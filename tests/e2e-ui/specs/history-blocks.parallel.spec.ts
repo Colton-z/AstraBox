@@ -1,24 +1,23 @@
 /**
- * E2E: the folded history read is the same transcript, paged by record, with
+ * E2E: the folded history read is the same transcript, paged by message, with
  * the work behind one addressable header.
  *
- * `useFirstPageMessages.ts:34` moved the console's history read from
- * `/sessions/{id}/messages` to `/sessions/{id}/history-blocks`, so this page is
- * now what a reader sees. Everything that can go wrong on it answers 200 with a
- * well-formed body: `history_blocks.py::project_record` can fold a record's
- * conclusion away with its work, `list_history_blocks_page`
- * (`session_message_view.py:748`) can lose a record between two pages or serve
+ * The console reads its history from `/sessions/{id}/history-blocks`
+ * (`historyPages.ts::readHistoryPage`), so this page is what a reader sees.
+ * Everything that can go wrong on it answers 200 with a well-formed body:
+ * `history_blocks.py::fold_parts` can fold a response's conclusion away with
+ * its work, `load_history_page` can lose a message between two pages or serve
  * the second page against a history the first one never saw, and
- * `get_session_history_block_details` can reopen a header at the wrong
- * checkpoint and hand back blocks that belong to a later turn. A record that
- * silently disappears between page one and page two is not visible in the
- * browser at all — the reader simply never scrolls to it.
+ * `load_block_parts` can reopen a header at the wrong output position and hand
+ * back parts that belong to a later response. A message that silently
+ * disappears between page one and page two is not visible in the browser at
+ * all — the reader simply never scrolls to it.
  *
  * So the page is checked against the raw read of the same session: the same
- * records, in the same order, with the tool work removed from the page and
+ * messages, in the same order, with the tool work removed from the page and
  * still present in `/messages` and in the detail read. The cursor is walked at
- * `limit=2`, which is the only way a three-turn session crosses a page boundary
- * at all, and the boundary is re-asked to prove the checkpoint pins it.
+ * `limit=2`, which is the only way a three-response session crosses a page
+ * boundary at all, and the boundary is re-asked to prove the cursor pins it.
  *
  * The browser half is one assertion the API half cannot make: that the page the
  * console receives carries no tool output, and that the output appears only
@@ -26,8 +25,8 @@
  * would render identically.
  *
  * Engine independence: tool names differ per engine, so nothing here matches
- * `Bash` or `Read`. The tool turn is found by the `tool_use` blocks the durable
- * record carries, and cards are located by `data-tool-call-id`.
+ * `Bash` or `Read`. The tool response is found by the tool parts its history
+ * message carries, and cards are located by `data-tool-call-id`.
  *
  * This spec depends on the model reaching for a tool. When it does not, it
  * FAILS and names what the engine drove instead — it does not `test.skip()`,
@@ -40,6 +39,7 @@ import { expect, test, type Locator } from '@playwright/test';
 import {
   AstraApi,
   messageText,
+  messageToolCalls,
   type HistoryBlockPage,
   type MessageRecord,
 } from '../fixtures/astraApi';
@@ -63,44 +63,42 @@ const MAX_PAGES = 12;
 
 const sessions = trackSessions();
 
+/** The data of a `data-process-block` part (`history_blocks.py::fold_parts`). */
 interface ProcessDetails {
   block_id: string;
   cursor: string;
   session_id: string;
   message_id: string;
-  turn_id: string;
   tool_count: number;
   summarize: boolean;
   summary?: unknown;
 }
 
-function blocksOf(record: MessageRecord | null | undefined): Array<Record<string, unknown>> {
-  return Array.isArray(record?.blocks) ? record.blocks : [];
+function partsOf(record: MessageRecord | null | undefined): Array<Record<string, unknown>> {
+  return Array.isArray(record?.parts) ? record.parts : [];
 }
 
-function blocksOfType(record: MessageRecord | null | undefined, type: string): Array<Record<string, unknown>> {
-  return blocksOf(record).filter((block) => String(block.type ?? '') === type);
+function partsOfType(record: MessageRecord | null | undefined, type: string): Array<Record<string, unknown>> {
+  return partsOf(record).filter((part) => String(part.type ?? '') === type);
 }
 
-function toolUseIds(record: MessageRecord | null | undefined): string[] {
-  return blocksOfType(record, 'tool_use')
-    .map((block) => String(block.id ?? '').trim())
-    .filter(Boolean);
+function toolCallIds(record: MessageRecord | null | undefined): string[] {
+  return record ? messageToolCalls(record).map((call) => call.toolCallId).filter(Boolean) : [];
 }
 
-/** The headers this record carries in place of the work they stand for. */
+/** The headers this message carries in place of the work they stand for. */
 function processDetails(record: MessageRecord | null | undefined): ProcessDetails[] {
-  return blocksOfType(record, 'process_block')
-    .map((block) => block.process_details as ProcessDetails | undefined)
+  return partsOfType(record, 'data-process-block')
+    .map((part) => part.data as ProcessDetails | undefined)
     .filter((details): details is ProcessDetails => Boolean(details));
 }
 
 function messageIds(records: MessageRecord[]): string[] {
-  return records.map((record) => String(record.message_id));
+  return records.map((record) => String(record.id));
 }
 
 /**
- * The engine's own tool names off the durable records — diagnostic only.
+ * The engine's own tool names off the history messages — diagnostic only.
  *
  * What the model reached for is the model's business; what the read does with
  * it is this spec's. It never throws, so a broken read here cannot replace the
@@ -109,12 +107,11 @@ function messageIds(records: MessageRecord[]): string[] {
 function toolsDriven(records: MessageRecord[]): string {
   const names = new Set<string>();
   for (const record of records) {
-    for (const block of blocksOfType(record, 'tool_use')) {
-      const name = String(block.name ?? '').trim();
-      if (name) names.add(name);
+    for (const call of messageToolCalls(record)) {
+      if (call.toolName) names.add(call.toolName);
     }
   }
-  return [...names].sort().join(', ') || '(no tool_use block at all)';
+  return [...names].sort().join(', ') || '(no tool call at all)';
 }
 
 /** Press a collapsible trigger that states its own state, and wait for it. */
@@ -186,8 +183,8 @@ test('the folded history pages by record and carries its tool work only on deman
   // the text the detail read must carry is fixed before the model runs.
   await api.uploadFileText(sessionId, '/workspace', sourceName, `${toolOutputMarker}\n`);
 
-  // ── ACT: three turns, with the one that ran a tool in the middle, so a
-  //    `limit=2` walk has to carry it across a page boundary. ────────────────
+  // ── ACT: three responses, with the one that ran a tool in the middle, so
+  //    a `limit=2` walk has to carry it across a page boundary. ─────────────
   const first = await api.sendTurn(
     sessionId,
     `Reply with exactly ${markerOne} and nothing else. Do not use any tool.`,
@@ -212,10 +209,10 @@ test('the folded history pages by record and carries its tool work only on deman
   expect(last.errorText, 'the second tool-free turn must answer').toBeNull();
   await api.waitForAssistantMessageMatching(sessionId, 2, () => true, RENDER_MS);
 
-  // The raw read is the control: the same durable records, unfolded.
+  // The raw read is the control: the same history messages, unfolded.
   const raw = (await api.getMessages(sessionId, 50)).messages;
   const rawAssistants = raw.filter((record) => record.role === 'assistant');
-  const toolRecord = rawAssistants.find((record) => toolUseIds(record).length > 0) ?? null;
+  const toolRecord = rawAssistants.find((record) => toolCallIds(record).length > 0) ?? null;
   expect(
     toolRecord,
     'the folded page needs a response that ran a tool, and the engine drove: ' +
@@ -224,8 +221,8 @@ test('the folded history pages by record and carries its tool work only on deman
       'playwright-test-budget.cjs:48-70 SIGTERMs the whole process group on a ' +
       'skipped result and would end the lane instead of costing this one spec.',
   ).not.toBeNull();
-  const toolMessageId = String(toolRecord?.message_id);
-  const rawToolIds = toolUseIds(toolRecord);
+  const toolMessageId = String(toolRecord?.id);
+  const rawToolIds = toolCallIds(toolRecord);
   test.info().annotations.push({
     type: 'e2e_history_blocks_shape',
     description: `records=${raw.length} tools=${toolsDriven(rawAssistants)} ` +
@@ -237,22 +234,16 @@ test('the folded history pages by record and carries its tool work only on deman
   expect(folded.paging_mode, 'the console reads a block page, not a timestamp page').toBe('blocks');
   expect(
     messageIds(folded.messages),
-    'the folded read must carry the same records, in the same order, as the raw read',
+    'the folded read must carry the same messages, in the same order, as the raw read',
   ).toEqual(messageIds(raw));
   expect(folded.block_count, 'block_count counts what the page carries').toBe(
     folded.messages.length,
   );
   expect(folded.has_more, 'a whole short session fits on one default page').toBe(false);
   expect(folded.next_cursor ?? null, 'and a last page issues no cursor').toBeNull();
-  for (const record of folded.messages) {
-    expect(
-      String(record.history_block_id ?? ''),
-      `record ${record.message_id} must be addressable on the page it is shown on`,
-    ).toBe(String(record.message_id));
-  }
 
   const foldedTool = folded.messages.find(
-    (record) => String(record.message_id) === toolMessageId,
+    (record) => String(record.id) === toolMessageId,
   );
   const headers = processDetails(foldedTool);
   expect(headers, 'a settled tool response folds into exactly one header').toHaveLength(1);
@@ -261,17 +252,12 @@ test('the folded history pages by record and carries its tool work only on deman
   expect(Number(header.tool_count), 'the header counts the calls it stands for').toBeGreaterThanOrEqual(1);
   expect(String(header.session_id)).toBe(sessionId);
   expect(String(header.message_id)).toBe(toolMessageId);
-  expect(String(header.turn_id)).toBe(String(toolRecord?.turn_id));
   expect(String(header.block_id), 'a header a reader can open must be named').not.toBe('');
-  expect(String(header.cursor), 'and must carry the checkpoint it was issued at').not.toBe('');
+  expect(String(header.cursor), 'and must carry the output position it was issued at').not.toBe('');
   expect(
-    toolUseIds(foldedTool),
-    'the folded page must not carry the calls it folded away',
+    toolCallIds(foldedTool),
+    'the folded page must not carry the calls it folded away, nor the results they hold',
   ).toEqual([]);
-  expect(
-    blocksOfType(foldedTool, 'tool_result'),
-    'nor their results — that is the whole point of the fold',
-  ).toHaveLength(0);
   expect(
     rawToolIds.length,
     'while the raw read still carries them for whoever wants the whole record',
@@ -282,36 +268,36 @@ test('the folded history pages by record and carries its tool work only on deman
     messageText(toolRecord as MessageRecord),
     'and it is the response\'s own words, not a rewrite of them',
   ).toContain(conclusion);
-  // A response that ran no tool folds only its thinking, and only if the model
-  // thought: `history_blocks.py::_deferred_groups` hides a settled run of
-  // thinking behind a reasoning-only header (no label, no tool count). Whether
-  // the model thinks before a one-line answer is its business, so the raw
-  // record decides which way each response goes.
+  // A response that ran no tool folds only its reasoning, and only if the
+  // model reasoned: `history_blocks.py::fold_parts` hides each settled run of
+  // reasoning behind a reasoning-only header (no label, no tool count).
+  // Whether the model reasons before a one-line answer is its business, so
+  // the raw message decides which way each response goes.
   for (const record of folded.messages) {
-    if (String(record.message_id) === toolMessageId || record.role !== 'assistant') continue;
-    const rawRecord = raw.find((item) => String(item.message_id) === String(record.message_id));
-    const thought = blocksOfType(rawRecord, 'thinking').length > 0;
+    if (String(record.id) === toolMessageId || record.role !== 'assistant') continue;
+    const rawRecord = raw.find((item) => String(item.id) === String(record.id));
+    const thought = partsOfType(rawRecord, 'reasoning').length > 0;
     const headers = processDetails(record);
     if (!thought) {
-      expect(headers, `record ${record.message_id} neither thought nor ran a tool, so it has nothing to fold`)
+      expect(headers, `response ${record.id} neither reasoned nor ran a tool, so it has nothing to fold`)
         .toHaveLength(0);
     }
     for (const item of headers) {
       expect(
         item.tool_count,
-        `record ${record.message_id} ran no tool, so its header can stand only for its thinking`,
+        `response ${record.id} ran no tool, so its header can stand only for its reasoning`,
       ).toBe(0);
       expect(item.summarize, 'a reasoning-only fold is not the labelled whole-response one').toBe(false);
     }
-    expect(blocksOfType(record, 'thinking'), 'thinking the page shows is thinking it failed to fold')
+    expect(partsOfType(record, 'reasoning'), 'reasoning the page shows is reasoning it failed to fold')
       .toHaveLength(0);
     expect(
       messageText(record).trim(),
-      `record ${record.message_id} keeps its answer on the page, word for word`,
+      `response ${record.id} keeps its answer on the page, word for word`,
     ).toBe(messageText(rawRecord as MessageRecord).trim());
   }
 
-  // ── 2. Two records at a time: same order, no gaps, no repeats. ───────────
+  // ── 2. Two messages at a time: same order, no gaps, no repeats. ──────────
   const pages: HistoryBlockPage[] = [];
   let cursor: string | null = null;
   for (let guard = 0; guard < MAX_PAGES; guard += 1) {
@@ -324,7 +310,7 @@ test('the folded history pages by record and carries its tool work only on deman
     expect(walkedPage.paging_mode).toBe('blocks');
     expect(
       walkedPage.messages.length,
-      'a page of two must hold one or two records, never none and never more',
+      'a page of two must hold one or two messages, never none and never more',
     ).toBeGreaterThan(0);
     expect(walkedPage.messages.length).toBeLessThanOrEqual(2);
     if (!walkedPage.has_more) {
@@ -349,27 +335,28 @@ test('the folded history pages by record and carries its tool work only on deman
     walked,
     'walking the cursor must rebuild the raw transcript exactly — no gap, no repeat',
   ).toEqual(messageIds(raw));
-  expect(new Set(walked).size, 'and must not hand the same record out twice').toBe(walked.length);
+  expect(new Set(walked).size, 'and must not hand the same message out twice').toBe(walked.length);
 
-  const pagesHoldingTheToolTurn = pages.filter((walkedPage) => (
+  const pagesHoldingTheToolResponse = pages.filter((walkedPage) => (
     messageIds(walkedPage.messages).includes(toolMessageId)
   ));
   expect(
-    pagesHoldingTheToolTurn,
-    'a tool turn is one record, so a page boundary can never cut through it',
+    pagesHoldingTheToolResponse,
+    'a response is one message, so a page boundary can never cut through it',
   ).toHaveLength(1);
-  const walkedTool = pagesHoldingTheToolTurn[0].messages.find(
-    (record) => String(record.message_id) === toolMessageId,
+  const walkedTool = pagesHoldingTheToolResponse[0].messages.find(
+    (record) => String(record.id) === toolMessageId,
   );
-  expect(toolUseIds(walkedTool), 'the walked page folds it the same way').toEqual([]);
+  expect(toolCallIds(walkedTool), 'the walked page folds it the same way').toEqual([]);
   expect(processDetails(walkedTool).map((item) => item.block_id)).toEqual([header.block_id]);
 
-  // The checkpoint is what makes the second page belong to the first read.
-  // Re-asking on a still transcript proves nothing — a read with no checkpoint
-  // at all answers the same — so a real turn is written first, and only then
-  // is the old cursor asked again: it must answer the page it answered before,
-  // while a fresh read must show the new records that page must not.
-  expect(pages.length, 'six records at two per page must take more than one page').toBeGreaterThan(1);
+  // The cursor's pinned position is what makes the second page belong to the
+  // first read. Re-asking on a still transcript proves nothing — a read that
+  // pins nothing answers the same — so a real response is written first, and
+  // only then is the old cursor asked again: it must answer the page it
+  // answered before, while a fresh read must show the new messages that page
+  // must not.
+  expect(pages.length, 'six messages at two per page must take more than one page').toBeGreaterThan(1);
   const boundaryCursor = String(pages[0].next_cursor || '');
   const laterMarker = `HISTORY_BLOCKS_LATER_${runId}`;
   const later = await api.sendTurn(
@@ -377,31 +364,31 @@ test('the folded history pages by record and carries its tool work only on deman
     `Reply with exactly ${laterMarker} and nothing else. Do not use any tool.`,
     QUICK_TURN_MS,
   );
-  expect(later.errorText, 'the turn written after the read must answer').toBeNull();
+  expect(later.errorText, 'the response written after the read must answer').toBeNull();
   await api.waitForAssistantMessageMatching(sessionId, 3, () => true, RENDER_MS);
   const fresh = await api.getHistoryBlocks(sessionId);
   expect(
     fresh.messages.length,
-    'a fresh read after the new turn carries its two new records',
+    'a fresh read after the new response carries its input and its reply',
   ).toBe(raw.length + 2);
   expect(
-    fresh.messages.some((record) => record.role === 'user' && String(record.content).includes(laterMarker)),
+    fresh.messages.some((record) => record.role === 'user' && messageText(record).includes(laterMarker)),
     'and the new input is among them',
   ).toBe(true);
   expect(
     messageIds(fresh.messages).slice(0, raw.length),
-    'the records the first read saw keep their order in front of the new ones',
+    'the messages the first read saw keep their order in front of the new ones',
   ).toEqual(messageIds(raw));
   const reasked = await api.getHistoryBlocks(sessionId, 2, boundaryCursor);
   expect(
     messageIds(reasked.messages),
-    're-asking for a page at the old cursor must answer with the same records, after the transcript grew',
+    're-asking for a page at the old cursor must answer with the same messages, after the transcript grew',
   ).toEqual(messageIds(pages[1].messages));
   expect(String(reasked.next_cursor || '')).toBe(String(pages[1].next_cursor || ''));
   expect(reasked.has_more).toBe(pages[1].has_more);
   expect(
     messageIds(reasked.messages).some((id) => !messageIds(raw).includes(id)),
-    'the pinned page never leaks a record written after its checkpoint',
+    'the pinned page never leaks a message written after its position',
   ).toBe(false);
 
   const bogus = await request.get(
@@ -419,25 +406,26 @@ test('the folded history pages by record and carries its tool work only on deman
     'GET',
     `${detailRoute}?cursor=${encodeURIComponent(header.cursor)}`,
   );
-  expect(opened.messages, 'a header stands for one record\'s work').toHaveLength(1);
+  expect(opened.messages, 'a header stands for one response\'s work').toHaveLength(1);
   expect(opened.has_more, 'and a header\'s contents are whole').toBe(false);
   expect(
-    toolUseIds(opened.messages[0]),
-    'the reopened header must carry exactly the calls the raw record holds',
+    toolCallIds(opened.messages[0]),
+    'the reopened header must carry exactly the calls the raw message holds',
   ).toEqual(rawToolIds);
-  expect(String(opened.messages[0].history_block_id)).toBe(header.block_id);
+  expect(String(opened.messages[0].id)).toBe(header.block_id);
+  expect(String(opened.messages[0].metadata?.history_block_id)).toBe(header.block_id);
 
   const withoutCursor = await request.get(apiPath(detailRoute));
   expect(
     withoutCursor.status(),
-    'without a checkpoint the blocks would be read as the record stands now, not as the page folded them',
+    'without its position the parts would be read as the response stands now, not as the page folded them',
   ).toBe(400);
   const withPageCursor = await request.get(
     apiPath(`${detailRoute}?cursor=${encodeURIComponent(boundaryCursor)}`),
   );
   expect(
     withPageCursor.status(),
-    'a page cursor names a position, not a checkpoint, and must be refused as one',
+    'a page cursor names a page, not a header, and must be refused as one',
   ).toBe(400);
   const unknownBlock = await request.get(
     apiPath(
@@ -447,7 +435,7 @@ test('the folded history pages by record and carries its tool work only on deman
   );
   expect(
     unknownBlock.status(),
-    'a header the pinned record does not produce is missing, not empty — the two send a reader to different places',
+    'a header the pinned response does not produce is missing, not empty — the two send a reader to different places',
   ).toBe(404);
 
   // ── 4. The browser receives a page with no tool work on it. ──────────────
@@ -476,27 +464,26 @@ test('the folded history pages by record and carries its tool work only on deman
   const body = (await firstResponse.json()) as { data: HistoryBlockPage };
   expect(body.data.paging_mode).toBe('blocks');
   const delivered = body.data.messages.find(
-    (record) => String(record.message_id) === toolMessageId,
+    (record) => String(record.id) === toolMessageId,
   );
-  expect(toolUseIds(delivered), 'the page the browser receives carries no calls').toEqual([]);
+  expect(toolCallIds(delivered), 'the page the browser receives carries no calls').toEqual([]);
   // The model may quote what it read in its own answer, and its answer belongs
   // on the page. What the fold hides is the tools' output, so the answer is
-  // held to the raw record word for word and the output is looked for in
+  // held to the raw message word for word and the output is looked for in
   // everything else the body carries.
   expect(
-    String(delivered?.content ?? ''),
+    messageText(delivered as MessageRecord),
     'the answer the browser receives is the response\'s own words',
-  ).toBe(String(toolRecord?.content ?? ''));
-  const rawAnswer = new Set(blocksOfType(toolRecord, 'text').map((block) => String(block.text ?? '')));
-  for (const block of blocksOfType(delivered, 'text')) {
-    expect(rawAnswer.has(String(block.text ?? '')), 'every text block on the page is one the response wrote')
+  ).toBe(messageText(toolRecord as MessageRecord));
+  const rawAnswer = new Set(partsOfType(toolRecord, 'text').map((part) => String(part.text ?? '')));
+  for (const part of partsOfType(delivered, 'text')) {
+    expect(rawAnswer.has(String(part.text ?? '')), 'every text part on the page is one the response wrote')
       .toBe(true);
   }
   expect(
     JSON.stringify({
       ...(delivered ?? {}),
-      content: undefined,
-      blocks: blocksOf(delivered).filter((block) => String(block.type ?? '') !== 'text'),
+      parts: partsOf(delivered).filter((part) => String(part.type ?? '') !== 'text'),
     }),
     'and none of the output they produced — a body that still carried it would render identically',
   ).not.toContain(toolOutputMarker);

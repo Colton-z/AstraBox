@@ -104,10 +104,13 @@ fi
 
 [ "$with_turn" = 1 ] || exit 0
 
-curl -sS --no-buffer --max-time 600 -X POST "$base_url/api/v1/sessions/$session_id/ai-stream" \
-  -H 'Content-Type: application/json' -H 'Accept: text/event-stream' \
+curl -fsS -X POST "$base_url/api/v1/sessions/$session_id/inputs" \
+  -H 'Content-Type: application/json' \
   --data '{"content": "What is the capital of France? Answer in one sentence.", "client_message_id": "installer-acceptance-turn"}' \
-  >"$work/turn.sse" || fail "the message request failed"
+  >/dev/null || fail "the message was not accepted"
+# A new session has no earlier output, so its first response is this message's.
+curl -sS --no-buffer --max-time 600 "$base_url/api/v1/sessions/$session_id/stream?after_seq=0" \
+  -H 'Accept: text/event-stream' >"$work/turn.sse" || fail "the session stream failed"
 verdict="$(python3 "$(dirname "$0")/installer-engine-acceptance.py" judge "$work/turn.sse")"
 case "$verdict" in
   PASS*) pass "the Agent replied through the model service: ${verdict#PASS }" ;;
@@ -115,8 +118,12 @@ case "$verdict" in
 esac
 
 deadline=$((SECONDS + settle_timeout_seconds))
-until [ "$(session_state "$session_id")" = READY ]; do
-  [ "$SECONDS" -lt "$deadline" ] || fail "Session $session_id did not return to READY after the reply"
+until curl -fsS "$base_url/api/v1/sessions/$session_id" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)["data"]
+settled = data.get("state") == "READY" and not data.get("current_responses") and not data.get("held_inputs")
+sys.exit(0 if settled else 1)'; do
+  [ "$SECONDS" -lt "$deadline" ] || fail "Session $session_id did not settle after the reply"
   sleep 2
 done
-pass "Session $session_id returned to READY"
+pass "Session $session_id settled after the reply"

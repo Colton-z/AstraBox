@@ -21,7 +21,7 @@ afterEach(() => {
 // Codex's command approval, as its adapter declares it.
 const APPROVAL: PendingPlanConfirmationInteraction = {
   interaction_id: 'codex-14',
-  turn_id: 'turn-1',
+  response_id: 'turn-1',
   tool_call_id: 'item-9',
   tool_name: 'commandExecution',
   presentation: 'decision',

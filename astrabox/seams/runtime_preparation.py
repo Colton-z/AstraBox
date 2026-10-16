@@ -1,4 +1,4 @@
-"""One deployment integration for every preparation point of an Agent and Session.
+"""One deployment integration for every preparation point of an Agent, Assistant and Session.
 
 The platform owns ordering, placement, fencing, file delivery and failure
 handling. The provider owns external identities, declarations, credential
@@ -14,7 +14,7 @@ import hashlib
 import re
 from abc import ABC
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 from urllib.parse import urlsplit
 
 from astrabox.seams.sandbox import SandboxHandle
@@ -30,17 +30,39 @@ class PreparedPackage:
 
 
 @dataclass(frozen=True)
-class AgentPreparationOperation:
+class PreparationSubject:
+    """What prepared resources and an external identity belong to.
+
+    An Agent is shared by everyone it is published to; an Assistant belongs to
+    one owner. The id is stable for the subject's life and is the key for an
+    external identity; revisions are not.
+    """
+    kind: Literal["agent", "assistant"]
+    id: str
+
+    def __post_init__(self) -> None:
+        if self.kind not in ("agent", "assistant") or not isinstance(self.id, str) or not self.id.strip():
+            raise ValueError("a preparation subject is an agent or assistant with an id")
+
+
+@dataclass(frozen=True)
+class ResourcePreparationOperation:
     """Durable identity of one callback, including recovery after host failure."""
-    agent_id: str
+    subject: PreparationSubject
     operation_id: str
 
 
 @dataclass(frozen=True)
-class AgentPreparationContext:
-    operation: AgentPreparationOperation
-    creator_user_id: str
-    config_version: int
+class ResourcePreparationContext:
+    """A subject's resources, already placed in a box no engine has started in.
+
+    ``revision`` names the configuration the resources were prepared from: an
+    Agent's version, or an Assistant's configuration revision. ``packages``
+    and ``skills_path`` are the actual prepared paths in ``sandbox``.
+    """
+    operation: ResourcePreparationOperation
+    owner_user_id: str
+    revision: str
     preparation_id: str
     runtime_generation: str
     config: Mapping[str, Any] = field(repr=False)
@@ -97,8 +119,8 @@ class SessionPreparationContext:
     """
     session_id: str
     principal_id: str
-    agent_id: str | None
-    config_version: int
+    subject: PreparationSubject
+    revision: str
     runtime_generation: str
     sandbox_id: str
     runtime_identity: Mapping[str, Any]
@@ -190,10 +212,10 @@ def validated_user_action(value: object) -> dict[str, str | None] | None:
 
 @dataclass(frozen=True)
 class SessionUserActionContext:
-    """Identity and Agent binding resolved by the host, never by request JSON."""
+    """Identity and subject binding resolved by the host, never by request JSON."""
     session_id: str
     principal_id: str
-    agent_id: str | None
+    subject: PreparationSubject
 
 
 @dataclass(frozen=True)
@@ -236,23 +258,23 @@ class SessionUserActionState:
 class RuntimePreparationProvider(ABC):
     """One deployment-owned integration; independent of the sandbox backend.
 
-    Keep the Agent's external identity stable. Read the actual prepared files,
-    merge declarations, and skip unchanged external writes in this adapter.
-    Config versions and pool members are not external identity keys. The host
-    serializes operations per Agent across replicas and generations.
+    Keep each subject's external identity stable. Read the actual prepared
+    files, merge declarations, and skip unchanged external writes in this
+    adapter. Revisions and boxes are not external identity keys. The host
+    serializes operations per subject across replicas and generations.
     """
     name: str
-    #: Seconds a turn preparation stays valid. When set, the host re-runs
-    #: ``prepare_turn`` for the same attempt before it lapses while the engine
-    #: write is live; a failed refresh quarantines the attempt.
-    turn_validity_seconds: float | None = None
 
     def plan(self, *, config: Mapping[str, Any]) -> RuntimePreparationPlan:
         """Declare preparation requirements without I/O or personal identity."""
         return RuntimePreparationPlan()
 
-    async def synchronize(self, *, context: AgentPreparationContext) -> None:
+    async def synchronize(self, *, context: ResourcePreparationContext) -> None:
         """Return only after all external writes have conclusively completed.
+
+        Runs after the subject's Skills and packages are in the box and before
+        any engine there starts: before an Agent's waiting inventory is
+        published, and before an Assistant's workspace starts Hermes.
 
         Use operation.operation_id for durable idempotency/recovery. Exceptions,
         cancellation and host loss leave the operation unresolved; no later
@@ -261,7 +283,7 @@ class RuntimePreparationProvider(ABC):
         The context contains trusted configuration and must not be logged.
         """
 
-    async def recover(self, *, operation: AgentPreparationOperation) -> bool:
+    async def recover(self, *, operation: ResourcePreparationOperation) -> bool:
         """True proves this exact operation can never write again.
 
         Quiesce/fence even a still-running invocation or one not yet received
@@ -282,11 +304,13 @@ class RuntimePreparationProvider(ABC):
         return RuntimeMaterials()
 
     async def prepare_turn(self, *, context: TurnPreparationContext) -> RuntimeMaterials:
-        """Prepare one imminent engine write; idempotent per dispatch attempt.
+        """Prepare one input just before it reaches the engine; idempotent per input.
 
-        Runs under the host's durable per-Session guard and deadline before the
-        input reaches the engine. Return refreshed files only (the startup
-        environment is fixed); provider-owned state may also be renewed here.
+        Runs once per input, in the process whose reader holds the Session,
+        under a deadline; ``context.dispatch_attempt_id`` is the input's id.
+        Return refreshed files only (the startup environment is fixed);
+        provider-owned state may also be renewed here. Raising refuses the
+        input, which fails with the error code shown to the person.
         """
         return RuntimeMaterials()
 
@@ -316,7 +340,6 @@ _ASYNC_METHODS = (
 
 def register_runtime_preparation_provider(provider: RuntimePreparationProvider) -> None:
     global _PROVIDER
-    validity = getattr(provider, "turn_validity_seconds", None)
     if (
         not isinstance(provider, RuntimePreparationProvider)
         or not isinstance(getattr(provider, "name", None), str)
@@ -325,10 +348,6 @@ def register_runtime_preparation_provider(provider: RuntimePreparationProvider) 
                for method in _ASYNC_METHODS)
     ):
         raise TypeError("runtime-preparation provider requires a name and async preparation methods")
-    if validity is not None and (
-        isinstance(validity, bool) or not isinstance(validity, (int, float)) or validity <= 0
-    ):
-        raise TypeError("turn_validity_seconds must be a positive number or None")
     if _PROVIDER is not None and _PROVIDER is not provider:
         raise RuntimeError("a runtime-preparation provider is already registered")
     _PROVIDER = provider

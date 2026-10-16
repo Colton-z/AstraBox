@@ -8,18 +8,21 @@ otherwise-timing-dependent recovery paths against a real sandbox and host.
 Fault files live on the backend host. The base file and its ``.d/*.json``
 siblings are one declaration channel shared by every fault kind. Examples::
 
-    {"faults": {"drop": 1}, "match": {"session_id": "<id>"}, "consumed": [...]}
-    {"faults": {"transcript_append_5xx": 3}, "match": {"session_id": "<id>"}}
+    {"faults": {"transcript_append_5xx": 3}, "match": {"session_id": "<id>"}, "consumed": [...]}
+    {"faults": {"hold_after_frame": 1}, "match": {"session_id": "<id>", "frame_type": "text-delta"}}
 
 Hook points (see :mod:`astrabox.common.fault_injection`):
 
-- ``turn_terminal_drop`` (context: ``session_id``) — consume one bridge-drop.
 - ``transcript_append_5xx`` (context: ``session_id``, ``append_id``,
   ``entry_count``) — consume one temporary append rejection.
-- ``turn_frame_processed`` (context: ``session_id``, ``frame_type``) — hold the
-  bridge after one matching frame until the declaration releases it.
-- ``prepared_slot_renewal`` (context: ``agent_id``, ``slot_id``) — hold a
-  replacement build while the published slot remains available for a claim.
+- ``response_part_read`` (context: ``session_id``, ``frame_type``) — hold the
+  session's reader after one matching part, committed, until the declaration
+  releases it.
+- ``reader_boundary`` (context: ``session_id``, ``phase``, ``item_id``) — hold
+  before subscription or admission recording. Releasing an admission hold
+  detaches that reader before it can record the held event.
+- ``tool_card_lookup`` (context: ``session_id``, ``response_id``, ``cursor``, ``frame``)
+  — hold before authorized card lookup, then detach that reader on release.
 
 The reversible sandbox-egress fault uses the same armed support module but an
 admin test route rather than a watched file. It is a requested mutation, not a
@@ -42,7 +45,7 @@ from astrabox.common.logger.logger_factory import get_logger
 
 logger = get_logger(__name__)
 
-_FAULT_FILE = "/tmp/astrabox-e2e-turn-terminal-drop-faults.json"
+_FAULT_FILE = "/tmp/astrabox-e2e-faults.json"
 _HOLD_RELEASE_TIMEOUT_SECONDS = 120.0
 _LOCK = threading.Lock()
 
@@ -58,10 +61,10 @@ def e2e_faults_enabled() -> bool:
 
 def install_e2e_fault_hooks() -> None:
     """Register the file-driven E2E fault handlers at the hook seam."""
-    register_fault_hook("turn_terminal_drop", maybe_consume_turn_terminal_drop)
     register_fault_hook("transcript_append_5xx", maybe_consume_transcript_append_5xx)
-    register_fault_barrier("turn_frame_processed", maybe_hold_turn_after_frame)
-    register_fault_barrier("prepared_slot_renewal", maybe_hold_prepared_slot_renewal)
+    register_fault_barrier("response_part_read", maybe_hold_after_part)
+    register_fault_barrier("reader_boundary", maybe_hold_reader_boundary)
+    register_fault_barrier("tool_card_lookup", maybe_detach_during_card_lookup)
     logger.warning(
         "E2E fault hooks installed (ASTRABOX_E2E_FAULTS armed) — "
         "this must never be a production deployment"
@@ -163,7 +166,7 @@ def _fault_base_path() -> str:
     if not e2e_faults_enabled():
         return ""
     return str(
-        os.getenv("ASTRABOX_E2E_TURN_TERMINAL_DROP_FAULT_FILE") or _FAULT_FILE
+        os.getenv("ASTRABOX_E2E_FAULT_FILE") or _FAULT_FILE
     ).strip()
 
 
@@ -278,21 +281,6 @@ def _consume_counted_fault(
     return None
 
 
-def maybe_consume_turn_terminal_drop(session_id: str) -> bool:
-    """Consume one terminal-drop fault for this session when explicitly armed."""
-    path = _consume_counted_fault(
-        "drop", session_id=session_id, consumed_value=str(session_id)
-    )
-    if path is None:
-        return False
-    logger.warning(
-        "e2e injecting turn terminal drop after result session=%s path=%s",
-        session_id,
-        path,
-    )
-    return True
-
-
 def maybe_consume_transcript_append_5xx(
     *, session_id: str, append_id: str, entry_count: int
 ) -> bool:
@@ -321,7 +309,7 @@ def maybe_consume_transcript_append_5xx(
     return True
 
 
-def _consume_turn_frame_hold(*, session_id: str, frame_type: str) -> str | None:
+def _consume_part_hold(*, session_id: str, frame_type: str) -> str | None:
     return _consume_counted_fault(
         "hold_after_frame",
         session_id=session_id,
@@ -351,19 +339,41 @@ def _wait_for_hold_release(path: str, *, label: str) -> None:
     )
 
 
-async def maybe_hold_turn_after_frame(
+async def maybe_hold_reader_boundary(*, session_id: str, phase: str, item_id: str) -> None:
+    """Stage one reconnect/custody cut without changing durable facts."""
+    path = _consume_counted_fault(
+        "hold_reader_boundary",
+        session_id=session_id,
+        match_context={"phase": phase},
+        consumed_value={"fault": "hold_reader_boundary", "session_id": session_id,
+                        "phase": phase, "item_id": item_id},
+    )
+    if path is None:
+        return
+    await asyncio.to_thread(_wait_for_hold_release, path, label=f"reader {phase} for {session_id}")
+    if phase == "admission":
+        from astrabox.core.service.orchestrator.engine.base import EngineStreamDetached
+
+        raise EngineStreamDetached(f"E2E reader detached before {phase} for {session_id}")
+
+
+async def maybe_hold_after_part(
     *,
     session_id: str,
     frame_type: str,
     prepare_hold: Callable[[], Awaitable[None]],
 ) -> None:
-    """Hold one matching processed frame until its E2E declaration releases it."""
-    path = _consume_turn_frame_hold(session_id=session_id, frame_type=frame_type)
+    """Hold a session's reader after one matching part until its E2E declaration releases it.
+
+    ``prepare_hold`` commits what the reader has read, so a page sees the
+    part before the hold begins.
+    """
+    path = _consume_part_hold(session_id=session_id, frame_type=frame_type)
     if path is None:
         return
     await prepare_hold()
     logger.warning(
-        "e2e holding turn after frame session=%s frame_type=%s path=%s",
+        "e2e holding reader after part session=%s frame_type=%s path=%s",
         session_id,
         frame_type,
         path,
@@ -371,28 +381,45 @@ async def maybe_hold_turn_after_frame(
     await asyncio.to_thread(
         _wait_for_hold_release,
         path,
-        label=f"turn-frame for session {session_id!r}",
+        label=f"reader part for session {session_id!r}",
     )
     logger.warning(
-        "e2e released turn-frame hold session=%s frame_type=%s path=%s",
+        "e2e released reader part hold session=%s frame_type=%s path=%s",
         session_id,
         frame_type,
         path,
     )
 
 
-async def maybe_hold_prepared_slot_renewal(*, agent_id: str, slot_id: str) -> None:
-    """Hold only the declared Agent's exact renewal until its claim completes."""
-    context = {"agent_id": agent_id, "slot_id": slot_id}
+async def maybe_detach_during_card_lookup(
+    *, session_id: str, response_id: str, cursor: dict[str, Any] | None, frame: dict[str, Any],
+) -> None:
+    """Hold one card-bearing result before lookup and lose its reader on release."""
+    from astrabox.core.service.orchestrator.tool_cards import card_ids_in
+
+    tool_call_id = str(frame.get("toolCallId") or "")
+    card_ids = card_ids_in(frame.get("output"))
+    if not tool_call_id or not card_ids:
+        return
     path = _consume_counted_fault(
-        "hold_prepared_slot_renewal",
-        session_id="",
-        match_context=context,
-        consumed_value={"fault": "hold_prepared_slot_renewal", **context},
+        "detach_during_card_lookup",
+        session_id=session_id,
+        consumed_value={
+            "fault": "detach_during_card_lookup",
+            "session_id": session_id,
+            "response_id": response_id,
+            "cursor": cursor,
+            "tool_call_id": tool_call_id,
+            "card_ids": card_ids,
+        },
     )
-    if path is not None:
-        await asyncio.to_thread(
-            _wait_for_hold_release,
-            path,
-            label=f"prepared-slot renewal for Agent {agent_id!r} slot {slot_id!r}",
-        )
+    if path is None:
+        return
+    await asyncio.to_thread(
+        _wait_for_hold_release, path, label=f"card lookup for session {session_id!r}",
+    )
+    from astrabox.core.service.orchestrator.engine.base import EngineStreamDetached
+
+    raise EngineStreamDetached(f"e2e reader loss before card lookup: {tool_call_id}")
+
+

@@ -2,19 +2,24 @@
 
 ``test_tool_permission.py`` covers the ``tool_approval`` presentation. This
 file drives the engines' decision and form interactions end-to-end through the
-same public ``interaction-respond`` path:
+same answer route the console uses
+(``POST /sessions/{id}/interactions/{iid}/answer``):
 
 * **ExitPlanMode** (session in ``plan`` mode) → a ``decision`` interaction
   carrying the proposed plan as its ``body``; APPROVE it (with a follow-on
-  ``permission_mode``) and the turn settles.
+  ``permission_mode``) and the paused response runs to its end.
 * **AskUserQuestion** → a ``form`` interaction carrying ``questions`` +
-  ``options``; answer it by ``option_label`` and the turn settles.
+  ``options``; answer it by ``option_label`` and the paused response runs to
+  its end.
 * **Codex Plan** → a native ``request_user_input`` form; answer it and prove
-  the turn resumes under Codex's own Plan collaboration preset.
+  the response resumes under Codex's own Plan collaboration preset.
 
-Together they prove that each adapter's declared contract survives to the
-browser and that the decision/answer relay works through the engine control
-connection, not just the approval path.
+Each interaction pauses its response on the session's stream (a
+``data-interaction`` part, then ``finish(tool-calls)``) and is the one the
+session detail names as waiting on its owner; the answer reopens the same
+response, which then ends ``completed``. Together they prove that each
+adapter's declared contract survives to the browser and that the answer reaches
+the runtime, not just the approval path.
 
 Run it explicitly (deselected in the default unit run):
 
@@ -27,6 +32,8 @@ import httpx
 import pytest
 
 from tests.e2e._sandbox_helpers import (
+    Reply,
+    answer_interaction,
     approval_presentation,
     assert_permission_mode_unavailable,
     contract_supported,
@@ -37,12 +44,12 @@ from tests.e2e._sandbox_helpers import (
     decision,
     engine_capabilities,
     engine_kind,
+    follow_reply,
     pending_interaction,
     permission_mode,
     poll_until_agent_ready,
     release_session,
-    respond_interaction,
-    stream_turn,
+    send_and_follow,
     tool_name,
     wait_for_pending_interaction,
     wait_until_settled,
@@ -51,19 +58,54 @@ from tests.e2e._sandbox_helpers import (
 pytestmark = pytest.mark.e2e
 
 
-def _surface_interaction(e2e_client: httpx.Client, sid: str, prompt: str) -> dict:
-    res = stream_turn(e2e_client, sid, content=prompt)
-    assert res.error is None, f"turn errored before the interaction: {res.error}"
-    pi = pending_interaction(e2e_client, sid) or wait_for_pending_interaction(e2e_client, sid, timeout=20.0)
-    assert pi is not None, (
-        f"no pending interaction surfaced (stream_interactions="
-        f"{[i.get('tool_name') for i in res.interactions]}, finish={res.finish_reason})"
+def _waiting_interaction(
+    e2e_client: httpx.Client, reply: Reply, *, exclude_id: str | None = None
+) -> dict:
+    """The interaction the paused response waits on, as the stream and the detail both name it.
+
+    The stream hears the pause as the reader reads it; the detail reads what
+    the reader recorded, so it is polled for the same interaction.
+    """
+    sid = reply.session_id
+    assert reply.error is None, f"the response failed before the interaction: {reply.error}"
+    assert reply.paused, (
+        f"the response did not pause on an interaction: finish={reply.finish_reason!r} "
+        f"text={reply.text[:200]!r}"
     )
-    return pi
+    streamed = reply.interactions[-1]
+    pending = wait_for_pending_interaction(e2e_client, sid, exclude_id=exclude_id, timeout=20.0)
+    assert pending is not None, (
+        f"the session detail names no interaction waiting on its owner; the stream "
+        f"paused on {streamed}"
+    )
+    assert pending.get("interaction_id") == streamed.get("interaction_id"), (
+        f"the stream and the detail name different interactions: {streamed} vs {pending}"
+    )
+    assert pending.get("response_id") == reply.response_id, (
+        f"the waiting interaction does not pause this response: {pending} vs {reply.response_id}"
+    )
+    return pending
+
+
+def _surface_interaction(e2e_client: httpx.Client, sid: str, prompt: str) -> tuple[Reply, dict]:
+    reply = send_and_follow(e2e_client, sid, prompt, until="pause")
+    return reply, _waiting_interaction(e2e_client, reply)
+
+
+def _answered_to_the_end(e2e_client: httpx.Client, reply: Reply) -> None:
+    """Follow the answered response to its end and require the conversation at rest."""
+    follow_reply(e2e_client, reply, until="end")
+    assert reply.error is None, f"the response failed after its answer: {reply.error}"
+    final = wait_until_settled(e2e_client, reply.session_id)
+    assert not final.get("pending_interaction")
+    last = final["last_response"]
+    assert last["response_id"] == reply.response_id and last["outcome"] == "completed", (
+        f"the answered response did not end completed: {last}"
+    )
 
 
 def test_exit_plan_mode_approve_settles(e2e_client: httpx.Client) -> None:
-    """plan mode -> ExitPlanMode decision -> APPROVE -> turn settles."""
+    """plan mode -> ExitPlanMode decision -> APPROVE -> the response runs to its end."""
     plan_mode = permission_mode("plan")
     created = create_session(e2e_client, permission_mode=plan_mode)
     sid = str(created.get("session_id") or "")
@@ -95,7 +137,7 @@ def test_exit_plan_mode_approve_settles(e2e_client: httpx.Client) -> None:
             )
             return
 
-        pi = _surface_interaction(
+        reply, pi = _surface_interaction(
             e2e_client,
             sid,
             "Make a short two-step plan to create a file hello.txt, then call the "
@@ -105,51 +147,38 @@ def test_exit_plan_mode_approve_settles(e2e_client: httpx.Client) -> None:
         # ~/.claude/plans/), and plan mode gates that write as an ordinary
         # tool approval. Approve such leading gates — bounded, so a model
         # that never presents the plan still fails — until the plan decision
-        # itself surfaces. The oracle is the decision and its settle, not
-        # which incidental steps the vendor took on the way there.
+        # itself surfaces. The oracle is the decision and the response's end,
+        # not which incidental steps the vendor took on the way there.
         for _ in range(2):
             if str(pi.get("presentation")) != approval_presentation():
                 break
-            result = respond_interaction(
-                e2e_client,
-                sid,
-                str(pi["interaction_id"]),
-                {"decision": decision("approve")},
-            )
-            assert result.get("answered") is True, f"leading gate not accepted: {result}"
-            pi = wait_for_pending_interaction(
-                e2e_client,
-                sid,
-                exclude_id=str(pi["interaction_id"]),
-                timeout=30.0,
-            )
-            assert pi is not None, "no further interaction after approving a leading gate"
+            approved = str(pi["interaction_id"])
+            answer_interaction(e2e_client, sid, approved, {"decision": decision("approve")})
+            follow_reply(e2e_client, reply, until="pause")
+            pi = _waiting_interaction(e2e_client, reply, exclude_id=approved)
         assert str(pi.get("tool_name")) == "ExitPlanMode", f"expected ExitPlanMode: {pi}"
         assert str(pi.get("presentation")) == "decision", f"expected a decision: {pi}"
         assert str(pi.get("body") or "").strip(), f"the decision carried no plan text: {pi}"
 
-        result = respond_interaction(
+        answer_interaction(
             e2e_client,
             sid,
             str(pi["interaction_id"]),
             # bypassPermissions, so the work the approved plan then performs
             # (writes AND read-backs) raises no further gates: this test pins
-            # the decision mechanics and the settle, not the permission
-            # matrix of the post-approval work.
+            # the decision mechanics and the response's end, not the
+            # permission matrix of the post-approval work.
             {"decision": decision("approve"), "permission_mode": permission_mode("unattended")},
         )
-        assert result.get("answered") is True, f"plan approval not accepted: {result}"
 
-        # Approving exits plan mode and the turn proceeds to completion.
-        final = wait_until_settled(e2e_client, sid)
-        assert str(final.get("state")) == "READY"
-        assert not final.get("pending_interaction")
+        # Approving exits plan mode and the same response proceeds to its end.
+        _answered_to_the_end(e2e_client, reply)
     finally:
         release_session(sid)
 
 
 def test_ask_user_question_answer_settles(e2e_client: httpx.Client) -> None:
-    """AskUserQuestion form -> answer by option_label -> turn settles."""
+    """AskUserQuestion form -> answer by option_label -> the response runs to its end."""
     # agent_chat defaults to bypassPermissions, which the vendor documents as
     # shadowing can_use_tool. This contract exercises the native user-input
     # callback, so select the same permission mode as the canonical browser E2E.
@@ -167,18 +196,17 @@ def test_ask_user_question_answer_settles(e2e_client: httpx.Client) -> None:
             else:
                 assert permission_mode("gated") is None
                 assert_permission_mode_unavailable(e2e_client, sid)
-            ordinary = stream_turn(
+            ordinary = send_and_follow(
                 e2e_client,
                 sid,
-                content=(
-                    "If this engine has a built-in user-question tool, use it to ask "
-                    "whether I prefer RED or BLUE. Otherwise reply with exactly "
-                    "NO_QUESTION_TOOL."
-                ),
+                "If this engine has a built-in user-question tool, use it to ask "
+                "whether I prefer RED or BLUE. Otherwise reply with exactly "
+                "NO_QUESTION_TOOL.",
+                until="pause",
             )
             assert ordinary.error is None, ordinary.error
-            assert not ordinary.interactions, (
-                "an engine whose adapter declares no question interaction surfaced "
+            assert ordinary.ended and not ordinary.interactions, (
+                "an engine whose adapter declares no question interaction paused on "
                 f"one: {ordinary.interactions}"
             )
             assert ordinary.text.strip(), "modeless question probe produced no response"
@@ -191,11 +219,13 @@ def test_ask_user_question_answer_settles(e2e_client: httpx.Client) -> None:
         # that exists for it — name a tool the engine does not have and it
         # answers the question itself.
         asking = tool_name("question")
-        pi = _surface_interaction(
+        reply, pi = _surface_interaction(
             e2e_client,
             sid,
-            f"Use the {asking} tool to ask me whether I prefer the color RED or "
-            "BLUE. Ask exactly one question offering those two options.",
+            f"Use the {asking} tool to ask which accent color to use in a sample chart: RED or "
+            "BLUE. Ask exactly one question offering those two options. After I answer, "
+            "acknowledge the selected color and finish. This choice is only for this reply; "
+            "do not save it to memory, read or write files, or use any other tools.",
         )
         assert str(pi.get("tool_name")) == asking, f"expected {asking}: {pi}"
         assert str(pi.get("presentation")) == "form", f"expected a form: {pi}"
@@ -208,18 +238,15 @@ def test_ask_user_question_answer_settles(e2e_client: httpx.Client) -> None:
         chosen = str(options[0].get("label") or "").strip()
         assert chosen, f"first option has no label: {q0}"
 
-        result = respond_interaction(
+        answer_interaction(
             e2e_client,
             sid,
             str(pi["interaction_id"]),
             {"answers": [{"question_id": qid, "option_label": chosen}]},
         )
-        assert result.get("answered") is True, f"form answer not accepted: {result}"
 
-        # The answer is relayed to the CLI and the turn runs to completion.
-        final = wait_until_settled(e2e_client, sid)
-        assert str(final.get("state")) == "READY"
-        assert not final.get("pending_interaction")
+        # The answer reaches the runtime and the same response runs to its end.
+        _answered_to_the_end(e2e_client, reply)
     finally:
         release_session(sid)
 
@@ -266,7 +293,7 @@ def test_codex_plan_mode_question_answer_settles(e2e_client: httpx.Client) -> No
     assert sid, f"no session_id: {created}"
     try:
         poll_until_agent_ready(e2e_client, sid)
-        pi = _surface_interaction(
+        reply, pi = _surface_interaction(
             e2e_client,
             sid,
             "Plan a one-page research-note template with three sections: "
@@ -289,7 +316,7 @@ def test_codex_plan_mode_question_answer_settles(e2e_client: httpx.Client) -> No
         option_label = str(options[0].get("label") or "").strip()
         assert option_label, question
 
-        answered = respond_interaction(
+        answer_interaction(
             e2e_client,
             sid,
             str(pi["interaction_id"]),
@@ -302,9 +329,7 @@ def test_codex_plan_mode_question_answer_settles(e2e_client: httpx.Client) -> No
                 ]
             },
         )
-        assert answered.get("answered") is True, answered
-        final = wait_until_settled(e2e_client, sid)
-        assert str(final.get("state")) == "READY"
-        assert not final.get("pending_interaction")
+        _answered_to_the_end(e2e_client, reply)
+        assert pending_interaction(e2e_client, sid) is None
     finally:
         release_session(sid)

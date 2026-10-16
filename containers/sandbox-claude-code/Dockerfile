@@ -25,12 +25,11 @@
 # The resident AstraBox runner is the second image-owned process, on :8000.
 ARG SANDBOX_BASE_IMAGE=ghcr.io/agent-infra/sandbox:1.11.0
 
-# OpenSandbox's official in-sandbox daemon, pinned like every other image
-# dependency. AstraBox treats an isolated terminal as disposable because this
-# release cannot reliably cancel and reuse one after its SSE consumer leaves;
-# interruption deletes only that terminal session and opens a sibling. Keeping
-# the upstream binary untouched makes upgrades and support behavior predictable.
-ARG SANDBOX_EXECD_IMAGE=opensandbox/execd:v1.1.0
+# The release's OpenSandbox daemon carries the streaming-upload patch.
+# AstraBox treats an isolated terminal as disposable because this release cannot
+# reliably cancel and reuse one after its SSE consumer leaves; interruption
+# deletes only that terminal session and opens a sibling.
+ARG SANDBOX_EXECD_IMAGE=astrabox/execd:latest
 FROM ${SANDBOX_EXECD_IMAGE} AS execd
 
 FROM ${SANDBOX_BASE_IMAGE}

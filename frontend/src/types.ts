@@ -27,8 +27,8 @@ export type AgentPreparedRuntimeStatus = components['schemas']['AgentPreparedRun
  * page-side fix, not a type-side one, and belongs with whoever owns the page.
  *
  * What stays hand-written for good is what no route describes: the shapes the
- * console builds for itself — content blocks parsed out of tool events, outbox
- * and delivery bookkeeping, the form-schema grammar, file-change tracking — and
+ * console builds for itself — content blocks parsed out of tool events, the
+ * form-schema grammar, file-change tracking — and
  * the payloads a route declares only as an open object, where the console's
  * stronger reading is its own claim rather than the server's.
  */
@@ -49,32 +49,33 @@ export type SessionFileEntry = Schemas['SessionFileEntry'];
 export type WebshellResult = Schemas['WebshellAccess'];
 export type SandboxTerminateResult = Schemas['SandboxTermination'];
 export type ConversationEndResult = Schemas['ConversationEndResult'];
-export type BackgroundTaskState = Schemas['BackgroundTaskState'];
-export type AgentRuntimeView = Schemas['AgentRuntimeView'];
 export type AgentCategory = Schemas['AgentCategory'];
 export type AdminAgentCategory = Schemas['AdminAgentCategory'];
 export type DeletedAgentCategory = Schemas['DeletedAgentCategory'];
 export type AgentTag = Schemas['AgentTag'];
 export type AgentFavorite = Schemas['AgentFavorite'];
 
+/**
+ * A session's state as its read paths project it.
+ *
+ * The lifecycle (CREATING, READY, TERMINATED, DELETED) while the session is not
+ * READY; otherwise what its runtime reports: PROCESSING while a response runs
+ * or the platform still holds an input, WAITING_INPUT while an interaction
+ * waits on its owner. RECOVERY_REQUIRED is never stored: a read shows it for a
+ * READY session whose runtime is unavailable, and the next message replaces
+ * the runtime.
+ */
 export type SessionState =
   | 'CREATING'
   | 'READY'
-  | 'BACKGROUND_RUNNING'
-  | 'WAITING_INPUT'
-  | 'SENDING'
-  | 'BUSY'
   | 'PROCESSING'
-  | 'INTERRUPTING'
-  | 'TERMINATING'
-  | 'TERMINATED'
+  | 'WAITING_INPUT'
   | 'RECOVERY_REQUIRED'
+  | 'TERMINATED'
   | 'DELETED';
 
 /** Engine-owned permission-mode name, carried verbatim from its manifest. */
 export type PermissionMode = string;
-
-export type RecoveryPolicy = 'auto' | 'manual';
 
 export interface ApiResponse<T> {
   code: string;
@@ -430,29 +431,6 @@ export interface FormSchema {
   fields: FormFieldSchema[];
 }
 
-export interface MessageRecord {
-  session_id: string;
-  message_id: string;
-  turn_id: string;
-  client_message_id?: string | null;
-  role: 'user' | 'assistant';
-  user_id?: string;
-  content: string;
-  blocks?: ContentBlock[];
-  created_at?: string;
-  source_frame_seq_applied?: number | null;
-  // Present on the history-block read: the record's identity as that page
-  // folded it. The reader's identity for a record stays `role:message_id`.
-  history_block_id?: string;
-  // Present on imported history: the source's message identity, its reply
-  // parent, and for a reply whether the source recorded its ending.
-  history_import?: {
-    source_id: string;
-    completion?: 'complete' | 'unknown';
-    parent_source_id?: string;
-  };
-}
-
 export interface UserAction {
   status: string;
   message: string;
@@ -463,39 +441,6 @@ export interface SessionUserActionState {
   ready: boolean;
   user_action: UserAction | null;
   actions: { id: string; label: string }[];
-}
-
-export interface DeliveryFailure {
-  turn_id: string;
-  client_message_id: string;
-  text: string;
-  summary: string;
-  user_action?: UserAction | null;
-  resend_as_new?: boolean;
-  content_blocks?: ContentBlock[];
-}
-
-export interface OutboxItem {
-  client_message_id: string;
-  text: string;
-  status: 'sending' | 'accepted' | 'failed';
-  accepted_turn_id?: string;
-  command_id?: string;
-  input_id?: string;
-  failure_reason?: string;
-  user_action?: UserAction;
-  /**
-   * The refusal ended this message: the platform answered that the same
-   * message sent again cannot succeed (`error.retryable === false`). Sending
-   * it again has to be a new message, with its own `client_message_id`.
-   */
-  resend_as_new?: boolean;
-  /**
-   * The images this message was sent with. Held because retrying a failed row
-   * has to resend the message, and resending only its text would quietly
-   * deliver a different message from the one the user wrote.
-   */
-  images?: TurnInputImage[];
 }
 
 /** The image encodings this console can send. Mirrors the server's list. */
@@ -524,15 +469,6 @@ export interface ImageBlockData {
   source: { type: 'base64'; media_type: string; data: string };
 }
 
-export interface PendingEngineInput {
-  command_id: string;
-  input_id: string;
-  client_message_id: string;
-  content: string;
-  sequence: number;
-  status: 'pending' | 'delivered';
-}
-
 export interface SlashCommandDetail {
   name?: string;
   command?: string;
@@ -551,66 +487,32 @@ export interface EngineCapabilityManifest {
   extra: Record<string, unknown>;
 }
 
-export interface SessionRecord {
-  assistant_id?: string | null;
-  /** When the conversation last gained a reply, and when its owner last read it. */
-  last_output_at?: string | null;
-  read_at?: string | null;
-  /** Which workspace surfaces this session's Agent declares. Platform's, not the engine's. */
-  workspace_panels?: { terminal?: boolean; diff?: boolean } | null;
-  session_id: string;
-  user_id: string;
-  template_name: string;
+/** A response the runtime produced, as the session's reader recorded it. */
+export type ResponseView = Schemas['ResponseView'];
+/** An input the platform still holds: accepted, not yet taken by the runtime. */
+export type HeldInputView = Schemas['HeldInputView'];
+
+/**
+ * One session, as `GET /sessions` summarizes it and `GET /sessions/{id}`
+ * details it.
+ *
+ * The server's model, with the fields it declares only as open objects read
+ * the way the console renders them: the pending interaction and the engine's
+ * capability manifest are the engine adapter's vocabulary, carried verbatim.
+ * The detail adds what the runtime is doing (`current_responses`,
+ * `last_response`, `held_inputs`, `pending_interaction`) and `output_seq`, the
+ * output position its stream is followed from.
+ */
+export type SessionRecord = Omit<
+  Schemas['SessionRecord'],
+  'state' | 'pending_interaction' | 'engine_capabilities' | 'slash_commands' | 'slash_command_details'
+> & {
   state: SessionState;
-  permission_mode?: PermissionMode;
-  model_name?: string | null;
-  slash_commands?: Array<string | SlashCommandDetail>;
-  slash_command_details?: SlashCommandDetail[];
-  sandbox_id?: string;
-  engine_session_key?: string;
-  terminal_cwd?: string | null;
-  title?: string;
-  source_type?: string;
-  agent_id?: string;
-  agent_runtime?: AgentRuntimeView | null;
-  session_kind?: string;
-  engine_kind?: string | null;
-  /** The live engine client's declaration, carried by session detail without
-   *  translating its vocabulary. Null means this API process has no live
-   *  client from which to ask; list responses omit the detail-only field. */
-  engine_capabilities?: EngineCapabilityManifest | null;
-  expires_at?: string;
-  created_at?: string;
-  updated_at?: string;
-  deleted?: boolean;
-  runtime_unavailable?: boolean;
-  last_error?: string;
-  startup_progress?: string;
-  current_turn_id?: string | null;
-  last_turn_id?: string | null;
-  last_turn_status?: 'COMPLETED' | 'FAILED' | null;
-  last_turn_error?: string | null;
-  last_turn_command_id?: string | null;
-  delivery_state?: 'PENDING' | 'RECEIVED' | 'NOT_RECEIVED' | null;
-  last_turn_failure_phase?: string | null;
-  /** The engine's own account of why its loop ended (the agent SDK's
-   *  `terminal_reason`, e.g. completed / max_turns / aborted_tools) —
-   *  carried verbatim, so the value set belongs to the engine, not this platform. */
-  last_turn_terminal_reason?: string | null;
-  recovery_policy?: RecoveryPolicy | null;
-  recovery_reason?: string | null;
-  delivery_failure?: DeliveryFailure | null;
-  background_task_state?: BackgroundTaskState | null;
-  partial_response?: {
-    turn_id: string;
-    text: string;
-    chunk_count: number;
-    last_seq: number;
-    blocks?: ContentBlock[];
-  };
   pending_interaction?: PendingInteraction | null;
-  pending_inputs?: PendingEngineInput[];
-}
+  engine_capabilities?: EngineCapabilityManifest | null;
+  slash_commands?: Array<string | SlashCommandDetail> | null;
+  slash_command_details?: SlashCommandDetail[] | null;
+};
 
 export interface SessionListPage {
   sessions: SessionRecord[];
@@ -652,7 +554,6 @@ export interface AdminSessionVersions {
 
 export interface AdminSessionSummary {
   session_id: string;
-  template_name?: string;
   state: string;
   sandbox_id?: string;
   created_at?: string;
@@ -705,37 +606,62 @@ export interface AdminSessionDetail extends AdminSessionSummary {
   mcp_connections?: AdminSessionMcpConnection[];
 }
 
-export interface AdminTraceTurn {
-  turn_id: string;
-  latest_created_at?: string;
-  message_count?: number;
-}
-
+/** One history message as the trace summarises it (`admin_service._summarize_message`). */
 export interface AdminTraceMessage {
-  created_at?: string;
+  message_id?: string;
   role?: string;
-  turn_id?: string;
+  input_id?: string | null;
+  response_id?: string | null;
+  created_at?: string;
   content_preview?: string;
+  /** The UI message itself. */
   raw?: unknown;
 }
 
-export interface AdminTraceFrame {
-  seq?: number;
-  type?: string;
-  text_preview?: string;
-  text?: string;
-  [key: string]: unknown;
+/** One response on the trace's history page, newest first (`admin_service._response_summaries`). */
+export interface AdminTraceResponse {
+  response_id: string;
+  origin?: string | null;
+  status?: string | null;
+  outcome?: string | null;
+  native_reason?: string | null;
+  started_at?: string | null;
+  ended_at?: string | null;
+  /** What the person said that the response answers; empty for one the runtime started. */
+  user_preview?: string;
+  assistant_preview?: string;
 }
 
+/** One stored part of the selected response's output (`admin_service._summarize_part`). */
+export interface AdminTracePart {
+  seq?: number;
+  type?: string;
+  created_at?: string;
+  text?: string;
+  text_preview?: string;
+  /** The part as the session's reader stored it. */
+  raw?: unknown;
+}
+
+/**
+ * A session's latest messages beside one response's stored parts
+ * (`AdminSessionTrace` in `astrabox/api/routes/admin.py`, whose rows the
+ * route declares only as objects).
+ */
 export interface AdminSessionTrace {
-  current_turn_id?: string;
-  selected_turn_id?: string;
-  turns?: AdminTraceTurn[];
-  messages?: AdminTraceMessage[];
-  frames?: AdminTraceFrame[];
-  message_limit?: number;
-  frame_limit?: number;
-  truncated_frame_count?: number;
+  session_id: string;
+  state: string;
+  /** The responses still running, oldest first. */
+  current_response_ids: string[];
+  /** The response `parts` belong to. */
+  selected_response_id: string | null;
+  message_limit: number;
+  part_limit: number;
+  messages: AdminTraceMessage[];
+  responses: AdminTraceResponse[];
+  parts: AdminTracePart[];
+  /** How many earlier parts of the selected response the limit left out. */
+  truncated_part_count: number;
 }
 
 /**
@@ -786,8 +712,6 @@ export type AdminSandboxDiagnosticScope = 'summary' | 'inspect' | 'events' | 'lo
 export interface AdminProcessRuntimeRow {
   session_id: string;
   sandbox_id?: string | null;
-  /** `false` while a turn is in flight, `true` once it settled, absent if unknown. */
-  current_task_done?: boolean | null;
   watchdog_done?: boolean | null;
   lock_locked?: boolean | null;
   disconnect_set?: boolean | null;
@@ -808,7 +732,6 @@ export interface AdminProcessHealth {
   load_avg?: number[];
   runtimes?: {
     count?: number;
-    current_task_count?: number;
     watchdog_task_count?: number;
     locked_count?: number;
     items?: AdminProcessRuntimeRow[];
@@ -839,40 +762,31 @@ export interface AdminIntegrations {
 }
 
 export interface AdminErrorItem {
-  /** 'session' or 'turn_checkpoint' — which record the row was summarised from. */
+  /**
+   * 'session' (a session carrying `last_error`) or 'runtime' (an error the
+   * server logged that no session records) — which record the row summarises.
+   */
   source?: string;
   severity?: string;
   session_id?: string;
   sandbox_id?: string;
-  turn_id?: string;
   state?: string;
   user_id?: string;
   display_name?: string;
   message?: string;
   last_error?: string;
+  error_type?: string | null;
+  location?: string | null;
+  logger_name?: string | null;
+  /** How many times a logged error recurred. */
+  count?: number;
+  created_at?: string;
   updated_at?: string;
-  failed_at?: string;
-  blocked_at?: string;
 }
 
 export interface AdminErrorsPage {
   errors: AdminErrorItem[];
-  counts?: { total?: number; session?: number; turn_checkpoint?: number };
-}
-
-export interface SessionEvent {
-  type: string;
-  turn_id?: string;
-  state?: SessionState;
-  permission_mode?: PermissionMode;
-  text?: string;
-  code?: string;
-  message?: string;
-  data?: Record<string, unknown>;
-  interaction_id?: string;
-  tool_name?: string;
-  pending_interaction?: PendingInteraction;
-  at?: string;
+  counts?: { total?: number; session?: number; error?: number; warning?: number };
 }
 
 export type SessionFileEntryKind = 'file' | 'directory';
@@ -953,22 +867,12 @@ export interface ResultBlockData {
   num_turns?: number;
   stop_reason?: string;
   usage?: { input_tokens?: number; output_tokens?: number };
-  /** The platform's outcome for the turn; a user stop is `cancelled`. */
-  finish_reason?: string;
   is_error?: boolean;
-}
-
-export interface TurnFailureBlockData {
-  type: 'turn_failure';
-  error: string;
-  failure_phase: 'post_dispatch';
-  user_action?: UserAction | null;
 }
 
 export interface ApiRetryBlockData {
   type: 'api_retry';
-  // The live frame's id, so a reload reconciles with the stream instead of
-  // laying a restored copy beside the live one (active_turn_projection).
+  // The live part's id, which the AI SDK replaces a data part by.
   id?: string;
   attempt?: number;
   max_retries?: number;
@@ -984,35 +888,26 @@ export interface ApiRetryBlockData {
  * `disabled` when label generation is switched off. The
  * status is the server's word and is never rewritten here.
  */
-export interface ProcessSummaryState {
-  status: string;
-  summary?: string | null;
-  error?: string | null;
-  turn_completed?: boolean | null;
-}
+export type ProcessSummaryState = Schemas['ProcessSummaryState'];
 
 /**
- * The header a settled response's folded work is shown behind.
+ * The header an ended response's folded work is shown behind: the data of a
+ * history page's `data-process-block` part.
  *
- * `cursor` is the checkpoint the page that folded this work was read at, and
- * has to be sent back to reopen it: without it the blocks would come from the
- * record as it stands now rather than as this page saw it. `summarize` says
- * whether this header is the one a label describes.
+ * `cursor` is the output position the page that folded this work was read at,
+ * and has to be sent back to reopen it: without it the parts would come from
+ * the response as it stands now rather than as this page saw it.
+ * `message_id` is the response's id. `summarize` says whether this header is
+ * the one a label describes.
  */
 export interface ProcessDetails {
   block_id: string;
   cursor: string;
   session_id: string;
   message_id: string;
-  turn_id: string;
   tool_count: number;
   summarize: boolean;
   summary?: ProcessSummaryState | null;
-}
-
-export interface ProcessBlockData {
-  type: 'process_block';
-  process_details: ProcessDetails;
 }
 
 export interface UIDataBlockData {
@@ -1032,9 +927,7 @@ export type ContentBlock =
   | ToolUseBlockData
   | ToolResultBlockData
   | ResultBlockData
-  | TurnFailureBlockData
   | ApiRetryBlockData
-  | ProcessBlockData
   | UIDataBlockData;
 
 export interface PendingInteractionOption {
@@ -1052,20 +945,20 @@ export interface PendingInteractionQuestion {
   options: PendingInteractionOption[];
 }
 
-// A pending interaction is discriminated by `presentation` — the structural
-// answer contract its engine adapter declared — never by the vendor's name for
-// it. `tool_name` carries that native name verbatim for display and matching
-// only: two engines may raise the same native name through different
-// contracts, so no consumer may branch on it.
+// A pending interaction is the public half of the record its engine adapter
+// declared (`public_interaction_view`), discriminated by `presentation` — the
+// structural answer contract — never by the vendor's name for it. `tool_name`
+// carries that native name verbatim for display and matching only: two engines
+// may raise the same native name through different contracts, so no consumer
+// may branch on it.
 export interface PendingQuestionnaireInteraction {
   interaction_id: string;
-  session_id?: string;
-  turn_id: string;
+  /** The response this interaction pauses. */
+  response_id?: string;
   tool_call_id?: string;
   tool_name: string;
   presentation: 'form';
   prompt?: string;
-  created_at?: string;
   questions: PendingInteractionQuestion[];
   preset_answers?: Record<string, string> | null;
   raw_input?: Record<string, unknown>;
@@ -1089,13 +982,12 @@ export interface PendingDecisionOption {
 
 export interface PendingPlanConfirmationInteraction {
   interaction_id: string;
-  session_id?: string;
-  turn_id: string;
+  /** The response this interaction pauses. */
+  response_id?: string;
   tool_call_id?: string;
   tool_name: string;
   presentation: 'decision';
   prompt?: string;
-  created_at?: string;
   body?: string | null;
   options: PendingDecisionOption[];
   raw_input?: Record<string, unknown>;
@@ -1103,13 +995,12 @@ export interface PendingPlanConfirmationInteraction {
 
 export interface PendingToolPermissionInteraction {
   interaction_id: string;
-  session_id?: string;
-  turn_id: string;
+  /** The response this interaction pauses. */
+  response_id?: string;
   tool_call_id?: string;
   tool_name: string;
   presentation: 'tool_approval';
   prompt?: string;
-  created_at?: string;
   raw_input?: Record<string, unknown>;
 }
 

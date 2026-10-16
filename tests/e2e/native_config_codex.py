@@ -15,13 +15,14 @@ from tests.e2e._engine_profile import current_profile
 from tests.e2e._sandbox_helpers import (
     create_agent_variant_session,
     data,
+    deadline_after,
     get_admin_session_detail,
     poll_until_agent_ready,
-    stream_turn,
+    send_and_follow,
+    transcript_entries,
     wait_until_settled,
 )
 from tests.e2e.test_terminal import _run_terminal
-from tests.e2e.test_transcript_mirror import _query_mirror_docs
 
 
 def verify_native_configuration(client: httpx.Client) -> None:
@@ -60,22 +61,23 @@ def verify_native_configuration(client: httpx.Client) -> None:
     assert code == 0, (stderr, events)
     assert json.loads(stdout) == catalog, "the serving Codex home did not receive the authored catalog"
 
-    result = stream_turn(
+    result = send_and_follow(
         client,
         sid,
-        content=(
-            "For a hypothetical company's revenue analysis, explain in one sentence "
-            "what year-over-year revenue growth measures. No external research is needed."
-        ),
+        "For a hypothetical company's revenue analysis, explain in one sentence "
+        "what year-over-year revenue growth measures. No external research is needed.",
+        until="end",
     )
     assert result.error is None, result.error
-    assert result.n_text_delta > 0 and result.text.strip(), result
-    wait_until_settled(client, sid)
+    assert result.n_text_delta > 0 and result.text.strip(), result.response
+    settled = wait_until_settled(client, sid)
+    assert settled["last_response"]["response_id"] == result.response_id, settled
+    assert settled["last_response"]["outcome"] == "completed", settled
 
     contexts: list[dict[str, Any]] = []
-    deadline = time.monotonic() + 30
+    deadline = deadline_after(30)
     while time.monotonic() < deadline:
-        entries = [json.loads(doc["entry_json"]) for doc in _query_mirror_docs(sid)]
+        entries = [row["entry"] for row in transcript_entries(sid)]
         contexts = [entry["payload"] for entry in entries if entry.get("type") == "turn_context"]
         if contexts:
             break

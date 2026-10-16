@@ -28,7 +28,7 @@
 import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 
-import { AstraApi, type MessageRecord } from '../fixtures/astraApi';
+import { AstraApi, messageToolCalls } from '../fixtures/astraApi';
 import { apiPath, appPath } from '../fixtures/env';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { sendPrompt } from '../fixtures/sessionPage';
@@ -75,10 +75,6 @@ async function withDefaults(
   } finally {
     await api.data('PUT', '/admin/assistant-defaults', authored(before));
   }
-}
-
-function blocks(messages: MessageRecord[]): Array<Record<string, unknown>> {
-  return messages.flatMap((message) => (Array.isArray(message.blocks) ? message.blocks : []) as Array<Record<string, unknown>>);
 }
 
 async function existingAssistant(api: AstraApi, label: string): Promise<string> {
@@ -134,10 +130,12 @@ test("a user's Assistant opens on one conversation every time and answers in it"
     await expect(page.getByTestId('run-view').getByText(marker.toUpperCase()).first())
       .toBeVisible({ timeout: 120_000 });
 
+    // READY on the detail: nothing runs, nothing waits on the owner, and no
+    // message is still held for the runtime.
     await expect.poll(
-      async () => (await api.data<{ current_turn_id?: string | null }>('GET', `/sessions/${sessionId}`)).current_turn_id ?? null,
-      { message: 'the answered turn settles before the conversation is ended', timeout: 60_000 },
-    ).toBeNull();
+      async () => (await api.getSession(sessionId)).state,
+      { message: 'the answered response settles before the conversation is ended', timeout: 60_000 },
+    ).toBe('READY');
     await page.getByRole('button', { name: 'End conversation' }).click();
     await expect.poll(
       async () => (await api.data<{ state: string }>('GET', `/sessions/${sessionId}`)).state,
@@ -262,10 +260,10 @@ test("an MCP server the defaults select from the catalog reaches an Assistant th
         answered.add(pending.interaction_id);
         expect(answered.size, 'one tool call raises at most a few gates').toBeLessThan(4);
       }
-      const turn = blocks((await api.getMessages(sessionId, 100)).messages.slice(before));
-      const calls = turn.filter((block) => block.type === 'tool_use' && JSON.stringify(block).includes('search_engine'));
+      const calls = (await api.getMessages(sessionId, 100)).messages.slice(before).flatMap(messageToolCalls)
+        .filter((call) => JSON.stringify({ toolName: call.toolName, input: call.input }).includes('search_engine'));
       expect(calls.length, 'the Assistant called the inherited search_engine tool').toBeGreaterThan(0);
-      const results = turn.filter((block) => block.type === 'tool_result').map((block) => JSON.stringify(block.content ?? ''));
+      const results = calls.map((call) => JSON.stringify(call.output ?? ''));
       expect(
         results.some((text) => /organic/i.test(text) && /https?:/i.test(text)),
         `the gateway answered with organic results through the inherited Vault: ${results.join(' | ').slice(0, 600)}`,

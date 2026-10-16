@@ -2,9 +2,10 @@
 import { randomUUID } from 'node:crypto';
 import { expect, test, type APIRequestContext } from '@playwright/test';
 
-import { AstraApi, messageText } from '../fixtures/astraApi';
-import { documentsByField } from '../fixtures/dbOracle';
+import { AstraApi, answersInput, messageText } from '../fixtures/astraApi';
+import { postgresRows, sqlLiteral } from '../fixtures/dbOracle';
 import { apiPath } from '../fixtures/env';
+import { deploymentRow, sessionRow } from '../fixtures/ingressRecords';
 import { deployedApiClient, issueToken, json, requiredEnvironment } from '../fixtures/oidcMachine';
 import { PlatformApi, type DeploymentRunRecord } from '../fixtures/platformApi';
 import { requireServiceContainer, SERVER_CONTAINER_HANDLE } from '../fixtures/serviceContainer';
@@ -109,9 +110,11 @@ test('an Assistant creates a personal schedule that fires as its owner and refus
   });
   const marker = `PERSONAL_${id.replace(/-/g, '')}`;
   const schedule = { cron: '* * * * *', timezone: 'UTC' };
-  const assistantRecord = documentsByField('assistant_catalog', '$.assistant_id', assistant.assistant_id)[0];
-  expect(assistantRecord.owner_id).toBe(owner.user_id);
-  const ownerOrgId = String(assistantRecord.org_id || '');
+  const [assistantRecord] = postgresRows<{ owner_id: string; org_id: string | null }>(
+    `SELECT owner_id, org_id FROM assistants WHERE assistant_id = ${sqlLiteral(assistant.assistant_id)}`,
+  );
+  expect(assistantRecord?.owner_id).toBe(owner.user_id);
+  const ownerOrgId = String(assistantRecord?.org_id || '');
   expect(ownerOrgId, 'the pre-existing Assistant identity supplies the organization oracle').not.toBe('');
   sourceSessionId = (await api.startAssistantConversation(assistant.assistant_id)).session_id;
   sessions.push(sourceSessionId);
@@ -138,10 +141,11 @@ test('an Assistant creates a personal schedule that fires as its owner and refus
   expect(matching, 'find the tool-created plan by independent task marker, not the model reply').toHaveLength(1);
   const plan = matching[0];
   deploymentId = String(plan.deployment_id);
-  const storedPlan = documentsByField('deployments', '$.deployment_id', deploymentId)[0];
+  const storedPlan = deploymentRow(deploymentId);
   expect(storedPlan).toMatchObject({
     owner_user_id: owner.user_id, owner_org_id: ownerOrgId,
-    agent_id: agentId, source_assistant_id: assistant.assistant_id, schedule,
+    agent_id: agentId, source_assistant_id: assistant.assistant_id,
+    schedule_cron: schedule.cron, schedule_timezone: schedule.timezone,
   });
   expect(plan).toMatchObject({
     scope: 'personal', owner_user_id: owner.user_id, owner_org_id: ownerOrgId, created_by: owner.user_id,
@@ -180,9 +184,11 @@ test('an Assistant creates a personal schedule that fires as its owner and refus
       sessions.push(sessionId);
     }
     completed = run;
-    if (run?.status === 'COMPLETED' && sessionId && run.turn_id) {
-      const settled = await api.getSession(sessionId);
-      return settled.last_turn_id === run.turn_id && settled.last_turn_status === 'COMPLETED'
+    if (run?.status === 'COMPLETED' && sessionId && run.input_id) {
+      // The Run's status is read from the response to its input; the conversation shows that response ended.
+      const reply = (await api.getMessages(sessionId, 20)).messages
+        .find((message) => answersInput(message, String(run.input_id)));
+      return reply?.metadata?.status === 'ended' && reply.metadata.outcome === 'completed'
         ? 'COMPLETED' : 'RUNNING';
     }
     return run?.status;
@@ -190,9 +196,9 @@ test('an Assistant creates a personal schedule that fires as its owner and refus
     .toBe('COMPLETED');
   expect(sessionId).not.toBe('');
   expect(completed?.scheduled_for).toBeTruthy();
-  const persisted = documentsByField('sessions', '$.session_id', sessionId)[0];
+  const persisted = sessionRow(sessionId);
   expect(persisted).toMatchObject({ user_id: owner.user_id, agent_id: agentId });
-  expect(persisted.user_id).not.toBe(admin.user_id);
+  expect(persisted?.user_id).not.toBe(admin.user_id);
   const messages = await api.getMessages(sessionId, 50);
   expect(messages.messages.filter((row) => row.role === 'assistant').map(messageText).join('\n')).toContain(marker);
   expect(messages.messages.filter((row) => row.role === 'user').map(messageText)).toEqual([
@@ -201,7 +207,7 @@ test('an Assistant creates a personal schedule that fires as its owner and refus
   await info.attach('personal-schedule-evidence', {
     body: JSON.stringify({ plan, storedPlan, sourceSessionId, created, ownerOrgId,
       run: completed, ownerUserId: owner.user_id,
-      agentOwnerUserId: admin.user_id, sessionOwnerUserId: persisted.user_id, sessionId, marker }),
+      agentOwnerUserId: admin.user_id, sessionOwnerUserId: persisted?.user_id, sessionId, marker }),
     contentType: 'application/json',
   });
 

@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 
 import { expect, test } from '@playwright/test';
 
-import { AstraApi } from '../fixtures/astraApi';
+import { AstraApi, type SessionRecord } from '../fixtures/astraApi';
 import { trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
 import { requireServiceContainer, SERVER_CONTAINER_HANDLE } from '../fixtures/serviceContainer';
@@ -21,7 +21,9 @@ function sorted(values: string[]): string[] {
   return [...values].sort((left, right) => left.localeCompare(right));
 }
 
-function expectCompleteCommandMetadata(session: Record<string, unknown>): string[] {
+function expectCompleteCommandMetadata(
+  session: Pick<SessionRecord, 'slash_commands' | 'slash_command_details'>,
+): string[] {
   expect(Array.isArray(session.slash_command_details), 'slash_command_details must be present').toBe(true);
   expect(Array.isArray(session.slash_commands), 'slash_commands must be present').toBe(true);
   const detailNames = (session.slash_command_details as unknown[]).map(commandName).filter(Boolean);
@@ -65,7 +67,7 @@ test('new agent_chat is READY with slash commands visible in the composer', asyn
     await api.waitForSessionReady(sessionId);
     const ready = await api.getSession(sessionId);
     const initialTitles = new Set(
-      [ready.title, agent.name, ready.template_name]
+      [ready.title, agent.name]
         .map((value) => String(value || '').trim())
         .filter(Boolean),
     );
@@ -138,18 +140,20 @@ test('new agent_chat is READY with slash commands visible in the composer', asyn
       return {
         source: detail.title_source,
         status: detail.title_generation_status,
-        turnIndex: detail.title_generation_turn_index,
+        responseIndex: detail.title_generation_response_index,
         error: detail.title_generation_error,
       };
     }, {
       timeout: 60_000,
       intervals: [250, 500, 1_000],
-      message: 'the first completed topic-bearing turn must persist its automatic title',
-    }).toMatchObject({ source: 'first_turn_model', status: 'COMPLETED', turnIndex: 1 });
+      message: 'the first completed topic-bearing response must persist its automatic title',
+    }).toMatchObject({ source: 'generated', status: 'completed', responseIndex: 1 });
     const titled = await api.getSession(sessionId);
     const generatedTitle = String(titled.title || '').trim();
     expect(generatedTitle).not.toEqual('');
     expect(initialTitles.has(generatedTitle)).toBe(false);
+    // The page learns of the title from the `data-session-changed` part its
+    // own stream carries, and reads the session and the list again.
     await expect(
       page.getByTestId('run-view').locator('header h1'),
       'the already-open header must refresh to the persisted title without a reload',

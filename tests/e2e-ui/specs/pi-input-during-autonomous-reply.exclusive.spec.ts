@@ -1,12 +1,33 @@
-/** A Web input must preserve the Pi reply already running for its channel. */
+/**
+ * A Web input must preserve the Pi reply already running for its channel.
+ *
+ * Pi takes every input as a follow-up and drains them first in, first out
+ * (`engine/pi_runtime_client.py`), so a message sent while a reply runs waits
+ * in Pi's own queue: the session records it as delivered, not yet taken. The
+ * reply that was running ends where Pi drains the follow-up, and the
+ * follow-up is answered by a response of its own.
+ */
 import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 
-import { AstraApi, messageText, visibleMessages } from '../fixtures/astraApi';
+import {
+  AstraApi,
+  answersInput,
+  messageText,
+  messageToolCalls,
+  visibleMessages,
+  type MessageRecord,
+} from '../fixtures/astraApi';
 import { revealAssistantProcess } from '../fixtures/assistantProcess';
 import { channelCallback } from '../fixtures/channelCallback';
-import { documentsByField, framesForTurn, sessionEvents, snapshotDoc } from '../fixtures/dbOracle';
-import { messageProseBlocks, textBlockValues } from '../fixtures/dshOutput';
+import {
+  postgresRows,
+  sessionInputRows,
+  sessionOutputRows,
+  sessionResponseRows,
+  sqlLiteral,
+} from '../fixtures/dbOracle';
+import { textBlockValues } from '../fixtures/dshOutput';
 import { engineProfileFor } from '../fixtures/engineProfile';
 import { apiPath } from '../fixtures/env';
 import { childPrompt, expectNativeMode, launchEvidence, nativeRows } from '../fixtures/nativeChildLifecycle';
@@ -21,6 +42,34 @@ import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
 const sessions = trackSessions();
 let agentId = '';
 let deploymentId = '';
+
+/** A message's prose: its text parts, each one separately, in order. */
+function proseParts(message: MessageRecord): string[] {
+  return textBlockValues(message.parts);
+}
+
+/**
+ * The execd pipe Pi runs on for a session. The session's reader stores the
+ * runtime cursor it has read up to, and a Pi cursor's generation is that pipe
+ * (`PiRuntimeClient`, `engine/pi_runtime_client.py`).
+ */
+function piPipeId(sessionId: string): string {
+  const [row] = postgresRows<{ reader_cursor: Record<string, unknown> | null }>(
+    `SELECT reader_cursor FROM sessions WHERE session_id = ${sqlLiteral(sessionId)}`,
+  );
+  return String(row?.reader_cursor?.generation ?? '');
+}
+
+/** The tool output parts a response stored for one call. */
+function toolOutputs(sessionId: string, responseId: string, toolCallId: unknown): Record<string, unknown>[] {
+  return sessionOutputRows(sessionId, responseId).map((row) => row.part)
+    .filter((part) => part.type === 'tool-output-available' && part.toolCallId === toolCallId);
+}
+
+/** Read evidence for an attachment without letting a broken read replace the test's own failure. */
+function observe(read: () => unknown): unknown {
+  try { return read(); } catch (error) { return { unavailable: String(error) }; }
+}
 onPassOnly(async ({ request }) => {
   if (deploymentId) await new PlatformApi(request).deleteDeployment(agentId, deploymentId);
   if (agentId) await new AstraApi(request).deleteAgent(agentId);
@@ -105,19 +154,27 @@ test('Pi preserves an ordinary reply when a Web input is queued during its tool'
     await expect.poll(partial).toHaveLength(1);
     const before = (await partial())[0]!;
     evidence.before = before;
-    expect(before.blocks).toContainEqual(expect.objectContaining({ type: 'tool_use', id: call.id, name: 'bash', input: call.arguments }));
-    const anchor = String(object(snapshotDoc(sessionId)?.current_turn_engine_anchor).engine_turn_id);
-    expect(anchor).toMatch(/^pi-rpc-v1\./);
-    const pipe = String(object(JSON.parse(Buffer.from(anchor.slice('pi-rpc-v1.'.length), 'base64url').toString())).pty_session_id);
+    expect(messageToolCalls(before)).toContainEqual(expect.objectContaining({
+      toolCallId: String(call.id), toolName: 'bash', input: call.arguments,
+    }));
+    const promptInput = sessionInputRows(sessionId).find((row) => row.content === prompt);
+    expect(promptInput, 'the channel prompt is one recorded input').toBeTruthy();
+    expect(answersInput(before, promptInput!.input_id), 'the running reply answers the channel prompt').toBe(true);
+    const pipe = piPipeId(sessionId);
+    expect(pipe, 'the session reader must be reading a Pi pipe').not.toBe('');
     const handle = await requireSandboxHandle(api, String(detail.sandbox_id));
     const wire = () => piNativeOutput(handle, pipe, object(detail.runtime_identity));
     expect(toolResults()).toEqual([]);
     expect(deliveries()).toHaveLength(1);
-    expect((await api.getSession(sessionId)).current_turn_id).toBe(before.turn_id);
+    expect(((await api.getSession(sessionId)).current_responses ?? []).map((response) => response.response_id))
+      .toEqual([before.id]);
     await openSessionView(page, sessionId);
     await sendPrompt(page, sessionId, nextPrompt);
     await expect.poll(() => wire().filter((row) => row.type === 'queue_update'
       && Array.isArray(row.followUp) && row.followUp.includes(nextPrompt))).toHaveLength(1);
+    const webInput = () => sessionInputRows(sessionId).filter((row) => row.content === nextPrompt);
+    await expect.poll(() => webInput().map((row) => row.state),
+      { message: 'Pi holds the Web input in its queue: delivered, not yet taken' }).toEqual(['delivered']);
     expect(toolResults(), 'the native queue must accept the input while the actual tool is still held').toEqual([]);
     evidence.queuedWire = wire();
     await api.uploadFileText(sessionId, root, release.split('/').at(-1)!, toolReceipt);
@@ -135,27 +192,32 @@ test('Pi preserves an ordinary reply when a Web input is queued during its tool'
     const expectedBlocks = native().filter((row) => row.seq > floor && row.seq <= oldFinal!.seq)
       .flatMap(({ entry }) => object(entry.message).role === 'assistant' ? textBlockValues(object(entry.message).content) : []);
     await expect.poll(async () => (await api.getMessages(sessionId)).messages
-      .filter((message) => message.message_id === before.message_id).map(messageProseBlocks)).toEqual([expectedBlocks]);
+      .filter((message) => message.id === before.id).map(proseParts)).toEqual([expectedBlocks]);
     await expect.poll(deliveries, { timeout: 30_000 }).toEqual([
       expect.stringContaining(`READY_${id}`), expectedBlocks.join('\n\n').trim(), inputReceipt,
     ]);
     const final = await api.getMessages(sessionId);
     const own = final.messages.filter((message) => message.role === 'assistant' && messageText(message) === inputReceipt);
     expect(own).toHaveLength(1);
-    expect(own[0]!.message_id).not.toBe(before.message_id);
-    expect(own[0]!.turn_id, 'the native follow-up stays in the same active platform turn').toBe(before.turn_id);
+    expect(own[0]!.id).not.toBe(before.id);
+    expect(webInput(), 'Pi took the Web input once it drained its queue').toEqual([
+      expect.objectContaining({ state: 'admitted', response_id: own[0]!.id }),
+    ]);
+    expect(answersInput(own[0]!, webInput()[0]!.input_id), 'the follow-up is answered by a response of its own')
+      .toBe(true);
     const completed = await api.waitForSessionReady(sessionId);
-    expect(completed.last_turn_id).toBe(before.turn_id);
-    expect(completed.last_turn_status).toBe('COMPLETED');
-    expect(sessionEvents(sessionId).filter((event) => event.event_type === 'turn.failed')).toEqual([]);
+    expect(completed.last_response?.response_id).toBe(own[0]!.id);
+    expect(completed.last_response?.outcome).toBe('completed');
+    const responses = sessionResponseRows(sessionId);
+    expect(responses.find((row) => row.response_id === before.id), 'the running reply completes')
+      .toMatchObject({ status: 'ended', outcome: 'completed' });
+    expect(responses.filter((row) => row.outcome !== 'completed'), 'no response fails or is cancelled').toEqual([]);
     expect(final.messages.filter((message) => message.role === 'user').map(messageText)).toEqual([greeting, prompt, nextPrompt]);
     expect(recipient.errors).toEqual([]);
-    const outputs = framesForTurn(before.turn_id).map((row) => object(row.payload))
-      .filter((frame) => frame.type === 'tool-output-available' && frame.toolCallId === call.id);
-    expect(outputs).toEqual([expect.objectContaining({ output: expect.objectContaining({ isError: false,
+    expect(toolOutputs(sessionId, before.id, call.id)).toEqual([expect.objectContaining({ output: expect.objectContaining({ isError: false,
       content: expect.objectContaining({ content: toolResults()[0]!.content }) }) })]);
     await expect(page.getByTestId('assistant-text').filter({ hasText: inputReceipt })).toBeVisible();
-    const reply = page.locator(`[data-message-id="${before.message_id}"]`);
+    const reply = page.locator(`[data-message-id="${before.id}"]`);
     await expect(reply.getByTestId('assistant-turn-process')).toHaveCount(1);
     await revealAssistantProcess(page, { within: reply });
     await expect.poll(async () => normalizeRendered((await reply.getByTestId('assistant-text').allInnerTexts()).join('\n')))
@@ -177,7 +239,9 @@ test('Pi preserves an ordinary reply when a Web input is queued during its tool'
   } finally {
     try {
       await info.attach('pi-ordinary-queued-input', { body: JSON.stringify({ ...evidence, sessionId, agentId, deploymentId,
-        native: sessionId ? nativeRows(sessionId) : [], events: sessionId ? sessionEvents(sessionId) : [],
+        native: sessionId ? observe(() => nativeRows(sessionId)) : [],
+        inputs: sessionId ? observe(() => sessionInputRows(sessionId)) : [],
+        responses: sessionId ? observe(() => sessionResponseRows(sessionId)) : [],
         deliveries: recipient.deliveries, errors: recipient.errors }), contentType: 'application/json' });
     } finally { await recipient.close(); }
   }
@@ -266,7 +330,8 @@ test('Pi preserves an autonomous reply when a Web input arrives before it settle
     rootScope = String(launch[0]!.subpath);
     await expect.poll(() => finalReplies(native()).some((reply) => reply.text.includes(launched))).toBe(true);
     await expect.poll(() => readFile(gate.started)).toBe(gate.marker);
-    expect((await api.getSession(sessionId)).current_turn_id).toBeFalsy();
+    expect(((await api.getSession(sessionId)).current_responses ?? []).length,
+      'the launch reply has ended while the background child runs').toBe(0);
     const nativeFloor = Math.max(...native().map((row) => row.seq));
     const childReceipt = `CHILD_${randomUUID()}`;
     await api.uploadFileText(sessionId, root, gate.release.split('/').at(-1)!, childReceipt);
@@ -286,18 +351,21 @@ test('Pi preserves an autonomous reply when a Web input arrives before it settle
     const before = (await partial())[0]!;
     evidence.before = before;
     evidence.nativeCall = call;
-    expect(before.blocks).toContainEqual(expect.objectContaining({ type: 'tool_use',
-      id: call.id, name: 'bash', input: call.arguments }));
+    expect(messageToolCalls(before)).toContainEqual(expect.objectContaining({
+      toolCallId: String(call.id), toolName: 'bash', input: call.arguments,
+    }));
+    expect(before.metadata?.origin, 'Pi started the reply to the child settlement on its own').toBe('engine');
+    expect(before.metadata?.input_ids ?? [], 'a reply Pi started on its own answers no input').toEqual([]);
     expect(toolResults()).toEqual([]);
     expect(deliveries()).toEqual(initialDeliveries);
     await openSessionView(page, sessionId);
     await expect(page.getByTestId('assistant-text').filter({ hasText: prefix })).toBeVisible();
     await sendPrompt(page, sessionId, nextPrompt);
-    expect(sessionEvents(sessionId).filter((event) => event.event_type === 'command.accepted'
-      && object(event.payload).content === nextPrompt)).toHaveLength(1);
+    const webInput = () => sessionInputRows(sessionId).filter((row) => row.content === nextPrompt);
+    expect(webInput(), 'the Web input is accepted once').toHaveLength(1);
     expect(toolResults(), 'the input must arrive during the actual foreground tool').toEqual([]);
-    await expect.poll(async () => (await partial()).map((message) => ({ id: message.message_id, blocks: message.blocks })))
-      .toEqual([{ id: before.message_id, blocks: before.blocks }]);
+    await expect.poll(async () => (await partial()).map((message) => ({ id: message.id, parts: message.parts })))
+      .toEqual([{ id: before.id, parts: before.parts }]);
     await api.uploadFileText(sessionId, root, release.split('/').at(-1)!, parentReceipt);
     const echoed = () => native().filter(({ entry }) => object(entry.message).role === 'user'
       && nativeText(object(entry.message).content) === nextPrompt);
@@ -317,25 +385,27 @@ test('Pi preserves an autonomous reply when a Web input arrives before it settle
     expect(expectedBlocks.join('\n')).toContain(prefix);
     expect(expectedBlocks.join('\n')).toContain(childReceipt);
     const restored = async () => (await api.getMessages(sessionId)).messages
-      .filter((message) => message.message_id === before.message_id);
-    await expect.poll(async () => (await restored()).map(messageProseBlocks)).toEqual([expectedBlocks]);
+      .filter((message) => message.id === before.id);
+    await expect.poll(async () => (await restored()).map(proseParts)).toEqual([expectedBlocks]);
     const expectedReplies = finalReplies(native(), nativeFloor).map((reply) =>
       reply.seq === parentFinal.seq ? expectedBlocks.join('\n\n').trim() : reply.text.trim());
     await expect.poll(deliveries, { timeout: 30_000 }).toEqual([...initialDeliveries, ...expectedReplies]);
     const final = await api.getMessages(sessionId);
     const ownAnswer = final.messages.filter((message) => message.role === 'assistant' && messageText(message) === inputReceipt);
     expect(ownAnswer).toHaveLength(1);
-    expect(ownAnswer[0]!.message_id).not.toBe(before.message_id);
-    expect(ownAnswer[0]!.turn_id).not.toBe(before.turn_id);
+    expect(ownAnswer[0]!.id).not.toBe(before.id);
+    expect(answersInput(ownAnswer[0]!, webInput()[0]!.input_id), 'the Web input is answered by a response of its own')
+      .toBe(true);
+    expect(sessionResponseRows(sessionId).find((row) => row.response_id === before.id),
+      'the reply Pi started on its own completes').toMatchObject({ origin: 'engine', status: 'ended', outcome: 'completed' });
     expect(final.messages.filter((message) => message.role === 'user').map(messageText)).toEqual([greeting, prompt, nextPrompt]);
-    expect(documentsByField('channel_inbound', '$.deployment_id', deploymentId)).toHaveLength(2);
-    const outputs = framesForTurn(before.turn_id).map((row) => object(row.payload))
-      .filter((frame) => frame.type === 'tool-output-available' && frame.toolCallId === call.id);
-    expect(outputs).toEqual([expect.objectContaining({ output: expect.objectContaining({ isError: false,
+    expect(postgresRows(`SELECT item_id FROM channel_inbound WHERE deployment_id = ${sqlLiteral(deploymentId)}`),
+      'the channel admitted its two messages, and the Web input is not one of them').toHaveLength(2);
+    expect(toolOutputs(sessionId, before.id, call.id)).toEqual([expect.objectContaining({ output: expect.objectContaining({ isError: false,
       content: expect.objectContaining({ content: toolResults()[0]!.content }) }) })]);
     await page.reload({ waitUntil: 'domcontentloaded' });
     await expect(page.getByTestId('assistant-text').filter({ hasText: inputReceipt })).toBeVisible();
-    const reply = page.locator(`[data-message-id="${before.message_id}"]`);
+    const reply = page.locator(`[data-message-id="${before.id}"]`);
     await expect(reply.getByTestId('assistant-turn-process')).toHaveCount(1);
     await revealAssistantProcess(page, { within: reply });
     await expect.poll(async () => normalizeRendered((await reply.getByTestId('assistant-text').allInnerTexts()).join('\n')))
@@ -351,7 +421,9 @@ test('Pi preserves an autonomous reply when a Web input arrives before it settle
   } finally {
     try {
       await info.attach('pi-active-input-scene', { body: JSON.stringify({ ...evidence, sessionId, agentId, deploymentId,
-        native: sessionId ? nativeRows(sessionId) : [], events: sessionId ? sessionEvents(sessionId) : [],
+        native: sessionId ? observe(() => nativeRows(sessionId)) : [],
+        inputs: sessionId ? observe(() => sessionInputRows(sessionId)) : [],
+        responses: sessionId ? observe(() => sessionResponseRows(sessionId)) : [],
         deliveries: recipient.deliveries, recipientErrors: recipient.errors }), contentType: 'application/json' });
     } finally {
       await recipient.close();

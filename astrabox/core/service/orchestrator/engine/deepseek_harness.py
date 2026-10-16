@@ -19,6 +19,8 @@ inside its OpenSandbox isolated session (the image's
 the gateway port is derived from the conversation's uid. Either way a
 reattach is a reconnect: the server outlives the host, so a restart
 resolves the endpoint again and rejoins by naming the durable session key.
+Activation returns :class:`DeepSeekHarnessRuntimeClient`, the conversation's
+runtime contract (``engine/runtime.py``).
 
 Self-registers as engine_kind="deepseek_harness" on import.
 """
@@ -38,14 +40,10 @@ from astrabox.config.release_images import release_image
 from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator.engine.base import (
     EngineAdapter,
-    EngineClient,
-    EngineConversationBinding,
     EngineKind,
     EnginePreparationContext,
     EngineStartupContext,
     EngineStartupMaterialRequest,
-    ResidentOutputCheckpoint,
-    initialize_engine_client,
 )
 from astrabox.core.service.orchestrator.engine.capabilities import (
     EngineSessionLogDeclaration,
@@ -57,21 +55,17 @@ from astrabox.core.service.orchestrator.engine.extensions import (
     AGENTS_HOME_SKILLS_TARGET,
     EngineExtensions,
 )
-from astrabox.core.service.orchestrator.engine.deepseek_harness_client import (
-    DSH_PERMISSION_PRESETS,
-    ENGINE_KIND,
-    DeepSeekHarnessEngineClient,
-    DeepSeekHarnessLink,
-    create_harness_session,
-    resolve_model_route,
-)
 from astrabox.core.service.orchestrator.engine.deepseek_harness_link import (
     DSH_API_PORT,
     DshApiLink,
 )
-from astrabox.core.service.orchestrator.engine.emissions import (
-    ChildResourceFact,
-    emission_from_translated_frame,
+from astrabox.core.service.orchestrator.engine.deepseek_harness_runtime_client import (
+    DSH_PERMISSION_PRESETS,
+    ENGINE_KIND,
+    DeepSeekHarnessLink,
+    DeepSeekHarnessRuntimeClient,
+    create_harness_session,
+    resolve_model_route,
 )
 from astrabox.core.service.orchestrator.engine.provisioning import (
     EngineSandboxRequest,
@@ -80,6 +74,7 @@ from astrabox.core.service.orchestrator.engine.provisioning import (
 from astrabox.core.service.orchestrator.engine.registry import (
     register_engine_adapter,
 )
+from astrabox.core.service.orchestrator.engine.runtime import initialize_runtime_client
 from astrabox.core.service.orchestrator.engine.runtime_profiles import (
     SANDBOX_IMAGE_WORKLOAD_HOME,
     SANDBOX_IMAGE_WORKLOAD_USER,
@@ -473,6 +468,7 @@ async def _publish_runtime(
     sandbox: Any,
     link: DeepSeekHarnessLink,
     engine_session_key: str | None,
+    resume_session_key: str | None,
     terminal_cwd: str,
     runtime_identity: dict[str, Any] | None = None,
     permission_mode: str | None = None,
@@ -482,41 +478,25 @@ async def _publish_runtime(
     prepared_model_route: dict[str, Any] | None = None,
     session_create: dict[str, Any] | None = None,
     prepare_engine_input: Any = None,
-    resident_output_sink: Any = None,
-    event_sink: Any = None,
-    output_checkpoint: ResidentOutputCheckpoint | None = None,
-    initial_sequence: int = 0,
 ) -> SessionRuntime:
     """One live link → one conversation-bound, published SessionRuntime.
 
-    Shared by the start and reattach flows so binding, manifest validation and
-    runtime publication cannot drift between them. The session is created (or
-    rejoined) inside ``initialize_engine_client``, which is where the binding
-    contract is enforced.
+    ``engine_session_key`` names the harness conversation to rejoin (a resume
+    or a prepared box's); without one the conversation is created here with
+    the Agent's creation options. ``resume_session_key`` is what the platform
+    asked to resume, which the client must answer under.
     """
 
-    engine_client = DeepSeekHarnessEngineClient(
-        session_id=session_id,
+    native = engine_session_key or await create_harness_session(
+        link, cwd=terminal_cwd, session_create=session_create
+    )
+    engine_client = DeepSeekHarnessRuntimeClient(
         link=link,
-        native_session_id=engine_session_key,
-        cwd=terminal_cwd,
-        # Start only. A rejoin names an existing session rather than creating
-        # one, so the preset it was pinned with at creation still stands and
-        # there is nothing here to re-assert.
-        session_create=session_create,
-        resident_output_sink=resident_output_sink,
-        event_sink=event_sink,
-        output_checkpoint=output_checkpoint,
-        initial_sequence=initial_sequence,
+        native_session_id=native,
         model_endpoint_provider=model_endpoint_for_name(model_endpoint_provider),
     )
-    engine_manifest = await initialize_engine_client(
-        engine_client,
-        expected_engine_kind=ENGINE_KIND,
-        conversation_binding=EngineConversationBinding(
-            platform_session_id=session_id,
-            engine_session_key=engine_session_key,
-        ),
+    engine_manifest = await initialize_runtime_client(
+        engine_client, engine_kind=ENGINE_KIND, resume_session_key=resume_session_key,
     )
     if permission_mode:
         # Applied on every publish, start and reattach alike. The harness pins
@@ -546,12 +526,10 @@ async def _publish_runtime(
         engine_kind=ENGINE_KIND,
         engine_client=engine_client,
         engine_manifest=engine_manifest,
-        conversation_bound=True,
         sandbox=sandbox,
         sandbox_id=extract_sandbox_id(sandbox),
         # Under the Agent-shared tenancy the box is shared; the isolated
-        # session is what teardown closes, what a reattach rebuilds from, and
-        # half of the consumption receipts' carrier identity.
+        # session is what teardown closes and what a reattach rebuilds from.
         isolated_session_id=(
             str((runtime_identity or {}).get("isolated_session_id") or "")
             or None
@@ -570,47 +548,11 @@ async def _publish_runtime(
         # before the runtime is published and finds no engine client.
         # ``hermes.py`` sets the same flag.
         setattr(runtime, "permission_mode_verified", True)
-    if output_checkpoint is not None:
-        engine_client.observe_output()
     return runtime
 
 
 class DeepSeekHarnessEngineAdapter(EngineAdapter):
     """EngineAdapter for the DeepSeek Harness web profile's API."""
-
-    # The harness's own catalog and history are a child's durable record; the
-    # relay journals nothing for children (docs/maintainers/resident-relay.md).
-    child_record_lives_in_engine = True
-
-    def supports_unowned_output_attach(self) -> bool:
-        return True
-
-    def durable_child_resource_facts(
-        self, raw_messages: list[dict[str, Any]]
-    ) -> list[tuple[int, ChildResourceFact]]:
-        """Replay native child observations retained by the idle relay."""
-        from astrabox.core.service.orchestrator.engine.deepseek_harness_child_runs import (
-            DeepSeekHarnessChildResources,
-        )
-
-        async def no_call(method: str, payload: dict[str, Any]) -> Any:
-            raise RuntimeError("durable DSH child replay performs no RPC")
-
-        projectors: dict[str, DeepSeekHarnessChildResources] = {}
-        facts: list[tuple[int, ChildResourceFact]] = []
-        for index, record in enumerate(raw_messages):
-            if record.get("kind") != "dsh-child-observation":
-                continue
-            root = str(record["rootSessionId"])
-            if root not in projectors:
-                projectors[root] = DeepSeekHarnessChildResources(
-                    root_session_id=root, call=no_call
-                )
-            for frame in projectors[root].fold_native_record(record):
-                fact = emission_from_translated_frame(frame)
-                if isinstance(fact, ChildResourceFact):
-                    facts.append((index, fact))
-        return facts
 
     def child_run_is_active(self, child_run: dict[str, Any]) -> bool:
         from astrabox.core.service.orchestrator.engine.child_runs import (
@@ -630,8 +572,8 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
         return ENGINE_KIND
 
     @property
-    def engine_client_type(self) -> type[EngineClient]:
-        return DeepSeekHarnessEngineClient
+    def engine_client_type(self) -> type[Any]:
+        return DeepSeekHarnessRuntimeClient
 
     @property
     def capabilities(self) -> EngineRuntimeCapabilities:
@@ -853,53 +795,51 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
                 status_code=409,
             )
         sandbox = context.sandbox
-        observe_only = context.attach_mode == "observe"
         link: DeepSeekHarnessLink | None = None
         try:
-            if not observe_only:
-                if not context.runtime_state_store:
-                    raise APIError(
-                        code="AGENT_RUNTIME_ERROR",
-                        message="platform startup supplied no DSH native-state target",
-                        status_code=500,
-                    )
-                home = str((context.runtime_identity or {}).get("home_dir") or "")
-                if not home.startswith("/"):
-                    raise APIError(
-                        code="AGENT_RUNTIME_ERROR",
-                        message="DSH native state requires the placed runtime home",
-                        status_code=500,
-                    )
-                state_target_path = f"{home.rstrip('/')}/.dsh/astrabox-runtime-state.json"
-                state_target = json.dumps(
-                    context.runtime_state_store, ensure_ascii=False, sort_keys=True
+            if not context.runtime_state_store:
+                raise APIError(
+                    code="AGENT_RUNTIME_ERROR",
+                    message="platform startup supplied no DSH native-state target",
+                    status_code=500,
                 )
-                linux_user = str(context.runtime_identity["linux_user"])
-                if is_prepared:
-                    # A claimed runtime has never held a Session's state target,
-                    # and the image reads it only when the attachment restore
-                    # below asks, so one owner-only write publishes it whole
-                    # without the installer's atomic replacement.
-                    await sandbox.files.write_bytes(
-                        state_target_path,
-                        state_target.encode("utf-8"),
-                        mode=0o600,
-                        owner=linux_user,
-                        group=linux_user,
-                    )
-                else:
-                    await install_verified_text_script(
-                        sandbox,
-                        path=state_target_path,
-                        content=state_target,
-                        runtime_identity=context.runtime_identity,
-                        mode=0o600,
-                        owner_user=linux_user,
-                        error_code="AGENT_RUNTIME_ERROR",
-                        error_message="failed to install the DSH native-state target",
-                    )
+            home = str((context.runtime_identity or {}).get("home_dir") or "")
+            if not home.startswith("/"):
+                raise APIError(
+                    code="AGENT_RUNTIME_ERROR",
+                    message="DSH native state requires the placed runtime home",
+                    status_code=500,
+                )
+            state_target_path = f"{home.rstrip('/')}/.dsh/astrabox-runtime-state.json"
+            state_target = json.dumps(
+                context.runtime_state_store, ensure_ascii=False, sort_keys=True
+            )
+            linux_user = str(context.runtime_identity["linux_user"])
+            if is_prepared:
+                # A claimed runtime has never held a Session's state target,
+                # and the image reads it only when the attachment restore
+                # below asks, so one owner-only write publishes it whole
+                # without the installer's atomic replacement.
+                await sandbox.files.write_bytes(
+                    state_target_path,
+                    state_target.encode("utf-8"),
+                    mode=0o600,
+                    owner=linux_user,
+                    group=linux_user,
+                )
+            else:
+                await install_verified_text_script(
+                    sandbox,
+                    path=state_target_path,
+                    content=state_target,
+                    runtime_identity=context.runtime_identity,
+                    mode=0o600,
+                    owner_user=linux_user,
+                    error_code="AGENT_RUNTIME_ERROR",
+                    error_message="failed to install the DSH native-state target",
+                )
             instructions = str(getattr(template, "system", None) or "").strip()
-            if instructions and not is_prepared and not observe_only:
+            if instructions and not is_prepared:
                 await _install_agent_instructions(
                     sandbox, cwd=context.cwd, instructions=instructions,
                     runtime_identity=context.runtime_identity,
@@ -908,53 +848,25 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
                 sandbox,
                 port=_conversation_gateway_port(context.runtime_identity),
                 launch_url_path=f"{(context.runtime_identity or {}).get('home_dir') or SANDBOX_IMAGE_WORKLOAD_HOME}/.deepseek-harness/web-url",
-                observe_only=observe_only,
             )
-            if not observe_only:
-                await link.restore_attachments()
-            output_checkpoint = None
-            if observe_only and context.resident_output_sink is None:
-                raise RuntimeError("deepseek_harness output attachment requires the Session journal")
-            if context.resume_session_key and context.resident_output_sink is not None:
-                # Ownership precedes the journal cut: a competing reader must
-                # be refused before a checkpoint can become stale behind it.
-                output_checkpoint = await context.resident_output_sink.restore_resident_output(
-                    engine_kind=ENGINE_KIND, sandbox_id=context.sandbox_id,
-                    engine_session_key=context.resume_session_key,
-                )
-            # A control request can attach before a Web or channel reader.
-            # Resume its existing output too; a newly prepared Session has
-            # neither an open response nor a matching replay boundary yet.
-            resume_output = observe_only or (
-                output_checkpoint is not None
-                and (
-                    bool(output_checkpoint.open_response_id)
-                    or output_checkpoint.replay_output_cursor is not None
-                )
-            )
+            await link.restore_attachments()
             return await _publish_runtime(
                 session_id=context.session_id,
-                resident_output_sink=context.resident_output_sink,
-                event_sink=context.event_sink,
                 sandbox=sandbox,
                 link=link,
                 engine_session_key=(
                     context.resume_session_key or prepared_native_session or None
                 ),
+                resume_session_key=context.resume_session_key,
                 terminal_cwd=context.cwd,
                 runtime_identity=context.runtime_identity,
-                permission_mode=None if observe_only else context.permission_mode,
-                model=None if observe_only else str(
-                    getattr(context.model_access, "model_name", "") or ""
-                ).strip()
-                or None,
+                permission_mode=context.permission_mode,
+                model=str(getattr(context.model_access, "model_name", "") or "").strip() or None,
                 gateway_base_url=base_url,
                 model_endpoint_provider=str(context.model_access.endpoint_provider),
                 prepared_model_route=prepared.get("prepared_model_route"),
                 session_create=_session_create_options(template),
                 prepare_engine_input=context.prepare_engine_input,
-                output_checkpoint=output_checkpoint if resume_output else None,
-                initial_sequence=(output_checkpoint.high_water_sequence or 0) if output_checkpoint is not None else 0,
             )
         except BaseException:
             if link is not None:

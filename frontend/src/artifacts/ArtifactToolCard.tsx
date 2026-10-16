@@ -1,4 +1,3 @@
-import { useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { FileText } from 'lucide-react';
@@ -7,19 +6,11 @@ import { useArtifactNavigation } from './navigation';
 import type { ArtifactMarker } from './types';
 export function ArtifactToolCard({
   marker,
-  live,
-  toolCallId,
 }: {
   marker: ArtifactMarker;
-  live: boolean;
-  toolCallId: string;
 }) {
   const { t } = useTranslation();
   const navigation = useArtifactNavigation();
-  const appeared = navigation.appeared;
-  useEffect(() => {
-    if (live) appeared?.(marker, toolCallId);
-  }, [live, appeared, marker.id, marker.version, toolCallId]);
   return (
     <div
       className="flex items-center gap-3 rounded-md border border-border bg-card p-3"

@@ -1,4 +1,4 @@
-"""Codex app-server notifications and requests, translated once.
+"""Codex app-server items and requests, translated once.
 
 Codex names three nested things and AstraBox needs all three kept straight: a
 **thread** is the conversation, a **turn** is one user request and everything
@@ -8,12 +8,19 @@ have an explicit lifecycle (``item/started`` … deltas … ``item/completed``)
 and carry a stable ``itemId``, so a streamed block opens and closes on the
 engine's own boundaries rather than on any counting done here.
 
-The end of a response is ``turn/completed`` and nothing else. ``item/completed``
-ends one piece of work and the turn keeps going — a command finishing is
-usually the middle of an answer, not its end. The turn's own
-``status`` (``completed`` / ``interrupted`` / ``failed``) is the vendor's word
-for how it ended and is carried through rather than re-derived from what was
-seen on the way.
+This module translates items. Where a response starts and ends — Codex's
+``turn/started`` and ``turn/completed`` — and what the thread's status is are
+read by :mod:`~astrabox.core.service.orchestrator.engine.codex_runtime_client`,
+which owns the response boundaries. ``item/completed`` ends one piece of work
+and the turn keeps going: a command finishing is usually the middle of an
+answer, not its end.
+
+An item can reach the translator whole. A reader that attaches to a running
+thread receives the deltas of an item whose ``item/started`` went to a
+connection that is gone, and a reader that catches up reads completed items
+back from the thread's persisted history. Either way the completed item is
+the authority: a prose item becomes one block holding its completed text, a
+tool item its input and output parts.
 
 Interactions arrive as JSON-RPC *requests* rather than notifications, because
 Codex expects an answer routed back by the request's id. Four of them can
@@ -25,7 +32,6 @@ AstraBox renders, with the engine's whole request preserved in ``raw_input``.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
 from typing import Any
 
 from astrabox.core.service.orchestrator.engine.emissions import public_ui_frame
@@ -44,17 +50,8 @@ class CodexProtocolError(RuntimeError):
     """The app-server sent something this translator cannot honour."""
 
 
-#: `turn.status` → the platform's three finish reasons. `inProgress` is
-#: deliberately absent: on a `turn/completed` it would mean the vendor changed
-#: what that notification means, and guessing would hide it.
-_FINISH_REASONS = {
-    "completed": "stop",
-    "interrupted": "cancelled",
-    "failed": "error",
-}
-
 #: Item types that stream as prose, and the frame family each one opens.
-_PROSE_ITEMS = {"agentMessage": "text", "reasoning": "reasoning", "plan": "text"}
+PROSE_ITEMS = {"agentMessage": "text", "reasoning": "reasoning", "plan": "text"}
 
 #: Item types that are a tool call in the console's sense: something the agent
 #: ran, with an input worth showing and an output worth showing.
@@ -64,31 +61,32 @@ CODEX_TOOL_ITEM_TYPES = frozenset(
 
 #: Items the platform holds as child runs. The Agents panel and the durable
 #: `/child-runs` resource own a spawned sub-agent's identity and lifecycle, so
-#: a diagnostic card beside them would show the same thing twice.
+#: a diagnostic beside them would record the same thing twice.
 _CHILD_RUN_ITEMS = frozenset({"collabAgentToolCall", "subAgentActivity"})
 
-#: Notifications AstraBox already holds the fact for, so passing them through
-#: as raw-event cards would show the reader the same thing twice. Everything
-#: NOT listed here — including anything a newer Codex adds — still reaches the
-#: console as a card.
+#: Notifications AstraBox already holds the fact for. Everything NOT listed
+#: here — including anything a newer Codex adds — is kept as a diagnostic.
 _DROPPED_NOTIFICATIONS = frozenset(
     {
         # The conversation's identity and lifecycle: the platform's own
         # session row is the record of these.
         "thread/started",
-        "thread/status/changed",
-        "thread/closed",
         "thread/name/updated",
         "thread/tokenUsage/updated",
-        # Answered as interactions, and resolved by the platform; the
-        # server's own bookkeeping about them adds nothing.
-        "serverRequest/resolved",
         # This connection's control plane, not the conversation's content.
         "remoteControl/status/changed",
         "account/updated",
         "account/rateLimits/updated",
     }
 )
+
+#: Delta notifications, and the prose family each extends.
+DELTA_FAMILIES = {
+    "item/agentMessage/delta": "text",
+    "item/reasoning/summaryTextDelta": "reasoning",
+    "item/reasoning/textDelta": "reasoning",
+    "item/plan/delta": "text",
+}
 
 
 def raw_event_frame(subtype: str, raw: dict[str, Any]) -> dict[str, Any]:
@@ -102,55 +100,116 @@ def raw_event_frame(subtype: str, raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-class CodexTurnTranslator:
-    """One turn's notifications → AstraBox stream frames.
+def prose_text(item: dict[str, Any]) -> str:
+    """A completed prose item's text, read from the field its type declares.
 
-    Held across `iter_turn_events` calls rather than rebuilt per call: an
-    interaction ends the browser's stream while the engine's turn stays open,
-    and a translator rebuilt on re-entry would have forgotten which blocks the
-    engine still has open.
+    ``agentMessage`` and ``plan`` carry ``text``; ``reasoning`` carries its
+    summary sections and raw content as lists, which stream as one block.
+    """
+
+    if str(item.get("type") or "") == "reasoning":
+        return "".join([*(item.get("summary") or []), *(item.get("content") or [])])
+    return str(item.get("text") or "")
+
+
+class CodexTurnTranslator:
+    """One response's Codex items → AI SDK UI parts.
+
+    A prose item streams as one text or reasoning block keyed by its
+    ``itemId``: ``item/started`` opens it, deltas extend it, ``item/completed``
+    closes it. A tool item shows its input at ``item/started`` and its output
+    at ``item/completed``; its parts are keyed by the tool call id.
+
+    Translation reads the state without changing it; :meth:`advance` applies
+    each part once it is shown. The state is therefore a function of the parts
+    shown, which is what lets :meth:`state` resume a stream exactly after any
+    of them.
     """
 
     def __init__(self) -> None:
-        #: itemId → the frame family opened for it, so a delta can be refused
-        #: when nothing is open and `-end` closes what `-start` opened.
+        #: itemId → the family of its prose block open in the output.
         self._open: dict[str, str] = {}
+        #: itemId → characters of its open block shown.
+        self._lengths: dict[str, int] = {}
+        #: Open blocks restored from an earlier reader: their deltas are not
+        #: shown again, and completion supplies the text after what was shown.
+        self._resumed: set[str] = set()
+        #: itemId → how many of its tool parts are shown, in the order
+        #: input-start, input-available, output-available, file changes.
+        self._tools: dict[str, int] = {}
 
-    def translate(self, message: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    # ── state ────────────────────────────────────────────────────────────
+    def state(self) -> dict[str, Any]:
+        """The open blocks with the characters each has shown, and the tool parts shown."""
+
+        return {
+            "streaming": {
+                item_id: {"family": family, "length": self._lengths.get(item_id, 0)}
+                for item_id, family in self._open.items()
+            },
+            "tools": dict(self._tools),
+        }
+
+    def restore(self, state: dict[str, Any]) -> None:
+        """Continue from :meth:`state` taken by an earlier reader.
+
+        Deltas streamed while no reader was attached are gone, so later deltas
+        of a restored block are not shown either; its completion finishes it
+        with the completed text after the characters already shown.
+        """
+
+        for item_id, block in (state.get("streaming") or {}).items():
+            family = str(block["family"])
+            if family not in {"text", "reasoning"}:
+                raise CodexProtocolError(f"cannot resume a {family!r} block")
+            self._open[str(item_id)] = family
+            self._lengths[str(item_id)] = int(block["length"])
+            self._resumed.add(str(item_id))
+        for item_id, shown in (state.get("tools") or {}).items():
+            self._tools[str(item_id)] = int(shown)
+
+    def advance(self, part: dict[str, Any]) -> None:
+        """Record one part as shown."""
+
+        kind = str(part.get("type") or "")
+        if kind in {"text-start", "reasoning-start"}:
+            self._open[str(part["id"])] = kind.removesuffix("-start")
+            self._lengths[str(part["id"])] = 0
+        elif kind in {"text-delta", "reasoning-delta"}:
+            self._lengths[str(part["id"])] += len(str(part.get("delta") or ""))
+        elif kind in {"text-end", "reasoning-end"}:
+            self.forget(str(part["id"]))
+        elif kind in _TOOL_PART_STAGES:
+            self._tools[str(part["toolCallId"])] = _TOOL_PART_STAGES[kind]
+        elif kind == "data-file-changes":
+            self.forget(str(part["data"]["toolCallId"]))
+
+    def forget(self, item_id: str) -> None:
+        """Drop an item whose parts are all shown."""
+
+        self._open.pop(item_id, None)
+        self._lengths.pop(item_id, None)
+        self._resumed.discard(item_id)
+        self._tools.pop(item_id, None)
+
+    # ── translation ──────────────────────────────────────────────────────
+    def translate(self, message: dict[str, Any]) -> list[dict[str, Any]]:
         method = str(message.get("method") or "").strip()
         params = message.get("params")
         params = params if isinstance(params, dict) else {}
 
-        if method == "turn/started":
-            yield {"type": "start-step"}
-            return
-        if method == "turn/completed":
-            yield self._turn_completed(params)
-            return
         if method == "item/started":
-            yield from self._item_started(params)
-            return
+            return self._item_started(params)
         if method == "item/completed":
-            yield from self._item_completed(params)
-            return
-        if method == "item/agentMessage/delta":
-            yield from self._delta(params, "text", str(params.get("delta") or ""))
-            return
-        if method in {
-            "item/reasoning/summaryTextDelta",
-            "item/reasoning/textDelta",
-        }:
-            yield from self._delta(params, "reasoning", str(params.get("delta") or ""))
-            return
-        if method == "item/plan/delta":
-            yield from self._delta(params, "text", str(params.get("delta") or ""))
-            return
+            return self.item_completed(params.get("item"))
+        family = DELTA_FAMILIES.get(method)
+        if family is not None:
+            return self._delta(params, family)
         if method in _DROPPED_NOTIFICATIONS:
-            return
-        yield raw_event_frame(method, message)
+            return []
+        return [raw_event_frame(method, message)]
 
-    # ── items ────────────────────────────────────────────────────────────
-    def _item_started(self, params: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    def _item_started(self, params: dict[str, Any]) -> list[dict[str, Any]]:
         item = params.get("item")
         if not isinstance(item, dict):
             raise CodexProtocolError("item/started carries no item object")
@@ -158,126 +217,130 @@ class CodexTurnTranslator:
         item_type = str(item.get("type") or "").strip()
         if not item_id:
             raise CodexProtocolError(f"item/started for {item_type!r} has no id")
-        family = _PROSE_ITEMS.get(item_type)
+        family = PROSE_ITEMS.get(item_type)
         if family is not None:
-            self._open[item_id] = family
-            frame: dict[str, Any] = {"type": f"{family}-start", "id": item_id}
-            # Codex's own classification of an assistant message, carried
-            # rather than dropped. A turn can emit more than one
-            # `agentMessage`, and the app-server spec says the answer is the
-            # one whose phase is `final_answer`; the others are mid-turn
-            # narration. Dropping it here is what put two replies in one
-            # message. `phase` is optional by that same spec — providers do
-            # not all emit it — so its absence travels as absence.
-            phase = item.get("phase")
-            if isinstance(phase, str) and phase.strip():
-                frame["phase"] = phase.strip()
-            yield frame
-            return
+            return [] if item_id in self._open else [_block_start(item, family)]
         if item_type in CODEX_TOOL_ITEM_TYPES:
-            yield public_ui_frame({
-                "type": "tool-input-start",
-                "toolCallId": item_id,
-                "toolName": item_type,
-                "dynamic": True,
-            })
-            yield public_ui_frame({
-                "type": "tool-input-available",
-                "toolCallId": item_id,
-                "toolName": item_type,
-                "dynamic": True,
-                # The item verbatim: Codex names a command's argv, a patch's
-                # changes and an MCP call's arguments differently, and which
-                # of those the reader is looking at is the engine's to say.
-                "input": dict(item),
-            })
-            return
-        # A userMessage item is the platform's own input coming back, and
-        # anything else is a shape this version does not know. Both reach the
-        # console as a card rather than being dropped.
+            return _tool_input(item)[self._tools.get(item_id, 0):]
+        # A userMessage item is the platform's own input coming back, which
+        # the client reads as admission; anything else is kept as evidence.
         if item_type != "userMessage" and item_type not in _CHILD_RUN_ITEMS:
-            yield raw_event_frame(f"item/started:{item_type}", params)
+            return [raw_event_frame(f"item/started:{item_type}", params)]
+        return []
 
-    def _item_completed(self, params: dict[str, Any]) -> Iterator[dict[str, Any]]:
-        item = params.get("item")
+    def item_completed(self, item: Any) -> list[dict[str, Any]]:
+        """The parts one completed item still owes, whether or not its start was shown."""
+
         if not isinstance(item, dict):
             raise CodexProtocolError("item/completed carries no item object")
         item_id = str(item.get("id") or "").strip()
         item_type = str(item.get("type") or "").strip()
-        family = self._open.pop(item_id, None)
+        if not item_id:
+            raise CodexProtocolError(f"item/completed for {item_type!r} has no id")
+        family = PROSE_ITEMS.get(item_type)
         if family is not None:
-            yield {"type": f"{family}-end", "id": item_id}
-            return
+            return self._prose_completed(item_id, item, family)
         if item_type in CODEX_TOOL_ITEM_TYPES:
-            yield {
-                "type": "tool-output-available",
-                "toolCallId": item_id,
-                "output": dict(item),
-            }
-            if item_type == "fileChange" and item.get("status") == "completed":
-                changes = []
-                for change in item["changes"]:
-                    kind = change["kind"]["type"]
-                    diff = change["diff"]
-                    view: ContentDiff | UnifiedDiff
-                    if kind == "add":
-                        view = ContentDiff(before="", after=diff)
-                    elif kind == "delete":
-                        view = ContentDiff(before=diff, after="")
-                    elif kind == "update":
-                        view = UnifiedDiff(patch=diff)
-                    else:
-                        raise CodexProtocolError(f"unknown file change kind {kind!r}")
-                    changes.append(FileChange(
-                        path=change["kind"].get("move_path") or change["path"], diff=view,
-                    ))
-                if changes:
-                    yield file_changes_frame(item_id, item_type, changes)
-            return
-        if (
-            item_type not in _PROSE_ITEMS
-            and item_type != "userMessage"
-            and item_type not in _CHILD_RUN_ITEMS
-        ):
-            yield raw_event_frame(f"item/completed:{item_type}", params)
+            parts = [*_tool_input(item), *_tool_output(item_id, item_type, item)]
+            return parts[self._tools.get(item_id, 0):]
+        if item_type != "userMessage" and item_type not in _CHILD_RUN_ITEMS:
+            return [raw_event_frame(f"item/completed:{item_type}", {"item": dict(item)})]
+        return []
 
-    def _delta(
-        self, params: dict[str, Any], family: str, delta: str
-    ) -> Iterator[dict[str, Any]]:
+    def _prose_completed(self, item_id: str, item: dict[str, Any], family: str) -> list[dict[str, Any]]:
+        open_family = self._open.get(item_id)
+        text = prose_text(item)
+        if open_family is None:
+            # Its start was not shown here: the completed text is the block.
+            parts = [_block_start(item, family)]
+            if text:
+                parts.append({"type": f"{family}-delta", "id": item_id, "delta": text})
+            return [*parts, {"type": f"{family}-end", "id": item_id}]
+        rest = text[self._lengths.get(item_id, 0):] if item_id in self._resumed else ""
+        parts = [{"type": f"{open_family}-delta", "id": item_id, "delta": rest}] if rest else []
+        return [*parts, {"type": f"{open_family}-end", "id": item_id}]
+
+    def _delta(self, params: dict[str, Any], family: str) -> list[dict[str, Any]]:
         item_id = str(params.get("itemId") or "").strip()
         open_family = self._open.get(item_id)
-        if open_family is None:
-            raise CodexProtocolError(
-                f"{family} delta for item {item_id!r} has no open block"
-            )
+        if open_family is None or item_id in self._resumed:
+            # The block's start went to an earlier reader or never reached
+            # this one; its completion shows the text this reader lacks.
+            return []
         if open_family != family:
             raise CodexProtocolError(
                 f"item {item_id!r} is open as {open_family!r}, not {family!r}"
             )
-        yield {"type": f"{family}-delta", "id": item_id, "delta": delta}
+        return [{"type": f"{family}-delta", "id": item_id, "delta": str(params.get("delta") or "")}]
 
-    # ── turn terminal ────────────────────────────────────────────────────
-    def _turn_completed(self, params: dict[str, Any]) -> dict[str, Any]:
-        turn = params.get("turn")
-        if not isinstance(turn, dict):
-            raise CodexProtocolError("turn/completed carries no turn object")
-        status = str(turn.get("status") or "").strip()
-        finish_reason = _FINISH_REASONS.get(status)
-        if finish_reason is None:
-            raise CodexProtocolError(
-                f"turn/completed carries unknown status {status!r}"
-            )
-        # Blocks the engine never closed cannot stay open into the next turn.
-        self._open.clear()
-        frame: dict[str, Any] = {
-            "type": "result",
-            "finishReason": finish_reason,
-            "__engine_terminal_reason": status,
-        }
-        error = turn.get("error")
-        if isinstance(error, dict):
-            frame["error"] = dict(error)
-        return frame
+
+#: Tool parts in the order they are shown, and how many are shown after each.
+_TOOL_PART_STAGES = {"tool-input-start": 1, "tool-input-available": 2, "tool-output-available": 3}
+
+
+def _block_start(item: dict[str, Any], family: str) -> dict[str, Any]:
+    frame: dict[str, Any] = {"type": f"{family}-start", "id": str(item["id"])}
+    # Codex's own classification of an assistant message, carried rather
+    # than dropped. A turn can emit more than one `agentMessage`, and the
+    # app-server spec says the answer is the one whose phase is
+    # `final_answer`; the others are mid-turn narration. `phase` is optional
+    # by that same spec, so its absence travels as absence.
+    phase = item.get("phase")
+    if isinstance(phase, str) and phase.strip():
+        frame["phase"] = phase.strip()
+    return frame
+
+
+def _tool_input(item: dict[str, Any]) -> list[dict[str, Any]]:
+    item_id = str(item["id"])
+    item_type = str(item["type"])
+    return [
+        public_ui_frame({
+            "type": "tool-input-start",
+            "toolCallId": item_id,
+            "toolName": item_type,
+            "dynamic": True,
+        }),
+        public_ui_frame({
+            "type": "tool-input-available",
+            "toolCallId": item_id,
+            "toolName": item_type,
+            "dynamic": True,
+            # The item verbatim: Codex names a command's argv, a patch's
+            # changes and an MCP call's arguments differently, and which of
+            # those the reader is looking at is the engine's to say.
+            "input": dict(item),
+        }),
+    ]
+
+
+def _tool_output(item_id: str, item_type: str, item: dict[str, Any]) -> list[dict[str, Any]]:
+    parts: list[dict[str, Any]] = [{
+        "type": "tool-output-available",
+        "toolCallId": item_id,
+        "output": dict(item),
+    }]
+    if item_type != "fileChange" or item.get("status") != "completed":
+        return parts
+    changes = []
+    for change in item["changes"]:
+        kind = change["kind"]["type"]
+        diff = change["diff"]
+        view: ContentDiff | UnifiedDiff
+        if kind == "add":
+            view = ContentDiff(before="", after=diff)
+        elif kind == "delete":
+            view = ContentDiff(before=diff, after="")
+        elif kind == "update":
+            view = UnifiedDiff(patch=diff)
+        else:
+            raise CodexProtocolError(f"unknown file change kind {kind!r}")
+        changes.append(FileChange(
+            path=change["kind"].get("move_path") or change["path"], diff=view,
+        ))
+    if changes:
+        parts.append(file_changes_frame(item_id, item_type, changes))
+    return parts
 
 
 # ── interactions ─────────────────────────────────────────────────────────

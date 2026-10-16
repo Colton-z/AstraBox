@@ -14,7 +14,7 @@
 # Create the drop-in directory on the host first (a missing mount source is
 # created root-owned by the docker daemon, and the spec then cannot write it):
 #
-#   install -d -m 777 /tmp/astrabox-e2e-turn-terminal-drop-faults.json.d
+#   install -d -m 777 /tmp/astrabox-e2e-faults.json.d
 #
 # The database oracle now queries the real PostgreSQL service directly. The
 # host state bind below remains only for fault-injection artifacts and local
@@ -44,4 +44,4 @@ services:
     volumes: !override
       - /var/run/docker.sock:/var/run/docker.sock
       - ${HOME}/.astrabox-state:/data
-      - /tmp/astrabox-e2e-turn-terminal-drop-faults.json.d:/tmp/astrabox-e2e-turn-terminal-drop-faults.json.d
+      - /tmp/astrabox-e2e-faults.json.d:/tmp/astrabox-e2e-faults.json.d

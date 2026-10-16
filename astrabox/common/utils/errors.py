@@ -320,18 +320,31 @@ for _code, _status, _category, _retryable, _owner in (
     # existed. 403 would confirm it exists and belongs to somebody.
     ("MCP_TOKEN_NOT_FOUND", 404, "request", False, "client"),
     ("SESSION_NOT_FOUND", 404, "request", False, "session"),
+    # The session's terminal keeps only its latest command, so an older
+    # command id answers this once a newer command has started.
+    ("TERMINAL_COMMAND_NOT_FOUND", 404, "request", False, "session"),
     ("SESSION_BUSY", 409, "state", True, "session"),
+    ("INTERACTION_NOT_FOUND", 404, "request", False, "session"),
+    # Answered, withdrawn or expired: answering again cannot succeed.
+    ("INTERACTION_NOT_OPEN", 409, "state", False, "session"),
     # A message whose turn ended before the message reached the Agent program:
     # its delivery could not attach a runtime, or the turn was settled before
     # delivery. The turn is over, so the same message sent again under its
     # client_message_id answers this again; a new message starts a new turn.
-    ("INPUT_NOT_DELIVERED", 409, "state", False, "session"),
+    # Recorded on an input the platform still held when its conversation ended.
+    ("CONVERSATION_ENDED", 409, "state", False, "session"),
+    # A message whose replacement runtime failed to start; sending it again
+    # starts another attempt.
+    ("RUNTIME_START_FAILED", 502, "runtime", False, "runtime"),
     # Same class of 409 as the row above — the resource's current state refuses
     # the operation — so it carries the same category rather than an auth one:
     # the caller is permitted, the Vault is simply still held. Not retryable,
     # because the caller has to unbind those holders first, and it owns that
     # action, which is what `client` records.
     ("VAULT_IN_USE", 409, "state", False, "client"),
+    # The request names a Credential Vault that does not exist, or that was
+    # deleted while the binding naming it was saved.
+    ("VAULT_NOT_FOUND", 404, "request", False, "client"),
     # Another sandbox holds the workspace's write claim. Same class of 409 as
     # Not retryable, unlike its 409 neighbour: re-sending the same append_id
     # with the same entries is the idempotent path and never reaches this code,
@@ -347,10 +360,8 @@ for _code, _status, _category, _retryable, _owner in (
     ("INVALID_IDEMPOTENCY_KEY", 400, "request", False, "client"),
     ("IDEMPOTENCY_KEY_CONFLICT", 409, "request", False, "client"),
     ("IDEMPOTENCY_KEY_RETIRED", 409, "state", False, "client"),
-    ("REQUEST_CANCELLED", 499, "request", False, "client"),
     ("E2E_TRANSCRIPT_APPEND_FAULT", 503, "persistence", True, "platform"),
     ("PERSISTENCE_UNAVAILABLE", 503, "persistence", True, "store"),
-    ("PERSISTENCE_OPERATION_FAILED", 500, "persistence", False, "store"),
     ("PERSISTENCE_ERROR", 500, "persistence", False, "store"),
     ("ARTIFACT_SIGN_IN_REQUIRED", 401, "request", False, "client"),
     ("ARTIFACT_SHARE_AUDIENCE_RESTRICTED", 409, "request", False, "client"),
@@ -393,7 +404,8 @@ for _code, _status, _category, _retryable, _owner in (
     # Assistant defaults, so the user's retry cannot change the answer.
     ("ASSISTANT_DEFAULTS_UNAVAILABLE", 409, "configuration.environment", False, "template"),
     ("ENVIRONMENT_IN_USE", 409, "configuration.environment", False, "template"),
-    ("ENVIRONMENT_DELETE_UNSUPPORTED", 503, "configuration.persistence", False, "platform"),
+    # The row names a stored credential that is absent from the secret store.
+    ("ENVIRONMENT_SECRET_MISSING", 500, "configuration.environment", False, "platform"),
     # Optional engine protocols are requested by the caller. An engine that
     # does not declare one is healthy; the requested operation is unavailable.
     ("ENGINE_CAPABILITY_UNAVAILABLE", 409, "request", False, "client"),
@@ -406,6 +418,11 @@ for _code, _status, _category, _retryable, _owner in (
     ("CHILD_RUN_NOT_FOUND", 404, "request", False, "session"),
     ("CHILD_RUN_ALREADY_TERMINAL", 409, "state", False, "session"),
     ("CHILD_RUN_CONTROL_UNAVAILABLE", 409, "state", False, "session"),
+    # A running response whose runtime has no connected reader; retrying once
+    # the reader reconnects can succeed.
+    ("INTERRUPT_UNAVAILABLE", 409, "state", True, "session"),
+    # The conversation's Agent was deleted; its history stays readable.
+    ("AGENT_DELETED", 409, "state", False, "session"),
     # An engine with a permission-mode vocabulary but no product default needs
     # the caller to choose one explicitly.
     ("ENGINE_PERMISSION_MODE_REQUIRED", 400, "request", False, "client"),
@@ -424,7 +441,6 @@ for _code, _status, _category, _retryable, _owner in (
     ("ENGINE_RUNTIME_UNAVAILABLE", 409, "state", True, "session"),
     # A runtime published before binding its durable engine conversation is a
     # platform ordering defect; the republished runtime repeats it on retry.
-    ("ENGINE_CONVERSATION_NOT_BOUND", 500, "runtime.preparation", False, "platform"),
     ("ENGINE_ATTACH_MODE_INVALID", 500, "runtime.startup", False, "platform"),
     # The model provider mapped an engine's native protocol outside the gateway
     # base URL this deployment configured. Only that configuration can fix it.
@@ -469,6 +485,7 @@ for _code, _status, _category, _retryable, _owner in (
     ("RUNTIME_SUBJECT_UNAVAILABLE", 500, "state", False, "platform"),
     ("RUNTIME_SUBJECT_CHANGED", 409, "state", False, "platform"),
     ("RUNTIME_RECOVERY_SUPERSEDED", 409, "runtime.startup", False, "platform"),
+    ("SESSION_RUNTIME_LOCK_LOST", 502, "state", False, "platform"),
     (
         "RUNTIME_SUBJECT_MATERIALIZATION_LOST",
         409,
@@ -562,9 +579,15 @@ for _code, _status, _category, _retryable, _owner in (
     # Port 8080 is the sandbox's control API, not an application preview.
     ("EXPOSE_PORT_RESERVED", 400, "request", False, "client"),
     ("AGENT_RUNTIME_GENERATION_CONFLICT", 409, "state", True, "platform"),
-    ("AGENT_RESOURCE_SYNC_BUSY", 409, "state", True, "platform"),
-    ("AGENT_RESOURCE_SYNC_UNRESOLVED", 409, "state", False, "platform"),
-    ("AGENT_RESOURCE_SYNC_FAILED", 502, "runtime", False, "platform"),
+    ("ASSISTANT_REVISION_CONFLICT", 409, "state", True, "platform"),
+    # Another write changed the record between this request's read and its
+    # compare-and-set, so nothing was written. The same request computes its
+    # change again from the record as it now is.
+    ("ASSISTANT_VERSION_CONFLICT", 409, "state", True, "client"),
+    ("ASSISTANT_DEFAULTS_VERSION_CONFLICT", 409, "state", True, "client"),
+    ("RESOURCE_SYNC_BUSY", 409, "state", True, "platform"),
+    ("RESOURCE_SYNC_UNRESOLVED", 409, "state", False, "platform"),
+    ("RESOURCE_SYNC_FAILED", 502, "runtime", False, "platform"),
     ("RUNTIME_PREPARATION_FAILED", 502, "runtime", False, "platform"),
     ("CHANNEL_RESPONSE_JUDGE_UNAVAILABLE", 409, "configuration", False, "platform"),
     ("HISTORY_IMPORT_AFTER_CONVERSATION", 409, "state", False, "session"),
@@ -602,14 +625,17 @@ for _code, _status, _category, _retryable, _owner in (
         False,
         "runtime",
     ),
-    ("SIDECAR_ATTACH_IDENTITY_INVALID", 409, "runtime.attach", True, "runtime"),
-    ("SIDECAR_ATTACH_IDENTITY_MISMATCH", 409, "runtime.attach", True, "runtime"),
     ("SANDBOX_ISOLATED_SESSION_NOT_FOUND", 409, "runtime.attach", False, "runtime"),
     ("SESSION_USER_ACTION_FAILED", 502, "runtime.preparation", False, "platform"),
     ("TURN_PREPARATION_FAILED", 502, "runtime.preparation", True, "runtime"),
     # Starting, reattaching, or adopting the Assistant profile's resident
     # Hermes gateway failed. The same start is valid once the sandbox answers.
     ("HERMES_GATEWAY_START_FAILED", 502, "runtime.preparation", True, "runtime"),
+    ("HERMES_BACKEND_NOT_READY", 503, "runtime.preparation", True, "runtime"),
+    # Hermes declined one message at prompt.submit: its active-session limit,
+    # session storage it could not write, or a voice-mode stop phrase. The
+    # identical message goes through once Hermes takes messages again.
+    ("HERMES_INPUT_REFUSED", 409, "runtime.engine", True, "runtime"),
     ("CONVERSATION_BOOTSTRAP_FAILED", 502, "runtime.bootstrap", True, "runtime"),
     ("CONVERSATION_BOOTSTRAP_API_UNAVAILABLE", 502, "runtime.bootstrap", True, "runtime"),
     ("DEFAULT_REPO_CLONE_FAILED", 502, "runtime.default_repo", False, "runtime"),
@@ -721,19 +747,10 @@ register_error(
 )
 
 
-# These four rows deliberately do not form one cleanup family. Reading the
-# durable cleanup anchor is a record-store failure; stopping an engine or PTY is
-# a runtime failure. A sandbox destroy that returned no answer can be retried as
+# These rows deliberately do not form one cleanup family. Stopping an engine or
+# PTY is a runtime failure. A sandbox destroy that returned no answer can be retried as
 # sent, while a refused destroy needs its ownership/backend evidence repaired
 # before the same DELETE is useful.
-register_error(
-    "SESSION_CLEANUP_STATE_READ_FAILED",
-    status_code=503,
-    category="persistence",
-    retryable=True,
-    owner="store",
-    user_message="Session cleanup state is temporarily unavailable; retry the operation.",
-)
 register_error(
     "SESSION_PROCESS_CLEANUP_FAILED",
     status_code=502,

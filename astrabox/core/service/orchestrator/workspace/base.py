@@ -31,16 +31,6 @@ class WorkspaceRef:
     agent_id: str | None = None
     assistant_id: str | None = None
 
-    def as_doc(self) -> dict[str, Any]:
-        doc: dict[str, Any] = {"kind": self.kind}
-        if self.user_id:
-            doc["user_id"] = self.user_id
-        if self.agent_id:
-            doc["agent_id"] = self.agent_id
-        if self.assistant_id:
-            doc["assistant_id"] = self.assistant_id
-        return doc
-
 
 class Workspace(Protocol):
     ref: WorkspaceRef

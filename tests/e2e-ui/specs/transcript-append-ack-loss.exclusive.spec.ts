@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { expect, test } from '@playwright/test';
 
 import { AstraApi, messageText } from '../fixtures/astraApi';
-import { documentsByField } from '../fixtures/dbOracle';
+import { nativeTranscriptRows, postgresRows, sqlLiteral } from '../fixtures/dbOracle';
 import { appPath } from '../fixtures/env';
 import { requireSandboxHandle } from '../fixtures/sandboxOps';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
@@ -18,9 +18,27 @@ onPassOnly(async ({ request }) => {
   if (agentId) await new AstraApi(request).deleteAgent(agentId);
 });
 
-function batchRows(appendId: string) {
-  return documentsByField('transcript_entries', '$.append_id', appendId)
-    .sort((a, b) => Number(a.batch_index) - Number(b.batch_index));
+/** One stored entry of an append batch, with the session whose store holds it. */
+interface BatchRow {
+  platform_session_id: string;
+  scope_id: number;
+  seq: number;
+  batch_index: number;
+  entry_json: string;
+}
+
+/** The entries one append stored, in batch order, wherever they landed. */
+function batchRows(appendId: string): BatchRow[] {
+  return postgresRows<BatchRow>(
+    `SELECT s.platform_session_id, e.scope_id, e.seq, e.batch_index, e.entry_json `
+      + `FROM transcript_entries e JOIN transcript_scopes s ON s.scope_id = e.scope_id `
+      + `WHERE e.append_id = ${sqlLiteral(appendId)} ORDER BY e.batch_index, e.scope_id, e.seq`,
+  );
+}
+
+/** A stored entry's identity: its place in its transcript. */
+function rowIdentity(row: BatchRow): string {
+  return `${row.scope_id}:${row.seq}`;
 }
 
 function requireBatch(evidence: AppendFaultEvidence | null): AppendFaultEvidence & {
@@ -60,7 +78,7 @@ test('the real SessionStore retries identical appends after lost or malformed AC
   expect(warmup.errorText).toBeNull();
   expect(warmup.text.trim()).not.toEqual('');
   const ready = await api.waitForSession(sessionId,
-    (value) => value.state === 'READY' && !value.current_turn_id, 60_000);
+    (value) => value.state === 'READY' && (value.current_responses ?? []).length === 0, 60_000);
   const detail = await api.adminSessionDetail(sessionId);
   expect(String(detail.runtime_identity?.isolated_session_id || ''),
     'the fixture must own the whole runner, never a shared-box sibling').toEqual('');
@@ -106,7 +124,7 @@ test('the real SessionStore retries identical appends after lost or malformed AC
       'the SDK append must return inside its real one-second caller budget')
         .toEqual([expect.objectContaining({ elapsed_seconds: expect.any(Number) })]);
       expect(held.sdk_accepts.every((item) => item.elapsed_seconds < 1)).toBe(true);
-      let committedBeforeRetry: Record<string, unknown>[] = [];
+      let committedBeforeRetry: BatchRow[] = [];
       if (mode === 'ack') {
         expect(held.attempts.map((item) => item.status)).toEqual([200]);
         committedBeforeRetry = assertExactStoredBatch(sessionId, held);
@@ -147,7 +165,7 @@ test('the real SessionStore retries identical appends after lost or malformed AC
       }
       const after = assertExactStoredBatch(sessionId, complete);
       if (mode !== '502') expect(after).toEqual(committedBeforeRetry);
-      const nativeInputs = documentsByField('transcript_entries', '$.platform_session_id', sessionId)
+      const nativeInputs = nativeTranscriptRows(sessionId)
         .filter((row) => {
           const entry = JSON.parse(String(row.entry_json));
           return entry.type === 'user' && JSON.stringify(entry).includes(marker);
@@ -158,7 +176,7 @@ test('the real SessionStore retries identical appends after lost or malformed AC
       expect(reply.value?.errorText).toBeNull();
       expect(reply.value?.text.trim()).toBeTruthy();
       await api.waitForSession(sessionId,
-        (value) => value.state === 'READY' && !value.current_turn_id, 30_000);
+        (value) => value.state === 'READY' && (value.current_responses ?? []).length === 0, 30_000);
       const exported = (await api.adminSessionTranscript(sessionId, 30_000))
         .split('\n').filter((line) => line.trim()).map((line) => JSON.parse(line));
       for (const entry of complete.entries) {
@@ -168,8 +186,8 @@ test('the real SessionStore retries identical appends after lost or malformed AC
       receipts.push({
         mode, appendId: complete.append_id, entryCount: complete.entries.length,
         attempts: complete.attempts, sdkAccepts: complete.sdk_accepts,
-        committedBeforeRetry: committedBeforeRetry.map((row) => row._id),
-        committedAfter: after.map((row) => row._id),
+        committedBeforeRetry: committedBeforeRetry.map(rowIdentity),
+        committedAfter: after.map(rowIdentity),
       });
     }
     const history = await api.getMessages(sessionId, 50);

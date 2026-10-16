@@ -1,11 +1,11 @@
-"""Permission-mode e2e — ``acceptEdits`` lets a Write proceed with no prompt.
+"""Permission-mode e2e — an alternate write mode lets a write proceed with no prompt.
 
-The counterpart to ``test_tool_permission.py``: with the session created in
-``acceptEdits`` mode, a file Write is auto-accepted by the in-box CLI, so the
-turn runs to completion (``finish: stop``) WITHOUT ever surfacing a pending
-``tool_approval`` interaction, and the file is written in a single turn. This
-proves the host-resolved permission_mode is threaded into the in-box CLI options
-(not silently dropped, which would either prompt anyway or fail open).
+The counterpart to ``test_tool_permission.py``: with the session in the
+engine's alternate write mode (``acceptEdits`` for Claude), a file write is
+auto-accepted by the runtime, so the response runs to its end (``finish: stop``)
+WITHOUT ever pausing on a ``tool_approval`` interaction, and the file is
+written. This proves the session's permission mode reaches the runtime (not
+silently dropped, which would either prompt anyway or fail open).
 
 Run it explicitly (deselected in the default unit run):
 
@@ -27,7 +27,7 @@ from tests.e2e._sandbox_helpers import (
     permission_mode,
     poll_until_agent_ready,
     release_session,
-    stream_turn,
+    send_and_follow,
     tool_name,
     tool_names,
     wait_for_file,
@@ -62,41 +62,39 @@ def test_accept_edits_writes_without_a_prompt(e2e_client: httpx.Client) -> None:
             assert selected_mode is None
             assert_permission_mode_unavailable(e2e_client, sid)
 
-        res = stream_turn(
+        # Followed to a pause or the end: a pause on an approval here is the
+        # failure, and it must be reported as soon as it happens.
+        reply = send_and_follow(
             e2e_client,
             sid,
-            content=(
-                f"Use the {tool_name('write')} tool to create a file at {path} containing the single "
-                f"word CHERRY, then reply with the word DONE."
-            ),
+            f"Use the {tool_name('write')} tool to create a file at {path} containing the single "
+            "word CHERRY, then reply with the word DONE.",
+            until="pause",
         )
-        assert res.saw_ui_header, "missing x-vercel-ai-ui-message-stream: v1 header"
-        assert res.error is None, f"acceptEdits turn emitted an error frame: {res.error}"
+        assert reply.saw_ui_header, "the session stream is not an AI SDK UI message stream"
+        assert reply.error is None, f"the response failed: {reply.error}"
 
-        # The defining assertion: NO permission interaction was surfaced — the Write
-        # was auto-accepted. (Neither on the live stream nor on the detail projection.)
-        assert not res.interactions, (
-            f"acceptEdits still surfaced a permission interaction: "
-            f"{[(i.get('tool_name'), i.get('presentation')) for i in res.interactions]}"
+        # The defining assertion: NO permission interaction was surfaced — the
+        # write was auto-accepted, so the response never paused.
+        assert not reply.interactions and not reply.paused, (
+            f"the alternate mode still paused on a permission interaction: "
+            f"{[(i.get('tool_name'), i.get('presentation')) for i in reply.interactions]}"
         )
-        assert not detail.get("pending_interaction"), "unexpected pending interaction in acceptEdits"
         writers = tool_names("write")
-        assert any(w in res.tool_names for w in writers), (
-            f"the agent never called any of {writers}: tools={res.tool_names}"
+        assert any(w in reply.tool_names for w in writers), (
+            f"the agent never called any of {writers}: tools={reply.tool_names}"
         )
-        # The turn completed (it did not pause on a tool-permission).
-        assert res.finish_reason == "stop", (
-            f"acceptEdits turn did not finish with stop: {res.finish_reason!r}"
+        assert reply.finish_reason == "stop", (
+            f"the response did not end normally: {reply.finish_reason!r}"
         )
 
         content = wait_for_file(e2e_client, sid, path, timeout=30.0)
-        assert content is not None, f"acceptEdits Write did not produce {path}"
-        assert content.strip(), f"acceptEdits Write produced an empty file: {content!r}"
+        assert content is not None, f"the alternate-mode write did not produce {path}"
+        assert content.strip(), f"the alternate-mode write produced an empty file: {content!r}"
 
-        # The session settled (READY, no lingering pending interaction). The
-        # stream's finish frame precedes the kernel's terminal projection by a
-        # beat, so this waits rather than reading once.
         final = wait_until_settled(e2e_client, sid)
         assert not final.get("pending_interaction")
+        assert final["last_response"]["response_id"] == reply.response_id, final
+        assert final["last_response"]["outcome"] == "completed", final
     finally:
         release_session(sid)

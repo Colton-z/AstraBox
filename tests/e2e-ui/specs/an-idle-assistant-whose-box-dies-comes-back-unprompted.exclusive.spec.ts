@@ -16,7 +16,7 @@
 import { test, expect } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
-import { documentsByField } from '../fixtures/dbOracle';
+import { postgresRows, sqlLiteral } from '../fixtures/dbOracle';
 import { parseTimeoutEnv } from '../fixtures/env';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import {
@@ -56,7 +56,12 @@ test('an idle Assistant whose box dies is rebuilt without any action and answers
   expect(sandboxRunning(deadHandle)).toBe(false);
 
   // No product action from here until the workspace is back.
-  const workspace = () => documentsByField('assistant_workspace', '$.assistant_id', assistantId)[0] ?? {};
+  const workspace = (): { state?: string; current_sandbox_id?: string | null } => postgresRows<{
+    state: string;
+    current_sandbox_id: string | null;
+  }>(
+    `SELECT state, current_sandbox_id FROM assistant_workspaces WHERE assistant_id = ${sqlLiteral(assistantId)}`,
+  )[0] ?? {};
   await expect.poll(() => {
     const row = workspace();
     return row.state === 'READY' && Boolean(row.current_sandbox_id) && row.current_sandbox_id !== deadSandboxId;

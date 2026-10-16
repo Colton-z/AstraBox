@@ -1,28 +1,38 @@
 /**
  * A channel thread keeps working after its question's runner or whole box dies.
  *
- * The sibling spec covers the live case: a newer message stops the turn parked
- * on the open AskUserQuestion through the engine, which records an error
- * result for that tool, and then runs its own turn. Here the original engine wait is gone
- * before the newer message arrives, either with its box or with its runner.
+ * The sibling spec covers the live case: a newer message stops the response
+ * waiting on the open AskUserQuestion through the engine, which records an
+ * error result for that tool, and is then answered by a response of its own.
+ * Here the original engine wait is gone before the newer message arrives,
+ * either with its box or with its runner.
  *
- * That difference is load-bearing for the ingress spine, which stops the
- * pending question's turn as a precondition of dispatching. If stopping a wait that
- * is not there fails the dispatch, the 409 takes the whole message with it and
- * every later message in the thread meets the same closed door — a channel
- * participant has no browser composer and no card to dismiss, so nothing they
- * can do clears it.
+ * That difference is load-bearing for the ingress spine, which stops a
+ * question still open in the conversation before it sends a newer message. If
+ * stopping a wait that is not there failed the message, every later message in
+ * the thread would meet the same closed door — a channel participant has no
+ * browser composer and no card to dismiss, so nothing they can do clears it.
+ * The Session's reader learns of the loss on its own (a lost box ends the
+ * response that waited; a replaced runner does not report it), so the
+ * question may already be closed when the newer message is driven, or still
+ * open; the thread must keep working either way.
  *
  * The newer input runs on replacement compute after whole-box death, or on
- * the original box after runner death. Neither path may insert an answer in
- * native SessionStore for the question whose callback process has exited.
- * Claude's resume can close that unresolved tool with its own interrupted
- * result; that is not a user answer or a platform-authored tool result.
+ * the original box after runner death. Neither path may store an answer for
+ * the question whose callback process has exited, or write one into native
+ * SessionStore. Claude's resume can close that unresolved tool with its own
+ * interrupted result; that is not a user answer or a platform-authored tool
+ * result.
  */
 import { expect, test, type APIRequestContext } from '@playwright/test';
 
-import { AstraApi, messageText } from '../fixtures/astraApi';
-import { documentsByField, sessionEvents } from '../fixtures/dbOracle';
+import { AstraApi, messageText, messageToolCalls } from '../fixtures/astraApi';
+import {
+  nativeTranscriptRows,
+  sessionInputRows,
+  sessionInteractionRows,
+  sessionResponseRows,
+} from '../fixtures/dbOracle';
 import { PlatformApi } from '../fixtures/platformApi';
 import { IMAGE_RUNNER_LAUNCHER, imageRunnerPidLookup, imageRunnerRestartScript } from '../fixtures/runnerRestart';
 import { killSandbox, requireSandboxHandle, sandboxExec } from '../fixtures/sandboxOps';
@@ -36,6 +46,13 @@ interface ChannelTriggerReceipt {
   [key: string]: unknown;
 }
 
+interface NativeRow {
+  seq: number;
+  /** The runtime's own conversation id the entry is filed under. */
+  session_id: string;
+  entry: Record<string, unknown>;
+}
+
 const sessions = trackSessions();
 let agentId = '';
 let deploymentId = '';
@@ -47,12 +64,19 @@ function object(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function nativeRows(sessionId: string) {
-  return documentsByField('transcript_entries', '$.platform_session_id', sessionId)
-    .filter((row) => row.subpath == null)
-    .map((row) => ({ seq: Number(row.seq), session_id: row.session_id,
-      entry: object(JSON.parse(String(row.entry_json))) }))
-    .sort((left, right) => left.seq - right.seq);
+/**
+ * Claude's main transcript as the platform holds it, in the runtime's own
+ * order: the vendor's record, independent of what the platform projected
+ * from it.
+ */
+function nativeRows(sessionId: string): NativeRow[] {
+  return nativeTranscriptRows(sessionId)
+    .filter((row) => row.subpath === null)
+    .map((row) => ({
+      seq: Number(row.seq),
+      session_id: row.native_session_id,
+      entry: object(JSON.parse(row.entry_json)),
+    }));
 }
 
 function nativeBlocks(entry: Record<string, unknown>): Record<string, unknown>[] {
@@ -73,6 +97,11 @@ function originalToolRows(sessionId: string, toolCallId: string) {
     .some((block) => block.type === 'tool_use' && block.id === toolCallId));
 }
 
+/** Read evidence for an attachment without letting a broken read replace the test's own failure. */
+function observe(read: () => unknown): unknown {
+  try { return read(); } catch (error) { return { unavailable: String(error) }; }
+}
+
 test.beforeEach(() => {
   agentId = ''; deploymentId = ''; activeSessionId = '';
   for (const key of Object.keys(evidence)) delete evidence[key];
@@ -82,10 +111,10 @@ test.afterEach(async ({ request }, info) => {
   const failed = ['failed', 'timedOut', 'interrupted'].includes(String(info.status));
   await info.attach('superseded-exited-question-evidence', {
     body: JSON.stringify({ agentId, deploymentId, sessionId: activeSessionId, ...evidence,
-      native: failed && activeSessionId ? nativeRows(activeSessionId) : [],
-      journal: failed && activeSessionId ? sessionEvents(activeSessionId) : [],
-      interactions: failed && activeSessionId
-        ? documentsByField('interaction_snapshots', '$.session_id', activeSessionId) : [],
+      native: failed && activeSessionId ? observe(() => nativeRows(activeSessionId)) : [],
+      inputs: failed && activeSessionId ? observe(() => sessionInputRows(activeSessionId)) : [],
+      responses: failed && activeSessionId ? observe(() => sessionResponseRows(activeSessionId)) : [],
+      interactions: failed && activeSessionId ? observe(() => sessionInteractionRows(activeSessionId)) : [],
       history: failed && activeSessionId ? await new AstraApi(request).getMessages(activeSessionId, 100) : null }),
     contentType: 'application/json',
   });
@@ -173,21 +202,22 @@ async function runSupersededQuestion(request: APIRequestContext, fault: 'sandbox
   expect(deploymentId, 'the channel deployment must expose its id').not.toEqual('');
   expect(secret, 'the channel deployment must expose its trigger secret').not.toEqual('');
 
-  // No warm turn. The whole-box fault puts the superseding message on a
-  // cold re-borrow, and three live model turns plus that borrow do not fit the
-  // suite's fixed 180s budget — measured, not guessed. The question trigger
-  // creates the session by itself, so the warm turn bought nothing this spec
-  // needs.
+  // No warm message. The whole-box fault puts the superseding message on a
+  // cold re-borrow, and three live model replies plus that borrow do not fit
+  // the suite's fixed 180s budget — measured, not guessed. The question
+  // message creates the session by itself, so a warm message bought nothing
+  // this spec needs.
   const questionMarker = `E2E_CHANNEL_EXITED_ASK_${runId}`;
+  const questionText = [
+    `${questionMarker}: call AskUserQuestion exactly once as your first and only tool.`,
+    'Ask one single-select question with options YES and NO.',
+    'Wait for the answer and do not answer the question yourself.',
+  ].join(' ');
   const question = await triggerThreadMessage(request, {
     secret,
     threadId,
     messageId: `question-${runId}`,
-    text: [
-      `${questionMarker}: call AskUserQuestion exactly once as your first and only tool.`,
-      'Ask one single-select question with options YES and NO.',
-      'Wait for the answer and do not answer the question yourself.',
-    ].join(' '),
+    text: questionText,
   });
   expect(question.status).toBe('accepted');
   const sessionId = String(question.session_id || '').trim();
@@ -201,6 +231,8 @@ async function runSupersededQuestion(request: APIRequestContext, fault: 'sandbox
   const toolCallId = String(pending.tool_call_id || '').trim();
   expect(toolCallId, 'the open channel question must expose its engine tool id')
     .not.toEqual('');
+  const parkedResponseId = String(pending.response_id || '').trim();
+  expect(parkedResponseId, 'the open channel question must name the response it pauses').not.toEqual('');
   const waiting = await api.getSession(sessionId);
   const deadSandboxId = String(waiting.sandbox_id || '').trim();
   expect(deadSandboxId, 'the open channel question must still own its sandbox')
@@ -217,23 +249,25 @@ async function runSupersededQuestion(request: APIRequestContext, fault: 'sandbox
     .toBe('AskUserQuestion');
   expect(nativeRows(sessionId).flatMap((row) => nativeBlocks(row.entry))
     .filter((block) => block.type === 'tool_result' && block.tool_use_id === toolCallId)).toEqual([]);
-  const initialInteractions = documentsByField('interaction_snapshots', '$.session_id', sessionId);
+  const initialInteractions = sessionInteractionRows(sessionId);
   expect(initialInteractions.filter((row) => row.interaction_id === interactionId))
-    .toEqual([expect.objectContaining({ interaction_state: 'OPEN', active: true, tool_call_id: toolCallId })]);
-  const initialCommands = sessionEvents(sessionId).filter((row) => row.event_type === 'command.accepted'
-    && object(row.payload).command_type === 'StartTurn');
-  expect(initialCommands).toHaveLength(1);
-  expect(object(initialCommands[0].payload).command_type).toBe('StartTurn');
-  evidence.before = { fault, originalQuestion, pending, waiting, runtimeBefore, initialCommands, initialInteractions };
+    .toEqual([expect.objectContaining({
+      status: 'open', response_id: parkedResponseId, answer: null,
+      contract: expect.objectContaining({ tool_call_id: toolCallId }),
+    })]);
+  // The message is the conversation's one input: the channel sent it once.
+  const initialInputs = sessionInputRows(sessionId);
+  expect(initialInputs.map((row) => ({ source: row.source, content: row.content })))
+    .toEqual([{ source: 'channel', content: questionText }]);
+  evidence.before = { fault, originalQuestion, pending, waiting, runtimeBefore, initialInputs, initialInteractions };
 
-  // Out-of-band death, not a reclaim: a reclaim settles the parked turn on its
-  // way out, which is precisely the state this spec must NOT start from. The
-  // platform still reports a pending interaction; the wait behind it is gone.
+  // Out-of-band death, not a reclaim: a reclaim releases the box through the
+  // platform, which is precisely the path this spec must NOT start from. The
+  // engine's wait behind the question is gone without the platform being told.
   const originalHandle = await requireSandboxHandle(api, deadSandboxId);
   if (fault === 'sandbox-loss') {
     killSandbox(originalHandle);
   } else {
-    expect(runtimeBefore.has_local_runtime).toBe(true);
     expect(runtimeBefore.runtime_identity?.sandbox_id).toBe(deadSandboxId);
     expect(String(runtimeBefore.runtime_identity?.isolated_session_id || '')).toBe('');
     const oldPid = Number(sandboxExec(originalHandle,
@@ -254,21 +288,15 @@ async function runSupersededQuestion(request: APIRequestContext, fault: 'sandbox
     expect(await requireSandboxHandle(api, deadSandboxId)).toEqual(originalHandle);
     evidence.runnerRestart = { oldPid, newPid, restart, originalHandle };
   }
-  // Evict the host client as well as terminating the callback process. A cached
-  // client could otherwise decline the question without exercising recovery.
+  // Drop the host's connection to the old runtime as well as the callback
+  // process, so nothing in this process keeps answering for the dead wait.
   await api.adminEvictRuntime(sessionId);
-  const stillPending = await api.getSession(sessionId);
-  expect(
-    stillPending.pending_interaction,
-    'the fixture requires a question the platform still believes is answerable',
-  ).not.toBeNull();
-  expect(stillPending.pending_interaction?.interaction_id).toBe(interactionId);
-  expect(documentsByField('interaction_snapshots', '$.session_id', sessionId)
-    .filter((row) => row.interaction_id === interactionId))
-    .toEqual([expect.objectContaining({ interaction_state: 'OPEN', active: true, tool_call_id: toolCallId })]);
-  expect(nativeRows(sessionId).filter((row) => row.seq === originalQuestion.seq)).toEqual([originalQuestion]);
-  expect(nativeRows(sessionId).flatMap((row) => nativeBlocks(row.entry))
-    .filter((block) => block.type === 'tool_result' && block.tool_use_id === toolCallId)).toEqual([]);
+  // Whether the platform still shows the question here is a race with its own
+  // detection of the loss, not part of the contract; it is kept as evidence.
+  evidence.afterFault = {
+    session: await api.getSession(sessionId),
+    interactions: sessionInteractionRows(sessionId),
+  };
 
   const nextMarker = `E2E_CHANNEL_AFTER_EXIT_${runId}`;
   const assistantsBeforeNext = await api.assistantCount(sessionId);
@@ -285,19 +313,25 @@ async function runSupersededQuestion(request: APIRequestContext, fault: 'sandbox
   expect(next.session_id, 'the same external thread must keep one conversation')
     .toBe(sessionId);
 
-  await api.waitForAssistantMessageMatching(
-    sessionId,
-    assistantsBeforeNext,
-    (message) => fault === 'sandbox-loss'
-      ? messageText(message).includes(`${nextMarker}_DONE`)
-      : messageText(message).trim().length > 0,
-  );
-  const completed = await api.waitForSession(sessionId, (session) => (
-    session.state === 'READY'
-    && !session.current_turn_id
-    && !session.pending_interaction
-    && session.last_turn_status === 'COMPLETED'
-  ));
+  // The thread's next message becomes one input of the same conversation, and
+  // a response of its own answers it to completion.
+  await expect.poll(() => sessionInputRows(sessionId).filter((row) => row.content === nextPrompt).length, {
+    timeout: 120_000,
+    message: 'the newer channel message must reach the conversation once, past the dead question',
+  }).toBe(1);
+  const nextInput = sessionInputRows(sessionId).find((row) => row.content === nextPrompt)!;
+  expect(nextInput.source).toBe('channel');
+  const nextReply = await api.waitForReplyTo(sessionId, nextInput.input_id);
+  expect(nextReply.metadata?.outcome, 'the newer channel message must be answered to completion').toBe('completed');
+  expect(nextReply.id, 'the newer message is answered by a response of its own').not.toBe(parkedResponseId);
+  if (fault === 'sandbox-loss') {
+    expect(messageText(nextReply)).toContain(`${nextMarker}_DONE`);
+  } else {
+    expect(messageText(nextReply).trim().length).toBeGreaterThan(0);
+  }
+  const completed = await api.waitForSessionReady(sessionId);
+  expect(completed.last_response?.response_id, 'nothing ran after the newer message').toBe(nextReply.id);
+  expect(completed.pending_interaction ?? null).toBeNull();
   if (fault === 'sandbox-loss') {
     expect(
       String(completed.sandbox_id || ''),
@@ -311,23 +345,25 @@ async function runSupersededQuestion(request: APIRequestContext, fault: 'sandbox
     .not.toEqual('');
 
   const history = await api.getMessages(sessionId, 100);
+  const assistants = history.messages.filter((message) => message.role === 'assistant');
+  expect(assistants, 'the newer message adds exactly one response').toHaveLength(assistantsBeforeNext + 1);
   expect(
-    history.messages.filter((message) => (
-      message.role === 'assistant' && (fault === 'sandbox-loss'
-        ? messageText(message).includes(`${nextMarker}_DONE`)
-        : message.turn_id === completed.last_turn_id && messageText(message).trim().length > 0)
-    )),
+    assistants.filter((message) => (fault === 'sandbox-loss'
+      ? messageText(message).includes(`${nextMarker}_DONE`)
+      : message.id === nextReply.id && messageText(message).trim().length > 0)),
     'the newer channel question must produce exactly one durable answer',
   ).toHaveLength(1);
-  const parked = history.messages.find((message) => (
-    (message.blocks || []).some((block) => (
-      block.type === 'tool_use' && block.id === toolCallId
-    ))
-  ));
+  const parked = assistants.find((message) => messageToolCalls(message)
+    .some((call) => call.toolCallId === toolCallId && call.toolName === 'AskUserQuestion'));
   expect(
     parked,
     'the abandoned question stays in history — it happened, it just went unanswered',
   ).toBeDefined();
+  expect(parked?.id, 'the question belongs to the response that waited on it').toBe(parkedResponseId);
+  expect(parked?.metadata?.outcome, 'the response that waited on the question ended with its runtime')
+    .toBe('failed');
+  expect(parked?.metadata?.native_reason).toBe(fault === 'sandbox-loss' ? 'sandbox_lost' : 'runtime_lost');
+
   const finalNative = nativeRows(sessionId);
   expect(finalNative.filter((row) => row.seq === originalQuestion.seq)).toEqual([originalQuestion]);
   const interruptedTool = finalNative.filter((row) => nativeBlocks(row.entry)
@@ -349,15 +385,18 @@ async function runSupersededQuestion(request: APIRequestContext, fault: 'sandbox
     sourceToolAssistantUUID: originalQuestion.entry.uuid,
     parentUuid: originalQuestion.entry.uuid,
   });
-  const finalAccepted = sessionEvents(sessionId).filter((row) => row.event_type === 'command.accepted');
-  const finalCommands = finalAccepted.filter((row) => object(row.payload).command_type === 'StartTurn');
-  expect(finalAccepted.filter((row) => object(row.payload).command_type === 'AnswerInteraction'),
-    'an abandoned question must not be turned into an accepted answer command').toEqual([]);
-  expect(finalCommands).toHaveLength(2);
-  expect(finalCommands[0]).toEqual(initialCommands[0]);
-  expect(object(finalCommands[1].payload).command_type).toBe('StartTurn');
-  expect(finalCommands[1].turn_id).not.toBe(initialCommands[0].turn_id);
-  const nextContent = String(object(finalCommands[1].payload).content);
+  // No answer was ever stored for the dead question: the question closed with
+  // its runtime, unanswered, and the conversation took exactly two messages.
+  const finalInteraction = sessionInteractionRows(sessionId).filter((row) => row.interaction_id === interactionId);
+  expect(finalInteraction, 'an abandoned question must not be turned into an answer')
+    .toEqual([expect.objectContaining({ answer: null, answered_by: null, answered_at: null })]);
+  expect(['withdrawn', 'expired'], 'the question must close with its runtime')
+    .toContain(finalInteraction[0].status);
+  const finalInputs = sessionInputRows(sessionId);
+  expect(finalInputs).toHaveLength(2);
+  expect(finalInputs[0]).toEqual(initialInputs[0]);
+  expect(finalInputs[1].input_id).toBe(nextInput.input_id);
+  const nextContent = finalInputs[1].content;
   expect(nextContent).toBe(nextPrompt);
   const newInputs = finalNative.filter((row) => row.entry.type === 'user' && nativeText(row.entry) === nextContent);
   expect(newInputs).toHaveLength(1);
@@ -373,19 +412,13 @@ async function runSupersededQuestion(request: APIRequestContext, fault: 'sandbox
   });
   expect(nativeReplies.length).toBeGreaterThan(0);
   expect(finalNative.every((row) => row.session_id === originalQuestion.session_id)).toBe(true);
-  expect(documentsByField('interaction_snapshots', '$.session_id', sessionId)
-    .filter((row) => row.interaction_id === interactionId))
-    .toEqual([expect.objectContaining({ active: false, tool_call_id: toolCallId })]);
-  evidence.completed = { completed, finalCommands, finalNative, newInputs, nativeReplies, history };
+  evidence.completed = { completed, finalInputs, finalInteraction, finalNative, newInputs, nativeReplies, history };
   test.info().annotations.push({
-    type: 'retired_tool_call_blocks',
+    type: 'retired_tool_call_parts',
     description: JSON.stringify(
       history.messages
-        .flatMap((message) => message.blocks || [])
-        .filter((block) => (
-          (block.type === 'tool_result' && block.tool_use_id === toolCallId)
-          || (block.type === 'tool_use' && block.id === toolCallId)
-        )),
+        .flatMap((message) => messageToolCalls(message))
+        .filter((call) => call.toolCallId === toolCallId),
     ),
   });
 }

@@ -1,12 +1,11 @@
 # 接入新的调度器
 
 `SchedulerProvider` 负责运行定时 Deployment：在每个到期时刻触发，为每次调用分配持久的
-运行记录 ID，回调 AstraBox 启动这次运行的 Session 和对话轮次，负责重试和恢复中断的调用，
-并保存控制台列出和重放的运行记录。
+运行记录 ID，回调 AstraBox 启动这次运行的 Session 并接收它的输入，负责重试和恢复中断的
+调用，并保存控制台列出和重放的运行记录。
 
 AstraBox 内置一个 provider：`dbos`。它在每个服务进程中嵌入 DBOS Transact，把状态保存在
-AstraBox 已使用的 PostgreSQL 数据库或 SQLite 文件中。部署需要其他执行引擎时，再编写新的
-provider，例如把状态保存在 MongoDB 中的引擎——`dbos` 不能在 MongoDB 上运行。
+AstraBox 已使用的 PostgreSQL 数据库中。部署需要其他执行引擎时，再编写新的 provider。
 
 ## AstraBox 与 provider 的分工
 
@@ -14,8 +13,8 @@ provider，例如把状态保存在 MongoDB 中的引擎——`dbos` 不能在 M
 | --- | --- |
 | Deployment 记录：名称、提示词、Cron 表达式、IANA 时区和启用状态 | 按 Schedule 的时区在每个到期时刻触发 |
 | 谁可以创建、修改、立即运行或重放 Schedule | 每个到期时刻在所有副本中只产生一个持久的运行记录 ID |
-| 以运行记录 ID 幂等地启动这次运行的 Session 和对话轮次 | 持续回调 AstraBox，直到运行成功或永久失败 |
-| 对外的运行状态：先看 provider 的分派状态，再看 Session 的状态 | 重试、恢复中断的调用，以及运行记录台账 |
+| 以运行记录 ID 幂等地启动这次运行的 Session 并接收它的输入 | 持续回调 AstraBox，直到运行成功或永久失败 |
+| 对外的运行状态：以 Session 对这次运行输入的回复为准，没有回复时为 provider 的分派状态 | 重试、恢复中断的调用，以及运行记录台账 |
 
 Deployment 记录始终是期望状态。AstraBox 启动时把所有已保存的 Schedule 交给 provider
 （`reconcile`）；之后每次修改只交给发生变化的那一个（`apply` 或 `delete`）。provider
@@ -30,13 +29,14 @@ Deployment 记录始终是期望状态。AstraBox 启动时把所有已保存的
 2. **每个到期时刻只运行一次。**同一个 Deployment 的同一个到期时刻，在所有副本中只产生一条
    运行记录。用 provider 存储中的唯一约束保证这一点，而不是先读后写。
 3. **分派。**每次运行先调用 `RunHandler.start_session`，持久保存返回的 Session ID，
-   再调用 `RunHandler.admit_turn` 并保存对话轮次。两个调用都可能用同一个
-   `RunInvocation` 重复执行；AstraBox 按运行记录 ID 保证幂等。其他失败按有上限的退避
-   重试；遇到 `RunPermanentError` 或重试次数用尽时，把运行记录标记为 `FAILED`。
+   再调用 `RunHandler.admit_input`，并把它返回的 `RunInputBinding` 中的输入 ID 保存为
+   这次运行的 `input_id`。两个调用都可能用同一个 `RunInvocation` 重复执行；AstraBox
+   按运行记录 ID 保证幂等。其他失败按有上限的退避重试；遇到 `RunPermanentError` 或
+   重试次数用尽时，把运行记录标记为 `FAILED`。
 4. **恢复。**因进程丢失而中断的运行，以同一个运行记录 ID 和已经保存的 Session ID 继续。
-5. **停用。**`apply` 以停用状态返回后，最迟在 provider 声明的
+5. **停用。**以停用的定义调用 `apply` 并返回后，最迟在 provider 声明的
    `pause_visibility_seconds` 之后不再启动新的定时运行；已经开始的运行继续执行。
-6. **立即运行和重放。**`enqueue` 在运行记录保存后返回，不改变时间规则。
+6. **立即运行和重放。**`enqueue` 在运行记录保存后返回，不会挪动后续的到期时刻。
 7. **运行历史。**`list_runs` 按从新到旧的顺序返回一个 Deployment 所有触发方式的运行记录。
 8. **失败。**存储或引擎故障时抛出 `SchedulerUnavailable`，引擎拒绝表达式时抛出
    `InvalidSchedule`，超出引擎上限时抛出 `ScheduleCapacityExceeded`。引擎自己的术语和
@@ -51,31 +51,30 @@ Deployment 记录始终是期望状态。AstraBox 启动时把所有已保存的
 
 | 特性 | 含义 | `dbos` |
 | --- | --- | --- |
-| `recovery_scope` | `"cluster"` 表示任何副本都会接手进程丢失后留下的运行；`"executor"` 表示只有以相同身份重启的进程才会接手。 | `"executor"` |
+| `recovery_scope` | `"cluster"` 表示任一副本都可以接手进程丢失后留下的运行；`"executor"` 表示只有以相同身份重启的进程才会接手。 | `"executor"` |
 | `max_active_schedules` | 引擎支持的启用 Schedule 上限，没有上限时为 `None`。超过上限时 `apply` 会拒绝。 | `64` |
 | `pause_visibility_seconds` | 停用后 Schedule 最多还会触发多久。 | `11` |
 
 ## 检查部署配置
 
-AstraBox 启动时调用 `configure(repository_backend=...)`，传入当前使用的数据库后端。
-provider 无法在这个部署中运行时，抛出 `SchedulerConfigurationError` 并说明缺少什么：
-AstraBox 会拒绝启动，并提示运维人员选择其他 provider，或设置
-`ASTRABOX_SCHEDULER_PROVIDER=none`。`dbos` provider 会向后端请求 `sql_database_url()`；
-PostgreSQL 和 SQLite 后端提供它，MongoDB 不提供。
+AstraBox 启动时调用 `configure(database_url=...)`，传入平台的 PostgreSQL URL，provider
+可以用它保存自己的持久状态。provider 无法在这个部署中运行时，抛出
+`SchedulerConfigurationError` 并说明缺少什么：AstraBox 会拒绝启动，并提示运维人员选择
+其他 provider，或设置 `ASTRABOX_SCHEDULER_PROVIDER=none`。`dbos` provider 把定时计划
+和运行记录台账保存在该数据库的 `dbos` schema 中。
 
 `start(handler)` 开始分派，并恢复进程丢失后留下的运行；`stop()` 在 AstraBox 服务仍在
 运行时，于有限时间内完成排空。
 
 ## 在文档数据库上实现这些保证
 
-AstraBox 不提供 MongoDB 上的 provider。基于文档数据库的 provider 可以用自己的集合
-这样实现上述保证：
+基于文档数据库的 provider 可以用自己的集合这样实现上述保证：
 
 - 每次调用保存一个文档，在 Deployment ID 和 UTC 到期时刻上建唯一索引。到达同一到期
   时刻的每个副本都会插入这个文档，唯一索引保证只有一次插入成功。
-- 用带条件的更新认领调用并写入租约到期时间，处理器运行期间持续续租。发现租约已过期的
+- 用带条件的更新获取调用的处理权并写入租约到期时间，处理器运行期间持续续租。发现租约已过期的
   进程以同一个运行记录 ID 接手这次调用，这就是 `recovery_scope="cluster"`。
-- 在调用 `admit_turn` 之前保存 Session ID，接手的进程才能复用它。如果租约过期时第一个
+- 在调用 `admit_input` 之前保存 Session ID，接手的进程才能复用它。如果租约过期时第一个
   持有者仍在运行，重复的调用由 AstraBox 按运行记录 ID 的幂等性吸收。
 
 ## 打包 provider
@@ -105,7 +104,7 @@ from astrabox_scheduler_example import ExampleSchedulerProvider
 class TestExampleScheduler(SchedulerProviderContractSuite):
     def make_provider(self, store):
         provider = ExampleSchedulerProvider()
-        provider.configure(repository_backend=...)  # 位于 `store` 的全新存储
+        provider.configure(database_url=...)  # 为 `store` 准备的全新数据库
         return provider
 
     async def fire_due_times(self, provider, deployment_id, start, end):

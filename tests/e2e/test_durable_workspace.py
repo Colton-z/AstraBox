@@ -11,7 +11,6 @@ recovery is driven through the existing wake and conversation APIs.
 from __future__ import annotations
 
 import json
-import os
 import re
 import shlex
 import subprocess
@@ -22,25 +21,27 @@ import httpx
 import pytest
 
 from tests.e2e._sandbox_helpers import (
+    assert_database_is_the_live_stack,
     conversation_workspace_source,
     create_agent_variant_session,
-    create_session,
     data,
     destroy_sandbox_pod,
     durable_mounts_of_sandbox,
     get_admin_session_detail,
+    history,
+    kube_access,
     poll_until_ready,
     release_assistant,
     release_session,
     run_terminal,
     pod_uid,
     read_through_the_medium,
-    stream_turn,
+    send_and_follow,
+    user_messages,
     wait_until_settled,
 )
 from tests.e2e.test_conversation_end import _assistant_runtime, _wake_assistant
 from tests.e2e._service_containers import SERVER_CONTAINER_HANDLE, require_service_container
-from tests.e2e.test_transcript_mirror import _assert_db_is_the_live_stack
 
 pytestmark = pytest.mark.e2e
 
@@ -86,7 +87,7 @@ async def main():
     assert ref['kind'] == 'assistant' and ref['assistant_id'] == sys.argv[2], ref
     owner = RuntimeStateOwner(ref['user_id'], ref['kind'], ref['assistant_id'], ref['engine_kind'])
     assert owner.user_id == session['user_id'] and owner.engine_kind == 'assistant'
-    workspace = await AssistantWorkspaceRepository().get_workspace(owner.user_id, owner.subject_id)
+    workspace = await AssistantWorkspaceRepository().get_workspace(owner.subject_id)
     assert workspace and workspace['assistant_id'] == owner.subject_id
     assert workspace['engine_kind'] == owner.engine_kind
     native_session_id = session['engine_session_key']
@@ -172,25 +173,6 @@ def _destroy_assistant_box(
     pytest.fail(f"old BatchSandbox {sandbox_id} and Pod {pod} were not physically removed")
 
 
-def _kube() -> tuple[str, str]:
-    """Cluster access, read on its own rather than through Assistant identity.
-
-    Reaching it through `_assistant_runtime` asserted four Assistant-only facts
-    — environment, image, digest, model — that an Agent test neither has nor
-    needs, so the Agent cases here could only ever run in the Assistant lane.
-    Destroying a Pod is a deployment capability; the product being exercised
-    while it happens is a separate question.
-    """
-
-    kubeconfig = os.getenv("ASTRABOX_E2E_KUBECONFIG", "").strip()
-    namespace = os.getenv("ASTRABOX_E2E_KUBE_NAMESPACE", "").strip()
-    assert kubeconfig and namespace, (
-        "destroying a box needs the deployment's cluster access "
-        "(ASTRABOX_E2E_KUBECONFIG, ASTRABOX_E2E_KUBE_NAMESPACE)"
-    )
-    return kubeconfig, namespace
-
-
 def _probe(client: httpx.Client, session_id: str, script: str) -> tuple[str, str]:
     """Run `script` in whatever box serves this conversation; return (pod, output).
 
@@ -222,7 +204,7 @@ def _assert_the_box_is_this_conversation_alone(
     the kill below is a node failure, not a session end: it takes every
     conversation in that box down with it. Sharing the matrix Agent with the
     rest of the lane therefore made this test inject box loss into whatever
-    else was mid-turn — the failure surfaces in the victim, as a turn whose
+    else was mid-response — the failure surfaces in the victim, as a response whose
     engine link died, so nothing points back here. Each case now runs on an
     Agent of its own; this asserts the isolation instead of assuming it, so a
     future change that re-shares the box fails here rather than in a stranger.
@@ -241,24 +223,25 @@ def _assert_the_box_is_this_conversation_alone(
     occupants = int(counted[-1])
     assert occupants == 1, (
         f"this box carries {occupants} conversations, and destroying it would "
-        "take the others down mid-turn; the test must own the box it kills"
+        "take the others down mid-response; the test must own the box it kills"
     )
 
 
 def _live_box(client: httpx.Client, session_id: str) -> str:
-    """The Pod serving this conversation, after proving it can serve a turn.
+    """The Pod serving this conversation, after proving it can answer a message.
 
     READY is not enough to ask the box anything. Measured twice on a settled
     pool: a session that had just reached READY answered the terminal with
     `SANDBOX_GONE ... state='Pending'`, before anything had been destroyed.
-    What READY carries is that a turn may be dispatched, so a turn is what
-    establishes the box before its name is asked for — the same ordering the
-    product gives a user, who talks before they open a shell.
+    What READY carries is that a message may be sent, so an answered message
+    is what establishes the box before its name is asked for — the same
+    ordering the product gives a user, who talks before they open a shell.
     """
 
-    settled = stream_turn(client, session_id, content="Reply with just OK.")
-    assert settled.error is None, (
-        f"a READY conversation could not take a turn: {settled.error}"
+    answered = send_and_follow(client, session_id, "Reply with just OK.", until="end")
+    assert answered.error is None and answered.finish_reason == "stop", (
+        f"a READY conversation could not answer a message: finish={answered.finish_reason!r} "
+        f"error={answered.error!r}"
     )
     wait_until_settled(client, session_id)
     pod, _output = _probe(client, session_id, "true")
@@ -269,89 +252,39 @@ def _read_after_recovery(
     client: httpx.Client,
     session_id: str,
     *,
-    destroyed: str | None,
+    destroyed_uid: str,
     script: str,
-    attempts: int = 6,
 ) -> str:
     """Talk the conversation back onto a box and read `script` there.
 
-    A turn is what re-materializes it. Nothing recovers a lost box on a timer —
+    A message is what brings it back. Nothing recovers a lost box on a timer —
     not this platform, not OpenSandbox, whose Pool keeps a buffer count and no
     record of which member a sandbox borrowed, and not the counterparts
     (AgentScope Runtime re-creates lazily on `connect()`; Open Managed Agents
-    recovers orphaned fibers when a request or alarm wakes the object). So the
-    conversation comes back by being used, and polling for a replacement waits
-    out the budget against a box that is already gone.
+    recovers orphaned fibers when a request or alarm wakes the object). The
+    platform holds the message until a runtime can take it and gives the
+    conversation a new box to resume on, so ONE message must be answered:
+    a refusal, a failed response or a hang is the defect.
 
-    Every refusal on this path asks for time and says so. `SANDBOX_GONE` arms
-    the re-borrow; `SESSION_BUSY` reports the recovery it started; a fresh box
-    refuses its first connections while its network comes up. All are
-    `retryable`, so the loop backs off rather than spending its attempts inside
-    the window they name.
-
-    ``destroyed`` is the Pod the answer must NOT come from, or None when the
-    box legitimately keeps its name — a controller-owned box is recreated in
-    place, so requiring a different one there would wait forever.
-
-    DELIBERATELY not asserting that the first turn fails. This platform makes
-    the user pay a `SANDBOX_GONE` for a lost box; Open Managed Agents, the
-    primary product counterpart, recovers transparently. Pinning the 409 here
-    would freeze the weaker of the two into a test about storage.
+    ``destroyed_uid`` is the Pod object the answer must NOT come from. Compared
+    by uid rather than by name, because a controller-owned box is recreated
+    under the same name and still is a different box.
     """
 
-    last = ""
-    delay = 3.0
-    for attempt in range(attempts):
-        if attempt:
-            time.sleep(delay)
-            # Capped at 15s, not 30: this case shares a 180s budget with the
-            # turns themselves, and a 30s cap spends 105s of it asleep — which
-            # times out inside `time.sleep` before the turns get their share.
-            delay = min(delay * 2, 15.0)
-        # A new message each attempt, as the console's "Send again" sends one.
-        # A refused message's turn is settled with that refusal, and the same
-        # client_message_id sent again returns the recorded refusal instead of
-        # a new attempt; nothing of the refused message stays queued.
-        message_id = uuid.uuid4().hex
-        try:
-            resumed = stream_turn(
-                client,
-                session_id,
-                content="Reply with just OK.",
-                client_message_id=message_id,
-            )
-        except AssertionError as refused:  # a 409 body is not an SSE stream
-            last = str(refused)
-            continue
-        if resumed.error is not None:
-            last = str(resumed.error)
-            continue
-        wait_until_settled(client, session_id)
-        try:
-            pod, output = _probe(client, session_id, script)
-        except AssertionError as unreachable:
-            last = str(unreachable)
-            continue
-        if destroyed is None or pod != destroyed:
-            return output
-        # Answered from the destroyed Pod, which means nothing has moved yet.
-        # Reading a workspace here would pass against the box the test is
-        # trying to prove it can survive losing.
-        last = f"still answering from {pod!r}"
-    raise AssertionError(
-        f"the conversation did not move off {destroyed!r} within {attempts} "
-        f"turns after its box was destroyed; last: {last}"
+    resumed = send_and_follow(client, session_id, "Reply with just OK.", until="end")
+    assert resumed.error is None and resumed.finish_reason == "stop", (
+        f"the conversation did not answer after its box was destroyed: "
+        f"finish={resumed.finish_reason!r} error={resumed.error!r} outcome={resumed.outcome!r}"
     )
-
-
-def _assert_retained_usage(client: httpx.Client, session_id: str, turns: dict) -> None:
-    """The history read must retain the metrics the actual reply stream published."""
-    history = data(client.get(f"/api/v1/sessions/{session_id}/messages", params={"limit": 50}))
-    for turn_id, usage in turns.items():
-        results = [block for message in history["messages"] if message["turn_id"] == turn_id
-                   for block in message.get("blocks", []) if block["type"] == "result"]
-        assert len(results) == 1, "each settled reply must retain its result"
-        assert results[0].get("usage") == usage, "history dropped or changed reply metrics"
+    settled = wait_until_settled(client, session_id)
+    assert settled["last_response"]["response_id"] == resumed.response_id, settled
+    assert settled["last_response"]["outcome"] == "completed", settled
+    pod, output = _probe(client, session_id, script)
+    kubeconfig, namespace = kube_access()
+    assert pod_uid(pod=pod, kubeconfig=kubeconfig, namespace=namespace) != destroyed_uid, (
+        f"the conversation answered from the destroyed Pod {pod!r}; nothing moved"
+    )
+    return output
 
 
 @pytest.mark.assistant_live
@@ -400,17 +333,18 @@ def test_an_assistant_remembers_its_conversations_after_its_box_is_destroyed(
         assert session_id
         poll_until_ready(e2e_client, session_id, expected_image=image)
 
-        planted = stream_turn(
-            e2e_client,
-            session_id,
-            content=first_prompt,
-        )
-        assert planted.error is None, f"planting turn errored: {planted.error}"
-        assert planted.n_text_delta > 0 and planted.text.strip(), "first turn produced no reply"
+        planted = send_and_follow(e2e_client, session_id, first_prompt, until="end")
+        assert planted.error is None, f"the planting response failed: {planted.error}"
+        assert planted.n_text_delta > 0 and planted.text.strip(), "the first response produced no reply"
         settled = wait_until_settled(e2e_client, session_id)
-        assert len(planted.results) == 1, "first reply published no unique result"
-        usage_by_turn = {settled["last_turn_id"]: planted.results[0].get("usage")}
-        _assert_retained_usage(e2e_client, session_id, usage_by_turn)
+        assert settled["last_response"]["response_id"] == planted.response_id, settled
+        assert settled["last_response"]["outcome"] == "completed", settled
+        # The conversation as its owner reads it, before the box is lost: the
+        # loss and the recovery must leave every message of it as it was.
+        history_before = history(e2e_client, session_id)
+        assert [m["id"] for m in user_messages(history_before)] == [planted.client_message_id], (
+            history_before
+        )
         detail = get_admin_session_detail(e2e_client, session_id)
         native_session_id = str(detail.get("engine_session_key") or "")
         assert native_session_id and detail.get("sandbox_id") == old_sandbox, detail
@@ -419,7 +353,7 @@ def test_an_assistant_remembers_its_conversations_after_its_box_is_destroyed(
             pod=pod, kubeconfig=kubeconfig, namespace=namespace
         ), "Assistant core recovery must start without a PVC"
 
-        _assert_db_is_the_live_stack(session_id)
+        assert_database_is_the_live_stack(session_id)
         before = _assistant_snapshot(
             session_id, assistant_id, prompt=first_prompt, deadline=live_test_deadline
         )
@@ -439,17 +373,26 @@ def test_an_assistant_remembers_its_conversations_after_its_box_is_destroyed(
         )
         new_sandbox = str(replacement.get("current_sandbox_id") or "")
         assert new_sandbox and new_sandbox != old_sandbox, replacement
-        _assert_retained_usage(e2e_client, session_id, usage_by_turn)
+        assert history(e2e_client, session_id) == history_before, (
+            "losing the box changed the conversation's history"
+        )
 
-        resumed = stream_turn(e2e_client, session_id, content=next_prompt)
+        resumed = send_and_follow(e2e_client, session_id, next_prompt, until="end")
         assert resumed.error is None, f"same-conversation native resume failed: {resumed.error}"
         assert resumed.n_text_delta > 0 and token in resumed.text, (
             f"replacement answered without the original conversation context: {resumed.text!r}"
         )
         settled = wait_until_settled(e2e_client, session_id)
-        assert len(resumed.results) == 1, "resumed reply published no unique result"
-        usage_by_turn[settled["last_turn_id"]] = resumed.results[0].get("usage")
-        _assert_retained_usage(e2e_client, session_id, usage_by_turn)
+        assert settled["last_response"]["response_id"] == resumed.response_id, settled
+        assert settled["last_response"]["outcome"] == "completed", settled
+        history_after = history(e2e_client, session_id)
+        assert history_after[: len(history_before)] == history_before, (
+            "the resumed conversation changed or dropped its earlier messages"
+        )
+        assert [m["id"] for m in user_messages(history_after)] == [
+            planted.client_message_id,
+            resumed.client_message_id,
+        ], [m["id"] for m in user_messages(history_after)]
         recovered = get_admin_session_detail(e2e_client, session_id)
         assert recovered.get("sandbox_id") == new_sandbox, recovered
         assert recovered.get("engine_session_key") == native_session_id, recovered
@@ -510,7 +453,7 @@ def test_an_agent_conversation_keeps_its_files_after_its_box_is_destroyed(
     session_id = ""
     marker = f"DURABLE-{uuid.uuid4().hex[:6].upper()}"
     try:
-        kubeconfig, namespace = _kube()
+        kubeconfig, namespace = kube_access()
         # An Agent of this test's own: the kill below is destructive to every
         # conversation in the box, and the matrix Agent's box is shared with
         # every other test running beside this one.
@@ -589,13 +532,13 @@ def test_a_conversation_comes_back_after_its_box_is_destroyed(
 
     If a destroyed box never carried its conversation back, both cases above
     would fail for a reason that has nothing to do with storage. Kept separate
-    so that reason is readable when it happens — and asserted on the turn
+    so that reason is readable when it happens — and asserted on an answer
     rather than on a Pod, because answering is what a user calls coming back.
     """
 
     session_id = ""
     try:
-        kubeconfig, namespace = _kube()
+        kubeconfig, namespace = kube_access()
         # An Agent of this test's own, for the same reason as the case above.
         session = create_agent_variant_session(
             e2e_client, name_suffix="durable-recovery", engine_options={}
@@ -606,12 +549,13 @@ def test_a_conversation_comes_back_after_its_box_is_destroyed(
         pod = _live_box(e2e_client, session_id)
 
         _assert_the_box_is_this_conversation_alone(e2e_client, session_id)
+        destroyed_uid = pod_uid(pod=pod, kubeconfig=kubeconfig, namespace=namespace)
         destroy_sandbox_pod(pod=pod, kubeconfig=kubeconfig, namespace=namespace)
         # Returning at all is the assertion: `_read_after_recovery` refuses an
         # answer from the destroyed Pod, so reaching here means the
         # conversation was carried onto another box and could speak from it.
         _read_after_recovery(
-            e2e_client, session_id, destroyed=pod, script="echo RECOVERED"
+            e2e_client, session_id, destroyed_uid=destroyed_uid, script="echo RECOVERED"
         )
     finally:
         release_session(session_id)

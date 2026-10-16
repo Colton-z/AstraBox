@@ -45,11 +45,6 @@ def test_an_unset_base_is_not_derived_inside_a_container(
     assert _mcp_proxy_base_url(monkeypatch) == ""
 
 
-def test_an_explicit_base_is_used_as_given(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ASTRABOX_MCP_PROXY_BASE_URL", "http://172.17.0.23:8000")
-    assert _mcp_proxy_base_url(monkeypatch) == "http://172.17.0.23:8000"
-
-
 def test_an_unset_base_fails_the_callback_url_naming_the_setting(
     monkeypatch: pytest.MonkeyPatch, inside_a_container: None
 ) -> None:

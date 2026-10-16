@@ -2,35 +2,41 @@ import { test, expect } from "@playwright/test";
 import { openSessions, createRunViaComposer, tid } from "./helpers";
 
 /**
- * INTERRUPT SPEC — start a turn, then stop it mid-flight.
+ * INTERRUPT SPEC — start a response, then stop it mid-flight.
  *
- * This spec kicks off a deliberately long-running turn (count slowly to 50) so there
- * is a real streaming window to interrupt. While the turn is busy the composer swaps
- * its send control for a Stop button (data-testid="run-composer-stop"); clicking it
- * aborts the local reader and calls POST /api/v1/sessions/{id}/interrupt. The
- * assertions confirm the run leaves its running state: the streaming assistant
- * marker clears, the run-header pill leaves PROCESSING, and the Stop control
- * disappears.
+ * This spec asks for a deliberately long response (count slowly to 50) so there
+ * is a real streaming window to interrupt. While the response runs the composer
+ * swaps its send control for a Stop button (data-testid="run-composer-stop");
+ * clicking it calls POST /api/v1/sessions/{id}/interrupt, which the session
+ * accepts while a response runs. The assertions confirm the run leaves its
+ * running state: the streaming assistant marker clears, the run-header pill
+ * leaves PROCESSING, the Stop control disappears, and the session records the
+ * response as cancelled.
  */
 
 const LONG_PROMPT =
   "Count from 1 to 50, one number per line, output them step by step, don't skip any, and don't summarize.";
 
-test("interrupt: a streaming turn can be stopped", async ({ page }) => {
-  // The InterruptTurn worker force-settles a zero-frame turn with a terminal
-  // turn.failed, so an interrupt landing before the first token does not
-  // hang the UI at "Stopping…". A turn that already produced frames still
-  // settles through the bridge (which may carry partial content). This spec
-  // asserts the run leaves its streaming state either way.
+test("interrupt: a streaming turn can be stopped", async ({ page, request }) => {
   await openSessions(page);
-  await createRunViaComposer(page, { prompt: LONG_PROMPT });
+  const sessionId = await createRunViaComposer(page, { prompt: LONG_PROMPT });
 
-  // Wait until the turn is actually live: the composer Stop control is only
-  // rendered while busy (status submitted|streaming).
+  // Wait until the response is actually live: the composer Stop control is
+  // only rendered while the session works.
   const stopButton = tid(page, "run-composer-stop");
   await expect(stopButton).toBeVisible({ timeout: 90_000 });
 
+  const interrupted = page.waitForResponse((candidate) =>
+    candidate.request().method() === "POST"
+    && new URL(candidate.url()).pathname === `/api/v1/sessions/${sessionId}/interrupt`,
+  );
   await stopButton.click();
+  const interruptResponse = await interrupted;
+  expect(interruptResponse.status(), "the session must take the interrupt").toBe(200);
+  expect(
+    ((await interruptResponse.json()) as { data?: { status?: string } }).data?.status,
+    "a running response is interrupted, not found idle",
+  ).toBe("accepted");
 
   // After interrupting, the run must leave its running state: no streaming
   // assistant marker remains...
@@ -47,6 +53,18 @@ test("interrupt: a streaming turn can be stopped", async ({ page }) => {
     })
     .not.toBe("PROCESSING");
 
-  // ...and the composer Stop control is gone once the turn stops being busy.
+  // ...the composer Stop control is gone once the session stops working...
   await expect(tid(page, "run-composer-stop")).toHaveCount(0, { timeout: 30_000 });
+
+  // ...and the session records the response it stopped as cancelled.
+  await expect.poll(async () => {
+    const response = await request.get(`/api/v1/sessions/${sessionId}`);
+    const detail = ((await response.json()) as {
+      data?: { last_response?: { status?: string; outcome?: string } | null };
+    }).data;
+    return detail?.last_response ?? null;
+  }, {
+    message: "the stopped response must end as cancelled",
+    timeout: 30_000,
+  }).toMatchObject({ status: "ended", outcome: "cancelled" });
 });

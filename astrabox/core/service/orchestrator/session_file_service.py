@@ -230,13 +230,11 @@ class SessionFileService:
         self,
         *,
         sessions_repo: Any,
-        session_snapshots_repo: Any,
         agent_repo: Any,
         runtime_manager: Any,
         assistant_workspace_service: Any | None = None,
     ) -> None:
         self._sessions_repo = sessions_repo
-        self._session_snapshots_repo = session_snapshots_repo
         self._agent_repo = agent_repo
         self._runtime_manager = runtime_manager
         self._assistant_workspace_service = assistant_workspace_service
@@ -759,10 +757,10 @@ class SessionFileService:
         if runtime_cwd:
             return self._normalize_absolute_path(runtime_cwd)
 
-        snapshot = await self._session_snapshots_repo.get_snapshot(session_id)
-        snapshot_cwd = str((snapshot or {}).get("terminal_cwd") or "").strip()
-        if snapshot_cwd:
-            return self._normalize_absolute_path(snapshot_cwd)
+        session = await self._sessions_repo.get_session(session_id)
+        stored_cwd = str((session or {}).get("terminal_cwd") or "").strip()
+        if stored_cwd:
+            return self._normalize_absolute_path(stored_cwd)
 
         planned = self._runtime_manager.resolve_session_terminal_cwd(
             session_id,

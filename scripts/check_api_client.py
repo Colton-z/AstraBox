@@ -61,7 +61,7 @@ def main() -> int:
     if snapshot_version != source_version:
         return _fail(
             f"OpenAPI version {snapshot_version!r} differs from pyproject.toml {source_version!r}; "
-            "regenerate the snapshot using an installation of the current source version"
+            "regenerate the snapshot with `python scripts/gen_openapi_snapshot.py`"
         )
 
     if not GENERATOR_CLI.is_file():
@@ -107,8 +107,8 @@ def main() -> int:
                 f"  committed:   {len(committed)} lines\n"
                 f"  regenerated: {len(fresh)} lines\n"
                 f"Run `{_REGENERATE}` and commit the result. If the snapshot itself "
-                "moved, regenerate it first (tests/http_wire_contract_test.py "
-                "documents how) so the client is generated from the current tree.",
+                "moved, regenerate it first (`python scripts/gen_openapi_snapshot.py`) "
+                "so the client is generated from the current tree.",
                 file=sys.stderr,
             )
             for index, (a, b) in enumerate(zip(committed, fresh), start=1):

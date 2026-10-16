@@ -57,7 +57,7 @@
  * never starts a box.
  *
  * WHY PARALLEL. Nothing here is exclusive to the deployment. The only mutated
- * document is a row this spec owns; the donor Environment is read, never
+ * record is a row this spec owns; the donor Environment is read, never
  * written. Once its engine kind is retired the row is inert rather than broken —
  * `engine_allowed_for_session_kind` returns False (it never raises) so
  * `/agent-configuration/environments` simply omits it, and
@@ -75,7 +75,7 @@
  * session's sandbox — and a rerun heals it, because the PUT below re-establishes
  * the installed kind before anything else happens.
  *
- * PREREQUISITE. `patchDocs` reaches the deployment database through
+ * PREREQUISITE. The engine-kind write reaches the deployment database through
  * `ASTRABOX_E2E_POSTGRES_CONTAINER`; unset, `requireServiceContainer` marks the
  * test skipped with the reason printed. That is the same exposure every
  * fault-injection spec carries, and the lane sets it.
@@ -83,9 +83,10 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
-import { patchDocs } from '../fixtures/dbOracle';
+import { postgresTextRows, sqlLiteral } from '../fixtures/dbOracle';
 import { appPath } from '../fixtures/env';
 import { PlatformApi } from '../fixtures/platformApi';
+import { POSTGRES_CONTAINER_HANDLE, requireServiceContainer } from '../fixtures/serviceContainer';
 import { onPassOnly } from '../fixtures/sessionCleanup';
 
 // Both status words this spec reads are localized — `common:enabled`,
@@ -97,12 +98,26 @@ import { onPassOnly } from '../fixtures/sessionCleanup';
 test.use({ locale: 'en-US' });
 
 /**
- * The collection an Environment document lives in — singular, from
- * `settings.environment_collection` (common/utils/settings.py:254). `patchDocs`
- * refuses anything but exactly one matched document, so a name that ever stops
- * being right fails loudly here instead of patching nothing quietly.
+ * Set the engine kind a stored Environment names, in its own `environments`
+ * row: the one write no product route accepts for a kind this release does not
+ * install. Anything but exactly one changed row is refused, so a name that ever
+ * stops being right fails loudly here instead of changing nothing quietly.
  */
-const ENVIRONMENT_COLLECTION = 'environment';
+function setStoredEngineKind(environmentName: string, engineKind: string): void {
+  const changed = postgresTextRows(
+    requireServiceContainer(POSTGRES_CONTAINER_HANDLE),
+    process.env.ASTRABOX_E2E_POSTGRES_DB || 'astrabox',
+    process.env.ASTRABOX_E2E_POSTGRES_USER || 'astrabox',
+    `UPDATE environments SET engine_kind = ${sqlLiteral(engineKind)} `
+      + `WHERE name = ${sqlLiteral(environmentName)} RETURNING name`,
+  );
+  if (changed.length !== 1) {
+    throw new Error(
+      `the engine-kind write must change exactly one environments row named `
+        + `${JSON.stringify(environmentName)}; it changed ${changed.length}`,
+    );
+  }
+}
 
 /** Results that mean "keep the scene", matching fixtures/sessionCleanup.ts. */
 const FAILURE_STATUSES = new Set(['failed', 'timedOut', 'interrupted']);
@@ -120,11 +135,7 @@ const retired: { environmentName: string; installedKind: string; uninstalledKind
 // teardown and a second thing to read when it does.
 onPassOnly(async () => {
   if (!retired.environmentName) return;
-  patchDocs(
-    ENVIRONMENT_COLLECTION,
-    { '$.name': retired.environmentName },
-    { engine_kind: retired.installedKind },
-  );
+  setStoredEngineKind(retired.environmentName, retired.installedKind);
 });
 
 // Registered as an `afterEach` because that is where the result is real; inside
@@ -333,11 +344,7 @@ test('an environment whose engine this release no longer installs is marked in t
   retired.environmentName = environmentName;
   retired.installedKind = installedKind;
   retired.uninstalledKind = uninstalledKind;
-  patchDocs(
-    ENVIRONMENT_COLLECTION,
-    { '$.name': environmentName },
-    { engine_kind: uninstalledKind },
-  );
+  setStoredEngineKind(environmentName, uninstalledKind);
 
   const orphaned = await catalogueEntry();
   expect(

@@ -178,7 +178,8 @@ it('keeps a refused save beside its Save and marks the field the refusal names',
   fireEvent.change(capacity, { target: { value: '5000' } });
   const runtime = card('Runtime and availability');
   const reads = vi.mocked(listAgents).mock.calls.length;
-  const save = within(runtime).getByRole('button', { name: 'Save' }) as HTMLButtonElement;
+  // The card's Save renders once the edit makes it dirty, after this event.
+  const save = (await within(runtime).findByRole('button', { name: 'Save' })) as HTMLButtonElement;
   fireEvent.click(save);
 
   const reason = 'INVALID_REQUEST: prepared_capacity must be between 0 and 1000 (category=request)';

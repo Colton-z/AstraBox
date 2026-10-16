@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
-import { documentsByField } from '../fixtures/dbOracle';
+import { postgresRows, sqlLiteral } from '../fixtures/dbOracle';
 import { appPath } from '../fixtures/env';
 import { PlatformApi } from '../fixtures/platformApi';
 import { trackSessions } from '../fixtures/sessionCleanup';
@@ -147,15 +147,24 @@ function supplier(identity: PoolIdentity, action: 'arm' | 'read' | 'restore'): S
   return JSON.parse(line!.slice('E2E_RETIREMENT_RECOVERY='.length)) as SupplierRead;
 }
 
+/** The pool address and preparation error the Agent's runtime record (`agent_runtimes`) holds. */
 function agentRetirement(agentId: string): Record<string, unknown> {
-  const rows = documentsByField('agents', '$.agent_id', agentId);
+  const rows = postgresRows<{
+    client_pool_name: string | null;
+    client_pool_backend: string | null;
+    client_pool_epoch: string | null;
+    prepared_runtime_error: string | null;
+  }>(
+    `SELECT client_pool_name, client_pool_backend, client_pool_epoch, prepared_runtime_error `
+      + `FROM agent_runtimes WHERE agent_id = ${sqlLiteral(agentId)}`,
+  );
   expect(rows).toHaveLength(1);
   const row = rows[0];
   return {
-    poolName: row._client_pool_name,
-    backend: row._client_pool_backend,
-    epoch: row._client_pool_epoch,
-    error: row._prepared_runtime_error,
+    poolName: row.client_pool_name,
+    backend: row.client_pool_backend,
+    epoch: row.client_pool_epoch,
+    error: row.prepared_runtime_error,
   };
 }
 

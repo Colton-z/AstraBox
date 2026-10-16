@@ -16,13 +16,15 @@ from astrabox.core.service.orchestrator.conversation_targets import (
 from astrabox.core.service.orchestrator.engine.platform_mcp import platform_mcp_servers
 from tests.agent_service_visibility_test import _service
 
+pytestmark = pytest.mark.usefixtures("database")
+
 
 @pytest.mark.asyncio
 async def test_channel_creation_records_source_before_startup_and_normal_runs_keep_tools() -> None:
-    service, _ = _service()
+    service, _ = await _service()
     service._agent_config = SimpleNamespace(resolve_agent_harness=AsyncMock(return_value=AgentView(agent_id="pub")))
-    kernel = SimpleNamespace(create_session=AsyncMock(return_value={"session_id": "new"}))
-    service._platform = SimpleNamespace(_session_kernel=kernel)
+    lifecycle = SimpleNamespace(create_session=AsyncMock(return_value={"session_id": "new"}))
+    service._platform = SimpleNamespace(_session_lifecycle=lifecycle)
     user = UserContext("executor")
     ingress = SimpleNamespace(
         _targets=ConversationTargets(
@@ -37,9 +39,9 @@ async def test_channel_creation_records_source_before_startup_and_normal_runs_ke
         await ChannelIngressService._start_channel_conversation(
             ingress, target, user, execution_user_id
         )
-        assert kernel.create_session.call_args.kwargs["source_type"] == "channel"
+        assert lifecycle.create_session.call_args.kwargs["source_type"] == "channel"
     await service.start_conversation(user, "pub")
-    assert kernel.create_session.call_args.kwargs["source_type"] == "agent"
+    assert lifecycle.create_session.call_args.kwargs["source_type"] == "agent"
 
 
 @pytest.mark.asyncio

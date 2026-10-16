@@ -43,13 +43,13 @@ import type { Page } from '@playwright/test';
 
 import {
   AstraApi,
+  answersInput,
   messageText,
   visibleMessages,
-  type MessagePage,
   type MessageRecord,
   type SessionRecord,
 } from '../fixtures/astraApi';
-import { documentsByField, sessionEvents } from '../fixtures/dbOracle';
+import { nativeTranscriptRows, sessionInputRows } from '../fixtures/dbOracle';
 import { parseTimeoutEnv } from '../fixtures/env';
 import { PlatformApi } from '../fixtures/platformApi';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
@@ -91,7 +91,7 @@ const TURN_TIMEOUT_MS = parseTimeoutEnv('ASTRABOX_E2E_TURN_TIMEOUT_MS', 180_000)
 // as evidence, and this bounds how long the box keeps that command alive.
 const GATE_CEILING_SECONDS = 100;
 
-const TERMINAL_STATES = new Set(['RECOVERY_REQUIRED', 'TERMINATED', 'DELETED', 'FAILED']);
+const TERMINAL_STATES = new Set(['TERMINATED', 'DELETED']);
 // Results that keep the scene and get the diagnostics attachment.
 const FAILURE_STATUSES = new Set(['failed', 'timedOut', 'interrupted']);
 
@@ -152,9 +152,10 @@ async function gateIsRunning(
 // ── The native SessionStore mirror ─────────────────────────────────────────
 //
 // The vendor's own transcript, as the platform durably holds it: one row per
-// SDK JSONL line in `transcript_entries`, keyed by `platform_session_id`, with
-// the raw line in `entry_json`. Read through the document oracle rather than
-// the admin export so the read is the database's, ordered by native `seq`.
+// SDK JSONL line in `transcript_entries` under the session's main scope
+// (`transcript_scopes`), with the raw line in `entry_json`. Read from the
+// database rather than the admin export so the read is the store's, ordered by
+// native `seq`.
 
 interface NativeEntry {
   seq: number;
@@ -162,8 +163,8 @@ interface NativeEntry {
 }
 
 function mainScopeEntries(sessionId: string): NativeEntry[] {
-  return documentsByField('transcript_entries', '$.platform_session_id', sessionId)
-    .filter((row) => row.subpath == null)
+  return nativeTranscriptRows(sessionId)
+    .filter((row) => row.subpath === null)
     .map((row) => ({
       seq: Number(row.seq),
       entry: JSON.parse(String(row.entry_json)) as Record<string, unknown>,
@@ -295,31 +296,19 @@ function assistantTextCarrying(
   return undefined;
 }
 
-/** The overlay's messages, exactly as `visibleMessages` folds them for the console. */
-function overlayMessages(messagePage: MessagePage): MessageRecord[] {
-  const overlay = messagePage.active_turn_overlay;
-  if (!overlay) return [];
-  return overlay.messages?.length ? overlay.messages : [overlay.message];
-}
-
 /**
- * The accepted `StartTurn` commands of the session, from the platform journal.
+ * The inputs the session accepted (`session_inputs`).
  *
  * This is the durable receipt of an input the platform accepted for delivery.
  * One trigger must leave exactly one, carrying the raw body and the
  * deployment's receipt id.
  */
-function acceptedStartTurns(sessionId: string): { content: string; client_message_id: string }[] {
-  return sessionEvents(sessionId)
-    .filter((event) => String(event.event_type ?? '') === 'command.accepted')
-    .map((event) => (event.payload && typeof event.payload === 'object'
-      ? (event.payload as Record<string, unknown>)
-      : {}))
-    .filter((payload) => String(payload.command_type ?? '') === 'StartTurn')
-    .map((payload) => ({
-      content: String(payload.content ?? ''),
-      client_message_id: String(payload.client_message_id ?? ''),
-    }));
+function acceptedInputs(sessionId: string): { content: string; client_message_id: string; source: string | null }[] {
+  return sessionInputRows(sessionId).map((row) => ({
+    content: row.content,
+    client_message_id: row.client_message_id,
+    source: row.source,
+  }));
 }
 
 async function waitForAssistantTextMatching(
@@ -571,22 +560,25 @@ function attachDiagnosticsOnFailure(): void {
             durable_users: (messagePage.messages || [])
               .filter((message) => message.role === 'user')
               .map((message) => ({
-                client_message_id: message.client_message_id ?? null,
+                client_message_id: message.id,
                 text: excerpt(messageText(message)),
               })),
-            durable_assistant_lengths: (messagePage.messages || [])
+            durable_assistants: (messagePage.messages || [])
               .filter((message) => message.role === 'assistant')
-              .map((message) => messageText(message).length),
-            active_turn_overlay: messagePage.active_turn_overlay ?? null,
+              .map((message) => ({
+                metadata: message.metadata ?? null,
+                text_length: messageText(message).length,
+              })),
             visible_user_texts: visibleMessages(messagePage)
               .filter((message) => message.role === 'user')
               .map((message) => excerpt(messageText(message))),
           };
         })
         : noSession,
-      accepted_start_turns: sessionId
-        ? await probe(() => acceptedStartTurns(sessionId).map((item) => ({
+      accepted_inputs: sessionId
+        ? await probe(() => acceptedInputs(sessionId).map((item) => ({
           client_message_id: item.client_message_id,
+          source: item.source,
           content: excerpt(item.content),
         })))
         : noSession,
@@ -726,9 +718,9 @@ test('webhook-delivered native Skill command keeps one user input through a cold
   scene.sessionId = sessionId;
   expect(sessionId, 'an accepted trigger names the Session it started').not.toEqual('');
   test.info().annotations.push({ type: 'e2e_session_id', description: sessionId });
-  // The receipt id the relay stamps on the input it delivers
-  // (`deployment_service._fire_when_ready`). It is asserted, not searched for:
-  // a second identity here would mean the input was re-minted on the way.
+  // The receipt id the relay stamps on the input it sends
+  // (`DeploymentService.trigger`). It is asserted, not searched for: a second
+  // identity here would mean the input was re-minted on the way.
   const receiptId = `deployment:${deploymentId}:${sessionId}`;
   scene.receiptId = receiptId;
 
@@ -789,34 +781,42 @@ test('webhook-delivered native Skill command keeps one user input through a cold
     'Claude Code must expand the webhook slash command as a user-side Skill envelope',
   ).toBeGreaterThan(0);
 
-  // The turn is genuinely active: a current turn, and no completed terminal
-  // for it. Read from the session record, not inferred from the held command.
+  // ── One accepted invocation, one input: the durable receipt. ──────────────
+  expect(
+    acceptedInputs(sessionId),
+    'one webhook trigger must accept exactly one input carrying the raw body under the deployment receipt id',
+  ).toEqual([{ content: body, client_message_id: receiptId, source: 'webhook' }]);
+  const webhookInput = sessionInputRows(sessionId)[0]!;
+
+  // The run is genuinely active: a response answering the webhook input is
+  // running and has no terminal yet. Read from the session record, not
+  // inferred from the held command.
   const active = await api.getSession(sessionId);
   test.info().annotations.push({ type: 'e2e_active_session', description: JSON.stringify(active) });
+  const running = active.current_responses ?? [];
   expect(
-    String(active.current_turn_id || ''),
-    'the webhook turn must still be current while its Bash is held',
-  ).not.toEqual('');
+    running.map((response) => response.status),
+    'the webhook response must still be running while its Bash is held',
+  ).toEqual(['running']);
+  const responseId = running[0]!.response_id;
   expect(
-    active.last_turn_id === active.current_turn_id && active.last_turn_status === 'COMPLETED',
-    'the held turn must not already carry a completed terminal',
-  ).toBe(false);
-
-  // ── One accepted invocation, one delivered input: the durable receipt. ─────
-  const startTurns = acceptedStartTurns(sessionId);
+    active.last_response?.response_id ?? null,
+    'the held response must not already carry a terminal',
+  ).not.toBe(responseId);
   expect(
-    startTurns,
-    'one webhook trigger must accept exactly one StartTurn carrying the raw body under the deployment receipt id',
-  ).toEqual([{ content: body, client_message_id: receiptId }]);
+    active.held_inputs ?? [],
+    'the runtime took the webhook input; the platform holds nothing more for it',
+  ).toEqual([]);
 
   // ── First page entry, cold, inside the window. ─────────────────────────────
   await installUserBubbleObserver(page);
   await openSessionView(page, sessionId);
 
   const cold = await api.getMessages(sessionId, 50);
+  const coldReplies = (cold.messages || []).filter((message) => message.role === 'assistant');
   test.info().annotations.push({
-    type: 'e2e_cold_entry_overlay',
-    description: JSON.stringify(cold.active_turn_overlay ?? null),
+    type: 'e2e_cold_entry_running_response',
+    description: JSON.stringify(coldReplies.map((message) => message.metadata ?? null)),
   });
 
   // (1) The durable history holds the one external input, byte-for-byte,
@@ -827,32 +827,24 @@ test('webhook-delivered native Skill command keeps one user input through a cold
     'the Skill expansion is engine-owned; only the webhook body belongs to user history',
   ).toEqual([body]);
   expect(
-    String(durableUsers[0]!.client_message_id || '').trim(),
+    durableUsers[0]!.id,
     'the surviving user message must still be the relay delivery, not a re-minted one',
   ).toEqual(receiptId);
+  expect(durableUsers[0]!.metadata?.input_id).toBe(webhookInput.input_id);
 
-  // (2) The active FIFO carries the same external input, never Skill context.
+  // (2) The running response answers exactly that external input, never Skill
+  //     context.
   expect(
-    cold.active_turn_overlay,
-    'a running webhook turn must be published as an active turn, '
-    + 'otherwise a cold entry reads a working conversation as settled',
-  ).toBeTruthy();
-  expect(
-    overlayMessages(cold).filter((message) => message.role === 'user').map((message) => ({
-      message_id: message.message_id,
-      turn_id: message.turn_id,
-      client_message_id: message.client_message_id,
-      content: messageText(message),
+    coldReplies.map((message) => ({
+      id: message.id,
+      status: message.metadata?.status,
+      input_ids: message.metadata?.input_ids,
     })),
-    'the active FIFO must retain exactly the original webhook input and its identity, not Skill context',
-  ).toEqual([{
-    message_id: durableUsers[0]!.message_id,
-    turn_id: active.current_turn_id,
-    client_message_id: receiptId,
-    content: body,
-  }]);
+    'a running webhook response must be in history as the answer to the webhook input, '
+    + 'otherwise a cold entry reads a working conversation as settled',
+  ).toEqual([{ id: responseId, status: 'running', input_ids: [webhookInput.input_id] }]);
 
-  // (3) The console's own fold of durable + overlay still shows one user.
+  // (3) The console's own fold of history still shows one user.
   expect(
     visibleMessages(cold).filter((message) => message.role === 'user').map(messageText),
     'the console projection must not gain a user message while the Skill turn runs',
@@ -917,10 +909,15 @@ test('webhook-delivered native Skill command keeps one user input through a cold
 
   const settled = await api.waitForSession(sessionId, (row) => (
     String(row.state || '') === 'READY'
-    && !row.current_turn_id
-    && String(row.last_turn_status || '') === 'COMPLETED'
+    && row.last_response?.response_id === responseId
   ), TURN_TIMEOUT_MS);
+  expect(settled.last_response?.outcome, 'the webhook Skill response must complete').toBe('completed');
   expect(settled.pending_interaction ?? null, 'a finished Skill turn leaves nothing pending').toBeNull();
+  const finished = await api.getMessages(sessionId, 50);
+  expect(
+    finished.messages.filter((message) => answersInput(message, webhookInput.input_id)).map((message) => message.id),
+    'one response answers the webhook input',
+  ).toEqual([responseId]);
   const commandNames = (Array.isArray(settled.slash_commands) ? settled.slash_commands : [])
     .map((item) => {
       if (typeof item === 'string') return item;
@@ -938,11 +935,11 @@ test('webhook-delivered native Skill command keeps one user input through a cold
   // Still exactly one accepted input after completion: the release, the
   // Skill's expansion and the reply added nothing to the platform's queue.
   expect(
-    acceptedStartTurns(sessionId),
+    acceptedInputs(sessionId),
     'completion must not add a second accepted input',
-  ).toEqual([{ content: body, client_message_id: receiptId }]);
+  ).toEqual([{ content: body, client_message_id: receiptId, source: 'webhook' }]);
   expect(
-    (settled.pending_inputs as unknown[] | undefined) ?? [],
+    settled.held_inputs ?? [],
     'a settled webhook session holds no pending input',
   ).toEqual([]);
 
@@ -980,7 +977,10 @@ test('webhook-delivered native Skill command keeps one user input through a cold
     visibleMessages(reloaded).filter((message) => message.role === 'user').map(messageText),
     'the settled history must still carry the one webhook input, unchanged',
   ).toEqual([body]);
-  expect(reloaded.active_turn_overlay ?? null, 'a settled conversation publishes no active overlay').toBeNull();
+  expect(
+    (await api.getSession(sessionId)).current_responses ?? [],
+    'a settled conversation runs no response',
+  ).toEqual([]);
   // The vendor's expansion is still in its own Store — retained, never shown.
   const finalEntries = mainScopeEntries(sessionId);
   expect(userRecordsCarrying(finalEntries, COMMAND_NAME_ENVELOPE)).toHaveLength(1);

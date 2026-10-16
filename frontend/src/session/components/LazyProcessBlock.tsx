@@ -8,7 +8,6 @@ import { ErrorNote } from '@/components/shell';
 import { Spinner } from '@/components/ui/spinner';
 import { useTranscriptAccess } from '../TranscriptAccess';
 import type { ProcessDetails, ProcessSummaryState } from '../../types';
-import { messageRecordsToSdkMessages } from '../hooks/useInitialMessages';
 
 /**
  * The blocks already fetched for a folded header, shared across the transcript.
@@ -23,7 +22,7 @@ export type ProcessDetailsCacheValue = Map<string, Promise<SDKUIMessage[]>>;
 export const ProcessDetailsCache = createContext<ProcessDetailsCacheValue | null>(null);
 
 /**
- * The label each settled response has been given, keyed by its message id.
+ * The label each ended response has been given, keyed by its response id.
  *
  * Held beside the details for the same reason: a folded header is asked for
  * its label when it mounts, and the list mounts it again every time it scrolls
@@ -31,6 +30,19 @@ export const ProcessDetailsCache = createContext<ProcessDetailsCacheValue | null
  */
 export type ProcessSummaryCacheValue = Map<string, ProcessSummaryState>;
 export const ProcessSummaryCache = createContext<ProcessSummaryCacheValue | null>(null);
+
+/** The reader's disclosure choices, shared by live and folded renderers for this page. */
+export const ProcessOpenCache = createContext<Map<string, boolean> | null>(null);
+
+export function useProcessOpen(key: string): [boolean, (open: boolean) => void] {
+  const cache = useContext(ProcessOpenCache);
+  const [open, setOpen] = useState(() => cache?.get(key) ?? false);
+  useEffect(() => { setOpen(cache?.get(key) ?? false); }, [cache, key]);
+  return [open, (value) => {
+    cache?.set(key, value);
+    setOpen(value);
+  }];
+}
 
 const PROCESS_SUMMARY_POLL_MS = 1000;
 
@@ -59,7 +71,7 @@ export function LazyProcessBlock({
   const { readDetails, generateSummary } = useTranscriptAccess();
   const ownCache = useRef<ProcessDetailsCacheValue>(new Map());
   const cache = useContext(ProcessDetailsCache) ?? ownCache.current;
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useProcessOpen(details.summarize ? details.message_id : details.block_id);
   const [messages, setMessages] = useState<SDKUIMessage[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -77,7 +89,7 @@ export function LazyProcessBlock({
     let pending = cache.get(key);
     if (!pending) {
       pending = readDetails(details.session_id, details.block_id, details.cursor)
-        .then((page) => messageRecordsToSdkMessages(page.messages, null));
+        .then((page) => page.messages);
       cache.set(key, pending);
       // A failed read is not an answer to cache: the retry below has to reach
       // the server rather than be handed the same rejection again.

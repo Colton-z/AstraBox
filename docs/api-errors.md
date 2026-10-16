@@ -13,15 +13,15 @@ AstraBox REST resource handlers use this JSON structure:
 ```json
 {
   "code": "SESSION_BUSY",
-  "message": "session is busy",
-  "data": null,
+  "message": "cannot delete session while the agent is working",
+  "data": { "runtime_status": "working" },
   "error": {
     "code": "SESSION_BUSY",
     "status_code": 409,
     "category": "state",
     "retryable": true,
     "owner": "session",
-    "user_message": "session is busy"
+    "user_message": "cannot delete session while the agent is working"
   }
 }
 ```
@@ -60,7 +60,6 @@ completed. Common status groups are:
 | 404 | `NOT_FOUND`, `SESSION_NOT_FOUND` | Target resource is missing or inaccessible |
 | 409 | `SESSION_BUSY`, `IDEMPOTENCY_KEY_CONFLICT` | Resource state conflicts with the operation |
 | 429 | `ADMISSION_DENIED` | Deployment admission policy refused the work |
-| 499 | `REQUEST_CANCELLED` | The caller cancelled the request |
 | 5xx | `PERSISTENCE_UNAVAILABLE`, `UNEXPECTED_SERVER_ERROR` | AstraBox, infrastructure, or an upstream dependency failed |
 
 The table contains examples, not a complete error-code catalog. Use the
@@ -212,21 +211,22 @@ Resource state conflict prevents the operation.
 **Common triggers:**
 
 - Same idempotency key reused for a different conversation
-- Session is already processing another turn
+- The Agent is working while a request deletes or archives the Session, ends
+  the conversation, or terminates its sandbox
 - Agent or Environment state does not allow the requested operation
 
 ```json
 {
   "code": "SESSION_BUSY",
-  "message": "session is busy",
-  "data": null,
+  "message": "cannot delete session while the agent is working",
+  "data": { "runtime_status": "working" },
   "error": {
     "code": "SESSION_BUSY",
     "status_code": 409,
     "category": "state",
     "retryable": true,
     "owner": "session",
-    "user_message": "session is busy"
+    "user_message": "cannot delete session while the agent is working"
   }
 }
 ```

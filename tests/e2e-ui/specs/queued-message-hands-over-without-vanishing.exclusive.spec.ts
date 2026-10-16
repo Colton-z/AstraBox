@@ -1,27 +1,22 @@
 /**
- * E2E: a queued message is never on neither surface.
+ * E2E: a message sent while a response runs is never off screen.
  *
- * The queue and the transcript divide one message between them: the queue
- * holds what this platform has accepted and the engine has not taken, the
- * transcript holds what the engine received. Consumption is the handover, and
- * a handover has no gap — at every instant the message a user sent is on one
- * of the two surfaces.
+ * A message is in the transcript from the moment it is sent, in the place
+ * the session's history keeps it: after the response that was running when it
+ * arrived. While the platform holds it for the runtime it says so ("Queued"),
+ * and it stays the same message through the runtime taking it and answering
+ * it — never removed, never shown twice, never reported as failed.
  *
- * Reported from the console and not caught by any suite: the second message
- * entered the queue, disappeared from it, and the transcript went on showing
- * the PREVIOUS answer above "Generating…" until the new answer arrived, at
- * which point the message finally appeared. A queued input is handed to the
- * engine by the backend, so the client never accepts a turn of its own for it;
- * the consumption handler cleared the queue row and skipped the projection
- * because it had no turn id to anchor on, and the message was on neither
- * surface for the length of a turn.
+ * Reported from the console against the queue this transcript replaced: the
+ * second message left the queue before the transcript showed it, and was on
+ * neither surface for the length of a reply.
  *
- * The first turn is held open by a Bash command that waits on a file, so the
- * second message is genuinely queued rather than racing a fast reply.
+ * The first response is held open by a Bash command that waits on a file, so
+ * the second message is genuinely held rather than racing a fast reply.
  */
 import { test, expect } from '@playwright/test';
 
-import { AstraApi } from '../fixtures/astraApi';
+import { AstraApi, messageText } from '../fixtures/astraApi';
 import { openLiveProcessGroup, revealAssistantProcess } from '../fixtures/assistantProcess';
 import { findClippedDecorations } from '../fixtures/clippedDecorations';
 import { trackSessions } from '../fixtures/sessionCleanup';
@@ -31,15 +26,14 @@ const TURN_TIMEOUT_MS = parseTimeoutEnv('ASTRABOX_E2E_TURN_TIMEOUT_MS', 120_000)
 
 interface HandoverSample {
   at: number;
-  queued: number;
   shown: number;
 }
 
 interface HandoverRecord {
   samples: HandoverSample[];
-  /** Samples where the message was on neither surface. */
+  /** Samples where the message was not exactly once in the transcript. */
   gaps: HandoverSample[];
-  /** Samples where the queued row read as a failed send. */
+  /** Samples where the message read as a failed send. */
   failures: Array<{ at: number; text: string }>;
   stop: () => void;
 }
@@ -98,6 +92,7 @@ test('a queued message hands over to the transcript without vanishing', async ({
     // reader recognises.
     // The running turn keeps that card inside a process group that starts
     // closed, so the reader opens the group before the card is on screen.
+    await expect(page.locator('[data-tool-call-id]').first()).toBeAttached({ timeout: 60_000 });
     await openLiveProcessGroup(page);
     const toolCard = page.getByRole('button', { name: /Bash/ });
     await expect(
@@ -113,8 +108,23 @@ test('a queued message hands over to the transcript without vanishing', async ({
     await composer.fill(queuedMarker);
     await page.getByTestId('composer-submit').click();
 
-    const queueRow = page.getByTestId('composer-queue').filter({ hasText: queuedMarker });
-    await expect(queueRow, 'the queued message belongs to the queue until the engine takes it').toHaveCount(1, { timeout: 30_000 });
+    const userBubble = page
+      .getByTestId('user-message')
+      .filter({ hasText: queuedMarker });
+    await expect(userBubble, 'the message is in the transcript the moment it is sent').toHaveCount(1, { timeout: 30_000 });
+    await expect(
+      userBubble,
+      'a message the platform holds for the runtime says it is queued',
+    ).toContainText(/Queued|等待发送/, { timeout: 30_000 });
+    // It comes after the response that was running when it was sent, where
+    // the session's history keeps it.
+    const order = await page.evaluate((marker) => Array.from(
+      document.querySelectorAll('[data-testid="user-message"], [data-testid="assistant-message"]'),
+    ).map((node) => (
+      node.getAttribute('data-testid') === 'user-message' && (node as HTMLElement).innerText.includes(marker)
+        ? 'queued' : node.getAttribute('data-testid')
+    )), queuedMarker);
+    expect(order.slice(-2), 'the held message follows the running response').toEqual(['assistant-message', 'queued']);
 
     // A held turn is the only place the streaming indicators stand still long
     // enough to be measured, so this spec answers §11's second question about
@@ -130,9 +140,9 @@ test('a queued message hands over to the transcript without vanishing', async ({
 
     // Watch from inside the page, before the handover can start.
     await page.evaluate((marker) => {
-      const count = (testId: string) => Array.from(
-        document.querySelectorAll(`[data-testid="${testId}"]`),
-      ).filter((node) => (node as HTMLElement).innerText?.includes(marker)).length;
+      const bubbles = () => Array.from(
+        document.querySelectorAll('[data-testid="user-message"]'),
+      ).filter((node) => (node as HTMLElement).innerText?.includes(marker)) as HTMLElement[];
       const record: HandoverRecord = {
         samples: [],
         gaps: [],
@@ -140,18 +150,16 @@ test('a queued message hands over to the transcript without vanishing', async ({
         stop: () => {},
       };
       const sample = () => {
-        const queued = count('composer-queue');
-        const shown = count('user-message');
+        const shown = bubbles();
         const at = performance.now();
-        record.samples.push({ at, queued, shown });
-        if (queued + shown === 0) record.gaps.push({ at, queued, shown });
-        // The other half of the same report: an error appeared and went away
-        // on its own. A queued message that the platform has receipted is not
-        // an unconfirmed send, so nothing here should ever read as failed.
-        const failed = Array.from(document.querySelectorAll('[data-testid="composer-queue"]'))
-          .filter((node) => (node as HTMLElement).innerText?.includes(marker))
-          .map((node) => (node as HTMLElement).innerText.trim())
-          .filter((text) => /失败|failed|Failed/.test(text));
+        record.samples.push({ at, shown: shown.length });
+        if (shown.length !== 1) record.gaps.push({ at, shown: shown.length });
+        // An error that appears and goes away on its own: a message the
+        // platform has receipted is not an unconfirmed send, so nothing here
+        // should ever read as failed.
+        const failed = shown
+          .filter((node) => node.querySelector('[data-testid="user-message-failure"]'))
+          .map((node) => node.innerText.trim());
         if (failed.length) record.failures.push({ at, text: failed[0].slice(0, 160) });
       };
       const observer = new MutationObserver(sample);
@@ -164,33 +172,34 @@ test('a queued message hands over to the transcript without vanishing', async ({
       (window as unknown as { __handover?: HandoverRecord }).__handover = record;
     }, queuedMarker);
 
-    // The first turn ending is NOT this message's handover: it was queued
-    // behind that turn and the engine has not read it yet. A sweep keyed on
-    // "the turn this send was bound to has settled" empties the queue here,
-    // and nothing shows the message until the next turn's history lands.
-    // Let the first turn finish; the backend then hands the queued input to the
-    // engine without this client accepting a turn for it.
+    // Let the first response finish; the runtime then takes the held message
+    // and answers it, with nothing this page sends.
     await api.runTerminalCommand(sessionId, `touch ${release}`, '/tmp', 30_000);
 
-    // The invariant: at no instant is the message on neither surface. Sampling
-    // from the driver cannot state that — it only sees the DOM between polls,
-    // and a handover gap shorter than one interval passes unseen. This spec
-    // passed once against a build that had the defect for exactly that reason.
-    // So the sampling runs IN the page, on every mutation, and the run is
-    // judged from the record afterwards.
-    const userBubble = page
-      .getByTestId('user-message')
-      .filter({ hasText: queuedMarker });
-    const deadline = Date.now() + TURN_TIMEOUT_MS;
-    let landed = false;
-    while (Date.now() < deadline) {
-      if (await userBubble.count() > 0) {
-        landed = true;
-        break;
-      }
-      await page.waitForTimeout(150);
-    }
-    expect(landed, 'the queued message must reach the transcript').toBe(true);
+    // The invariant: at no instant is the message off screen or doubled.
+    // Sampling from the driver cannot state that — it only sees the DOM between
+    // polls, and a gap shorter than one interval passes unseen. So the sampling
+    // runs IN the page, on every mutation, and the run is judged from the
+    // record afterwards.
+    await expect(
+      userBubble,
+      'once the runtime takes it the message stops saying it is queued',
+    ).not.toContainText(/Queued|等待发送/, { timeout: TURN_TIMEOUT_MS });
+    await expect(
+      page.getByTestId('assistant-message').last(),
+      'the held message gets its own answer, after it',
+    ).toBeVisible({ timeout: TURN_TIMEOUT_MS });
+    const answeredOrder = await page.evaluate((marker) => Array.from(
+      document.querySelectorAll('[data-testid="user-message"], [data-testid="assistant-message"]'),
+    ).map((node) => (
+      node.getAttribute('data-testid') === 'user-message' && (node as HTMLElement).innerText.includes(marker)
+        ? 'queued' : node.getAttribute('data-testid')
+    )), queuedMarker);
+    expect(answeredOrder.indexOf('queued'), 'the held message is in the transcript').toBeGreaterThanOrEqual(0);
+    expect(
+      answeredOrder.slice(answeredOrder.indexOf('queued') + 1),
+      'its answer follows it',
+    ).toContain('assistant-message');
 
     const record = await page.evaluate(() => {
       const observed = (window as unknown as { __handover?: HandoverRecord }).__handover;
@@ -205,7 +214,7 @@ test('a queued message hands over to the transcript without vanishing', async ({
     expect(record.samples.length, 'the in-page sampler must have observed the handover').toBeGreaterThan(5);
     expect(
       record.gaps,
-      'a sent message is always on one of the two surfaces — queue or transcript',
+      'a sent message is in the transcript exactly once at every instant',
     ).toEqual([]);
     expect(
       record.failures,
@@ -223,9 +232,13 @@ test('a queued message hands over to the transcript without vanishing', async ({
       'a finished command stops reading as working',
     ).toHaveText(/Done|已完成/, { timeout: TURN_TIMEOUT_MS });
 
-    // And it lands as its own message, before its answer — not folded into the
-    // authoritative history that arrives with the reply.
+    // And it is one message, the one history keeps.
     await expect(userBubble).toHaveCount(1);
+    const history = await api.getMessages(sessionId, 50);
+    expect(
+      history.messages.filter((message) => message.role === 'user' && messageText(message) === queuedMarker),
+      'history holds the held message once',
+    ).toHaveLength(1);
   } finally {
     await api.runTerminalCommand(sessionId, `touch ${release}`, '/tmp', 15_000).catch(() => {});
   }

@@ -16,11 +16,9 @@ from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator.engine import (
     claude_code_background,
     claude_code_runtime,
-    claude_transcript,
 )
 from astrabox.core.service.orchestrator.engine.base import (
     EngineAdapter,
-    EngineClient,
     EngineKind,
     EnginePreparationContext,
     EngineStartupContext,
@@ -34,6 +32,7 @@ from astrabox.core.service.orchestrator.engine.emissions import (
     SessionMessageFact,
     emission_from_translated_frame,
 )
+from astrabox.core.service.orchestrator.engine.frame_scope import session_scoped_engine_frame
 from astrabox.core.service.orchestrator.engine.frame_translator import (
     ClaudeStreamCursor,
     translate_claude_sdk_message,
@@ -119,23 +118,46 @@ class ClaudeCodeEngineAdapter(EngineAdapter):
             return bool(str(data.get("engineStatus") or "").strip())
         return True
 
+    def stored_child_transcript_facts(
+        self,
+        *,
+        engine_ref: str,
+        closed: bool,
+        native_state: dict[str, Any],
+        raw_scopes: list[dict[str, Any]],
+    ) -> list[ChildResourceFact]:
+        """One Agent's messages from its own transcript in the SessionStore mirror.
+
+        Claude writes each Agent's conversation to a transcript of its own
+        (``subagents/agent-<id>.jsonl``); a background Agent's messages reach
+        the platform only there. Returns no facts when the mirror holds no
+        transcript of this Agent. ``closed`` does not change the answer: the
+        transcript is the Agent's whole conversation so far either way.
+        """
+        blocks = claude_code_background.background_task_transcript_tree_blocks(
+            raw_scopes, root_transcript_ref=engine_ref, parent_engine_ref=engine_ref
+        )
+        return [
+            ChildResourceFact(
+                session_scoped_engine_frame({"type": "data-subagent", "id": block["id"], "data": block["data"]})
+            )
+            for block in blocks
+            if block["data"].get("kind") == "message" and block["data"].get("engineRef") == engine_ref
+        ]
+
     @property
     def engine_kind(self) -> EngineKind:
         return "claude_code"
 
     @property
-    def engine_client_type(self) -> type[EngineClient]:
-        from astrabox.core.service.orchestrator.engine.claude_code_client import (
-            ClaudeCodeEngineClient,
-        )
+    def engine_client_type(self) -> type[Any]:
+        from astrabox.core.service.orchestrator.engine.claude_runtime_client import ClaudeRuntimeClient
 
-        return ClaudeCodeEngineClient
+        return ClaudeRuntimeClient
 
     @property
     def capabilities(self) -> EngineRuntimeCapabilities:
-        # The translation-shell profile (docs/design-translation-shell-2026-07.md):
-        # turns drive through ClaudeCodeEngineClient over the in-box runner;
-        # the SDK owns turn lifecycle and recovery.
+        # The SDK, through the in-box runner, owns the conversation and its recovery.
         return EngineRuntimeCapabilities(
             engine_kind="claude_code",
             supported_session_kinds=frozenset({"agent_chat"}),
@@ -204,8 +226,6 @@ class ClaudeCodeEngineAdapter(EngineAdapter):
             sandbox_death_notice=True,
         )
 
-    def supports_unowned_output_attach(self) -> bool:
-        return True
 
     async def activate_runtime(
         self, context: EngineStartupContext
@@ -214,31 +234,6 @@ class ClaudeCodeEngineAdapter(EngineAdapter):
 
         return await claude_code_runtime.activate_runtime(context)
 
-    def durable_session_message(
-        self, message: dict[str, Any]
-    ) -> SessionMessageFact | None:
-        from astrabox.core.service.orchestrator.engine.claude_hook_messages import (
-            session_start_message,
-        )
-
-        return session_start_message(message)
-
-    def durable_child_resource_facts(
-        self,
-        raw_messages: list[dict[str, Any]],
-    ) -> list[tuple[int, ChildResourceFact]]:
-        cursor = ClaudeStreamCursor()
-        facts: list[tuple[int, ChildResourceFact]] = []
-        for message_index, message in enumerate(raw_messages):
-            for frame in translate_claude_sdk_message(
-                message,
-                envelope_seq=message_index + 1,
-                cursor=cursor,
-            ):
-                emission = emission_from_translated_frame(frame)
-                if isinstance(emission, ChildResourceFact):
-                    facts.append((message_index, emission))
-        return facts
 
     async def prepare_runtime(
         self, context: EnginePreparationContext
@@ -255,64 +250,6 @@ class ClaudeCodeEngineAdapter(EngineAdapter):
             )
         return await claude_code_runtime.prepare_runtime(context)
 
-    def detached_child_run_terminal(
-        self,
-        raw_event: dict[str, Any],
-        *,
-        transcript_refs: set[str],
-        engine_refs: set[str],
-        transcript_to_engine_ref: dict[str, str],
-        activation_to_engine_ref: dict[str, str],
-        observed_activations: dict[str, str],
-        control_to_engine_ref: dict[str, str] | None = None,
-    ) -> dict[str, str] | None:
-        return claude_code_background.background_terminal_fact_for_manifest(
-            raw_event,
-            transcript_refs=transcript_refs,
-            engine_refs=engine_refs,
-            transcript_to_engine_ref=transcript_to_engine_ref,
-            activation_to_engine_ref=activation_to_engine_ref,
-            observed_activations=observed_activations,
-            control_to_engine_ref=control_to_engine_ref,
-        )
-
-    def slice_recovery_turn(
-        self,
-        raw_items: list[dict[str, Any]],
-        *,
-        prompt_text: str,
-    ) -> list[dict[str, Any]]:
-        return claude_transcript.slice_turn_tail_entries(
-            raw_items,
-            prompt_text=prompt_text,
-        )
-
-    def has_transcript_terminal_evidence(
-        self,
-        raw_items: list[Any],
-    ) -> bool:
-        return claude_transcript.has_terminal_evidence(raw_items)
-
-    def project_settled_transcript(
-        self,
-        raw_items: list[Any],
-        *,
-        done: bool = False,
-    ):
-        return claude_transcript.project_settled_transcript(raw_items, done=done)
-
-    def detached_child_run_transcript_blocks(
-        self,
-        raw_scopes: list[dict[str, Any]],
-        *,
-        root_transcript_ref: str,
-        engine_ref: str,
-    ) -> list[dict[str, Any]]:
-        return claude_code_background.background_task_transcript_tree_blocks(
-            raw_scopes,
-            root_transcript_ref=root_transcript_ref,
-            parent_engine_ref=engine_ref,
-        )
 
     def shared_conversation_service_launch(
         self, *, home: str, workspace: str, port: int

@@ -1,922 +1,371 @@
-"""Durable, sandbox-independent store for claude transcript entries.
+"""The runtime's own transcript entries, held so a replacement runtime can resume.
 
-Backs the claude_agent_sdk ``SessionStore`` mirror: each row is one JSONL
-transcript line (``SessionStoreEntry``) scoped by ``(project_key, session_id,
-subpath)`` and ordered by a per-scope monotonic ``seq``. This is the externalized
-runtime state the backend reads for recovery without the sandbox, and the SDK
-materializes it for ``--resume``. The runner's transport journal has a separate
-lifetime and is not the durable transcript store.
+Each scope is one transcript file a session's runtime writes: the Claude
+SDK's ``SessionStore`` keys (its main transcript and each sub-agent's), or a
+log an image-resident mirror relays for Codex and the DeepSeek Harness. An
+entry is one line, stored as the JSON text the sender serialized and handed
+back deep-equal; the store never interprets it.
 
-Design keeps the Mongo surface minimal (find / insert_many / delete_many; sort
-and dedup happen in Python) so the storage is portable and easy to reason about.
-Entry payloads are persisted as a JSON string (``entry_json``) so arbitrary
-transcript field names round-trip without Mongo field-name constraints — the
-SessionStore contract only requires ``json.dumps``/``json.loads`` round-trip
-equality, never byte-equality.
+Every operation names the platform session the request was authorized for.
+The rest of a scope's key comes from the box, which any caller can echo, so
+the platform session is what keeps one tenant out of another's transcripts.
 
-Idempotency is per BATCH, keyed by the caller's ``append_id``. A scope document
-carries the scope's ``last_sequence`` plus a record of every batch whose sequence
-range is allocated but whose rows are not yet all written; the range is claimed
-by a compare-and-set on ``last_sequence``, so concurrent appends to one scope
-produce a contiguous, gap-free ``1..N``. Re-sending a batch under the same
-``append_id`` returns the same ``store_sequence`` and writes nothing new,
-whatever the entries carry — a batch's identity is its ``append_id``, never its
-content, so the same entries under a NEW ``append_id`` are a second append and
-advance the sequence. Sending different entries under an ``append_id`` that is
-already committed is a hard error, not a silent overwrite.
-
-Entry-level identity comes from the row ``_id``, derived from
-``(scope, append_id, index)``: re-writing a batch is a duplicate-key no-op per
-row, which is also how a crash between claiming the range and writing the rows
-repairs itself when the batch is re-sent.
+Appends are batches named by the sender's ``append_id``. One statement creates
+the scope if needed, numbers the batch after the scope's last entry and stores
+it, so a scope's entries are always ``1..N`` without gaps, and a batch is
+either wholly stored or not at all. Re-sending a stored batch returns the
+position it got the first time and stores nothing; reusing an ``append_id``
+for different entries is refused. A batch's identity is its ``append_id``,
+never its content: the same entries under a new ``append_id`` are a second
+append.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
-import time
-import uuid as uuid_mod
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, cast
 
-from astrabox.persistence.repository._compat import DuplicateKeyError
-
-from astrabox.persistence.repository.backend import (
-    get_async_collection,
-    run_mongo_with_retry,
+from sqlalchemy import (
+    ARRAY,
+    ColumnElement,
+    Table,
+    Text,
+    UniqueConstraint,
+    and_,
+    func,
+    literal,
+    select,
+    true,
 )
-from astrabox.common.logger.logger_factory import get_logger
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.sql import Select
 
-logger = get_logger(__name__)
+from astrabox.persistence.sql import ForeignKeyViolation, UniqueViolation, fetch_all, fetch_value
+from astrabox.persistence.sql.models.sessions import TranscriptEntry, TranscriptScope
+from astrabox.persistence.sql.notify import notice
 
-COLLECTION_NAME = "transcript_entries"
+_SCOPES = cast(Table, TranscriptScope.__table__)
+_ENTRIES = cast(Table, TranscriptEntry.__table__)
 
-#: Suffix of the companion collection holding one document per SessionStore
-#: scope. Separate from the entry rows so the recovery reads, which select on
-#: ``platform_session_id`` alone, cannot pick a scope document up as an entry.
-SCOPE_COLLECTION_SUFFIX = "_scopes"
+#: The constraint a second copy of a batch violates when two deliveries of it
+#: race: each statement checks for the batch against the snapshot it started
+#: with, so the delivery that commits second is stopped here instead.
+_BATCH_KEY = next(
+    str(constraint.name)
+    for constraint in _ENTRIES.constraints
+    if isinstance(constraint, UniqueConstraint)
+)
 
-# Business turn boundaries and ordering carried by mirrored entries. The
-# lifecycle readers use these fields to select a turn's durable transcript.
-SANDBOX_TURN_ID_ENTRY_FIELD = "__astrabox_sandbox_turn_id"
-PLATFORM_TURN_ID_ENTRY_FIELD = "__astrabox_platform_turn_id"
-COMMAND_ID_ENTRY_FIELD = "__astrabox_command_id"
-DISPATCH_ID_ENTRY_FIELD = "__astrabox_dispatch_id"
-MIRROR_SEQ_ENTRY_FIELD = "__astrabox_mirror_seq"
+
+class TranscriptBatchConflict(Exception):
+    """An ``append_id`` the scope already stored names different entries."""
+
+
+class TranscriptSessionMissing(LookupError):
+    """The platform session a transcript append names does not exist."""
+
+
+def _scope_key(
+    platform_session_id: str, project_key: str, native_session_id: str, subpath: str | None
+) -> ColumnElement[bool]:
+    return and_(
+        _SCOPES.c.platform_session_id == platform_session_id,
+        _SCOPES.c.project_key == project_key,
+        _SCOPES.c.native_session_id == native_session_id,
+        _SCOPES.c.subpath == (subpath or ""),
+    )
+
+
+def _entries_of(where: ColumnElement[bool]) -> Select[Any]:
+    """Entry text of the scopes ``where`` selects, scope by scope in order."""
+    return (
+        select(_ENTRIES.c.entry_json)
+        .select_from(_SCOPES.join(_ENTRIES, _ENTRIES.c.scope_id == _SCOPES.c.scope_id))
+        .where(where)
+        .order_by(_SCOPES.c.scope_id, _ENTRIES.c.seq)
+    )
 
 
 class TranscriptEntryRepository:
-    """Transcript store over the configured database's document collections."""
-
-    def __init__(self, *, collection_name: str = COLLECTION_NAME) -> None:
-        self._collection_name = collection_name
-        self._scope_collection_name = collection_name + SCOPE_COLLECTION_SUFFIX
-        self._indexes_ready = False
-        # Strictly-monotonic storage write time (epoch ms) for this instance, so
-        # back-to-back appends always get distinct, increasing mtimes — the
-        # SessionStore list_sessions/summary staleness contract relies on this.
-        self._last_mtime = 0
-
-    def _next_mtime(self) -> int:
-        now_ms = int(time.time() * 1000)
-        if now_ms <= self._last_mtime:
-            now_ms = self._last_mtime + 1
-        self._last_mtime = now_ms
-        return now_ms
-
-    async def _collection(self) -> Any:
-        collection = await get_async_collection(self._collection_name)
-        if not self._indexes_ready:
-            await self._ensure_indexes(collection)
-            self._indexes_ready = True
-        return collection
-
-    async def _ensure_indexes(self, collection: Any) -> None:
-        try:
-            # Resolving a re-sent batch reads the rows it already wrote, so
-            # (scope_id, append_id) is on the append path, not just recovery.
-            await collection.create_index(
-                [("scope_id", 1), ("append_id", 1)],
-                name="ix_transcript_scope_append",
-            )
-            await collection.create_index(
-                [("project_key", 1), ("session_id", 1), ("subpath", 1), ("seq", 1)],
-                name="ix_transcript_scope_seq",
-            )
-            # Recovery reads the durable mirror by platform session id (which the
-            # platform always has) + the business turn stamp, so it never needs the
-            # sandbox-derived project_key nor the (possibly-dead) sandbox WAL.
-            await collection.create_index(
-                [("platform_session_id", 1), ("seq", 1)],
-                name="ix_transcript_platform_seq",
-            )
-            await collection.create_index(
-                [
-                    ("platform_session_id", 1),
-                    ("platform_turn_id", 1),
-                    ("subpath", 1),
-                    ("seq", 1),
-                ],
-                name="ix_transcript_platform_turn_seq",
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("transcript index creation failed (non-blocking): %s", exc)
-
-    async def _scope_collection(self) -> Any:
-        return await get_async_collection(self._scope_collection_name)
-
-    @staticmethod
-    def _scope(project_key: str, session_id: str, subpath: str | None) -> dict[str, Any]:
-        return {"project_key": project_key, "session_id": session_id, "subpath": subpath}
-
-    @staticmethod
-    def _digest(value: str) -> str:
-        return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-    @classmethod
-    def _scope_id(
-        cls,
-        platform_session_id: str | None,
-        project_key: str,
-        session_id: str,
-        subpath: str | None,
-    ) -> str:
-        """Identity of one sequence space.
-
-        ``platform_session_id`` leads because it is the tenant boundary: it is
-        the capability-verified path parameter, whereas project_key / session_id
-        / subpath are sandbox-derived values any caller can echo. Leaving it out
-        would let one tenant claim sequence numbers in another tenant's scope by
-        naming that scope in the request body.
-        """
-        return cls._digest(
-            json.dumps(
-                [platform_session_id, project_key, session_id, subpath],
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
-        )
-
-    @classmethod
-    def _row_id(cls, scope_id: str, append_id: str, index: int) -> str:
-        return cls._digest(f"{scope_id}:{append_id}:{index}")
-
-    @staticmethod
-    def _entries_digest(entries: list[dict[str, Any]]) -> str:
-        """Content identity of a batch, order-sensitive but key-order-independent."""
-        return hashlib.sha256(
-            json.dumps(
-                entries, ensure_ascii=False, separators=(",", ":"), sort_keys=True
-            ).encode("utf-8")
-        ).hexdigest()
-
-    @staticmethod
-    def _normalized_append_id(append_id: str | None) -> str:
-        """The batch's identity.
-
-        ``None`` mints one: a caller with no batch identity of its own (a direct
-        host-side ``SessionStore.append``, which the SDK contract gives no such
-        parameter) is asking for exactly one append. A caller that CAN be
-        re-delivered — the in-box spool — always supplies its own.
-        """
-        if append_id is None:
-            return str(uuid_mod.uuid4())
-        normalized = str(append_id).strip()
-        if not normalized:
-            raise ValueError("append_id must be a non-empty string")
-        return normalized
-
-    @staticmethod
-    def _entry_str_field(entry: dict[str, Any], field: str) -> str | None:
-        value = str(entry.get(field) or "").strip()
-        return value or None
-
-    @staticmethod
-    def _entry_int_field(entry: dict[str, Any], field: str) -> int | None:
-        value = entry.get(field)
-        if isinstance(value, bool):
-            return None
-        if isinstance(value, int):
-            return int(value)
-        text = str(value or "").strip()
-        if not text:
-            return None
-        try:
-            return int(text)
-        except (TypeError, ValueError):
-            return None
+    """Transcript scopes and entries, fenced by the platform session."""
 
     async def append_entries(
         self,
         project_key: str,
-        session_id: str,
+        native_session_id: str,
         subpath: str | None,
         entries: list[dict[str, Any]],
         *,
-        append_id: str | None = None,
-        platform_session_id: str | None = None,
+        append_id: str,
+        platform_session_id: str,
     ) -> int:
-        """Append one batch; return the scope's ``store_sequence`` after it.
+        """Store one batch; the scope's entry count after it.
 
-        The sequence is 1-based and counts entries committed to this scope, so
-        the first append of k entries returns k. An empty batch returns the
-        current sequence without advancing it. Re-sending a batch under an
-        ``append_id`` already seen returns the sequence that batch got the first
-        time and stores nothing new.
+        The first append of k entries returns k. An empty batch returns the
+        current count without storing anything. Re-sending a batch under an
+        ``append_id`` already stored returns the count that batch reached and
+        stores nothing.
 
         Raises:
-            RuntimeError: ``append_id`` names a batch already stored with
-                different entries.
+            TranscriptBatchConflict: ``append_id`` names a batch already
+                stored with different entries.
+            TranscriptSessionMissing: ``platform_session_id`` names no session.
         """
-        platform_sid = str(platform_session_id or "").strip() or None
-        scope_id = self._scope_id(platform_sid, project_key, session_id, subpath)
-        resolved_append_id = self._normalized_append_id(append_id)
+        batch = str(append_id or "").strip()
+        if not batch:
+            raise ValueError("append_id must be a non-empty string")
         if not entries:
             return await self.current_sequence(
-                project_key, session_id, subpath, platform_session_id=platform_sid
+                project_key, native_session_id, subpath, platform_session_id=platform_session_id
             )
+        texts = [json.dumps(entry, ensure_ascii=False) for entry in entries]
+        try:
+            stored = await self._store(
+                platform_session_id, project_key, native_session_id, subpath, batch, texts
+            )
+        except UniqueViolation as exc:
+            if exc.constraint != _BATCH_KEY:
+                raise
+            # Another delivery of this append_id committed while this one ran;
+            # the key check waited for it, so its rows are there to compare.
+            stored = None
+        except ForeignKeyViolation as exc:
+            raise TranscriptSessionMissing(platform_session_id) from exc
+        if stored is not None:
+            return stored
+        return await self._stored_batch(
+            platform_session_id, project_key, native_session_id, subpath, batch, entries
+        )
 
-        async def _op() -> int:
-            collection = await self._collection()
-            scope_collection = await self._scope_collection()
-            await self._ensure_scope(
-                collection,
-                scope_collection,
-                scope_id=scope_id,
-                platform_session_id=platform_sid,
-                project_key=project_key,
-                session_id=session_id,
-                subpath=subpath,
-            )
-            commit = await self._resolve_or_claim_commit(
-                collection,
-                scope_collection,
-                scope_id=scope_id,
-                append_id=resolved_append_id,
-                entries=entries,
-            )
-            # Writing the rows is what makes the claimed range real, so it runs
-            # on the re-send path too: a crash between the claim and the rows
-            # leaves a claim whose rows the next delivery of this append_id
-            # completes, at the sequence the claim already fixed.
-            await self._write_batch_rows(
-                collection,
-                scope_id=scope_id,
-                append_id=resolved_append_id,
-                first_sequence=int(commit["first_sequence"]),
-                entries=entries,
-                project_key=project_key,
-                session_id=session_id,
-                subpath=subpath,
-                platform_session_id=platform_sid,
-            )
-            await self._release_claim(
-                scope_collection, scope_id=scope_id, append_id=resolved_append_id
-            )
-            return int(commit["last_sequence"])
+    @staticmethod
+    async def _store(
+        platform_session_id: str,
+        project_key: str,
+        native_session_id: str,
+        subpath: str | None,
+        append_id: str,
+        texts: list[str],
+    ) -> int | None:
+        """Store a batch the scope does not hold yet; ``None`` when it holds it.
 
-        return await run_mongo_with_retry(f"{self._collection_name}.append", _op)
+        Inserting the scope, or updating its existing row, takes the row's
+        lock, so concurrent appends to one scope number their batches one
+        after another from the count the previous one committed.
+        """
+        count = len(texts)
+        # The batch is looked up through the scope's key, so the subquery
+        # stands alone instead of referring to the upsert's conflicting row.
+        existing = _SCOPES.alias("existing")
+        held = (
+            select(true())
+            .select_from(existing.join(_ENTRIES, _ENTRIES.c.scope_id == existing.c.scope_id))
+            .where(
+                existing.c.platform_session_id == platform_session_id,
+                existing.c.project_key == project_key,
+                existing.c.native_session_id == native_session_id,
+                existing.c.subpath == (subpath or ""),
+                _ENTRIES.c.append_id == append_id,
+            )
+            .correlate(None)
+            .exists()
+        )
+        proposed = pg_insert(_SCOPES).values(
+            platform_session_id=platform_session_id,
+            project_key=project_key,
+            native_session_id=native_session_id,
+            subpath=subpath or "",
+            last_sequence=count,
+        )
+        scope = (
+            proposed.on_conflict_do_update(
+                index_elements=[
+                    _SCOPES.c.platform_session_id,
+                    _SCOPES.c.project_key,
+                    _SCOPES.c.native_session_id,
+                    _SCOPES.c.subpath,
+                ],
+                set_={"last_sequence": _SCOPES.c.last_sequence + count, "updated_at": func.now()},
+                where=~held,
+            )
+            .returning(_SCOPES.c.scope_id, _SCOPES.c.last_sequence)
+            .cte("scope")
+        )
+        lines = (
+            func.unnest(literal(texts, ARRAY(Text)))
+            .table_valued("entry_json", with_ordinality="ordinal")
+            .render_derived()
+        )
+        rows = (
+            _ENTRIES.insert()
+            .from_select(
+                ["scope_id", "seq", "append_id", "batch_index", "entry_json"],
+                select(
+                    scope.c.scope_id,
+                    scope.c.last_sequence - count + lines.c.ordinal,
+                    literal(append_id),
+                    lines.c.ordinal - 1,
+                    lines.c.entry_json,
+                ).select_from(scope.join(lines, true())),
+            )
+            .cte("stored")
+        )
+        last = await fetch_value(
+            select(scope.c.last_sequence, notice(platform_session_id, "transcript")).add_cte(rows)
+        )
+        return None if last is None else int(last)
+
+    @staticmethod
+    async def _stored_batch(
+        platform_session_id: str,
+        project_key: str,
+        native_session_id: str,
+        subpath: str | None,
+        append_id: str,
+        entries: list[dict[str, Any]],
+    ) -> int:
+        """The count a stored batch reached, once it is shown to be this batch."""
+        rows = await fetch_all(
+            select(_ENTRIES.c.seq, _ENTRIES.c.entry_json)
+            .select_from(_SCOPES.join(_ENTRIES, _ENTRIES.c.scope_id == _SCOPES.c.scope_id))
+            .where(
+                _scope_key(platform_session_id, project_key, native_session_id, subpath),
+                _ENTRIES.c.append_id == append_id,
+            )
+            .order_by(_ENTRIES.c.seq)
+        )
+        if len(rows) != len(entries) or any(
+            json.loads(row["entry_json"]) != entry for row, entry in zip(rows, entries)
+        ):
+            raise TranscriptBatchConflict(
+                f"append_id {append_id!r} already names a different batch of "
+                f"{len(rows)} entries in this transcript; an append_id identifies "
+                "one batch and cannot be reused for another"
+            )
+        return int(rows[-1]["seq"])
 
     async def current_sequence(
         self,
         project_key: str,
-        session_id: str,
+        native_session_id: str,
         subpath: str | None,
         *,
-        platform_session_id: str | None = None,
+        platform_session_id: str,
     ) -> int:
-        """The scope's committed sequence; 0 for a scope nothing has written."""
-        platform_sid = str(platform_session_id or "").strip() or None
-        scope_id = self._scope_id(platform_sid, project_key, session_id, subpath)
-
-        async def _op() -> int:
-            scope_collection = await self._scope_collection()
-            scope_doc = await scope_collection.find_one({"_id": f"scope:{scope_id}"})
-            if isinstance(scope_doc, dict):
-                return int(scope_doc.get("last_sequence") or 0)
-            collection = await self._collection()
-            return await self._highest_row_sequence(
-                collection,
-                project_key=project_key,
-                session_id=session_id,
-                subpath=subpath,
-                platform_session_id=platform_sid,
+        """The scope's entry count; 0 for a scope nothing has written."""
+        value = await fetch_value(
+            select(_SCOPES.c.last_sequence).where(
+                _scope_key(platform_session_id, project_key, native_session_id, subpath)
             )
-
-        return await run_mongo_with_retry(
-            f"{self._collection_name}.current_sequence", _op
         )
-
-    @staticmethod
-    async def _highest_row_sequence(
-        collection: Any,
-        *,
-        project_key: str,
-        session_id: str,
-        subpath: str | None,
-        platform_session_id: str | None,
-    ) -> int:
-        """Highest ``seq`` already stored in a scope, or 0 when it holds nothing.
-
-        Read once, when a scope document is first created, to start the counter
-        above whatever the rows already hold — the counter describes the rows,
-        so it cannot be assumed to start from nothing while rows exist.
-        """
-        query: dict[str, Any] = {
-            "project_key": project_key,
-            "session_id": session_id,
-            "subpath": subpath,
-        }
-        if platform_session_id is not None:
-            query["platform_session_id"] = platform_session_id
-        highest = 0
-        cursor = collection.find(query, {"seq": 1}).sort("seq", -1).limit(1)
-        async for row in cursor:
-            highest = max(highest, int(row.get("seq") or 0))
-        return highest
-
-    async def _ensure_scope(
-        self,
-        collection: Any,
-        scope_collection: Any,
-        *,
-        scope_id: str,
-        platform_session_id: str | None,
-        project_key: str,
-        session_id: str,
-        subpath: str | None,
-    ) -> None:
-        doc_id = f"scope:{scope_id}"
-        if isinstance(await scope_collection.find_one({"_id": doc_id}), dict):
-            return
-        last_sequence = await self._highest_row_sequence(
-            collection,
-            project_key=project_key,
-            session_id=session_id,
-            subpath=subpath,
-            platform_session_id=platform_session_id,
-        )
-        try:
-            await scope_collection.insert_one(
-                {
-                    "_id": doc_id,
-                    "scope_id": scope_id,
-                    "platform_session_id": platform_session_id,
-                    "project_key": project_key,
-                    "session_id": session_id,
-                    "subpath": subpath,
-                    "last_sequence": last_sequence,
-                    "claimed_batches": {},
-                }
-            )
-        except DuplicateKeyError:
-            # Another writer created the scope first; its document is as good
-            # as the one this call would have written.
-            return
-
-    async def _resolve_or_claim_commit(
-        self,
-        collection: Any,
-        scope_collection: Any,
-        *,
-        scope_id: str,
-        append_id: str,
-        entries: list[dict[str, Any]],
-    ) -> dict[str, Any]:
-        """Return this batch's sequence range, claiming one if it has none yet.
-
-        Three answers, in the order they are asked. An outstanding claim names a
-        batch whose range is fixed but whose rows may be incomplete. Rows already
-        written are the durable record of a batch whose claim was released. Only
-        a batch with neither takes a new range, under a compare-and-set on the
-        scope's ``last_sequence`` so two writers cannot claim the same numbers.
-        """
-        doc_id = f"scope:{scope_id}"
-        entries_sha256 = self._entries_digest(entries)
-        claim_key = self._digest(append_id)
-        while True:
-            scope_doc = await scope_collection.find_one({"_id": doc_id})
-            if not isinstance(scope_doc, dict):
-                raise RuntimeError(
-                    f"transcript scope {scope_id} vanished while appending batch "
-                    f"{append_id}"
-                )
-            claimed = scope_doc.get("claimed_batches")
-            if not isinstance(claimed, dict):
-                raise RuntimeError(
-                    f"transcript scope {scope_id} has a malformed claim ledger"
-                )
-            outstanding = claimed.get(claim_key)
-            if isinstance(outstanding, dict):
-                self._assert_same_batch(
-                    outstanding,
-                    scope_id=scope_id,
-                    append_id=append_id,
-                    entry_count=len(entries),
-                    entries_sha256=entries_sha256,
-                )
-                return outstanding
-            settled = await self._settled_commit(
-                collection,
-                scope_id=scope_id,
-                append_id=append_id,
-                entries=entries,
-            )
-            if settled is not None:
-                return settled
-            previous = int(scope_doc.get("last_sequence") or 0)
-            commit = {
-                "append_id": append_id,
-                "entry_count": len(entries),
-                "entries_sha256": entries_sha256,
-                "first_sequence": previous + 1,
-                "last_sequence": previous + len(entries),
-            }
-            result = await scope_collection.update_one(
-                {"_id": doc_id, "last_sequence": previous},
-                {
-                    "$inc": {"last_sequence": len(entries)},
-                    "$set": {f"claimed_batches.{claim_key}": commit},
-                },
-            )
-            if int(getattr(result, "modified_count", 0) or 0) == 1:
-                return commit
-            # Another writer moved last_sequence between the read and the
-            # compare-and-set. Re-read and claim above the range it took.
-
-    @staticmethod
-    def _assert_same_batch(
-        commit: dict[str, Any],
-        *,
-        scope_id: str,
-        append_id: str,
-        entry_count: int,
-        entries_sha256: str,
-    ) -> None:
-        if (
-            commit.get("append_id") != append_id
-            or int(commit.get("entry_count") or -1) != entry_count
-            or commit.get("entries_sha256") != entries_sha256
-        ):
-            raise RuntimeError(
-                f"transcript append_id {append_id} in scope {scope_id} already names "
-                "a different batch; an append_id identifies one batch of entries "
-                "and cannot be reused for another"
-            )
-
-    async def _settled_commit(
-        self,
-        collection: Any,
-        *,
-        scope_id: str,
-        append_id: str,
-        entries: list[dict[str, Any]],
-    ) -> dict[str, Any] | None:
-        """The sequence range of a batch whose rows are all stored, else None."""
-        cursor = collection.find(
-            {"scope_id": scope_id, "append_id": append_id},
-            {"seq": 1, "batch_index": 1, "entry_json": 1},
-        )
-        rows = [row async for row in cursor]
-        if not rows:
-            return None
-        if len(rows) != len(entries):
-            raise RuntimeError(
-                f"transcript append_id {append_id} in scope {scope_id} already stored "
-                f"{len(rows)} entries; this delivery carries {len(entries)}"
-            )
-        by_index = {int(row.get("batch_index") or 0): row for row in rows}
-        for index, entry in enumerate(entries):
-            row = by_index.get(index)
-            if row is None or json.loads(row["entry_json"]) != entry:
-                raise RuntimeError(
-                    f"transcript append_id {append_id} in scope {scope_id} already "
-                    f"names a different batch (entry {index} differs)"
-                )
-        sequences = [int(row.get("seq") or 0) for row in rows]
-        first_sequence = min(sequences)
-        last_sequence = max(sequences)
-        if last_sequence - first_sequence + 1 != len(rows):
-            raise RuntimeError(
-                f"transcript batch {append_id} in scope {scope_id} holds a "
-                "non-contiguous sequence range"
-            )
-        return {
-            "append_id": append_id,
-            "entry_count": len(rows),
-            "entries_sha256": self._entries_digest(entries),
-            "first_sequence": first_sequence,
-            "last_sequence": last_sequence,
-        }
-
-    async def _write_batch_rows(
-        self,
-        collection: Any,
-        *,
-        scope_id: str,
-        append_id: str,
-        first_sequence: int,
-        entries: list[dict[str, Any]],
-        project_key: str,
-        session_id: str,
-        subpath: str | None,
-        platform_session_id: str | None,
-    ) -> None:
-        now_ms = self._next_mtime()
-        for index, entry in enumerate(entries):
-            doc = {
-                "_id": self._row_id(scope_id, append_id, index),
-                "scope_id": scope_id,
-                "append_id": append_id,
-                "batch_index": index,
-                "project_key": project_key,
-                "session_id": session_id,
-                "subpath": subpath,
-                "platform_session_id": platform_session_id,
-                "platform_turn_id": self._entry_str_field(
-                    entry, PLATFORM_TURN_ID_ENTRY_FIELD
-                ),
-                "command_id": self._entry_str_field(entry, COMMAND_ID_ENTRY_FIELD),
-                "dispatch_id": self._entry_str_field(entry, DISPATCH_ID_ENTRY_FIELD),
-                "sandbox_turn_id": self._entry_int_field(
-                    entry, SANDBOX_TURN_ID_ENTRY_FIELD
-                ),
-                "seq": first_sequence + index,
-                "uuid": entry.get("uuid") if isinstance(entry.get("uuid"), str) else None,
-                "entry_json": json.dumps(entry, ensure_ascii=False),
-                "mtime": now_ms,
-            }
-            try:
-                await collection.insert_one(doc)
-            except DuplicateKeyError:
-                # This row of this batch is already stored. The claim resolution
-                # above proved the batch is the same one, so the stored row is
-                # this row.
-                continue
-
-    async def _release_claim(
-        self, scope_collection: Any, *, scope_id: str, append_id: str
-    ) -> None:
-        """Drop a claim once its rows are stored, so the ledger stays bounded.
-
-        The ledger only has to cover batches whose rows might still be missing,
-        which is the writers in flight — not the scope's whole history. Keeping
-        every batch forever would grow the scope document without limit and
-        rewrite all of it on each append.
-        """
-        doc_id = f"scope:{scope_id}"
-        claim_key = self._digest(append_id)
-        while True:
-            scope_doc = await scope_collection.find_one({"_id": doc_id})
-            if not isinstance(scope_doc, dict):
-                return
-            claimed = scope_doc.get("claimed_batches")
-            if not isinstance(claimed, dict) or claim_key not in claimed:
-                return
-            remaining = {
-                key: value for key, value in claimed.items() if key != claim_key
-            }
-            result = await scope_collection.update_one(
-                {"_id": doc_id, "claimed_batches": claimed},
-                {"$set": {"claimed_batches": remaining}},
-            )
-            if int(getattr(result, "modified_count", 0) or 0) == 1:
-                return
+        return int(value or 0)
 
     async def load_entries(
         self,
         project_key: str,
-        session_id: str,
+        native_session_id: str,
         subpath: str | None,
         *,
-        platform_session_id: str | None = None,
-        append_id: str | None = None,
+        platform_session_id: str,
     ) -> list[dict[str, Any]] | None:
-        scope = self._scope(project_key, session_id, subpath)
-        # Tenant fence: when a caller is authorized only for one platform
-        # session (the capability-token path), the sandbox-derived body key
-        # (project_key / session_id) is INTERSECTED with that platform session,
-        # so a valid token for session X cannot read another tenant's transcript
-        # by putting the victim's project_key in the body. The recovery path
-        # already treats platform_session_id as the trusted scope for the same
-        # reason.
-        psid = str(platform_session_id or "").strip()
-        if psid:
-            scope = {**scope, "platform_session_id": psid}
-        if append_id is not None:
-            # A native snapshot is one complete append batch. Its persisted
-            # identity selects that batch without inspecting older payloads.
-            scope = {
-                **scope,
-                "scope_id": self._scope_id(psid or None, project_key, session_id, subpath),
-                "append_id": append_id,
-            }
+        """The scope's entries in order; ``None`` for a scope nothing has written.
 
-        async def _op() -> list[dict[str, Any]]:
-            collection = await self._collection()
-            cursor = collection.find(scope)
-            return [row async for row in cursor]
-
-        rows = await run_mongo_with_retry(f"{self._collection_name}.load", _op)
+        ``None`` and an empty list are different answers in the SessionStore
+        contract: a scope exists only once a batch was stored in it.
+        """
+        rows = await fetch_all(
+            _entries_of(_scope_key(platform_session_id, project_key, native_session_id, subpath))
+        )
         if not rows:
             return None
-        rows.sort(key=lambda r: int(r.get("seq", 0)))
-        return [json.loads(r["entry_json"]) for r in rows]
-
-    async def load_all_entries_by_platform_session(
-        self, platform_session_id: str
-    ) -> list[dict[str, Any]]:
-        """Export read: return ALL raw SDK transcript entries for a session from the durable
-        mirror, in append (seq) order, keyed by the platform session id. Unlike
-        ``load_turn_entries_by_platform_session`` this is not turn-sliced — it is the whole
-        conversation transcript. The platform-only ``__astrabox_sandbox_turn_id`` stamp is stripped
-        so the returned entries are clean CLI JSONL lines. Empty list when the mirror has
-        nothing for the session. This is how agent_chat transcripts (whose durable truth is
-        the mirror, not a network-storage .claude/*.jsonl) are materialized for batch JSONL export.
-        """
-        sid = str(platform_session_id or "").strip()
-        if not sid:
-            return []
-
-        async def _op() -> list[dict[str, Any]]:
-            collection = await self._collection()
-            cursor = collection.find({"platform_session_id": sid})
-            return [row async for row in cursor]
-
-        rows = await run_mongo_with_retry(
-            f"{self._collection_name}.load_all_by_platform", _op
-        )
-        if not rows:
-            return []
-        rows.sort(key=lambda r: int(r.get("seq", 0)))
-        out: list[dict[str, Any]] = []
-        for r in rows:
-            try:
-                entry = json.loads(r["entry_json"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            if not isinstance(entry, dict):
-                continue
-            entry.pop(SANDBOX_TURN_ID_ENTRY_FIELD, None)
-            entry.pop(PLATFORM_TURN_ID_ENTRY_FIELD, None)
-            entry.pop(COMMAND_ID_ENTRY_FIELD, None)
-            entry.pop(DISPATCH_ID_ENTRY_FIELD, None)
-            entry.pop(MIRROR_SEQ_ENTRY_FIELD, None)
-            out.append(entry)
-        return out
+        return [json.loads(row["entry_json"]) for row in rows]
 
     async def load_subpath_entries_by_platform_session(
-        self,
-        platform_session_id: str,
-        *,
-        subpath: str | None,
+        self, platform_session_id: str, *, subpath: str | None
     ) -> list[dict[str, Any]]:
-        """Return one exact SessionStore scope by the platform session id."""
-        sid = str(platform_session_id or "").strip()
-        normalized_subpath = (
-            str(subpath or "").strip() if subpath is not None else None
-        )
-        if not sid or (subpath is not None and not normalized_subpath):
+        """The entries of the session's scopes at ``subpath`` (``None``: main), in order."""
+        if not str(platform_session_id or "").strip() or (
+            subpath is not None and not subpath.strip()
+        ):
             return []
-
-        async def _op() -> list[dict[str, Any]]:
-            collection = await self._collection()
-            cursor = collection.find(
-                {
-                    "platform_session_id": sid,
-                    "subpath": normalized_subpath,
-                }
+        rows = await fetch_all(
+            _entries_of(
+                and_(
+                    _SCOPES.c.platform_session_id == platform_session_id,
+                    _SCOPES.c.subpath == (subpath or ""),
+                )
             )
-            return [row async for row in cursor]
-
-        rows = await run_mongo_with_retry(
-            f"{self._collection_name}.load_subpath_by_platform",
-            _op,
         )
-        rows.sort(key=lambda row: int(row.get("seq", 0)))
-        entries: list[dict[str, Any]] = []
-        for row in rows:
-            try:
-                entry = json.loads(row["entry_json"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            if isinstance(entry, dict):
-                entries.append(entry)
-        return entries
+        return [json.loads(row["entry_json"]) for row in rows]
 
     async def list_scopes_by_platform_session(
         self, platform_session_id: str
     ) -> list[dict[str, Any]]:
-        """Every SessionStore scope the mirror holds for one platform session.
+        """Every scope of one platform session, in the order they were created.
 
-        The export read, and deliberately NOT
-        :meth:`load_all_entries_by_platform_session`. A platform session's
-        transcript is not one file: the main conversation and each subagent are
-        separate SessionStore keys, and the SDK writes them as separate JSONL
-        files (``<session-id>.jsonl`` and ``subagents/agent-<id>.jsonl``).
-        Flattening every scope into one seq-ordered list — which that method
-        does, because recovery wants exactly that — interleaves a subagent's
-        lines into the main transcript, producing a file ``claude --resume``
-        cannot read.
-
-        Ordered by first appearance, so the main scope (``subpath`` None) leads.
+        A scope is ``{"project_key", "session_id", "subpath"}`` in the
+        SessionStore key's own terms: ``session_id`` is the runtime's
+        conversation id, and ``subpath`` is ``None`` for a main transcript. The
+        main transcript and each sub-agent are separate files, which an export
+        or a restore writes one by one.
         """
-        sid = str(platform_session_id or "").strip()
-        if not sid:
+        if not str(platform_session_id or "").strip():
             return []
-
-        async def _op() -> list[dict[str, Any]]:
-            collection = await self._collection()
-            cursor = collection.find(
-                {"platform_session_id": sid},
-                {"project_key": 1, "session_id": 1, "subpath": 1, "seq": 1},
-            )
-            return [row async for row in cursor]
-
-        rows = await run_mongo_with_retry(
-            f"{self._collection_name}.list_scopes_by_platform", _op
+        rows = await fetch_all(
+            select(_SCOPES.c.project_key, _SCOPES.c.native_session_id, _SCOPES.c.subpath)
+            .where(_SCOPES.c.platform_session_id == platform_session_id)
+            .order_by(_SCOPES.c.scope_id)
         )
-        seen: set[tuple[str, str, str | None]] = set()
-        scopes: list[dict[str, Any]] = []
-        for row in sorted(rows, key=lambda r: int(r.get("seq", 0))):
-            project_key = str(row.get("project_key") or "")
-            session_id = str(row.get("session_id") or "")
-            subpath = row.get("subpath")
-            subpath = subpath if isinstance(subpath, str) and subpath else None
-            if not project_key or not session_id:
-                continue
-            key = (project_key, session_id, subpath)
-            if key in seen:
-                continue
-            seen.add(key)
-            scopes.append(
-                {"project_key": project_key, "session_id": session_id, "subpath": subpath}
-            )
-        return scopes
-
-    async def load_turn_entries_by_platform_session(
-        self, platform_session_id: str, sandbox_turn_id: int
-    ) -> list[dict[str, Any]]:
-        """Recovery read: return the raw SDK transcript entries for one turn of a session
-        from the durable mirror, sliced by the business turn stamp. Keyed by the platform
-        session id (always known to the platform) so recovery never needs the
-        sandbox-derived project_key nor the in-sandbox WAL. Returns the entries in append
-        order; empty list when the mirror has nothing for that turn (best-effort mirror may
-        not have landed — the caller treats this as 'not recoverable from mirror').
-        """
-        sid = str(platform_session_id or "").strip()
-        if not sid:
-            return []
-        target_turn = int(sandbox_turn_id)
-
-        async def _op() -> list[dict[str, Any]]:
-            collection = await self._collection()
-            cursor = collection.find({"platform_session_id": sid})
-            return [row async for row in cursor]
-
-        rows = await run_mongo_with_retry(
-            f"{self._collection_name}.load_turn_by_platform", _op
-        )
-        if not rows:
-            return []
-        rows.sort(key=lambda r: int(r.get("seq", 0)))
-        out: list[dict[str, Any]] = []
-        for r in rows:
-            try:
-                entry = json.loads(r["entry_json"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            if not isinstance(entry, dict):
-                continue
-            if entry.get(SANDBOX_TURN_ID_ENTRY_FIELD) == target_turn:
-                entry[MIRROR_SEQ_ENTRY_FIELD] = int(r.get("seq", 0))
-                out.append(entry)
-        return out
-
-    async def load_recovery_entries_by_platform_session(
-        self, platform_session_id: str
-    ) -> list[dict[str, Any]]:
-        """Recovery read: ALL of a session's mirror entries, mirror-seq stamped.
-
-        Turn recovery slices the tail by the Agent program's prompt user entry;
-        see ``slice_turn_tail_entries``. Mirror entries do not carry a reliable
-        ``platform_turn_id``, so this reads the whole session. ``seq`` is exposed
-        as ``__astrabox_mirror_seq`` so the recovered projection can record how
-        far the mirror advanced.
-        """
-        sid = str(platform_session_id or "").strip()
-        if not sid:
-            return []
-
-        async def _op() -> list[dict[str, Any]]:
-            collection = await self._collection()
-            cursor = collection.find({"platform_session_id": sid})
-            return [row async for row in cursor]
-
-        rows = await run_mongo_with_retry(
-            f"{self._collection_name}.load_recovery_by_platform", _op
-        )
-        if not rows:
-            return []
-        rows.sort(key=lambda r: int(r.get("seq", 0)))
-        out: list[dict[str, Any]] = []
-        for r in rows:
-            try:
-                entry = json.loads(r["entry_json"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            if not isinstance(entry, dict):
-                continue
-            entry[MIRROR_SEQ_ENTRY_FIELD] = int(r.get("seq", 0))
-            out.append(entry)
-        return out
+        return [
+            {
+                "project_key": row["project_key"],
+                "session_id": row["native_session_id"],
+                "subpath": row["subpath"] or None,
+            }
+            for row in rows
+        ]
 
     async def list_sessions(
-        self, project_key: str, *, platform_session_id: str | None = None
+        self, project_key: str, *, platform_session_id: str
     ) -> list[dict[str, Any]]:
-        # Tenant fence (see load_entries): when authorized only for one platform
-        # session, intersect it so a valid token cannot ENUMERATE another
-        # tenant's sessions by supplying the victim's project_key.
-        query: dict[str, Any] = {"project_key": project_key, "subpath": None}
-        psid = str(platform_session_id or "").strip()
-        if psid:
-            query["platform_session_id"] = psid
+        """The runtime conversations with a main transcript under ``project_key``.
 
-        async def _op() -> list[dict[str, Any]]:
-            collection = await self._collection()
-            # Main transcripts only — subagent subpaths must not appear here.
-            cursor = collection.find(query, {"session_id": 1, "mtime": 1})
-            return [row async for row in cursor]
-
-        rows = await run_mongo_with_retry(f"{self._collection_name}.list_sessions", _op)
-        by_session: dict[str, int] = {}
-        for row in rows:
-            sid = row.get("session_id")
-            if not isinstance(sid, str):
-                continue
-            mtime = int(row.get("mtime", 0))
-            if sid not in by_session or mtime > by_session[sid]:
-                by_session[sid] = mtime
-        return [{"session_id": sid, "mtime": mt} for sid, mt in by_session.items()]
-
-    async def delete(self, project_key: str, session_id: str, subpath: str | None) -> None:
-        async def _op() -> None:
-            collection = await self._collection()
-            scope_collection = await self._scope_collection()
-            if subpath is None:
-                # Delete the main transcript and cascade to all its subkeys
-                # (subagent transcripts), but not other sessions / projects.
-                query: dict[str, Any] = {
-                    "project_key": project_key,
-                    "session_id": session_id,
-                }
-            else:
-                query = self._scope(project_key, session_id, subpath)
-            await collection.delete_many(query)
-            # The scope document counts rows, so it goes with them: leaving it
-            # behind would have the next append claim sequence numbers above
-            # entries this call just removed.
-            await scope_collection.delete_many(query)
-
-        await run_mongo_with_retry(f"{self._collection_name}.delete", _op)
+        Each is ``{"session_id", "mtime"}``, ``mtime`` being when its last
+        batch was stored in epoch milliseconds, the unit the SessionStore
+        contract lists sessions in.
+        """
+        rows = await fetch_all(
+            select(_SCOPES.c.native_session_id, _SCOPES.c.updated_at)
+            .where(
+                _SCOPES.c.platform_session_id == platform_session_id,
+                _SCOPES.c.project_key == project_key,
+                _SCOPES.c.subpath == "",
+            )
+            .order_by(_SCOPES.c.scope_id)
+        )
+        return [
+            {"session_id": row["native_session_id"], "mtime": _epoch_ms(row["updated_at"])}
+            for row in rows
+        ]
 
     async def list_subkeys(
-        self,
-        project_key: str,
-        session_id: str,
-        *,
-        platform_session_id: str | None = None,
+        self, project_key: str, native_session_id: str, *, platform_session_id: str
     ) -> list[str]:
-        query: dict[str, Any] = {
-            "project_key": project_key,
-            "session_id": session_id,
-            "subpath": {"$ne": None},
-        }
-        psid = str(platform_session_id or "").strip()
-        if psid:
-            query["platform_session_id"] = psid
-
-        async def _op() -> list[dict[str, Any]]:
-            collection = await self._collection()
-            cursor = collection.find(
-                query,
-                {"subpath": 1, "seq": 1},
+        """The sub-file paths under one runtime conversation, in the order they were created."""
+        rows = await fetch_all(
+            select(_SCOPES.c.subpath)
+            .where(
+                _SCOPES.c.platform_session_id == platform_session_id,
+                _SCOPES.c.project_key == project_key,
+                _SCOPES.c.native_session_id == native_session_id,
+                _SCOPES.c.subpath != "",
             )
-            return [row async for row in cursor]
+            .order_by(_SCOPES.c.scope_id)
+        )
+        return [str(row["subpath"]) for row in rows]
 
-        rows = await run_mongo_with_retry(f"{self._collection_name}.list_subkeys", _op)
-        seen: set[str] = set()
-        subpaths: list[str] = []
-        for row in sorted(rows, key=lambda r: int(r.get("seq", 0))):
-            sp = row.get("subpath")
-            if isinstance(sp, str) and sp not in seen:
-                seen.add(sp)
-                subpaths.append(sp)
-        return subpaths
 
-    async def delete_all_in_collection(self) -> None:
-        """Test helper — wipe the (test) collection."""
-        collection = await self._collection()
-        await collection.delete_many({})
-        scope_collection = await self._scope_collection()
-        await scope_collection.delete_many({})
+def _epoch_ms(value: datetime) -> int:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return int(value.timestamp() * 1000)

@@ -8,8 +8,9 @@ import { expect, test } from '@playwright/test';
 
 import { AstraApi, messageText } from '../fixtures/astraApi';
 import { channelCallback } from '../fixtures/channelCallback';
-import { documentsByField, sessionEvents } from '../fixtures/dbOracle';
+import { postgresRows, sessionInputRows, sqlLiteral } from '../fixtures/dbOracle';
 import { apiPath } from '../fixtures/env';
+import { channelInboundRows, channelOutboxRows } from '../fixtures/ingressRecords';
 import { requireSandboxHandle, sandboxExec } from '../fixtures/sandboxOps';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView } from '../fixtures/sessionPage';
@@ -20,6 +21,13 @@ onPassOnly(async ({ request }) => {
   // Deleting the Assistant deletes its triggers.
   if (assistantId) await new AstraApi(request).deleteAssistant(assistantId);
 });
+
+/** The Hermes cron jobs a conversation scheduled, and how far each one's runs were delivered (`hermes_cron_jobs`). */
+function cronJobs(sessionId: string): Array<{ job_id: string; delivered_run_at: string | null }> {
+  return postgresRows<{ job_id: string; delivered_run_at: string | null }>(
+    `SELECT job_id, delivered_run_at FROM hermes_cron_jobs WHERE session_id = ${sqlLiteral(sessionId)} ORDER BY job_id`,
+  );
+}
 
 /** The text Hermes saved as the run's response, the part after its ``## Response`` heading. */
 function savedResponse(output: string): string {
@@ -96,7 +104,7 @@ test('an Assistant job created from a chat reports its run to that chat without 
     await expect.poll(() => recipient.deliveries.map((row) => row.text), { timeout: 60_000 })
       .toEqual([expect.stringContaining(ready)]);
     const readyAt = recipient.deliveries[0].receivedAt;
-    const owned = () => documentsByField('hermes_cron_jobs', '$.session_id', sessionId);
+    const owned = () => cronJobs(sessionId);
     await expect.poll(() => owned().length).toBe(2);
     evidence.created = { jobs: owned(), deliveries: [...recipient.deliveries] };
 
@@ -111,10 +119,16 @@ test('an Assistant job created from a chat reports its run to that chat without 
 
     // The delivered text is the run Hermes recorded in the box, not a reply the conversation wrote.
     const handle = await requireSandboxHandle(api, sandboxId);
-    const savedRun = (id: string) => sandboxExec(handle, [
-      `f=$(find / -path /proc -prune -o -type f -path '*/cron/output/${id}/*.md' -print 2>/dev/null | sort | tail -n 1)`,
-      '[ -n "$f" ] && cat -- "$f"',
-    ].join('\n'));
+    const identity = (await api.adminSessionDetail(sessionId)).runtime_identity as Record<string, unknown>;
+    const configDir = String(identity.config_dir || '').replace(/\/+$/, '');
+    expect(configDir, 'the Hermes runtime names its profile home').toMatch(/^\/.+/);
+    const savedRun = (id: string) => {
+      const directory = `${configDir}/cron/output/${id}`.replace(/'/g, "'\\''");
+      return sandboxExec(handle, [
+        `f=$(find '${directory}' -maxdepth 1 -type f -name '*.md' -print | sort | tail -n 1)`,
+        '[ -n "$f" ] && cat -- "$f"',
+      ].join('\n'));
+    };
     const runs = Object.fromEntries(owned().map((row) => [String(row.job_id), savedRun(String(row.job_id))]));
     const jobId = Object.keys(runs).find((id) => savedResponse(runs[id]).includes(cronMarker)) || '';
     const quietJobId = Object.keys(runs).find((id) => id !== jobId) || '';
@@ -130,28 +144,26 @@ test('an Assistant job created from a chat reports its run to that chat without 
     const history = await api.getMessages(sessionId, 100);
     expect(history.has_more).toBe(false);
     const replies = history.messages.filter((row) => row.role === 'assistant');
-    const runReplies = replies.filter((row) => String(row.message_id).startsWith(`hermes-cron:${jobId}:`));
+    // A run is reported as a response the runtime starts itself, named after the run.
+    const runReplies = replies.filter((row) => row.id.startsWith(`hermes-cron:${jobId}:`));
     expect(runReplies).toHaveLength(1);
-    expect(replies.filter((row) => String(row.message_id).startsWith(`hermes-cron:${quietJobId}:`))).toEqual([]);
-    expect(messageText(runReplies[0]).trim()).toBe(savedResponse(saved));
+    expect(runReplies[0]!.metadata).toMatchObject({ origin: 'engine', input_ids: [], outcome: 'completed' });
+    expect(replies.filter((row) => row.id.startsWith(`hermes-cron:${quietJobId}:`))).toEqual([]);
+    expect(messageText(runReplies[0]!).trim()).toBe(savedResponse(saved));
     expect(recipient.deliveries.map((row) => row.text)).toEqual(replies.map((row) => messageText(row).trim()));
-    await expect.poll(() => documentsByField('channel_outbox', '$.session_id', sessionId)
+    await expect.poll(() => channelOutboxRows(sessionId)
       .filter((row) => row.state === 'DELIVERED').map((row) => row.response_id).sort())
-      .toEqual(replies.map((row) => row.message_id).sort());
+      .toEqual(replies.map((row) => row.id).sort());
 
-    const inbound = documentsByField('channel_inbound', '$.deployment_id', deploymentId);
+    const inbound = channelInboundRows(deploymentId);
     expect(inbound).toHaveLength(2);
     const ignored = inbound.filter((row) => row.state === 'IGNORED');
     expect(ignored).toHaveLength(1);
     expect(ignored[0]).toMatchObject({ context_excluded: true });
-    const inputCommands = sessionEvents(sessionId).filter((event) => {
-      const command = event.payload as { command_type?: string };
-      return event.event_type === 'command.accepted'
-        && ['StartTurn', 'SubmitInput'].includes(command.command_type || '');
-    });
-    expect(inputCommands).toHaveLength(1);
-    expect(inputCommands[0].payload).toMatchObject({ command_type: 'StartTurn', content: ownerPrompt });
-    expect(JSON.stringify(sessionEvents(sessionId))).not.toContain(strangerMarker);
+    const inputs = sessionInputRows(sessionId);
+    expect(inputs.map((input) => ({ source: input.source, content: input.content })),
+      "the owner's message is the only input the chat ever sent").toEqual([{ source: 'channel', content: ownerPrompt }]);
+    expect(JSON.stringify(inputs)).not.toContain(strangerMarker);
     expect(JSON.stringify(history.messages)).not.toContain(strangerMarker);
 
     await openSessionView(page, sessionId);

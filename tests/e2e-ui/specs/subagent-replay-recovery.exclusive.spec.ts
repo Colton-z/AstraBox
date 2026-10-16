@@ -2,34 +2,31 @@
  * E2E: an open background Agent survives an instance restart and rebuilds its
  * completed transcript drawer from durable engine state.
  *
- * The restart happens only after the launch turn has opened a durable
- * background manifest and before that manifest materializes. Recovery must
- * append the terminal child facts while the native parent continuation waits
- * for release, before its Result can flush them. The browser comes back cold, so a Done row and
- * a completed Bash card can only come from the mirrored child transcript, not
- * from the page's pre-restart registry.
+ * The restart happens after the reply that launched the Agent has ended and
+ * while the child is still working. The child finishes across the restart;
+ * Claude answers its completion on its own and, as the prompt asks, runs one
+ * Bash command this spec holds open. The restarted server's reader takes the
+ * session's lease and resumes the runtime's events from the position the old
+ * process committed (`session_runtime/host.py`). Inside that held continuation
+ * the browser comes back cold, so a closed `completed` row and a completed
+ * Bash card in the child's drawer can only come from what the platform
+ * recorded after the restart and from the child's own transcript in the
+ * SessionStore mirror (`stored_child_transcript_facts` in
+ * `engine/claude_code.py`) — not from the page's pre-restart registry, and not
+ * from the parent's continuation ending.
  *
- * Nothing reads the conversation live between the restart and that append:
- * the page leaves before the restart, and until the materialization exists
- * the spec reads only the Session row, workspace files and the journal. A
- * live reader would change the scene: an engine attach publishes the held
- * continuation as an engine-owned response, and that response keeps the
- * conversation out of IDLE until its Result, which is the state
- * `_materialize_background_continuation_event` waits for.
+ * The page leaves before the restart, so nothing reads the conversation in a
+ * browser between the restart and the cold drawer.
  *
  * This is exclusive because restarting the shared server disrupts every other
  * session on that host. `run-round.mjs` detects restartServerContainer callers
  * and puts them in their own serial pass.
  */
 import { expect, test, type Page } from '@playwright/test';
+import type { Response } from '@playwright/test';
 
-import {
-  AstraApi,
-  type ChildRunRecord,
-  type MessageRecord,
-  type SessionRecord,
-} from '../fixtures/astraApi';
-import { oracleDbPath, sessionEvents } from '../fixtures/dbOracle';
+import { AstraApi, messageToolCalls, type ChildRunRecord } from '../fixtures/astraApi';
+import { nativeTranscriptRows, oracleDbPath, sessionResponseRows } from '../fixtures/dbOracle';
 import { absoluteBaseUrl, parseTimeoutEnv } from '../fixtures/env';
 import { PlatformApi } from '../fixtures/platformApi';
 import {
@@ -40,47 +37,24 @@ import {
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
 
+test.use({ locale: 'en-US' });
+
 const OPEN_WINDOW_TIMEOUT_MS = parseTimeoutEnv(
   'ASTRABOX_E2E_SUBAGENT_REPLAY_OPEN_TIMEOUT_MS',
   150_000,
 );
-const MATERIALIZATION_TIMEOUT_MS = parseTimeoutEnv(
+const RECOVERY_TIMEOUT_MS = parseTimeoutEnv(
   'ASTRABOX_E2E_SUBAGENT_REPLAY_MATERIALIZATION_TIMEOUT_MS',
   240_000,
 );
 const BACKGROUND_SLEEP_SECONDS = 45;
-const TERMINAL_SESSION_STATES = new Set([
-  'RECOVERY_REQUIRED',
-  'TERMINATED',
-  'DELETED',
-  'FAILED',
-]);
-
-interface OpenWindowProbe {
-  window: {
-    event: Record<string, unknown>;
-    publicChildRunId: string;
-  } | null;
-  diagnostic: string;
-}
-
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+// Claude Code keeps each Agent's conversation in a transcript of its own,
+// `subagents/agent-<id>` in the session's SessionStore mirror
+// (`engine/claude_code_background.py`).
+const AGENT_TRANSCRIPT_PREFIX = 'subagents/agent-';
 
-function nonEmptyStrings(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.map((item) => String(item).trim()).filter(Boolean)
-    : [];
-}
-
-function stringMap(value: unknown): Record<string, string> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>)
-      .map(([key, item]) => [key.trim(), String(item).trim()])
-      .filter(([key, item]) => key && item),
-  );
-}
-
+/** The engine's own handles on a child; the public API addresses it by `child_run_id` only. */
 function expectPublicRestToHideNativeRefs(
   value: unknown,
   nativeRefs: string[],
@@ -96,10 +70,6 @@ function expectPublicRestToHideNativeRefs(
     'parentEngineRef',
     'controlRef',
     'transcriptRef',
-    'engine_refs',
-    'control_to_engine_ref',
-    'transcript_refs',
-    'transcript_to_engine_ref',
   ]) {
     expect(wire, `${label} must not expose private field ${key}`).not.toContain(`"${key}"`);
   }
@@ -108,178 +78,78 @@ function expectPublicRestToHideNativeRefs(
   }
 }
 
-function lifecycleFacts(event: Record<string, unknown>): Record<string, unknown>[] {
-  const blocks = eventPayload(event).blocks;
-  if (!Array.isArray(blocks)) return [];
-  return blocks.flatMap((block) => {
-    if (!block || typeof block !== 'object') return [];
-    const data = (block as Record<string, unknown>).data;
-    if (!data || typeof data !== 'object' || Array.isArray(data)) return [];
-    const fact = data as Record<string, unknown>;
-    return fact.kind === 'lifecycle' ? [fact] : [];
-  });
+/** The input id the inputs route answered a composer send with. */
+async function acceptedInputId(response: Response): Promise<string> {
+  const body = (await response.json()) as { data?: { input_id?: unknown } };
+  const inputId = String(body.data?.input_id ?? '').trim();
+  expect(inputId, 'the inputs route must answer with the accepted input id').not.toBe('');
+  return inputId;
 }
 
-function eventPayload(event: Record<string, unknown>): Record<string, unknown> {
-  return event.payload && typeof event.payload === 'object'
-    ? (event.payload as Record<string, unknown>)
-    : {};
+// ── Claude's own transcript, as the SessionStore mirror holds it ───────────
+
+interface NativeEntry {
+  subpath: string | null;
+  entry: Record<string, unknown>;
 }
 
-function materializationsForOpenedEvent(
-  events: Record<string, unknown>[],
-  openedEventSeq: number,
-): Record<string, unknown>[] {
-  return events.filter((event) => (
-    String(event.event_type || '') === 'turn.background_tasks_materialized'
-    && Number(eventPayload(event).source_opened_event_seq) === openedEventSeq
-  ));
+function nativeEntries(sessionId: string): NativeEntry[] {
+  return nativeTranscriptRows(sessionId).map((row) => ({
+    subpath: row.subpath,
+    entry: JSON.parse(String(row.entry_json)) as Record<string, unknown>,
+  }));
 }
 
-/**
- * Parent Results journaled after the manifest, other than the launcher's own.
- *
- * The manifest is journaled at the `async_launched` receipt, so the launching
- * turn's own Result follows it. That Result settles the launch while the child
- * is still running; only a later parent Result could flush child facts.
- */
-function laterParentCompletions(
-  events: Record<string, unknown>[],
-  openedEventSeq: number,
-  launcherTurnId: string,
-): Record<string, unknown>[] {
-  return events.filter((event) => (
-    Number(event.event_seq) > openedEventSeq
-    && String(event.event_type || '') === 'turn.completed'
-    && String(event.turn_id || '').trim() !== launcherTurnId
-  ));
+/** A line of the parent's own lane, not a sub-agent's line carried in its file. */
+function isParentLane(item: NativeEntry): boolean {
+  if (item.subpath !== null || item.entry.isSidechain === true) return false;
+  return String(item.entry.parentToolUseId ?? item.entry.parent_tool_use_id ?? '').trim() === '';
 }
 
-async function waitForOpenBackgroundWindow(
-  api: AstraApi,
-  sessionId: string,
-  timeoutMs: number,
-): Promise<OpenWindowProbe> {
-  const deadline = Date.now() + timeoutMs;
-  let lastSession: SessionRecord | null = null;
-  let lastChildRuns: ChildRunRecord[] = [];
-  let lastEvents: Record<string, unknown>[] = [];
+function contentBlocks(entry: Record<string, unknown>): Record<string, unknown>[] {
+  const message = entry.message;
+  if (!message || typeof message !== 'object') return [];
+  const content = (message as Record<string, unknown>).content;
+  return Array.isArray(content)
+    ? content.filter((block): block is Record<string, unknown> => Boolean(block) && typeof block === 'object')
+    : [];
+}
 
-  while (Date.now() < deadline) {
-    const [session, childRunPage] = await Promise.all([
-      api.getSession(sessionId),
-      api.listChildRuns(sessionId),
-    ]);
-    lastSession = session;
-    lastChildRuns = childRunPage.child_runs;
-    lastEvents = sessionEvents(sessionId);
+/** Claude's launch receipt for this run's backgrounded Agent call: the Agent's own id. */
+function nativeAgentIds(sessionId: string, marker: string): string[] {
+  const parent = nativeEntries(sessionId).filter(isParentLane);
+  const calls = parent.flatMap((item) => contentBlocks(item.entry))
+    .filter((block) => block.type === 'tool_use' && ['Agent', 'Task'].includes(String(block.name))
+      && (block.input as Record<string, unknown> | undefined)?.run_in_background === true
+      && JSON.stringify(block.input).includes(marker));
+  return calls.flatMap((call) => parent.flatMap((item) => {
+    const result = item.entry.toolUseResult as Record<string, unknown> | undefined;
+    const receipt = result?.status === 'async_launched'
+      && contentBlocks(item.entry).some((block) => block.type === 'tool_result' && block.tool_use_id === call.id);
+    return receipt && result?.agentId ? [String(result.agentId)] : [];
+  }));
+}
 
-    if (TERMINAL_SESSION_STATES.has(String(session.state || ''))) {
-      throw new Error(
-        `session ${sessionId} reached ${session.state} while waiting for a background replay window; `
-        + `last_error=${session.last_error || '<none>'}`,
-      );
-    }
+interface NativeBash {
+  toolUseId: string;
+  input: Record<string, unknown>;
+  results: Record<string, unknown>[];
+}
 
-    const opened = lastEvents.find(
-      (event) => String(event.event_type || '') === 'turn.background_tasks_opened',
-    );
-    if (opened) {
-      const openedEventSeq = Number(opened.event_seq);
-      const backgroundState = session.background_task_state;
-      const stateOpenedEventSeq = backgroundState && typeof backgroundState === 'object'
-        ? Number((backgroundState as Record<string, unknown>).opened_event_seq)
-        : Number.NaN;
-      const materialized = materializationsForOpenedEvent(lastEvents, openedEventSeq);
-      if (
-        Number.isFinite(openedEventSeq)
-        && openedEventSeq > 0
-        && stateOpenedEventSeq === openedEventSeq
-        && materialized.length === 0
-        && lastChildRuns.length === 1
-      ) {
-        return {
-          window: {
-            event: opened,
-            publicChildRunId: lastChildRuns[0].child_run_id,
-          },
-          diagnostic: '',
-        };
-      }
-      if (materialized.length > 0) {
-        return {
-          window: null,
-          diagnostic:
-            `the Agent settled before the OPEN window could be faulted `
-            + `(opened_event_seq=${openedEventSeq}, materialized=${materialized.length})`,
-        };
-      }
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1_500));
+/** Bash calls whose input carries `fragment`, with their results, in one transcript lane. */
+function nativeBash(entries: NativeEntry[], fragment: string): NativeBash[] {
+  const blocks = entries.flatMap((item) => contentBlocks(item.entry));
+  const calls = new Map<string, Record<string, unknown>>();
+  for (const block of blocks) {
+    if (block.type !== 'tool_use' || block.name !== 'Bash') continue;
+    if (!JSON.stringify(block.input ?? null).includes(fragment)) continue;
+    calls.set(String(block.id ?? ''), (block.input ?? {}) as Record<string, unknown>);
   }
-
-  const eventTypes = lastEvents.map((event) => String(event.event_type || '')).filter(Boolean);
-  return {
-    window: null,
-    diagnostic:
-      `no OPEN turn.background_tasks_opened manifest appeared within ${timeoutMs}ms `
-      + `(session_state=${lastSession?.state || '<none>'}, current_turn_id=${lastSession?.current_turn_id || '<none>'}, `
-      + `child_runs=${JSON.stringify(lastChildRuns)}, `
-      + `journal_event_types=${JSON.stringify(eventTypes)})`,
-  };
-}
-
-async function waitForRecoveredMaterialization(
-  api: AstraApi,
-  sessionId: string,
-  openedEventSeq: number,
-  timeoutMs: number,
-): Promise<{
-  session: SessionRecord;
-  messages: MessageRecord[];
-  childRuns: ChildRunRecord[];
-  events: Record<string, unknown>[];
-}> {
-  const deadline = Date.now() + timeoutMs;
-  let lastSession: SessionRecord | null = null;
-  let lastMessages: MessageRecord[] = [];
-  let lastChildRuns: ChildRunRecord[] = [];
-  let lastEvents: Record<string, unknown>[] = [];
-
-  while (Date.now() < deadline) {
-    const session = await api.getSession(sessionId);
-    lastSession = session;
-    lastEvents = sessionEvents(sessionId);
-    if (TERMINAL_SESSION_STATES.has(String(session.state || ''))) {
-      throw new Error(
-        `session ${sessionId} reached ${session.state} during background recovery; `
-        + `last_error=${session.last_error || '<none>'}`,
-      );
-    }
-    // Messages and child runs are read once recovery has materialized; the
-    // poll continues until the child reads closed.
-    if (materializationsForOpenedEvent(lastEvents, openedEventSeq).length > 0) {
-      const [messagePage, childRunPage] = await Promise.all([
-        api.getMessages(sessionId, 50),
-        api.listChildRuns(sessionId),
-      ]);
-      lastMessages = messagePage.messages || [];
-      lastChildRuns = childRunPage.child_runs;
-      if (!session.background_task_state && lastChildRuns.some((childRun) => childRun.closed)) {
-        return { session, messages: lastMessages, childRuns: lastChildRuns, events: lastEvents };
-      }
-    }
-    await new Promise((resolve) => setTimeout(resolve, 2_000));
-  }
-
-  throw new Error(
-    `background manifest ${openedEventSeq} did not materialize after instance recovery `
-    + `within ${timeoutMs}ms (session_state=${lastSession?.state || '<none>'}, `
-    + `materialized=${materializationsForOpenedEvent(lastEvents, openedEventSeq).length}, `
-    + `background_task_state=${JSON.stringify(lastSession?.background_task_state || null)}, `
-    + `child_runs=${JSON.stringify(lastChildRuns)}, `
-    + `journal_event_types=${JSON.stringify(lastEvents.map((event) => event.event_type))})`,
-  );
+  return [...calls].filter(([toolUseId]) => toolUseId).map(([toolUseId, input]) => ({
+    toolUseId,
+    input,
+    results: blocks.filter((block) => block.type === 'tool_result' && block.tool_use_id === toolUseId),
+  }));
 }
 
 function backgroundAgentPrompt(
@@ -330,12 +200,10 @@ test('background Agent recovery replays its durable transcript drawer', async ({
   const platform = new PlatformApi(request);
   const runId = Date.now();
   const childMarker = `REPLAYED_SUBAGENT_${runId}`;
-  const startedPath = `/workspace/.astrabox-e2e-replay-${runId}.started`;
-  const releasePath = `/workspace/.astrabox-e2e-replay-${runId}.release`;
 
-  // The open/materialized journal pair is the durable boundary under test.
-  // Resolve the oracle before creating anything so a missing deployment handle
-  // skips with setup instructions and leaves no session behind.
+  // The session's records are the oracle across the restart. Resolve the
+  // database before creating anything so a missing deployment handle fails
+  // with setup instructions and leaves no session behind.
   test.info().annotations.push({ type: 'oracle-db', description: oracleDbPath() });
 
   const agent = await api.defaultAgent();
@@ -347,72 +215,45 @@ test('background Agent recovery replays its durable transcript drawer', async ({
   await api.setPermissionMode(sessionId, 'bypassPermissions');
   const sandboxId = String(ready.sandbox_id || '').trim();
   expect(sandboxId, 'the replay scenario requires the session runtime published by the platform').not.toBe('');
+  const root = String((await platform.listFiles(sessionId)).root_path || '').trim();
+  expect(root, 'the files listing must name the workspace root the gate lives in').not.toBe('');
+  const startedPath = `${root}/.astrabox-e2e-replay-${runId}.started`;
+  const releasePath = `${root}/.astrabox-e2e-replay-${runId}.release`;
 
   await page.setViewportSize({ width: 1280, height: 720 });
   await openSessionView(page, sessionId);
   const prompt = backgroundAgentPrompt(runId, childMarker, startedPath, releasePath);
-  await sendPrompt(page, sessionId, prompt);
+  const launchInputId = await acceptedInputId(await sendPrompt(page, sessionId, prompt));
   await expect(
     page.getByTestId('user-message').last(),
     'the browser must show the launch instruction it dispatched',
   ).toContainText(childMarker, { timeout: 30_000 });
 
-  // Background work opens from the engine's `async_launched` receipt, so the
-  // manifest is journaled before the launching turn's own Result.
-  const probe = await waitForOpenBackgroundWindow(
-    api,
-    sessionId,
-    OPEN_WINDOW_TIMEOUT_MS,
-  );
-  expect(probe.window, probe.diagnostic).not.toBeNull();
-
-  const openedEvent = probe.window!.event;
-  const openedEventSeq = Number(openedEvent.event_seq);
-  const openedPayload = eventPayload(openedEvent);
-  const transcriptRefs = nonEmptyStrings(openedPayload.transcript_refs);
-  const engineRefs = nonEmptyStrings(openedPayload.engine_refs);
-  const transcriptToEngineRef = stringMap(openedPayload.transcript_to_engine_ref);
-  const controlToEngineRef = stringMap(openedPayload.control_to_engine_ref);
-  const controlRefs = Object.keys(controlToEngineRef);
-  expect(transcriptRefs, 'one async launch must name its private transcript').toHaveLength(1);
-  expect(engineRefs, 'one async launch must name its private engine child').toHaveLength(1);
+  // ── The window: the launch reply has ended and its one child still works.
+  const launchReply = await api.waitForReplyTo(sessionId, launchInputId, { timeoutMs: OPEN_WINDOW_TIMEOUT_MS });
+  expect(launchReply.metadata?.outcome, 'the reply that launched the Agent must complete').toBe('completed');
+  const open = await api.waitForChildRuns(sessionId, (rows) => rows.length === 1, OPEN_WINDOW_TIMEOUT_MS);
   expect(
-    transcriptToEngineRef,
-    'the private manifest must bind the transcript locator to the logical engine child',
-  ).toEqual({ [transcriptRefs[0]]: engineRefs[0] });
-  // TaskStarted may precede the launching Result. In that ordering Claude has
-  // already published its task_id control locator; otherwise ordered replay
-  // enriches the same child after the open manifest is persisted.
-  expect(
-    Object.values(controlToEngineRef).every((engineRef) => engineRef === engineRefs[0]),
-    'every lifecycle-published stop handle must resolve to the launched engine child',
-  ).toBe(true);
-  expect(
-    openedPayload,
-    'the private manifest must not preserve the old public-id list',
-  ).not.toHaveProperty('child_run_ids');
-  expect(
-    openedPayload,
-    'the private manifest must not preserve the old control-id list',
-  ).not.toHaveProperty('control_ids');
-
-  const childRunId = probe.window!.publicChildRunId;
+    open[0]!.closed,
+    'the Agent settled before the restart could land inside its work; the scene was not reached',
+  ).toBe(false);
+  const childRunId = open[0]!.child_run_id;
+  await expect.poll(() => nativeAgentIds(sessionId, childMarker), {
+    timeout: 15_000,
+    message: 'Claude\'s own transcript must hold one backgrounded Agent call with its async_launched receipt',
+  }).toHaveLength(1);
+  const agentIdNative = nativeAgentIds(sessionId, childMarker)[0]!;
   expect(childRunId, 'the Session projection must mint one public child UUID').toMatch(UUID_PATTERN);
-  expect(childRunId).not.toBe(engineRefs[0]);
-  expect(childRunId).not.toBe(transcriptRefs[0]);
-  const beforeRestartChildRuns = await api.listChildRuns(sessionId);
-  expect(beforeRestartChildRuns.child_runs.map((childRun) => childRun.child_run_id)).toEqual([childRunId]);
+  expect(childRunId).not.toBe(agentIdNative);
   expectPublicRestToHideNativeRefs(
-    beforeRestartChildRuns,
-    [...engineRefs, ...transcriptRefs, ...controlRefs],
+    await api.listChildRuns(sessionId),
+    [agentIdNative],
     'pre-restart child-runs REST',
   );
-  const parentTurnId = String(openedEvent.turn_id || '').trim();
-  expect(parentTurnId, 'the open manifest must stay bound to its launcher turn').not.toBe('');
   expect(
-    materializationsForOpenedEvent(sessionEvents(sessionId), openedEventSeq),
-    'the fault must land before the background completion materializes',
-  ).toHaveLength(0);
+    sessionResponseRows(sessionId).filter((row) => row.origin === 'engine'),
+    'the restart must land before Claude answers the finished child',
+  ).toEqual([]);
 
   // Resolve compute through the platform-published id and endpoint. This is
   // deliberately runtime-neutral: Docker and Kubernetes are substrate choices,
@@ -433,101 +274,96 @@ test('background Agent recovery replays its durable transcript drawer', async ({
   ).toBe(sandboxId);
   expect(sandboxRunning(sandboxHandle), 'the original sandbox must still be running after restart').toBe(true);
 
-  // Restore the original held-continuation scenario, using the shared file
-  // channel rather than a fixed sleep or a sibling isolation's private /tmp.
+  // Claude's own continuation enters its real Bash gate: the child finished and
+  // Claude is answering it, through the shared file channel rather than a fixed
+  // sleep or a sibling isolation's private /tmp.
   await expect.poll(async () => {
-    const files = await platform.listFiles(sessionId, '/workspace', 10_000);
+    const files = await platform.listFiles(sessionId, root, 10_000);
     if (!files.entries?.some((entry) => entry.name === startedPath.split('/').at(-1) && entry.kind === 'file')) return false;
     return await api.downloadFileText(sessionId, startedPath, 10_000) === 'started';
   }, { timeout: 60_000, intervals: [500, 1_000], message: 'the native parent continuation must enter its real Bash gate' }).toBe(true);
 
-  const settled = await waitForRecoveredMaterialization(
-    api,
-    sessionId,
-    openedEventSeq,
-    MATERIALIZATION_TIMEOUT_MS,
-  );
-  const matchingMaterializations = materializationsForOpenedEvent(
-    settled.events,
-    openedEventSeq,
-  );
+  // ── What the restarted platform recorded, while the continuation is held.
+  let recovered: ChildRunRecord[] = [];
+  await expect.poll(async () => {
+    recovered = (await api.listChildRuns(sessionId)).child_runs.filter((row) => row.child_run_id === childRunId);
+    return {
+      child: recovered.map((row) => ({
+        engine_kind: row.engine_kind, engine_status: row.engine_status, closed: row.closed, operations: row.operations,
+      })),
+      answers: sessionResponseRows(sessionId).filter((row) => row.origin === 'engine')
+        .map((row) => ({ status: row.status, input_ids: row.input_ids })),
+    };
+  }, {
+    timeout: RECOVERY_TIMEOUT_MS,
+    intervals: [1_000, 2_000],
+    message: 'after the restart, the child must read closed at Claude\'s exact completed status, under the '
+      + 'same public UUID, while Claude\'s own answer to it is the one response still running',
+  }).toEqual({
+    child: [{ engine_kind: 'claude_code', engine_status: 'completed', closed: true, operations: [] }],
+    answers: [{ status: 'running', input_ids: [] }],
+  });
+  const heldParent = () => nativeBash(nativeEntries(sessionId).filter(isParentLane), startedPath);
+  await expect.poll(() => heldParent().length, {
+    timeout: 15_000,
+    message: 'Claude\'s transcript must hold the parent continuation\'s one gated Bash call',
+  }).toBe(1);
   expect(
-    matchingMaterializations,
-    'recovery must claim one materialization for the open manifest, not replay it twice',
-  ).toHaveLength(1);
+    heldParent()[0]!.input.run_in_background,
+    'the gated command must run in the parent\'s foreground, so its result stays owed until release',
+  ).not.toBe(true);
   expect(
-    eventPayload(matchingMaterializations[0]).source,
-    'recovery must materialize from durable detached-child evidence',
-  ).toBe('engine_detached_child');
-  expect(
-    laterParentCompletions(settled.events, openedEventSeq, parentTurnId),
-    'no later parent Result may be available to flush the recovered child facts',
-  ).toHaveLength(0);
-  const privateLifecycleFacts = lifecycleFacts(matchingMaterializations[0]);
-  expect(privateLifecycleFacts, 'materialization must contain one private engine lifecycle fact').toHaveLength(1);
-  expect(privateLifecycleFacts[0]).toEqual(expect.objectContaining({
-    kind: 'lifecycle',
-    engineRef: engineRefs[0],
-    event: 'closed',
-    engineEvent: 'task_notification',
-    engineStatus: 'completed',
-    operations: [],
-  }));
-  const controlRef = String(privateLifecycleFacts[0].controlRef || '').trim();
-  expect(controlRef, 'Claude terminal evidence must retain its private control locator').not.toBe('');
-  if (controlRefs.length > 0) {
-    expect(
-      controlRefs,
-      'a stop handle observed before restart must remain the terminal lifecycle control locator',
-    ).toContain(controlRef);
-  }
-  expect(
-    settled.session.background_task_state,
-    'the recovered completion must close the durable background window',
-  ).toBeFalsy();
-
-  const launcher = settled.messages.find((message) => (
-    message.role === 'assistant'
-    && String(message.turn_id || '').trim() === parentTurnId
-  ));
-  expect(launcher, 'materialization must update the original launcher message').toBeTruthy();
-  const matchingChildRuns = settled.childRuns.filter(
-    (item) => item.child_run_id === childRunId,
-  );
-  expect(
-    matchingChildRuns,
-    'recovery must preserve the public UUID and Claude\'s exact completed status',
-  ).toEqual([
-    expect.objectContaining({
-      child_run_id: childRunId,
-      engine_kind: 'claude_code',
-      engine_status: 'completed',
-      closed: true,
-      operations: [],
-    }),
-  ]);
+    heldParent()[0]!.results,
+    'the parent continuation must still be held: no result for its Bash call, so nothing after it can carry the child',
+  ).toEqual([]);
   expectPublicRestToHideNativeRefs(
-    { session_id: sessionId, child_runs: settled.childRuns },
-    [...engineRefs, ...transcriptRefs, controlRef],
+    { session_id: sessionId, child_runs: recovered },
+    [agentIdNative],
     'recovered child-runs REST',
   );
+
+  // The child's transcript, through its public id, against the child's own
+  // record of the same Bash round trip.
+  const childNative = () => nativeEntries(sessionId)
+    .filter((item) => item.subpath === `${AGENT_TRANSCRIPT_PREFIX}${agentIdNative}`);
+  await expect.poll(() => nativeBash(childNative(), childMarker).map((call) => call.results.length), {
+    timeout: 15_000,
+    message: 'the child\'s own transcript must hold its one Bash call and that call\'s result',
+  }).toEqual([1]);
+  const childBash = nativeBash(childNative(), childMarker);
+  expect(
+    JSON.stringify(childBash[0]!.results),
+    'the child\'s own transcript must hold that call\'s result with the printed marker',
+  ).toContain(childMarker);
   const recoveredTranscript = await api.getChildRunMessages(sessionId, childRunId);
   expect(recoveredTranscript.child_run_id, 'transcript lookup must use the same stable public UUID').toBe(childRunId);
-  expectPublicRestToHideNativeRefs(
-    recoveredTranscript,
-    [...engineRefs, ...transcriptRefs, controlRef],
-    'recovered child transcript REST',
-  );
+  expectPublicRestToHideNativeRefs(recoveredTranscript, [agentIdNative], 'recovered child transcript REST');
+  const childBlocks = recoveredTranscript.messages.flatMap((message) => message.content);
   expect(
-    settled.messages.flatMap((message) => message.blocks || [])
-      .filter((block) => String(block.type || '') === 'subagent'),
-    'root history must not own the replayed child transcript',
-  ).toHaveLength(0);
+    childBlocks.filter((block) => block.type === 'tool_use' && block.id === childBash[0]!.toolUseId)
+      .map((block) => block.name),
+    'the child transcript must carry the child\'s own Bash call once',
+  ).toEqual(['Bash']);
+  expect(
+    JSON.stringify(childBlocks.filter((block) => block.type === 'tool_result'
+      && block.tool_use_id === childBash[0]!.toolUseId)),
+    'the child transcript must carry that call\'s result',
+  ).toContain(childMarker);
+
+  const history = await api.getMessages(sessionId, 50);
+  expect(
+    history.messages.flatMap((message) => message.parts).filter((part) => part.type === 'data-subagent'),
+    'root history must not own the child\'s lifecycle or transcript',
+  ).toEqual([]);
+  expect(
+    history.messages.flatMap(messageToolCalls).filter((call) => call.toolCallId === childBash[0]!.toolUseId),
+    'root history must not own the child\'s tool calls',
+  ).toEqual([]);
 
   // A cold navigation exercises the Session child-run API -> registry. A
   // lifecycle summary can make a row look complete, so the load-bearing assertion
   // is the completed Bash card and marker inside that card: those require the
-  // named subagent transcript to have been replayed from the engine mirror.
+  // child's transcript to have been read from the engine mirror.
   await openSessionView(page, sessionId);
   await expect(
     page.getByTestId('user-message').filter({ hasText: childMarker }),
@@ -536,23 +372,21 @@ test('background Agent recovery replays its durable transcript drawer', async ({
   await showAgentsTab(page);
 
   const panel = page.getByTestId('subagent-agents-panel');
-  const row = panel
-    .getByTestId('subagent-agent-row')
-    .filter({ hasText: childRunId.slice(0, 8) });
+  const row = panel.locator(`[data-child-run-id="${childRunId}"]`);
   await expect(
     row,
-    'the replayed launcher must rebuild exactly one row keyed by its Agent tool call',
+    'the recovered Agent must render exactly one row under its public UUID',
   ).toHaveCount(1, { timeout: 45_000 });
   await expect(
     row.getByText(/^completed$/),
-    'the replayed Agent row must show Claude\'s exact completed status',
+    'the recovered Agent row must show Claude\'s exact completed status',
   ).toBeVisible({ timeout: 45_000 });
   await row.click();
 
   const drawer = page.getByTestId('subagent-transcript-drawer');
   await expect(drawer).toBeVisible({ timeout: 15_000 });
   const completedBash = drawer.getByRole('button', {
-    name: /^Bash\s+(Done|完成)$/,
+    name: /^Bash\s+(Done|已完成)$/,
   }).first();
   await expect(
     completedBash,
@@ -561,25 +395,27 @@ test('background Agent recovery replays its durable transcript drawer', async ({
   await completedBash.click();
   await expect(
     completedBash.locator('xpath=..'),
-    'the replayed Bash card must belong to this child run',
+    'the recovered Bash card must belong to this child run',
   ).toContainText(childMarker, { timeout: 15_000 });
 
   expect(
-    laterParentCompletions(sessionEvents(sessionId), openedEventSeq, parentTurnId),
-    'the cold child drawer must recover before releasing the parent Result',
-  ).toHaveLength(0);
-  await api.uploadFileText(sessionId, '/workspace', releasePath.split('/').at(-1)!, 'release', 10_000);
+    sessionResponseRows(sessionId).filter((row) => row.origin === 'engine').map((row) => row.status),
+    'the cold child drawer must recover before the parent continuation ends',
+  ).toEqual(['running']);
+  await api.uploadFileText(sessionId, root, releasePath.split('/').at(-1)!, 'release', 10_000);
   expect(await api.downloadFileText(sessionId, releasePath, 10_000)).toBe('release');
   expect((await api.waitForSessionReady(sessionId)).state, 'the released native continuation must settle normally').toBe('READY');
+  expect(
+    sessionResponseRows(sessionId).filter((row) => row.origin === 'engine')
+      .map((row) => ({ status: row.status, outcome: row.outcome })),
+    'Claude\'s own continuation must end completed once released',
+  ).toEqual([{ status: 'ended', outcome: 'completed' }]);
 
   console.log('SUBAGENT_REPLAY_RECOVERY_E2E_EVIDENCE', JSON.stringify({
     session_id: sessionId,
     sandbox_id: sandboxId,
     sandbox_runtime: sandboxHandle.runtime,
-    parent_turn_id: parentTurnId,
+    launch_response_id: launchReply.id,
     child_run_id: childRunId,
-    opened_event_seq: openedEventSeq,
-    materialized_event_seq: matchingMaterializations[0]?.event_seq,
-    later_parent_turn_completions: 0,
   }));
 });

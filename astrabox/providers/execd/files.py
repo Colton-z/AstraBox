@@ -16,9 +16,9 @@ core:
   which become :class:`SandboxPathNotFound` and :class:`SandboxPathRejected`;
 * :meth:`ExecdFiles.remove` uses execd's recursive removal, which unlinks a
   symlink instead of following it;
-* execd answers an upload only after it has copied the received body from its
-  multipart spool to the target and synced the target to disk
-  (``components/execd/pkg/web/controller/filesystem_upload.go`` in OpenSandbox),
+* the release's execd upload controller streams each file part to its target
+  and syncs it before answering
+  (``containers/execd/stream-upload.patch`` over OpenSandbox's controller),
   so the wait for that answer grows with the file, as described at
   :data:`_UPLOAD_SETTLE_FLOOR_BYTES_PER_SECOND`.
 """
@@ -77,9 +77,8 @@ _KINDS: dict[str, SandboxEntryKind] = {
 }
 
 #: The slowest rate, in bytes per second, at which execd is expected to settle
-#: an upload. Settling means copying the received body from execd's multipart
-#: spool to the target and syncing it to disk, so execd's answer can lag the
-#: last request byte by the time it takes to write the whole file again. The
+#: an upload. Settling includes syncing the target to disk, so execd's answer
+#: can lag the last request byte while dirty file data is written back. The
 #: wait for that answer is therefore the client's ordinary request timeout
 #: plus the upload's size at this rate. The rate is far below the sustained
 #: write rate of the disks sandboxes run on, so a healthy box answers within

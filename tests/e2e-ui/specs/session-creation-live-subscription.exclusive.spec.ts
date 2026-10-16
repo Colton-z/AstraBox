@@ -15,7 +15,7 @@ type StreamAudit = {
 
 const STREAM_AUDIT_KEY = '__astraboxE2EStreamAudit';
 
-async function armBrowserStreamAudit(page: import('@playwright/test').Page, sessionId: string) {
+async function armBrowserStreamAudit(page: import('@playwright/test').Page, sessionId: string, afterSeq: number) {
   await page.evaluate(({ key, path }) => {
     type BrowserAudit = StreamAudit & { controller: AbortController };
     const store = window as unknown as Record<string, unknown>;
@@ -79,7 +79,7 @@ async function armBrowserStreamAudit(page: import('@playwright/test').Page, sess
     })();
   }, {
     key: STREAM_AUDIT_KEY,
-    path: apiPath(`/sessions/${sessionId}/ai-stream?follow=session`),
+    path: apiPath(`/sessions/${sessionId}/stream?after_seq=${afterSeq}`),
   });
 }
 
@@ -110,7 +110,7 @@ async function stopBrowserStreamAudit(page: import('@playwright/test').Page): Pr
 // the scene and names it in the report tail — see fixtures/sessionCleanup.ts.
 const sessions = trackSessions();
 
-test('agent_chat creation waits for READY before opening the SDK live subscription', async ({ request, page }) => {
+test('agent_chat creation follows the session stream from the start, without a refusal', async ({ request, page }) => {
   const api = new AstraApi(request);
   const agent = await api.defaultAgent();
   const sessionStates = new Map<string, string>();
@@ -151,7 +151,7 @@ test('agent_chat creation waits for READY before opening the SDK live subscripti
   page.on('request', (candidate) => {
     if (candidate.method() !== 'GET') return;
     const url = new URL(candidate.url());
-    const match = url.pathname.match(/\/sessions\/([^/]+)\/ai-stream$/);
+    const match = url.pathname.match(/\/sessions\/([^/]+)\/stream$/);
     if (!match) return;
     const id = decodeURIComponent(match[1]);
     streamOpenStates.push({ sessionId: id, state: sessionStates.get(id) || '<unobserved>' });
@@ -159,7 +159,7 @@ test('agent_chat creation waits for READY before opening the SDK live subscripti
   page.on('response', (response) => {
     if (response.request().method() !== 'GET') return;
     const path = new URL(response.url()).pathname;
-    const stream = path.match(/\/sessions\/([^/]+)\/ai-stream$/);
+    const stream = path.match(/\/sessions\/([^/]+)\/stream$/);
     if (stream) {
       streamResponses.push({ sessionId: decodeURIComponent(stream[1]), status: response.status() });
     }
@@ -191,22 +191,19 @@ test('agent_chat creation waits for READY before opening the SDK live subscripti
     const header = page.getByTestId('run-view').locator('header').first();
     const status = header.getByTestId('status-pill');
     await expect(status).toHaveAttribute('data-state', 'CREATING');
-    expect(await page.evaluate(() => document.visibilityState)).toBe('visible');
-    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
-    await page.waitForTimeout(300);
-    expect(
-      streamOpenStates.filter((item) => item.sessionId === sessionId),
-      'visibility recovery while CREATING must not bypass the live-subscription gate',
-    ).toEqual([]);
+    // A starting session accepts messages and delivers them once it is up, so
+    // the page follows its stream from the start: whatever the session says
+    // while it starts reaches this page without a reload.
+    await expect.poll(
+      () => streamOpenStates.filter((item) => item.sessionId === sessionId).length,
+      { timeout: 30_000, message: 'a creating conversation follows its stream' },
+    ).toBeGreaterThan(0);
     await expect(status).toHaveAttribute('data-state', 'CREATING');
     holdDetail = false;
     releaseDetail();
 
-    // The composer is NOT a readiness proxy: it enables during CREATING by
-    // design (sessionRunStatus.canQueueMessage — a message typed early queues
-    // and dispatches at READY). The claim under test is the SUBSCRIPTION:
-    // no ai-stream may open before provisioning reaches READY. So reach READY
-    // on the API's own word, then judge what the network observer recorded.
+    // The composer enables during CREATING by design: a message typed early
+    // waits on the server and is delivered once the session is up.
     await expect(page.getByTestId('composer-prompt')).toBeEnabled({ timeout: 60_000 });
     const ready = await api.waitForSessionReady(sessionId);
     expect(ready.state).toBe('READY');
@@ -214,14 +211,14 @@ test('agent_chat creation waits for READY before opening the SDK live subscripti
     await expect(status).toHaveAttribute('data-state', 'READY', { timeout: 30_000 });
     await expect.poll(
       () => streamResponses.filter((item) => item.sessionId === sessionId).map((item) => item.status),
-      { timeout: 30_000, message: 'READY must open the actual standing subscription without a reload' },
+      { timeout: 30_000, message: 'the standing subscription is answered without a reload' },
     ).toContain(200);
     await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
     await page.waitForTimeout(300);
     expect(
-      streamResponses.filter((item) => item.sessionId === sessionId).map((item) => item.status),
-      'visibility recovery must leave the READY subscription healthy',
-    ).not.toContain(409);
+      new Set(streamResponses.filter((item) => item.sessionId === sessionId).map((item) => item.status)),
+      'the session stream is never refused, while the session starts or after',
+    ).toEqual(new Set([200]));
 
     await expect.poll(
       () => childListResponses.some((item) => item.sessionId === sessionId && item.response.status() === 200),
@@ -243,30 +240,18 @@ test('agent_chat creation waits for READY before opening the SDK live subscripti
     await expect(page.getByText(/^(Runtime disconnected|运行时断开|Sandbox expired|沙箱已过期)$/)).toHaveCount(0);
     await expect(page.getByRole('button', { name: /^(Recover session|恢复会话)$/ })).toHaveCount(0);
     await expect(page.getByText('session runtime is still being created', { exact: false })).toHaveCount(0);
-    expect(
-      streamOpenStates
-        .filter((item) => item.sessionId === sessionId)
-        .every((item) => item.state === 'READY'),
-      'any idle standing subscription must wait until provisioning reaches READY',
-    ).toBe(true);
 
     const assistantCount = await api.assistantCount(sessionId);
     await sendPrompt(page, sessionId, 'Reply briefly without using tools.');
-    await expect.poll(
-      () => streamOpenStates.filter((item) => item.sessionId === sessionId).length,
-      {
-        timeout: 60_000,
-        message: 'the READY conversation should open its standing output subscription',
-      },
-    ).toBeGreaterThan(0);
-    const observedStates = streamOpenStates
-      .filter((item) => item.sessionId === sessionId)
-      .map((item) => item.state);
+    const reply = await api.waitForAssistantMessageCount(sessionId, assistantCount, 180_000);
+    await expect(
+      page.locator(`[data-message-id="${reply.id}"]`),
+      'the reply streams into the page that followed the session from its start',
+    ).toHaveCount(1, { timeout: 60_000 });
     expect(
-      new Set(observedStates),
-      'no output subscription may race session provisioning',
-    ).toEqual(new Set(['READY']));
-    await api.waitForAssistantMessageCount(sessionId, assistantCount, 180_000);
+      new Set(streamResponses.filter((item) => item.sessionId === sessionId).map((item) => item.status)),
+      'the session stream is never refused',
+    ).toEqual(new Set([200]));
     await api.waitForSessionReady(sessionId);
   } finally {
     holdDetail = false;
@@ -353,7 +338,7 @@ test('the browser renders incremental text before the session stream finishes', 
     await page.goto(appPath(`/sessions/${sessionId}`), { waitUntil: 'domcontentloaded' });
     await expect(page.getByTestId('run-view')).toBeVisible({ timeout: 60_000 });
     await expect(page.getByTestId('composer-prompt')).toBeEnabled({ timeout: 60_000 });
-    await armBrowserStreamAudit(page, sessionId);
+    await armBrowserStreamAudit(page, sessionId, Number((await api.getSession(sessionId)).output_seq ?? 0));
 
     await sendPrompt(
       page,

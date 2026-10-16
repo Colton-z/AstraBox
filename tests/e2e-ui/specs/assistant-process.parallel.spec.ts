@@ -1,30 +1,28 @@
 /**
- * E2E: a settled tool turn folds into one header, and the reader can open it —
- * live, after a reload, and after a failed detail read.
+ * E2E: a settled tool response folds into one header, and the reader can open
+ * it — live, after a reload, and after a failed detail read.
  *
  * The product path is one chain, and every link in it fails silently.
- * `history_blocks.py::project_record` replaces a settled response's tool work
- * with a single `process_block` and hands the folded blocks back separately;
- * `sessions.py::get_session_history_blocks` serves that projection with a
- * checkpoint cursor, `get_session_history_block_details` reopens one header at
- * that checkpoint, and `bridge_terminal.py::_schedule_process_summary` offers
- * the label the header is named with while
- * `session_read.py::_attach_process_summaries` puts it back on the page. Each
- * of those can answer with a well-formed, wrong body — a fold that hides the
- * conclusion as well as the work, a header nobody can open, a detail read
- * repeated on every expand, a label that is an error string — and every one of
- * them renders. The console shows something either way, the HTTP contract test
- * sees a valid envelope, and `tsc` sees a string.
+ * `history_blocks.py::fold_parts` replaces an ended response's tool work with
+ * a single `data-process-block` part; `load_history_page` serves that page
+ * pinned to the output position it was read at, `load_block_parts` reopens one
+ * header at that position, `process_summaries.py` writes the label the header
+ * is named with when the response ends, and `views.py` puts it back on the
+ * header of the page. Each of those can answer with a well-formed, wrong body —
+ * a fold that hides the conclusion as well as the work, a header nobody can
+ * open, a detail read repeated on every expand, a label that is an error
+ * string — and every one of them renders. The console shows something either
+ * way, the HTTP contract test sees a valid envelope, and `tsc` sees a string.
  *
  * What is asserted here therefore has to be the reader's outcome: the marker
  * the model answered with stays on the page, the tool cards leave it and come
  * back on one press, the detail endpoint is asked once per page load, and the
  * header's accessible name is the label rather than a failure. Two of those are
- * only true after a reload, which is where the browser has nothing but
- * `process_details` to work from.
+ * only true after a reload, which is where the browser has nothing but the
+ * header's `data-process-block` part to work from.
  *
- * Visibility is the assertion, never DOM presence. `MessageParts.tsx:462` and
- * `:562` keep both panels mounted while closed (`keepMounted`), so a folded
+ * Visibility is the assertion, never DOM presence. The two collapsibles in
+ * `MessageParts.tsx` keep their panels mounted while closed (`keepMounted`), so a folded
  * tool card is in the document the whole time — counting cards would pass on a
  * fold that hides nothing. A tool card, by contrast, unmounts its own body
  * (ai-elements/tool.tsx `ToolContent`), so the output text a card stands for is
@@ -42,7 +40,7 @@
  *
  * Engine independence: tool names differ per engine, so nothing here matches
  * `Bash` or `Read`. A card is located by `data-tool-call-id`, which carries the
- * `tool_use` block's own id, and is read through its header's state word.
+ * tool part's own `toolCallId`, and is read through its header's state word.
  *
  * This spec depends on the model reaching for a tool. When it does not, it
  * FAILS and names what the engine drove instead — it does not `test.skip()`,
@@ -55,7 +53,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { expect, test, type Locator, type Page, type Route } from '@playwright/test';
 
-import { AstraApi, messageText, type MessageRecord } from '../fixtures/astraApi';
+import { AstraApi, messageText, messageToolCalls, type MessageRecord } from '../fixtures/astraApi';
 import { apiPath, appPath } from '../fixtures/env';
 import { PlatformApi } from '../fixtures/platformApi';
 import { requireServiceContainer, SERVER_CONTAINER_HANDLE } from '../fixtures/serviceContainer';
@@ -104,47 +102,47 @@ interface ProcessSummaryState {
   status: string;
   summary?: string | null;
   error?: string | null;
-  turn_completed?: boolean | null;
+  response_completed?: boolean | null;
 }
 
 // Sessions created here are deleted only when the test passes. A failure keeps
 // the scene and names it in the report tail — see fixtures/sessionCleanup.ts.
 const sessions = trackSessions();
 
-function blocksOf(record: MessageRecord | null): Array<Record<string, unknown>> {
-  return Array.isArray(record?.blocks) ? record.blocks : [];
-}
+/**
+ * Tool part states of a call that never returned: the one a stop landed on,
+ * or one waiting on a person (`_UNFINISHED_TOOL_STATES` in `history_blocks.py`).
+ */
+const UNFINISHED_TOOL_STATES = new Set([
+  'input-streaming',
+  'input-available',
+  'approval-requested',
+  'approval-responded',
+]);
 
-function toolUseIds(record: MessageRecord | null): string[] {
-  return blocksOf(record)
-    .filter((block) => String(block.type ?? '') === 'tool_use')
-    .map((block) => String(block.id ?? '').trim())
-    .filter(Boolean);
-}
-
-/** Each `tool_use` id in *record* mapped to its result's `tool_result_state`. */
-function toolResultStates(record: MessageRecord | null): Map<string, string> {
+/** Each tool call in *record* mapped to the state its tool part ended in. */
+function toolStates(record: MessageRecord | null): Map<string, string> {
   const states = new Map<string, string>();
-  for (const id of toolUseIds(record)) states.set(id, '');
-  for (const block of blocksOf(record)) {
-    if (String(block.type ?? '') !== 'tool_result') continue;
-    const owner = String(block.tool_use_id ?? '').trim();
-    if (owner) states.set(owner, String(block.tool_result_state ?? '').trim());
+  for (const call of record ? messageToolCalls(record) : []) {
+    if (call.toolCallId) states.set(call.toolCallId, call.state);
   }
   return states;
 }
 
+function toolCallIds(record: MessageRecord | null): string[] {
+  return [...toolStates(record).keys()];
+}
+
 /**
- * The calls the reader has to be able to see on a turn that stopped short.
+ * The calls the reader has to be able to see on a response that stopped short.
  *
- * `tool_result_state` is the platform's own durable word for how a call ended,
- * and `history_blocks.py::process_atoms` folds a call away only while that word
- * is `output-available`. A refused or errored call is what the fold leaves
+ * A tool part's `state` is how its call ended, and
+ * `history_blocks.py::fold_parts` folds a call away only while it is
+ * `output-available`. A refused or errored call is what the fold leaves
  * outside, so those ids are what this spec looks for on screen.
  */
 function failedToolIds(record: MessageRecord | null): string[] {
-  const states = toolResultStates(record);
-  return [...states]
+  return [...toolStates(record)]
     .filter(([, state]) => state === 'output-error' || state === 'output-denied')
     .map(([id]) => id);
 }
@@ -152,27 +150,27 @@ function failedToolIds(record: MessageRecord | null): string[] {
 /**
  * The calls a stop landed on before any result came back.
  *
- * A call with no result is not work that ran: `history_blocks.py::process_atoms`
- * folds a call away only while its result is `output-available`, and the open
- * page applies the same rule to a settled turn (`MessageParts.tsx`
+ * A call with no result is not work that ran: `history_blocks.py::fold_parts`
+ * folds a call away only while it is `output-available`, and the open page
+ * applies the same rule to an ended response (`MessageParts.tsx`
  * `isProcessPart` / `isAlertPart`). These ids are therefore asserted outside
  * the fold, by id, exactly like a call that reported a failure.
  */
 function resultlessToolIds(record: MessageRecord | null): string[] {
-  return [...toolResultStates(record)]
-    .filter(([, state]) => state === '')
+  return [...toolStates(record)]
+    .filter(([, state]) => UNFINISHED_TOOL_STATES.has(state))
     .map(([id]) => id);
 }
 
 /** The calls that ran to completion, and so belong behind the header. */
 function settledToolIds(record: MessageRecord | null): string[] {
-  return [...toolResultStates(record)]
+  return [...toolStates(record)]
     .filter(([, state]) => state === 'output-available')
     .map(([id]) => id);
 }
 
 /**
- * The engine's own tool names off the durable record — diagnostic only.
+ * The engine's own tool names off the history message — diagnostic only.
  *
  * What the model reached for is the model's business; what the page does with
  * it is this spec's. It never throws, so a broken read here cannot replace the
@@ -180,12 +178,10 @@ function settledToolIds(record: MessageRecord | null): string[] {
  */
 function toolsDriven(record: MessageRecord | null): string {
   const names = new Set<string>();
-  for (const block of blocksOf(record)) {
-    if (String(block.type ?? '') !== 'tool_use') continue;
-    const name = String(block.name ?? '').trim();
-    if (name) names.add(name);
+  for (const call of record ? messageToolCalls(record) : []) {
+    if (call.toolName) names.add(call.toolName);
   }
-  return [...names].sort().join(', ') || '(no tool_use block at all)';
+  return [...names].sort().join(', ') || '(no tool call at all)';
 }
 
 /** Every tool card a reader can currently see inside `scope`. */
@@ -201,7 +197,7 @@ async function ensureExpanded(trigger: Locator): Promise<void> {
 }
 
 /**
- * Open a folded turn and every group inside it.
+ * Open a folded response and every group inside it.
  *
  * Both levels are the same Base UI collapsible, which marks its trigger
  * `aria-expanded` — the state is read off that rather than off what is on
@@ -228,7 +224,7 @@ async function openProcess(turn: Locator): Promise<void> {
   }
 }
 
-/** Collapse a folded turn through its own header. */
+/** Collapse a folded response through its own header. */
 async function closeProcess(turn: Locator): Promise<void> {
   const trigger = turn.getByTestId('assistant-turn-process-trigger');
   await trigger.click();
@@ -303,9 +299,9 @@ test('a settled tool turn folds, names itself, and reopens once per page load', 
   const sessionId = created.session_id;
   sessions.push(sessionId);
   await api.waitForSessionReady(sessionId, READY_MS);
-  // The UI dispatches under the SESSION's permission mode, so it is armed
-  // before the page opens: a tool parked on an approval never settles, and a
-  // turn that never settles never folds.
+  // The UI sends under the SESSION's permission mode, so it is armed before
+  // the page opens: a tool parked on an approval never ends, and a response
+  // that never ends never folds.
   const armed = await api.setPermissionMode(sessionId, 'bypassPermissions');
   expect(armed.permission_mode, 'the folded turn must run its tools unattended').toBe(
     'bypassPermissions',
@@ -336,8 +332,8 @@ test('a settled tool turn folds, names itself, and reopens once per page load', 
   await openSessionView(page, sessionId);
 
   // ── ACT: two tool calls, then a conclusion. The fold needs both — a response
-  //    with no closing answer is left whole by `_deferred_groups`, because
-  //    hiding its work would leave the page with nothing at all. ──────────────
+  //    with no closing answer is left whole by `fold_parts`, because hiding
+  //    its work would leave the page with nothing at all. ────────────────────
   await sendPrompt(
     page,
     sessionId,
@@ -393,8 +389,8 @@ test('a settled tool turn folds, names itself, and reopens once per page load', 
     (message) => messageText(message).includes(answerMarker),
     TURN_SETTLE_MS,
   );
-  const messageId = String(settled.message_id);
-  const durableToolIds = toolUseIds(settled);
+  const messageId = String(settled.id);
+  const durableToolIds = toolCallIds(settled);
   expect(
     durableToolIds.length,
     'the folded header stands for tool work, so the response must carry tool calls; ' +
@@ -427,7 +423,7 @@ test('a settled tool turn folds, names itself, and reopens once per page load', 
 
   await openProcess(live);
   await expect(
-    live.getByTestId('assistant-turn-process-panel'),
+    live.getByTestId('assistant-turn-process').locator(':scope > [data-slot="collapsible-content"]'),
     'the opened header must show the work it stands for',
   ).toBeVisible();
   await expect(
@@ -487,7 +483,7 @@ test('a settled tool turn folds, names itself, and reopens once per page load', 
   ).toHaveAccessibleName(generated, { timeout: SUMMARY_MS });
   await closeProcess(live);
 
-  // ── 3. A cold page has only `process_details`, and must ask once. ─────────
+  // ── 3. A cold page has only the header part, and must ask once. ──────────
   // The fault is armed before the reload: the first detail read of the new page
   // answers 500, and the reader has to be able to get past it.
   let detailAttempts = 0;
@@ -531,8 +527,8 @@ test('a settled tool turn folds, names itself, and reopens once per page load', 
     ).toBe(0);
 
     const coldTrigger = cold.getByTestId('assistant-turn-process-trigger');
-    // The cold page has only `process_details.summary` to name the header
-    // with: the same label, read back from the row the live page wrote.
+    // The cold page has only the header part's `summary` to name the header
+    // with: the same label, read back from the row the platform wrote.
     await expect(
       coldTrigger,
       'the generated label survives the reload as the header title',
@@ -714,7 +710,8 @@ test('an interrupted tool turn folds with its stop reason and keeps the failed c
   // Two cards mean the second command is under way, which is the moment there
   // is something to interrupt. They are counted rather than waited on as
   // visible: a live group starts closed and keeps its cards mounted and
-  // hidden (MessageParts.tsx:562), so nothing is on screen to wait for.
+  // hidden (`keepMounted` in MessageParts.tsx), so nothing is on screen to
+  // wait for.
   const cards = page.locator('[data-tool-call-id]');
   try {
     // Polled for "at least two" rather than asserted as exactly two: an engine
@@ -745,22 +742,22 @@ test('an interrupted tool turn folds with its stop reason and keeps the failed c
   ).toHaveCount(0, { timeout: TURN_SETTLE_MS });
   const stopped = await api.waitForSession(
     sessionId,
-    (session) => !String(session.current_turn_id || '').trim(),
+    (session) => !session.current_responses?.length && session.last_response?.status === 'ended',
     TURN_SETTLE_MS,
   );
   const record = await api.waitForAssistantMessageMatching(
     sessionId,
     0,
-    (message) => toolUseIds(message).length > 0,
+    (message) => toolCallIds(message).length > 0 && message.metadata?.status === 'ended',
     RENDER_MS,
   );
-  const messageId = String(record.message_id);
+  const messageId = String(record.id);
   const settledCalls = settledToolIds(record);
   const failedCalls = failedToolIds(record);
   const resultlessCalls = resultlessToolIds(record);
   test.info().annotations.push({
     type: 'e2e_stopped_turn_status',
-    description: `${String(stopped.last_turn_status ?? '')} message=${messageId} ` +
+    description: `${String(stopped.last_response?.outcome ?? '')} message=${messageId} ` +
       `available=${settledCalls.length} failed_or_denied=${failedCalls.length} ` +
       `no_result=${resultlessCalls.length} tools=${toolsDriven(record)}`,
   });
@@ -769,7 +766,7 @@ test('an interrupted tool turn folds with its stop reason and keeps the failed c
     'the stopped response must carry one call that finished, or there is nothing to fold',
   ).toBeGreaterThan(0);
   // The shape under test is a stop that lands on a running call, which the
-  // platform records as a `tool_use` with no `tool_result`. An engine that
+  // platform records as a tool part that never got its output. An engine that
   // answered the stop with a failed result instead is named here and fails
   // this spec: that is a different scene, and the fold's rule for it is
   // covered by `failedCalls` only as an addition to this one.
@@ -782,21 +779,21 @@ test('an interrupted tool turn folds with its stop reason and keeps the failed c
   const outsideCalls = [...resultlessCalls, ...failedCalls];
 
   // An interruption folds the work that ran to completion and leaves the calls
-  // that reported a failure outside — `history_blocks.py::process_atoms` folds
-  // a call away only while its result is `output-available`, because nothing
-  // came after a failed one to explain what happened.
+  // that reported a failure outside — `history_blocks.py::fold_parts` folds a
+  // call away only while it is `output-available`, because nothing came after
+  // a failed one to explain what happened.
   //
   // Both stages assert the same shape and reach it by different routes: the
   // open page folds from the parts it streamed (`MessageParts.tsx`
-  // `isProcessPart` / `canCollapseTurn`), the reloaded page from the projection
-  // above. A red on one stage alone is those two disagreeing.
+  // `isProcessPart` / `canCollapseTurn`), the reloaded page from the server's
+  // fold. A red on one stage alone is those two disagreeing.
   //
   // The single-header assertion is the one most likely to catch that
-  // disagreement, and it is deliberate: `canCollapseTurn`
-  // (MessageParts.tsx:292) is computed from the parts of the record it is
-  // given, and a reloaded record already carries its fold as a
-  // `data-process-block` part. Wrapping a second header around one the server
-  // already folded shows the reader two nested "Process" rows for one turn.
+  // disagreement, and it is deliberate: `canCollapseTurn` in MessageParts.tsx
+  // is computed from the parts of the message it is given, and a reloaded
+  // message already carries its fold as a `data-process-block` part. Wrapping
+  // a second header around one the server already folded shows the reader two
+  // nested "Process" rows for one response.
   const expectStoppedShape = async (turn: Locator, stage: string, lazy: boolean) => {
     await expect(
       turn.getByTestId('assistant-turn-process'),
@@ -849,8 +846,8 @@ test('an interrupted tool turn folds with its stop reason and keeps the failed c
   };
 
   // The open page is read through the newest bubble rather than through
-  // `messageId`: what a live row is keyed by is the stream's business, and the
-  // durable id is only guaranteed to address a row on the reloaded page.
+  // `messageId`: the live row is keyed by the same response id, but reading
+  // the newest bubble keeps this stage independent of that.
   await expectStoppedShape(page.getByTestId('assistant-message').last(), 'live', false);
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(page.getByTestId('run-view')).toBeVisible({ timeout: RENDER_MS });
@@ -858,6 +855,6 @@ test('an interrupted tool turn folds with its stop reason and keeps the failed c
   await expectStoppedShape(cold, 'reloaded', true);
   await expect(
     cold.getByTestId('assistant-turn-process'),
-    'reloaded: the fold is the lazy header, opened from the checkpoint it carries',
+    'reloaded: the fold is the lazy header, opened from the position it carries',
   ).toHaveAttribute('data-process-block-id', /.+/);
 });

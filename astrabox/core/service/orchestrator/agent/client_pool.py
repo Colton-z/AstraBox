@@ -9,8 +9,8 @@ and which runtime capabilities it must prove before becoming inventory.
 The pool owns physical boxes, not Sessions, and its preparer completes every
 prepared unit before a box is published: with conversation tenancy the box's
 one engine, which the claiming Session takes with the whole box; with Agent
-tenancy as many engine seats as the box's memory holds, which the Agent takes
-with the box and hands out one per conversation. Both use the same engine
+tenancy seats within its requested capacity and the box's memory, taken with
+the box and handed out one per conversation. Both use the same engine
 preparation and activation seam, and replenishment, the replica that does it
 and idle expiry are the pool's for both.
 """
@@ -76,9 +76,10 @@ logger = get_logger(__name__)
 _PREPARE_TIMEOUT_SECONDS = 600
 _POOL_NAME_PART_RE = re.compile(r"[^a-z0-9-]+")
 
-# Durable cleanup address for the supplier namespace currently serving an
-# Agent.  Both values live together: a pool name is meaningful only to the
-# backend that created it, especially after the Environment changes provider.
+# Where an Agent read carries the durable cleanup address of the supplier
+# namespace serving it. Both values live together: a pool name is meaningful
+# only to the backend that created it, especially after the Environment
+# changes provider.
 CLIENT_POOL_NAME_FIELD = "_client_pool_name"
 CLIENT_POOL_BACKEND_FIELD = "_client_pool_backend"
 
@@ -487,11 +488,11 @@ async def _record_agent_client_pool(
     """Record a namespace as the Agent's before anything starts it.
 
     A started namespace keeps its boxes until it is retired, and retirement
-    finds namespaces only through the Agent row. The write that records this
-    namespace also queues the one it displaces, so every namespace any path
-    starts stays named until it is retired, whichever Agent writes land around
-    its start. A namespace for a lifetime the Agent row does not carry is
-    refused: another generation superseded it.
+    finds namespaces only through the Agent's runtime record. The write that
+    records this namespace also keeps the one it displaces for retirement, so
+    every namespace any path starts stays named until it is retired, whichever
+    Agent writes land around its start. A namespace for a lifetime the Agent
+    does not carry is refused: another generation superseded it.
     """
 
     from astrabox.persistence.repository.agent_repository import AgentRepository
@@ -500,55 +501,25 @@ async def _record_agent_client_pool(
     agent_id = str(_value(template, "agent_id", "") or "").strip()
     epoch = str(_value(template, "client_pool_epoch", "") or "").strip()
     name = plan.spec.pool_name
-    backend = plan.backend_name
-    for _ in range(3):
-        row = await repo.get_agent(agent_id)
-        if not isinstance(row, dict):
-            raise APIError(
-                code="AGENT_NOT_FOUND",
-                message=f"Agent {agent_id!r} disappeared before client pool {name!r} started",
-                status_code=404,
-            )
-        if str(row.get("_client_pool_epoch") or "").strip() != epoch:
-            raise APIError(
-                code="AGENT_RUNTIME_GENERATION_CONFLICT",
-                message=(
-                    f"client pool {name!r} belongs to a superseded runtime "
-                    f"generation of Agent {agent_id!r}; retry with the current "
-                    "Agent definition"
-                ),
-                status_code=409,
-            )
-        recorded = str(row.get(CLIENT_POOL_NAME_FIELD) or "").strip()
-        recorded_backend = str(row.get(CLIENT_POOL_BACKEND_FIELD) or "").strip()
-        if recorded == name and recorded_backend == backend:
-            return
-        retiring = list(row.get("_retiring_client_pools") or [])
-        if recorded:
-            retiring.append({"name": recorded, "backend": recorded_backend})
-        if await repo.compare_and_update_agent(
-            agent_id,
-            expected={
-                key: row[key] if key in row else {"$exists": False}
-                for key in (
-                    "_client_pool_epoch",
-                    CLIENT_POOL_NAME_FIELD,
-                    CLIENT_POOL_BACKEND_FIELD,
-                    "_retiring_client_pools",
-                )
-            },
-            updates={
-                CLIENT_POOL_NAME_FIELD: name,
-                CLIENT_POOL_BACKEND_FIELD: backend,
-                "_retiring_client_pools": retiring,
-            },
-        ):
-            return
-    raise APIError(
-        code="AGENT_RUNTIME_GENERATION_CONFLICT",
-        message=f"Agent {agent_id!r} changed while recording client pool {name!r}",
-        status_code=409,
+    outcome = await repo.record_client_pool(
+        agent_id, client_pool_epoch=epoch, name=name, backend=plan.backend_name
     )
+    if outcome == "missing":
+        raise APIError(
+            code="AGENT_NOT_FOUND",
+            message=f"Agent {agent_id!r} disappeared before client pool {name!r} started",
+            status_code=404,
+        )
+    if outcome == "superseded":
+        raise APIError(
+            code="AGENT_RUNTIME_GENERATION_CONFLICT",
+            message=(
+                f"client pool {name!r} belongs to a superseded runtime "
+                f"generation of Agent {agent_id!r}; retry with the current "
+                "Agent definition"
+            ),
+            status_code=409,
+        )
 
 
 async def ensure_agent_client_pool(

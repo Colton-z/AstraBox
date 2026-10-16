@@ -4,8 +4,9 @@ import { expect, test } from '@playwright/test';
 
 import { AstraApi, messageText } from '../fixtures/astraApi';
 import { channelCallback } from '../fixtures/channelCallback';
-import { documentsByField, sessionEvents } from '../fixtures/dbOracle';
+import { nativeTranscriptRows, sessionInputRows } from '../fixtures/dbOracle';
 import { apiPath } from '../fixtures/env';
+import { channelInboundRows, channelOutboxRows } from '../fixtures/ingressRecords';
 import { PlatformApi } from '../fixtures/platformApi';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView } from '../fixtures/sessionPage';
@@ -33,10 +34,10 @@ function blockText(content: string | NativeBlock[] | undefined): string {
   return typeof content === 'string' ? content : (content || []).map((block) => block.text || '').join('');
 }
 
+/** The content blocks of the conversation's own native transcript, in the order Claude wrote them. */
 function nativeBlocks(sessionId: string): NativeBlock[] {
-  return documentsByField('transcript_entries', '$.platform_session_id', sessionId)
-    .filter((row) => row.subpath == null)
-    .sort((a, b) => Number(a.seq) - Number(b.seq))
+  return nativeTranscriptRows(sessionId)
+    .filter((row) => row.subpath === null)
     .flatMap((row) => {
       const entry = JSON.parse(String(row.entry_json)) as { message?: { content?: unknown } };
       return Array.isArray(entry.message?.content) ? entry.message.content as NativeBlock[] : [];
@@ -129,21 +130,19 @@ test('a recurring native agent timer sends two channel replies without another i
     expect(history.has_more).toBe(false);
     const replies = history.messages.filter((row) => row.role === 'assistant');
     for (const output of outputs) {
-      expect(replies.filter((row) => messageText(row).includes(output.text))).toHaveLength(1);
+      const tick = replies.filter((row) => messageText(row).includes(output.text));
+      expect(tick).toHaveLength(1);
+      // A tick is a response the runtime started itself: no message asked for it.
+      expect(tick[0]!.metadata).toMatchObject({ origin: 'engine', input_ids: [], outcome: 'completed' });
     }
     await expect.poll(() => recipient.deliveries.map((row) => row.text))
       .toEqual(replies.map((row) => messageText(row).trim()));
-    expect(documentsByField('channel_inbound', '$.deployment_id', deploymentId)).toHaveLength(1);
-    const inputCommands = sessionEvents(sessionId).filter((event) => {
-      const command = event.payload as { command_type?: string };
-      return event.event_type === 'command.accepted'
-        && ['StartTurn', 'SubmitInput'].includes(command.command_type || '');
-    });
-    expect(inputCommands).toHaveLength(1);
-    expect(inputCommands[0].payload).toMatchObject({ command_type: 'StartTurn', content: prompt });
-    await expect.poll(() => documentsByField('channel_outbox', '$.session_id', sessionId)
+    expect(channelInboundRows(deploymentId)).toHaveLength(1);
+    expect(sessionInputRows(sessionId).map((input) => ({ source: input.source, content: input.content })),
+      'the setup message is the only input the conversation ever accepted').toEqual([{ source: 'channel', content: prompt }]);
+    await expect.poll(() => channelOutboxRows(sessionId)
       .filter((row) => row.state === 'DELIVERED').map((row) => row.response_id).sort())
-      .toEqual(replies.map((row) => row.message_id).sort());
+      .toEqual(replies.map((row) => row.id).sort());
     await openSessionView(page, sessionId);
     for (const output of outputs) {
       await expect(page.getByTestId('assistant-text').filter({ hasText: output.text })).toBeVisible();

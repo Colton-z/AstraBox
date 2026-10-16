@@ -70,11 +70,11 @@ const agents = range(ROWS, (i) => ({
 const sessions = range(ROWS, (i) => ({
   session_id: `s-${String(i).padStart(3, "0")}`,
   user_id: "u-1",
-  template_name: `release-notes-writer-${i}`,
   title: `Draft the 2026.07 release notes (#${i})`,
-  // "Running in background" is the longest status label the pill can carry; it is
-  // what sets the status column's real minimum width.
-  state: ["READY", "BUSY", "BACKGROUND_RUNNING", "WAITING_INPUT"][i % 4],
+  // The states a conversation row shows; "Awaiting answer" (WAITING_INPUT) is
+  // the longest label the pill carries, which sets the status column's real
+  // minimum width.
+  state: ["READY", "PROCESSING", "WAITING_INPUT", "CREATING"][i % 4],
   permission_mode: "default",
   model_name: "claude-opus-5",
   sandbox_id: `sbx-${String(i).padStart(6, "0")}-a3f9c2e1b7d4`,
@@ -86,7 +86,6 @@ const sessions = range(ROWS, (i) => ({
 
 const adminSessions = sessions.map((s, i) => ({
   session_id: s.session_id,
-  template_name: s.template_name,
   state: s.state,
   sandbox_id: s.sandbox_id,
   created_at: s.created_at,
@@ -112,18 +111,19 @@ const errors = {
       updated_at: iso(0),
     },
     {
-      source: "turn_checkpoint",
+      source: "runtime",
       severity: "warning",
-      session_id: "s-002",
-      sandbox_id: "sbx-000002-a3f9c2e1b7d4",
-      turn_id: "turn-002",
-      user_id: "u-1",
-      display_name: "Operator",
-      message: "Turn stopped before completion",
-      failed_at: iso(1),
+      message: "MCP server closed the connection",
+      last_error: "MCP server closed the connection",
+      error_type: "ConnectionResetError",
+      location: "astrabox/mcp/proxy.py:212",
+      logger_name: "astrabox.mcp",
+      count: 3,
+      created_at: iso(2),
+      updated_at: iso(1),
     },
   ],
-  counts: { total: 2, session: 1, turn_checkpoint: 1 },
+  counts: { total: 2, session: 1, error: 1, warning: 1 },
 };
 
 const sandboxes = range(ROWS, (i) => ({
@@ -208,55 +208,58 @@ const vaults = [
 ];
 
 /**
- * One turn that dispatches a subagent, because the subagent drawer is only
+ * One response that dispatches a subagent, because the subagent drawer is only
  * reachable through one.
+ *
+ * The history is AI SDK UI messages, as `session_runtime/ui_message.py` folds
+ * them: the person's message keyed by its `client_message_id`, then one
+ * assistant message per response keyed by the response id, its metadata
+ * saying the response ended and how. Tool parts are `dynamic-tool` parts,
+ * which is what every engine adapter emits.
  *
  * Two things have to line up or the drawer never opens: the dispatching call's
  * tool name has to be one ToolParts treats as a dispatch (`Agent` / `Task`),
- * and the `childRunId` on the subagent frames has to equal that call's id — the
- * registry buckets by it, and `Open in Agents` passes the tool call id. That
- * equality is the Claude adapter's, not a convenience: it takes the child run's
- * id from `scope["tool_use_id"]` (engine/claude_code_background.py).
- *
- * `childRunId` and `engineKind` are the two fields the registry requires;
- * frames without them are not partial entries, they are dropped, and the panel
- * renders its empty state with nothing to say why. `canonical_child_run_data`
- * mints them on every frame the platform carries, so a fixture missing them is
- * a shape the backend cannot emit.
+ * and the child run listed for it has to name that call's id — `Open in
+ * Agents` passes the tool call id. That equality is the Claude adapter's, not
+ * a convenience: it takes the child run's id from `scope["tool_use_id"]`
+ * (engine/claude_code_background.py).
  */
+/** Where the stub's output log ends: every part of the transcript is before it. */
+const OUTPUT_SEQ = 12;
+
 const TRANSCRIPT = [
   {
-    session_id: "s-001",
-    message_id: "m-user-1",
-    turn_id: "t-1",
+    id: "cm-user-1",
     role: "user",
-    content: "Draft the release notes and check the changelog.",
-    created_at: iso(0),
+    parts: [{ type: "text", text: "Draft the release notes and check the changelog." }],
+    metadata: { input_id: "in-1", created_at: iso(0), state: "admitted", source: "web" },
   },
   {
-    session_id: "s-001",
-    message_id: "m-assistant-1",
-    turn_id: "t-1",
+    id: "resp-1",
     role: "assistant",
-    content: "",
-    created_at: iso(0),
-    blocks: [
-      { type: "text", text: "I'll dispatch a subagent to check the changelog." },
+    parts: [
+      { type: "step-start" },
+      { type: "text", text: "I'll dispatch a subagent to check the changelog.", state: "done" },
       {
-        type: "tool_use",
-        id: "tu-task-1",
-        name: "Task",
+        type: "dynamic-tool",
+        toolName: "Task",
+        toolCallId: "tu-task-1",
+        state: "output-available",
         input: { description: "Check the changelog", subagent_type: "Explore" },
+        output: "Found 2 missing entries.",
       },
-      {
-        type: "tool_result",
-        tool_use_id: "tu-task-1",
-        is_error: false,
-        tool_result_state: "output-available",
-        content: "Found 2 missing entries.",
-      },
-      { type: "text", text: "Two entries were missing; added." },
+      { type: "text", text: "Two entries were missing; added.", state: "done" },
     ],
+    metadata: {
+      response_id: "resp-1",
+      input_ids: ["in-1"],
+      origin: "input",
+      status: "ended",
+      outcome: "completed",
+      native_reason: "end_turn",
+      started_at: iso(0),
+      ended_at: iso(0),
+    },
   },
 ];
 
@@ -379,26 +382,24 @@ function resolve(pathname: string, query: URLSearchParams): unknown {
   if (at("assistants", "*", "conversations")) return { session_id: "s-001" };
   if (at("assistants", "*", "main-conversation")) return { session_id: "s-001" };
   if (at("sessions", "*")) return sessions.find((s) => s.session_id === t[1]) ?? sessions[0];
-  // The raw record read. The whole `MessagePage` (frontend/src/api.ts), not the
-  // part the transcript reads.
+  // The raw history read: the whole `SessionMessagePage`
+  // (astrabox/api/routes/sessions.py), not the part the transcript reads.
   if (at("sessions", "*", "messages")) {
     return {
       messages: TRANSCRIPT,
       has_more: false,
-      active_turn_overlay: null,
-      session_frame_seq: null,
+      before: null,
+      output_seq: OUTPUT_SEQ,
       pending_interaction: null,
     };
   }
-  // What the console draws its transcript from (`useFirstPageMessages`): the
-  // same records, paged by record, with the fields that page refuses to be
-  // without. It rejects a `paging_mode` other than `blocks`, and
-  // `requireSessionFrameSeq` rejects a page that omits `session_frame_seq` —
-  // where the session's frames end, and what a client with no turn in flight
-  // opens the output channel with; `null` is the value the server sends for a
-  // session with no frames journalled. An incomplete fixture here is not a
-  // session view missing a cursor, it is the session view replaced by "Failed
-  // to load messages" for every spec that opens one.
+  // What the console draws its transcript from (`historyPages.ts`): the same
+  // messages with the fields that page refuses to be without. It rejects a
+  // `paging_mode` other than `blocks`, and the session view waits for the
+  // first page's `output_seq`, the position it follows the session's stream
+  // from. An incomplete fixture here is not a session view missing a cursor,
+  // it is the session view replaced by its loading or failure state for every
+  // spec that opens one.
   if (at("sessions", "*", "history-blocks")) {
     return {
       messages: TRANSCRIPT,
@@ -406,8 +407,7 @@ function resolve(pathname: string, query: URLSearchParams): unknown {
       next_cursor: null,
       paging_mode: "blocks",
       block_count: TRANSCRIPT.length,
-      active_turn_overlay: null,
-      session_frame_seq: null,
+      output_seq: OUTPUT_SEQ,
       pending_interaction: null,
     };
   }
@@ -623,6 +623,15 @@ export async function stubApi(
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
     const pathname = url.pathname;
+    // The session's stream with nothing after the page's position: the server
+    // holds such a request open until there is, so the stub does too, until
+    // the page goes. Answering it would have the page reconnect at once, and
+    // failing it would put the stream-trouble banner in the layout under test.
+    if (/^\/api\/v1\/sessions\/[^/]+\/stream$/.test(pathname)) {
+      await new Promise<void>((resolve) => page.once("close", () => resolve()));
+      await route.abort().catch(() => undefined);
+      return;
+    }
     // Auth probing is intentionally not an API-envelope route. Returning the
     // normal {data: ...} fixture shape here makes RequireAuth read
     // `authenticated` as missing and turns every layout test into a login-page

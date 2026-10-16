@@ -1,15 +1,22 @@
 /** Real Write approval and a subsequent question keep one response owner during first-page reads. */
 import { expect, test, type Page } from '@playwright/test';
 
-import { AstraApi, messageText, visibleMessages, type PendingInteraction } from '../fixtures/astraApi';
-import { framesForTurn } from '../fixtures/dbOracle';
+import {
+  AstraApi,
+  messageText,
+  messageToolCalls,
+  toolCallSettled,
+  visibleMessages,
+  type PendingInteraction,
+} from '../fixtures/astraApi';
+import { sessionOutputRows } from '../fixtures/dbOracle';
 import { trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
-import { aiStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
+import { sessionStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
 
 const sessions = trackSessions();
 let sessionId = '';
-let turnId = '';
+let responseId = '';
 const observations: unknown[] = [];
 
 function record(value: unknown): Record<string, unknown> {
@@ -25,14 +32,14 @@ async function observe(read: () => unknown | Promise<unknown>): Promise<unknown>
 test.afterEach(async ({ request, page }, info) => {
   if (!['failed', 'timedOut', 'interrupted'].includes(String(info.status))) return;
   const api = new AstraApi(request);
-  const [session, history, frames, stream] = await Promise.all([
+  const [session, history, output, stream] = await Promise.all([
     observe(() => api.getSession(sessionId)),
     observe(() => api.getMessages(sessionId, 100)),
-    observe(() => framesForTurn(turnId)),
-    observe(() => aiStreamBodies(page)),
+    observe(() => sessionOutputRows(sessionId, responseId)),
+    observe(() => sessionStreamBodies(page)),
   ]);
   await info.attach('interaction-handoff-scene', {
-    body: JSON.stringify({ sessionId, turnId, observations, session, history, frames, stream }),
+    body: JSON.stringify({ sessionId, responseId, observations, session, history, output, stream }),
     contentType: 'application/json',
   });
 });
@@ -44,7 +51,9 @@ async function browserAnswer(
 ): Promise<void> {
   const response = page.waitForResponse((candidate) => (
     candidate.request().method() === 'POST'
-    && candidate.url().includes(`/sessions/${sessionId}/interaction-respond`)
+    && new URL(candidate.url()).pathname.endsWith(
+      `/sessions/${sessionId}/interactions/${encodeURIComponent(String(pending.interaction_id))}/answer`,
+    )
   ));
   await click();
   const received = await response;
@@ -86,14 +95,14 @@ test('Write approval hands off to a question on the same turn during live first-
   expect(first.tool_name).toBe('Write');
   expect(first.interaction_id).toBeTruthy();
   expect(first.tool_call_id).toBeTruthy();
-  turnId = String(first.turn_id || '');
-  expect(turnId).not.toBe('');
+  responseId = String(first.response_id || '');
+  expect(responseId, 'the Write approval must name the response it pauses').not.toBe('');
 
   const panel = page.getByTestId('pending-interaction-panel');
   await expect(panel).toBeVisible();
   const before = await api.getMessages(sessionId, 100);
   expect(record(before.pending_interaction)).toMatchObject({
-    interaction_id: first.interaction_id, turn_id: turnId, tool_call_id: first.tool_call_id,
+    interaction_id: first.interaction_id, response_id: responseId, tool_call_id: first.tool_call_id,
   });
   await browserAnswer(page, first, () => panel.getByRole('button', {
     name: /Allow and continue|Apply suggestion and continue|允许并继续|应用建议并继续/,
@@ -106,11 +115,11 @@ test('Write approval hands off to a question on the same turn during live first-
     const bootstrap = await api.getMessages(sessionId, 100);
     const detail = await api.getSession(sessionId);
     const owners = visibleMessages(bootstrap)
-      .filter((message) => message.role === 'assistant').map((message) => message.turn_id);
+      .filter((message) => message.role === 'assistant').map((message) => message.id);
     owners.forEach((owner) => assistantOwners.add(owner));
     observations.push({ owners, bootstrap, detail });
     expect(detail.last_error, 'the interaction handoff must not fail during a real read').toBeFalsy();
-    expect(detail.last_turn_status).not.toBe('FAILED');
+    expect(detail.last_response?.outcome, 'no response may fail during the handoff').not.toBe('failed');
     const pending = detail.pending_interaction as PendingInteraction | null | undefined;
     if (pending?.interaction_id !== first.interaction_id && pending?.tool_name === 'AskUserQuestion') {
       second = pending;
@@ -121,8 +130,8 @@ test('Write approval hands off to a question on the same turn during live first-
   expect(second, 'approving Write must reach the next native question without another input').toBeDefined();
   const question = second!;
   expect(observations.length).toBeGreaterThan(0);
-  expect([...assistantOwners]).toEqual([turnId]);
-  expect(question.turn_id).toBe(turnId);
+  expect([...assistantOwners]).toEqual([responseId]);
+  expect(question.response_id, 'the question pauses the same response the approval did').toBe(responseId);
   expect(question.interaction_id).not.toBe(first.interaction_id);
   expect(question.tool_call_id).toBeTruthy();
   expect(question.tool_call_id).not.toBe(first.tool_call_id);
@@ -133,21 +142,20 @@ test('Write approval hands off to a question on the same turn during live first-
 
   const after = await api.getMessages(sessionId, 100);
   expect(record(after.pending_interaction)).toMatchObject({
-    interaction_id: question.interaction_id, turn_id: turnId, tool_call_id: question.tool_call_id,
+    interaction_id: question.interaction_id, response_id: responseId, tool_call_id: question.tool_call_id,
   });
   const active = visibleMessages(after).filter((message) => message.role === 'assistant');
-  expect([...new Set(active.map((message) => message.turn_id))]).toEqual([turnId]);
-  const asks = active.flatMap((message) => message.blocks || []).filter((block) => (
-    block.type === 'tool_use' && block.name === 'AskUserQuestion' && block.id === question.tool_call_id
+  expect([...new Set(active.map((message) => message.id))]).toEqual([responseId]);
+  const asks = active.flatMap((message) => messageToolCalls(message)).filter((call) => (
+    call.toolName === 'AskUserQuestion' && call.toolCallId === question.tool_call_id
   ));
   expect(asks).toHaveLength(1);
   expect(JSON.stringify(asks[0].input)).toContain(questionMarker);
-  await expect.poll(() => framesForTurn(turnId).some((frame) => {
-    const payload = record(frame.payload);
-    return payload.type === 'data-interaction'
-      && record(payload.data).interaction_id === question.interaction_id
-      && record(payload.data).tool_call_id === question.tool_call_id;
-  }), { timeout: 15_000, message: 'the question interaction frame must retain the exact native tool and owner' })
+  await expect.poll(() => sessionOutputRows(sessionId, responseId).some(({ part }) => (
+    part.type === 'data-interaction'
+      && record(part.data).interaction_id === question.interaction_id
+      && record(part.data).tool_call_id === question.tool_call_id
+  )), { timeout: 15_000, message: 'the recorded question part must retain the exact native tool and owner' })
     .toBe(true);
   await expect(panel).toContainText(questionMarker);
   await expect(panel).toContainText('YES');
@@ -162,9 +170,12 @@ test('Write approval hands off to a question on the same turn during live first-
   }).click());
 
   const ready = await api.waitForSession(sessionId, (detail) => (
-    detail.state === 'READY' && !detail.current_turn_id && !detail.pending_interaction
+    detail.state === 'READY'
+    && (detail.current_responses ?? []).length === 0
+    && !detail.pending_interaction
   ), 60_000);
-  expect(ready.last_turn_status).toBe('COMPLETED');
+  expect(ready.last_response?.response_id, 'the handed-off response is the one that ended').toBe(responseId);
+  expect(ready.last_response?.outcome).toBe('completed');
   expect(ready.last_error).toBeFalsy();
   expect(await api.downloadFileText(sessionId, targetPath)).toBe(targetContent);
   const expectedTools = [
@@ -173,13 +184,12 @@ test('Write approval hands off to a question on the same turn during live first-
   ];
   const historyEvidence = async () => {
     const history = await api.getMessages(sessionId, 100);
-    const own = history.messages.filter((message) => message.turn_id === turnId);
-    const blocks = own.flatMap((message) => message.blocks || []);
+    const own = history.messages.filter((message) => message.id === responseId);
+    const calls = own.flatMap((message) => messageToolCalls(message));
     return {
       users: history.messages.filter((message) => message.role === 'user').map(messageText),
-      tools: blocks.filter((block) => block.type === 'tool_use')
-        .map((block) => ({ name: block.name, id: block.id })),
-      results: blocks.filter((block) => block.type === 'tool_result').map((block) => block.tool_use_id),
+      tools: calls.map((call) => ({ name: call.toolName, id: call.toolCallId })),
+      results: calls.filter(toolCallSettled).map((call) => call.toolCallId),
       answers: own.filter((message) => message.role === 'assistant'
         && messageText(message).includes(finalMarker)).length,
     };
@@ -202,7 +212,7 @@ test('Write approval hands off to a question on the same turn during live first-
   await expect(answer).toBeVisible();
   expect(await historyEvidence()).toEqual(expectedHistory);
   test.info().annotations.push({ type: 'interaction_handoff', description: JSON.stringify({
-    observation_count: observations.length, assistant_owners: [...assistantOwners], turn_id: turnId,
+    observation_count: observations.length, assistant_owners: [...assistantOwners], response_id: responseId,
     write_interaction: first.interaction_id, question_interaction: question.interaction_id,
     tools: expectedTools,
   }) });

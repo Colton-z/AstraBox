@@ -2,7 +2,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" id="fig-architecture-request-path" viewBox="0 0 1080 568"
      role="img" aria-labelledby="architecture-request-path-title architecture-request-path-desc">
   <title id="architecture-request-path-title">一次 Session 请求经过的路径</title>
-  <desc id="architecture-request-path-desc">Session 请求到达 AstraBox 服务。AstraBox 请求 OpenSandbox 创建沙箱、分配预热资源、恢复或重新连接沙箱，取得地址后发送任务。Agent 程序返回 Event 和最终结果。AstraBox 把 Session Event 和 Agent 程序原生状态保存到数据库，通过 SSE 实时发送事件，并记录 Session 状态。</desc>
+  <desc id="architecture-request-path-desc">Session 输入到达 AstraBox 服务。AstraBox 请求 OpenSandbox 创建沙箱、分配预热资源、恢复或重新连接沙箱，取得地址后把输入交给 Agent 程序。Agent 程序报告输出，然后报告回复结束。AstraBox 把每条输出实时通过 SSE 发给客户端，连同 Agent 程序的读取位置一起记录到数据库，并记录回复的结束方式。</desc>
 
   <style data-standalone="true">
     @media (prefers-color-scheme: dark) {
@@ -58,26 +58,26 @@
   <path class="edge-dashed" d="M 752 248 H 328" marker-end="url(#architecture-request-path-arrow)"/>
   <path class="edge" d="M 328 288 H 968" marker-end="url(#architecture-request-path-arrow)"/>
   <path class="edge-dashed" d="M 968 328 H 328" marker-end="url(#architecture-request-path-arrow)"/>
-  <path class="edge" d="M 328 368 H 536" marker-end="url(#architecture-request-path-arrow)"/>
-  <path class="edge-stream" d="M 320 408 H 112" marker-end="url(#architecture-request-path-arrow-stream)"/>
+  <path class="edge-stream" d="M 320 368 H 112" marker-end="url(#architecture-request-path-arrow-stream)"/>
+  <path class="edge" d="M 328 408 H 536" marker-end="url(#architecture-request-path-arrow)"/>
   <path class="edge" d="M 328 448 H 536" marker-end="url(#architecture-request-path-arrow)"/>
 
   <rect class="mask" x="116" y="148" width="200" height="12" rx="2"/>
-  <text class="arrow-label route" x="216" y="156">POST /api/v1/sessions/{id}/ai-stream</text>
+  <text class="arrow-label route" x="216" y="156">POST /api/v1/sessions/{id}/inputs</text>
   <rect class="mask" x="588" y="188" width="120" height="12" rx="2"/>
   <text class="arrow-label" x="648" y="196">新建/预热分配/恢复/重连</text>
   <rect class="mask" x="624" y="228" width="48" height="12" rx="2"/>
   <text class="arrow-label" x="648" y="236">沙箱地址</text>
   <rect class="mask" x="804" y="268" width="120" height="12" rx="2"/>
-  <text class="arrow-label" x="864" y="276">通过沙箱内的服务发送任务</text>
-  <rect class="mask" x="808" y="308" width="112" height="12" rx="2"/>
-  <text class="arrow-label" x="864" y="316">增量事件与一个最终结果</text>
-  <rect class="mask" x="396" y="348" width="72" height="12" rx="2"/>
-  <text class="arrow-label" x="432" y="356">保存每一条事件</text>
-  <rect class="mask" x="152" y="388" width="128" height="12" rx="2"/>
-  <text class="arrow-label" x="216" y="396">同样的事件以 SSE 流发送</text>
+  <text class="arrow-label" x="864" y="276">通过沙箱内的服务交付输入</text>
+  <rect class="mask" x="820" y="308" width="88" height="12" rx="2"/>
+  <text class="arrow-label" x="864" y="316">输出，然后是回复结束</text>
+  <rect class="mask" x="148" y="348" width="136" height="12" rx="2"/>
+  <text class="arrow-label" x="216" y="356">GET …/stream：逐条实时发送</text>
+  <rect class="mask" x="380" y="388" width="104" height="12" rx="2"/>
+  <text class="arrow-label" x="432" y="396">输出与读取位置一起记录</text>
   <rect class="mask" x="396" y="428" width="72" height="12" rx="2"/>
-  <text class="arrow-label" x="432" y="436">会话的最终状态</text>
+  <text class="arrow-label" x="432" y="436">回复的结束方式</text>
 
   <rect class="box" x="24" y="64" width="168" height="64" rx="8"/>
   <text class="name" x="108" y="92">控制台</text>
@@ -89,7 +89,7 @@
 
   <rect class="store" x="456" y="64" width="168" height="64" rx="8"/>
   <text class="name" x="540" y="92">数据库</text>
-  <text class="sub" x="540" y="110">会话事件 · 原生状态</text>
+  <text class="sub" x="540" y="110">输出日志 · 原生状态</text>
 
   <rect class="box" x="672" y="64" width="168" height="64" rx="8"/>
   <text class="name" x="756" y="92">OpenSandbox</text>

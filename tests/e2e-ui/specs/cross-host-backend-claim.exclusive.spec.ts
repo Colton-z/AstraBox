@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { expect, test, type BrowserContext } from '@playwright/test';
 
-import { AstraApi, messageText, visibleMessages, type SessionRecord } from '../fixtures/astraApi';
+import {
+  AstraApi, answersInput, messageText, visibleMessages, type InputReceipt, type SessionRecord,
+} from '../fixtures/astraApi';
 import { backendBrowserFlow, CrossHostBackend, data, responseFor } from '../fixtures/crossHostBackend';
 import { apiPath } from '../fixtures/env';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
@@ -72,6 +74,7 @@ test('backend on B claims the prepared sandbox on A and serves its files and liv
     const prompt = `Research project ${marker}: explain in one short sentence why diversification reduces concentration risk. Do not use tools.`;
     const accepted = await sendPrompt(b, session.session_id, prompt);
     expect(new URL(accepted.url()).origin).toBe(originB);
+    const receipt = await data<InputReceipt>(accepted);
     await expect(b.getByTestId('user-message')).toHaveText(prompt);
     const reply = b.getByTestId('assistant-message').last();
     await expect(reply.getByTestId('assistant-text')).not.toBeEmpty({ timeout: 60_000 });
@@ -80,13 +83,18 @@ test('backend on B claims the prepared sandbox on A and serves its files and liv
     const settledRead = responseFor(b, `/sessions/${session.session_id}`);
     const transcriptB = visibleMessages(await ui.history(b, originB, session.session_id));
     const settled = await data<SessionRecord>(await settledRead);
-    expect(settled.last_turn_status, String(settled.last_error || '')).toBe('COMPLETED');
-    expect(settled.current_turn_id || null).toBeNull();
+    const answer = transcriptB.filter((row) => answersInput(row, receipt.input_id));
+    expect(answer, 'history must hold one reply to the prompt B accepted').toHaveLength(1);
+    expect(
+      { response: settled.last_response?.response_id, outcome: settled.last_response?.outcome },
+      String(settled.last_error || ''),
+    ).toEqual({ response: answer[0].id, outcome: 'completed' });
+    expect(settled.current_responses ?? []).toEqual([]);
     expect(settled.sandbox_id).toBe(waiting.sandbox_id);
     expect(visibleMessages(await ui.history(a, originA, session.session_id))).toEqual(transcriptB);
     expect(transcriptB.filter((row) => row.role === 'user').map(messageText)).toEqual([prompt]);
     await expect(a.getByTestId('assistant-message').last().getByTestId('assistant-text')).toHaveText(rendered);
-    evidence.turn = { status: settled.last_turn_status, turnId: settled.last_turn_id, transcript: transcriptB };
+    evidence.response = { last: settled.last_response, inputId: receipt.input_id, transcript: transcriptB };
     expect(backend.sandboxOnSource(session.sandbox_id)).toEqual(placement);
     backend.assertUnchanged();
   });

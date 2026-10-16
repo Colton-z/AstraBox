@@ -43,7 +43,7 @@ Agent 的默认 GitHub 仓库使用以下字段；在**项目代码仓库**中�
 | `branch` | string | 否 | 要克隆的分支或 Tag，省略时使用仓库默认值。 |
 | `depth` | integer | 否 | 大于 0 时执行浅克隆，省略时克隆完整历史。 |
 
-第一轮任务开始前，仓库会被克隆到 Session 工作目录。
+发送第一条消息前，仓库会被克隆到 Session 工作目录。
 
 :::note
 Agent 的 `deploy_key_secret_name` 只保存逻辑名称。AstraBox 准备工作树时在服务端读取私钥，Agent API 不会返回私钥。

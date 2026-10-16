@@ -1,17 +1,22 @@
 """Host half of the runner envelope protocol (``sandbox_runner.py``).
 
-``RunnerLink`` is the transport the claude_code EngineClient drives a slot
+``RunnerLink`` is the transport the Claude runtime client drives a slot
 through: prepare before a Session exists, activate exactly once, attach on a
 later host connection, then inputs and controls. The runner journal replays
 every retained frame strictly after the attach cursor. If that cursor expired,
-the runner sends one ordered ``gap`` instruction before the retained suffix;
-the EngineClient turns it into a SessionStore rebuild instruction. Missing
-frames are never synthesized by this wire.
+the runner sends one ordered ``gap`` instruction before the retained suffix.
+Missing frames are never synthesized by this wire.
+
+The runner keeps a frame marked ``requires_persistence`` until the host says
+it is durable. The host says so with :meth:`RunnerLink.acknowledge_persisted`
+once the platform has committed what it read up to that sequence.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import time
 import json
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
@@ -22,7 +27,7 @@ from websockets.asyncio.client import connect as websocket_connect
 from websockets.exceptions import ConnectionClosed
 
 from astrabox.common.logger.logger_factory import get_logger
-from astrabox.core.service.orchestrator.engine.base import EngineOutputAlreadyObserved, EngineStreamDetached
+from astrabox.core.service.orchestrator.engine.base import EngineStreamDetached
 
 logger = get_logger(__name__)
 
@@ -147,14 +152,12 @@ class RunnerLink:
         uri: str,
         *,
         activation_token: str,
-        persistent_event_handler: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         token = str(activation_token or "").strip()
         if not token:
             raise RunnerLinkError("runner link requires an activation token")
         self._uri = uri
         self._activation_token = token
-        self._persistent_event_handler = persistent_event_handler
         self._ws: Any = None
         self._recv_task: asyncio.Task[None] | None = None
         self._prepared: asyncio.Future[dict[str, Any]] | None = None
@@ -163,8 +166,17 @@ class RunnerLink:
         self._answer_acks: dict[str, asyncio.Future[bool]] = {}
         self._permission_mode_acks: dict[str, asyncio.Future[str]] = {}
         self._init_info: asyncio.Future[dict[str, Any] | None] | None = None
+        self._state_requests: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._events: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
         self._expected_seq: int | None = None
+        #: Highest runner sequence handed to ``next_frame``. A replay below it
+        #: is not handed over again.
+        self._forwarded_seq = 0
+        #: Durable events the runner still holds for this host's acknowledgement.
+        self._durable_unacked: set[int] = set()
+        #: Whether the first text the engine produced since the last delivered
+        #: input has arrived; logged once, as the point output leaves the box.
+        self._awaiting_first_text = False
         self._gap_received = False
         self._session_id: str | None = None
         self._opening_engine_requirements: dict[str, Any] | None = None
@@ -301,6 +313,8 @@ class RunnerLink:
         loop = asyncio.get_running_loop()
         self._prepared = loop.create_future()
         self._expected_seq = None
+        self._forwarded_seq = 0
+        self._durable_unacked.clear()
         frame = {
             "op": "prepare",
             "slot_id": target,
@@ -425,7 +439,6 @@ class RunnerLink:
         last_seen_seq: int,
         required_option_keys: Collection[str] | None = None,
         permission_mode: str | None = None,
-        observe_only: bool = False,
     ) -> dict[str, Any]:
         if (
             isinstance(last_seen_seq, bool)
@@ -444,7 +457,7 @@ class RunnerLink:
             )
         )
         return await self._open_session({
-            "op": "observe" if observe_only else "attach",
+            "op": "attach",
             "activation_token": self._activation_token,
             "session_id": session_id,
             "last_seen_seq": last_seen_seq,
@@ -459,13 +472,14 @@ class RunnerLink:
         self._gap_received = False
         requested_cursor = (
             int(frame["last_seen_seq"])
-            if frame["op"] in {"attach", "observe"}
+            if frame["op"] == "attach"
             else 0
         )
         # Install the expectation before the opening frame goes out. The
         # runner sends hello and immediately replays; setting this after hello
         # races the receive task and either duplicates or drops the first item.
         self._expected_seq = requested_cursor + 1
+        self._forwarded_seq = max(self._forwarded_seq, requested_cursor)
         await self._send_wire(json.dumps(frame), action=f"{frame['op']} handshake")
         hello = await self._hello
         requirements = frame.get("engine_requirements")
@@ -493,6 +507,7 @@ class RunnerLink:
         same idempotency key is sent again. A second missing receipt is a
         protocol failure, not an unbounded bridge wait.
         """
+        self._awaiting_first_text = True
         if self._ws is None:
             raise RunnerLinkError("link not connected")
         command_id = str(command.command_id or "").strip()
@@ -671,6 +686,33 @@ class RunnerLink:
             "command_id": command_id,
         }), action="turn interrupt")
 
+    async def state(self, *, timeout_s: float = 10.0) -> dict[str, Any]:
+        """The runner session's own account of itself, consistent with its last journaled frame."""
+        if self._ws is None:
+            raise RunnerLinkError("link not connected")
+        request_id = uuid.uuid4().hex
+        future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+        self._state_requests[request_id] = future
+        try:
+            await self._send_wire(json.dumps({"op": "state", "request_id": request_id}), action="state query")
+            try:
+                return await asyncio.wait_for(future, timeout=timeout_s)
+            except TimeoutError as exc:
+                raise EngineStreamDetached(f"runner did not answer a state query within {timeout_s:g}s") from exc
+        finally:
+            self._state_requests.pop(request_id, None)
+
+    async def acknowledge_persisted(self, up_to_seq: int) -> None:
+        """Tell the runner every durable frame through ``up_to_seq`` is committed."""
+        ws = self._ws
+        if ws is None:
+            return
+        for sequence in sorted(seq for seq in self._durable_unacked if seq <= up_to_seq):
+            await self._send_wire(
+                json.dumps({"op": "event_persisted", "seq": sequence}), action="persistence acknowledgement"
+            )
+            self._durable_unacked.discard(sequence)
+
     async def stop_task(self, task_id: str) -> None:
         if self._ws is None:
             raise RunnerLinkError("link not connected")
@@ -774,7 +816,15 @@ class RunnerLink:
 
     @property
     def last_seen_seq(self) -> int:
-        return (self._expected_seq or 1) - 1
+        """The cursor a reattach resumes after.
+
+        It never passes a durable event the runner has not had acknowledged,
+        so a connection lost before that commit replays the event.
+        """
+        seen = (self._expected_seq or 1) - 1
+        if self._durable_unacked:
+            seen = min(seen, min(self._durable_unacked) - 1)
+        return seen
 
     async def _recv_loop(self, ws: Any, generation: int) -> None:
         try:
@@ -805,6 +855,11 @@ class RunnerLink:
                         EngineStreamDetached(
                             "runner link closed before answer acknowledgement"
                         )
+                    )
+            for state_future in self._state_requests.values():
+                if not state_future.done():
+                    state_future.set_exception(
+                        EngineStreamDetached("runner link closed before a state reply")
                     )
             for future in self._permission_mode_acks.values():
                 if not future.done():
@@ -853,11 +908,7 @@ class RunnerLink:
                 self._prepared.set_exception(RunnerLinkError(detail))
                 return
             if self._hello is not None and not self._hello.done():
-                self._hello.set_exception(
-                    EngineOutputAlreadyObserved(detail)
-                    if frame.get("code") == "OUTPUT_ALREADY_OBSERVED"
-                    else RunnerLinkError(detail)
-                )
+                self._hello.set_exception(RunnerLinkError(detail))
                 return
             raise RunnerLinkError(detail)
         if op == "answer_ack":
@@ -875,6 +926,14 @@ class RunnerLink:
                 future.set_exception(error)
                 raise error
             future.set_result(accepted)
+            return
+        if op == "state":
+            request_id = str(frame.get("request_id") or "")
+            state_future = self._state_requests.get(request_id)
+            snapshot = frame.get("state")
+            if state_future is None or state_future.done() or not isinstance(snapshot, dict):
+                raise RunnerLinkError(f"unexpected state reply for {request_id!r}")
+            state_future.set_result(snapshot)
             return
         if op == "permission_mode_ack":
             request_id = str(frame.get("request_id") or "").strip()
@@ -935,8 +994,19 @@ class RunnerLink:
                     "runner replay is non-contiguous "
                     f"(expected {self._expected_seq}, received {seq})"
                 )
-            await self._persist_required_event(frame, ws=ws)
             self._expected_seq = seq + 1
+            self._note_required_persistence(frame)
+            if seq <= self._forwarded_seq:
+                # Replayed only for a durable event still unacknowledged;
+                # its reader already has it.
+                return
+            self._forwarded_seq = seq
+            if self._awaiting_first_text and _is_text_delta(frame):
+                self._awaiting_first_text = False
+                logger.info(
+                    "runner first text arrived session=%s seq=%s at=%.3f",
+                    self._session_id, seq, time.time(),
+                )
         if op == "init_info":
             future = self._init_info
             if future is not None and not future.done():
@@ -961,44 +1031,34 @@ class RunnerLink:
                 )
                 future.set_exception(error)
                 raise error
+            logger.info(
+                "runner input acknowledged session=%s command=%s at=%.3f",
+                self._session_id, command_id, time.time(),
+            )
             future.set_result(frame)
             return
         self._events.put_nowait(frame)
 
-    async def _persist_required_event(self, frame: dict[str, Any], *, ws: Any) -> None:
-        """Commit a durable SDK event before it can advance the live cursor."""
+    def _note_required_persistence(self, frame: dict[str, Any]) -> None:
+        """Remember a durable frame until the platform commits it.
 
-        requires_persistence = frame.get("requires_persistence")
-        if requires_persistence is None:
+        ``last_seen_seq`` stays below it, so a connection lost before the
+        commit replays it.
+        """
+        if frame.get("requires_persistence") is None:
             return
-        if requires_persistence is not True:
-            raise RunnerLinkError("requires_persistence must be true when present")
-        if frame.get("op") != "event":
-            raise RunnerLinkError("only runner event frames may require persistence")
-        sequence = frame.get("seq")
-        if (
-            isinstance(sequence, bool)
-            or not isinstance(sequence, int)
-            or sequence < 1
-        ):
-            raise RunnerLinkError("durable runner event requires a positive seq")
-        message = frame.get("message")
-        if not isinstance(message, dict):
-            raise RunnerLinkError("durable runner event requires an SDK message object")
-        handler = self._persistent_event_handler
-        if handler is None:
-            raise RunnerLinkError(
-                "runner emitted a durable SDK event without a persistence handler"
-            )
-        try:
-            await handler(dict(frame))
-        except Exception as exc:  # noqa: BLE001 - persistence failure kills the link
-            logger.exception(
-                "runner durable event persistence failed: seq=%s type=%s",
-                sequence,
-                frame.get("message_type"),
-            )
-            raise RunnerLinkError(
-                f"runner durable event persistence failed at seq {sequence}"
-            ) from exc
-        await ws.send(json.dumps({"op": "event_persisted", "seq": sequence}))
+        if frame.get("requires_persistence") is not True or frame.get("op") != "event":
+            raise RunnerLinkError("only runner event frames may require persistence, as true")
+        self._durable_unacked.add(int(frame["seq"]))
+
+
+def _is_text_delta(frame: dict[str, Any]) -> bool:
+    """Whether a runner frame carries a piece of the engine's reply text."""
+    if frame.get("op") != "event" or frame.get("message_type") != "StreamEvent":
+        return False
+    message = frame.get("message")
+    event = message.get("event") if isinstance(message, dict) else None
+    if not isinstance(event, dict) or event.get("type") != "content_block_delta":
+        return False
+    delta = event.get("delta")
+    return isinstance(delta, dict) and delta.get("type") == "text_delta"

@@ -12,57 +12,55 @@
  * tautology that passes forever:
  *   - switching tabs: `TabsContent` is a Base UI `Tabs.Panel`, whose
  *     `keepMounted` defaults to false, so leaving and returning REMOUNTS
- *     `SessionFilesPanel` and its mount load refetches the root;
- *   - the panel's own refresh button (SessionFilesPanel.tsx:743) and
- *     `page.reload()`: both refetch by hand, which is exactly what the user in
- *     this journey did not do;
- *   - expanding a directory: `refresh({force:true})` only refetches
- *     `loadedDirectoryPaths`, so the child must write into a directory the
- *     panel already has open. That is why the marker lands in the workspace
- *     ROOT, which the mount load opens (SessionFilesPanel.tsx:412).
- * The app-wide MANUAL_REFRESH_EVENT is not a control either: its only two
- * listeners are useSessionRefreshEffects.ts:37-40 (rehydrate) and
- * useSessionBootstrapEffects.ts:69 (lifecycle.refresh); neither touches the
- * file tree.
+ *     `SessionFilesPanel` and its mount load refetches the root. That includes
+ *     the Agents tab, which is why the child is watched through the API and
+ *     through the Agents tab's label, never by opening it;
+ *   - the panel's own refresh button and `page.reload()`: both refetch by hand,
+ *     which is exactly what the user in this journey did not do;
+ *   - expanding a directory: `refresh({force:true})` in `useSessionFiles` only
+ *     refetches the directories it has loaded, so the child must write into a
+ *     directory the panel already has open. That is why the marker lands in
+ *     the workspace ROOT, which the panel's mount load opens.
+ * The app-wide MANUAL_REFRESH_EVENT is not a control either: its listeners in
+ * `useSessionRefreshEffects` (rehydrate) and `useSessionBootstrapEffects`
+ * (lifecycle refresh) do not touch the file tree.
  *
  * HOW THE PANEL LEARNS. `useSessionFiles` has no interval and no feed; outside
- * its mount load the only refetch input is `refreshSignal`
- * (SessionRightPanel.tsx:108), a nonce bumped on the work-active true→false
- * edge, where work is a turn (isStreaming||isSubmitted) or a background child
- * (`lifecycleState === 'background'`) — useSessionRefreshEffects.ts:28-35, with
- * `isStreaming` being `lifecycleState === 'busy'` (useSessionChat.ts:1502).
+ * its mount load the only refetch input is `refreshSignal`, the nonce
+ * `useSessionRefreshEffects` bumps on the working true→false edge.
+ * `SessionPage` passes it `isWorking || isSending`, and `useSessionChat`'s
+ * `isWorking` is a response this page's stream is writing, or the session's
+ * own PROCESSING state.
  *
- * WHICH HALF OF THAT PREDICATE THIS RUN EXERCISES, stated plainly because it
- * bounds what a green means. Under Claude Code the child's completion is
- * answered by a turn of the engine's own: the CLI queues a
- * `<task-notification>`, the resident sink opens the response with
- * conversation_state "STREAMING" (engine/platform_events.py:340), and
- * session_read.py:1034 tests PROCESSING/STREAMING BEFORE has_background_work
- * (:1038) — so the page runs background → busy → ready. Work stays active
- * across both, and the single edge at the end lands after every write either
- * the child or the answering turn made. An engine that queues no such
- * notification runs background → ready instead, which is the other half of the
- * same predicate and needs a profile this file's prompt cannot address. So a
- * green here is the user-facing outcome on the answering-turn shape, not a
- * differential on the predicate itself. What keeps a red legible is the
+ * WHICH EDGE THIS RUN EXERCISES, stated plainly because it bounds what a green
+ * means. A Claude Code background Agent works after the reply that launched it
+ * has ended, so its write lands outside any response. When it finishes, the CLI
+ * queues a `<task-notification>` and Claude answers it on its own: the session's
+ * reader records a response of origin `engine` that answers no input
+ * (`engine/claude_runtime_client.py`, the runner's `engine_boundary`). That
+ * response's end is the edge after the write, so a green here is the
+ * user-facing outcome on the shape where the runtime answers a finished child,
+ * not a differential on the edge itself. What keeps a red legible is the
  * MECHANISM assertion, which separates "the panel never asked the server again"
  * from "it asked and still did not render the row", plus the annotated request
  * timeline saying when each ask happened.
  *
+ * The user sees the child running from the tab strip: `getRightPanelTabLabel`
+ * labels the tab `Agents (N)` while N children read as active by the engine's
+ * own status, and plain `Agents` once none is.
+ *
  * ENGINE: Claude Code. `run_in_background` on the Agent tool, the
  * `async_launched` receipt and the `<task-notification>` queueing are Claude
- * Code's own vocabulary — claude_code_background.py says so in its module
- * docstring and notes that an engine with no background-task concept answers
- * the base adapter's empty values and "the whole lane stays dark". The
- * requirement is asserted on the child-run row (engine_kind) rather than left
- * to a probe timeout, so a mis-selected profile fails at a named assertion.
- * agent-engine-matrix.json declares `contracts.background_subagent` for all four
- * profiles but carries no per-spec rows, so there is nothing to register there;
- * the prompt below is written in Claude Code's tool names and only that.
+ * Code's own vocabulary (`engine/claude_code_background.py`). The requirement
+ * is asserted on the child-run row (engine_kind) rather than left to a probe
+ * timeout, so a mis-selected profile fails at a named assertion. The prompt
+ * below is written in Claude Code's tool names and only that.
  */
 import { test, expect } from '@playwright/test';
+import type { Response } from '@playwright/test';
 
 import { AstraApi, type ChildRunRecord } from '../fixtures/astraApi';
+import { nativeTranscriptRows, sessionResponseRows } from '../fixtures/dbOracle';
 import { PlatformApi } from '../fixtures/platformApi';
 import { apiPath, parseTimeoutEnv } from '../fixtures/env';
 import { insist } from '../fixtures/insist';
@@ -70,37 +68,36 @@ import { trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
 
 // The spec reads three localized surfaces — the "Files" tab label
-// (chat:panel.tab.files), "Current directory" (chat:files.current_directory) and
-// the header's "Running in background" (chat:status.background_running). The
-// console detects language as ['localStorage','navigator'], so an unpinned
-// runner locale decides which spelling it gets, and a spec that accepted two
-// spellings would also accept a third nobody wrote it against. Pin it the way
-// agent-per-session-sandbox.exclusive.spec.ts:33 does.
+// (chat:panel.tab.files), "Current directory" (chat:files.current_directory)
+// and "Upload" (chat:files.upload). The console detects language as
+// ['localStorage','navigator'], so an unpinned runner locale decides which
+// spelling it gets, and a spec that accepted two spellings would also accept a
+// third nobody wrote it against. The Agents tab label is built in code and is
+// the same in both locales.
 test.use({ locale: 'en-US' });
 
 // A conversation on the prewarmed lane claims its box in about a second; the
-// rest of the 180s wall belongs to the turn, the child and the settle.
+// rest of the 180s wall belongs to the reply, the child and the settle.
 const READY_TIMEOUT_MS = parseTimeoutEnv('ASTRABOX_E2E_READY_TIMEOUT_MS', 60_000);
 // The panel's own mount load: root listing + tree paint.
 const PANEL_MOUNT_TIMEOUT_MS = parseTimeoutEnv('ASTRABOX_E2E_FILES_PANEL_MOUNT_TIMEOUT_MS', 30_000);
 // First evidence that the model actually backgrounded an Agent. Deliberately
-// tighter than the sibling background specs' probe: those spend most of a wall
-// they do not otherwise use, and this journey still has a release, a child
-// completion and a task-notification response to pay for after the probe.
+// tight: this journey still has a release, a child completion and the
+// runtime's answer to it to pay for after the probe.
 const BACKGROUND_PROBE_TIMEOUT_MS = parseTimeoutEnv(
   'ASTRABOX_E2E_BACKGROUND_FILES_PROBE_TIMEOUT_MS',
   60_000,
 );
 // The child-run row appears at launch (async_launched), long before it closes.
 const CHILD_ROW_TIMEOUT_MS = parseTimeoutEnv('ASTRABOX_E2E_CHILD_RUN_ROW_TIMEOUT_MS', 20_000);
-// The background window as the header states it.
+// The background window: the launch reply has ended and the child holds its gate.
 const BACKGROUND_WINDOW_TIMEOUT_MS = parseTimeoutEnv(
   'ASTRABOX_E2E_BACKGROUND_WINDOW_TIMEOUT_MS',
   30_000,
 );
 // From releasing the gate to the file existing in the sandbox.
 const WORKSPACE_WRITE_TIMEOUT_MS = parseTimeoutEnv('ASTRABOX_E2E_WORKSPACE_WRITE_TIMEOUT_MS', 30_000);
-// Child closes, the task-notification response runs, background state clears.
+// Child closes and the runtime's own answer to it ends.
 const BACKGROUND_SETTLED_TIMEOUT_MS = parseTimeoutEnv(
   'ASTRABOX_E2E_BACKGROUND_FILES_SETTLED_TIMEOUT_MS',
   45_000,
@@ -116,6 +113,56 @@ const CHILD_RELEASE_DEADLINE_SECONDS = 90;
 // agent-engine-matrix.json: the claude_code profile's child_completion declares
 // exactly this terminal status for a background Agent that finished its task.
 const CLAUDE_CODE_CHILD_COMPLETED = 'completed';
+
+// Claude Code keeps each Agent's conversation in a transcript of its own,
+// `subagents/agent-<id>` in the session's SessionStore mirror
+// (`engine/claude_code_background.py`).
+const AGENT_TRANSCRIPT_PREFIX = 'subagents/agent-';
+
+/** The input id the inputs route answered a composer send with. */
+async function acceptedInputId(response: Response): Promise<string> {
+  const body = (await response.json()) as { data?: { input_id?: unknown } };
+  const inputId = String(body.data?.input_id ?? '').trim();
+  expect(inputId, 'the inputs route must answer with the accepted input id').not.toBe('');
+  return inputId;
+}
+
+function contentBlocks(entry: Record<string, unknown>): Record<string, unknown>[] {
+  const message = entry.message;
+  if (!message || typeof message !== 'object') return [];
+  const content = (message as Record<string, unknown>).content;
+  return Array.isArray(content)
+    ? content.filter((block): block is Record<string, unknown> => Boolean(block) && typeof block === 'object')
+    : [];
+}
+
+interface ChildBashEvidence {
+  input: Record<string, unknown>;
+  /** The tool_result blocks Claude recorded for that call, in transcript order. */
+  results: Record<string, unknown>[];
+}
+
+/**
+ * The child's own Bash call for `commandFragment`, read from its transcript in
+ * the SessionStore mirror — the supplier's record, independent of the
+ * child-run projection the console reads.
+ */
+function childBash(sessionId: string, commandFragment: string): ChildBashEvidence[] {
+  const rows = nativeTranscriptRows(sessionId)
+    .filter((row) => String(row.subpath ?? '').startsWith(AGENT_TRANSCRIPT_PREFIX))
+    .map((row) => JSON.parse(String(row.entry_json)) as Record<string, unknown>);
+  const blocks = rows.flatMap((entry) => contentBlocks(entry));
+  const calls = new Map<string, Record<string, unknown>>();
+  for (const block of blocks) {
+    if (block.type !== 'tool_use' || block.name !== 'Bash') continue;
+    if (!JSON.stringify(block.input ?? null).includes(commandFragment)) continue;
+    calls.set(String(block.id ?? ''), (block.input ?? {}) as Record<string, unknown>);
+  }
+  return [...calls].filter(([id]) => id).map(([id, input]) => ({
+    input,
+    results: blocks.filter((block) => block.type === 'tool_result' && block.tool_use_id === id),
+  }));
+}
 
 // Sessions are deleted only when the test passes; a failure keeps the scene and
 // names it in the report tail — see fixtures/sessionCleanup.ts.
@@ -166,8 +213,8 @@ test("a background Agent's new file reaches the open Files panel without the use
     if (new URL(outgoing.url()).pathname === fileListPath) fileListCalls.push(Date.now());
   });
 
-  // Pin the console language before the FIRST navigation, or the three labels
-  // below read whatever the runner's locale happens to be.
+  // Pin the console language before the FIRST navigation, or the labels below
+  // read whatever the runner's locale happens to be.
   await page.addInitScript(() => {
     try {
       window.localStorage.setItem('astrabox-lang', 'en');
@@ -208,8 +255,7 @@ test("a background Agent's new file reaches the open Files panel without the use
   // ── Launch the background Agent through the real composer ─────────────────
   // The child blocks on a release file this test writes out of band. A fixed
   // sleep spends the budget without proving the ordering; the gate puts the
-  // write strictly inside the background window
-  // (completed-child-agent-reactivates.exclusive.spec.ts:78-90).
+  // write strictly inside the background window.
   const childCommand = [
     "python3 - <<'PY'",
     'from pathlib import Path',
@@ -227,7 +273,7 @@ test("a background Agent's new file reaches the open Files panel without the use
   const prompt = [
     `E2E background files ${runId}. This is a product regression test; follow the tool instructions literally.`,
     'Launch exactly one general-purpose Agent with run_in_background=true.',
-    'Its complete task is: use Bash exactly once to run the following command, wait for it,',
+    'Its complete task is: use Bash exactly once, with run_in_background=false, to run the following command, wait for it,',
     `then give a short completion report containing ${wroteMarker}.`,
     '---',
     childCommand,
@@ -235,7 +281,7 @@ test("a background Agent's new file reaches the open Files panel without the use
     'Do not use Bash yourself, do not launch a second Agent, and do not wait for this one.',
     `Immediately after the Agent call, reply with one short sentence containing ${parentMarker} and end your turn.`,
   ].join('\n');
-  await sendPrompt(page, sessionId, prompt);
+  let launchInputId = await acceptedInputId(await sendPrompt(page, sessionId, prompt));
 
   // ── Did the model actually background an Agent? ───────────────────────────
   // Ask again rather than skip: a runtime test.skip() SIGTERMs the worker and
@@ -243,16 +289,14 @@ test("a background Agent's new file reaches the open Files panel without the use
   // decide the round instead of the platform's behaviour.
   await insist<true>({
     ask: async (attempt) => {
-      if (attempt > 1) await api.postTurnInput(sessionId, prompt);
+      if (attempt > 1) launchInputId = (await api.postTurnInput(sessionId, prompt)).input_id;
     },
     probe: async () => {
       const deadline = Date.now() + BACKGROUND_PROBE_TIMEOUT_MS;
       while (Date.now() < deadline) {
-        const session = await api.getSession(sessionId);
-        if (session.background_task_state) return true;
         if ((await api.listChildRuns(sessionId)).child_runs.length > 0) return true;
-        const state = String(session.state || '');
-        if (state === 'TERMINATED' || state === 'DELETED' || state === 'RECOVERY_REQUIRED') {
+        const state = String((await api.getSession(sessionId)).state || '');
+        if (state === 'TERMINATED' || state === 'DELETED') {
           throw new Error(`session ${sessionId} reached terminal state ${state} during the probe`);
         }
         await page.waitForTimeout(1_500);
@@ -260,9 +304,9 @@ test("a background Agent's new file reaches the open Files panel without the use
       return null;
     },
     what:
-      `no background Agent within ${BACKGROUND_PROBE_TIMEOUT_MS}ms (no background_task_state `
-      + 'and no child-run row): the model answered inline instead of launching a '
-      + 'run_in_background Agent, and this spec\'s subject only exists once one is running.',
+      `no background Agent within ${BACKGROUND_PROBE_TIMEOUT_MS}ms (no child-run row): the model `
+      + 'answered inline instead of launching a run_in_background Agent, and this spec\'s subject '
+      + 'only exists once one is running.',
     budgetMs: BACKGROUND_PROBE_TIMEOUT_MS * 2,
     probeMs: BACKGROUND_PROBE_TIMEOUT_MS,
   });
@@ -282,21 +326,40 @@ test("a background Agent's new file reaches the open Files panel without the use
   ).toBe('claude_code');
 
   // ── The background window, from the user's seat ───────────────────────────
-  // The parent turn has ended and the page reads 'background', which keeps work
-  // active: no nonce bump is owed here, so the tree on screen is still the
-  // mount load's snapshot, taken BEFORE any child work.
-  const runningInBackground = page.locator('header').getByText('Running in background', {
-    exact: true,
+  // The launch reply has ended: the page's working edge for it has already
+  // fired, so the tree on screen holds no write of the child's yet.
+  const launchReply = await api.waitForReplyTo(sessionId, launchInputId, {
+    timeoutMs: BACKGROUND_WINDOW_TIMEOUT_MS,
   });
+  expect(launchReply.metadata?.outcome, 'the reply that launched the child must complete').toBe('completed');
+  // The child is at its gate in its own transcript: its Bash call is recorded
+  // and has no result, so the write the panel must learn about is still ahead.
+  await expect.poll(() => childBash(sessionId, releasePath).length, {
+    timeout: BACKGROUND_WINDOW_TIMEOUT_MS,
+    message: 'the background Agent must record its one gated Bash call in its own transcript',
+  }).toBe(1);
+  expect(
+    childBash(sessionId, releasePath)[0]!.input.run_in_background,
+    'the gated command must run in the child\'s foreground, so its result stays owed until release',
+  ).not.toBe(true);
+  expect(
+    childBash(sessionId, releasePath)[0]!.results,
+    'the gated Bash call must still be running — nothing has released it',
+  ).toEqual([]);
+  // What the user is shown while the child works: the tab strip counts it.
+  const agentsTabWhileRunning = page.getByRole('tab', { name: 'Agents (1)', exact: true });
   await expect(
-    runningInBackground,
-    'the header must say the child is running before the write can be inside that window',
+    agentsTabWhileRunning,
+    'the Agents tab must count the child the user left running',
   ).toBeVisible({ timeout: BACKGROUND_WINDOW_TIMEOUT_MS });
+  expect(
+    (await api.getSession(sessionId)).current_responses ?? [],
+    'the child works outside any response: nothing of the conversation\'s own is running',
+  ).toEqual([]);
 
-  // Quiesce the meter. A listing still in flight from the mount load, or from a
-  // directory the panel opened while the launch turn ran, would otherwise be
-  // counted as an after-the-write refetch and the MECHANISM assertion would
-  // pass on the wrong evidence.
+  // Quiesce the meter. A listing still in flight from the mount load, or from
+  // the launch reply's end, would otherwise be counted as an after-the-write
+  // refetch and the MECHANISM assertion would pass on the wrong evidence.
   const quiesceDeadline = Date.now() + BACKGROUND_WINDOW_TIMEOUT_MS;
   let previousCount = -1;
   while (fileListCalls.length !== previousCount) {
@@ -310,6 +373,10 @@ test("a background Agent's new file reaches the open Files panel without the use
     await page.waitForTimeout(2_000);
   }
   const callsBeforeWrite = fileListCalls.length;
+  await expect(
+    tree.getByText(markerName, { exact: true }),
+    'the tree on screen must not hold the marker before the child is released',
+  ).toHaveCount(0);
 
   // ── Release the child, out of band ────────────────────────────────────────
   // Through the test's own request context, never through the page: the panel
@@ -360,23 +427,43 @@ test("a background Agent's new file reaches the open Files panel without the use
           id: row.child_run_id, status: row.engine_status, reason: row.engine_reason,
         })))}`,
     ).toBe(true);
+    const childResults = childBash(sessionId, releasePath)[0]?.results ?? [];
+    expect(
+      JSON.stringify(childResults),
+      'the child\'s own transcript must hold its Bash result with the receipt it printed',
+    ).toContain(wroteMarker);
+
+    // The runtime answers the finished child on its own: one response that no
+    // input started. Its end is the working edge the panel refetches on.
+    await expect
+      .poll(
+        () => sessionResponseRows(sessionId)
+          .filter((row) => row.origin === 'engine')
+          .map((row) => ({ status: row.status, input_ids: row.input_ids })),
+        {
+          timeout: BACKGROUND_SETTLED_TIMEOUT_MS,
+          intervals: [1_000, 2_000],
+          message: 'Claude must answer the finished child with one response of its own that ends',
+        },
+      )
+      .toEqual([{ status: 'ended', input_ids: [] }]);
     await expect
       .poll(
         async () => {
           const detail = await api.getSession(sessionId);
-          return String(detail.state || '') === 'READY' && !detail.background_task_state;
+          return String(detail.state || '') === 'READY' && (detail.current_responses ?? []).length === 0;
         },
         {
           timeout: BACKGROUND_SETTLED_TIMEOUT_MS,
           intervals: [1_000, 2_000],
-          message: 'the completed background task must clear and the session project READY',
+          message: 'the conversation must be at rest once the child and the runtime\'s answer to it are done',
         },
       )
       .toBe(true);
     await expect(
-      runningInBackground,
-      'the header must stop saying the child is running once it has closed',
-    ).toHaveCount(0, { timeout: BACKGROUND_WINDOW_TIMEOUT_MS });
+      page.getByRole('tab', { name: 'Agents', exact: true }),
+      'the Agents tab must stop counting the child once it has closed',
+    ).toBeVisible({ timeout: BACKGROUND_WINDOW_TIMEOUT_MS });
 
     // ── THE CLAIM ────────────────────────────────────────────────────────────
     // No manual refresh, no re-opened directory, no tab switch, no reload: the

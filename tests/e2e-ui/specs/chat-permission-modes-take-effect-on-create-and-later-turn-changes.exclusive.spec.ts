@@ -5,8 +5,8 @@
  * default, bypassPermissions, and plan using the permission control. Default
  * must hold a Write behind an approval card; rejecting it clears the pending
  * interaction. Bypass must not raise an approval, and plan must not create the
- * requested file. Browser request inspection confirms that each turn carries
- * the mode shown by the badge.
+ * requested file. Browser request inspection confirms that each mode change
+ * updates the Session setting shown by the badge.
  *
  * Tool selection and plan confirmation depend on the model. The first gated
  * Write is a bounded capability probe; model-independent mode and file-state
@@ -92,19 +92,16 @@ test('chat permission modes take effect on create and later turn changes', async
   const panel = page.getByTestId('pending-interaction-panel');
   const pill = page.getByTestId('run-view').getByTestId('status-pill').first();
 
-  // The mode each turn actually left the browser under, in send order. The console
-  // sends on POST /sessions/{id}/turn-inputs (a receipt — the frames come back on the
-  // session stream), carrying `permission_mode` from the strip. Reading the request
-  // the page issues is the only oracle that binds the badge the user was looking at
-  // to the mode the turn ran under, and it perturbs nothing.
+  // The console changes the Session's mode through its own route before sending
+  // an input. Inputs carry content and identity; the mode is the Session's.
   const sentModes: string[] = [];
   page.on('request', (req) => {
-    if (req.method() !== 'POST' || !req.url().includes('/turn-inputs')) return;
+    if (req.method() !== 'POST' || !new URL(req.url()).pathname.endsWith(`/sessions/${sessionId}/permission-mode`)) return;
     try {
       const body = JSON.parse(req.postData() || '{}') as { permission_mode?: unknown };
       sentModes.push(String(body.permission_mode ?? ''));
     } catch {
-      // Not a JSON turn dispatch; nothing to read.
+      // Not a JSON mode change; nothing to read.
     }
   });
 
@@ -156,12 +153,11 @@ test('chat permission modes take effect on create and later turn changes', async
   };
 
   /**
-   * Send from the real composer and confirm the console dispatched the turn under
-   * the mode the badge is showing. `.fill()` sets the value without key events, so a
+   * Send from the real composer and confirm the Session holds the selected mode.
+   * `.fill()` sets the value without key events, so a
    * multi-line prompt is not submitted early by an Enter newline.
    */
   const sendFromComposer = async (prompt: string, echo: string, expectedMode: ModeName) => {
-    const before = sentModes.length;
     const composer = page.getByTestId('composer-prompt');
     await expect(composer, 'the composer must be enabled before sending').toBeEnabled({ timeout: 45_000 });
     await composer.fill(prompt);
@@ -172,10 +168,13 @@ test('chat permission modes take effect on create and later turn changes', async
       page.getByTestId('user-message').filter({ hasText: echo }).last(),
       'the user bubble should render — proof the turn was dispatched from the page',
     ).toBeVisible({ timeout: 30_000 });
-    await expect.poll(() => sentModes.length, { timeout: 30_000 }).toBeGreaterThan(before);
     expect(
       sentModes[sentModes.length - 1],
-      `the console must dispatch this turn under the mode it is showing (${expectedMode})`,
+      `the console must request the Session mode it is showing (${expectedMode})`,
+    ).toBe(expectedMode);
+    expect(
+      (await api.getSession(sessionId)).permission_mode,
+      'the selected mode must persist when the browser sends the next input',
     ).toBe(expectedMode);
   };
 
@@ -199,10 +198,11 @@ test('chat permission modes take effect on create and later turn changes', async
     while (Date.now() < deadline) {
       const session = await api.getSession(sessionId);
       if (String(session.state || '') === 'READY' && !session.pending_interaction) {
-        // Two samples ~2s apart, because the projection reads READY for a beat
-        // between an answered interaction and the continuation the model starts on
-        // the same turn. Handing that beat to the next step would find the mode
-        // cycle disabled and burn an actionability timeout on it.
+        // Two samples ~2s apart: the page offers the mode cycle only once it has
+        // read the session as idle itself, which it does after the response's end
+        // reaches it. Handing the next step a session the page still shows as
+        // busy would find the mode cycle disabled and burn an actionability
+        // timeout on it.
         settledSamples += 1;
         if (settledSamples >= 2) return true;
       } else {
@@ -289,7 +289,7 @@ test('chat permission modes take effect on create and later turn changes', async
     // pathDefault-absence assertion below carries "the requested write specifically
     // did not happen".
     expect(probePending.tool_name, 'default mode should gate the tool the model reached for').toBeTruthy();
-    expect(probePending.turn_id, 'the pending interaction should bind to a turn').toBeTruthy();
+    expect(probePending.response_id, 'the pending interaction should name the response it pauses').toBeTruthy();
     expect(probePending.interaction_id, 'the pending interaction should expose a stable id').toBeTruthy();
     // The ids have no pixel, but the tool name does — asserting it ties the card on
     // screen to the interaction the platform actually raised, rather than checking

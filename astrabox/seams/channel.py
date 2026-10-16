@@ -341,7 +341,7 @@ class ChannelInbound:
 #: projection providers consume (docs/channel-spine.md invariant D). This is
 #: a forward contract for third-party providers, never a compatibility layer:
 #: raw internal AI-SDK frames must not cross the seam.
-CHANNEL_EVENT_VERSION = 2
+CHANNEL_EVENT_VERSION = 3
 
 EVENT_TURN_STARTED = "turn_started"
 EVENT_PROGRESS = "progress"
@@ -401,9 +401,7 @@ class ChannelInteraction:
 class ChannelEvent:
     """One rendering update from the platform Session output subscription.
 
-    ``response_id`` identifies the mainline reply independently of its
-    trigger; ``turn_id`` names the Session turn that produced it and can be
-    empty for engine-owned Session messages.
+    ``response_id`` identifies the reply, whatever made the agent produce it.
 
     ``progress`` carries the coalesced assistant text SO FAR (idempotent
     update-the-card semantics — intermediate steps may be skipped);
@@ -413,7 +411,6 @@ class ChannelEvent:
 
     type: str
     seq: int
-    turn_id: str
     text: str | None = None
     error: str | None = None
     version: int = CHANNEL_EVENT_VERSION
@@ -455,7 +452,8 @@ class ChannelDeliveryHandle(ABC):
 
         The spine calls this sequentially per session — never concurrently —
         and persists returned aliases before the next emit. A raise fails the
-        delivery attempt (retried under the outbox policy), never the turn.
+        delivery attempt (retried under the outbox policy), never the agent's
+        response.
         """
 
     async def close(self) -> None:
@@ -613,9 +611,9 @@ class ChannelProvider(ABC):
     ) -> "ChannelDeliveryReceipt | None":
         """Send one completed main-conversation response to its destination.
 
-        Default: no-op (inbound-only channel). Called in the background after
-        the turn settles; exceptions are logged by the caller, never raised
-        into the turn. Returning a :class:`ChannelDeliveryReceipt` gets the
+        Default: no-op (inbound-only channel). Called in the background once
+        the reply is complete; an exception fails that delivery attempt, never
+        the agent's response. Returning a :class:`ChannelDeliveryReceipt` gets the
         platform aliases persisted onto the conversation chain before the
         delivery is marked complete.
 

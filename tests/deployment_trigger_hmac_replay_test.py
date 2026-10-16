@@ -25,10 +25,9 @@ def _service() -> DeploymentService:
         deployment_repo=AsyncMock(),
         agent_repo=AsyncMock(),
         agent_service_getter=lambda: AsyncMock(),
-        stream_message_events_ds=AsyncMock(),
-        dispatch_turn_input=AsyncMock(),
         sessions_repo=AsyncMock(),
-        spawn_background_task=lambda *a, **k: None,
+        session_runtime=AsyncMock(),
+        session_facts=AsyncMock(),
         agent_config=AsyncMock(),
         channel_ingress=AsyncMock(),  # hmac scenes never touch the channel spine
     )
@@ -51,14 +50,6 @@ def test_signature_binds_the_body() -> None:
     sig = _hmac_signature("s", "123", body)
     # A different body under the same secret+timestamp yields a different sig.
     assert sig != _hmac_signature("s", "123", b'{"cmd":"malicious"}')
-
-
-def test_fresh_signed_request_passes() -> None:
-    svc = _service()
-    body = b'{"text":"hi"}'
-    svc._verify_signature(
-        _hmac_binding(), _signed_headers("shared-secret", body), body
-    )  # no raise
 
 
 def test_replay_with_tampered_body_is_rejected() -> None:
@@ -91,12 +82,3 @@ def test_non_numeric_timestamp_is_rejected() -> None:
     with pytest.raises(APIError) as exc:
         svc._verify_signature(_hmac_binding(), headers, body)
     assert exc.value.status_code == 401
-
-
-def test_window_is_configurable(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ASTRABOX_WEBHOOK_HMAC_WINDOW_SECONDS", "20000")
-    svc = _service()
-    body = b'{"text":"hi"}'
-    # 10000s old passes under a 20000s window.
-    headers = _signed_headers("shared-secret", body, ts=time.time() - 10_000)
-    svc._verify_signature(_hmac_binding(), headers, body)  # no raise

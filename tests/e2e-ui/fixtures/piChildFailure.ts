@@ -2,7 +2,7 @@
 import { expect } from '@playwright/test';
 
 import type { AstraApi } from './astraApi';
-import { snapshotDoc } from './dbOracle';
+import { postgresRows, sqlLiteral } from './dbOracle';
 import { nativeRows, type ChildGate } from './nativeChildLifecycle';
 import { terminalOutput } from './nativeMcpServer';
 import { PlatformApi } from './platformApi';
@@ -160,15 +160,18 @@ export async function obstructCompletionReplay(api: AstraApi, sessionId: string,
   } };
 }
 
+/**
+ * The execd pipe the session's reader reads Pi on, or null before it has read
+ * anything. The reader stores its runtime cursor on the session row, and a Pi
+ * cursor's generation is that pipe (`PiRuntimeClient`,
+ * `engine/pi_runtime_client.py`).
+ */
 export function currentPiPipe(sessionId: string): string | null {
-  const anchor = object(snapshotDoc(sessionId)?.current_turn_engine_anchor);
-  if (!anchor.engine_turn_id) return null;
-  expect(anchor.engine_kind).toBe('pi');
-  const value = String(anchor.engine_turn_id);
-  expect(value.startsWith('pi-rpc-v1.')).toBe(true);
-  const decoded = object(JSON.parse(Buffer.from(value.slice('pi-rpc-v1.'.length), 'base64url').toString('utf8')));
-  expect(decoded.pty_session_id).toEqual(expect.any(String));
-  return String(decoded.pty_session_id);
+  const [row] = postgresRows<{ reader_cursor: ObjectRecord | null }>(
+    `SELECT reader_cursor FROM sessions WHERE session_id = ${sqlLiteral(sessionId)}`,
+  );
+  const pipe = String(object(row?.reader_cursor).generation ?? '').trim();
+  return pipe || null;
 }
 
 /** Replay the real execd pipe as a viewer; never attach as its input/output owner. */

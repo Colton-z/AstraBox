@@ -20,7 +20,9 @@ AstraBox coordinates authorization, runtime assignment, credentials, saved
 state, and delivery of input and output. It uses the selected providers'
 supported operations for sandbox allocation, isolation, and storage. An Agent
 program runs its own tools, permissions, and conversation protocol through its
-adapter. These integrations participate in the same platform workflow.
+adapter, and its runtime remains the authority on its own conversation: whether
+it is working, which inputs it has taken, and where each response starts and
+ends. These integrations participate in the same platform workflow.
 
 The Agent program reads and writes the Session workspace at `/workspace` in
 the bundled images. An application started there can be opened through the URL
@@ -106,6 +108,14 @@ Each installed Agent program has an adapter between its native API and
 AstraBox's Session operations. Reasoning, tool selection, permission semantics,
 and program-specific configuration remain native to that program.
 
+The adapter serves one runtime contract for every Agent program: it hands the
+program an input, reads the program's events from a resumable position, reports
+the program's own state, passes answers and interruptions on, and translates
+the program's output into AI SDK UI message parts. The events say when the
+program durably took an input, when a response started and ended and how, when
+it waits on an approval or a question, and whether it is working. AstraBox
+records these facts as the program reports them and never infers them.
+
 The adapter declares its image, startup inputs, state format, and connection
 requirements. Common platform startup code prepares the workspace, resolves
 credentials, restores saved native state, and then activates the adapter. A
@@ -128,11 +138,10 @@ Protocol Server option connects to an endpoint an operator already runs. A
 multi-replica installation can configure one authenticated external channel
 gateway.
 
-Web and messaging adapters consume the same Session output subscription. The
-Agent-program adapter interprets native reply boundaries; the platform saves
-the text, tools, and terminal state in the existing Session journal. A channel
-renders that output for its destination rather than running a separate Agent
-workflow.
+Web and messaging adapters consume the same Session output. The Agent-program
+adapter interprets native reply boundaries, and the platform records the reply
+in the Session's output log. A channel renders that output for its destination
+rather than running a separate Agent workflow.
 
 An attached channel follows the Session even when no new inbound message
 arrives. If a native background task or extension wakes the main Agent, its
@@ -141,25 +150,22 @@ output path. Child status and child transcripts remain separate from the main
 Agent's reply. A text-only destination receives the reply's text; Web also
 renders its tool cards and other supported parts.
 
-Channel subscriptions retain a journal cursor, and the existing reply outbox
-retains delivery attempts and platform message IDs. After a partial read, the
-subscription reconstructs the reply from its boundary before advancing the
-cursor. There is no second conversation store. See
-[Add a messaging platform](writing-a-channel-provider.md#deliver-agent-replies).
+A channel subscription keeps its position in the Session's output log, and the
+reply outbox keeps delivery attempts and platform message IDs. A delivery reads
+its reply whole from the output log, so a delivery resumed after a restart
+sends the same reply. There is no second conversation store. See
+[Add a messaging platform](writing-a-channel-provider.md).
 
 ### Data and credentials
 
-PostgreSQL is the deployment default for AstraBox records. MongoDB is available
-through the `mongo` extra, and SQLite suits local development and tests. Team
-deployments use shared PostgreSQL or MongoDB. The bundled LiteLLM service uses
-a separate database and database role.
+AstraBox keeps its records in PostgreSQL, the only database it supports; every
+replica uses the same database. The server brings the schema to its release's
+version when it starts; see [Deploy AstraBox](deploy.md). The bundled
+LiteLLM service uses a separate database and database role.
 
 Scheduled Deployments run through a scheduler provider. The built-in `dbos`
 provider embeds DBOS Transact in each server process and keeps its schedules
-and Run ledger in the same PostgreSQL database (its `dbos` schema) or SQLite
-file. It cannot run with MongoDB; such a deployment sets
-`ASTRABOX_SCHEDULER_PROVIDER=none` or installs a provider that supports its
-database.
+and Run ledger in the same PostgreSQL database, in its `dbos` schema.
 
 AstraBox Credential Vault records are organization-level resources. The `local`
 secret-store plugin encrypts values with AES-GCM; `aws_kms` uses AWS KMS envelope
@@ -183,21 +189,28 @@ the supported delivery mechanism.
 ![The path of one Session request](./img/architecture-request-path.svg#inline)
 
 1. The console, API, or an integration sends input to a Session.
-2. AstraBox authenticates the caller, checks authorization, and saves the input
-   before dispatching it.
-3. AstraBox uses the Session's current sandbox. If a runtime must be prepared
-   or rebuilt, it resolves the current Agent and Environment, then asks
-   OpenSandbox to create, claim, resume, or reconnect the sandbox.
+2. AstraBox authenticates the caller, checks authorization, records the input,
+   and returns a receipt. The client follows the Session's output stream.
+3. One AstraBox process holds the Session's connection to its runtime; any
+   replica may accept the input, and a database notice tells that process. If
+   the Session has no runtime yet, or its runtime must be rebuilt, AstraBox
+   resolves the current Agent and Environment and asks OpenSandbox to create,
+   claim, resume, or reconnect the sandbox.
 4. AstraBox confirms the workspace and credentials, restores native state when
-   required, and connects to the selected Agent program before sending input.
-5. The Agent program works in `/workspace` and returns its native output.
-6. AstraBox stores the resulting Session events and streams them to the client
-   over SSE.
-7. A result, question, approval request, interruption, or error updates the
-   Session state.
+   required, and connects to the selected Agent program. It runs the
+   deployment's preparation, if one is installed, and hands the input to the
+   program.
+5. The Agent program works in `/workspace` and reports its output, the start
+   and end of its response, the approvals or questions it waits on, and whether
+   it is working.
+6. AstraBox relays each output part to the clients following the Session as it
+   arrives, and records the parts together with the program's position in the
+   database.
+7. The response ends when the Agent program says it ended, with the program's
+   own outcome. A question or approval pauses it until someone answers.
 
 Closing the browser does not cancel the work. A client can reconnect with the
-last `after_seq` cursor and continue receiving saved events. See
+last `after_seq` cursor and receive what it missed, then the rest live. See
 [SSE Event Stream](events-stream.md).
 
 Starting a runtime can follow several paths:
@@ -211,19 +224,27 @@ Starting a runtime can follow several paths:
 Prepared capacity can exist before the Session that receives it. A persistent
 workspace is therefore selected before delivery. A shared sandbox keeps its
 existing root while each conversation receives its own isolated directory.
-If compute is confirmed lost, the affected task fails; a subsequent message
-can resume from saved native state without replaying the failed task
-automatically.
+If compute is confirmed lost, the response the Agent program was producing
+ends as failed. Messages the program had not yet taken go to a replacement
+runtime, which resumes the conversation from saved native state; a message the
+program had taken is not sent again.
 
 ## Where data lives
 
 | Data | Stored in |
 | --- | --- |
-| Agent, Environment, and Deployment records | The database configured for AstraBox |
+| Agent, Environment, and Deployment records | The AstraBox PostgreSQL database |
 | Credential values | The configured Secret Store |
-| Session state, messages, and Events | The database configured for AstraBox |
-| Native Agent-program state (SessionStore) | The AstraBox database, in the program's native record or snapshot format |
+| Session records: inputs, responses, approvals and questions, and the output log | The AstraBox PostgreSQL database |
+| Native Agent-program state (SessionStore) | The AstraBox PostgreSQL database, in the program's native record or archive format |
 | Session and Assistant files | `/workspace`, backed by an optional persistent workspace volume; otherwise retained with the sandbox or a supported snapshot |
+
+Inline Environment credentials require a Secret Store derived from
+`EncryptedCollectionSecretStore`, so references and ciphertext commit together
+in PostgreSQL and readers obtain one consistent snapshot. Both `local` and
+`aws_kms` support this. Other Secret Store providers can serve credential-free
+Environments; inline credentials are refused with
+`ENVIRONMENT_SECRET_STORE_NOT_TRANSACTIONAL`.
 
 Native state includes the records the Agent program needs to resume its
 conversation, including native child-conversation state. AstraBox saves those
@@ -298,7 +319,7 @@ Two separate choices determine how work is distributed:
 
 | Choice | What is shared |
 | --- | --- |
-| AstraBox backend replicas | API and orchestration replicas use the same product database, credential configuration, and reachable sandbox service. Saved Session and native state are available independently of a replica's local memory. |
+| AstraBox backend replicas | API and orchestration replicas use the same product database, credential configuration, and reachable sandbox service. Saved Session and native state are available independently of a replica's local memory. One replica at a time holds each Session's connection to its runtime; when it stops, another replica takes the Session over. |
 | Sandbox worker nodes | The sandbox service places compute on its workers. Persistent workspaces spanning workers require shared backing storage; each mergerfs view runs beside its consuming sandbox. |
 
 Increasing backend replicas does not make a node-local workspace filesystem
@@ -309,8 +330,8 @@ workers.
 ## Extensions {#plugin-interfaces}
 
 Installed provider packages can connect another Agent program, sandbox
-backend, model service, data store, Secret Store, identity provider, workspace
-store, extension source, scheduler, or messaging platform without changing the
+backend, model service, Secret Store, identity provider, workspace store,
+extension source, scheduler, or messaging platform without changing the
 Session API. AstraBox checks provider compatibility at startup and refuses an unknown
 or incompatible configuration.
 
@@ -322,7 +343,7 @@ For extension points, see [Embed AstraBox](embedding.md),
 
 ## Related documents
 
-- [Overview](overview.md) — Agent, Environment, Session, and Event.
+- [Overview](overview.md) — Agent, Environment, and Session.
 - [Deploy AstraBox](deploy.md) — installation and operations.
 - [OpenSandbox](providers/opensandbox.md) — sandbox behavior and setup.
 - [HTTP API](api.md) — requests, authentication, responses, and streaming.

@@ -13,6 +13,13 @@ envelope looks like, when the process is ready to answer, and what an
 unmatched response means are all the adapter's, and the installed adapters
 genuinely disagree about the last one.
 
+A record's offset is where its first byte sits in the process's output as the
+box numbers it: stdout and stderr counted together, in the order the box
+received them. That is the offset an attachment replays from, so a reader that
+resumes at a record's offset reads that record again. The box's replay does
+not say which stream a byte came from; a replayed line that does not open a
+JSON object is the process's stderr and is kept with the stderr tail.
+
 So the channel is composed, not inherited, and its request support is
 mechanism only: :meth:`register_request` hands back a future,
 :meth:`complete_request` settles one the adapter has recognized. The channel
@@ -44,9 +51,30 @@ from astrabox.seams.sandbox_data import (
 #: this tail is the only account of why a process died.
 _STDERR_TAIL_LIMIT = 8000
 
-#: One parsed record and the byte offset just past its terminating LF.
+#: One parsed record and the output offset of its first byte.
 RecordSink = Callable[[dict[str, Any], int], Awaitable[None]]
 FailureSink = Callable[[BaseException], Awaitable[None]]
+
+
+class ProcessExited(RuntimeError):
+    """The process ended; the exit notice carries its code and stderr tail."""
+
+    def __init__(self, message: str, *, exit_code: int | None) -> None:
+        super().__init__(message)
+        self.exit_code = exit_code
+
+
+class ProcessReplayUnreadable(RuntimeError):
+    """A replayed line opens a JSON object but is not one.
+
+    The box replays stdout and stderr as one stream, so a record whose bytes
+    the box received with stderr written between them cannot be read back from
+    the replay. ``offset`` is where the unreadable line starts.
+    """
+
+    def __init__(self, message: str, *, offset: int) -> None:
+        super().__init__(message)
+        self.offset = offset
 
 
 class ProcessJsonLineChannel:
@@ -86,7 +114,10 @@ class ProcessJsonLineChannel:
         self._send_lock = asyncio.Lock()
         self._fatal: BaseException | None = None
         self._stdout_buffer = b""
-        self._buffer_start_offset = 0
+        #: ``(buffer index, output offset, replayed)`` for each stdout chunk in
+        #: the buffer, so a record's first byte maps to the box's numbering even
+        #: when stderr arrived between the chunks of one record.
+        self._segments: list[tuple[int, int, bool]] = []
         self._next_output_offset = 0
         self._stderr_tail = ""
 
@@ -127,7 +158,8 @@ class ProcessJsonLineChannel:
         process_id = await self.create()
         requested = max(0, int(since))
         self._next_output_offset = requested
-        self._buffer_start_offset = requested
+        self._stdout_buffer = b""
+        self._segments = []
         try:
             self._attachment = await self.processes.attach(
                 process_id, since=requested, takeover=takeover
@@ -216,26 +248,29 @@ class ProcessJsonLineChannel:
 
     async def _handle_frame(self, frame: ProcessFrame) -> None:
         if isinstance(frame, ProcessExit):
-            raise RuntimeError(
+            raise ProcessExited(
                 f"{self.label} process exited with code {frame.exit_code}; "
-                f"stderr={self._stderr_tail[-1000:]!r}"
+                f"stderr={self._stderr_tail[-1000:]!r}",
+                exit_code=frame.exit_code,
             )
         if isinstance(frame, ProcessReplay):
             # The replay starts at what the box still holds, and the attach
             # already refused one that starts past the cursor asked for.
             self._next_output_offset = frame.offset
-            self._buffer_start_offset = frame.offset
             self._stdout_buffer = b""
-            await self._feed_stdout(frame.data)
+            self._segments = []
+            await self._feed_stdout(frame.data, replayed=True)
             return
         if frame.stream == "stderr":
-            self._stderr_tail = (
-                self._stderr_tail + frame.data.decode("utf-8", "replace")
-            )[-_STDERR_TAIL_LIMIT:]
+            self._keep_stderr(frame.data)
+            self._next_output_offset += len(frame.data)
             return
-        await self._feed_stdout(frame.data)
+        await self._feed_stdout(frame.data, replayed=False)
 
-    async def _feed_stdout(self, data: bytes) -> None:
+    def _keep_stderr(self, data: bytes) -> None:
+        self._stderr_tail = (self._stderr_tail + data.decode("utf-8", "replace"))[-_STDERR_TAIL_LIMIT:]
+
+    async def _feed_stdout(self, data: bytes, *, replayed: bool) -> None:
         """Split stdout on LF only and hand each record to the adapter.
 
         LF is the sole delimiter, and the split happens on bytes: a JSON
@@ -247,8 +282,7 @@ class ProcessJsonLineChannel:
 
         if not data:
             return
-        if not self._stdout_buffer:
-            self._buffer_start_offset = self._next_output_offset
+        self._segments.append((len(self._stdout_buffer), self._next_output_offset, replayed))
         self._stdout_buffer += data
         self._next_output_offset += len(data)
         while True:
@@ -256,24 +290,47 @@ class ProcessJsonLineChannel:
             if newline < 0:
                 break
             raw_line = self._stdout_buffer[:newline]
-            consumed = newline + 1
-            line_end_offset = self._buffer_start_offset + consumed
-            self._stdout_buffer = self._stdout_buffer[consumed:]
-            self._buffer_start_offset = line_end_offset
+            _, line_offset, from_replay = self._segments[0]
+            self._consume(newline + 1)
             if raw_line.endswith(b"\r"):
                 raw_line = raw_line[:-1]
             if not raw_line.strip():
                 continue
+            if from_replay and not raw_line.lstrip().startswith(b"{"):
+                self._keep_stderr(raw_line + b"\n")
+                continue
             try:
                 record = json.loads(raw_line.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                if from_replay:
+                    raise ProcessReplayUnreadable(
+                        f"{self.label} replayed an unreadable record at offset "
+                        f"{line_offset}: {raw_line[:300]!r}",
+                        offset=line_offset,
+                    ) from exc
                 raise RuntimeError(
                     f"{self.label} wrote non-JSON stdout at offset "
-                    f"{line_end_offset}: {raw_line[:300]!r}"
+                    f"{line_offset}: {raw_line[:300]!r}"
                 ) from exc
             if not isinstance(record, dict):
                 raise RuntimeError(f"{self.label} JSON record is not an object")
-            await self._on_record(record, line_end_offset)
+            await self._on_record(record, line_offset)
+
+    def _consume(self, count: int) -> None:
+        """Drop the first ``count`` buffered bytes, keeping each chunk's offset."""
+
+        buffered = len(self._stdout_buffer)
+        self._stdout_buffer = self._stdout_buffer[count:]
+        segments: list[tuple[int, int, bool]] = []
+        for position, (index, offset, replayed) in enumerate(self._segments):
+            end = self._segments[position + 1][0] if position + 1 < len(self._segments) else buffered
+            if end <= count:
+                continue
+            if index < count:
+                segments.append((0, offset + count - index, replayed))
+            else:
+                segments.append((index - count, offset, replayed))
+        self._segments = segments
 
     # ── teardown ─────────────────────────────────────────────────────────
     async def fail(self, exc: BaseException) -> None:

@@ -23,9 +23,7 @@ import re
 import secrets
 from typing import Any
 
-from astrabox.common.utils.time_utils import utcnow_iso
 from astrabox.core.service.orchestrator.engine.frame_scope import mark_engine_public_ui_frame
-from astrabox.persistence.repository.session_repository import SessionRepository
 from astrabox.persistence.repository.tool_card_repository import ToolCardRepository
 
 CARD_PART_TYPE = "data-tool-card"
@@ -52,7 +50,6 @@ async def record_card(
         "tool": tool,
         "kind": kind,
         "data": dict(data),
-        "created_at": utcnow_iso(),
     })
     return card_id
 
@@ -72,7 +69,6 @@ def card_ids_in(output: Any) -> list[str]:
 
 async def card_parts(
     session_id: str, frame: dict[str, Any], *, repository: ToolCardRepository | None = None,
-    sessions: SessionRepository | None = None,
 ) -> list[dict[str, Any]]:
     """The card parts a translated tool result adds, for this Session's cards only.
 
@@ -86,16 +82,9 @@ async def card_parts(
     ids = card_ids_in(frame.get("output"))
     if not tool_call_id or not ids or not session_id:
         return []
-    named = await (repository or ToolCardRepository()).named(ids)
-    assistant_id = ""
-    if any(row.get("assistant_id") for row in named):
-        session = await (sessions or SessionRepository()).get_session(session_id)
-        assistant_id = str(((session or {}).get("workspace_ref") or {}).get("assistant_id") or "")
     records = {
         str(row["card_id"]): row
-        for row in named
-        if row.get("session_id") == session_id
-        or (assistant_id and row.get("assistant_id") == assistant_id)
+        for row in await (repository or ToolCardRepository()).named(session_id, ids)
     }
     # Marked as public UI, as an adapter's own data parts are, so the part is
     # kept in the turn's message and not only shown while the turn streams.

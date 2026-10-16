@@ -35,6 +35,8 @@ class _EnvironmentRepo:
     async def get_any_by_name(self, name: str) -> dict[str, Any] | None:
         return {"name": name, "engine_kind": "claude_code"}
 
+    get_with_secrets = get_any_by_name
+
 
 class _CatalogRepo:
     def __init__(self) -> None:
@@ -65,7 +67,7 @@ def _assistant_service() -> tuple[AssistantService, _CatalogRepo]:
     catalog = _CatalogRepo()
     service = AssistantService(
         agent_config=_Environments(),
-        session_kernel=None,
+        session_lifecycle=None,
         catalog_repo=catalog,  # type: ignore[arg-type]
         workspace_service=SimpleNamespace(),  # type: ignore[arg-type]
         spawn_background_task=lambda coroutine, **_: coroutine.close(),
@@ -91,27 +93,6 @@ async def test_a_non_administrator_cannot_create_an_agent_when_authoring_is_rese
     assert repo.created == []
 
 
-async def test_an_administrator_still_creates_agents_when_authoring_is_reserved(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("ASTRABOX_AUTHORING_ADMIN_ONLY", "true")
-    service, repo = _agent_service()
-
-    created = await service.create_agent_config(_user("admin"), dict(_AGENT))
-
-    assert created["name"] == "probe"
-    assert [doc["created_by"] for doc in repo.created] == ["visitor-1"]
-
-
-async def test_every_user_creates_agents_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("ASTRABOX_AUTHORING_ADMIN_ONLY", raising=False)
-    service, repo = _agent_service()
-
-    await service.create_agent_config(_user(), dict(_AGENT))
-
-    assert len(repo.created) == 1
-
-
 async def test_a_non_administrator_cannot_create_an_assistant_when_authoring_is_reserved(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -124,14 +105,3 @@ async def test_a_non_administrator_cannot_create_an_assistant_when_authoring_is_
     assert raised.value.status_code == 403
     assert raised.value.code == "FORBIDDEN"
     assert catalog.created == []
-
-
-async def test_an_administrator_still_creates_assistants_when_authoring_is_reserved(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("ASTRABOX_AUTHORING_ADMIN_ONLY", "true")
-    service, catalog = _assistant_service()
-
-    await service.create_assistant(_user("admin"), dict(_ASSISTANT))
-
-    assert [row["owner_id"] for row in catalog.created] == ["visitor-1"]

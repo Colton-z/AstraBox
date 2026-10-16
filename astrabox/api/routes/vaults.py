@@ -269,20 +269,14 @@ def register_vault_routes(app: Any) -> None:
     )
     async def archive_vault(vault_id: str, request: Request):
         user = await get_current_user_context(request)
-        # Authorize before inspecting bindings so a cross-org id cannot reveal
-        # whether another organization's runtime uses the Vault.
-        await _service.get_vault(user, vault_id)
-        await _bindings.ensure_vault_unbound(vault_id, action="archive")
-        return success_response(await _service.archive_vault(user, vault_id))
+        return success_response(await _bindings.archive_vault(user, vault_id))
 
     # 204 is declared, not defaulted: the handler answers 204 with no body, and
     # the default 200 documents a body no caller ever receives.
     @app.delete("/api/v1/admin/vaults/{vault_id}", status_code=204)
     async def delete_vault(vault_id: str, request: Request):
         user = await get_current_user_context(request)
-        await _service.get_vault(user, vault_id)
-        await _bindings.ensure_vault_unbound(vault_id, action="delete")
-        await _service.delete_vault(user, vault_id)
+        await _bindings.delete_vault(user, vault_id)
         return Response(status_code=204)
 
     # ── credentials ─────────────────────────────────────────────────────────

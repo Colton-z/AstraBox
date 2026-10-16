@@ -1,9 +1,9 @@
 """Assistant workspace service - materialization, wake, hibernate.
 
 Workspace lifetime is bound to the assistant runtime, not to each user. The
-first call to ``materialize_workspace_if_absent`` allocates the
-``assistant_workspace`` row with ``_id = sha1(assistant_id)`` as primary-key
-fence; subsequent calls from any user return the existing row.
+first call to ``materialize_workspace_if_absent`` inserts the Assistant's one
+``assistant_workspaces`` row, keyed by the Assistant; later calls from any
+user return the existing row.
 
 This service only owns workspace state. A conversation Session may materialize
 the workspace through the common runtime-subject lifecycle; explicit wake uses
@@ -25,39 +25,34 @@ records that native state was saved and destruction still needs proof. A
 completed hibernate has no sandbox pointer; wake materializes a fresh box and
 restores native state. Workspace files survive that replacement only when
 optional persistent workspace storage is configured.
+
+Every transition below is one conditional write in
+:class:`~astrabox.persistence.repository.assistant_workspace_repository.AssistantWorkspaceRepository`;
+each method's docstring says which facts its condition names and why.
 """
 
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime
 from typing import Any
 
-from astrabox.persistence.repository.assistant_workspace_repository import (
-    AssistantWorkspaceRepository,
-    assistant_workspace_fence_id,
-)
 from astrabox.common.logger.logger_factory import get_logger
+from astrabox.common.utils.errors import APIError
+from astrabox.common.utils.time_utils import utcnow
 from astrabox.core.service.orchestrator.engine.capabilities import (
     engine_allowed_for_session_kind,
 )
-from astrabox.common.utils.errors import APIError
-from astrabox.common.utils.time_utils import utcnow_iso
+from astrabox.persistence.repository.assistant_workspace_repository import (
+    WORKSPACE_STATES,
+    AssistantWorkspaceRepository,
+    MaterializerClaim,
+)
 from astrabox.seams.sandbox_disposal import SandboxDestruction, may_sever_last_name
 
 logger = get_logger(__name__)
 
-# Engine validity comes from the single matrix (domain-model.md §2); the
-# workspace layer must be exactly as strict as the product layer.
-_VALID_STATES = frozenset({"MATERIALIZING", "READY", "HIBERNATING", "RECOVERY_REQUIRED"})
-
-# Per-profile resident engine control processes, keyed by the same marker key
-# as ``assistant_profiles``. A record names the execd PTY holding the
-# profile's resident gateway and the spawn fingerprint of the profile
-# configuration it was launched from. The record is a rendezvous, not an
-# authority: readers verify it against the live sandbox (execd 404 means the
-# process is gone), and it is cleared wherever the box's processes are known
-# dead — ``converge_dead_sandbox`` and ``finish_hibernation``.
-_ASSISTANT_GATEWAYS_FIELD = "assistant_gateways"
+_VALID_STATES = frozenset(WORKSPACE_STATES)
 
 
 def assistant_profile_marker_key(*, user_id: str, assistant_id: str) -> str:
@@ -65,13 +60,14 @@ def assistant_profile_marker_key(*, user_id: str, assistant_id: str) -> str:
     return hashlib.sha256(f"assistant-profile|{profile_key}".encode("utf-8")).hexdigest()
 
 
-def _assistant_profile_ready_marker(
+def _profile_marker_identity(
     *,
     user_id: str,
     assistant_id: str,
     sandbox_id: str,
     configuration_revision: str,
-) -> tuple[str, dict[str, Any]]:
+) -> tuple[str, str, str, str]:
+    """The marker key, user, box and revision a ready profile is recorded under."""
     normalized_user_id = str(user_id or "").strip()
     normalized_assistant_id = str(assistant_id or "").strip()
     normalized_sandbox_id = str(sandbox_id or "").strip()
@@ -90,25 +86,11 @@ def _assistant_profile_ready_marker(
             ),
             status_code=500,
         )
-    profile_key = f"{normalized_user_id}:{normalized_assistant_id}"
     marker_key = assistant_profile_marker_key(
         user_id=normalized_user_id,
         assistant_id=normalized_assistant_id,
     )
-    return marker_key, {
-        "status": "ready",
-        "user_id": normalized_user_id,
-        "assistant_id": normalized_assistant_id,
-        "profile_key": profile_key,
-        "sandbox_id": normalized_sandbox_id,
-        # What the profile in that box was prepared from. A conversation that
-        # finds a different revision prepares it again rather than reusing it:
-        # the Agent program reads its profile once, at start, so a reused one
-        # keeps answering from the definition the owner replaced.
-        "configuration_revision": normalized_revision,
-        "control_transport": "hermes_serve_websocket",
-        "ready_at": utcnow_iso(),
-    }
+    return marker_key, normalized_user_id, normalized_sandbox_id, normalized_revision
 
 
 def get_assistant_profile_ready_marker(
@@ -119,34 +101,45 @@ def get_assistant_profile_ready_marker(
     sandbox_id: str,
     configuration_revision: str | None,
 ) -> dict[str, Any] | None:
+    """The user's profile prepared in ``sandbox_id`` from ``configuration_revision``, if any.
+
+    A profile prepared from a different revision is not reused: the Agent
+    program reads its profile once, at start, so a reused one keeps answering
+    from the definition the owner replaced.
+    """
     if not isinstance(workspace, dict):
         return None
     normalized_user_id = str(user_id or "").strip()
     normalized_assistant_id = str(assistant_id or "").strip()
     normalized_sandbox_id = str(sandbox_id or "").strip()
+    revision = str(configuration_revision or "").strip()
     if not normalized_user_id or not normalized_assistant_id or not normalized_sandbox_id:
         return None
-
+    if not revision:
+        return None
     marker_key = assistant_profile_marker_key(
         user_id=normalized_user_id,
         assistant_id=normalized_assistant_id,
     )
     markers = workspace.get("assistant_profiles")
     marker = markers.get(marker_key) if isinstance(markers, dict) else None
-    if isinstance(marker, dict):
-        if (
-            str(marker.get("status") or "").strip() == "ready"
-            and str(marker.get("user_id") or "").strip() == normalized_user_id
-            and str(marker.get("assistant_id") or "").strip() == normalized_assistant_id
-            and str(marker.get("sandbox_id") or "").strip() == normalized_sandbox_id
-            and bool(str(configuration_revision or "").strip())
-            and str(marker.get("configuration_revision") or "").strip()
-            == str(configuration_revision or "").strip()
-        ):
-            return marker
-        return None
-
+    if (
+        isinstance(marker, dict)
+        and str(marker.get("user_id") or "").strip() == normalized_user_id
+        and str(marker.get("sandbox_id") or "").strip() == normalized_sandbox_id
+        and str(marker.get("configuration_revision") or "").strip() == revision
+    ):
+        return marker
     return None
+
+
+def _materializer(owner: dict[str, Any]) -> MaterializerClaim:
+    """The materializer claim named by a caller's ``state`` / session / generation triple."""
+    return MaterializerClaim(
+        state=str(owner["state"]),
+        provisioning_session_id=str(owner["provisioning_session_id"]),
+        provisioning_sandbox_generation=owner.get("provisioning_sandbox_generation"),
+    )
 
 
 class AssistantWorkspaceService:
@@ -154,16 +147,26 @@ class AssistantWorkspaceService:
         self._workspace_repo = workspace_repo or AssistantWorkspaceRepository()
 
     async def get_workspace(self, *, user_id: str, assistant_id: str) -> dict[str, Any] | None:
-        return await self._workspace_repo.get_workspace(user_id, assistant_id)
+        """The Assistant's workspace; ``user_id`` names the caller, not the row."""
+        _ = user_id
+        return await self._workspace_repo.get_workspace(assistant_id)
 
     async def has_assistant_workspace(self, *, assistant_id: str) -> bool:
-        return await self._workspace_repo.has_assistant_workspace(assistant_id)
+        return await self._workspace_repo.has_workspace(assistant_id)
 
     async def list_lease_renewal_candidates(
-        self, *, now_iso: str, renew_before_iso: str, limit: int = 50
+        self,
+        *,
+        now_iso: str,
+        renew_before_iso: str,
+        after_assistant_id: str | None = None,
+        limit: int = 50,
     ) -> list[dict[str, Any]]:
         return await self._workspace_repo.list_lease_renewal_candidates(
-            now_iso=now_iso, renew_before_iso=renew_before_iso, limit=limit
+            now_iso=now_iso,
+            renew_before_iso=renew_before_iso,
+            after_assistant_id=after_assistant_id,
+            limit=limit,
         )
 
     async def list_ready_workspaces(
@@ -177,17 +180,9 @@ class AssistantWorkspaceService:
         self, *, assistant_id: str, sandbox_id: str, expires_at: str | None
     ) -> bool:
         """Store a renewed lease, only while the workspace still holds ``sandbox_id``."""
-        return await self._workspace_repo.compare_and_update_workspace(
-            "",
-            assistant_id,
-            expected={"current_sandbox_id": sandbox_id},
-            updates={"current_sandbox_expires_at": expires_at},
+        return await self._workspace_repo.record_lease(
+            assistant_id, sandbox_id=sandbox_id, expires_at=expires_at
         )
-
-    async def list_user_workspaces(
-        self, *, user_id: str, assistant_ids: list[str]
-    ) -> list[dict[str, Any]]:
-        return await self._workspace_repo.list_user_workspaces(user_id, assistant_ids)
 
     async def list_workspaces_by_sandbox_id(
         self, sandbox_id: str
@@ -214,27 +209,22 @@ class AssistantWorkspaceService:
         sandbox_id: str,
         expires_at: str | None,
     ) -> bool:
-        """Refresh a workspace whose binding and lease have not changed."""
+        """Refresh a workspace whose binding and lease have not changed.
+
+        The condition names the lease the caller read as well as the box, so a
+        renewal published while the provider was being asked is not replaced
+        by that stale answer.
+        """
         resolved_sandbox_id = str(sandbox_id or "").strip()
         resolved_expires_at = str(expires_at or "").strip() or None
         assistant_id = str((workspace or {}).get("assistant_id") or "").strip()
-        user_id = str(
-            (workspace or {}).get("created_by_user_id")
-            or (workspace or {}).get("user_id")
-            or ""
-        ).strip()
         if not resolved_sandbox_id or not assistant_id:
             return False
-        return await self._workspace_repo.compare_and_update_workspace(
-            user_id,
+        return await self._workspace_repo.realign_lease(
             assistant_id,
-            expected={
-                "current_sandbox_id": resolved_sandbox_id,
-                "current_sandbox_expires_at": workspace.get(
-                    "current_sandbox_expires_at", {"$exists": False}
-                ),
-            },
-            updates={"current_sandbox_expires_at": resolved_expires_at},
+            sandbox_id=resolved_sandbox_id,
+            observed_expires_at=workspace.get("current_sandbox_expires_at"),
+            expires_at=resolved_expires_at,
         )
 
     async def converge_dead_sandbox(
@@ -244,7 +234,7 @@ class AssistantWorkspaceService:
         sandbox_id: str,
         last_error: str,
     ) -> bool:
-        """Clear one confirmed-dead workspace pointer under an exact CAS fence.
+        """Clear one confirmed-dead workspace pointer under an exact fence.
 
         The shared lifecycle coordinator establishes that the box is terminal.
         This owner-specific transition says what that fact means for an
@@ -259,28 +249,11 @@ class AssistantWorkspaceService:
         state = str((workspace or {}).get("state") or "").strip()
         if not resolved_sandbox_id or not assistant_id or state not in _VALID_STATES:
             return False
-        return await self.transition_state(
-            user_id=str(
-                (workspace or {}).get("created_by_user_id")
-                or (workspace or {}).get("user_id")
-                or ""
-            ).strip(),
-            assistant_id=assistant_id,
-            expected_state=state,
-            new_state="RECOVERY_REQUIRED",
-            expected_extra={"current_sandbox_id": resolved_sandbox_id},
-            extra_updates={
-                "current_sandbox_id": None,
-                "current_sandbox_expires_at": None,
-                "hibernated_at": None,
-                "runtime_identity": None,
-                "assistant_profiles": {},
-                _ASSISTANT_GATEWAYS_FIELD: {},
-                "provisioning_session_id": None,
-                "provisioning_sandbox_generation": None,
-                "post_commit_cleanup_pending": False,
-                "last_error": str(last_error or "sandbox terminated"),
-            },
+        return await self._workspace_repo.converge_dead_sandbox(
+            assistant_id,
+            observed_state=state,
+            sandbox_id=resolved_sandbox_id,
+            last_error=str(last_error or "sandbox terminated"),
         )
 
     async def materialize_workspace_if_absent(
@@ -290,8 +263,12 @@ class AssistantWorkspaceService:
         assistant_id: str,
         engine_kind: str,
         provisioning_session_id: str,
-        template_capability_hash: str = "",
     ) -> dict[str, Any]:
+        """The Assistant's workspace, inserted MATERIALIZING under the Session when absent.
+
+        The insert is keyed by the Assistant, so concurrent first calls create
+        one row and every caller reads that one.
+        """
         if not engine_allowed_for_session_kind(engine_kind, "assistant_chat"):
             raise APIError(
                 code="ASSISTANT_WORKSPACE_INVALID_ENGINE",
@@ -305,47 +282,33 @@ class AssistantWorkspaceService:
                 message="materializing a workspace requires a materializer Session id",
                 status_code=500,
             )
-        existing = await self._workspace_repo.get_workspace(user_id, assistant_id)
-        if existing is not None:
-            if str(existing.get("engine_kind") or "").strip() != engine_kind:
-                raise APIError(
-                    code="ASSISTANT_WORKSPACE_ENGINE_MISMATCH",
-                    message=(
-                        f"workspace engine_kind={existing.get('engine_kind')!r} "
-                        f"cannot change to {engine_kind!r}"
-                    ),
-                    status_code=409,
-                )
-            return existing
-        payload = {
-            "created_by_user_id": user_id,
-            "assistant_id": assistant_id,
-            "engine_kind": engine_kind,
-            "runtime_identity": None,
-            "current_sandbox_id": None,
-            "current_sandbox_expires_at": None,
-            "state": "MATERIALIZING",
-            "provisioning_session_id": resolved_provisioning_session_id,
-            "provisioning_sandbox_generation": None,
-            "last_error": None,
-            "template_capability_hash": template_capability_hash,
-        }
-        try:
-            return await self._workspace_repo.materialize_workspace(payload)
-        except Exception as exc:
-            # Race-loser path: the primary-key fence guarantees one winner.
-            fence_id = assistant_workspace_fence_id(user_id, assistant_id)
-            logger.info(
-                "assistant_workspace race loser: user=%s assistant=%s fence=%s exc=%s",
-                user_id,
-                assistant_id,
-                fence_id,
-                exc,
+        created = await self._workspace_repo.create_workspace(
+            assistant_id=assistant_id,
+            created_by_user_id=user_id,
+            engine_kind=engine_kind,
+            provisioning_session_id=resolved_provisioning_session_id,
+        )
+        if created is not None:
+            return created
+        existing = await self._workspace_repo.get_workspace(assistant_id)
+        if existing is None:
+            # Nothing was inserted and nothing exists: the Assistant was
+            # deleted after the caller resolved it.
+            raise APIError(
+                code="ASSISTANT_NOT_FOUND",
+                message=f"assistant={assistant_id} not found",
+                status_code=404,
             )
-            row = await self._workspace_repo.get_workspace(user_id, assistant_id)
-            if row is None:
-                raise
-            return row
+        if str(existing.get("engine_kind") or "").strip() != engine_kind:
+            raise APIError(
+                code="ASSISTANT_WORKSPACE_ENGINE_MISMATCH",
+                message=(
+                    f"workspace engine_kind={existing.get('engine_kind')!r} "
+                    f"cannot change to {engine_kind!r}"
+                ),
+                status_code=409,
+            )
+        return existing
 
     async def claim_materialization(
         self,
@@ -355,7 +318,11 @@ class AssistantWorkspaceService:
         expected_state: str,
         provisioning_session_id: str,
     ) -> bool:
-        """Give exactly one Session the right to create the workspace sandbox."""
+        """Give exactly one Session the right to create the workspace sandbox.
+
+        The condition is the state the caller read and an empty claim, so of
+        concurrent acquirers exactly one moves the workspace to MATERIALIZING.
+        """
 
         resolved_session_id = str(provisioning_session_id or "").strip()
         if not resolved_session_id:
@@ -364,18 +331,16 @@ class AssistantWorkspaceService:
                 message="claiming materialization requires a materializer Session id",
                 status_code=500,
             )
-        return await self.transition_state(
-            user_id=user_id,
-            assistant_id=assistant_id,
+        if expected_state not in _VALID_STATES:
+            raise APIError(
+                code="ASSISTANT_WORKSPACE_INVALID_STATE",
+                message=f"unknown state={expected_state!r}",
+                status_code=400,
+            )
+        return await self._workspace_repo.claim_materialization(
+            assistant_id,
             expected_state=expected_state,
-            new_state="MATERIALIZING",
-            expected_extra={"provisioning_session_id": None},
-            extra_updates={
-                "provisioning_session_id": resolved_session_id,
-                "provisioning_sandbox_generation": None,
-                "hibernated_at": None,
-                "last_error": None,
-            },
+            provisioning_session_id=resolved_session_id,
         )
 
     async def claim_materialization_generation(
@@ -390,75 +355,43 @@ class AssistantWorkspaceService:
         """Qualify the reserved Session owner with its durable startup generation."""
         if not sandbox_generation:
             raise ValueError("materialization requires a sandbox generation")
-        return await self._workspace_repo.compare_and_update_workspace(
-            user_id,
+        return await self._workspace_repo.claim_materialization_generation(
             assistant_id,
-            expected={
-                "state": "MATERIALIZING",
-                "provisioning_session_id": provisioning_session_id,
-                "provisioning_sandbox_generation": observed_generation,
-            },
-            updates={"provisioning_sandbox_generation": sandbox_generation},
+            provisioning_session_id=provisioning_session_id,
+            observed_generation=observed_generation,
+            sandbox_generation=sandbox_generation,
         )
 
-    async def transition_state(
+    async def reopen_materialization(self, *, user_id: str, assistant_id: str) -> bool:
+        """MATERIALIZING again after a stalled materializer's box was proven destroyed.
+
+        The condition is a RECOVERY_REQUIRED row with no box and no claim, so
+        the reopened workspace can be claimed by exactly one acquirer.
+        """
+        return await self._workspace_repo.reopen_materialization(assistant_id)
+
+    async def claim_profile_refresh(
         self,
         *,
         user_id: str,
         assistant_id: str,
-        expected_state: str | None,
-        new_state: str,
-        extra_updates: dict[str, Any] | None = None,
-        expected_extra: dict[str, Any] | None = None,
+        sandbox_id: str,
+        revision: str,
+        session_id: str,
+        retry_before: datetime,
     ) -> bool:
-        """Move the workspace to ``new_state`` under a compare-and-set fence.
+        """Elect one workspace Session to prepare ``revision`` on the READY box.
 
-        ``expected_state`` fences on the state alone; ``expected_extra`` adds
-        further fields to the same predicate, for transitions whose safety
-        depends on which sandbox or which provisioning session the row still
-        names. A transition that rewrites a pointer must name the value it
-        believes that pointer holds, or it can overwrite a newer one.
+        A refresh of the same revision is claimed again only once the earlier
+        one has had until ``retry_before`` to publish its profile.
         """
-        if new_state not in _VALID_STATES:
-            raise APIError(
-                code="ASSISTANT_WORKSPACE_INVALID_STATE",
-                message=f"unknown state={new_state!r}",
-                status_code=400,
-            )
-        if new_state == "READY":
-            raise APIError(
-                code="ASSISTANT_WORKSPACE_INVALID_STATE",
-                message=(
-                    "READY may only be published by mark_ready (a materializer that "
-                    "built a box) or restore_ready_after_hibernation_failure "
-                    "(the unchanged live box whose commit failed)"
-                ),
-                status_code=409,
-            )
-        updates: dict[str, Any] = {"state": new_state}
-        if extra_updates:
-            supplied_state = extra_updates.get("state")
-            if supplied_state is not None and supplied_state != new_state:
-                raise APIError(
-                    code="ASSISTANT_WORKSPACE_INVALID_STATE",
-                    message="extra_updates cannot override the fenced state transition",
-                    status_code=400,
-                )
-            updates.update(extra_updates)
-        expected: dict[str, Any] = {}
-        if expected_state is not None:
-            expected["state"] = expected_state
-        if expected_extra:
-            expected.update(expected_extra)
-        if not expected:
-            return await self._workspace_repo.update_workspace(
-                user_id, assistant_id, updates
-            )
-        return await self._workspace_repo.compare_and_update_workspace(
-            user_id,
+        return await self._workspace_repo.claim_profile_refresh(
             assistant_id,
-            expected=expected,
-            updates=updates,
+            sandbox_id=sandbox_id,
+            revision=revision,
+            session_id=session_id,
+            started_at=utcnow(),
+            retry_before=retry_before,
         )
 
     async def mark_ready(
@@ -473,6 +406,14 @@ class AssistantWorkspaceService:
         expires_at: str | None = None,
         runtime_identity: dict[str, Any] | None = None,
     ) -> bool:
+        """Bind the started sandbox onto the workspace and publish READY.
+
+        This is the single writer of a built box onto ``current_sandbox_id``:
+        the caller has already created and started the sandbox, so this
+        transition both records that pointer and moves MATERIALIZING to READY,
+        fenced on the materializer Session and its startup generation. A
+        retried startup whose publication already landed succeeds.
+        """
         normalized_sandbox_id = str(sandbox_id or "").strip()
         if not normalized_sandbox_id:
             raise APIError(
@@ -480,22 +421,32 @@ class AssistantWorkspaceService:
                 message=f"workspace ready requires sandbox_id user={user_id} assistant={assistant_id}",
                 status_code=500,
             )
-        profile_marker_key, profile_marker = _assistant_profile_ready_marker(
+        resolved_session_id = str(provisioning_session_id or "").strip()
+        if not resolved_session_id or not provisioning_sandbox_generation:
+            raise APIError(
+                code="ASSISTANT_WORKSPACE_INVALID_PROVISIONING_SESSION",
+                message=(
+                    "publishing READY requires the materializer Session and its "
+                    f"startup generation user={user_id} assistant={assistant_id}"
+                ),
+                status_code=500,
+            )
+        marker_key, marker_user, _, revision = _profile_marker_identity(
             user_id=user_id,
             assistant_id=assistant_id,
             sandbox_id=normalized_sandbox_id,
             configuration_revision=configuration_revision,
         )
         marked = await self._workspace_repo.mark_ready(
-            user_id,
             assistant_id,
-            provisioning_session_id=provisioning_session_id,
+            provisioning_session_id=resolved_session_id,
             provisioning_sandbox_generation=provisioning_sandbox_generation,
             sandbox_id=normalized_sandbox_id,
             expires_at=expires_at,
             runtime_identity=runtime_identity,
-            profile_marker_key=profile_marker_key,
-            profile_marker=profile_marker,
+            marker_key=marker_key,
+            user_id=marker_user,
+            configuration_revision=revision,
         )
         if not marked:
             raise APIError(
@@ -527,14 +478,16 @@ class AssistantWorkspaceService:
         names, rather than trusted from wherever the boolean came from.
         """
         sandbox_id = str(sandbox_id or "").strip()
+        resolved_phase = str(failure_phase or "").strip().lower()
         if not sandbox_id:
             return False
+        if not resolved_phase:
+            raise ValueError("failure_phase is required")
         return await self._workspace_repo.mark_post_commit_failure(
-            user_id,
             assistant_id,
             sandbox_id=sandbox_id,
             cleanup_confirmed=may_sever_last_name(cleanup, sandbox_id=sandbox_id),
-            failure_phase=failure_phase,
+            failure_phase=resolved_phase,
         )
 
     async def mark_assistant_profile_ready(
@@ -545,143 +498,19 @@ class AssistantWorkspaceService:
         sandbox_id: str,
         configuration_revision: str,
     ) -> bool:
-        marker_key, marker = _assistant_profile_ready_marker(
+        """Record a user's profile prepared on the READY box, while it is still that box."""
+        marker_key, marker_user, normalized_sandbox_id, revision = _profile_marker_identity(
             user_id=user_id,
             assistant_id=assistant_id,
             sandbox_id=sandbox_id,
             configuration_revision=configuration_revision,
         )
-        return await self._workspace_repo.compare_and_update_workspace(
-            str(user_id).strip(),
+        return await self._workspace_repo.mark_profile_ready(
             str(assistant_id).strip(),
-            expected={
-                "state": "READY",
-                "current_sandbox_id": str(sandbox_id).strip(),
-            },
-            updates={f"assistant_profiles.{marker_key}": marker},
-        )
-
-    async def get_profile_gateway_process(
-        self,
-        *,
-        user_id: str,
-        assistant_id: str,
-        sandbox_id: str,
-    ) -> dict[str, str] | None:
-        """The recorded resident control process for one profile, if current.
-
-        Returns None when there is no record or the record names another
-        sandbox — a stale entry a crashed transition left behind, which the
-        next :meth:`record_profile_gateway_process` overwrites under its CAS.
-        """
-
-        resolved_sandbox_id = str(sandbox_id or "").strip()
-        if not resolved_sandbox_id:
-            return None
-        workspace = await self._workspace_repo.get_workspace(user_id, assistant_id)
-        if not isinstance(workspace, dict):
-            return None
-        marker_key = assistant_profile_marker_key(
-            user_id=user_id, assistant_id=assistant_id
-        )
-        records = workspace.get(_ASSISTANT_GATEWAYS_FIELD)
-        record = records.get(marker_key) if isinstance(records, dict) else None
-        if not isinstance(record, dict):
-            return None
-        if str(record.get("sandbox_id") or "").strip() != resolved_sandbox_id:
-            return None
-        pty_session_id = str(record.get("pty_session_id") or "").strip()
-        if not pty_session_id:
-            return None
-        return {
-            "pty_session_id": pty_session_id,
-            "spawn_fingerprint": str(record.get("spawn_fingerprint") or "").strip(),
-        }
-
-    async def record_profile_gateway_process(
-        self,
-        *,
-        user_id: str,
-        assistant_id: str,
-        sandbox_id: str,
-        engine_kind: str,
-        pty_session_id: str,
-        spawn_fingerprint: str,
-        expected_pty_session_id: str | None,
-    ) -> bool:
-        """Swap one profile's resident-process record under a CAS fence.
-
-        ``expected_pty_session_id`` is the PTY the caller last observed for
-        this sandbox (None for no current record). The compare-and-set is what
-        gives concurrent spawners — including ones in different host
-        processes — exactly one winner: the loser's write returns False and
-        the loser destroys its own spawn and adopts the published one.
-        """
-
-        resolved_sandbox_id = str(sandbox_id or "").strip()
-        resolved_pty = str(pty_session_id or "").strip()
-        if not resolved_sandbox_id or not resolved_pty:
-            raise APIError(
-                code="ASSISTANT_WORKSPACE_INVALID_SANDBOX",
-                message=(
-                    "recording a profile gateway requires the sandbox and PTY ids "
-                    f"user={user_id} assistant={assistant_id}"
-                ),
-                status_code=500,
-            )
-        marker_key = assistant_profile_marker_key(
-            user_id=user_id, assistant_id=assistant_id
-        )
-        record_path = f"{_ASSISTANT_GATEWAYS_FIELD}.{marker_key}"
-        record = {
-            "engine_kind": str(engine_kind or "").strip(),
-            "sandbox_id": resolved_sandbox_id,
-            "pty_session_id": resolved_pty,
-            "spawn_fingerprint": str(spawn_fingerprint or "").strip(),
-            "recorded_at": utcnow_iso(),
-        }
-        if expected_pty_session_id is not None:
-            return await self._workspace_repo.compare_and_update_workspace(
-                user_id,
-                assistant_id,
-                expected={
-                    f"{record_path}.pty_session_id": str(expected_pty_session_id)
-                },
-                updates={record_path: record},
-            )
-        workspace = await self._workspace_repo.get_workspace(user_id, assistant_id)
-        if not isinstance(workspace, dict):
-            return False
-        records = workspace.get(_ASSISTANT_GATEWAYS_FIELD)
-        raw = records.get(marker_key) if isinstance(records, dict) else None
-        stale_pty = (
-            str(raw.get("pty_session_id") or "").strip()
-            if isinstance(raw, dict)
-            else ""
-        )
-        if stale_pty:
-            # The caller saw no record because the stored one names another
-            # sandbox; fencing on that stale PTY still gives concurrent
-            # writers one winner while letting the stale entry be replaced.
-            return await self._workspace_repo.compare_and_update_workspace(
-                user_id,
-                assistant_id,
-                expected={f"{record_path}.pty_session_id": stale_pty},
-                updates={record_path: record},
-            )
-        if not isinstance(raw, dict):
-            # The compare-and-set below matches the field's current value
-            # exactly, and a document-store filter on None does not reliably
-            # match an absent key; write the explicit None so the one-winner
-            # CAS is decidable.
-            await self._workspace_repo.update_workspace(
-                user_id, assistant_id, {record_path: None}
-            )
-        return await self._workspace_repo.compare_and_update_workspace(
-            user_id,
-            assistant_id,
-            expected={record_path: None},
-            updates={record_path: record},
+            sandbox_id=normalized_sandbox_id,
+            marker_key=marker_key,
+            user_id=marker_user,
+            configuration_revision=revision,
         )
 
     async def begin_hibernation(
@@ -713,16 +542,8 @@ class AssistantWorkspaceService:
                 ),
                 status_code=500,
             )
-        return await self.transition_state(
-            user_id=user_id,
-            assistant_id=assistant_id,
-            expected_state="READY",
-            new_state="HIBERNATING",
-            expected_extra={"current_sandbox_id": resolved_sandbox_id},
-            extra_updates={
-                "hibernated_at": resolved_hibernated_at,
-                "last_error": None,
-            },
+        return await self._workspace_repo.begin_hibernation(
+            assistant_id, sandbox_id=resolved_sandbox_id, hibernated_at=resolved_hibernated_at
         )
 
     async def mark_hibernation_release_required(
@@ -747,18 +568,8 @@ class AssistantWorkspaceService:
                 ),
                 status_code=500,
             )
-        return await self._workspace_repo.compare_and_update_workspace(
-            user_id,
-            assistant_id,
-            expected={
-                "state": "HIBERNATING",
-                "current_sandbox_id": resolved_sandbox_id,
-            },
-            updates={
-                "state": "RECOVERY_REQUIRED",
-                "post_commit_cleanup_pending": True,
-                "last_error": None,
-            },
+        return await self._workspace_repo.mark_hibernation_release_required(
+            assistant_id, sandbox_id=resolved_sandbox_id
         )
 
     async def finish_hibernation(
@@ -771,46 +582,10 @@ class AssistantWorkspaceService:
     ) -> bool:
         """Publish a hibernated workspace only after its box is proven gone."""
         resolved_sandbox_id = str(destroyed_sandbox_id or "").strip() or None
-        return await self.transition_state(
-            user_id=user_id,
-            assistant_id=assistant_id,
-            expected_state=expected_state,
-            new_state="HIBERNATING",
-            expected_extra={"current_sandbox_id": resolved_sandbox_id},
-            extra_updates={
-                "current_sandbox_id": None,
-                "current_sandbox_expires_at": None,
-                "runtime_identity": None,
-                "assistant_profiles": {},
-                _ASSISTANT_GATEWAYS_FIELD: {},
-                "provisioning_session_id": None,
-                "provisioning_sandbox_generation": None,
-                "post_commit_cleanup_pending": False,
-                "last_error": None,
-            },
-        )
-
-    async def restore_ready_after_hibernation_failure(
-        self,
-        *,
-        user_id: str,
-        assistant_id: str,
-        sandbox_id: str,
-    ) -> bool:
-        """Unfreeze the same live box when its storage commit failed."""
-        resolved_sandbox_id = str(sandbox_id or "").strip()
-        return await self._workspace_repo.compare_and_update_workspace(
-            user_id,
+        return await self._workspace_repo.finish_hibernation(
             assistant_id,
-            expected={
-                "state": "HIBERNATING",
-                "current_sandbox_id": resolved_sandbox_id,
-            },
-            updates={
-                "state": "READY",
-                "hibernated_at": None,
-                "last_error": None,
-            },
+            expected_state=expected_state,
+            destroyed_sandbox_id=resolved_sandbox_id,
         )
 
     async def adopt_undestroyed_sandbox(
@@ -839,10 +614,12 @@ class AssistantWorkspaceService:
         ``assistant_service.py``). The orphan then converges as an ordinary
         pending destruction.
 
-        Compare-and-set on the pointer still being empty: if a rebuild has
-        bound a sandbox meanwhile, that pointer is a live box's name and this
-        one must not overwrite it — the id then remains only in the caller's
-        error.
+        The condition is the pointer still being empty, and with
+        ``expected_owner`` (``state``, ``provisioning_session_id``,
+        ``provisioning_sandbox_generation``) that materializer still holding
+        the claim: if a rebuild has bound a sandbox meanwhile, that pointer is
+        a live box's name and this one must not overwrite it — the id then
+        remains only in the caller's error.
         """
         resolved_sandbox_id = str(sandbox_id or "").strip()
         if not resolved_sandbox_id:
@@ -854,17 +631,11 @@ class AssistantWorkspaceService:
                 ),
                 status_code=500,
             )
-        return await self.transition_state(
-            user_id=user_id,
-            assistant_id=assistant_id,
-            expected_state=None,
-            new_state="RECOVERY_REQUIRED",
-            expected_extra={"current_sandbox_id": None, **(expected_owner or {})},
-            extra_updates={
-                "current_sandbox_id": resolved_sandbox_id,
-                "post_commit_cleanup_pending": True,
-                "last_error": reason,
-            },
+        return await self._workspace_repo.adopt_undestroyed_sandbox(
+            assistant_id,
+            sandbox_id=resolved_sandbox_id,
+            reason=reason,
+            materializer=_materializer(expected_owner) if expected_owner else None,
         )
 
     async def release_recovered_sandbox(
@@ -882,7 +653,7 @@ class AssistantWorkspaceService:
         sandbox is gone before calling — an unconfirmed release turns a
         retryable orphan into a box nothing can ever name again.
 
-        Compare-and-set on RECOVERY_REQUIRED **and on the pointer still naming
+        The condition is RECOVERY_REQUIRED **and the pointer still naming
         exactly ``sandbox_id``**, staying in that state: this call only releases
         the pointer, and the caller decides what the workspace does next.
         Returns False when the workspace has meanwhile left RECOVERY_REQUIRED
@@ -905,19 +676,8 @@ class AssistantWorkspaceService:
                 ),
                 status_code=500,
             )
-        return await self.transition_state(
-            user_id=user_id,
-            assistant_id=assistant_id,
-            expected_state="RECOVERY_REQUIRED",
-            new_state="RECOVERY_REQUIRED",
-            expected_extra={"current_sandbox_id": resolved_sandbox_id},
-            extra_updates={
-                "current_sandbox_id": None,
-                "current_sandbox_expires_at": None,
-                "provisioning_session_id": None,
-                "provisioning_sandbox_generation": None,
-                "post_commit_cleanup_pending": False,
-            },
+        return await self._workspace_repo.release_recovered_sandbox(
+            assistant_id, sandbox_id=resolved_sandbox_id
         )
 
     async def mark_materialization_failed(
@@ -936,8 +696,9 @@ class AssistantWorkspaceService:
         after sandbox creation. Unconfirmed sandboxes must instead go through
         :meth:`adopt_undestroyed_sandbox`.
 
-        The compare-and-set moves an unchanged MATERIALIZING workspace to
-        HIBERNATING, records the failure, and leaves a concurrent wake untouched.
+        The condition is an unchanged MATERIALIZING workspace held by this
+        materializer at this generation with no box; it moves to HIBERNATING
+        and records the failure, leaving a concurrent wake untouched.
         """
         resolved_phase = str(failure_phase or "").strip()
         if not resolved_phase:
@@ -949,23 +710,14 @@ class AssistantWorkspaceService:
                 ),
                 status_code=500,
             )
-        return await self.transition_state(
-            user_id=user_id,
-            assistant_id=assistant_id,
-            expected_state="MATERIALIZING",
-            new_state="HIBERNATING",
-            expected_extra={
-                "provisioning_session_id": provisioning_session_id,
-                "provisioning_sandbox_generation": provisioning_sandbox_generation,
-                "current_sandbox_id": None,
-            },
-            extra_updates={
-                "current_sandbox_id": None,
-                "current_sandbox_expires_at": None,
-                "provisioning_session_id": None,
-                "provisioning_sandbox_generation": None,
-                "last_error": f"materialization_{resolved_phase}",
-            },
+        return await self._workspace_repo.mark_materialization_failed(
+            assistant_id,
+            materializer=MaterializerClaim(
+                state="MATERIALIZING",
+                provisioning_session_id=provisioning_session_id,
+                provisioning_sandbox_generation=provisioning_sandbox_generation,
+            ),
+            last_error=f"materialization_{resolved_phase}",
         )
 
     async def claim_stalled_materialization(
@@ -985,12 +737,12 @@ class AssistantWorkspaceService:
         nothing ran the failure tail), nobody is driving the row and nobody
         ever will.
 
-        The compare-and-set names both facts about the row that this transition
+        The condition names both facts about the row that this transition
         depends on: it still points at that dead session, and it still holds no
         sandbox. Those make the claim atomic — exactly one concurrent wake
         takes the rebuild and the losers keep reporting MATERIALIZING.
 
-        What ``current_sandbox_id: None`` does not establish is that the dead
+        What an empty ``current_sandbox_id`` does not establish is that the dead
         materializer left no box: the pointer is written by ``mark_ready``, so
         an empty one says only that materialization did not finish. The box, if
         there is one, is named on the dead session's own row, and proving it
@@ -1009,21 +761,14 @@ class AssistantWorkspaceService:
                 ),
                 status_code=500,
             )
-        return await self.transition_state(
-            user_id=user_id,
-            assistant_id=assistant_id,
-            expected_state="MATERIALIZING",
-            new_state="MATERIALIZING",
-            expected_extra={
-                "provisioning_session_id": resolved_provisioning_session_id,
-                "provisioning_sandbox_generation": provisioning_sandbox_generation,
-                "current_sandbox_id": None,
-            },
-            extra_updates={
-                "provisioning_session_id": None,
-                "provisioning_sandbox_generation": None,
-                "last_error": last_error,
-            },
+        return await self._workspace_repo.claim_stalled_materialization(
+            assistant_id,
+            materializer=MaterializerClaim(
+                state="MATERIALIZING",
+                provisioning_session_id=resolved_provisioning_session_id,
+                provisioning_sandbox_generation=provisioning_sandbox_generation,
+            ),
+            last_error=last_error,
         )
 
     async def mark_recovery_required(
@@ -1033,10 +778,12 @@ class AssistantWorkspaceService:
         assistant_id: str,
         reason: str,
     ) -> bool:
-        return await self.transition_state(
-            user_id=user_id,
-            assistant_id=assistant_id,
-            expected_state=None,
-            new_state="RECOVERY_REQUIRED",
-            extra_updates={"last_error": reason},
-        )
+        """Put the workspace in RECOVERY_REQUIRED whatever it holds.
+
+        Unconditional, for an owner who deletes the Assistant or destroys its
+        workspace: the box pointer and any materializer claim are kept, so the
+        destruction that follows stays retryable and an in-flight
+        materializer's own fenced writes fail. ``False`` when the Assistant has
+        no workspace.
+        """
+        return await self._workspace_repo.force_recovery_required(assistant_id, reason=reason)

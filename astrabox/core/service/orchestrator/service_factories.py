@@ -84,9 +84,34 @@ class DeploymentServiceReplacement(Protocol):
 
     async def list_for_assistant(self, assistant_id: str) -> list[dict[str, Any]]: ...
 
-    async def delete_for_assistant(self, assistant_id: str) -> None: ...
+    async def delete_for_target(self, *, agent_id: str = "", assistant_id: str = "") -> None: ...
 
     async def list_manageable(self, user: Any) -> list[dict[str, Any]]: ...
+
+    async def list_personal_schedules(
+        self, user: Any, *, source_assistant_id: str | None = None,
+    ) -> list[dict[str, Any]]: ...
+
+    async def create_personal_schedule(
+        self, user: Any, *, agent_id: str, source_assistant_id: str,
+        name: str, prompt_prefix: str, schedule: dict[str, Any],
+    ) -> dict[str, Any]: ...
+
+    async def update_personal_schedule(
+        self, user: Any, deployment_id: str, *, patch: dict[str, Any],
+    ) -> dict[str, Any]: ...
+
+    async def delete_personal_schedule(self, user: Any, deployment_id: str) -> None: ...
+
+    async def list_personal_schedule_runs(
+        self, user: Any, deployment_id: str, *, limit: int = 50,
+    ) -> list[dict[str, Any]]: ...
+
+    async def trigger_personal_schedule(self, user: Any, deployment_id: str) -> dict[str, Any]: ...
+
+    async def replay_personal_schedule_run(
+        self, user: Any, deployment_id: str, run_id: str,
+    ) -> dict[str, Any]: ...
 
     async def create(
         self,
@@ -99,6 +124,7 @@ class DeploymentServiceReplacement(Protocol):
         prompt_prefix: str = "",
         secret: str | None = None,
         attention_policy: str | None = None,
+        response_instruction: Any = None,
         channel_config: Any = None,
         credentials: Any = None,
         callback_base_url: str | None = None,
@@ -149,7 +175,7 @@ class DeploymentServiceReplacement(Protocol):
         self, context: dict[str, Any], *, run_id: str
     ) -> str: ...
 
-    async def drive_run_turn(
+    async def admit_run_input(
         self,
         context: dict[str, Any],
         *,

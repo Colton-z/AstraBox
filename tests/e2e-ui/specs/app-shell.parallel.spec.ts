@@ -73,7 +73,9 @@ test('console shell loads and lists the seeded agent', async ({ page, request })
   const rail = page.locator('[data-slot="sidebar"]');
   const railContainer = rail.locator('[data-slot="sidebar-container"]');
   const trigger = page.locator('[data-slot="sidebar-trigger"]').first();
+  // Home, Artifacts, Connections and Manage (components/shell/SurfaceNav.tsx).
   const headerLinks = rail.locator('[data-slot="sidebar-header"] [data-sidebar="menu-button"]');
+  const consoleLink = rail.locator('[data-slot="sidebar-header"] a[href$="/manage/agents"]');
   const sessionLink = rail.locator(`[data-session-id="${created.session_id}"] a`);
   const sessionText = sessionLink.locator(':scope > span');
   const account = rail.locator('[data-slot="sidebar-footer"] [data-slot="dropdown-menu-trigger"]');
@@ -82,7 +84,7 @@ test('console shell loads and lists the seeded agent', async ({ page, request })
 
   if (await rail.getAttribute('data-state') === 'collapsed') await trigger.click();
   await expect(rail).toHaveAttribute('data-state', 'expanded');
-  await expect(headerLinks).toHaveCount(2);
+  await expect(headerLinks).toHaveCount(4);
   await expect(sessionText).toBeVisible();
   await expect(accountText).toBeVisible();
   await expect(accountSettings).toBeVisible();
@@ -98,7 +100,7 @@ test('console shell loads and lists the seeded agent', async ({ page, request })
   await expect.poll(async () => (await railContainer.boundingBox())!.width, {
     message: 'collapse must actually release horizontal space to the conversation',
   }).toBeLessThan(expandedWidth / 2);
-  for (let index = 0; index < 2; index += 1) {
+  for (let index = 0; index < 4; index += 1) {
     await expectCollapsedControl(headerLinks.nth(index), `header destination ${index + 1}`);
   }
   await expectCollapsedControl(sessionLink, 'conversation');
@@ -131,7 +133,7 @@ test('console shell loads and lists the seeded agent', async ({ page, request })
     message.role === 'user'
   )), 'sidebar navigation must not submit a conversation turn').toHaveLength(0);
 
-  await headerLinks.nth(1).click();
+  await consoleLink.click();
   await expect(page).toHaveURL((url) => url.pathname === appPath('/manage/agents'));
   if (await rail.getAttribute('data-state') === 'collapsed') await trigger.click();
   const managementLink = rail.locator('[data-slot="sidebar-content"] a[href$="/manage/agents"]');

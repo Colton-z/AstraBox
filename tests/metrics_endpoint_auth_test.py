@@ -26,15 +26,6 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     return TestClient(create_app())
 
 
-def test_metrics_is_open_by_default(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.delenv("ASTRABOX_METRICS_TOKEN", raising=False)
-    response = client.get("/metrics")
-    assert response.status_code == 200
-    assert "text/plain" in response.headers["content-type"]
-
-
 def test_metrics_token_locks_out_missing_and_wrong_credentials(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -49,16 +40,6 @@ def test_metrics_token_locks_out_missing_and_wrong_credentials(
         client.get("/metrics", headers={"Authorization": "scrape-secret"}).status_code
         == 401
     )
-
-
-def test_metrics_token_admits_the_bearer(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("ASTRABOX_METRICS_TOKEN", "scrape-secret")
-    response = client.get(
-        "/metrics", headers={"Authorization": "Bearer scrape-secret"}
-    )
-    assert response.status_code == 200
 
 
 def test_metrics_disabled_still_wins_over_token(

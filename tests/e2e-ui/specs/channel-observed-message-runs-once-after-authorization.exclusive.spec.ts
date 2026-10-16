@@ -8,8 +8,11 @@ import { expect, test } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
 import { channelCallback } from '../fixtures/channelCallback';
-import { documentsByField, sessionEvents } from '../fixtures/dbOracle';
+import { sessionInputRows } from '../fixtures/dbOracle';
 import { apiPath } from '../fixtures/env';
+import {
+  agentSessionRows, channelInboundRows, channelMessageInputs, type ChannelInboundRow,
+} from '../fixtures/ingressRecords';
 import { InstalledChannelBackend } from '../fixtures/installedChannelBackend';
 import { PlatformApi } from '../fixtures/platformApi';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
@@ -70,17 +73,26 @@ test('an observed message runs once, only after the platform authorizes it, in e
       signal: 'authorization', event_id: eventId, mention: true, callback_url: recipient.url,
     });
     const row = (eventId: string) => {
-      const rows = documentsByField('channel_inbound', '$.deployment_id', deploymentId)
-        .filter((item) => item.dedup_key === eventId);
+      const rows = channelInboundRows(deploymentId).filter((item) => item.dedup_key === eventId);
       expect(rows, `one durable record for ${eventId}`).toHaveLength(1);
-      return rows[0];
+      return rows[0]!;
+    };
+    // What a record says about its message; a redelivered signal must not change it.
+    const messageFacts = (record: ChannelInboundRow) => ({
+      state: record.state, content: record.content, reply_text: record.reply_text,
+      participant: record.participant, conversation: record.conversation,
+      frozen_content: record.frozen_content, frozen_context: record.frozen_context,
+    });
+    // A message that never ran became no input in any conversation.
+    const neverRan = (eventId: string) => {
+      expect(row(eventId).session_id).toBeNull();
+      expect(channelMessageInputs(row(eventId).item_id), `${eventId} must not run`).toEqual([]);
     };
     const replies = () => {
       expect(recipient.errors).toEqual([]);
       return recipient.deliveries.map((delivery) => delivery.text);
     };
-    const startTurns = (sessionId: string) => sessionEvents(sessionId).filter((event) => (
-      event.event_type === 'command.accepted' && object(event.payload).command_type === 'StartTurn'));
+    const inputs = (sessionId: string) => sessionInputRows(sessionId);
 
     const contextId = `${id}-context`;
     const firstId = `${id}-first`;
@@ -94,8 +106,9 @@ test('an observed message runs once, only after the platform authorizes it, in e
     // An observation is context only: nothing starts for it.
     expect((await observe(contextId, contextText)).status).toBe('observed');
     expect((await observe(firstId, firstText)).status).toBe('observed');
-    expect(row(firstId)).toMatchObject({ state: 'OBSERVED', session_id: null, command_id: null });
-    expect(documentsByField('sessions', '$.agent_id', agentId)).toEqual([]);
+    expect(row(firstId).state).toBe('OBSERVED');
+    neverRan(firstId);
+    expect(agentSessionRows(agentId)).toEqual([]);
 
     // Its authorization runs it once, with the earlier observation as context.
     const accepted = await authorize(firstId);
@@ -106,31 +119,30 @@ test('an observed message runs once, only after the platform authorizes it, in e
     await expect.poll(replies, { timeout: 90_000 }).toEqual([expect.stringContaining(`FIRST_${id}`)]);
     await expect.poll(() => row(firstId).state, { timeout: 30_000 }).toBe('SETTLED');
     const first = row(firstId);
-    const firstInput = object(first.frozen_input);
-    expect((firstInput.context as Array<Record<string, unknown>>).map((entry) => entry.message_id))
-      .toEqual([contextId]);
-    expect(String(firstInput.content)).toContain(contextText);
-    expect(String(firstInput.content)).toContain(firstText);
-    expect(startTurns(sessionId).map((event) => object(event.payload).client_message_id))
-      .toEqual([`${first._id}::a0`]);
+    expect(first.frozen_context).toEqual([contextId]);
+    expect(String(first.frozen_content)).toContain(contextText);
+    expect(String(first.frozen_content)).toContain(firstText);
+    expect(inputs(sessionId).map((input) => ({ id: input.client_message_id, content: input.content })))
+      .toEqual([{ id: first.item_id, content: first.frozen_content }]);
     evidence.first = first;
 
     // Redelivering either signal changes nothing and runs nothing.
     expect((await authorize(firstId)).status).toBe('duplicate');
     expect((await observe(firstId, `CHANGED_${id}`)).status).toBe('observed');
-    expect(row(firstId).payload).toEqual(first.payload);
+    expect(messageFacts(row(firstId))).toEqual(messageFacts(first));
 
     // An authorization that arrives first waits for its observation, then runs once.
     expect((await authorize(secondId)).status).toBe('authorized');
-    expect(row(secondId)).toMatchObject({ state: 'AUTHORIZED', session_id: null, command_id: null });
-    expect(startTurns(sessionId)).toHaveLength(1);
+    expect(row(secondId).state).toBe('AUTHORIZED');
+    neverRan(secondId);
+    expect(inputs(sessionId)).toHaveLength(1);
     const completedSecond = await observe(secondId, secondText);
     expect(completedSecond).toMatchObject({ status: 'accepted', session_id: sessionId });
     await expect.poll(replies, { timeout: 90_000 }).toEqual([
       expect.stringContaining(`FIRST_${id}`), expect.stringContaining(`SECOND_${id}`),
     ]);
     await expect.poll(() => row(secondId).state, { timeout: 30_000 }).toBe('SETTLED');
-    expect(String(object(row(secondId).frozen_input).content)).toContain(secondText);
+    expect(String(row(secondId).frozen_content)).toContain(secondText);
 
     // A message recalled before its authorization is never answered.
     expect((await observe(recalledId, recalledText)).status).toBe('observed');
@@ -138,18 +150,15 @@ test('an observed message runs once, only after the platform authorizes it, in e
       event_id: `${recalledId}-deleted`, recall: { message_id: recalledId, timestamp: sentAt() },
     })).status).toBe('recalled');
     expect(await authorize(recalledId)).toMatchObject({ status: 'ignored', reason: 'recalled' });
-    expect(row(recalledId)).toMatchObject({ state: 'OBSERVED', session_id: null, command_id: null });
+    expect(row(recalledId).state).toBe('OBSERVED');
+    neverRan(recalledId);
 
-    const turns = startTurns(sessionId);
-    expect(turns).toHaveLength(2);
-    expect(turns.some((event) => String(object(event.payload).content).includes(recalledText))).toBe(false);
+    const sent = inputs(sessionId);
+    expect(sent.map((input) => input.client_message_id)).toEqual([first.item_id, row(secondId).item_id]);
+    expect(sent.some((input) => input.content.includes(recalledText))).toBe(false);
     expect(replies()).toHaveLength(2);
-    expect(documentsByField('sessions', '$.agent_id', agentId).map((item) => item.session_id))
-      .toEqual([sessionId]);
-    evidence.final = {
-      inbound: documentsByField('channel_inbound', '$.deployment_id', deploymentId),
-      turns, replies: replies(),
-    };
+    expect(agentSessionRows(agentId).map((item) => item.session_id)).toEqual([sessionId]);
+    evidence.final = { inbound: channelInboundRows(deploymentId), inputs: sent, replies: replies() };
     completed = true;
   } finally {
     try {

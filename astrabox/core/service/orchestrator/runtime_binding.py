@@ -253,8 +253,6 @@ async def resolve_assistant_workspace_binding(
                 normalized,
                 authoritative_sandbox_id=None,
                 authoritative_expires_at=None,
-                authoritative_runtime_identity=None,
-                engine_kind=engine_kind,
                 # There is no workspace row at all, so nothing else can be
                 # naming a box: this row's copy is kept.
                 workspace_names_a_sandbox=False,
@@ -361,8 +359,6 @@ async def resolve_assistant_workspace_binding(
             normalized,
             authoritative_sandbox_id=authoritative_sandbox_id if status == "READY" else None,
             authoritative_expires_at=authoritative_expires_at if authoritative_sandbox_id else None,
-            authoritative_runtime_identity=owner_runtime_identity,
-            engine_kind=authoritative_engine_kind,
             workspace_names_a_sandbox=authoritative_sandbox_id is not None,
         ),
     )
@@ -373,8 +369,6 @@ def _assistant_binding_updates(
     *,
     authoritative_sandbox_id: str | None,
     authoritative_expires_at: str | None,
-    authoritative_runtime_identity: dict[str, Any] | None,
-    engine_kind: str,
     workspace_names_a_sandbox: bool = False,
 ) -> dict[str, Any]:
     """Align a conversation row with its workspace authority.
@@ -399,7 +393,6 @@ def _assistant_binding_updates(
     """
     updates: dict[str, Any] = {}
     current_sandbox_id = _clean(session.get("sandbox_id"))
-    current_endpoint = _clean(session.get("sandbox_endpoint"))
     severs_last_name = (
         authoritative_sandbox_id is None
         and current_sandbox_id is not None
@@ -407,32 +400,10 @@ def _assistant_binding_updates(
     )
     if authoritative_sandbox_id != current_sandbox_id and not severs_last_name:
         updates["sandbox_id"] = authoritative_sandbox_id
-    if current_endpoint:
-        updates["sandbox_endpoint"] = None
     if authoritative_sandbox_id and authoritative_expires_at != _clean(session.get("expires_at")):
         updates["expires_at"] = authoritative_expires_at
     if authoritative_sandbox_id is None and _clean(session.get("expires_at")):
         updates["expires_at"] = None
-
-    workspace_ref = session.get("workspace_ref")
-    if isinstance(workspace_ref, dict):
-        updated_ref = dict(workspace_ref)
-        ref_severs_last_name = (
-            authoritative_sandbox_id is None
-            and _clean(updated_ref.get("sandbox_id")) is not None
-            and not workspace_names_a_sandbox
-        )
-        if (
-            _clean(updated_ref.get("sandbox_id")) != authoritative_sandbox_id
-            and not ref_severs_last_name
-        ):
-            updated_ref["sandbox_id"] = authoritative_sandbox_id
-        if _clean(updated_ref.get("engine_kind")) != engine_kind:
-            updated_ref["engine_kind"] = engine_kind
-        # workspace runtime_identity is owner-level metadata. Do not copy it into
-        # workspace_ref; per-user profile identity is derived by the workspace plan.
-        if updated_ref != workspace_ref:
-            updates["workspace_ref"] = updated_ref
     # Assistant workspace runtime_identity is owner/bootstrap metadata. Per-user
     # profile identity is derived by the assistant workspace planner, so do not
     # copy workspace identity into a user conversation session.

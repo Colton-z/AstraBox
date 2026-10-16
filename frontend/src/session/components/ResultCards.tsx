@@ -65,7 +65,8 @@ export function ResultPartCard({ data }: { data: Record<string, unknown> }) {
   );
 }
 
-export function TurnFailureCard({ error }: { error?: string }) {
+/** A response the runtime recorded as failed, with its report when it gave one. */
+export function ResponseFailureCard({ error }: { error?: string }) {
   const { t } = useTranslation();
   return (
     <ErrorNote className="flex items-start gap-2">

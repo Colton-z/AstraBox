@@ -20,12 +20,10 @@ Concrete implementations in this repository:
 * ``SecretStore`` — where credential secret material lives (``local`` and
   ``aws_kms`` encrypted-at-rest built-ins; external stores plug in).
 * ``StorageProvider`` — one provider owns a session's storage medium
-* ``AsyncDocumentCollection`` ← ``persistence/repository/sqlite/collection.py`` (the
-  minimal store primitive every concrete repository class is written over)
 * ``WebIdentityResolver`` — one identity seam for browser, API, and public MCP
   requests.
 * ``RuntimePreparationProvider`` — one deployment integration for Agent
-  resources, Session startup materials, per-turn preparation and user
+  resources, Session startup materials, per-input preparation and user
   prerequisites.
 
 Everything here imports only the standard library, ``typing`` and
@@ -43,13 +41,12 @@ from __future__ import annotations
 #: class; the entry-point loaders compare it against this value at registration
 #: and fail loud on mismatch, so an incompatible plugin is rejected at bootstrap
 #: instead of failing mid-turn with an AttributeError.
-SEAMS_API_VERSION = 6
+SEAMS_API_VERSION = 7
 
 from astrabox.seams.extensions import ExtensionProvider
 from astrabox.seams.skills import SkillContentProvider, SkillSource, ResolvedSkillSource
 from astrabox.seams.identity import WebIdentityResolver
 from astrabox.seams.model import ModelEndpoint, ModelEndpointProvider
-from astrabox.seams.repository import AsyncDocumentCollection
 from astrabox.seams.secrets import SecretStore
 from astrabox.seams.sandbox import (
     SANDBOX_LIFECYCLE_PROBE_FAILED,
@@ -63,7 +60,7 @@ from astrabox.seams.sandbox import (
     SandboxRuntimeDefaults,
 )
 from astrabox.seams.runtime_preparation import (
-    PreparedPackage, AgentPreparationOperation, AgentPreparationContext,
+    PreparedPackage, PreparationSubject, ResourcePreparationOperation, ResourcePreparationContext,
     RuntimePreparationProvider, RuntimePreparationPlan, RuntimeMaterials, RuntimeFile,
     SessionPreparationContext, TurnPreparationContext, PreparationUserActionRequired,
     SessionUserActionContext, SessionUserActionCommand, SessionUserActionState,
@@ -77,8 +74,9 @@ __all__ = [
     # contract version (providers may pin it; loaders enforce on mismatch)
     "SEAMS_API_VERSION",
     "PreparedPackage",
-    "AgentPreparationOperation",
-    "AgentPreparationContext",
+    "PreparationSubject",
+    "ResourcePreparationOperation",
+    "ResourcePreparationContext",
     "RuntimePreparationProvider",
     "RuntimePreparationPlan",
     "RuntimeMaterials",
@@ -112,11 +110,8 @@ __all__ = [
     "ResolvedSkillSource",
     # secret store (vault secret material at rest)
     "SecretStore",
-    # resident-sidecar generation fencing
     # storage
     "StorageProvider",
-    # repository (the minimal collection primitive every store is written over)
-    "AsyncDocumentCollection",
     # identity for every HTTP surface
     "WebIdentityResolver",
 ]

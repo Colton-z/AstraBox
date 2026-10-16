@@ -3,7 +3,15 @@ import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 
 import { AstraApi, messageText, visibleMessages } from '../fixtures/astraApi';
-import { documentsByField, sessionEvents, waitForTurnTerminalProof } from '../fixtures/dbOracle';
+import {
+  nativeTranscriptRows,
+  sessionInputRows,
+  sessionOutputRows,
+  sessionResponseRows,
+  type SessionInputRow,
+  type SessionResponseRow,
+} from '../fixtures/dbOracle';
+import { channelInboundRows, channelMessageInputs, channelOutboxRows } from '../fixtures/ingressRecords';
 import { PlatformApi } from '../fixtures/platformApi';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView } from '../fixtures/sessionPage';
@@ -21,7 +29,7 @@ function object(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function inboundRows() { return documentsByField('channel_inbound', '$.deployment_id', deploymentId); }
+function inboundRows() { return channelInboundRows(deploymentId); }
 function messagesFor(messageId: string) {
   return inboundRows().filter((row) => row.dedup_key === `e2e:${source!.botId}:channel:room:message:${messageId}`);
 }
@@ -31,20 +39,22 @@ function expectOnlyUserMessages(messageIds: string[]) {
   expect(rows.filter((row) => String(row.dedup_key).startsWith(prefix))
     .map((row) => row.dedup_key).sort()).toEqual(messageIds.map((id) => `${prefix}${id}`).sort());
   // The official adapter emits login lifecycle events before user messages.
-  // They remain durable source receipts, never Agent tasks or retained context.
+  // They remain durable source receipts, never Agent inputs or retained context.
   for (const row of rows.filter((item) => !String(item.dedup_key).startsWith(prefix))) {
     expect(String(row.dedup_key)).toMatch(/:event:login-(added|updated):/);
-    expect(row).toMatchObject({ state: 'IGNORED', session_id: null, command_id: null, turn_id: null });
-    expect(object(row.payload).retain_context).toBe(false);
-    expect(String(object(row.payload).provider_ignore_reason)).toMatch(/login-(added|updated)/);
+    expect(row).toMatchObject({ state: 'IGNORED', session_id: null, retain_context: false });
+    expect(channelMessageInputs(row.item_id)).toEqual([]);
+    expect(String(row.provider_ignore_reason)).toMatch(/login-(added|updated)/);
   }
 }
-function commands() {
-  return sessionEvents(sessionId).filter((row) => row.event_type === 'command.accepted'
-    && object(row.payload).command_type === 'StartTurn');
+/** The inputs the Session accepted, by their identity and content: one per message that ran. */
+function inputs() {
+  return sessionInputRows(sessionId).map((row) => ({
+    input_id: row.input_id, client_message_id: row.client_message_id, source: row.source, content: row.content,
+  }));
 }
 function nativeInputs(content: string) {
-  return documentsByField('transcript_entries', '$.platform_session_id', sessionId)
+  return nativeTranscriptRows(sessionId)
     .filter((row) => row.subpath == null)
     .map((row) => ({ uuid: row.uuid, seq: row.seq, entry: object(JSON.parse(String(row.entry_json))) }))
     .filter((row) => {
@@ -67,7 +77,8 @@ function recallMessage(messageId: string, timestamp: number, sn: number) {
     message: { id: messageId } });
 }
 
-async function waitAccepted(messageId: string) {
+/** The one input a channel message became: its item id is the input's client message id. */
+async function waitAccepted(messageId: string): Promise<SessionInputRow> {
   await expect.poll(() => {
     source!.healthy();
     const row = messagesFor(messageId)[0];
@@ -76,37 +87,46 @@ async function waitAccepted(messageId: string) {
       sessions.push(sessionId);
     }
     if (!sessionId || !row) return 0;
-    const token = `${row._id}::a0`;
-    return commands().filter((command) => object(command.payload).client_message_id === token).length;
-  }, { timeout: 60_000, message: 'the original channel message must become one accepted StartTurn' }).toBe(1);
+    return sessionInputRows(sessionId).filter((input) => input.client_message_id === row.item_id).length;
+  }, { timeout: 60_000, message: 'the original channel message must become one accepted input' }).toBe(1);
   const row = messagesFor(messageId)[0];
-  return commands().find((command) => object(command.payload).client_message_id === `${row._id}::a0`)!;
+  const input = sessionInputRows(sessionId).find((item) => item.client_message_id === row.item_id)!;
+  expect(input.source).toBe('channel');
+  return input;
 }
 
-async function waitSettled(command: Record<string, unknown>, expectedDeliveries: number) {
-  await waitForTurnTerminalProof(sessionId, String(command.turn_id), 'COMPLETED', 60_000);
+/**
+ * The message's response ran to completion, the runtime took exactly the
+ * accepted input, and its one delivery reached the channel.
+ */
+async function waitSettled(input: SessionInputRow, expectedDeliveries: number): Promise<SessionResponseRow> {
+  let response: SessionResponseRow | undefined;
+  await expect.poll(() => {
+    response = sessionResponseRows(sessionId).find((row) => row.input_ids.includes(input.input_id));
+    return response ? `${response.status}/${response.outcome ?? ''}` : 'no response yet';
+  }, { timeout: 60_000, message: 'the response answering the message must complete' }).toBe('ended/completed');
   await expect.poll(() => {
     source!.healthy();
     return source!.deliveries.length;
   }, { timeout: 30_000 }).toBe(expectedDeliveries);
   expect(source!.deliveries.every((delivery) => delivery.channel_id === 'room'
     && delivery.content.trim().length > 0)).toBe(true);
-  const commandId = String(command.causation_id);
-  const inputId = String(object(command.payload).input_id);
-  const receipts = sessionEvents(sessionId).filter((row) => row.causation_id === commandId
-    && ['input.delivered', 'input.consumed'].includes(String(row.event_type)));
-  expect(receipts.map((row) => row.event_type).sort()).toEqual(['input.consumed', 'input.delivered']);
-  expect(receipts.every((row) => object(row.payload).input_id === inputId)).toBe(true);
-  expect(object(receipts.find((row) => row.event_type === 'input.consumed')!.payload).content)
-    .toBe(object(command.payload).content);
-  // A delivery row belongs to the response it reports: one per turn, whatever
-  // command or engine work produced it.
-  const outbox = documentsByField('channel_outbox', '$.session_id', sessionId)
-    .filter((row) => row.turn_id === command.turn_id);
+  const taken = sessionInputRows(sessionId).find((row) => row.input_id === input.input_id)!;
+  expect(taken).toMatchObject({ state: 'admitted', response_id: response!.response_id, content: input.content });
+  // The runtime's own record of what it dequeued for this input.
+  const consumed = sessionOutputRows(sessionId, response!.response_id)
+    .map((row) => row.part)
+    .filter((part) => part.type === 'data-input-consumed' && object(part.data).inputId === input.input_id);
+  expect(consumed).toHaveLength(1);
+  expect(object(consumed[0].data).content).toBe(input.content);
+  // A delivery row belongs to the response it reports: one per response,
+  // whatever input or engine work produced it.
+  const outbox = channelOutboxRows(sessionId).filter((row) => row.response_id === response!.response_id);
   expect(outbox).toHaveLength(1);
-  await expect.poll(() => documentsByField('channel_outbox', '$.session_id', sessionId)
-    .find((row) => row.turn_id === command.turn_id)?.state).toBe('DELIVERED');
-  evidence.receipts = receipts;
+  await expect.poll(() => channelOutboxRows(sessionId)
+    .find((row) => row.response_id === response!.response_id)?.state).toBe('DELIVERED');
+  evidence.settled = { input: taken, response, consumed };
+  return response!;
 }
 
 test.beforeEach(async ({ request }) => {
@@ -127,8 +147,9 @@ test.afterEach(async ({ request }, info) => {
     await info.attach('channel-recall-boundary-evidence', {
       body: JSON.stringify({ agentId, deploymentId, sessionId, ...evidence,
         retainedInbound: failed && deploymentId ? inboundRows() : [],
-        journal: failed && sessionId ? sessionEvents(sessionId) : [],
-        native: failed && sessionId ? documentsByField('transcript_entries', '$.platform_session_id', sessionId) : [],
+        inputs: failed && sessionId ? sessionInputRows(sessionId) : [],
+        responses: failed && sessionId ? sessionResponseRows(sessionId) : [],
+        native: failed && sessionId ? nativeTranscriptRows(sessionId) : [],
         retainedHistory: failed && sessionId ? await new AstraApi(request).getMessages(sessionId, 100) : null,
         deliveries: source?.deliveries, sourceErrors: source?.errors }),
       contentType: 'application/json',
@@ -154,10 +175,10 @@ test('channel recall before Agent submission replaces retained context with a ti
   await expect.poll(() => messagesFor(contextId)[0]?.state).toBe('OBSERVED');
   expect(messagesFor(contextId)[0]?.session_id).toBeNull();
   recallMessage(contextId, base + 1000, 2);
-  await expect.poll(() => object(messagesFor(contextId)[0]?.recall || {}).timestamp).toBe(recalledAt);
-  const recall = object(messagesFor(contextId)[0].recall);
-  expect(recall.event_id).toBe(`e2e:${source!.botId}:event:message-deleted:sn:2`);
-  expect(String(recall.event_id)).not.toEqual(String(messagesFor(contextId)[0].dedup_key));
+  await expect.poll(() => messagesFor(contextId)[0]?.recall_timestamp).toBe(recalledAt);
+  const recalled = messagesFor(contextId)[0];
+  expect(recalled.recall_event_id).toBe(`e2e:${source!.botId}:event:message-deleted:sn:2`);
+  expect(String(recalled.recall_event_id)).not.toEqual(String(recalled.dedup_key));
   expectOnlyUserMessages([contextId]);
   expect(source!.deliveries).toHaveLength(0);
   // The same source event traverses a fresh gateway ACK cursor. A later
@@ -167,31 +188,37 @@ test('channel recall before Agent submission replaces retained context with a ti
   // Deliberately include the secret inside the original quote. The adapter
   // must omit quoted bodies and platform context must use the durable recall.
   sendMessage(wakeId, `<quote id="${contextId}">${secret}</quote><at id="${source!.botId}"/>${wakeText}`, base + 2000);
-  const command = await waitAccepted(wakeId);
-  const content = String(object(command.payload).content);
+  const input = await waitAccepted(wakeId);
+  const content = input.content;
   expect(content).toContain(marker);
   expect(content).toContain(wakeText);
   expect(content).not.toContain(secret);
-  expect(commands()).toHaveLength(1);
-  await waitSettled(command, 1);
+  expect(inputs()).toHaveLength(1);
+  await waitSettled(input, 1);
   await expect.poll(() => nativeInputs(content).length).toBe(1);
-  expect(JSON.stringify(object(messagesFor(wakeId)[0].frozen_input))).not.toContain(secret);
+  const wake = messagesFor(wakeId)[0];
+  expect(wake.frozen_content).toBe(content);
+  expect(wake.frozen_context).toEqual([`e2e:${source!.botId}:channel:room:message:${contextId}`]);
+  expect(JSON.stringify({ content: wake.frozen_content, context: wake.frozen_context })).not.toContain(secret);
   expect(messagesFor(contextId)[0].context_submitted).toBe(true);
+  expect(channelMessageInputs(recalled.item_id), 'the recalled message is never an input itself').toEqual([]);
   const history = visibleMessages(await api.getMessages(sessionId, 100));
   expect(history.filter((row) => row.role === 'user').map(messageText)).toEqual([content]);
-  expect(commands()).toEqual([command]);
+  expect(inputs()).toEqual([
+    { input_id: input.input_id, client_message_id: input.client_message_id, source: 'channel', content },
+  ]);
   await openSessionView(page, sessionId);
   await expect(page.getByText(marker, { exact: false }).first()).toBeVisible();
   await expect(page.getByText(secret, { exact: false })).toHaveCount(0);
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(page.getByText(marker, { exact: false }).first()).toBeVisible();
   await expect(page.getByText(secret, { exact: false })).toHaveCount(0);
-  evidence.original = { command, native: nativeInputs(content), recall, marker };
+  evidence.original = { input, native: nativeInputs(content), recalled, marker };
   evidence.inbound = inboundRows();
   evidence.history = history;
 });
 
-test('channel recall after StartTurn preserves the original accepted input without opening another turn', async ({ request, page }) => {
+test('channel recall after its input is accepted preserves that input without sending another', async ({ request, page }) => {
   const api = new AstraApi(request);
   const unique = randomUUID();
   const base = Date.now();
@@ -204,20 +231,25 @@ test('channel recall after StartTurn preserves the original accepted input witho
   const originalSessionId = sessionId;
   const text = `Conversation ${unique}. Explain what a notebook is in one short sentence. Do not use tools.`;
   sendMessage(wakeId, `<quote id="${parentId}"/><at id="${source!.botId}"/>${text}`, base + 1000);
-  const command = await waitAccepted(wakeId);
+  const input = await waitAccepted(wakeId);
   expect(messagesFor(wakeId)[0].session_id).toBe(originalSessionId);
-  expect(object(command.payload).content).toBe(text);
-  const originalCommands = commands();
-  expect(originalCommands).toHaveLength(2);
-  const originalFrozen = messagesFor(wakeId)[0].frozen_input;
+  expect(input.content).toBe(text);
+  const originalInputs = inputs();
+  expect(originalInputs).toHaveLength(2);
+  const originalFrozen = {
+    content: messagesFor(wakeId)[0].frozen_content, context: messagesFor(wakeId)[0].frozen_context,
+  };
   const recalledAt = new Date(base + 2000).toISOString();
   recallMessage(wakeId, base + 2000, 3);
-  await expect.poll(() => object(messagesFor(wakeId)[0]?.recall || {}).timestamp).toBe(recalledAt);
-  await waitSettled(command, 2);
+  await expect.poll(() => messagesFor(wakeId)[0]?.recall_timestamp).toBe(recalledAt);
+  await waitSettled(input, 2);
   await expect.poll(() => nativeInputs(text).length).toBe(1);
   const originalNative = nativeInputs(text);
-  expect(commands()).toEqual(originalCommands);
-  expect(messagesFor(wakeId)[0].frozen_input).toEqual(originalFrozen);
+  expect(inputs()).toEqual(originalInputs);
+  expect({ content: messagesFor(wakeId)[0].frozen_content, context: messagesFor(wakeId)[0].frozen_context })
+    .toEqual(originalFrozen);
+  expect(channelMessageInputs(messagesFor(wakeId)[0].item_id).map((row) => row.input_id),
+    'the recalled message keeps the one input it was').toEqual([input.input_id]);
   expectOnlyUserMessages([parentId, wakeId]);
   const history = visibleMessages(await api.getMessages(sessionId, 100));
   expect(history.filter((row) => row.role === 'user').map(messageText)).toEqual([parentText, text]);
@@ -227,8 +259,8 @@ test('channel recall after StartTurn preserves the original accepted input witho
   await expect(page.getByText(text, { exact: false }).first()).toBeVisible();
   await expect(page.getByText(`[该消息已于 ${recalledAt} 被撤回]`, { exact: false })).toHaveCount(0);
   expect(nativeInputs(text)).toEqual(originalNative);
-  expect(commands()).toEqual(originalCommands);
-  evidence.original = { originalCommands, originalFrozen, originalNative, parent, command, recalledAt };
+  expect(inputs()).toEqual(originalInputs);
+  evidence.original = { originalInputs, originalFrozen, originalNative, parent, input, recalledAt };
   evidence.inbound = inboundRows();
   evidence.history = history;
 });

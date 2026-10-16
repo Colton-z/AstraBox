@@ -104,29 +104,6 @@ def read_turn_input_content(
     return text, blocks
 
 
-def read_engine_content_blocks(value: Any) -> list[dict[str, Any]] | None:
-    """Re-read the blocks a durable command row carries, or ``None``.
-
-    The API already refused anything malformed, so a row that fails here is
-    a corrupt journal rather than a bad request — and delivering a partly
-    readable input to the engine would lose exactly the part that cannot be
-    read. Raise instead; the delivery path's other malformed-row checks do
-    the same.
-    """
-
-    if value is None:
-        return None
-    if not isinstance(value, list) or not value:
-        raise RuntimeError("delivery command content_blocks is malformed")
-    try:
-        _text, blocks = read_turn_input_content(value)
-    except APIError as exc:
-        raise RuntimeError(
-            f"delivery command content_blocks is malformed: {exc.message}"
-        ) from exc
-    return blocks
-
-
 def turn_input_is_empty(text: str, blocks: list[dict[str, Any]] | None) -> bool:
     """True when an input would reach the engine carrying nothing at all."""
 

@@ -110,20 +110,18 @@ test('removing the final skill and package persists empty lists after reload', a
 
   const descriptor = String(process.env.ASTRABOX_E2E_REAL_SKILL_DESCRIPTOR
     || 'https://github.com/anthropics/skills.git@main#skills/skill-creator');
-  const skills = page.getByRole('group', { name: 'Custom Skills', exact: true })
-    .filter({ has: page.getByRole('button', { name: 'Add', exact: true }) });
-  await skills.getByRole('button', { name: 'Add', exact: true }).click();
-  const skillExample = await emptyFieldExample(skills.getByRole('textbox'));
-  await skills.getByRole('textbox').focus();
-  await skills.getByRole('textbox').press('Tab');
-  await expect(skills.getByRole('textbox')).toHaveValue(skillExample);
-  await expect(skills.getByRole('textbox')).toBeFocused();
-  await skills.getByRole('textbox').fill(descriptor);
+  // Skills are a JSON array of sources, like Packages below. A new Agent
+  // stores an empty list, which the editor shows as one.
+  const skills = page.getByRole('textbox', { name: 'Custom Skills', exact: true });
+  await expect(skills).toHaveValue('[]');
+  await skills.fill(JSON.stringify([descriptor]));
+  await skills.blur();
   await saveAndReload(page, api, 'skills', [descriptor]);
-  await expect(skills.getByRole('textbox')).toHaveValue(descriptor);
-  await skills.getByRole('button', { name: 'Remove item', exact: true }).click();
+  expect(JSON.parse(await skills.inputValue())).toEqual([descriptor]);
+  await skills.fill('[]');
+  await skills.blur();
   await saveAndReload(page, api, 'skills', []);
-  await expect(skills.getByRole('textbox')).toHaveCount(0);
+  expect(JSON.parse(await skills.inputValue())).toEqual([]);
 
   const repositories = [{
     kind: 'claude-plugin',
@@ -137,7 +135,7 @@ test('removing the final skill and package persists empty lists after reload', a
     paths: [String(process.env.ASTRABOX_E2E_REAL_PLUGIN_PATH || 'plugins/frontend-design')],
   }];
   const plugins = page.getByRole('textbox', { name: 'Packages', exact: true });
-  await emptyJsonExample(plugins);
+  await expect(plugins, 'a new Agent stores an empty package list').toHaveValue('[]');
   await emptyJsonExample(page.locator('#agent-default_repo'));
   await plugins.fill(JSON.stringify(repositories));
   await plugins.blur();
@@ -164,7 +162,7 @@ test('removing the final skill and package persists empty lists after reload', a
     await expect(mcpGroup.getByRole('combobox', { name: 'MCP servers from LiteLLM', exact: true })).toBeVisible();
     await expect(mcpGroup.getByRole('textbox', { name: 'Custom MCP', exact: true })).toBeVisible();
     await expect(skillGroup.getByRole('combobox', { name: 'Skills from LiteLLM', exact: true })).toBeVisible();
-    await expect(skillGroup.getByRole('group', { name: 'Custom Skills', exact: true })).toBeVisible();
+    await expect(skillGroup.getByRole('textbox', { name: 'Custom Skills', exact: true })).toBeVisible();
     await expect(mcpGroup.locator('#agent-extension-skills')).toHaveCount(0);
     await expect(skillGroup.locator('#agent-extension-mcp')).toHaveCount(0);
     await expect(mcpGroup.locator('#agent-packages')).toHaveCount(0);
@@ -177,7 +175,7 @@ test('removing the final skill and package persists empty lists after reload', a
     });
     await expect(workspace).toHaveCount(1);
     await expect(tools.locator('#agent-default_repo')).toHaveCount(0);
-    await expect(tools.getByRole('group', { name: 'Custom Skills', exact: true })).toBeVisible();
+    await expect(tools.getByRole('textbox', { name: 'Custom Skills', exact: true })).toBeVisible();
     await expect(workspace.locator('#agent-extension-mcp')).toHaveCount(0);
 
     const customMcp = mcpGroup.getByRole('textbox', { name: 'Custom MCP', exact: true });
@@ -220,8 +218,8 @@ test('removing the final skill and package persists empty lists after reload', a
     await customMcp.fill(JSON.stringify(directMcp));
     expect(await customMcp.evaluate((element) => element.matches(':placeholder-shown'))).toBe(false);
     await customMcp.blur();
-    await skills.getByRole('button', { name: 'Add', exact: true }).click();
-    await skills.getByRole('textbox').fill(descriptor);
+    await skills.fill(JSON.stringify([descriptor]));
+    await skills.blur();
     await plugins.fill(JSON.stringify(repositories));
     await plugins.blur();
     await expect(tools.getByRole('button', { name: 'Save', exact: true })).toHaveCount(1);
@@ -244,7 +242,7 @@ test('removing the final skill and package persists empty lists after reload', a
     await page.reload({ waitUntil: 'domcontentloaded' });
     await expect(tools.locator(`[aria-label="${managed.name}"]`)).toBeVisible();
     await expect(tools.locator('#agent-extension-skills')).toBeVisible();
-    await expect(skills.getByRole('textbox')).toHaveValue(descriptor);
+    expect(JSON.parse(await skills.inputValue())).toEqual([descriptor]);
     expect(JSON.parse(await tools.locator('#agent-mcp_servers').inputValue())).toEqual(directMcp);
     expect(JSON.parse(await plugins.inputValue())).toEqual(repositories);
     await expect(tools.getByRole('button', { name: 'Save', exact: true })).toHaveCount(0);

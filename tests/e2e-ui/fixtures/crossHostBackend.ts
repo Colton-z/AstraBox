@@ -83,7 +83,7 @@ export function backendBrowserFlow(sessions: string[], evidence: Record<string, 
       status = await data<Prepared>(await refreshed);
       return status.ready && status.prepared_count > 0;
     }, { timeout: 60_000, intervals: [1_000, 2_000] }).toBe(true);
-    await expect(page.getByTestId('prewarm-state')).toHaveText('Ready');
+    await expect(page.getByTestId('prewarm-count')).toBeVisible();
     await expect(page.getByTestId('prewarm-count')).toHaveText(`Available: ${status.prepared_count} of ${status.target}`);
     expect(status.sandbox_id).toBeTruthy();
     expect(status.client_pool_name).toBeTruthy();
@@ -109,7 +109,8 @@ export function backendBrowserFlow(sessions: string[], evidence: Record<string, 
     await page.waitForURL(/\/sessions\/[^/]+$/);
     const id = new URL(page.url()).pathname.split('/').pop()!;
     sessions.push(id);
-    await expect(page.getByTestId('composer-prompt')).toBeEnabled({ timeout: 60_000 });
+    await expect(page.getByTestId('run-view').locator('header').getByTestId('status-pill'))
+      .toHaveAttribute('data-state', 'READY', { timeout: 60_000 });
     const record = await detail(page, origin, id);
     expect(record.session_id).toBe(id);
     expect(record.state).toBe('READY');

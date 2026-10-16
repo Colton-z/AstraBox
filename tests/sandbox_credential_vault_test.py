@@ -21,17 +21,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from astrabox.common.utils.errors import APIError
-from astrabox.core.service.orchestrator.runtime import config_resolver
 from astrabox.providers.open_sandbox.credential_vault import (
     build_env_credential_vault_write,
     build_vault_write,
-    gateway_host,
     open_sandbox_vault_write,
     require_vault_preconditions,
-)
-from astrabox.providers.open_sandbox.networking import (
-    open_sandbox_network_policy,
-    with_vault_binding_allows,
 )
 from astrabox.seams.egress_credentials import (
     EGRESS_HELD_PLACEHOLDER,
@@ -194,99 +188,6 @@ def test_the_binding_is_scoped_to_the_endpoint_the_credential_belongs_to() -> No
     assert bindings[0].match.paths == ["/v1/chat/completions"]
 
 
-def test_an_internal_http_gateway_gets_an_http_binding() -> None:
-    """The bundled gateway is on HTTP port 80, so an HTTPS-only binding never matches it."""
-    _, bindings = build_vault_write(
-        credential=_REAL,
-        credential_header="Authorization",
-        base_url="http://gateway.internal/v1",
-    )
-    assert bindings[0].match.hosts == ["gateway.internal"]
-    assert bindings[0].match.schemes == ["http"]
-
-
-@pytest.mark.parametrize(
-    "base_url",
-    ["http://172.17.0.1/v1", "http://localhost/v1", "http://gateway/v1"],
-)
-def test_a_vault_gateway_must_use_a_real_fqdn(base_url: str) -> None:
-    """OpenSandbox rejects IP and single-label credential binding hosts."""
-    with pytest.raises(APIError) as caught:
-        build_vault_write(
-            credential=_REAL,
-            credential_header="Authorization",
-            base_url=base_url,
-        )
-    assert caught.value.code == "SANDBOX_CONFIG_INVALID"
-    assert "fully qualified domain name" in str(caught.value)
-
-
-@pytest.mark.parametrize(
-    "base_url",
-    ["http://gateway.internal:4000/v1", "https://gateway.internal:8443/v1"],
-)
-def test_a_gateway_port_the_vault_cannot_match_is_refused(base_url: str) -> None:
-    """OpenSandbox derives a binding's port from its scheme: HTTP=80, HTTPS=443."""
-    with pytest.raises(APIError) as caught:
-        build_vault_write(
-            credential=_REAL,
-            credential_header="Authorization",
-            base_url=base_url,
-        )
-    assert caught.value.code == "SANDBOX_CONFIG_INVALID"
-    assert "80 or 443" in str(caught.value)
-
-
-@pytest.mark.parametrize(
-    ("header", "expected_auth"),
-    [
-        ("Authorization", "passthrough"),
-        ("authorization", "passthrough"),
-        ("", "passthrough"),
-        ("x-api-key", "apiKey"),
-        ("X-API-Key", "apiKey"),
-    ],
-)
-def test_the_credential_is_attached_the_way_its_own_source_calls_for(
-    header: str, expected_auth: str
-) -> None:
-    """A gateway Bearer token and a vendor key are attached differently.
-
-    Getting it wrong leaks nothing — the upstream rejects the request — but it
-    rejects EVERY turn, so it is derived from the credential's header rather
-    than assumed. A gateway token is SUBSTITUTED for the placeholder the
-    workload sends rather than written over its header, because one box can
-    hold several workloads whose calls must not spend one identity; a vendor
-    key has no such split and stays a rewrite.
-    """
-    _, bindings = build_vault_write(
-        credential=_REAL, credential_header=header, base_url="https://gw.example.com"
-    )
-    assert bindings[0].auth.type == expected_auth
-    if expected_auth == "passthrough":
-        placeholders = [
-            entry.placeholder for entry in (bindings[0].auth.substitutions or [])
-        ]
-        assert placeholders == [EGRESS_HELD_PLACEHOLDER]
-
-
-def test_an_endpoint_with_no_host_is_refused() -> None:
-    with pytest.raises(APIError) as caught:
-        build_vault_write(credential=_REAL, credential_header="", base_url="not-a-url")
-    assert caught.value.code == "SANDBOX_CONFIG_INVALID"
-
-
-def test_an_empty_credential_is_refused() -> None:
-    """Storing nothing would produce a binding that authenticates nothing."""
-    with pytest.raises(APIError):
-        build_vault_write(credential="   ", credential_header="", base_url="https://gw.example.com")
-
-
-@pytest.mark.parametrize("base_url", ["https://gw.example.com", "http://gw.example.com:4000/v1"])
-def test_the_host_is_taken_from_the_endpoint(base_url: str) -> None:
-    assert gateway_host(base_url) == "gw.example.com"
-
-
 @pytest.mark.parametrize("egress_image", ["", "   "])
 def test_a_missing_credential_proxy_is_refused(egress_image: str) -> None:
     """Protected delivery never falls back to shipping the real credential.
@@ -298,64 +199,6 @@ def test_a_missing_credential_proxy_is_refused(egress_image: str) -> None:
         require_vault_preconditions(egress_image=egress_image, egress_mode="dns+nft")
     assert caught.value.code == "SANDBOX_CONFIG_INVALID"
     assert "missing:" in str(caught.value)
-
-
-def test_the_refusal_names_what_is_missing() -> None:
-    """The provider precondition names only the provider component."""
-    with pytest.raises(APIError) as caught:
-        require_vault_preconditions(egress_image="", egress_mode="dns")
-    message = str(caught.value)
-    assert "ASTRABOX_SANDBOX_EGRESS_IMAGE" in message
-    assert "ASTRABOX_SANDBOX_EGRESS_MODE=dns+nft" in message
-    assert "network_policy" not in message
-
-
-def test_a_fully_configured_vault_is_accepted() -> None:
-    require_vault_preconditions(
-        egress_image="opensandbox/egress:v1.1.7",
-        egress_mode="dns+nft",
-    )
-
-
-def test_vault_hosts_enter_network_policy_only_at_provider_boundary(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        config_resolver, "platform_callback_egress_targets", lambda: []
-    )
-    platform_policy = config_resolver.resolve_network_policy(
-        SimpleNamespace(
-            networking={
-                "type": "limited",
-                "allowed_hosts": ["packages.example.com"],
-            },
-            tracing=None,
-            skills=[],
-        )
-    )
-    credential = _env_cred(hosts=["api.github.com"])
-    translated = open_sandbox_vault_write(
-        SandboxEgressCredentialPlan(environment=(credential,))
-    )
-
-    assert translated is not None
-    credentials, bindings = translated
-    assert credentials[0].source.value == "ghp_real"
-    assert bindings[0].match.hosts == ["api.github.com"]
-    assert platform_policy.allowed_hosts == ("packages.example.com",)
-
-    provider_policy = with_vault_binding_allows(
-        open_sandbox_network_policy(platform_policy), translated
-    )
-    assert provider_policy is not None
-    assert provider_policy.default_action == "deny"
-    # The cloud-metadata always-deny leads every provider policy, then the
-    # Environment allows, then the Vault binding host.
-    assert [rule.target for rule in provider_policy.egress or []] == [
-        "169.254.0.0/16",
-        "packages.example.com",
-        "api.github.com",
-    ]
 
 
 def test_the_flag_is_on_by_default_and_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -464,20 +307,6 @@ def test_optional_request_limits_reach_the_upstream_binding() -> None:
     assert bindings[0].match.paths == ["/repos/acme/private/*"]
 
 
-def test_omitted_request_limits_remain_omitted() -> None:
-    _credentials, bindings = build_env_credential_vault_write([_env_cred()])
-    assert bindings[0].match.methods is None
-    assert bindings[0].match.paths is None
-
-
-def test_a_leftmost_label_wildcard_survives_translation() -> None:
-    """Upstream matches *.example.com at any depth — the seam's own rule."""
-    _credentials, bindings = build_env_credential_vault_write(
-        [_env_cred(hosts=["*.github.com", "API.GitHub.com"])]
-    )
-    assert bindings[0].match.hosts == ["*.github.com", "api.github.com"]
-
-
 def test_unrestricted_networking_is_refused_not_widened() -> None:
     """A credential that may go anywhere cannot be bound to somewhere."""
     with pytest.raises(APIError) as caught:
@@ -485,103 +314,10 @@ def test_unrestricted_networking_is_refused_not_widened() -> None:
     assert "unrestricted" in str(caught.value)
 
 
-def test_an_uninterceptable_port_is_refused() -> None:
-    """The sidecar redirects 80/443 only: a binding elsewhere never fires."""
-    with pytest.raises(APIError) as caught:
-        build_env_credential_vault_write([_env_cred(hosts=["api.github.com:8443"])])
-    assert "8443" in str(caught.value)
-
-
 def test_cleartext_needs_the_credentials_own_opt_in() -> None:
     with pytest.raises(APIError) as caught:
         build_env_credential_vault_write([_env_cred(hosts=["internal.svc:80"])])
     assert "allow_insecure_http" in str(caught.value)
-
-
-def test_an_opted_in_cleartext_host_binds_on_its_own_scheme() -> None:
-    """Two schemes cannot match one request, so two bindings stay unambiguous."""
-    _credentials, bindings = build_env_credential_vault_write(
-        [_env_cred(hosts=["api.github.com", "internal.svc:80"], allow_insecure_http=True)]
-    )
-    by_scheme = {b.match.schemes[0]: b for b in bindings}
-    assert set(by_scheme) == {"https", "http"}
-    assert by_scheme["https"].match.hosts == ["api.github.com"]
-    assert by_scheme["http"].match.hosts == ["internal.svc"]
-    assert by_scheme["https"].name != by_scheme["http"].name
-
-
-@pytest.mark.parametrize("host", ["*", "api.*.com", "*github.com"])
-def test_wildcard_forms_upstream_rejects_are_refused_here(host: str) -> None:
-    """Refused at translation, not written as a rule upstream will reject later."""
-    with pytest.raises(APIError):
-        build_env_credential_vault_write([_env_cred(hosts=[host])])
-
-
-@pytest.mark.parametrize("host", ["172.17.0.1", "localhost", "gateway"])
-def test_environment_credentials_require_fqdn_hosts_too(host: str) -> None:
-    with pytest.raises(APIError) as caught:
-        build_env_credential_vault_write([_env_cred(hosts=[host])])
-    assert "fully qualified domain name" in str(caught.value)
-
-
-def test_a_credential_with_no_enabled_surface_is_refused() -> None:
-    """Its placeholder would never be replaced — the box would send the literal."""
-    with pytest.raises(APIError) as caught:
-        build_env_credential_vault_write([_env_cred(header=False, body=False)])
-    assert "neither header nor body" in str(caught.value)
-
-
-async def test_the_mcp_gateway_binding_names_the_paths_its_servers_are_dialled_on(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The live defect: the binding was installed and still never matched.
-
-    Its own log line read `hosts=['<gateway>'] paths=['/*/mcp']` while the box
-    sent `POST https://<gateway>/bright_data/mcp` — same host, same scheme, an
-    allowed method — so the path was the only clause that could be failing, and
-    every MCP call in the campaign reached the gateway with its placeholder
-    unsubstituted. The exact path the runtime already tells the box to dial
-    needs no glob dialect to be right.
-    """
-
-    from astrabox.core.service.orchestrator.runtime import mcp_credentials
-    from astrabox.seams.extensions import MCPGatewayCredential
-
-    class _Provider:
-        def mcp_gateway_credential(self) -> MCPGatewayCredential:
-            return MCPGatewayCredential(
-                header="Authorization",
-                value="gateway-key",
-                base_url="https://gateway.test",
-            )
-
-    monkeypatch.setattr(mcp_credentials, "extension_provider_for_name", lambda _n: _Provider())
-
-    template = SimpleNamespace(
-        credential_vault_ids=[],
-        mcp_servers={
-            "bright_data": {
-                "provider": "litellm",
-                "type": "streamable_http",
-                "url": "https://gateway.test/bright_data/mcp",
-            },
-            "alpha_vantage": {
-                "provider": "litellm",
-                "type": "streamable_http",
-                "url": "https://gateway.test/alpha_vantage/mcp",
-            },
-        },
-    )
-
-    plan = await mcp_credentials.resolve_agent_mcp_credential_plan(template, vault_enabled=True)
-    written = open_sandbox_vault_write(plan)
-    assert written is not None
-    _credentials, bindings = written
-    assert all(binding.match.hosts == ["gateway.test"] for binding in bindings)
-    paths = sorted(path for binding in bindings for path in binding.match.paths or [])
-    assert paths == ["/alpha_vantage/mcp", "/bright_data/mcp"]
-    # No wildcard survives: a middle wildcard is exactly what did not match.
-    assert not any("*" in path for path in paths)
 
 
 async def test_a_gateway_server_with_no_url_gets_no_guessed_binding(

@@ -1,21 +1,14 @@
-"""Channel seam + generic_json reference provider + webhook-spine wiring.
+"""The generic_json reference provider's inbound checks and the channel secrets.
 
-Pins the incubated channel contract (see ``astrabox/seams/channel.py``):
-
-* registry semantics (fail-loud lookup, scene parsing);
-* the ``generic_json`` reference provider's inbound auth (constant-time
-  secret, both header shapes), payload mapping, and callback-url validation;
-* the webhook service's channel branch: scene gating at create time
-  (unknown provider → 400), provider-delegated verification at trigger time,
-  prompt_prefix application, and outbound delivery of the finished turn's
-  last assistant message through ``deliver_outbound``.
+* the provider's inbound auth refuses a bad secret or payload, and its reply
+  context accepts only an HTTP(S) URL;
+* a channel secret is returned once at create and never listed;
+* who a binding's messages run as is validated against its provider.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
-import uuid
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -32,36 +25,8 @@ from astrabox.seams.channel import (
     ChannelDescriptor,
     ChannelInbound,
     ChannelProvider,
-    channel_scene_name,
-    get_channel,
     register_channel,
 )
-
-
-@pytest.fixture(autouse=True)
-def _isolated_sqlite_state(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
-    from astrabox.config.settings import get_settings
-
-    monkeypatch.setenv("ASTRABOX_STATE_DIR", str(tmp_path))
-    monkeypatch.setenv("ASTRABOX_DB_BACKEND", "sqlite")
-    monkeypatch.delenv("ASTRABOX_DB_URL", raising=False)
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
-
-# ── seam registry ────────────────────────────────────────────────────────────
-
-
-def test_channel_scene_name_parsing() -> None:
-    assert channel_scene_name("channel:generic_json") == "generic_json"
-    assert channel_scene_name("channel:SLACK") == "slack"
-    assert channel_scene_name("hmac") is None
-    assert channel_scene_name("channel:") is None
-
-
-def test_get_channel_fails_loud_on_unknown_name() -> None:
-    with pytest.raises(RuntimeError, match="no channel provider named"):
-        get_channel("never-registered")
 
 
 # ── generic_json provider ────────────────────────────────────────────────────
@@ -71,19 +36,6 @@ _BINDING = {"secret": "s3cret", "agent_id": "dep-1", "prompt_prefix": ""}
 
 def _payload(**extra: Any) -> bytes:
     return json.dumps({"text": "hello agent", **extra}).encode()
-
-
-def test_generic_json_accepts_both_secret_header_shapes() -> None:
-    provider = GenericJsonChannelProvider()
-    for headers in (
-        {"x-channel-secret": "s3cret"},
-        {"authorization": "Bearer s3cret"},
-    ):
-        inbound = provider.verify_and_resolve(
-            headers=headers, raw_body=_payload(), binding=_BINDING
-        )
-        assert inbound.content == "hello agent"
-        assert inbound.reply_context is None
 
 
 def test_generic_json_rejects_bad_secret_and_bad_payload() -> None:
@@ -147,82 +99,6 @@ class _RecordingChannel(ChannelProvider):
         self.delivered.append((reply_context, text))
 
 
-class _FakeKernel:
-    """Journal + per-turn assistant text, faked together (see the reliability
-    test's twin): ``stream`` records the accepted command and the turn's
-    assistant message so attach queries and turn-bound delivery reads work."""
-
-    def __init__(self) -> None:
-        self.commands: list[dict[str, Any]] = []
-        self.turn_texts: dict[tuple[str, str], str] = {}
-
-    async def list_events(self, session_id: str, **kwargs: Any) -> list[dict[str, Any]]:
-        return []
-
-    async def session_output_cursor(self, session_id):
-        return len([key for key in self.turn_texts if key[0] == session_id])
-
-    async def read_session_output(self, session_id, *, after_seq):
-        from astrabox.core.service.orchestrator.session_kernel.service_mixins.session_output import (
-            SessionOutputBatch, SessionOutputResponse,
-        )
-        messages = [(turn, text) for (session, turn), text in self.turn_texts.items() if session == session_id]
-        return SessionOutputBatch(
-            responses=[SessionOutputResponse(
-                response_id=turn, turn_id=turn, start_after_seq=index,
-                response_seq=index + 1, text=text, complete=True,
-            ) for index, (turn, text) in enumerate(messages) if index + 1 > after_seq],
-            after_seq=len(messages),
-        )
-
-    async def find_command_by_client_message_id(
-        self, session_id: str, *, client_message_id: str
-    ) -> dict[str, Any] | None:
-        for c in self.commands:
-            if (
-                c["session_id"] == session_id
-                and c["payload"]["client_message_id"] == client_message_id
-            ):
-                return c
-        return None
-
-    async def get_assistant_message_for_turn(
-        self, session_id: str, *, turn_id: str
-    ) -> dict[str, Any] | None:
-        text = self.turn_texts.get((session_id, turn_id))
-        return {"content": text} if text is not None else None
-
-    async def resume_command_stream(
-        self, user: Any, session_id: str, *, command_id: str
-    ) -> Any:
-        command = next(
-            row for row in self.commands
-            if row["session_id"] == session_id and row["causation_id"] == command_id
-        )
-        if (session_id, command["turn_id"]) not in self.turn_texts:
-            raise RuntimeError("fixture command has no settled output")
-        yield {"type": "finish"}
-
-    def stream(self, user: Any, session_id: str, content: str, **kwargs: Any) -> Any:
-        async def _agen() -> Any:
-            command_id, turn_id = f"cmd-{uuid.uuid4().hex[:6]}", f"turn-{uuid.uuid4().hex[:6]}"
-            self.commands.append(
-                {
-                    "session_id": session_id,
-                    "turn_id": turn_id,
-                    "causation_id": command_id,
-                    "payload": {
-                        "client_message_id": str(kwargs.get("client_message_id") or ""),
-                        "content": content,
-                    },
-                }
-            )
-            self.turn_texts[(session_id, turn_id)] = "final assistant reply"
-            yield {"type": "finish"}
-
-        return _agen()
-
-
 def _service(**overrides: Any) -> DeploymentService:
     webhook_row = {
         "deployment_id": "wh-1",
@@ -235,102 +111,29 @@ def _service(**overrides: Any) -> DeploymentService:
     deployment_repo = AsyncMock()
     deployment_repo.get_by_id.return_value = webhook_row
     agent_repo = AsyncMock()
-    agent_repo.get_agent.return_value = {"user_id": "creator-1", "template_name": "t"}
+    agent_repo.get_agent.return_value = {"created_by": "creator-1", "template_name": "t"}
     agent_service = AsyncMock()
-    agent_service.start_conversation.return_value = {"session_id": "sess-1"}
     sessions_repo = AsyncMock()
-    sessions_repo.get_session.return_value = {"state": "READY", "user_id": "creator-1"}
-    kernel = _FakeKernel()
-
-    spawned: list[Any] = []
-
-    def _spawn(coro: Any, name: str = "") -> None:
-        spawned.append(coro)
-
     ingress = ChannelIngressService(
         deployment_repo=deployment_repo,
         agent_repo=agent_repo,
         agent_service_getter=lambda: agent_service,
-        stream_message_events_ds=kernel.stream,
-        resume_command_stream=kernel.resume_command_stream,
-        read_session_output=kernel.read_session_output,
-        session_output_cursor=kernel.session_output_cursor,
         sessions_repo=sessions_repo,
-        session_events_repo=kernel,
-        message_view=kernel,
-        session_detail_getter=AsyncMock(
-            return_value={
-                "state": "READY",
-                "current_turn_id": None,
-                "pending_interaction": None,
-            }
-        ),
-        answer_pending_interaction=AsyncMock(),
-        supersede_pending_interaction=AsyncMock(),
-        spawn_background_task=_spawn,
+        session_runtime=AsyncMock(),
+        session_facts=AsyncMock(),
+        spawn_background_task=lambda coro, name="": coro.close(),
     )
-    service = DeploymentService(
+    return DeploymentService(
         deployment_repo=deployment_repo,
         agent_repo=agent_repo,
         agent_service_getter=lambda: agent_service,
-        stream_message_events_ds=kernel.stream,
-        dispatch_turn_input=AsyncMock(),
         sessions_repo=sessions_repo,
-        spawn_background_task=_spawn,
+        session_runtime=AsyncMock(),
+        session_facts=AsyncMock(),
         agent_config=AsyncMock(),
         channel_ingress=ingress,
         **overrides,
     )
-    service._test_spawned = spawned  # type: ignore[attr-defined]
-    service._test_kernel = kernel  # type: ignore[attr-defined]
-    return service
-
-
-async def test_channel_trigger_maps_verifies_fires_and_delivers() -> None:
-    provider = _RecordingChannel()
-    register_channel(provider)
-
-    service = _service()
-    response = await service.trigger(
-        "wh-1", headers={"x-ok": "1"}, raw_body=b"{}"
-    )
-    assert response["status"] == "accepted"
-    assert response["session_id"] == "sess-1"
-    assert response["challenge"] == "echo-me", "ack_extra must merge into the response"
-
-    # Run the spawned background task to completion: readiness wait + drain +
-    # outbound delivery of the last assistant message.
-    spawned = service._test_spawned  # type: ignore[attr-defined]
-    assert len(spawned) == 1
-    await asyncio.wait_for(spawned.pop(0), timeout=5)
-    await service._channel_ingress.project_session_outputs()
-    await service._channel_ingress.sweep_pending_outbox()
-    while spawned:
-        await asyncio.wait_for(spawned.pop(0), timeout=5)
-    assert provider.delivered == [({"chat": "c-9"}, "final assistant reply")]
-
-
-async def test_channel_create_rejects_unknown_provider() -> None:
-    service = _service()
-    with pytest.raises(APIError) as exc:
-        await service.create(
-            agent_id="dep-1",
-            creator_user_id="u1",
-            scene="channel:not-installed",
-        )
-    assert exc.value.status_code == 400
-    assert "not-installed" in str(exc.value)
-
-
-async def test_channel_create_accepts_registered_provider() -> None:
-    register_channel(_RecordingChannel())
-    service = _service()
-    service._deployment_repo.upsert = AsyncMock(side_effect=lambda _id, doc: doc)
-    created = await service.create(
-        agent_id="dep-1", creator_user_id="u1", scene="channel:recorder"
-    )
-    assert created["scene"] == "channel:recorder"
-    assert created["secret"]
 
 
 async def test_channel_secret_is_returned_once_and_never_listed() -> None:
@@ -342,7 +145,7 @@ async def test_channel_secret_is_returned_once_and_never_listed() -> None:
         "scene": "channel:recorder",
         "secret": "do-not-list-this",
     }
-    service._deployment_repo.upsert = AsyncMock(return_value=stored)
+    service._deployment_repo.create = AsyncMock(return_value=stored)
     service._deployment_repo.list_by_agent = AsyncMock(return_value=[stored])
 
     created = await service.create(
@@ -379,7 +182,7 @@ async def test_who_a_channel_binding_runs_as_is_validated_against_its_provider()
     register_channel(_RecordingChannel())
     register_channel(_TicketChannel())
     service = _service()
-    service._deployment_repo.upsert = AsyncMock(side_effect=lambda _id, doc: doc)
+    service._deployment_repo.create = AsyncMock(side_effect=lambda _id, doc: doc)
     admin = UserContext(user_id="admin", roles=["admin"])
     owner = UserContext(user_id="owner")
 

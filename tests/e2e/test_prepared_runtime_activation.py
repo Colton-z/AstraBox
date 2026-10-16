@@ -14,6 +14,7 @@ import httpx
 import pytest
 
 from tests.e2e._sandbox_helpers import (
+    Reply,
     current_profile,
     data,
     environment_with_tenancy,
@@ -21,11 +22,11 @@ from tests.e2e._sandbox_helpers import (
     poll_until_agent_ready,
     release_agent,
     release_session,
-    stream_turn,
+    send_and_follow,
+    transcript_entries,
     wait_until_settled,
 )
 from tests.e2e._service_containers import SERVER_CONTAINER_HANDLE, require_service_container
-from tests.e2e.test_transcript_mirror import _query_mirror_docs
 
 pytestmark = pytest.mark.e2e
 
@@ -87,7 +88,7 @@ import asyncio, json, sys
 from astrabox.deploy.onebox import ensure_database_wiring
 from astrabox.persistence.repository.agent_repository import AgentRepository
 ensure_database_wiring()
-row = asyncio.run(AgentRepository().get_agent(sys.argv[1]))
+row = asyncio.run(AgentRepository().read_ledger(sys.argv[1]))
 seats = list((row or {}).get('_prepared_slots') or [])
 """ + _OLDEST_SEAT + _PROJECT_RECEIPT
         receipt = _run_json([
@@ -121,6 +122,17 @@ receipt = json.loads(path.read_text())
     identity = receipt["runtime_identity"]
     assert identity["home_dir"] and identity["linux_user"], receipt
     return receipt
+
+
+def _answered(client: httpx.Client, sid: str, prompt: str) -> Reply:
+    """Send one message, follow its response to the end, and require it completed."""
+    reply = send_and_follow(client, sid, prompt, until="end")
+    assert reply.error is None, reply.error
+    assert reply.text.strip(), f"the response carried no reply text: {reply.response}"
+    settled = wait_until_settled(client, sid)
+    assert settled["last_response"]["response_id"] == reply.response_id, settled
+    assert settled["last_response"]["outcome"] == "completed", settled
+    return reply
 
 
 def _supplier_processes(execute: list[str], identity: dict, engine: str) -> list:
@@ -368,16 +380,14 @@ def test_claim_activates_the_already_prepared_engine(
     })
     request.node.user_properties.append(("prepared_activation", activation_evidence))
     print(activation_evidence, flush=True)
-    result = stream_turn(e2e_client, sid, content="用一句话解释什么是市盈率。")
-    assert result.error is None, result.error
-    assert result.text.strip(), "The activated supplier produced no first reply"
-    wait_until_settled(e2e_client, sid)
+    # The activated supplier answers the first message.
+    _answered(e2e_client, sid, "用一句话解释什么是市盈率。")
     if profile["engine_kind"] == "deepseek_harness":
         assert get_admin_session_detail(e2e_client, sid).get("engine_session_key") == (
             receipt["prepared_native_session"]
         )
     assert _supplier_processes(execute, identity, profile["engine_kind"]) == before, (
-        "The first user turn replaced the supposedly prepared supplier"
+        "The first message replaced the supposedly prepared supplier"
     )
 
     # Observe the refill before editing: the occupied box is not the waiting
@@ -410,10 +420,8 @@ def test_claim_activates_the_already_prepared_engine(
         }, "A prompt edit did not replace the unclaimed whole-box preparation"
 
     assert get_admin_session_detail(e2e_client, sid)["sandbox_id"] == prepared["sandbox_id"]
-    continuation = stream_turn(e2e_client, sid, content="再用一句话解释市净率。")
-    assert continuation.error is None, continuation.error
-    assert continuation.text.strip(), "The existing Session could not answer after the Agent edit"
-    wait_until_settled(e2e_client, sid)
+    # The existing Session answers after the Agent edit.
+    _answered(e2e_client, sid, "再用一句话解释市净率。")
     continued_session = get_admin_session_detail(e2e_client, sid)
     assert continued_session["sandbox_id"] == prepared["sandbox_id"]
 
@@ -472,7 +480,7 @@ def test_prepared_runtime_resumes_native_history_without_disrupting_sibling(
         "name": f"Warm resume {tenancy} {uuid.uuid4().hex[:8]}",
         "model": profile["model"],
         "environment_name": environment_with_tenancy(e2e_client, tenancy),
-        "prepared_capacity": 1,
+        "prepared_capacity": 2 if tenancy == "agent" else 1,
         "engine_options": canonical.get("engine_options") or {},
     }))
     agent_id = agent["agent_id"]
@@ -490,25 +498,23 @@ def test_prepared_runtime_resumes_native_history_without_disrupting_sibling(
         return sid, receipt
 
     def remember(sid: str, marker: str) -> None:
-        result = stream_turn(e2e_client, sid, content=(
+        result = _answered(e2e_client, sid, (
             f"Our hypothetical research project is labelled {marker}. "
             "Explain revenue growth in one sentence and include that project label. "
             "No tools or workspace files are needed."
         ))
-        assert result.error is None, result.error
         assert marker in result.text, result.text
-        wait_until_settled(e2e_client, sid)
 
     def recall(sid: str, marker: str, other: str) -> None:
-        result = stream_turn(e2e_client, sid, content=(
+        result = _answered(e2e_client, sid, (
             "What was the original project label in our revenue-growth discussion? "
             "Answer from this conversation, without tools."
         ))
-        assert result.error is None, result.error
         assert marker in result.text, result.text
         assert other not in result.text, "Another Session's history leaked into the answer"
-        wait_until_settled(e2e_client, sid)
 
+    if tenancy == "agent":
+        _wait_prepared_count(e2e_client, agent_id, 2, live_test_deadline)
     sibling, _ = borrow()
     sibling_marker = "NEIGHBOR_" + uuid.uuid4().hex
     remember(sibling, sibling_marker)
@@ -521,17 +527,23 @@ def test_prepared_runtime_resumes_native_history_without_disrupting_sibling(
     marker = "RESTORED_" + uuid.uuid4().hex
     remember(sid, marker)
     old = get_admin_session_detail(e2e_client, sid)
+    if tenancy == "agent":
+        assert old["sandbox_id"] == sibling_before["sandbox_id"]
     assert old.get("engine_session_key"), "A native conversation must exist before recovery"
     mirrored: list[dict] = []
     while time.monotonic() < live_test_deadline:
-        mirrored = _query_mirror_docs(sid)
+        mirrored = transcript_entries(sid)
         if marker in json.dumps(mirrored):
             break
         time.sleep(0.3)
-    assert marker in json.dumps(mirrored), "The database has not received the actual first turn"
+    assert marker in json.dumps(mirrored), (
+        "The platform's copy of the runtime's transcript does not hold the first message"
+    )
     waiting = _wait_prepared(e2e_client, agent_id, live_test_deadline)
+    assert waiting["sandbox_id"] != old["sandbox_id"]
     execute = _sandbox_exec(waiting["sandbox_id"])
     receipt = _prepared_identity(agent_id, tenancy, execute)
+    assert receipt["sandbox_id"] == waiting["sandbox_id"]
     assert receipt["slot_id"] != original["slot_id"]
     processes = _supplier_processes(execute, receipt["runtime_identity"], profile["engine_kind"])
     reclaimed = data(e2e_client.post(f"/api/v1/sessions/{sid}/sandbox/terminate", timeout=60))

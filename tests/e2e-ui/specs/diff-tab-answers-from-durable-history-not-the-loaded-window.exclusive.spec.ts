@@ -13,7 +13,13 @@
  */
 import { test, expect } from '@playwright/test';
 
-import { AstraApi, visibleMessages, type MessagePage, type MessageRecord } from '../fixtures/astraApi';
+import {
+  AstraApi,
+  messageToolCalls,
+  visibleMessages,
+  type MessagePage,
+  type MessageRecord,
+} from '../fixtures/astraApi';
 import { insist } from '../fixtures/insist';
 import { trackSessions } from '../fixtures/sessionCleanup';
 import { expectComposerEnabled, openSessionView, sendPrompt } from '../fixtures/sessionPage';
@@ -59,7 +65,7 @@ const NO_FILE_CHANGES = /No file changes yet\.|还没有文件变更/;
 const sessions = trackSessions();
 
 /**
- * The file paths a set of durable records asked `Edit` or `Write` to change.
+ * The file paths a set of history messages asked `Edit` or `Write` to change.
  *
  * This arrangement oracle locates the requested Claude writes in history.
  * The panel independently reads completed adapter file-change results.
@@ -67,11 +73,9 @@ const sessions = trackSessions();
 function editedFilePaths(records: MessageRecord[]): string[] {
   const paths: string[] = [];
   for (const record of records) {
-    for (const block of record.blocks ?? []) {
-      if (String(block.type ?? '') !== 'tool_use') continue;
-      const name = String(block.name ?? '').trim();
-      if (name !== 'Edit' && name !== 'Write') continue;
-      const input = (block.input ?? {}) as Record<string, unknown>;
+    for (const call of messageToolCalls(record)) {
+      if (call.toolName !== 'Edit' && call.toolName !== 'Write') continue;
+      const input = (call.input ?? {}) as Record<string, unknown>;
       const filePath = String(input.file_path ?? input.path ?? '').trim();
       if (filePath) paths.push(filePath);
     }
@@ -83,34 +87,33 @@ function namesFile(records: MessageRecord[], fileName: string): boolean {
   return editedFilePaths(records).some((path) => path.endsWith(fileName));
 }
 
+/** When the oldest message on a page was accepted or started, for diagnostics. */
 function oldestCreatedAt(records: MessageRecord[]): string {
   return records
-    .map((record) => String(record.created_at ?? '').trim())
+    .map((record) => String(record.metadata?.created_at ?? record.metadata?.started_at ?? '').trim())
     .filter(Boolean)
     .sort()[0] ?? '';
 }
 
 /**
- * The tools the engine actually drove, off the durable first page.
+ * The tools the engine actually drove, off the history's first page.
  *
- * `tool_use.name` is the field the transcript turns into tool cards, so this
- * is the same choice the page renders. Diagnostic only, and it never throws: a
+ * A tool part's name is what the transcript turns into tool cards, so this is
+ * the same choice the page renders. Diagnostic only, and it never throws: a
  * broken read here must not replace the failure it is describing.
  */
 async function toolsTheModelDrove(api: AstraApi, sessionId: string): Promise<string> {
   const names = new Set<string>();
   try {
     for (const message of visibleMessages(await api.getMessages(sessionId))) {
-      for (const block of message.blocks ?? []) {
-        if (String(block.type ?? '') !== 'tool_use') continue;
-        const name = String(block.name ?? '').trim();
-        if (name) names.add(name);
+      for (const call of messageToolCalls(message)) {
+        if (call.toolName) names.add(call.toolName);
       }
     }
   } catch (error) {
     return `<messages unreadable: ${String(error)}>`;
   }
-  return [...names].sort().join(', ') || '(no tool_use block at all)';
+  return [...names].sort().join(', ') || '(no tool call at all)';
 }
 
 /** Poll the durable first page until an Edit/Write names *fileName*. */
@@ -123,8 +126,9 @@ async function waitForChangedFile(
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const page = await api.getMessages(sessionId, 50);
-    // The overlay carries an in-flight turn's blocks, so this sees the tool
-    // call as soon as the engine makes it rather than after the turn settles.
+    // History folds a running response's parts through the position it was
+    // read at, so this sees the tool call as soon as the engine makes it
+    // rather than after the response ends.
     if (namesFile(visibleMessages(page), fileName)) return true;
     await new Promise((resolve) => setTimeout(resolve, 1_500));
   }
@@ -167,11 +171,10 @@ async function insistOnAChangedFile(
 }
 
 /**
- * Walk durable history backwards until an Edit/Write names *fileName*.
+ * Walk history backwards until an Edit/Write names *fileName*.
  *
  * `getMessages` takes no cursor, so the older pages go through `data()` with
- * the `before=` the oldest `created_at` on the page supplies — the same cursor
- * the console pages with.
+ * the `before=` cursor each page hands back.
  */
 async function findChangedFileInDurableHistory(
   api: AstraApi,
@@ -189,19 +192,16 @@ async function findChangedFileInDurableHistory(
       return { found: true, pages, records, oldest: oldestCreatedAt(current.messages) };
     }
     if (current.has_more !== true) break;
-    const next = oldestCreatedAt(current.messages);
-    expect(next, 'a page answering has_more=true must carry a pagination timestamp').not.toBe('');
-    expect(
-      cursor === '' || next < cursor,
-      `the history cursor must move backwards (${next} after ${cursor})`,
-    ).toBe(true);
+    const next = String(current.before ?? '');
+    expect(next, 'a page answering has_more=true must carry a cursor').not.toBe('');
+    expect(next, 'the history cursor must move').not.toBe(cursor);
     cursor = next;
     current = await api.data<MessagePage>(
       'GET',
       `/sessions/${sessionId}/messages?limit=50&before=${encodeURIComponent(cursor)}`,
     );
   }
-  return { found: false, pages, records, oldest: cursor || oldestCreatedAt(current.messages) };
+  return { found: false, pages, records, oldest: oldestCreatedAt(current.messages) };
 }
 
 test('the Diff tab still counts every file the agent changed after a reload of a long conversation', async ({
@@ -209,10 +209,9 @@ test('the Diff tab still counts every file the agent changed after a reload of a
   request,
 }) => {
   const uncaught: string[] = [];
-  // Attached before the first navigation: rebuilding the window on mount runs
-  // `mergeLatestDurableRecords`, which raises SESSION_HISTORY_WINDOWS_DO_NOT_OVERLAP
-  // rather than rendering, and an uncaught throw would otherwise reach the
-  // assertions below as a blank panel.
+  // Attached before the first navigation: an uncaught throw while the page
+  // reads its history would otherwise reach the assertions below as a blank
+  // panel.
   page.on('pageerror', (error) => uncaught.push(error.message));
 
   const api = new AstraApi(request);
@@ -346,7 +345,9 @@ test('the Diff tab still counts every file the agent changed after a reload of a
   });
   await api.waitForSession(
     sessionId,
-    (session) => session.state === 'READY' && session.last_turn_status === 'COMPLETED',
+    (session) => session.state === 'READY'
+      && !session.current_responses?.length
+      && session.last_response?.status === 'ended',
     TURN_SETTLE_MS,
   );
 

@@ -110,7 +110,7 @@ test.describe("live-gate selector contract", () => {
   test("the session view renders what the live helpers assert on", async ({ page }) => {
     await stubApi(page);
     // s-004 is READY in the fixture, so the composer renders its submit action.
-    // A BUSY fixture correctly renders the stop action instead, so it cannot
+    // A PROCESSING fixture correctly renders the stop action instead, so it cannot
     // exercise the live helper's submit selector.
     await page.goto("/sessions/s-004", { waitUntil: "domcontentloaded" });
     await settle(page);

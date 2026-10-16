@@ -142,6 +142,10 @@ class PtyTerminal:
     async def session_exists(self, pty_session_id: str) -> bool:
         return await self._processes.exists(pty_session_id)
 
+    async def interrupt(self, pty_session_id: str) -> None:
+        """Stop the command the shell runs: ``SIGINT`` to the shell and its children."""
+        await self._processes.signal(pty_session_id, "SIGINT")
+
     async def run(self, pty_session_id: str, command: str) -> AsyncIterator[dict[str, Any]]:
         """Run one command in the session's shell, yielding terminal events.
 

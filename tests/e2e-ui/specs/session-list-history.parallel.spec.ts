@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
-import { documentsByField, patchSessionDoc, sessionDoc } from '../fixtures/dbOracle';
+import { postgresRows, postgresTextRows, sqlLiteral } from '../fixtures/dbOracle';
+import { POSTGRES_CONTAINER_HANDLE, requireServiceContainer } from '../fixtures/serviceContainer';
 import { trackSessions } from '../fixtures/sessionCleanup';
 import { apiPath, appPath } from '../fixtures/env';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
@@ -10,6 +11,33 @@ import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
 // Sessions created here are deleted only when the test passes. A failure keeps
 // the scene and names it in the report tail — see fixtures/sessionCleanup.ts.
 const sessions = trackSessions();
+
+/** One `sessions` row as the listing boundary is judged from it. */
+interface SessionRow {
+  session_id: string;
+  user_id: string;
+  /** `updated_at` as epoch seconds, so the order below compares numbers. */
+  updated_epoch: number;
+  deleted: boolean;
+  hidden: boolean;
+}
+
+function sessionRows(where: string): SessionRow[] {
+  return postgresRows<SessionRow>(
+    `SELECT session_id, user_id, extract(epoch FROM updated_at)::float8 AS updated_epoch, deleted, hidden `
+      + `FROM sessions WHERE ${where}`,
+  );
+}
+
+/** Set columns on one `sessions` row; the ids of the rows it changed. */
+function patchSessionRow(sessionId: string, assignments: string): string[] {
+  return postgresTextRows(
+    requireServiceContainer(POSTGRES_CONTAINER_HANDLE),
+    process.env.ASTRABOX_E2E_POSTGRES_DB || 'astrabox',
+    process.env.ASTRABOX_E2E_POSTGRES_USER || 'astrabox',
+    `UPDATE sessions SET ${assignments} WHERE session_id = ${sqlLiteral(sessionId)} RETURNING session_id`,
+  );
+}
 
 test('cursor pages retain every visible conversation once and exclude hidden and foreign histories', async ({ request, page }) => {
   const api = new AstraApi(request);
@@ -20,27 +48,26 @@ test('cursor pages retain every visible conversation once and exclude hidden and
     return item;
   }));
   await Promise.all(created.map((item) => api.waitForSessionReady(item.session_id)));
-  const original = sessionDoc(created[0].session_id);
+  const [original] = sessionRows(`session_id = ${sqlLiteral(created[0].session_id)}`);
   expect(original?.user_id).toBeTruthy();
   const userId = String(original!.user_id);
   for (const item of created) {
-    expect(patchSessionDoc(item.session_id, { updated_at: '2099-01-01T00:00:00Z' })).toHaveLength(1);
+    expect(patchSessionRow(item.session_id, `updated_at = TIMESTAMPTZ '2099-01-01T00:00:00Z'`)).toHaveLength(1);
   }
   const hiddenId = created[3].session_id;
   const foreignId = created[4].session_id;
-  expect(patchSessionDoc(hiddenId, { hidden: true })).toHaveLength(1);
+  expect(patchSessionRow(hiddenId, 'hidden = true')).toHaveLength(1);
   // A test-owned durable row with a different owner tests the listing boundary;
   // it does not claim a second principal's runtime/history is exercised here.
-  expect(patchSessionDoc(foreignId, { user_id: randomUUID() })).toHaveLength(1);
-  const nativeVisible = documentsByField('sessions', '$.user_id', userId)
-    .filter((row) => row.deleted !== true && (row.hidden === undefined || row.hidden === false))
-    .sort((left, right) => {
-      for (const field of ['updated_at', 'session_id']) {
-        const a = String(left[field]); const b = String(right[field]);
-        if (a !== b) return a < b ? 1 : -1;
-      }
-      return 0;
-    });
+  expect(patchSessionRow(foreignId, `user_id = ${sqlLiteral(randomUUID())}`)).toHaveLength(1);
+  // The listing's promise: the owner's sessions that are neither deleted nor
+  // hidden, newest activity first, ties broken by session id.
+  const nativeVisible = sessionRows(`user_id = ${sqlLiteral(userId)}`)
+    .filter((row) => !row.deleted && !row.hidden)
+    .sort((left, right) => (
+      right.updated_epoch - left.updated_epoch
+      || (left.session_id < right.session_id ? 1 : left.session_id > right.session_id ? -1 : 0)
+    ));
   const expectedIds = nativeVisible.map((row) => String(row.session_id));
   expect(expectedIds.slice(0, 3).sort()).toEqual(created.slice(0, 3).map((item) => item.session_id).sort());
   const received: string[] = [];
@@ -81,7 +108,7 @@ test('cursor pages retain every visible conversation once and exclude hidden and
     contentType: 'application/json',
   });
   // Restore this fixture's owner only on success, before ordinary API cleanup.
-  expect(patchSessionDoc(foreignId, { user_id: userId })).toHaveLength(1);
+  expect(patchSessionRow(foreignId, `user_id = ${sqlLiteral(userId)}`)).toHaveLength(1);
 });
 
 test('unsent text survives session switching and reload without returning after send', async ({ request, page }) => {
@@ -114,7 +141,7 @@ test('unsent text survives session switching and reload without returning after 
   await sendPrompt(page, first.session_id, firstDraft);
   await api.waitForAssistantMessageCount(first.session_id, assistantCount);
   await api.waitForSession(first.session_id, (session) => (
-    session.state === 'READY' && session.last_turn_status === 'COMPLETED'
+    session.state === 'READY' && session.last_response?.outcome === 'completed'
   ));
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(composer).toHaveValue('');

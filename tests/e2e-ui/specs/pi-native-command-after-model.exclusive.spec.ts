@@ -2,15 +2,15 @@
 import { randomUUID } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
 
-import { AstraApi, messageText } from '../fixtures/astraApi';
-import { framesForTurn, sessionEvents, snapshotDoc, waitForTurnTerminalProof } from '../fixtures/dbOracle';
+import { AstraApi, messageText, type SessionRecord } from '../fixtures/astraApi';
+import { sessionInputRows, sessionOutputRows, sessionResponseRows, type SessionInputRow } from '../fixtures/dbOracle';
 import { engineProfiles } from '../fixtures/engineProfile';
 import { nativeCalls, nativeRows } from '../fixtures/nativeChildLifecycle';
-import { finalReplies, nativeEntries, object } from '../fixtures/piChildFailure';
+import { currentPiPipe, finalReplies, nativeEntries, object } from '../fixtures/piChildFailure';
 import { requireSandboxHandle, sandboxExec, type SandboxHandle } from '../fixtures/sandboxOps';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
-import { aiStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
+import { sessionStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
 
 const sessions = trackSessions();
 let sessionId = '';
@@ -25,8 +25,9 @@ test.afterEach(async ({ request, page }, info) => {
   if (!sessionId || !['failed', 'timedOut', 'interrupted'].includes(String(info.status))) return;
   const api = new AstraApi(request);
   const reads = await Promise.allSettled([
-    api.getSession(sessionId), api.getMessages(sessionId, 100), aiStreamBodies(page),
-    Promise.resolve().then(() => sessionEvents(sessionId)),
+    api.getSession(sessionId), api.getMessages(sessionId, 100), sessionStreamBodies(page),
+    Promise.resolve().then(() => sessionInputRows(sessionId)),
+    Promise.resolve().then(() => sessionResponseRows(sessionId)),
     Promise.resolve().then(() => nativeRows(sessionId)),
     Promise.resolve().then(() => handle && pipe ? nativeOutput(handle, pipe) : null),
   ]);
@@ -34,22 +35,6 @@ test.afterEach(async ({ request, page }, info) => {
     body: JSON.stringify({ sessionId, ownedAgent, observations, reads }), contentType: 'application/json',
   });
 });
-
-function pipeFor(turnId: string): string | null {
-  const anchors = [
-    object(snapshotDoc(sessionId)?.current_turn_engine_anchor).engine_turn_id,
-    ...framesForTurn(turnId).map((frame) => frame.engine_turn_id),
-    ...sessionEvents(sessionId).filter((event) => event.turn_id === turnId)
-      .map((event) => object(event.payload).engine_turn_id),
-  ].filter((value): value is string => typeof value === 'string' && value.startsWith('pi-rpc-v1.'));
-  const pipes = [...new Set(anchors.map((anchor) =>
-    object(JSON.parse(Buffer.from(anchor.slice('pi-rpc-v1.'.length), 'base64url').toString())).pty_session_id))];
-  if (pipes.length === 0) return null;
-  expect(pipes).toHaveLength(1);
-  expect(pipes[0]).toEqual(expect.any(String));
-  expect(String(pipes[0]).trim()).not.toBe('');
-  return String(pipes[0]);
-}
 
 /** Cold tenancy's read-only execd viewer retains wire order without writing RPC. */
 function nativeOutput(sandbox: SandboxHandle, pipeId: string): Record<string, unknown>[] {
@@ -78,7 +63,7 @@ function nativeOutput(sandbox: SandboxHandle, pipeId: string): Record<string, un
 }
 
 async function noFailure(page: Page, phase: 'live' | 'idle' = 'live'): Promise<void> {
-  const bodies = await aiStreamBodies(page);
+  const bodies = await sessionStreamBodies(page);
   observations.push({ browserBodies: bodies });
   const frames = bodies.flatMap((body) => body.text.slice(0, body.text.lastIndexOf('\n') + 1)
     .split('\n').flatMap((line) => {
@@ -89,11 +74,17 @@ async function noFailure(page: Page, phase: 'live' | 'idle' = 'live'): Promise<v
   if (phase === 'live') {
     expect(frames.length, 'capture the browser stream including transient failures').toBeGreaterThan(0);
   }
-  expect(frames.filter((frame) => ['error', 'data-turn-failure'].includes(String(frame.type)))).toEqual([]);
-  expect(sessionEvents(sessionId).filter((event) => event.event_type === 'turn.failed')).toEqual([]);
-  await expect(page.getByTestId('run-view').getByText(
-    /本轮执行失败|上一条消息已送达沙箱，但这一轮执行失败了|This turn failed/i,
-  )).toHaveCount(0);
+  expect(frames.filter((frame) => ['error', 'data-input-failed'].includes(String(frame.type)))).toEqual([]);
+  expect(sessionResponseRows(sessionId).filter((row) => row.outcome === 'failed')).toEqual([]);
+  expect(sessionInputRows(sessionId).filter((row) => row.state === 'failed')).toEqual([]);
+  await expect(page.getByTestId('run-view').getByText(/本轮执行失败|This turn failed/i)).toHaveCount(0);
+}
+
+/** The one recorded input that carried `content`, if the session has accepted it. */
+function commandInput(content: string): SessionInputRow | undefined {
+  const rows = sessionInputRows(sessionId).filter((row) => row.content === content);
+  expect(rows.length, `${content} is accepted at most once`).toBeLessThanOrEqual(1);
+  return rows[0];
 }
 
 test('Pi native command retains post-model entries until its prompt acknowledgement', async ({ page, request }) => {
@@ -183,38 +174,46 @@ test('Pi native command retains post-model entries until its prompt acknowledgem
 
   await mirrorSseBodies(page);
   await openSessionView(page, sessionId);
-  const previous = (await api.getSession(sessionId)).last_turn_id;
   await sendPrompt(page, sessionId, '/reload-runtime');
-  const reloaded = await api.waitForSession(sessionId, (value) => {
-    if (value.last_error || value.last_turn_status === 'FAILED') throw new Error(JSON.stringify(value));
-    return Boolean(value.last_turn_id && value.last_turn_id !== previous
-      && value.last_turn_status === 'COMPLETED' && value.state === 'READY' && !value.current_turn_id);
+  // Pi answers an extension command with a `handled` receipt once its handler
+  // returns; the session's reader admits the input at that receipt.
+  await expect.poll(() => commandInput('/reload-runtime')?.state, { timeout: 30_000 }).toBe('admitted');
+  await api.waitForSession(sessionId, (value) => {
+    if (value.last_error) throw new Error(JSON.stringify(value));
+    return value.state === 'READY' && !(value.current_responses ?? []).length;
   }, 30_000);
-  const reloadTurn = String(reloaded.last_turn_id);
-  await waitForTurnTerminalProof(sessionId, reloadTurn, 'COMPLETED', 5_000);
-  await expect.poll(() => pipeFor(reloadTurn), { timeout: 15_000 }).not.toBeNull();
-  pipe = pipeFor(reloadTurn)!;
+  const reload = commandInput('/reload-runtime')!;
+  expect(sessionResponseRows(sessionId), 'a command that writes no conversation is answered by no invented response')
+    .toEqual([]);
+  await expect.poll(() => currentPiPipe(sessionId), { timeout: 15_000 }).not.toBeNull();
+  pipe = currentPiPipe(sessionId)!;
   const initialNative = nativeOutput(handle, pipe);
   expect(initialNative.filter((row) => row.type === 'response' && row.command === 'get_state')
     .some((row) => row.success === true && object(row.data).sessionId === nativeSessionId)).toBe(true);
   const initialAcks = initialNative.filter((row) => row.type === 'response' && row.command === 'prompt');
-  expect(initialAcks).toHaveLength(1);
-  expect(initialAcks[0]).toMatchObject({ success: true });
-  observations.push({ reloadTurn, initialNative });
-  await noFailure(page);
+  expect(initialAcks, 'the receipt Pi wrote for the reload names its platform input').toEqual([expect.objectContaining({
+    id: reload.input_id, success: true, data: expect.objectContaining({ disposition: 'handled' }),
+  })]);
+  observations.push({ reload, initialNative });
+  // The reload writes no conversation, so the page's stream has nothing to carry yet.
+  await noFailure(page, 'idle');
 
   await sendPrompt(page, sessionId, '/astrabox-post-model');
   // Retain the supplier's completed result even when the platform fails at entry_appended.
-  const ended = await api.waitForSession(sessionId, (value) => Boolean(value.last_turn_id
-    && value.last_turn_id !== reloadTurn && ['COMPLETED', 'FAILED'].includes(String(value.last_turn_status))), 90_000);
-  const turnId = String(ended.last_turn_id);
+  let ended: SessionRecord | undefined;
+  await expect.poll(async () => {
+    ended = await api.getSession(sessionId);
+    const input = commandInput('/astrabox-post-model');
+    if (input?.state === 'failed' || ended.last_response?.outcome === 'failed' || ended.last_error) return 'failed';
+    return input?.state === 'admitted' && !(ended.current_responses ?? []).length ? 'settled' : 'running';
+  }, { timeout: 90_000, message: 'the command must settle, or fail, before its evidence is read' }).not.toBe('running');
   let wire: Record<string, unknown>[] = [];
   await expect.poll(() => {
     wire = nativeOutput(handle!, pipe!);
     expect(wire.filter((row) => row.type === 'extension_error')).toEqual([]);
     return wire.filter((row) => row.type === 'response' && row.command === 'prompt').length;
   }, { timeout: 15_000, message: 'read the actual supplier command ACK, including on platform failure' }).toBe(2);
-  observations.push({ turnId, ended, wire });
+  observations.push({ ended, wire });
   const settled = wire.map((row, index) => ({ row, index })).filter(({ row }) => row.type === 'agent_settled');
   expect(settled).toHaveLength(1);
   const appended = wire.map((row, index) => ({ row, index })).filter(({ row }) => row.type === 'entry_appended'
@@ -232,26 +231,16 @@ test('Pi native command retains post-model entries until its prompt acknowledgem
   expect(result.answer).toEqual(expect.any(String));
   expect(String(result.answer)).toContain(marker);
   expect(JSON.parse(await api.downloadFileText(sessionId, resultPath, 10_000))).toEqual(result);
-  expect(ended.last_turn_status, 'the supplier command finished after its model; both boundaries must survive').toBe('COMPLETED');
-  expect(ended.state).toBe('READY');
-  expect(ended.last_error).toBeFalsy();
-  expect(ended.current_turn_id).toBeFalsy();
-  await waitForTurnTerminalProof(sessionId, turnId, 'COMPLETED', 5_000);
-  const durableFrames = framesForTurn(turnId);
-  const durableAcks = sessionEvents(sessionId).filter((event) => {
-    const payload = object(event.payload);
-    return event.turn_id === turnId && event.event_type === 'engine.diagnostic'
-      && payload.event_type === 'pi.rpc' && payload.subtype === 'prompt'
-      && object(payload.raw).id === acks[1]!.row.id;
-  });
-  expect(durableAcks, 'the actual command ACK must belong to this platform turn').toHaveLength(1);
-  expect(object(durableAcks[0]!.payload).raw).toEqual(acks[1]!.row);
-  const finishes = durableFrames.filter((frame) => object(frame.payload).type === 'finish');
-  expect(finishes, 'one durable terminal must follow the complete command, not only its model').toHaveLength(1);
-  expect(Number(durableAcks[0]!.event_seq)).toBeGreaterThan(0);
-  expect(Number(finishes[0]!.event_seq), 'platform completion must follow its persisted native ACK')
-    .toBeGreaterThan(Number(durableAcks[0]!.event_seq));
-  observations.push({ durableAcks, finishes });
+  // The supplier command finished after its model; the platform must hold the
+  // command until Pi's own receipt for it, not end it with the model's run.
+  const command = commandInput('/astrabox-post-model');
+  expect(command, 'Pi took the command with the receipt it wrote after the post-model entry')
+    .toMatchObject({ input_id: acks[1]!.row.id, state: 'admitted' });
+  expect(object(acks[1]!.row.data).disposition).toBe('handled');
+  expect(ended!.state).toBe('READY');
+  expect(ended!.last_error).toBeFalsy();
+  expect(ended!.current_responses ?? []).toEqual([]);
+  observations.push({ command });
   await expect.poll(() => nativeEntries(sessionId).filter(({ entry }) => entry.type === 'custom'
     && entry.customType === 'astrabox-post-model-result').map(({ entry }) => entry.data)).toEqual([result]);
   const entries = nativeEntries(sessionId);
@@ -261,12 +250,21 @@ test('Pi native command retains post-model entries until its prompt acknowledgem
   const replies = history.messages.filter((message) => message.role === 'assistant'
     && messageText(message) === result.answer);
   expect(replies).toHaveLength(1);
-  const answer = page.locator(`[data-message-id="${replies[0]!.message_id}"]`).getByTestId('assistant-text');
+  const reply = replies[0]!;
+  // The model's run is the conversation's one response, and it ended once with
+  // the `stop` Pi recorded on its final message (`finalReplies` reads only those).
+  expect(sessionResponseRows(sessionId)).toEqual([expect.objectContaining({
+    response_id: reply.id, status: 'ended', outcome: 'completed', native_reason: 'stop',
+  })]);
+  expect(ended!.last_response).toMatchObject({ response_id: reply.id, outcome: 'completed' });
+  const finishes = sessionOutputRows(sessionId, reply.id).filter((row) => row.part.type === 'finish');
+  expect(finishes, 'one terminal ends the model run').toHaveLength(1);
+  const answer = page.locator(`[data-message-id="${reply.id}"]`).getByTestId('assistant-text');
   await expect(answer).toContainText(marker);
   const rendered = await answer.innerText();
   await noFailure(page);
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(answer).toHaveText(rendered);
-  expect((await api.getSession(sessionId)).last_turn_status).toBe('COMPLETED');
+  expect((await api.getSession(sessionId)).last_response).toMatchObject({ response_id: reply.id, outcome: 'completed' });
   await noFailure(page, 'idle');
 });

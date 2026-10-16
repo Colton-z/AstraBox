@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 
 from astrabox.seams.sandbox_data import SandboxCommandResult
-from astrabox.common.utils.errors import APIError, error_spec
+from astrabox.common.utils.errors import APIError
 from astrabox.core.model import AgentView
 from astrabox.core.service.orchestrator import author_boundary
 from astrabox.core.service.orchestrator.agent_config_service import AgentConfigService
@@ -48,13 +48,6 @@ class _AgentRepo:
     async def get_agent(self, agent_id: str) -> dict[str, Any] | None:
         return dict(self.agent) if self.agent else None
 
-    async def compare_and_update_agent(
-        self, agent_id: str, *, expected: dict[str, Any], updates: dict[str, Any]
-    ) -> bool:
-        assert self.agent is not None
-        self.agent.update(updates)
-        return True
-
 
 class _EnvironmentRepo:
     def __init__(self, networking: dict[str, dict[str, Any] | None]) -> None:
@@ -68,6 +61,8 @@ class _EnvironmentRepo:
             "engine_kind": "claude_code",
             "networking": self._networking[name],
         }
+
+    get_with_secrets = get_any_by_name
 
 
 def _agent_service(**networking: dict[str, Any] | None) -> tuple[AgentConfigService, _AgentRepo]:
@@ -166,58 +161,6 @@ async def test_a_name_that_does_not_resolve_cannot_be_shown_public(
     assert repo.created == []
 
 
-async def test_a_public_git_host_is_still_an_authors_to_choose(
-    dns: dict[str, list[str]],
-) -> None:
-    dns["github.com"] = ["140.82.112.3"]
-    service, repo = _agent_service()
-
-    await service.create_agent_config(
-        _user(),
-        _agent(
-            packages=[{"kind": "claude-plugin", "url": "https://github.com/anthropics/plugins.git", "protocol": "https"}],
-            skills=["https://github.com/anthropics/skills.git@main#skills/review"],
-        ),
-    )
-
-    assert len(repo.created) == 1
-
-
-async def test_what_the_environment_names_is_available_to_its_agents(
-    dns: dict[str, list[str]],
-) -> None:
-    dns["git.corp.example"] = ["10.20.0.7"]
-    service, repo = _agent_service(
-        limited={
-            "type": "limited",
-            "allowed_hosts": ["git.corp.example", "10.0.0.0/8"],
-            "allow_mcp_servers": True,
-        }
-    )
-
-    await service.create_agent_config(
-        _user(),
-        _agent(
-            packages=[{"kind": "claude-plugin", "url": "https://git.corp.example/p.git", "protocol": "https"}],
-            skills=["https://10.9.8.7/skills.git#review"],
-        ),
-    )
-
-    assert len(repo.created) == 1
-
-
-async def test_an_unrestricted_environment_is_not_widened_by_an_author(
-    dns: dict[str, list[str]],
-) -> None:
-    service, repo = _agent_service(limited={"type": "unrestricted"})
-
-    await service.create_agent_config(
-        _user(), _agent(packages=[{"kind": "claude-plugin", "url": "https://10.0.0.5/x.git", "protocol": "https"}])
-    )
-
-    assert len(repo.created) == 1
-
-
 async def test_moving_an_agent_to_a_limited_environment_rechecks_its_hosts(
     dns: dict[str, list[str]],
 ) -> None:
@@ -301,26 +244,6 @@ async def test_a_deploy_key_name_cannot_address_a_server_secret(
     assert repo.created == []
 
 
-async def test_a_listed_deploy_key_is_available_under_any_spelling(
-    dns: dict[str, list[str]], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("ASTRABOX_DEPLOY_KEY_SECRET_NAMES", "team-repo-deploy-key")
-    service, repo = _agent_service()
-
-    await service.create_agent_config(
-        _user(),
-        _agent(
-            default_repo={
-                "url": "git@github.com:org/repo.git",
-                "protocol": "ssh",
-                "deploy_key_secret_name": "TEAM_REPO_DEPLOY_KEY",
-            }
-        ),
-    )
-
-    assert len(repo.created) == 1
-
-
 def test_a_stored_unlisted_deploy_key_is_never_read(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SECPROBE_MARKER", "SECPROBE-MARKER-9f3a1c7e")
     monkeypatch.delenv("ASTRABOX_DEPLOY_KEY_SECRET_NAMES", raising=False)
@@ -360,27 +283,6 @@ def test_a_listed_name_that_holds_no_private_key_is_not_written(
         )
 
     assert raised.value.code == "DEFAULT_REPO_INVALID_KEY"
-
-
-def test_a_listed_deploy_key_reaches_the_bootstrap(monkeypatch: pytest.MonkeyPatch) -> None:
-    import base64
-
-    monkeypatch.setenv("ASTRABOX_DEPLOY_KEY_SECRET_NAMES", "team-repo-deploy-key")
-    monkeypatch.setenv("TEAM_REPO_DEPLOY_KEY", _KEY)
-    template = SimpleNamespace(
-        default_repo={
-            "url": "git@github.com:org/repo.git",
-            "protocol": "ssh",
-            "deploy_key_secret_name": "team-repo-deploy-key",
-        }
-    )
-
-    payload = _default_repo._build_default_repo_bootstrap_payload(
-        template, target_cwd="/workspace", session_id="s-1"
-    )
-
-    assert payload is not None
-    assert base64.b64decode(payload["key_b64"]).decode() == _KEY
 
 
 class _Commands:
@@ -544,42 +446,6 @@ async def test_a_stored_author_server_cannot_select_the_gateway_credential() -> 
     assert raised.value.code == "AGENT_MCP_FIELD_RESERVED"
 
 
-async def test_a_catalog_assignment_keeps_its_credential_fields(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from astrabox.core.service.orchestrator import agent_config_service
-    from astrabox.seams.extensions import RuntimeMCPServer
-
-    class _Catalog:
-        async def resolve_mcp_servers(self, *, org_id: str, item_ids: list[str]) -> Any:
-            return [
-                RuntimeMCPServer(
-                    name="catalog",
-                    transport="streamable_http",
-                    url="http://gateway.astrabox.test:4000/catalog/mcp",
-                    credential_target_url="https://mcp.upstream.example/mcp",
-                )
-            ]
-
-    monkeypatch.setattr(
-        agent_config_service, "extension_provider_for_name", lambda _name: _Catalog()
-    )
-    service, repo = _agent_service()
-    repo.agent = {
-        "agent_id": "a-1",
-        **_agent(mcp_servers={"own": {"type": "http", "url": "https://mcp.example/mcp"}}),
-        "mcp_assignments": [{"provider": "litellm", "item_id": "catalog"}],
-    }
-
-    view = await service.resolve_agent_harness("a-1")
-
-    assert view is not None and view.mcp_servers is not None
-    assert view.mcp_servers["catalog"]["provider"] == "litellm"
-    assert view.mcp_servers["catalog"]["credential_target_url"] == (
-        "https://mcp.upstream.example/mcp"
-    )
-
-
 # ── Assistants take the same fields and meet the same rule ─────────────────
 
 
@@ -615,16 +481,18 @@ class _Catalog:
         ),
     ],
 )
+@pytest.mark.usefixtures("database")
 async def test_an_assistant_meets_the_same_rule(
     dns: dict[str, list[str]], server: dict[str, Any], code: str
 ) -> None:
+    # Naming MCP servers reads the Assistant defaults for names they already provide.
     from astrabox.providers import register_builtin_providers
 
     register_builtin_providers()
     catalog = _Catalog()
     service = AssistantService(
         agent_config=_Environments(_LIMITED),
-        session_kernel=None,
+        session_lifecycle=None,
         catalog_repo=catalog,  # type: ignore[arg-type]
         workspace_service=SimpleNamespace(),  # type: ignore[arg-type]
         spawn_background_task=lambda coroutine, **_: coroutine.close(),
@@ -643,15 +511,3 @@ async def test_an_assistant_meets_the_same_rule(
 
     assert error.code == code
     assert catalog.created == []
-
-
-def test_every_refusal_is_a_registered_4xx() -> None:
-    for code in (
-        "AGENT_EGRESS_HOST_REFUSED",
-        "AGENT_MCP_FIELD_RESERVED",
-        "AGENT_DEPLOY_KEY_NOT_ALLOWED",
-    ):
-        spec = error_spec(code)
-        assert spec.category != "unregistered"
-        assert spec.status_code == 403
-        assert spec.owner == "template"

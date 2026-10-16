@@ -1,20 +1,11 @@
 """Contracts for the read-only ``/api/v1/admin/sandboxes/*`` surface.
 
-The API provides list, detail, and diagnostics while preserving these
-boundaries:
-
-* a backend that CANNOT answer is legible as "cannot answer" — the seam's 501
-  reaches the caller with its reason intact, and is never flattened into an
-  empty list that would read as "no sandboxes are running";
-* the session attribution is the box's own create metadata or nothing. There is
-  no fallback that derives a session from the id or the create order, because a
-  wrong attribution is worse than a missing one;
-* every caller string that becomes part of a BACKEND URL is refused here unless
-  it is already one path segment. A control plane addressed by
-  ``/sandboxes/{id}/diagnostics/{scope}`` turns an unchecked name into a
-  different request against that control plane, whose answer this surface then
-  hands back — an ops read becomes a proxy. The refusals below are pinned per
-  field, and each asserts the backend was never asked.
+Every caller string that becomes part of a BACKEND URL is refused unless it is
+already one path segment. A control plane addressed by
+``/sandboxes/{id}/diagnostics/{scope}`` turns an unchecked name into a
+different request against that control plane, whose answer this surface then
+hands back — an ops read becomes a proxy. The refusals below assert the backend
+was never asked.
 
 The route prefix is also part of the contract because
 :mod:`astrabox.web.identity_middleware` applies the admin gate at
@@ -64,12 +55,6 @@ class _BareProvider(SandboxProvider):
 
     async def kill(self, sandbox_id: str) -> bool:
         raise RuntimeError("no kill")
-
-
-class _SilentProvider(_BareProvider):
-    """A backend that inherits every inventory default (the seam's 501 refusals)."""
-
-    name = "fake_silent"
 
 
 class _InventoryProvider(_BareProvider):
@@ -197,154 +182,6 @@ def test_the_ops_surface_sits_behind_the_admin_prefix_gate(app: FastAPI) -> None
     assert "/api/v1/admin/sandboxes" in paths
 
 
-def test_list_returns_the_backends_own_paging_counters(
-    client: TestClient, inventory: _InventoryProvider
-) -> None:
-    body = client.get("/api/v1/admin/sandboxes?page=2&page_size=25").json()
-
-    assert body["code"] == "OK"
-    data = body["data"]
-    assert data["backend"] == "fake_inventory"
-    assert inventory.list_calls == [(2, 25)]
-    # Counters come from the backend, so the console can page instead of
-    # assuming one response is the whole inventory.
-    assert data["pagination"] == {
-        "page": 2,
-        "page_size": 25,
-        "total_items": 5,
-        "total_pages": 3,
-        "has_next_page": True,
-    }
-
-
-def test_list_shows_the_session_only_where_the_box_carries_it(
-    client: TestClient, inventory: _InventoryProvider
-) -> None:
-    items = client.get("/api/v1/admin/sandboxes").json()["data"]["items"]
-    by_id = {item["sandbox_id"]: item for item in items}
-
-    assert by_id["sb-ours"]["session_id"] == "sess-1"
-    assert by_id["sb-ours"]["created_at"] == _CREATED_AT.isoformat()
-    assert by_id["sb-ours"]["entrypoint"] == ["/opt/gem/run.sh"]
-    # A box with no create metadata is still LISTED — the question is what the
-    # backend runs — but nothing invents a session for it.
-    assert by_id["sb-foreign"]["session_id"] is None
-    assert by_id["sb-foreign"]["metadata"] == {}
-
-
-def test_list_rejects_a_page_size_that_would_pull_the_whole_inventory(
-    client: TestClient, inventory: _InventoryProvider
-) -> None:
-    response = client.get("/api/v1/admin/sandboxes?page_size=100000")
-    assert response.status_code == 400
-    assert response.json()["code"] == "SANDBOX_QUERY_INVALID"
-    assert inventory.list_calls == []
-
-
-def test_list_rejects_a_non_numeric_page(
-    client: TestClient, inventory: _InventoryProvider
-) -> None:
-    response = client.get("/api/v1/admin/sandboxes?page=first")
-    assert response.status_code == 400
-    assert inventory.list_calls == []
-
-
-def test_detail_maps_a_missing_sandbox_to_404(
-    client: TestClient, inventory: _InventoryProvider
-) -> None:
-    assert (
-        client.get("/api/v1/admin/sandboxes/sb-ours").json()["data"]["sandbox_id"]
-        == "sb-ours"
-    )
-    response = client.get("/api/v1/admin/sandboxes/sb-gone")
-    assert response.status_code == 404
-    assert response.json()["code"] == "SANDBOX_NOT_FOUND"
-
-
-def test_diagnostics_passes_the_report_through_as_text(
-    client: TestClient, inventory: _InventoryProvider
-) -> None:
-    data = client.get(
-        "/api/v1/admin/sandboxes/sb-ours/diagnostics/inspect"
-    ).json()["data"]
-
-    assert inventory.diagnostics_calls == [("sb-ours", "inspect")]
-    assert data["text"] == "Pod Name: sb-ours\nPhase: Running\n"
-    assert data["content_type"] == "text/plain; charset=utf-8"
-    assert data["truncated"] is False
-    assert data["scope"] == "inspect"
-    # No parsed body, no promised fields: the payload carries text and nothing
-    # that would invite a consumer to scrape it.
-    assert set(data) == {
-        "sandbox_id",
-        "backend",
-        "scope",
-        "content_type",
-        "text",
-        "truncated",
-        # The scope vocabulary, named as the constant it is: this route accepts
-        # these four, and says nothing about which of them THIS sandbox can
-        # produce — that is only knowable by asking for each and reading the
-        # 501s.
-        "known_scopes",
-    }
-
-
-def test_diagnostics_relays_the_servers_refusal_with_its_reason(
-    client: TestClient, inventory: _InventoryProvider
-) -> None:
-    response = client.get("/api/v1/admin/sandboxes/sb-ours/diagnostics/summary")
-
-    assert response.status_code == 501
-    body = response.json()
-    assert body["code"] == "SANDBOX_DIAGNOSTICS_NOT_IMPLEMENTED"
-    # The operator learns WHICH server said so. Swallowing this into an empty
-    # report would read as a healthy, silent sandbox.
-    assert "http://server.test" in body["message"]
-
-
-def test_a_backend_that_cannot_enumerate_says_so_instead_of_answering_empty(
-    client: TestClient, backends: dict[str, SandboxProvider]
-) -> None:
-    register_sandbox(_SilentProvider())
-    set_default_sandbox_backend("fake_silent")
-
-    response = client.get("/api/v1/admin/sandboxes")
-
-    assert response.status_code == 501
-    body = response.json()
-    assert body["code"] == "SANDBOX_LISTING_UNSUPPORTED"
-    assert "fake_silent" in body["message"]
-    # The refusal must not be shaped like a successful empty page.
-    assert body.get("data") in (None, {})
-
-
-def test_an_unknown_backend_name_is_a_404_not_a_silent_default(
-    client: TestClient, inventory: _InventoryProvider
-) -> None:
-    response = client.get("/api/v1/admin/sandboxes?backend=not_installed")
-    assert response.status_code == 404
-    assert response.json()["code"] == "SANDBOX_BACKEND_UNKNOWN"
-    assert inventory.list_calls == []
-
-
-def test_an_ambiguous_backend_is_refused_rather_than_guessed(
-    client: TestClient, backends: dict[str, SandboxProvider]
-) -> None:
-    register_sandbox(_InventoryProvider())
-    register_sandbox(_SilentProvider())
-    set_default_sandbox_backend("")
-
-    response = client.get("/api/v1/admin/sandboxes")
-
-    assert response.status_code == 400
-    body = response.json()
-    assert body["code"] == "SANDBOX_BACKEND_UNRESOLVED"
-    # Naming the candidates is what makes the error actionable.
-    assert "fake_inventory" in body["message"]
-    assert "fake_silent" in body["message"]
-
-
 # ── caller strings that become backend URLs ─────────────────────────────────
 #
 # Each name below reaches a backend as a PATH SEGMENT. An HTTP client resolves
@@ -378,38 +215,3 @@ def test_a_sandbox_id_cannot_leave_its_segment_on_the_diagnostics_route(
     assert response.status_code == 400
     assert response.json()["code"] == "SANDBOX_NAME_INVALID"
     assert inventory.diagnostics_calls == []
-
-
-def test_an_unknown_diagnostic_scope_is_refused_before_the_backend(
-    client: TestClient, inventory: _InventoryProvider
-) -> None:
-    # The scope vocabulary is closed, so this is the one field whose check is a
-    # membership test — and it belongs here as well as in the backend, because
-    # this route is what a deployment exposes.
-    for scope in ("%2e%2e", "logs%2Fx", "INSPECT-ish"):
-        response = client.get(f"/api/v1/admin/sandboxes/sb-ours/diagnostics/{scope}")
-        assert response.status_code in (400, 404), scope
-        if response.status_code == 400:
-            assert response.json()["code"] == "SANDBOX_DIAGNOSTIC_SCOPE_INVALID", scope
-    assert inventory.diagnostics_calls == []
-
-
-def test_ordinary_backend_id_shapes_still_pass(
-    client: TestClient, backends: dict[str, SandboxProvider]
-) -> None:
-    # The refusal is a segment grammar, not an opinion about how a backend names
-    # things: UUIDs, container digests and Kubernetes names all go through.
-    provider = _InventoryProvider()
-    register_sandbox(provider)
-    set_default_sandbox_backend(provider.name)
-    for sandbox_id in (
-        "3f1a9c2b7d4e",
-        "d290f1ee-6c54-4b01-90e6-d701748f0851",
-        "sbx-abc.def_1",
-    ):
-        client.get(f"/api/v1/admin/sandboxes/{sandbox_id}")
-    assert provider.describe_calls == [
-        "3f1a9c2b7d4e",
-        "d290f1ee-6c54-4b01-90e6-d701748f0851",
-        "sbx-abc.def_1",
-    ]

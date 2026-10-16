@@ -2,37 +2,36 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { listSessionChildRuns, type SessionChildRun } from '../../api';
 import type { SessionRightPanelCapabilities, SessionRightPanelTab } from '../sessionCapabilities';
-import { shouldPollBackgroundSubagentHistory } from '../sessionPolling';
+import { shouldPollChildRuns } from '../sessionPolling';
 import { useSubagentRegistry } from './useSubagentRegistry';
 import { keepsLastRead } from '../../hooks/useKeepCurrent';
 
 // Owns the Session-scoped child-run read model and transcript-drawer selection.
 // Root messages are deliberately absent: the backend projection is the sole
-// lifecycle authority for both live updates and reload recovery.
+// lifecycle authority for both live updates and reload recovery. The list is
+// read again whenever the conversation's stream carries a child-run part
+// (`childRunRevision`), when a response ends, and on a timer while a child
+// works with nothing on the stream.
 export function useSubagentDrawer({
   sessionId,
   childRunRevision,
   rightPanelCaps,
   setRightTab,
-  lifecycleState,
-  isSubmitted,
-  isStreaming,
+  working,
   hasPendingInteraction,
 }: {
   sessionId: string;
   childRunRevision: number;
   rightPanelCaps: SessionRightPanelCapabilities;
   setRightTab: (tab: SessionRightPanelTab) => void;
-  lifecycleState: string;
-  isSubmitted: boolean;
-  isStreaming: boolean;
+  working: boolean;
   hasPendingInteraction: boolean;
 }) {
   const [childRuns, setChildRuns] = useState<SessionChildRun[]>([]);
   const [projectionError, setProjectionError] = useState<string | null>(null);
   const requestGeneration = useRef(0);
   const loadedSession = useRef<string | null>(null);
-  const lifecycleBoundaryRef = useRef({ sessionId, state: lifecycleState });
+  const workingRef = useRef({ sessionId, working });
   const subagentRegistry = useSubagentRegistry(childRuns);
   const [selectedChildRunId, setSelectedChildRunId] = useState<string | null>(null);
 
@@ -76,18 +75,13 @@ export function useSubagentDrawer({
   }, [childRunRevision, refreshChildRuns]);
 
   useEffect(() => {
-    const previous = lifecycleBoundaryRef.current;
-    lifecycleBoundaryRef.current = { sessionId, state: lifecycleState };
-    // Native child activity clears through the durable child-run projection.
-    // Consume that boundary before the background poller stops.
-    if (
-      previous.sessionId === sessionId
-      && previous.state === 'background'
-      && lifecycleState === 'ready'
-    ) {
+    const previous = workingRef.current;
+    workingRef.current = { sessionId, working };
+    // A response that ends may have ended its children with it.
+    if (previous.sessionId === sessionId && previous.working && !working) {
       void refreshChildRuns().catch(() => {});
     }
-  }, [lifecycleState, refreshChildRuns, sessionId]);
+  }, [refreshChildRuns, sessionId, working]);
 
   const openSubagent = useCallback(
     (childRunId: string) => {
@@ -100,11 +94,9 @@ export function useSubagentDrawer({
   );
 
   useEffect(() => {
-    if (!shouldPollBackgroundSubagentHistory({
-      lifecycleState,
+    if (!shouldPollChildRuns({
       liveSubagentCount: subagentRegistry.liveCount,
-      isSubmitted,
-      isStreaming,
+      working,
       hasPendingInteraction,
     })) {
       return;
@@ -124,11 +116,9 @@ export function useSubagentDrawer({
     };
   }, [
     hasPendingInteraction,
-    isStreaming,
-    isSubmitted,
-    lifecycleState,
     refreshChildRuns,
     subagentRegistry.liveCount,
+    working,
   ]);
 
   return {

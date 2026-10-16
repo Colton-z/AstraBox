@@ -4,7 +4,7 @@ The selected :class:`~astrabox.seams.scheduler.SchedulerProvider` fires due
 times, keeps the Run ledger and recovers interrupted invocations. This module
 owns what the provider must not: turning a stored Deployment into the
 definition the provider projects, handing an invocation to the Deployment
-service to admit its Session and turn, and starting the provider with the
+service to admit its Session and input, and starting the provider with the
 deployment's desired schedules once the process is up.
 """
 
@@ -18,8 +18,8 @@ from astrabox.core.service.orchestrator.conversation_targets import (
     target_ref,
 )
 from astrabox.seams.scheduler import (
+    RunInputBinding,
     RunInvocation,
-    RunTurnBinding,
     ScheduleDefinition,
     configured_scheduler,
     configured_scheduler_name,
@@ -90,22 +90,19 @@ class DeploymentRunHandler:
             invocation_context(invocation), run_id=invocation.run_id
         )
 
-    async def admit_turn(
+    async def admit_input(
         self, invocation: RunInvocation, *, session_id: str
-    ) -> RunTurnBinding:
+    ) -> RunInputBinding:
         from astrabox.core.service.orchestrator.service_registry import (
             get_platform_service,
         )
 
-        binding = await get_platform_service().deployment_service.drive_run_turn(
+        admitted = await get_platform_service().deployment_service.admit_run_input(
             invocation_context(invocation),
             run_id=invocation.run_id,
             session_id=session_id,
         )
-        return RunTurnBinding(
-            command_id=str(binding.get("command_id") or ""),
-            turn_id=str(binding.get("turn_id") or ""),
-        )
+        return RunInputBinding(input_id=str(admitted["input_id"]))
 
 
 async def start_deployment_scheduler() -> None:
@@ -118,7 +115,7 @@ async def start_deployment_scheduler() -> None:
     schedule refuses the start, because it would silently never run.
     """
 
-    from astrabox.persistence.repository import DeploymentRepository
+    from astrabox.persistence.repository.deployment_repository import DeploymentRepository
 
     scheduler = configured_scheduler()
     if scheduler is None:
@@ -143,9 +140,7 @@ async def start_deployment_scheduler() -> None:
     )
     try:
         deployments = await DeploymentRepository().list_scheduled()
-        await scheduler.reconcile(
-            [schedule_definition(row) for row in deployments if row.get("deleted") is not True]
-        )
+        await scheduler.reconcile([schedule_definition(row) for row in deployments])
     except Exception as exc:
         await scheduler.stop()
         raise RuntimeError(

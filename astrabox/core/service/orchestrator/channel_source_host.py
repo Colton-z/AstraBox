@@ -1,8 +1,11 @@
 """Process-lifetime host for binding-scoped channel sources.
 
 A sourcing provider opens one long-lived consumer for each enabled channel
-binding. The host reconciles those consumers from the Deployment repository,
-then drives every envelope through the channel spine's single typed ingress:
+binding. The host reconciles those consumers from the Deployment repository:
+each pass compares the enabled bindings' revisions (their ``updated_at``) with
+the consumers it runs, and reads and hydrates a binding in full only to start
+its consumer. Every envelope then goes through the channel spine's single
+typed ingress:
 
     envelope → durable ingest → durable source cursor → source ack
 
@@ -14,8 +17,6 @@ work item lands may replay it, but the spine's dedup key makes that harmless.
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 from typing import Any
 
 from astrabox.common.logger.logger_factory import get_logger
@@ -110,14 +111,13 @@ class ChannelSourceHost:
 
     async def _reconcile_once(self) -> None:
         rows = await self._deployment_repo.list_channel_bindings()
-        desired: dict[str, tuple[str, Any, dict[str, Any], str]] = {}
-        for raw in rows:
-            binding = dict(raw)
+        desired: dict[str, tuple[str, Any, str]] = {}
+        for binding in rows:
             deployment_id = str(binding.get("deployment_id") or "").strip()
             channel_name = channel_scene_name(str(binding.get("scene") or ""))
-            provider = channel_if_registered(channel_name or "")
             if not deployment_id or channel_name is None:
                 continue
+            provider = channel_if_registered(channel_name)
             if provider is None:
                 logger.warning(
                     "channel source binding %s names an unregistered provider %r",
@@ -127,21 +127,10 @@ class ChannelSourceHost:
                 continue
             if not provider.supports_source:
                 continue
-            try:
-                hydrated = await self._channel_credentials.hydrate(binding, provider)
-            except Exception as exc:
-                logger.warning(
-                    "channel source binding %s credentials are unavailable: %s",
-                    deployment_id,
-                    exc,
-                )
-                continue
-            fingerprint = self._binding_fingerprint(hydrated)
             desired[deployment_id] = (
                 channel_name,
                 provider,
-                binding,
-                fingerprint,
+                self._binding_fingerprint(binding),
             )
 
         cancelled: list[tuple[str, Any]] = []
@@ -151,7 +140,7 @@ class ChannelSourceHost:
                 cancelled.append((deployment_id, task))
 
         replacements: list[tuple[str, str, Any, str]] = []
-        for deployment_id, (name, provider, binding, fingerprint) in desired.items():
+        for deployment_id, (name, provider, fingerprint) in desired.items():
             task = self._tasks.get(deployment_id)
             if (
                 task is not None
@@ -204,16 +193,12 @@ class ChannelSourceHost:
 
     @staticmethod
     def _binding_fingerprint(binding: dict[str, Any]) -> str:
-        material = {
-            "scene": binding.get("scene"),
-            "secret": binding.get("secret"),
-            "channel_config": binding.get("channel_config"),
-            "channel_credentials": binding.get("channel_credentials"),
-        }
-        encoded = json.dumps(
-            material, sort_keys=True, separators=(",", ":"), default=str
-        ).encode("utf-8")
-        return hashlib.sha256(encoded).hexdigest()
+        """The binding revision a consumer runs.
+
+        Every configuration write, credentials included, changes a binding's
+        ``updated_at``, so a consumer opened at another revision is replaced.
+        """
+        return f"{binding.get('scene')}@{binding.get('updated_at')}"
 
     # ── Consume loop ────────────────────────────────────────────────────
 
@@ -228,20 +213,15 @@ class ChannelSourceHost:
         backoff = _REOPEN_BACKOFF_INITIAL_SECONDS
         while not self._closed:
             binding = await self._deployment_repo.get_by_id(deployment_id)
-            hydrated = (
-                await self._channel_credentials.hydrate(binding, provider)
-                if binding
-                else None
-            )
             if (
-                not hydrated
-                or binding.get("deleted") is True
+                not binding
                 or binding.get("enabled") is False
                 or channel_scene_name(str(binding.get("scene") or "")) != name
-                or self._binding_fingerprint(hydrated) != fingerprint
+                or self._binding_fingerprint(binding) != fingerprint
             ):
                 return
             try:
+                hydrated = await self._channel_credentials.hydrate(binding, provider)
                 async for envelope in provider.open_source(binding=hydrated):
                     if not await self._handle_envelope(name, envelope):
                         raise _SourceRedelivery(

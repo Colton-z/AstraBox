@@ -1,22 +1,36 @@
 /** A2A 1.0 streams observe durable native work; disconnecting is not cancellation. */
 import { randomUUID } from 'node:crypto';
-import { isDeepStrictEqual } from 'node:util';
 import { expect, test, type APIRequestContext } from '@playwright/test';
 
 import { AstraApi, messageText } from '../fixtures/astraApi';
-import { documentsByField, framesForTurn, sessionDoc, sessionEvents, snapshotDoc } from '../fixtures/dbOracle';
+import {
+  nativeTranscriptRows,
+  sessionInputRows,
+  sessionInteractionRows,
+  sessionOutputRows,
+  sessionResponseRows,
+} from '../fixtures/dbOracle';
 import { absoluteApiUrl, apiPath } from '../fixtures/env';
+import { agentTaskReferences, sessionRow } from '../fixtures/ingressRecords';
 import { killSandbox, requireSandboxHandle, sandboxRunning, waitForSandboxStopped } from '../fixtures/sandboxOps';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 
 type Part = { text?: string; data?: Record<string, unknown> };
 type Status = { state: string; timestamp: string; message?: { taskId: string; contextId: string; parts: Part[] } };
+/**
+ * A task as the A2A service projects it (`agent_a2a_service.py`): its id is
+ * its input's `client_message_id` in the conversation, and its metadata names
+ * that input and the response that answers it.
+ */
 type Task = { id: string; contextId: string; status: Status; history?: unknown[];
-  metadata: { session_id: string; turn_id: string; input_id: string; command_id: string };
+  metadata: { agent_id: string; session_id: string; input_id: string; response_id: string; session_url_path: string };
   artifacts?: Array<{ parts: Part[] }> };
 type StreamEvent = { task?: Task;
   statusUpdate?: { taskId: string; contextId: string; status: Status };
   artifactUpdate?: { taskId: string; contextId: string; artifact: { parts: Part[] }; lastChunk?: boolean } };
+/** One AI SDK UI message part, as the conversation's page folds a response. */
+type UiPart = Record<string, unknown>;
+type NativeCall = { id: string; name: string; input?: unknown };
 
 const sessions = trackSessions();
 let agentId = '';
@@ -118,11 +132,36 @@ function input(text: string, contextId?: string) {
     ...(contextId ? { contextId } : {}) }, configuration: { historyLength: 0 } };
 }
 
-function nativeToolCalls(sessionId: string, name: string): Array<Record<string, unknown>> {
-  return documentsByField('transcript_entries', '$.platform_session_id', sessionId)
-    .map((row) => JSON.parse(String(row.entry_json)) as { message?: { content?: Array<Record<string, unknown>> } })
-    .flatMap((entry) => Array.isArray(entry.message?.content) ? entry.message.content : [])
-    .filter((block) => block.type === 'tool_use' && block.name === name);
+/**
+ * The conversation's own calls of one tool, as Claude Code wrote them into its
+ * SessionStore (the main transcript, not a sub-agent's). A call is named once
+ * by its native id: a resumed runtime may append a record of it again, which
+ * is not a second execution.
+ */
+function nativeToolCalls(sessionId: string, name: string): NativeCall[] {
+  const calls = new Map<string, NativeCall>();
+  for (const row of nativeTranscriptRows(sessionId)) {
+    if (row.subpath !== null) continue;
+    const entry = JSON.parse(row.entry_json) as { message?: { content?: unknown } };
+    const blocks = Array.isArray(entry.message?.content) ? entry.message.content as Array<Record<string, unknown>> : [];
+    for (const block of blocks) {
+      if (block.type !== 'tool_use' || block.name !== name) continue;
+      const id = String(block.id || '');
+      if (id && !calls.has(id)) calls.set(id, { id, name: String(block.name), input: block.input });
+    }
+  }
+  return [...calls.values()];
+}
+
+/** The UI parts an A2A result carries: its data part holds the response as the conversation's page folds it. */
+function resultParts(parts: Part[]): UiPart[] {
+  return parts.flatMap((part) => (Array.isArray(part.data?.parts) ? part.data.parts as UiPart[] : []));
+}
+
+/** The tool parts showing one native call: same native id and tool name. */
+function toolParts(parts: UiPart[], call: NativeCall): UiPart[] {
+  return parts.filter((part) => part.toolCallId === call.id
+    && (part.type === 'dynamic-tool' ? part.toolName === call.name : part.type === `tool-${call.name}`));
 }
 
 function heldPrompt(marker: string): string {
@@ -151,25 +190,35 @@ async function waitForStarted(api: AstraApi, sessionId: string, marker: string, 
   }, { timeout: remaining(), intervals: [500] }).toBe(marker);
 }
 
+/**
+ * The completed task, checked against the conversation's own records: the
+ * session settles on the response the task names, that response answers the
+ * task's input, and the task is one durable reference.
+ */
 async function finished(api: AstraApi, request: APIRequestContext, initial: Task, marker: string, remaining: () => number) {
   const task = await rpc<Task>(request, 'GetTask', { id: initial.id });
   expect(task).toMatchObject({ id: initial.id, contextId: initial.contextId,
     status: { state: 'TASK_STATE_COMPLETED' } });
   const sessionId = task.metadata.session_id;
-  await api.waitForSession(sessionId, (row) => row.last_turn_id === task.metadata.turn_id
-    && row.last_turn_status === 'COMPLETED' && !row.pending_interaction, remaining());
-  const references = documentsByField('agent_task_references', '$.agent_id', agentId);
-  expect(references.filter((row) => row.kind === 'task' && row._id === task.id)).toHaveLength(1);
-  const journal = sessionEvents(sessionId);
-  expect(journal.some((row) => row.event_type === 'turn.completed' && row.turn_id === task.metadata.turn_id)).toBe(true);
-  expect(framesForTurn(task.metadata.turn_id).some((row) => {
-    const payload = row.payload as { type?: string; data?: { inputId?: string } };
-    return payload.type === 'data-input-consumed' && payload.data?.inputId === task.metadata.input_id;
-  })).toBe(true);
-  const messages = await api.getMessages(sessionId, 100);
+  const responseId = task.metadata.response_id;
+  expect(responseId, 'a completed task names the response that answered it').not.toBe('');
+  const settled = await api.waitForSession(sessionId, (row) => row.state === 'READY'
+    && row.last_response?.response_id === responseId, remaining());
+  expect(settled.last_response?.outcome).toBe('completed');
+  const references = agentTaskReferences(agentId);
+  expect(references.filter((row) => row.kind === 'task' && row.reference_id === task.id)).toHaveLength(1);
+  const inputs = sessionInputRows(sessionId);
+  expect(inputs.filter((row) => row.client_message_id === task.id), 'the task is one input of its conversation')
+    .toEqual([expect.objectContaining({ input_id: task.metadata.input_id, source: 'a2a', state: 'admitted',
+      response_id: responseId })]);
+  const responses = sessionResponseRows(sessionId);
+  expect(responses.filter((row) => row.response_id === responseId), 'one response answers the task input')
+    .toEqual([expect.objectContaining({ origin: 'input', status: 'ended', outcome: 'completed',
+      input_ids: [task.metadata.input_id] })]);
+  const messages = await api.getMessages(sessionId, 50);
   expect(messages.messages.filter((row) => row.role === 'assistant').map(messageText).join('\n')).toContain(marker);
   expect(task.artifacts?.flatMap((artifact) => artifact.parts).map((part) => part.text || '').join('\n')).toContain(marker);
-  return { task, journal, references, messages };
+  return { task, references, inputs, responses, messages };
 }
 
 test('an A2A task continues after its client disconnects and a subscription returns the real result', async ({ request }, info) => {
@@ -184,25 +233,20 @@ test('an A2A task continues after its client disconnects and a subscription retu
   sessions.push(task.metadata.session_id);
   expect(task.history ?? []).toHaveLength(0);
   expect(task.status.state).toBe('TASK_STATE_SUBMITTED');
-  const coldSession = sessionDoc(task.metadata.session_id);
-  expect(coldSession).toMatchObject({ state: 'CREATING', agent_id: agentId });
-  const coldSnapshot = snapshotDoc(task.metadata.session_id);
-  expect(coldSnapshot).toMatchObject({ current_turn_id: task.metadata.turn_id, delivery_state: 'PENDING' });
-  const admission = sessionEvents(task.metadata.session_id).find((row) => row.event_type === 'command.accepted'
-    && row.causation_id === `${task.metadata.session_id}:${task.id}`);
-  expect(admission).toMatchObject({ turn_id: task.metadata.turn_id,
-    payload: { command_type: 'StartTurn', content: heldPrompt(marker) } });
+  // The task is durable before compute exists: the conversation is still
+  // starting and already holds the task's input, waiting for its runtime.
+  const coldSession = sessionRow(task.metadata.session_id);
+  expect(coldSession).toMatchObject({ state: 'CREATING', agent_id: agentId, source_type: 'a2a' });
+  const admission = sessionInputRows(task.metadata.session_id);
+  expect(admission).toEqual([expect.objectContaining({ input_id: task.metadata.input_id, client_message_id: task.id,
+    source: 'a2a', content: heldPrompt(marker), state: 'pending' })]);
   await waitForStarted(api, task.metadata.session_id, marker, remaining);
   const nativeCalls = () => nativeToolCalls(task.metadata.session_id, 'Bash');
   await expect.poll(() => nativeCalls().length, { timeout: Math.min(15_000, remaining()) }).toBe(1);
   const nativeCall = nativeCalls()[0];
   await initial.until((event) => {
     const artifacts = event.task?.artifacts ?? (event.artifactUpdate ? [event.artifactUpdate.artifact] : []);
-    return artifacts.flatMap((artifact) => artifact.parts).some((part) => {
-      const blocks = part.data?.blocks;
-      return Array.isArray(blocks) && blocks.some((block) => block.type === 'tool_use'
-        && block.name === 'Bash' && block.id === nativeCall.id);
-    });
+    return toolParts(resultParts(artifacts.flatMap((artifact) => artifact.parts)), nativeCall).length > 0;
   });
   expect(initial.events.some((event) => event.statusUpdate?.status.state === 'TASK_STATE_COMPLETED')).toBe(false);
   await initial.close();
@@ -215,10 +259,7 @@ test('an A2A task continues after its client disconnects and a subscription retu
   expect(resumed.events.some((event) => event.artifactUpdate?.taskId === task.id)).toBe(true);
   const evidence = await finished(api, request, task, marker, remaining);
   expect(evidence.references.filter((row) => row.kind === 'task')).toHaveLength(1);
-  const startup = evidence.journal.find((row) => row.event_type === 'session.startup_completed');
-  expect(startup).toBeDefined();
-  expect(Number(admission!.event_seq), 'durable input admission must precede cold startup completion')
-    .toBeLessThan(Number(startup!.event_seq));
+  expect(evidence.inputs, 'disconnecting the first stream neither cancelled nor resent the task').toHaveLength(1);
   const patchVersion = await rpc<Task>(request, 'GetTask', { id: task.id }, '1.0.7');
   expect(patchVersion).toMatchObject({ id: task.id, status: { state: 'TASK_STATE_COMPLETED' } });
   const nextMinor = await request.post(apiPath(`/agents/${agentId}/a2a`), {
@@ -243,7 +284,8 @@ test('an A2A task continues after its client disconnects and a subscription retu
     expect((await refused.json()).error?.code, method).toBe(-32004);
   }
   await info.attach('a2a-reconnected-stream', { contentType: 'application/json',
-    body: JSON.stringify({ ...evidence, coldSession, coldSnapshot, admission, startup, initial: initial.events, resumed: resumed.events, filename }) });
+    body: JSON.stringify({ ...evidence, coldSession, admission, nativeCall, initial: initial.events,
+      resumed: resumed.events, filename }) });
 });
 
 test('an A2A input-required stream stays open and a structured answer completes its original task', async ({ request }, info) => {
@@ -277,21 +319,23 @@ test('an A2A input-required stream stays open and a structured answer completes 
   expect(task.history ?? []).toHaveLength(0);
   expect(task.id).not.toBe(prepared.id);
   expect(task.metadata.session_id).toBe(prepared.metadata.session_id);
+  const sessionId = task.metadata.session_id;
   const authorization = await live.until((event) => (event.statusUpdate?.status ?? event.task?.status)?.state === 'TASK_STATE_AUTH_REQUIRED');
   expect((authorization.statusUpdate?.status ?? authorization.task!.status).message)
     .toMatchObject({ taskId: task.id, contextId: task.contextId });
   const approval = (authorization.statusUpdate?.status ?? authorization.task!.status).message!.parts
     .find((part) => part.data)?.data!;
   expect(approval).toMatchObject({ tool_name: 'Write', presentation: 'tool_approval' });
-  await expect.poll(() => nativeToolCalls(task.metadata.session_id, 'Write').length,
+  await expect.poll(() => nativeToolCalls(sessionId, 'Write').length,
     { timeout: Math.min(15_000, remaining()) }).toBe(1);
-  const nativeWrite = nativeToolCalls(task.metadata.session_id, 'Write')[0];
+  const nativeWrite = nativeToolCalls(sessionId, 'Write')[0];
   expect(nativeWrite.id).toBe(approval.tool_call_id);
   const follower = await stream(request, 'SubscribeToTask', { id: task.id }, remaining);
   const followingTask = (await follower.until((event) => Boolean(event.task))).task!;
   expect(followingTask).toMatchObject({ id: task.id, contextId: task.contextId,
     status: { state: 'TASK_STATE_AUTH_REQUIRED' } });
   const beforeApproval = live.events.length;
+  const followerBeforeApproval = follower.events.length;
   await new Promise((resolve) => setTimeout(resolve, 1600));
   live.check(); follower.check();
   expect([live.ended, follower.ended], 'authorization interrupts both streams without closing them').toEqual([false, false]);
@@ -308,18 +352,20 @@ test('an A2A input-required stream stays open and a structured answer completes 
   const pending = status.message!.parts.find((part) => part.data)?.data!;
   expect(pending).toMatchObject({ tool_name: 'AskUserQuestion', presentation: 'form' });
   expect(JSON.stringify(pending)).toContain(marker);
-  const turnId = String(pending.turn_id);
   const interactionId = String(pending.interaction_id);
   const nativeId = String(pending.tool_call_id);
-  expect([pending.turn_id, pending.interaction_id, pending.tool_call_id].every((value) => typeof value === 'string' && value.length > 0)).toBe(true);
-  expect(framesForTurn(turnId).some((row) => {
-    const payload = row.payload as { type?: string; data?: Record<string, unknown> };
-    return payload.type === 'data-interaction' && payload.data?.interaction_id === interactionId
-      && payload.data?.tool_call_id === nativeId;
-  })).toBe(true);
-  await expect.poll(() => nativeToolCalls(task.metadata.session_id, 'AskUserQuestion').length,
+  expect([pending.interaction_id, pending.tool_call_id].every((value) => typeof value === 'string' && value.length > 0)).toBe(true);
+  // The response the approval resumed is the one now waiting on the question.
+  const responseId = (await rpc<Task>(request, 'GetTask', { id: task.id })).metadata.response_id;
+  expect(responseId, 'a task waiting on a question names the response it pauses').not.toBe('');
+  expect(sessionOutputRows(sessionId, responseId).some((row) => {
+    const part = row.part as { type?: string; data?: Record<string, unknown> };
+    return part.type === 'data-interaction' && part.data?.interaction_id === interactionId
+      && part.data?.tool_call_id === nativeId;
+  }), 'the response recorded the question the task shows').toBe(true);
+  await expect.poll(() => nativeToolCalls(sessionId, 'AskUserQuestion').length,
     { timeout: Math.min(15_000, remaining()) }).toBe(1);
-  const nativeQuestion = nativeToolCalls(task.metadata.session_id, 'AskUserQuestion')[0];
+  const nativeQuestion = nativeToolCalls(sessionId, 'AskUserQuestion')[0];
   expect(nativeQuestion.id).toBe(nativeId);
   // Keep the original connection across several server projection cycles before answering.
   await new Promise((resolve) => setTimeout(resolve, 1600));
@@ -337,51 +383,50 @@ test('an A2A input-required stream stays open and a structured answer completes 
   expect(result.task.id).toBe(task.id);
   await live.until((event) => event.statusUpdate?.status.state === 'TASK_STATE_COMPLETED');
   await follower.until((event) => event.statusUpdate?.status.state === 'TASK_STATE_COMPLETED');
-  const updates = (events: StreamEvent[]) => events.filter((event) => event.statusUpdate || event.artifactUpdate);
-  const common = live.events.slice(beforeApproval).find((event) => event.statusUpdate?.status.state === 'TASK_STATE_WORKING');
-  expect(common, 'both streams must resume the same task after Write authorization').toBeDefined();
-  const liveStart = live.events.findIndex((event, index) => index >= beforeApproval && isDeepStrictEqual(event, common));
-  const followerStart = follower.events.findIndex((event) => isDeepStrictEqual(event, common));
-  expect(followerStart, 'the full WORKING event anchors the same immutable journal boundary').toBeGreaterThanOrEqual(0);
-  expect(updates(follower.events.slice(followerStart)), 'all updates from the common boundary through completion must have identical order')
-    .toEqual(updates(live.events.slice(liveStart)));
+  // Both subscribers saw the same task resume after the Write authorization and
+  // end on the same final status. Each projects the task as it reads it, so
+  // their intermediate snapshots need not coincide.
+  for (const [connection, from] of [[live, beforeApproval], [follower, followerBeforeApproval]] as const) {
+    const resumedAfter = connection.events.slice(from).filter((event) => event.statusUpdate?.status.state === 'TASK_STATE_WORKING');
+    expect(resumedAfter.length, 'both streams must resume the same task after Write authorization').toBeGreaterThan(0);
+    expect(resumedAfter.every((event) => event.statusUpdate?.taskId === task.id
+      && event.statusUpdate?.contextId === task.contextId)).toBe(true);
+  }
+  const finalStatus = (events: StreamEvent[]) => events.filter((event) => event.statusUpdate).at(-1)?.statusUpdate;
+  expect(finalStatus(follower.events), 'both streams end on the same final status').toEqual(finalStatus(live.events));
   const evidence = await finished(api, request, task, marker, remaining);
-  expect(evidence.task.metadata.turn_id).toBe(turnId);
-  expect(approval.turn_id).toBe(turnId);
-  expect(await api.downloadFileText(task.metadata.session_id, `/workspace/${filename}`, Math.min(15_000, remaining())))
+  expect(evidence.task.metadata.response_id).toBe(responseId);
+  expect(await api.downloadFileText(sessionId, `/workspace/${filename}`, Math.min(15_000, remaining())))
     .toBe(marker);
-  const interaction = documentsByField('interaction_snapshots', '$.session_id', task.metadata.session_id)
-    .find((row) => row.interaction_id === interactionId);
-  expect(interaction).toMatchObject({ interaction_state: 'ANSWERED', response: answer, turn_id: turnId });
-  const approvalRecord = documentsByField('interaction_snapshots', '$.session_id', task.metadata.session_id)
-    .find((row) => row.interaction_id === approval.interaction_id);
-  expect(approvalRecord).toMatchObject({ interaction_state: 'ANSWERED', response: { decision: 'approve' },
-    turn_id: turnId, tool_call_id: nativeWrite.id });
-  expect(interaction).toMatchObject({ tool_call_id: nativeQuestion.id });
-  const canonicalResponses = evidence.messages.messages.filter((row) => row.role === 'assistant' && row.turn_id === turnId);
+  const interactions = sessionInteractionRows(sessionId);
+  const interaction = interactions.find((row) => row.interaction_id === interactionId);
+  expect(interaction).toMatchObject({ status: 'answered', answer, response_id: responseId });
+  expect(interaction?.contract.tool_call_id).toBe(nativeQuestion.id);
+  const approvalRecord = interactions.find((row) => row.interaction_id === approval.interaction_id);
+  expect(approvalRecord, 'the approval paused the same response the question did')
+    .toMatchObject({ status: 'answered', answer: { decision: 'approve' }, response_id: responseId });
+  expect(approvalRecord?.contract.tool_call_id).toBe(nativeWrite.id);
+  const canonicalResponses = evidence.messages.messages.filter((row) => row.role === 'assistant' && row.id === responseId);
   expect(canonicalResponses, 'this Task has one canonical response for its logical input').toHaveLength(1);
-  const canonicalBlocks = canonicalResponses[0].blocks || [];
-  const resultBlocks = (parts: Part[]) => parts.flatMap((part) => Array.isArray(part.data?.blocks)
-    ? part.data.blocks as Array<Record<string, unknown>> : []);
+  const canonicalParts = canonicalResponses[0].parts;
   const finalArtifacts = [
-    { surface: 'GetTask', blocks: resultBlocks(evidence.task.artifacts?.flatMap((artifact) => artifact.parts) ?? []) },
+    { surface: 'GetTask', parts: resultParts(evidence.task.artifacts?.flatMap((artifact) => artifact.parts) ?? []) },
     ...[live, follower].map((connection, index) => {
       const finals = connection.events.filter((event) => event.artifactUpdate?.lastChunk === true);
       expect(finals.length, `SSE ${index + 1} must finalize its result artifact`).toBeGreaterThan(0);
-      return { surface: `SSE ${index + 1}`, blocks: resultBlocks(finals.at(-1)!.artifactUpdate!.artifact.parts) };
+      return { surface: `SSE ${index + 1}`, parts: resultParts(finals.at(-1)!.artifactUpdate!.artifact.parts) };
     }),
   ];
-  for (const { surface, blocks } of [{ surface: 'Session', blocks: canonicalBlocks }, ...finalArtifacts]) {
+  for (const { surface, parts } of [{ surface: 'Session', parts: canonicalParts }, ...finalArtifacts]) {
     // Required tool identities originate in native supplier custody, not in the A2A adapter.
     for (const tool of [nativeWrite, nativeQuestion]) {
-      expect(blocks.filter((block) => block.type === 'tool_use' && block.name === tool.name && block.id === tool.id),
-        `${surface}: native ${String(tool.name)} call`).toHaveLength(1);
-      expect(blocks.filter((block) => block.type === 'tool_result' && block.tool_use_id === tool.id),
-        `${surface}: matching ${String(tool.name)} result`).toHaveLength(1);
+      const shown = toolParts(parts, tool);
+      expect(shown, `${surface}: native ${tool.name} call`).toHaveLength(1);
+      expect(shown[0].state, `${surface}: matching ${tool.name} result`).toBe('output-available');
     }
-    const questionResult = blocks.find((block) => block.type === 'tool_result' && block.tool_use_id === nativeQuestion.id)!;
-    expect(JSON.stringify(questionResult.content), `${surface}: preserve the committed questionnaire answer`).toContain('YES');
-    expect(blocks, `${surface}: complete canonical response blocks`).toEqual(canonicalBlocks);
+    const questionResult = toolParts(parts, nativeQuestion)[0];
+    expect(JSON.stringify(questionResult.output), `${surface}: preserve the committed questionnaire answer`).toContain('YES');
+    expect(parts, `${surface}: complete canonical response parts`).toEqual(canonicalParts);
   }
   expect(evidence.references.filter((row) => row.kind === 'task')).toHaveLength(2);
   await info.attach('a2a-structured-answer', { contentType: 'application/json',
@@ -408,33 +453,36 @@ test('confirmed compute loss fails the original A2A task and only a new input re
   const before = await api.getSession(sessionId);
   const current = await rpc<Task>(request, 'GetTask', { id: task.id });
   expect(current.status.state).toBe('TASK_STATE_WORKING');
-  const turnId = current.metadata.turn_id;
-  const accepted = () => sessionEvents(sessionId).filter((row) => row.event_type === 'command.accepted'
-    && (row.payload as Record<string, unknown>).command_type === 'StartTurn');
-  const originalInputs = accepted();
-  expect(originalInputs).toHaveLength(1);
-  expect(originalInputs[0].payload).toMatchObject({ content: prompt });
+  const responseId = current.metadata.response_id;
+  expect(responseId, 'a working task names the response that runs it').not.toBe('');
+  const originalInputs = sessionInputRows(sessionId);
+  expect(originalInputs).toEqual([expect.objectContaining({ client_message_id: task.id, content: prompt,
+    source: 'a2a' })]);
   const sandbox = await requireSandboxHandle(api, String(before.sandbox_id));
   killSandbox(sandbox);
   await waitForSandboxStopped(sandbox, Math.min(30_000, remaining()));
   expect(sandboxRunning(sandbox)).toBe(false);
-  await api.waitForSession(sessionId, (row) => row.last_turn_id === turnId
-    && row.last_turn_status === 'FAILED' && !row.current_turn_id, remaining());
+  await api.waitForSession(sessionId, (row) => row.last_response?.response_id === responseId
+    && row.last_response?.outcome === 'failed' && !(row.current_responses?.length), remaining());
   const failedEvent = await live.until((event) => event.statusUpdate?.status.state === 'TASK_STATE_FAILED');
   await expect.poll(() => { live.check(); return live.ended; }, { timeout: Math.min(10_000, remaining()) }).toBe(true);
   const failed = await rpc<Task>(request, 'GetTask', { id: task.id });
   expect(failed).toMatchObject({ id: task.id, contextId: task.contextId,
     status: { state: 'TASK_STATE_FAILED', message: { taskId: task.id, contextId: task.contextId } } });
   expect(failedEvent.statusUpdate?.status.message).toMatchObject({ taskId: task.id, contextId: task.contextId });
-  const terminal = sessionEvents(sessionId).find((row) => row.turn_id === turnId && row.event_type === 'turn.failed');
-  expect(terminal).toBeDefined();
-  const reason = String((terminal!.payload as Record<string, unknown>).error_text || '');
-  expect(reason, 'the platform journal must retain the actual compute failure reason').not.toBe('');
+  // The platform ended the response for its lost box and recorded why; the
+  // task tells its client that same reason.
+  const terminal = sessionResponseRows(sessionId).find((row) => row.response_id === responseId);
+  expect(terminal).toMatchObject({ status: 'ended', outcome: 'failed', native_reason: 'sandbox_lost' });
+  const errorPart = sessionOutputRows(sessionId, responseId).map((row) => row.part)
+    .find((part) => part.type === 'error');
+  const reason = String(errorPart?.errorText || '');
+  expect(reason, 'the response must retain the actual compute failure reason').not.toBe('');
   expect(failed.status.message!.parts.map((part) => part.text || '').join('\n')).toContain(reason);
-  const history = await api.getMessages(sessionId, 100);
+  const history = await api.getMessages(sessionId, 50);
   expect(history.messages.filter((row) => row.role === 'user').map(messageText)).toEqual([prompt]);
-  expect(accepted(), 'the dead task must not be automatically replayed').toEqual(originalInputs);
-  expect(documentsByField('agent_task_references', '$.agent_id', agentId).filter((row) => row.kind === 'task')).toHaveLength(1);
+  expect(sessionInputRows(sessionId), 'the dead task must not be automatically replayed').toEqual(originalInputs);
+  expect(agentTaskReferences(agentId).filter((row) => row.kind === 'task')).toHaveLength(1);
   const nextMarker = `${marker}_NEW_INPUT`;
   const nextPrompt = `The previous task was interrupted by compute loss. Do not repeat it or run any tool. Reply with exactly ${nextMarker}.`;
   const nextInput = input(nextPrompt, task.contextId);
@@ -446,37 +494,33 @@ test('confirmed compute loss fails the original A2A task and only a new input re
     metadata: { session_id: sessionId } });
   expect(nextTask.id).not.toBe(task.id);
   expect(nextTask.history ?? []).toHaveLength(0);
-  const recoveringSession = sessionDoc(sessionId);
+  const recoveringSession = sessionRow(sessionId);
   expect(recoveringSession?.state === 'CREATING' || recoveringSession?.runtime_unavailable === true,
     'the new durable input must return while its runtime is still unavailable or starting').toBe(true);
-  const recoveringSnapshot = snapshotDoc(sessionId);
-  expect(recoveringSnapshot).toMatchObject({ current_turn_id: nextTask.metadata.turn_id, delivery_state: 'PENDING' });
-  const nextAdmission = accepted().find((row) => row.causation_id === `${sessionId}:${nextTask.id}`);
-  expect(nextAdmission).toMatchObject({ turn_id: nextTask.metadata.turn_id,
-    payload: { command_type: 'StartTurn', content: nextPrompt } });
+  const nextAdmission = sessionInputRows(sessionId).find((row) => row.client_message_id === nextTask.id);
+  expect(nextAdmission, 'the new input waits for the replacement runtime').toMatchObject({
+    input_id: nextTask.metadata.input_id, source: 'a2a', content: nextPrompt, state: 'pending',
+  });
   await recovery.until((event) => event.statusUpdate?.status.state === 'TASK_STATE_COMPLETED');
   const recovered = await finished(api, request, nextTask, nextMarker, remaining);
-  const nextStartup = recovered.journal.find((row) => row.event_type === 'session.startup_completed'
-    && Number(row.event_seq) > Number(nextAdmission!.event_seq));
-  expect(nextStartup, 'this input must precede the replacement runtime startup, not the original startup').toBeDefined();
   const rebound = await api.getSession(sessionId);
   expect(rebound.sandbox_id).toBeTruthy();
   expect(rebound.sandbox_id).not.toBe(sandbox.sandboxId);
   expect(await rpc<Task>(request, 'GetTask', { id: task.id })).toMatchObject({ id: task.id,
     status: { state: 'TASK_STATE_FAILED', message: { taskId: task.id, contextId: task.contextId } } });
-  const inputsAfterRecovery = accepted();
+  const inputsAfterRecovery = sessionInputRows(sessionId);
   expect(inputsAfterRecovery).toHaveLength(2);
   expect(inputsAfterRecovery[0]).toEqual(originalInputs[0]);
-  expect(inputsAfterRecovery[1].payload).toMatchObject({ content: nextPrompt });
+  expect(inputsAfterRecovery[1]).toMatchObject({ client_message_id: nextTask.id, content: nextPrompt });
   expect(nativeToolCalls(sessionId, 'Bash'), 'restoring native history must not re-execute the original held tool')
     .toEqual([originalBash]);
   expect(recovered.messages.messages.filter((row) => row.role === 'user').map(messageText)).toEqual([prompt, nextPrompt]);
   const taskReferences = recovered.references.filter((row) => row.kind === 'task');
   expect(taskReferences).toHaveLength(2);
-  expect(taskReferences.find((row) => row._id === nextTask.id)).toMatchObject({ message_id: nextInput.message.messageId });
-  expect(taskReferences.find((row) => row._id === task.id)?.message_id).not.toBe(nextInput.message.messageId);
+  expect(taskReferences.find((row) => row.reference_id === nextTask.id)).toMatchObject({ message_id: nextInput.message.messageId });
+  expect(taskReferences.find((row) => row.reference_id === task.id)?.message_id).not.toBe(nextInput.message.messageId);
   await info.attach('a2a-compute-loss', { contentType: 'application/json',
-    body: JSON.stringify({ task, failed, sandbox, terminal, history, originalInputs, originalBash,
-      events: live.events, nextTask, nextAdmission, nextStartup, recoveringSession, recoveringSnapshot,
+    body: JSON.stringify({ task, failed, sandbox, terminal, errorPart, history, originalInputs, originalBash,
+      events: live.events, nextTask, nextAdmission, recoveringSession,
       recovered, recoveryEvents: recovery.events }) });
 });

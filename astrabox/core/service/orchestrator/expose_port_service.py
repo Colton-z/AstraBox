@@ -148,6 +148,22 @@ class ExposePortService:
         url = str(endpoint.endpoint).strip()
         if not url.startswith(("http://", "https://")):
             url = f"https://{url}"
+        session_id = context.get("session_id")
+        if session_id:
+            # Direct application traffic bypasses the platform, so silence in
+            # the conversation cannot establish that this box is unused.
+            recorded = await self._sessions_repo.compare_and_update_session(
+                session_id,
+                expected={"sandbox_id": sandbox_id, "sandbox_parked_at": None},
+                updates={"exposed_sandbox_id": sandbox_id},
+                touch_updated_at=False,
+            )
+            if not recorded:
+                raise APIError(
+                    code="SANDBOX_NOT_AVAILABLE",
+                    message="sandbox binding changed or is parking; request its endpoint when ready",
+                    status_code=409,
+                )
         return context, SandboxBrowserEndpoint(
             endpoint=url,
             headers={},
@@ -193,6 +209,7 @@ class ExposePortService:
                     if sandbox_id:
                         return {
                             "deployment_id": normalized,
+                            "session_id": bound_session,
                             "sandbox_id": sandbox_id,
                             "sandbox_backend": str(
                                 session.get("sandbox_backend") or ""
@@ -227,6 +244,7 @@ class ExposePortService:
             )
         return {
             "deployment_id": normalized,
+            "session_id": normalized,
             "sandbox_id": sandbox_id,
             "sandbox_backend": str(session.get("sandbox_backend") or "").strip() or None,
             "user_id": str(session.get("user_id") or "").strip(),

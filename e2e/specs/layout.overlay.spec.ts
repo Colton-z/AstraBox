@@ -26,8 +26,8 @@ import { settle, stubApi } from "./layoutHelpers";
  */
 test("the composer stays usable while a subagent drawer is open", async ({ page }) => {
   await stubApi(page);
-  // s-004 is READY in the fixture. BUSY sessions intentionally replace submit
-  // with Stop, so they cannot prove that the submit control remains reachable.
+  // s-004 is READY in the fixture. A working session intentionally replaces
+  // submit with Stop, so it cannot prove that the submit control remains reachable.
   await page.goto("/sessions/s-004");
   await settle(page);
   await page.waitForTimeout(800);

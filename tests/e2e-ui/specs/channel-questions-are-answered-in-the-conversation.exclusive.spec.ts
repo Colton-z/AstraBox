@@ -19,8 +19,8 @@ import {
   toolName,
   type EngineProfile,
 } from '../fixtures/engineProfile';
-import { documentsByField } from '../fixtures/dbOracle';
 import { apiPath } from '../fixtures/env';
+import { channelInbound } from '../fixtures/ingressRecords';
 import { PlatformApi } from '../fixtures/platformApi';
 import { satoriSource } from '../fixtures/satoriSource';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
@@ -161,9 +161,10 @@ for (const declared of approving) {
       timeout: 120_000,
       message: 'the reply after the answer must reach the conversation',
     }).toContain(`DONE_${marker}`);
-    const settled = await api.waitForSession(sessionId, (detail) => detail.state === 'READY'
-      && !detail.current_turn_id && !detail.pending_interaction);
-    expect(settled.last_turn_status).toBe('COMPLETED');
+    const settled = await api.waitForSessionReady(sessionId);
+    expect(settled.last_response?.response_id, 'the answer continued the response that asked')
+      .toBe(pending.response_id);
+    expect(settled.last_response?.outcome).toBe('completed');
     expect(conversation.deliveries().slice(answeredAt).filter((row) => row.question),
       'an accepted answer asks nothing again').toEqual([]);
     const users = visibleMessages(await api.getMessages(sessionId, 100))
@@ -182,8 +183,8 @@ for (const declared of approving) {
     const before = conversation.deliveries().length;
     await conversation.send({ text: prompt });
     const shown = await questionDelivery(conversation, before);
-    const parkedTurn = String((await api.waitForPendingInteraction(sessionId)).turn_id || '');
-    expect(parkedTurn).not.toBe('');
+    const parked = String((await api.waitForPendingInteraction(sessionId)).response_id || '');
+    expect(parked).not.toBe('');
 
     const next = `NEXT_${randomUUID()}`;
     const supersededAt = conversation.deliveries().length;
@@ -193,9 +194,13 @@ for (const declared of approving) {
       timeout: 120_000,
       message: 'the new message must run instead of waiting behind the question',
     }).toContain(next);
-    const settled = await api.waitForSession(sessionId, (detail) => detail.state === 'READY'
-      && !detail.current_turn_id && !detail.pending_interaction);
-    expect(settled.last_turn_status).toBe('COMPLETED');
+    const settled = await api.waitForSessionReady(sessionId);
+    expect(settled.last_response?.outcome, 'the new message ran to completion').toBe('completed');
+    expect(settled.last_response?.response_id).not.toBe(parked);
+    const stopped = visibleMessages(await api.getMessages(sessionId, 100))
+      .find((message) => message.role === 'assistant' && message.id === parked);
+    expect(stopped?.metadata?.outcome, 'the response waiting on the approval was stopped, not answered')
+      .toBe('cancelled');
     expect(await api.downloadFileText(sessionId, target), 'a superseded approval is never granted')
       .toBe('NOT_EXECUTED');
 
@@ -260,8 +265,7 @@ for (const declared of asking) {
     // The confirmation names every answer the form gave, in question order.
     expect(texts.some((text) => text.includes('Answered: BLUE; LARGE')),
       'a button press is confirmed in the conversation').toBe(true);
-    await api.waitForSession(sessionId, (detail) => detail.state === 'READY'
-      && !detail.current_turn_id && !detail.pending_interaction);
+    await api.waitForSessionReady(sessionId);
     const reply = visibleMessages(await api.getMessages(sessionId, 100))
       .filter((message) => message.role === 'assistant').map(messageText).join('\n');
     expect(reply).toContain('BLUE');
@@ -309,8 +313,7 @@ test('a group on the official Satori adapter answers by number and by button', a
     let sessionId = '';
     await expect.poll(() => {
       source.healthy();
-      const inbound = documentsByField('channel_inbound', '$.deployment_id', deployment.deployment_id)
-        .find((row) => row.dedup_key === `e2e:${source.botId}:channel:room-${id}:message:${id}-1`);
+      const inbound = channelInbound(deployment.deployment_id, `e2e:${source.botId}:channel:room-${id}:message:${id}-1`);
       sessionId = String(inbound?.session_id || '');
       return sessionId;
     }, { timeout: 75_000 }).not.toBe('');
@@ -344,8 +347,7 @@ test('a group on the official Satori adapter answers by number and by button', a
     }).toContain(marker);
     expect(source.deliveries.some((row) => row.content.includes('Answered: BLUE; LARGE')),
       'the button press is confirmed in the group').toBe(true);
-    await api.waitForSession(sessionId, (detail) => detail.state === 'READY'
-      && !detail.current_turn_id && !detail.pending_interaction);
+    await api.waitForSessionReady(sessionId);
     const history = visibleMessages(await api.getMessages(sessionId, 100));
     expect(history.filter((message) => message.role === 'user').length,
       'neither answer is a new message to the Agent').toBe(usersBefore);

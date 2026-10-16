@@ -11,9 +11,11 @@ import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
-import { documentsByField } from '../fixtures/dbOracle';
 import { apiPath, appPath } from '../fixtures/env';
 import { channelCallback } from '../fixtures/channelCallback';
+import {
+  agentSessionRows, channelAliasRows, channelInbound, channelInboundRows, channelMessageInputs, sessionRow,
+} from '../fixtures/ingressRecords';
 import { call, deployedApiClient, issueToken, json, requiredEnvironment } from '../fixtures/oidcMachine';
 import { PlatformApi } from '../fixtures/platformApi';
 import { satoriSource } from '../fixtures/satoriSource';
@@ -128,8 +130,7 @@ test('linked participants run as their own accounts, and anyone else is refused 
         channel: { id: room, type: 0 }, user: { id: user, name: user },
         message: { id: messageId, content, created_at: timestamp } });
     }
-    const row = (messageId: string) => documentsByField('channel_inbound', '$.deployment_id', deploymentId)
-      .find((item) => item.dedup_key === alias(messageId));
+    const row = (messageId: string) => channelInbound(deploymentId, alias(messageId));
     const repliesTo = (messageId: string) => live.deliveries
       .filter((delivery) => delivery.content.includes(`<quote id="${messageId}"`))
       .map((delivery) => delivery.content);
@@ -144,6 +145,7 @@ test('linked participants run as their own accounts, and anyone else is refused 
       await expect.poll(() => { live.healthy(); return row(messageId)?.ignored_reason; }, { timeout: 60_000 })
         .toBe(reason);
       expect(row(messageId)).toMatchObject({ state: 'IGNORED', context_excluded: true, session_id: null });
+      expect(channelMessageInputs(row(messageId)!.item_id), 'a refused message runs as nobody').toEqual([]);
       await expect.poll(() => repliesTo(messageId)).toEqual([expect.stringContaining(notice)]);
     }
 
@@ -153,8 +155,8 @@ test('linked participants run as their own accounts, and anyone else is refused 
     say('m-admin', 'p-admin', `${mention}Reply with only the word READY. Do not use tools.`);
     const [memberSession, adminSession] = await Promise.all([settled('m-member'), settled('m-admin')]);
     expect(memberSession).not.toBe(adminSession);
-    expect(documentsByField('sessions', '$.session_id', memberSession)[0]?.user_id).toBe(member.user_id);
-    expect(documentsByField('sessions', '$.session_id', adminSession)[0]?.user_id).toBe(admin.user_id);
+    expect(sessionRow(memberSession)?.user_id).toBe(member.user_id);
+    expect(sessionRow(adminSession)?.user_id).toBe(admin.user_id);
     expect((await call(machine, token.value, 'GET', `/sessions/${memberSession}`)).status).toBe(200);
     expect([403, 404]).toContain((await call(machine, token.value, 'GET', `/sessions/${adminSession}`)).status);
     await expect.poll(() => repliesTo('m-member'), { timeout: 60_000 })
@@ -169,7 +171,7 @@ test('linked participants run as their own accounts, and anyone else is refused 
     // to the agent's answer there, and to the member's own message.
     const answerIndex = live.deliveries.findIndex((delivery) => delivery.content.includes(memberToken));
     const answerId = `reply-${answerIndex + 1}`;
-    await expect.poll(() => documentsByField('channel_aliases', '$.deployment_id', deploymentId)
+    await expect.poll(() => channelAliasRows(deploymentId)
       .find((item) => item.alias === alias(answerId))?.session_id).toBe(memberSession);
     say('m-cross-answer', 'p-admin', `<quote id="${answerId}"/>${mention}Which token was that? Do not use tools.`);
     say('m-cross-message', 'p-admin', `<quote id="m-member"/>${mention}Which token was that? Do not use tools.`);
@@ -181,13 +183,13 @@ test('linked participants run as their own accounts, and anyone else is refused 
     expect(memberMessages.status).toBe(200);
     expect(JSON.stringify(memberMessages.payload)).toContain(memberToken);
     expect(JSON.stringify(memberMessages.payload)).not.toContain('Which token was that?');
-    expect(documentsByField('sessions', '$.agent_id', agentId).map((item) => String(item.session_id)).sort())
+    expect(agentSessionRows(agentId).map((item) => item.session_id).sort())
       .toEqual([...sessions].sort());
   } finally {
     await info.attach('channel-linked-accounts-evidence', {
       body: JSON.stringify({
         agentId, deploymentId, deliveries: source?.deliveries, sourceErrors: source?.errors,
-        inbound: deploymentId ? documentsByField('channel_inbound', '$.deployment_id', deploymentId) : [],
+        inbound: deploymentId ? channelInboundRows(deploymentId) : [],
       }),
       contentType: 'application/json',
     });

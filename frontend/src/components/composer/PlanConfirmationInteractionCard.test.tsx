@@ -21,7 +21,7 @@ afterEach(() => {
 
 const PLAN: PendingPlanConfirmationInteraction = {
   interaction_id: 'plan-interaction-1',
-  turn_id: 'turn-1',
+  response_id: 'turn-1',
   tool_call_id: 'tool-call-plan-1',
   tool_name: 'ExitPlanMode',
   presentation: 'decision',

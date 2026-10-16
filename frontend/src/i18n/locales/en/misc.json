@@ -27,14 +27,11 @@
     "copy_output": "Copy output"
   },
   "composer": {
-    "queue_n": "Queue {{index}}",
     "queue_sending": "Sending",
     "queue_failed": "Send failed",
     "queue_waiting": "Queued",
     "retry": "Retry",
-    "retry_queued": "Retry queued message",
     "send_again": "Send again",
-    "send_again_queued": "Send this message again as a new message",
     "retry_disabled": "This session can't be retried",
     "remove_queued": "Remove queued message",
     "blocking": "Blocking",
@@ -103,7 +100,6 @@
     "creating": "Creating",
     "sending": "Sending",
     "ready": "Ready",
-    "background_running": "Running in background",
     "waiting_input": "Awaiting answer",
     "processing": "Working",
     "provisioning": "Creating",
@@ -114,16 +110,6 @@
     "terminated": "Terminated",
     "recovery_required": "Recovery needed",
     "deleted": "Deleted"
-  },
-  "agent_runtime": {
-    "status_unknown": "Agent status unknown",
-    "with_progress": "Agent {{progress}}",
-    "initializing": "Agent initializing",
-    "terminated": "Terminated",
-    "wake": "Wake agent",
-    "wake_with_progress": "Wake agent: {{progress}}",
-    "failed": "Agent error",
-    "state_generic": "Agent {{label}}"
   },
   "progress": {
     "creating_workspace": "Preparing workspace",

@@ -10,7 +10,8 @@
 可以在 Web 控制台中创建、查询、修改、停用、立即运行、重放和删除 Schedule。
 
 个人 Agent 计划可以让 Assistant 创建，然后在账号设置菜单中点击**个人计划**，
-在弹窗里查看和管理。只需有目标 Agent 的使用权限。下面的控制台操作说明适用于
+在弹窗里查看和管理。你需要有目标 Agent 的使用权限。参见
+[个人 Agent 计划](a2a.md#personal-agent-schedules)。下面的控制台操作说明适用于
 有管理权限的 Agent 计划，以及仅归属用户可管理的 Assistant 触发配置。
 
 ## 使用前提
@@ -19,9 +20,8 @@
 - 以 Agent 所有者或 AstraBox 管理员身份登录。只有 Assistant 的归属用户可以为它
   设置定时计划。
 - AstraBox 安装需要运行一个 scheduler provider。内置 provider 把 Schedule 和运行记录
-  保存在 AstraBox 已使用的 PostgreSQL 或 SQLite 数据库中。设置了
-  `ASTRABOX_SCHEDULER_PROVIDER=none` 的安装不能创建、启用或运行 Schedule；使用 MongoDB
-  且没有安装其他 scheduler provider 的安装必须这样设置。
+  保存在 AstraBox 已使用的 PostgreSQL 数据库中。设置了
+  `ASTRABOX_SCHEDULER_PROVIDER=none` 的安装不能创建、启用或运行 Schedule。
 
 打开**控制台 → 触发配置 → 新建触发配置**，然后选择**定时计划**。表单中包含
 完整的 Schedule 配置：

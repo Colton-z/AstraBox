@@ -1,43 +1,44 @@
 /**
- * E2E: an input the engine already accepted recovers as the same turn when the
- * host runtime is lost before the runner's receipt reaches it.
+ * E2E: an input the engine already accepted is answered once when the host
+ * loses its runtime connection before the runner's receipt reaches it.
  *
- * The window is the platform's own receipt boundary on the runner wire. The
- * host's `RunnerLink.deliver()` sends the `input` frame and waits for the
- * runner's journaled `input_ack`; the runner sends that receipt only after
- * `RunnerSession.submit()` handed the input to the Claude SDK, and the platform
- * journals `input.delivered` only after the receipt arrived. A receipt held on
- * the wire therefore leaves the engine working on an input the host cannot
- * prove it delivered.
+ * The window is the runner wire's receipt boundary. The session's reader hands
+ * an input to the runtime (`ClaudeRuntimeClient.submit` → `RunnerLink.deliver`),
+ * which sends the `input` frame and waits for the runner's journaled
+ * `input_ack`; the runner sends that receipt only after it handed the input to
+ * the Claude SDK, and the platform marks the input delivered
+ * (`session_inputs.state`) only after the receipt arrived. A receipt held on
+ * the wire therefore leaves the engine working on an input the platform cannot
+ * prove it delivered. Handing the same input over again is safe only because
+ * the runtime takes inputs idempotently by input id — that is what this spec
+ * holds the platform to.
  *
  * The fixture relaunches the image-baked runner behind an in-box proxy that
- * forwards every frame verbatim and holds only the armed Session's first
+ * forwards every frame verbatim and holds only the armed session's first
  * `input_ack`. While it is held the spec proves the acceptance twice — on the
- * wire (command id and platform input id of the `input` frame) and natively
- * (the same prompt as one root `user` record in the platform-held SessionStore)
- * — and proves the platform holds no delivery receipt. It then evicts the host
- * runtime, releases the receipt, and requires the ORIGINAL turn to settle
- * COMPLETED with one accepted input, one native user record, one reply, no
- * failure, a clean original request, and a cold page that renders the same.
- * No second user submission is ever made.
+ * wire (the `input` frame carries the platform input id as its command id and
+ * as the SDK message uuid) and natively (the same prompt as one root `user`
+ * record in the platform-held SessionStore) — and proves the platform still
+ * holds the input undelivered. It then evicts the host runtime, releases the
+ * receipt, and requires ONE response to answer the input and complete, with
+ * one native user record, one reply, no failure, a stream that delivered that
+ * reply, and a cold page that renders the same. No second user submission is
+ * ever made.
  *
  * Whole-box placement: the runner process is replaced, so the conversation
  * must own its box (`createColdTestAgent`). Failed runs keep the Session, the
  * Agent, the gated box and its proxy log for diagnosis.
  */
-import { randomUUID } from 'node:crypto';
+import { expect, test } from '@playwright/test';
 
-import { expect, test, type APIRequestContext } from '@playwright/test';
-
-import { AstraApi, messageText } from '../fixtures/astraApi';
+import { AstraApi, messageText, sseFrames, type InputReceipt } from '../fixtures/astraApi';
 import {
-  documentsByField,
-  framesForTurn,
-  sessionEvents,
-  snapshotDoc,
-  waitForTurnTerminalProof,
+  postgresRows,
+  sessionInputRows,
+  sessionOutputRows,
+  sessionResponseRows,
+  sqlLiteral,
 } from '../fixtures/dbOracle';
-import { apiPath } from '../fixtures/env';
 import {
   inputAckGateLogTail,
   installInputAckGate,
@@ -53,16 +54,10 @@ import { openSessionView } from '../fixtures/sessionPage';
 // so the failure that surfaces is this spec's own message, not the watchdog's.
 const SPEC_BUDGET_MS = 170_000;
 // How long the proxy may hold the receipt before it reports `timed_out`. The
-// host gives up its receipt after two 10s windows, so the spec must evict and
-// release well inside that; the proxy budget only bounds a spec that never
-// reaches the release step.
+// runner link gives up on a receipt after two 10s windows, so the spec must
+// evict and release well inside that; the proxy budget only bounds a spec that
+// never reaches the release step.
 const GATE_HOLD_BUDGET_SECONDS = 90;
-// Bound on the original request after the durable recovery, as in the source
-// spec: a request still open then is reported, not waited on.
-const ORIGINAL_REQUEST_GRACE_MS = 30_000;
-
-const RECEIPT_EVENT_TYPES = new Set(['input.delivered', 'input.consumed']);
-const TURN_TERMINAL_EVENT_TYPES = new Set(['turn.completed', 'turn.recovered']);
 
 let agentId = '';
 let sessionId = '';
@@ -81,21 +76,6 @@ interface NativeRootRow {
   entry: Record<string, unknown>;
 }
 
-interface CoupledTurnOutcome {
-  status: number;
-  frameTypes: string[];
-  text: string;
-  errorText: string | null;
-  error: string;
-}
-
-interface CoupledTurn {
-  clientMessageId: string;
-  commandId: string;
-  inputId: string;
-  outcome: Promise<CoupledTurnOutcome>;
-}
-
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`expected an object, received ${JSON.stringify(value)}`);
@@ -103,18 +83,22 @@ function object(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-/** Root (non-subagent) native SessionStore rows the platform holds for the conversation. */
+/** Root (non-subagent) native SessionStore entries the platform holds for the conversation. */
 function nativeRootRows(id: string): NativeRootRow[] {
-  return documentsByField('transcript_entries', '$.platform_session_id', id)
-    .filter((row) => row.subpath == null)
-    .map((row) => ({
+  return postgresRows<{ seq: number; session_id: string; entry_json: string }>(
+    `SELECT e.seq, s.native_session_id AS session_id, e.entry_json `
+      + `FROM transcript_entries e JOIN transcript_scopes s ON s.scope_id = e.scope_id `
+      + `WHERE s.platform_session_id = ${sqlLiteral(id)} AND s.subpath = '' ORDER BY e.seq`,
+  ).map((row) => {
+    const entry = object(JSON.parse(String(row.entry_json)));
+    return {
       seq: Number(row.seq),
-      uuid: String(row.uuid || ''),
+      uuid: String(entry.uuid || ''),
       session_id: String(row.session_id || ''),
       entry_json: String(row.entry_json || ''),
-      entry: object(JSON.parse(String(row.entry_json))),
-    }))
-    .sort((a, b) => a.seq - b.seq);
+      entry,
+    };
+  });
 }
 
 /** The text content of a native `user`/`assistant` record, whichever shape the SDK wrote. */
@@ -133,75 +117,6 @@ function nativeRecordText(entry: Record<string, unknown>): string {
 
 function nativeUserRowsWithPrompt(rows: NativeRootRow[], prompt: string): NativeRootRow[] {
   return rows.filter((row) => row.entry.type === 'user' && nativeRecordText(row.entry) === prompt);
-}
-
-/** `input.delivered` / `input.consumed` journal rows for one command — the platform's own delivery receipts. */
-function deliveryReceipts(id: string, commandId: string): Record<string, unknown>[] {
-  return sessionEvents(id).filter(
-    (event) => RECEIPT_EVENT_TYPES.has(String(event.event_type || ''))
-      && String(event.causation_id || '') === commandId,
-  );
-}
-
-/**
- * The original request, kept as the source spec kept it: one coupled
- * `POST ai-stream` whose body is read to the end. The client message id is
- * minted here so the wire and journal identities can be checked exactly: the
- * platform input id of a UUID client message id is that UUID, and the command
- * id is `<session>:<client message id>` (`turn_dispatch._input_id` /
- * `_input_command_id`).
- */
-function startCoupledTurn(request: APIRequestContext, id: string, content: string): CoupledTurn {
-  const clientMessageId = randomUUID();
-  const outcome = request
-    .fetch(apiPath(`/sessions/${id}/ai-stream`), {
-      method: 'POST',
-      data: { content, client_message_id: clientMessageId },
-      headers: { Accept: 'text/event-stream' },
-      timeout: SPEC_BUDGET_MS,
-    })
-    .then(async (response): Promise<CoupledTurnOutcome> => {
-      const raw = await response.text();
-      const result: CoupledTurnOutcome = {
-        status: response.status(), frameTypes: [], text: '', errorText: null, error: '',
-      };
-      if (!response.ok()) {
-        result.error = `ai-stream -> ${response.status()}: ${raw.slice(0, 500)}`;
-        return result;
-      }
-      for (const rawLine of raw.split('\n')) {
-        const line = rawLine.trim();
-        if (!line.startsWith('data:')) continue;
-        const payload = line.slice(5).trim();
-        if (!payload || payload === '[DONE]') continue;
-        let frame: Record<string, unknown>;
-        try {
-          frame = JSON.parse(payload) as Record<string, unknown>;
-        } catch {
-          continue;
-        }
-        const type = String(frame.type || '');
-        result.frameTypes.push(type);
-        if (type === 'text-delta' && typeof frame.delta === 'string') result.text += frame.delta;
-        else if (type === 'error' && result.errorText === null) result.errorText = String(frame.errorText ?? 'unknown error');
-      }
-      return result;
-    })
-    .catch((error: unknown): CoupledTurnOutcome => ({
-      status: 0, frameTypes: [], text: '', errorText: null, error: String((error as Error)?.message ?? error),
-    }));
-  return { clientMessageId, commandId: `${id}:${clientMessageId}`, inputId: clientMessageId, outcome };
-}
-
-async function waitForCurrentTurn(id: string, timeoutMs: number): Promise<string> {
-  const deadline = Date.now() + timeoutMs;
-  let last = '';
-  while (Date.now() < deadline) {
-    last = String(snapshotDoc(id)?.current_turn_id ?? '').trim();
-    if (last) return last;
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  throw new Error(`session ${id} snapshot never named a current turn within ${timeoutMs}ms`);
 }
 
 async function waitForNativeUserRow(id: string, prompt: string, timeoutMs: number): Promise<NativeRootRow> {
@@ -236,8 +151,8 @@ test.afterEach(async ({ request }, info) => {
       session: sessionId ? await observe(() => api.getSession(sessionId)) : null,
       adminDetail: sessionId ? await observe(() => api.adminSessionDetail(sessionId)) : null,
       history: sessionId ? await observe(() => api.getMessages(sessionId, 100)) : null,
-      snapshot: sessionId ? await observe(() => snapshotDoc(sessionId)) : null,
-      events: sessionId ? await observe(() => sessionEvents(sessionId)) : null,
+      inputs: sessionId ? await observe(() => sessionInputRows(sessionId)) : null,
+      responses: sessionId ? await observe(() => sessionResponseRows(sessionId)) : null,
       native: sessionId ? await observe(() => nativeRootRows(sessionId)) : null,
     }),
     contentType: 'application/json',
@@ -276,24 +191,30 @@ test('an input the engine accepted before its receipt reached the host recovers 
   evidence.sandboxId = sandboxId;
 
   // Relaunch the runner behind the receipt gate, then evict the host's cached
-  // link to the terminated process. The next turn must rebuild its transport
-  // through the gate so the test can control acknowledgement delivery.
+  // link to the terminated process, so the session's reader connects again
+  // through the gate.
   const installed = installInputAckGate(sandbox, { sessionId, maxWaitSeconds: GATE_HOLD_BUDGET_SECONDS });
   evidence.install = installed;
   test.info().annotations.push({ type: 'e2e_input_ack_gate_install', description: JSON.stringify(installed) });
-  const evictedBeforeTurn = await api.adminEvictRuntime(sessionId);
-  expect(evictedBeforeTurn.evicted, 'evict-runtime should report the evicted session').toBe(sessionId);
+  const evictedBeforeSend = await api.adminEvictRuntime(sessionId);
+  expect(evictedBeforeSend.evicted, 'evict-runtime should report the evicted session').toBe(sessionId);
   const afterInstall = await api.getSession(sessionId);
   expect(String(afterInstall.sandbox_id || '').trim(), 'installing the gate must not move the conversation off its box').toBe(sandboxId);
 
-  // The user's tab is open before the turn, as in the source spec; it is not
-  // reloaded until the cold assertions at the end.
+  // The user's tab is open before the message is sent; it is not reloaded
+  // until the cold assertions at the end.
   await openSessionView(page, sessionId);
 
-  // ── THE ORIGINAL REQUEST: exactly one submission for the whole spec. ──────
-  const turn = startCoupledTurn(request, sessionId, prompt);
-  evidence.commandId = turn.commandId;
-  evidence.inputId = turn.inputId;
+  // ── THE ORIGINAL MESSAGE: exactly one submission for the whole spec. ──────
+  // The reply is read off the session's stream from the position before the
+  // send, so the read covers everything the response writes.
+  const afterSeq = Number((await api.getSession(sessionId)).output_seq ?? 0);
+  const receipt: InputReceipt = await api.postTurnInput(sessionId, prompt);
+  evidence.inputId = receipt.input_id;
+  expect(receipt.duplicate, 'the message must be a new input').toBe(false);
+  const streamRead = api.readResponse(sessionId, afterSeq, receipt.input_id, startedAt + SPEC_BUDGET_MS)
+    .then((read) => ({ ...read, error: '' }))
+    .catch((error: unknown) => ({ frames: [] as Record<string, unknown>[], raw: '', error: String((error as Error)?.message ?? error) }));
 
   // ── Upstream acceptance: the runner accepted this exact input and its
   //    receipt is now withheld on the wire. ───────────────────────────────────
@@ -301,38 +222,24 @@ test('an input the engine accepted before its receipt reached the host recovers 
   const held = entered.entered!;
   evidence.entered = held;
   test.info().annotations.push({ type: 'e2e_input_ack_gate_entered', description: JSON.stringify(held) });
-  expect(held.command_id, 'the held receipt must belong to the original request command').toBe(turn.commandId);
-  expect(held.input_id, 'the wire input must carry the platform input id of the original request').toBe(turn.inputId);
-  expect(Number(held.sequence), 'the wire input must carry a positive FIFO sequence').toBeGreaterThan(0);
+  expect(held.command_id, 'the held receipt must be for the platform input of the original message').toBe(receipt.input_id);
+  expect(held.input_id, 'the SDK message must carry the platform input id as its uuid').toBe(receipt.input_id);
+  expect(Number(held.sequence), 'the wire input must carry a positive delivery sequence').toBeGreaterThan(0);
   expect(Number(held.ack_seq), 'the withheld receipt must be a journaled runner frame').toBeGreaterThan(0);
   expect(held.ack_duplicate, 'the withheld receipt must be the first acceptance, not a replayed duplicate').toBe(false);
 
-  // Platform side of the same command while the receipt is withheld: accepted
-  // once under one turn, and no delivery or consumption receipt anywhere.
-  const turnId = await waitForCurrentTurn(sessionId, remaining(15_000));
-  evidence.turnId = turnId;
-  test.info().annotations.push(
-    { type: 'e2e_session_id', description: sessionId },
-    { type: 'e2e_turn_id', description: turnId },
-    { type: 'e2e_command_id', description: turn.commandId },
-  );
-  const accepted = sessionEvents(sessionId).filter(
-    (event) => String(event.event_type || '') === 'command.accepted' && String(event.causation_id || '') === turn.commandId,
-  );
-  expect(accepted, 'the original request must be accepted exactly once').toHaveLength(1);
-  expect(String(accepted[0].turn_id || ''), 'the accepted command must belong to the current turn').toBe(turnId);
-  const acceptedPayload = object(accepted[0].payload);
-  expect(String(acceptedPayload.input_id || ''), 'the journal must record the same platform input id the wire carried').toBe(turn.inputId);
-  expect(acceptedPayload.content, 'the journal must record the submitted prompt').toBe(prompt);
+  // Platform side of the same input while the receipt is withheld: accepted
+  // once, and not marked delivered.
+  const inputsWhileHeld = sessionInputRows(sessionId);
+  expect(inputsWhileHeld.map((row) => row.input_id), 'the message must be accepted exactly once').toEqual([receipt.input_id]);
+  expect(inputsWhileHeld[0].content, 'the platform must record the submitted prompt').toBe(prompt);
   expect(
-    deliveryReceipts(sessionId, turn.commandId),
-    'the platform must hold no delivery or consumption receipt while the runner receipt is withheld',
-  ).toEqual([]);
+    { state: inputsWhileHeld[0].state, delivered_at: inputsWhileHeld[0].delivered_at },
+    'the platform must not have marked the input delivered while the runner receipt is withheld',
+  ).toEqual({ state: 'pending', delivered_at: null });
 
   // ── Native acceptance: the same prompt is one root user record in the
-  //    platform-held SessionStore before anything is evicted. The native uuid
-  //    is the runner's per-attempt vendor identity, so identity here is the
-  //    exact payload plus that uuid, retained below. ──────────────────────────
+  //    platform-held SessionStore before anything is evicted. ────────────────
   const nativeUser = await waitForNativeUserRow(sessionId, prompt, remaining(30_000));
   evidence.nativeUser = { seq: nativeUser.seq, uuid: nativeUser.uuid, session_id: nativeUser.session_id };
   expect(nativeUser.uuid, 'the native user record must carry its native identity').not.toEqual('');
@@ -345,25 +252,24 @@ test('an input the engine accepted before its receipt reached the host recovers 
   expect(gateAtNative.state, 'the receipt must still be withheld when the native record is proven').toBe('entered');
   expect(gateAtNative.released_at, 'nothing may have released the receipt yet').toBeUndefined();
   expect(
-    deliveryReceipts(sessionId, turn.commandId),
-    'the native record must not have been mistaken for a platform delivery receipt',
-  ).toEqual([]);
+    sessionInputRows(sessionId)[0].state,
+    'the native record must not have been mistaken for a delivery receipt',
+  ).toBe('pending');
 
-  // ── FAULT: drop the host-side runtime handle while the receipt is withheld.
-  //    The box, its runner, the SDK process and the native store are untouched. ─
+  // ── FAULT: drop the host-side runtime connection while the receipt is
+  //    withheld. The box, its runner, the SDK process and the native store
+  //    are untouched. ─────────────────────────────────────────────────────────
   const evicted = await api.adminEvictRuntime(sessionId);
   expect(evicted.evicted, 'evict-runtime should report the evicted session').toBe(sessionId);
   const gateAtEvict = readInputAckGate(sandbox);
   expect(gateAtEvict.state, 'the receipt must still be withheld at the moment of eviction').toBe('entered');
-  const detailAfterEvict = await api.adminSessionDetail(sessionId);
-  expect(detailAfterEvict.has_local_runtime, 'eviction must drop the host runtime handle').toBe(false);
   expect(
     String((await api.getSession(sessionId)).sandbox_id || '').trim(),
     'eviction must not drop the session sandbox',
   ).toBe(sandboxId);
   test.info().annotations.push({
     type: 'injected_fault',
-    description: `host runtime evicted while runner input_ack seq=${held.ack_seq} for ${turn.commandId} was withheld`,
+    description: `host runtime evicted while runner input_ack seq=${held.ack_seq} for input ${receipt.input_id} was withheld`,
   });
 
   // ── Release the original receipt. Whatever is still listening gets it now. ─
@@ -372,61 +278,38 @@ test('an input the engine accepted before its receipt reached the host recovers 
   expect(released.state).toBe('released');
   expect(Number(released.holds), 'the receipt must have been held at least once').toBeGreaterThanOrEqual(1);
 
-  // ── The ORIGINAL turn recovers and completes. ─────────────────────────────
-  const settledSnapshot = await waitForTurnTerminalProof(sessionId, turnId, 'COMPLETED', remaining(30_000));
-  evidence.settledSnapshot = settledSnapshot;
-  const settled = await api.waitForSession(
-    sessionId,
-    (session) => session.state === 'READY' && !String(session.current_turn_id || '').trim(),
-    remaining(10_000),
-  );
-  expect(String(settled.last_turn_id || ''), 'the recovered turn must be the original turn').toBe(turnId);
-  expect(String(settled.last_turn_status || ''), 'the original turn must complete').toBe('COMPLETED');
+  // ── ONE response answers the original input, and it completes. ───────────
+  await expect
+    .poll(() => {
+      const rows = sessionResponseRows(sessionId).filter((row) => row.input_ids.includes(receipt.input_id));
+      return rows.map((row) => `${row.status}/${row.outcome ?? ''}`).join(',');
+    }, { timeout: remaining(30_000), message: 'the response to the original input must complete' })
+    .toBe('ended/completed');
+  const answering = sessionResponseRows(sessionId).filter((row) => row.input_ids.includes(receipt.input_id));
+  evidence.responses = answering;
+  expect(answering, 'exactly one response answers the original input').toHaveLength(1);
+  const responseId = answering[0].response_id;
+  expect(answering[0].origin, 'the response answers the input, it was not started by the engine').toBe('input');
+  expect(answering[0].error, 'the response carries no failure').toBeNull();
+  const settled = await api.waitForSessionReady(sessionId, remaining(10_000));
+  expect(settled.last_response?.response_id, 'the last response is the one answering the input').toBe(responseId);
+  expect(settled.last_response?.outcome, 'the original input must be answered').toBe('completed');
   expect(String(settled.sandbox_id || '').trim(), 'recovery must stay on the same sandbox').toBe(sandboxId);
   expect(Boolean(settled.runtime_unavailable), 'recovery must not mark the runtime unavailable').toBe(false);
   expect(String(settled.last_error || '').trim(), 'recovery must not leave a user-visible error').toBe('');
-  expect(settled.delivery_failure ?? null, 'recovery must not report a delivery failure').toBeFalsy();
 
-  // Journal: one acceptance, no failure verdict, a terminal for this turn, and
-  // the FIFO row closed by its own receipts naming the same input.
-  const events = sessionEvents(sessionId);
-  expect(
-    events.filter((event) => String(event.event_type || '') === 'command.accepted' && String(event.causation_id || '') === turn.commandId),
-    'recovery must not accept the input a second time',
-  ).toHaveLength(1);
-  expect(
-    events.filter((event) => String(event.turn_id || '') === turnId && String(event.event_type || '') === 'turn.failed'),
-    'the original turn must never be settled as failed',
-  ).toEqual([]);
-  expect(
-    events.filter((event) => String(event.turn_id || '') === turnId && TURN_TERMINAL_EVENT_TYPES.has(String(event.event_type || ''))).length,
-    'the original turn must carry a durable completed terminal',
-  ).toBeGreaterThanOrEqual(1);
-  const receipts = deliveryReceipts(sessionId, turn.commandId);
-  evidence.receipts = receipts;
-  expect(receipts.length, 'the FIFO row must be closed by a delivery or consumption receipt').toBeGreaterThanOrEqual(1);
-  for (const type of RECEIPT_EVENT_TYPES) {
-    expect(
-      receipts.filter((event) => String(event.event_type || '') === type).length,
-      `${type} must be journaled at most once for the original command`,
-    ).toBeLessThanOrEqual(1);
-  }
-  for (const receipt of receipts) {
-    expect(String(object(receipt.payload).input_id || ''), 'every receipt must name the original input id').toBe(turn.inputId);
-  }
+  // The input: accepted once, taken by the runtime, never refused.
+  const inputsAfter = sessionInputRows(sessionId);
+  evidence.inputs = inputsAfter;
+  expect(inputsAfter.map((row) => row.input_id), 'recovery must not accept the input a second time').toEqual([receipt.input_id]);
+  expect(['delivered', 'admitted'], 'the input must end with the runtime').toContain(inputsAfter[0].state);
+  expect(inputsAfter[0].failure, 'the input must not be refused').toBeNull();
 
-  // Frames: the original turn ends in a finish, carries no error, and any
-  // consumption marker it carries names the original input.
-  const frames = framesForTurn(turnId);
-  const frameTypes = frames.map((frame) => String(object(frame.payload).type || ''));
-  evidence.frameTypes = frameTypes;
-  expect(frameTypes, 'the original turn must not carry an error frame').not.toContain('error');
-  expect(frameTypes, 'the original turn must carry a finish frame').toContain('finish');
-  for (const frame of frames) {
-    const payload = object(frame.payload);
-    if (String(payload.type || '') !== 'data-input-consumed') continue;
-    expect(String(object(payload.data).inputId || ''), 'a consumption marker on this turn must name the original input').toBe(turn.inputId);
-  }
+  // Output: the response ends in one finish and carries no error part.
+  const outputTypes = sessionOutputRows(sessionId, responseId).map((row) => String(row.part.type ?? ''));
+  evidence.outputTypes = outputTypes;
+  expect(outputTypes, 'the response must not carry an error part').not.toContain('error');
+  expect(outputTypes.filter((type) => type === 'finish'), 'the response must store exactly one finish').toHaveLength(1);
 
   // Native custody: the original user record survives by uuid and payload
   // exactly once, the prompt is one native user record in total, and a native
@@ -450,50 +333,32 @@ test('an input the engine accepted before its receipt reached the host recovers 
     'the recovered conversation must persist the native session key its records are filed under',
   ).toBe(nativeUser.session_id);
 
-  // Public history: one user message, one reply on the original turn, no failure card.
+  // Public history: one user message, one reply answering it, no failure.
   const history = await api.getMessages(sessionId, 100);
   expect(history.has_more).toBe(false);
   expect(
     history.messages.filter((message) => message.role === 'user').map(messageText),
-    'durable history must hold exactly the one submitted input',
+    'history must hold exactly the one submitted input',
   ).toEqual([prompt]);
   const assistants = history.messages.filter((message) => message.role === 'assistant');
-  expect(assistants, 'durable history must hold exactly one reply').toHaveLength(1);
-  expect(String(assistants[0].turn_id || ''), 'the reply must belong to the original turn').toBe(turnId);
+  expect(assistants, 'history must hold exactly one reply').toHaveLength(1);
+  expect(assistants[0].id, 'the reply must be the response that answered the input').toBe(responseId);
+  expect(assistants[0].metadata?.outcome, 'the reply must have completed').toBe('completed');
   expect(messageText(assistants[0]).trim(), 'the recovered reply must have content').not.toEqual('');
-  const failureBlocks = [
-    ...(assistants[0].blocks || []),
-    ...(assistants[0].content_blocks || []),
-    ...(assistants[0].parts || []),
-  ].filter((block) => String(block.type || '') === 'turn_failure');
-  expect(failureBlocks, 'the recovered reply must not carry a turn failure').toEqual([]);
 
-  // The original request, as the source asserted it: it was never re-sent, it
-  // ends without an error frame, and it received the reply's text-delta
-  // before its terminal. Whether the community's coupled tail delivers the
-  // recovered text to this response is a live question; the assertion is
-  // kept at the source's strength until a live run answers it.
-  const outcome = await Promise.race([
-    turn.outcome,
-    new Promise<CoupledTurnOutcome>((resolve) => {
-      setTimeout(() => resolve({
-        status: 0, frameTypes: [], text: '', errorText: null, error: 'original request still pending after recovery',
-      }), ORIGINAL_REQUEST_GRACE_MS);
-    }),
-  ]);
-  evidence.originalRequest = outcome;
-  test.info().annotations.push({ type: 'e2e_original_request_outcome', description: JSON.stringify(outcome) });
-  expect(outcome.error, `the original request must survive the eviction; outcome=${JSON.stringify(outcome)}`).toEqual('');
-  expect(outcome.status, 'the original request must have been admitted').toBe(200);
-  expect(outcome.errorText, `the original request must not receive an error frame; outcome=${JSON.stringify(outcome)}`).toBeNull();
+  // The session's stream, read from before the send: it carried this
+  // response, with its text, to a `finish` and without an `error`.
+  const streamed = await streamRead;
+  evidence.stream = { error: streamed.error, types: streamed.frames.map((frame) => frame.type) };
+  expect(streamed.error, `the stream must deliver the response to the original input; read=${JSON.stringify(evidence.stream)}`).toEqual('');
+  const streamedTypes = streamed.frames.map((frame) => String(frame.type ?? ''));
+  expect(streamedTypes, 'the stream must not deliver an error for this response').not.toContain('error');
+  expect(streamedTypes, 'the stream must deliver the reply text').toContain('text-delta');
+  expect(streamedTypes.at(-1), 'the stream must deliver the response to its finish').toBe('finish');
   expect(
-    outcome.frameTypes,
-    `the original request must receive the reply text before its terminal; outcome=${JSON.stringify(outcome)}`,
-  ).toContain('text-delta');
-  expect(
-    outcome.text.trim(),
-    `the original request must carry non-empty reply text; outcome=${JSON.stringify(outcome)}`,
-  ).not.toEqual('');
+    sseFrames(streamed.raw).filter((frame) => frame.type === 'start').map((frame) => frame.messageId),
+    'the stream must deliver one response, the one that answered the input',
+  ).toEqual([responseId]);
 
   // The gate is spent: released once, never timed out.
   const gateFinal = readInputAckGate(sandbox);

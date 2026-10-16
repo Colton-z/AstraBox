@@ -1,5 +1,7 @@
 # 快速入门
 
+> 通过 5 个步骤运行你的第一个 AstraBox Agent。
+
 5 步跑通你的第一个 AstraBox Agent：启动 AstraBox、选择运行环境、创建 Agent、创建 Session、收发消息。自托管服务启动后，无需安装任何 SDK。
 
 ## 前置条件
@@ -20,8 +22,8 @@ Agent 的模型请求统一经过内置网关
 选择端点和管理员管理的凭证。
 
 受保护凭证传递默认启用：Agent 只看到占位符，内置 OpenSandbox provider 会在沙箱进程
-之外，只把真实凭证加入匹配的模型请求。其他沙箱 provider 必须实现同一项 Vault 保护
-能力；不支持时应明确拒绝。
+之外，只把真实凭证加入匹配的模型请求。其他沙箱 provider 必须实现同样的受保护 Vault
+传递；不具备该能力的 provider 会报告不支持。
 
 ## 第 1 步：启动 AstraBox
 
@@ -38,7 +40,7 @@ curl -fsSL https://raw.githubusercontent.com/Colton-z/AstraBox/main/scripts/inst
 
 :::note
 如果希望改为从源码运行，参见[从源码运行](deploy.md#run-from-a-clone)。无人值守安装、
-使用镜像仓库或主机无法访问 GitHub 时，参见[安装脚本的设置](deploy.md#installer-settings)。
+使用保存同一批镜像的镜像仓库或主机无法访问 GitHub 时，参见[安装脚本的设置](deploy.md#installer-settings)。
 :::
 
 :::warning
@@ -47,7 +49,7 @@ curl -fsSL https://raw.githubusercontent.com/Colton-z/AstraBox/main/scripts/inst
 
 ## 第 2 步：选择运行环境
 
-打开「管理台 > 运行环境」，选择一个已启用的运行环境。运行环境决定 Agent 使用的 Agent 程序、沙箱、网络访问和模型连接。
+打开「管理台 > 运行环境」，选择一个已启用、并提供你要使用的 Agent 程序、沙箱、网络访问和模型连接的运行环境。
 
 :::note
 如果没有合适的运行环境，请先创建一个。可配置项参见[运行环境](environments.md)。
@@ -74,6 +76,45 @@ curl -fsSL https://raw.githubusercontent.com/Colton-z/AstraBox/main/scripts/inst
 :::note
 任务运行在 AstraBox 中，而不是浏览器中。离开当前页面不会中断 Agent 的工作，之后可以从侧边栏重新打开这个 Session。
 :::
+
+## 端到端脚本
+
+Agent 的可写字段由其 Environment 所选的 Agent 程序声明，因此 AstraBox 无法为所有部署
+使用同一个固定的 Agent JSON 对象。完成第 1–3 步后，下面的脚本会按名称找到该 Agent，
+创建 Session，发送一条消息，并以流式方式接收结果：
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+SERVICE_URL="${SERVICE_URL:-http://127.0.0.1:8088}"
+AGENT_NAME="${1:?Usage: bash quickstart.sh <agent-name>}"
+
+AGENT_ID=$(curl --fail --silent --show-error "$SERVICE_URL/api/v1/agents" \
+  | jq -er --arg name "$AGENT_NAME" \
+    '[.data[] | select(.name == $name)][0].agent_id')
+
+SESSION_ID=$(curl --fail --silent --show-error --request POST \
+  "$SERVICE_URL/api/v1/agents/$AGENT_ID/conversations" \
+  --header 'Content-Type: application/json' \
+  --header 'Idempotency-Key: quickstart-session' \
+  --data '{}' \
+  | jq -er '.data.session_id')
+
+curl --fail --silent --show-error --output /dev/null --request POST \
+  "$SERVICE_URL/api/v1/sessions/$SESSION_ID/inputs" \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "content": "Write a Python function that computes Fibonacci numbers and run a test.",
+    "client_message_id": "quickstart-message-1"
+  }'
+
+curl --fail --no-buffer --silent --show-error \
+  "$SERVICE_URL/api/v1/sessions/$SESSION_ID/stream?after_seq=0"
+```
+
+如果部署启用了团队登录，请按照[认证](api-authentication.md)中的说明，为每个请求加上
+bearer token。
 
 ## 常见问题
 

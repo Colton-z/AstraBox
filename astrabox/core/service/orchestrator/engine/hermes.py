@@ -1,12 +1,13 @@
-"""Hermes engine adapter using its TUI JSON-RPC protocol over OpenSandbox PTY.
+"""Hermes engine adapter using its TUI gateway JSON-RPC over ``hermes serve``.
 
-Each (user, assistant) profile owns one resident ``tui_gateway.entry`` process
+Each (user, assistant) profile owns one resident ``hermes serve`` backend
 inside the Assistant's sandbox — the vendor's own multi-session runtime — and
 every conversation of that profile is one ``session.create``/``session.resume``
 on it (decision record: ``docs/maintainers/hermes-runtime-preparation.md``).
-The host reaches the gateway through OpenSandbox's execd endpoint; Hermes does
-not expose an application port or receive a platform control key. Model
-credentials follow the separately configured outbound Vault path.
+The host reaches the backend's WebSocket through the sandbox endpoint
+(``docs/maintainers/hermes-transport.md``), and a conversation is read through
+the runtime contract by :mod:`.hermes_runtime_client`. Model credentials
+follow the separately configured outbound Vault path.
 
 Preparation for this engine is therefore the profile's resident gateway, not a
 prepared slot: the Agent-row slot machinery
@@ -40,12 +41,9 @@ from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator.engine.base import (
     EngineAdapter,
     EngineCapabilityManifest,
-    EngineClient,
-    EngineConversationBinding,
     EngineKind,
     EngineStartupContext,
     EngineStartupMaterialRequest,
-    initialize_engine_client,
 )
 from astrabox.core.service.orchestrator.engine.capabilities import (
     CONVERSATION_PLACEMENT_PER_ACCOUNT,
@@ -61,10 +59,6 @@ from astrabox.core.service.orchestrator.engine.registry import (
     register_engine_adapter,
 )
 from astrabox.core.service.orchestrator.engine.emissions import ChildResourceFact
-from astrabox.core.service.orchestrator.engine.hermes_client import (
-    HermesTuiEngineClient,
-    decode_turn_anchor,
-)
 from astrabox.core.service.orchestrator.engine.hermes_a2a import (
     assistant_a2a_peers,
     assistant_managed_config,
@@ -72,10 +66,12 @@ from astrabox.core.service.orchestrator.engine.hermes_a2a import (
 from astrabox.core.service.orchestrator.engine.hermes_cron import CronRunOutput
 from astrabox.core.service.orchestrator.engine.hermes_gateway import (
     HermesGatewayHandle,
-    gateway_handle_for_sandbox,
+    gateway_handle_for_profile,
     resolve_gateway_handle,
     wait_until_backend_idle,
 )
+from astrabox.core.service.orchestrator.engine.hermes_runtime_client import HermesRuntimeClient
+from astrabox.core.service.orchestrator.engine.runtime import RuntimeCursor, initialize_runtime_client
 from astrabox.core.service.orchestrator.runtime.pty_terminal import (
     resolve_sandbox_endpoint,
 )
@@ -201,6 +197,7 @@ _HERMES_PROTECTED_CONFIG_KEYS = (
     "skills",
     "plugins.enabled",
     "plugins.disabled",
+    "display.busy_input_mode",
 )
 
 #: Beside the profile env file: the digest of the process configuration the
@@ -249,12 +246,11 @@ async def _await_hermes_inbox_ready(
         await asyncio.sleep(1.0)
 
 
-class HermesEngineClient(HermesTuiEngineClient):
-    """Public in-tree name for the official Hermes TUI JSON-RPC client."""
-
-
 class HermesEngineAdapter(EngineAdapter):
     """EngineAdapter for Hermes — declares and connects its gateway client."""
+
+    def process_disposal(self) -> Any:
+        return _HERMES_PROCESS_DISPOSAL
 
     def stored_child_resource_facts(
         self,
@@ -299,14 +295,8 @@ class HermesEngineAdapter(EngineAdapter):
         return "assistant"
 
     @property
-    def engine_client_type(self) -> type[EngineClient]:
-        return HermesEngineClient
-
-    def supports_unowned_output_attach(self) -> bool:
-        # Hermes starts runs on its own inside a live session (``/loop`` and
-        # ``/heartbeat`` ticks, finished background work, queued follow-ups);
-        # the client's resident relay publishes them.
-        return True
+    def engine_client_type(self) -> type[Any]:
+        return HermesRuntimeClient
 
     @property
     def capabilities(self) -> EngineRuntimeCapabilities:
@@ -384,7 +374,7 @@ class HermesEngineAdapter(EngineAdapter):
         )
         sandbox = context.sandbox
 
-        engine_client: HermesEngineClient | None = None
+        engine_client: HermesRuntimeClient | None = None
         engine_manifest: EngineCapabilityManifest | None = None
         runtime_identity = context.runtime_identity
         try:
@@ -398,7 +388,7 @@ class HermesEngineAdapter(EngineAdapter):
             spawn_fingerprint = None
             # An output observer only reads a running backend; preparing the
             # profile could restart it under the conversations it serves.
-            if context.attach_mode not in {"lightweight", "observe"}:
+            if context.attach_mode != "lightweight":
 
                 async def _wait_until_backend_idle() -> None:
                     await wait_until_backend_idle(
@@ -429,16 +419,13 @@ class HermesEngineAdapter(EngineAdapter):
                 resume_session_key=context.resume_session_key,
                 profile_ref=profile_ref,
                 spawn_fingerprint=spawn_fingerprint,
-                resident_output_sink=context.resident_output_sink,
-                event_sink=context.event_sink,
             )
-            engine_manifest = await initialize_engine_client(
+            if not context.resume_session_key:
+                await self._save_runtime_state(sandbox.commands, runtime_identity)
+            engine_manifest = await initialize_runtime_client(
                 engine_client,
-                expected_engine_kind="assistant",
-                conversation_binding=EngineConversationBinding(
-                    platform_session_id=context.session_id,
-                    engine_session_key=context.resume_session_key,
-                ),
+                engine_kind="assistant",
+                resume_session_key=context.resume_session_key,
             )
         except BaseException as exc:
             if engine_client is not None:
@@ -457,13 +444,12 @@ class HermesEngineAdapter(EngineAdapter):
             agent=None,
             sandbox=sandbox,
             sandbox_id=extract_sandbox_id(sandbox),
-            engine_session_key=context.resume_session_key,
+            engine_session_key=engine_client.engine_session_key,
             terminal_cwd=context.cwd,
             permission_mode=None,
             engine_kind="assistant",
             engine_client=engine_client,
             engine_manifest=engine_manifest,
-            conversation_bound=True,
             runtime_identity=runtime_identity,
             prepare_engine_input=context.prepare_engine_input,
         )
@@ -477,9 +463,7 @@ class HermesEngineAdapter(EngineAdapter):
         resume_session_key: str | None = None,
         profile_ref: dict[str, str] | None = None,
         spawn_fingerprint: str | None = None,
-        resident_output_sink: Any = None,
-        event_sink: Any = None,
-    ) -> EngineClient:
+    ) -> HermesRuntimeClient:
         """Resolve the profile's resident gateway and open one session on it.
 
         Every conversation of the profile finds the resident backend and pays
@@ -494,12 +478,10 @@ class HermesEngineAdapter(EngineAdapter):
             profile_ref=profile_ref,
             spawn_fingerprint=spawn_fingerprint,
         )
-        return HermesEngineClient(
+        return await HermesRuntimeClient.connect(
             gateway=gateway,
             platform_session_id=session_id,
             resume_session_key=resume_session_key,
-            resident_output_sink=resident_output_sink,
-            event_sink=event_sink,
             read_cron_run_output=_cron_run_output_reader(sandbox, identity),
         )
 
@@ -545,9 +527,10 @@ class HermesEngineAdapter(EngineAdapter):
                 message="Hermes gateway resolution requires the sandbox id",
                 status_code=500,
             )
-        # The backend is already running: `astrabox-hermes-serve` starts it
-        # under supervisord and `astrabox-hermes-forward` publishes it once it
-        # answers, so this resolves an address rather than starting anything.
+        # `astrabox-hermes-serve` starts the backend under supervisord, which
+        # in a freshly initialized box happens only once its profile is
+        # published, and `astrabox-hermes-forward` publishes it once it
+        # answers. This resolves an address rather than starting anything.
         endpoint = await resolve_sandbox_endpoint(sandbox, HERMES_BACKEND_PORT)
         return await resolve_gateway_handle(
             url=hermes_backend_ws_url(endpoint.url),
@@ -557,14 +540,26 @@ class HermesEngineAdapter(EngineAdapter):
             sandbox_id=sandbox_id,
             profile_key=profile_ref["profile_key"],
             spawn_fingerprint=spawn_fingerprint,
+            wait_until_answering=lambda: _wait_until_backend_answers(sandbox.commands),
         )
 
     async def quiesce_and_save_runtime_state(
         self, sandbox: Any, *, runtime_identity: dict[str, Any]
     ) -> None:
         commands: SandboxCommands = sandbox.commands
-        phase = "hermes_stop_state_mirror"
+        phase = "hermes_close_restarts"
         try:
+            # A restart already running finishes first; none starts after.
+            closed = await commands.run(
+                "mkdir -p " + shlex.quote(posixpath.dirname(_HERMES_PAUSING_MARKER))
+                + " && exec flock " + shlex.quote(_HERMES_SUPERVISE_LOCK)
+                + " touch " + shlex.quote(_HERMES_PAUSING_MARKER),
+                # Waits out a restart holding the lock, which supervisor's
+                # stop waits bound.
+                timeout=None,
+            )
+            if closed.exit_code != 0:
+                raise RuntimeError("the box did not record that its restarts are closed")
             for program, phase in (
                 # The scheduler writes the same native state the save reads.
                 (_HERMES_SCHEDULER_PROGRAM, "hermes_stop_scheduler"),
@@ -590,33 +585,7 @@ class HermesEngineAdapter(EngineAdapter):
                 ):
                     raise RuntimeError("supervisor did not confirm STOPPED")
             phase = "hermes_native_state_save"
-            profile_env = posixpath.join(
-                runtime_identity["config_dir"], _HERMES_PROFILE_ENV_FILENAME
-            )
-            save_script = (
-                'set -euo pipefail; source "$1"; '
-                'test "$ASTRABOX_HERMES_PROFILE_LINUX_USER" = "$2"; '
-                'test "$ASTRABOX_HERMES_PROFILE_HOME" = "$3"; '
-                'exec "$HERMES_VENV/bin/python" '
-                '/opt/astrabox/hermes/hermes_state_mirror.py save --profile-env "$1"'
-            )
-            command = shlex.join([
-                "runuser", "-u", runtime_identity["linux_user"], "--", "env",
-                f"HOME={runtime_identity['home_dir']}",
-                f"USER={runtime_identity['linux_user']}",
-                f"LOGNAME={runtime_identity['linux_user']}",
-                "bash", "--noprofile", "--norc", "-c", save_script,
-                "astrabox-hermes-state-save", profile_env,
-                runtime_identity["linux_user"], runtime_identity["home_dir"],
-            ])
-            # A save is as long as the profile's native state is large.
-            result = await commands.run(command, timeout=None)
-            markers = [
-                line for line in result.output.splitlines()
-                if re.fullmatch(r"HERMES_STATE_SAVE_COMPLETE snapshot_id=\S+", line)
-            ]
-            if result.exit_code != 0 or len(markers) != 1:
-                raise RuntimeError("native state save did not confirm its snapshot")
+            await self._save_runtime_state(commands, runtime_identity)
         except Exception as exc:
             raise APIError(
                 code="ASSISTANT_WORKSPACE_CONVERGENCE_FAILED",
@@ -624,6 +593,42 @@ class HermesEngineAdapter(EngineAdapter):
                 status_code=503,
                 data={"phase": phase},
             ) from exc
+
+    async def _save_runtime_state(
+        self, commands: SandboxCommands, runtime_identity: dict[str, Any]
+    ) -> None:
+        """Confirm the complete native/profile snapshot through the installed mirror.
+
+        The mirror serializes saves and uses the supplier's WAL-consistent
+        backup, so a new conversation can be saved while siblings are running.
+        """
+        profile_env = posixpath.join(
+            runtime_identity["config_dir"], _HERMES_PROFILE_ENV_FILENAME
+        )
+        save_script = (
+            'set -euo pipefail; source "$1"; '
+            'test "$ASTRABOX_HERMES_PROFILE_LINUX_USER" = "$2"; '
+            'test "$ASTRABOX_HERMES_PROFILE_HOME" = "$3"; '
+            'exec "$HERMES_VENV/bin/python" '
+            '/opt/astrabox/hermes/hermes_state_mirror.py save --profile-env "$1"'
+        )
+        command = shlex.join([
+            "runuser", "-u", runtime_identity["linux_user"], "--", "env",
+            f"HOME={runtime_identity['home_dir']}",
+            f"USER={runtime_identity['linux_user']}",
+            f"LOGNAME={runtime_identity['linux_user']}",
+            "bash", "--noprofile", "--norc", "-c", save_script,
+            "astrabox-hermes-state-save", profile_env,
+            runtime_identity["linux_user"], runtime_identity["home_dir"],
+        ])
+        # A save is as long as the profile's native state is large.
+        result = await commands.run(command, timeout=None)
+        markers = [
+            line for line in result.output.splitlines()
+            if re.fullmatch(r"HERMES_STATE_SAVE_COMPLETE snapshot_id=\S+", line)
+        ]
+        if result.exit_code != 0 or len(markers) != 1:
+            raise RuntimeError("native state save did not confirm its snapshot")
 
     async def list_scheduled_jobs(
         self, sandbox: Any, *, runtime_identity: dict[str, Any]
@@ -657,9 +662,6 @@ class HermesEngineAdapter(EngineAdapter):
             for job in jobs
             if isinstance(job, dict)
         ]
-
-    def process_disposal(self) -> Any:
-        return _HERMES_PROCESS_DISPOSAL
 
 
 # The shared assistant workspace root baked into the Hermes runtime image (WORKDIR).
@@ -755,27 +757,6 @@ def _safe_hermes_profile_segment(value: Any, *, label: str) -> str:
             status_code=500,
         )
     return text
-
-
-def _build_hermes_workspace_identity(
-    *,
-    user_id: str,
-    assistant_id: str,
-    sandbox_id: str | None,
-) -> dict[str, Any]:
-    profile_key = f"{user_id}:{assistant_id}"
-    identity = plan_assistant_profile_identity(
-        engine_kind="assistant",
-        user_id=user_id,
-        assistant_id=assistant_id,
-        sandbox_id=sandbox_id,
-    )
-    identity["stage_evidence"] = {
-        "hermes_profile_key": profile_key,
-        "hermes_control_transport": "hermes_serve_websocket",
-        "hermes_control_port": HERMES_BACKEND_PORT,
-    }
-    return identity
 
 
 async def _prepare_hermes_profile(
@@ -1088,6 +1069,41 @@ def _hermes_process_digest(env: dict[str, str], overwrite_blob: dict[str, Any]) 
 #: itself binds loopback (see `astrabox-hermes-serve` for why); this is the
 #: one the sandbox's endpoint face knows about.
 HERMES_BACKEND_PORT = 9118
+#: How long a new attachment waits for the backend to answer. A cold backend
+#: loads its profile, plugins and model configuration before it serves the
+#: first request, which takes seconds, not milliseconds.
+_BACKEND_ANSWER_BUDGET_SECONDS = 120
+
+
+async def _wait_until_backend_answers(commands: SandboxCommands) -> None:
+    """Wait, inside the box, until the backend answers through its published port.
+
+    A provider's endpoint can accept a WebSocket upgrade for a port nothing
+    serves yet and close it afterwards, so a failed attachment does not say
+    whether the backend is starting. Any HTTP status through the forwarder does:
+    the forwarder opens the port only once the backend answers, and relays to
+    it, so an answer also covers a backend restarted behind a forwarder that
+    stayed up.
+    """
+    probe = (
+        f"deadline=$((SECONDS + {_BACKEND_ANSWER_BUDGET_SECONDS})); "
+        "until code=$(curl -sS -o /dev/null -m 3 -w '%{http_code}' "
+        f"http://127.0.0.1:{HERMES_BACKEND_PORT}/api/auth/me 2>/dev/null) "
+        '&& [ "$code" != 000 ]; do '
+        'if [ "$SECONDS" -ge "$deadline" ]; then exit 124; fi; sleep 0.2; done'
+    )
+    result = await commands.run(
+        "bash -c " + shlex.quote(probe), timeout=_BACKEND_ANSWER_BUDGET_SECONDS + 30,
+    )
+    if result.exit_code != 0:
+        raise APIError(
+            code="HERMES_BACKEND_NOT_READY",
+            message=(
+                "the Assistant's Hermes backend did not answer within "
+                f"{_BACKEND_ANSWER_BUDGET_SECONDS}s (probe exit {result.exit_code})"
+            ),
+            status_code=503,
+        )
 
 
 #: The upgrade header that carries the backend credential from this host into
@@ -1203,6 +1219,13 @@ _HERMES_BACKEND_PROGRAM = "astrabox-hermes"
 #: Hermes' gateway with no messaging platform: it runs the profile's cron jobs
 #: and reads the same environment and MCP configuration as the backend.
 _HERMES_SCHEDULER_PROGRAM = "astrabox-hermes-scheduler"
+#: Held by a profile restart and by the pause that ends restarts, so the two
+#: never interleave in the box.
+_HERMES_SUPERVISE_LOCK = "/run/astrabox/hermes-supervise.lock"
+#: Written under that lock when the box's Assistant starts pausing; a restart
+#: that finds it does not start the services the pause is stopping.
+_HERMES_PAUSING_MARKER = "/run/astrabox/hermes-pausing"
+_HERMES_RESTART_REFUSED_EXIT = 75
 
 
 async def _hermes_process_standing(
@@ -1295,7 +1318,9 @@ async def _restart_hermes_backend(commands: SandboxCommands) -> None:
     in place instead (:func:`_apply_hermes_profile_in_place`).
 
     Restarting ends every turn running in the backend, so callers wait until
-    none is (``wait_until_backend_idle``) before calling this.
+    none is (``wait_until_backend_idle``) before calling this. A restart and
+    the pause that saves the box's native state take the same lock in the box,
+    and once a pause has begun no restart runs there.
 
     The host is not assembling a capability here — the service is the image's,
     supervised by the image — it is telling a service its inputs moved. The
@@ -1303,16 +1328,29 @@ async def _restart_hermes_backend(commands: SandboxCommands) -> None:
     """
 
     # Each program may take its supervisor stop wait before starting again.
+    restart = (
+        f"test ! -e {shlex.quote(_HERMES_PAUSING_MARKER)} || exit {_HERMES_RESTART_REFUSED_EXIT}; "
+        f"exec supervisorctl restart {_HERMES_BACKEND_PROGRAM} {_HERMES_SCHEDULER_PROGRAM}"
+    )
     result = await commands.run(
         "bash -lc "
         + shlex.quote(
-            "set -euo pipefail; exec supervisorctl restart "
-            + _HERMES_BACKEND_PROGRAM
-            + " "
-            + _HERMES_SCHEDULER_PROGRAM
+            "set -euo pipefail; mkdir -p "
+            + shlex.quote(posixpath.dirname(_HERMES_SUPERVISE_LOCK))
+            + "; exec flock " + shlex.quote(_HERMES_SUPERVISE_LOCK)
+            + " bash -c " + shlex.quote(restart)
         ),
         timeout=None,
     )
+    if result.exit_code == _HERMES_RESTART_REFUSED_EXIT:
+        raise APIError(
+            code="ASSISTANT_WORKSPACE_NOT_READY",
+            message=(
+                "the Assistant is pausing, so its Hermes backend is not "
+                "restarted for a changed profile"
+            ),
+            status_code=409,
+        )
     output = result.output
     if result.exit_code != 0 or "started" not in output:
         raise APIError(
@@ -1474,6 +1512,22 @@ def _build_hermes_config_overwrite(
     switch in its configuration guide). Hermes titles a session with two model
     calls on every conversation's first turn, and nothing in the platform reads
     that title: conversation titles are the platform's own.
+
+    Hermes' busy-input mode is ``queue`` (``display.busy_input_mode``, the
+    "Busy Input Mode" section of the vendor's CLI guide, read on every busy
+    submit by ``_load_busy_input_mode`` in ``tui_gateway/server.py``). Its
+    default, ``interrupt``, redirects the running turn with a message sent
+    during it, or hard-interrupts the turn; under ``queue`` the message waits
+    and runs as the next turn. That is the order the platform promises for a
+    conversation's inputs, and the order the runtime client reads Hermes'
+    turns in (``engine/hermes_runtime_client.py``).
+
+    Hermes' model catalog fetch (``model_catalog.enabled``) stays off: its
+    hosts are outside the box's egress policy, and models use the custom
+    provider. Package installs (``security.allow_lazy_installs``) are enabled
+    for native Hermes plugins, whose declaration admits PyPI and whose
+    dependencies the profile merger installs through Hermes' own installer
+    into ``HERMES_LAZY_INSTALL_TARGET``. Other profiles keep installs disabled.
     """
     model_base_url = _resolve_hermes_openai_base_url(model_access)
     if not model_base_url:
@@ -1507,6 +1561,14 @@ def _build_hermes_config_overwrite(
             }
         ],
         "auxiliary": {"title_generation": {"enabled": False}},
+        "display": {"busy_input_mode": "queue"},
+        "model_catalog": {"enabled": False},
+        "security": {
+            "allow_lazy_installs": any(
+                plugin["kind"] == "hermes-plugin"
+                for plugin in _hermes_plugin_placements(template)
+            ),
+        },
         # The owner's timezone, which Hermes names in every system prompt and
         # reads cron schedules in. Empty is Hermes' own "unset": the
         # server's local time.
@@ -1613,58 +1675,50 @@ def _looks_anthropic_compatible_base_url(value: str) -> bool:
 
 
 class HermesProcessDisposal:
-    """Dispose one Hermes vendor session from its durable engine anchor."""
+    """Close a recorded native session on its existing profile attachment."""
 
     async def dispose_process(
         self,
         *,
         sandbox_id: str,
-        engine_turn_id: str,
+        engine_session_key: str,
+        runtime_cursor: dict | None,
+        workspace_ref: dict,
     ) -> None:
-        """Close one conversation's session on the profile's resident gateway.
-
-        The journal retains the opaque turn id after the active snapshot has
-        settled. Decoding it belongs to this adapter; the runtime manager does
-        not need to understand Hermes' identifiers.
-
-        Only the conversation's vendor session ends here. The backend is the
-        workspace's resident runtime, shared with sibling conversations and
-        owned by the image's supervisor, so nothing here stops it.
-        """
-        anchor = decode_turn_anchor(engine_turn_id)
-        resident = gateway_handle_for_sandbox(sandbox_id)
-        if resident is None:
-            # Only this host's own attachment can carry the close. A PTY-era
-            # disposal could open a temporary one, because the anchor named
-            # the PTY and execd would hand it over; the backend's address now
-            # needs the profile's credential, which an opaque turn id does not
-            # carry and must not.
-            #
-            # So the vendor session is left open, and it is bounded rather
-            # than leaked: it lives inside a backend that is restarted with
-            # its box and destroyed with the workspace. Said out loud because
-            # it IS a reduction from what the PTY path could do.
-            logger.info(
-                "Hermes session.close skipped: this host holds no attachment "
-                "to sandbox=%s; the vendor session ends with the backend "
-                "(tui_session=%s)",
-                sandbox_id,
-                anchor["tui_session_id"],
-            )
+        if not engine_session_key:
             return
-        try:
-            await resident.request(
-                "session.close",
-                {"session_id": anchor["tui_session_id"]},
-            )
-        except Exception as exc:
-            logger.warning(
-                "Hermes session.close failed on the resident backend: "
-                "sandbox=%s tui_session=%s err=%s",
-                sandbox_id,
-                anchor["tui_session_id"],
-                exc,
-            )
+        profile = _resolve_hermes_profile_ref(
+            user_id=workspace_ref.get("user_id"), assistant_id=workspace_ref.get("assistant_id"),
+        )
+        gateway = gateway_handle_for_profile(sandbox_id=sandbox_id, profile_key=profile["profile_key"])
+        if gateway is None:
+            # This capability only acts through the attachment this host owns;
+            # a different host's cleanup retains its established behavior.
+            logger.info("Hermes final disposal has no local profile attachment sandbox=%s", sandbox_id)
+            return
+        live = await gateway.request("session.active_list", {})
+        sessions = live.get("sessions")
+        if not isinstance(sessions, list) or any(
+            not isinstance(row, dict) or not row.get("id") or not row.get("session_key") for row in sessions
+        ):
+            raise RuntimeError("Hermes did not report its live native conversation identities")
+        if not sessions:
+            return
+        cursor = RuntimeCursor.from_json(runtime_cursor)
+        # Native compression rotates session_key in the same TUI record and
+        # continues emitting on its unchanged id. Only this backend's epoch
+        # makes the recorded id authoritative across that key rotation.
+        epoch, _, session_id = (cursor.generation if cursor is not None else "").rpartition(":")
+        if session_id and epoch == gateway.replay_epoch:
+            targets = [row for row in sessions if row["id"] == session_id]
+        else:
+            targets = [row for row in sessions if row["session_key"] == engine_session_key]
+        # An absent target is already closed. Every id comes from this scoped
+        # backend's list; an older incarnation's cursor cannot select an id.
+        for row in targets:
+            closed = await gateway.request("session.close", {"session_id": row["id"]})
+            if not isinstance(closed.get("closed"), bool):
+                raise RuntimeError("Hermes did not confirm native session closure")
 
 
 _HERMES_PROCESS_DISPOSAL = HermesProcessDisposal()

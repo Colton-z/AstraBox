@@ -2,46 +2,48 @@
  * E2E: an approval left waiting while nobody is connected is still answerable
  * long after the box would have given up on its own.
  *
- * A parked session's box blocks its PreToolUse hook holding the answer slot and
- * stops waiting once the HOST has been absent longer than its budget
- * (`DEFAULT_INTERACTION_WAIT_S = 120s`). The budget starts when the link drops
- * and a reattach resets it, so what keeps a parked approval alive is something
- * reconnecting while nobody is looking — the reconciler being present for a
- * session it must never recover.
+ * The runner in the box holds a pending approval's answer slot only while its
+ * host is connected: once the HOST has been absent longer than its budget
+ * (`ASTRABOX_RUNNER_INTERACTION_WAIT_SECONDS`, 120s by default), it stops
+ * waiting. The budget starts when the link drops and a reattach resets it. The
+ * runner serves one host link, the session's reader, and a session needs a
+ * reader for as long as its runtime lives: when a reader's link drops, the
+ * reader host connects again (the reconnect loop of `ReaderHost._serve` in
+ * `session_runtime/host.py`), and the periodic sweep starts a reader for any
+ * session with a live runtime and no live reader lease. That reconnection,
+ * made while nobody is looking, is what keeps a parked approval alive.
  *
- * WHY THIS SPENDS TWO MINUTES DOING NOTHING. Two separate mechanisms make an
- * approval answerable after the platform loses its runtime, and they are
- * distinguishable only in time:
- *
- *   - the answer path attaches before it refuses, so a click that arrives
- *     PROMPTLY succeeds whether or not anything was present in between;
- *   - the reconciler's presence keeps the box from giving up at all, which is
- *     the only thing that helps a click arriving LATE.
- *
- * A gate that answers promptly passes on the first mechanism alone and says
- * nothing about the second. So this one waits past the budget, touching
- * nothing, and only then answers. The wait is the assertion.
+ * WHY THIS SPENDS TWO MINUTES DOING NOTHING. A person's answer is stored on the
+ * interaction and handed to the runtime by whichever reader holds the session,
+ * so the answer request is accepted whether or not the box is still waiting.
+ * What separates the two is the runtime taking the answer: a box that is still
+ * waiting runs the tool and the interaction closes as answered; a box that
+ * gave up does not, and the interaction closes as expired. A click that
+ * arrives PROMPTLY reaches a waiting box whether or not anything was present
+ * in between; only presence helps a click arriving LATE. So this spec waits
+ * past the budget, touching nothing, and only then answers. The wait is the
+ * assertion.
  *
  * The sibling spec `backend-restart-rehydrates-resident-session-and-pending-
  * approval` is the prompt-click half of this pair; both read success the same
- * way — accepted, answered, and a durable terminal on the same turn — and
- * differ only in when the click lands.
+ * way — accepted, closed as answered, and the same response recorded as ended
+ * completed — and differ only in when the click lands.
  *
- * WHAT THIS DOES NOT DO, deliberately: it does not write a stale heartbeat into
- * the store. That looks like a dead worker and is not one — the link is still
- * up, so the box's budget never starts and the scene cannot exercise what it
- * claims to. The link has to actually drop, which is what evicting the runtime
- * does.
+ * WHAT THIS DOES NOT DO, deliberately: it does not expire the reader's lease in
+ * the database. That looks like an absent reader and is not one — the link is
+ * still up, so the box's budget never starts and the scene cannot exercise
+ * what it claims to. The link has to actually drop, which is what evicting the
+ * runtime does: it disconnects the platform's client to the box.
  *
  * HOW TO PROVE THIS GATE CAN GO RED. Waiting longer cannot do it: while the
- * presence arm works it reconnects and resets the budget, so every duration
- * passes and a green run says nothing. The only discriminator is removing the
- * arm. In `session_kernel/service_mixins/bootstrap.py`, construct the
- * ReconcileWorker with `attach_parked_runtime_fn=None` — the parked branch
- * already guards on that being set, so one word disables presence and nothing
- * else — then redeploy and run this spec. It must fail at the approval with
- * the box having given up. A run that stays green with the arm removed is a
- * gate that proves nothing, and the fault is in the gate, not the product.
+ * reader reconnects it resets the budget, so every duration passes and a green
+ * run says nothing. The only discriminator is removing the reconnection: make
+ * `ReaderHost._serve` (`session_runtime/host.py`) return when its reader's
+ * stream ends instead of connecting again, and keep `ReaderHost._sweep_forever`
+ * from starting a reader for the session — then redeploy and run this spec. It
+ * must fail at the approval with the box having given up. A run that stays
+ * green with the reconnection removed is a gate that proves nothing, and the
+ * fault is in the gate, not the product.
  */
 import { test, expect } from '@playwright/test';
 
@@ -49,12 +51,17 @@ import { insist } from '../fixtures/insist';
 import { AstraApi, type PendingInteraction } from '../fixtures/astraApi';
 import { trackSessions } from '../fixtures/sessionCleanup';
 import { parseTimeoutEnv } from '../fixtures/env';
-import { snapshotDoc, waitForTurnTerminalProof } from '../fixtures/dbOracle';
+import {
+  sessionInteractionRows,
+  sessionOutputRows,
+  sessionResponseRows,
+  type SessionResponseRow,
+} from '../fixtures/dbOracle';
 
-// Two minutes of deliberate waiting plus a provision, a gated turn and a
-// terminal — this spec is slow because the property is about elapsed time.
-// The permission prompt is model-dependent; a bounded probe skips rather than
-// asserting on a model that chose not to call the tool.
+// Two minutes of deliberate waiting plus a provision, a gated response and its
+// end — this spec is slow because the property is about elapsed time.
+// The permission prompt is model-dependent; a bounded probe asks again rather
+// than asserting on a model that chose not to call the tool.
 /** What a user says when a model answers instead of acting. */
 const INSIST_NUDGE =
   "You answered without using the tool. Do the tool call now, exactly as asked above, before replying again. \u8bf7\u73b0\u5728\u5c31\u6309\u4e0a\u9762\u7684\u8981\u6c42\u8c03\u7528\u5de5\u5177\uff0c\u4e0d\u8981\u53ea\u7528\u6587\u5b57\u56de\u7b54\u3002";
@@ -64,20 +71,38 @@ const PROMPT_MS = parseTimeoutEnv('ASTRABOX_E2E_PARKED_PROMPT_TIMEOUT_MS', 90_00
 // stopped waiting by the time the answer arrives. Below that number this spec
 // proves nothing the sibling does not already prove.
 //
-// The budget is the DEPLOYMENT's, not the image's: the runner has always taken
-// `interaction_wait_s` per activation and the platform now sends
+// The budget is the DEPLOYMENT's, not the image's: the runner takes
+// `interaction_wait_s` per activation and the platform sends
 // `ASTRABOX_RUNNER_INTERACTION_WAIT_SECONDS`. `run-playwright.sh` reads that
 // value off the running server and passes this one as it plus ten seconds, so
 // the two are one number and the lane cannot drift from what it is testing.
 // The fallback is the product default plus that margin, for a run outside the
-// lane. Against a 120s default this wait alone was 72% of the fixed 180s test
-// budget, and the spec finished at 183s -- over the wall it had passed under
-// before, having proved nothing extra for the extra seconds.
+// lane. Against a 120s default this wait alone is most of the fixed 180s test
+// budget, so the lane's shorter setting is what lets the spec fit.
 const PAST_THE_BUDGET_MS = parseTimeoutEnv('ASTRABOX_E2E_PARKED_ABSENCE_MS', 130_000);
-// Answering resumes the same model turn, so its continuation gets the normal
-// turn budget rather than a shorter terminal-only cutoff.
+// Answering resumes the same model response, so its continuation gets the
+// normal response budget rather than a shorter end-only cutoff.
 const TURN_BUDGET_MS = parseTimeoutEnv('ASTRABOX_E2E_TURN_TIMEOUT_MS', 180_000);
 const TERMINAL_MS = parseTimeoutEnv('ASTRABOX_E2E_PARKED_TERMINAL_TIMEOUT_MS', TURN_BUDGET_MS);
+
+/**
+ * What the platform recorded about the paused response and the approval it
+ * waits on: the response's status, the interaction's status, and which
+ * response the interaction pauses.
+ */
+function pausedFacts(sessionId: string, responseId: string, interactionId: string): {
+  response: string | null;
+  interaction: string | null;
+  pauses: string | null;
+} {
+  const response = sessionResponseRows(sessionId).find((row) => row.response_id === responseId);
+  const interaction = sessionInteractionRows(sessionId).find((row) => row.interaction_id === interactionId);
+  return {
+    response: response?.status ?? null,
+    interaction: interaction?.status ?? null,
+    pauses: interaction?.response_id ?? null,
+  };
+}
 
 // No store fault is injected, so there is nothing to restore afterwards.
 let sessionId = '';
@@ -100,8 +125,8 @@ test('an approval nobody attended to for longer than the box waits is still answ
 
   // Ask again rather than skip: a skip ends the round exactly as a
   // failure does, so the model's choice decided it instead of the
-  // platform. The probe returns the moment the turn settles ungated,
-  // so a declined ask costs that turn rather than the whole budget.
+  // platform. The probe returns the moment the response settles ungated,
+  // so a declined ask costs that response rather than the whole budget.
   const pending = await insist<PendingInteraction>({
     ask: async (attempt) => {
       if (attempt > 1) await api.postTurnInput(sessionId, INSIST_NUDGE);
@@ -115,29 +140,33 @@ test('an approval nobody attended to for longer than the box waits is still answ
   const interactionId = String(pending?.interaction_id || '').trim();
   expect(interactionId, 'the parked session must name its interaction').not.toEqual('');
 
-  const parkedTurnId = String(snapshotDoc(sessionId)?.current_turn_id ?? '').trim();
-  expect(parkedTurnId, 'the parked turn must have an id to prove a terminal on').not.toEqual('');
-  expect(
-    String(snapshotDoc(sessionId)?.conversation_state ?? ''),
-    'the session must genuinely be parked before the link is dropped',
-  ).toBe('WAITING_FOR_INTERACTION');
+  const parkedResponseId = String(pending?.response_id ?? '').trim();
+  expect(parkedResponseId, 'the parked interaction must name the response it pauses').not.toEqual('');
+  // Polled: the detail can name the interaction a moment before the reader's
+  // batch carrying it is the one this read sees; the interaction and the
+  // response's waiting status are written by the same statement batch.
+  await expect.poll(
+    () => pausedFacts(sessionId, parkedResponseId, interactionId),
+    { timeout: 15_000, message: 'the session must genuinely be parked before the link is dropped' },
+  ).toEqual({ response: 'waiting', interaction: 'open', pauses: parkedResponseId });
 
-  // Drop the link for real. A stale heartbeat in the store would not do this:
-  // the box watches its host connection, not the database.
+  // Drop the link for real. An expired reader lease in the database would not
+  // do this: the box watches its host connection, not the database.
   await api.adminEvictRuntime(sessionId);
 
   // Now do nothing at all for longer than the box waits on an absent host.
-  // Nothing here may touch the session — reading it through an endpoint that
-  // attaches would be the test performing the presence it is trying to observe.
+  // Nothing here may touch the session: the test must not perform the presence
+  // it is trying to observe.
   await new Promise((resolve) => setTimeout(resolve, PAST_THE_BUDGET_MS));
 
-  // The answer arrives late. It must still be accepted, and the decision must
-  // actually reach the tool call rather than being accepted into nothing.
+  // The answer arrives late. It is stored for the interaction, which the
+  // platform accepts whatever the box did meanwhile; whether the decision
+  // reached the tool call is read below, from how the interaction closes.
   const answered = await api.approvePendingInteraction(sessionId, { interactionId });
   expect(
     Boolean(answered.answered),
     `approving after ${Math.round(PAST_THE_BUDGET_MS / 1000)}s of nobody being connected was ` +
-      'refused: the box gave up on a wait nobody abandoned, which is what presence prevents',
+      'refused: the interaction no longer counted as open',
   ).toBe(true);
   expect(
     String(answered.interaction_id || ''),
@@ -145,32 +174,27 @@ test('an approval nobody attended to for longer than the box waits is still answ
   ).toBe(interactionId);
 
   // Accepted is not the same as effective. One answer is also not guaranteed
-  // to be the last: the model may gate a further tool call on this same turn.
-  // Keep answering distinct follow-up gates inside the original continuation
-  // budget, with a hard cap so a model loop cannot be laundered into a pass.
+  // to be the last: the model may gate a further tool call on this same
+  // response. Keep answering distinct follow-up gates inside the original
+  // continuation budget, with a hard cap so a model loop cannot be laundered
+  // into a pass.
   const answeredIds = new Set([interactionId]);
   const terminalDeadline = Date.now() + TERMINAL_MS;
+  let parked: SessionResponseRow | undefined;
   while (Date.now() < terminalDeadline) {
-    const currentSnapshot = snapshotDoc(sessionId);
-    const terminalFrame = currentSnapshot?.last_turn_terminal_frame;
-    if (
-      terminalFrame
-      && typeof terminalFrame === 'object'
-      && String((terminalFrame as Record<string, unknown>).turn_id ?? '') === parkedTurnId
-    ) {
-      break;
-    }
+    parked = sessionResponseRows(sessionId).find((row) => row.response_id === parkedResponseId);
+    if (parked?.status === 'ended') break;
 
     const again = await api.getPendingInteraction(sessionId);
     const againId = String(again?.interaction_id ?? '').trim();
     if (againId && !answeredIds.has(againId)) {
       expect(
-        String(currentSnapshot?.current_turn_id ?? '').trim(),
-        'a follow-up gate must belong to the same parked turn the late answer resumed',
-      ).toBe(parkedTurnId);
+        String(again?.response_id ?? '').trim(),
+        'a follow-up gate must belong to the same parked response the late answer resumed',
+      ).toBe(parkedResponseId);
       expect(
         answeredIds.size,
-        'the requested single-Write turn should not need more than 4 gates — a longer chain is the model looping',
+        'the requested single-Write response should not need more than 4 gates — a longer chain is the model looping',
       ).toBeLessThan(4);
       const furtherAnswer = await api.approvePendingInteraction(sessionId, {
         interactionId: againId,
@@ -182,14 +206,28 @@ test('an approval nobody attended to for longer than the box waits is still answ
     await new Promise((resolve) => setTimeout(resolve, 1_000));
   }
 
-  // The turn the late approval unblocked has to reach a durable terminal, or
-  // the decision was merely recorded and dropped. Use only the budget left by
-  // the bounded answering loop above.
-  await waitForTurnTerminalProof(
-    sessionId,
-    parkedTurnId,
-    'COMPLETED',
-    Math.max(1_000, terminalDeadline - Date.now()),
+  // The response the late approval unblocked has to be recorded as ended
+  // completed, or the decision was merely recorded and dropped.
+  expect(
+    parked ? `${parked.status}/${parked.outcome ?? ''}` : 'missing',
+    `the parked response must end completed after the late approval; row=${JSON.stringify(parked)}`,
+  ).toBe('ended/completed');
+  expect(
+    sessionOutputRows(sessionId, parkedResponseId).map(({ part }) => part).at(-1)?.type,
+    'the parked response ends on its own recorded finish part',
+  ).toBe('finish');
+  // A box that gave up leaves the stored answer untaken: its interaction closes
+  // as expired, not answered.
+  expect(
+    sessionInteractionRows(sessionId)
+      .filter((row) => answeredIds.has(row.interaction_id))
+      .map((row) => ({ interaction_id: row.interaction_id, status: row.status }))
+      .sort((left, right) => left.interaction_id.localeCompare(right.interaction_id)),
+    'every late answer must have been taken by the waiting runtime, closing its approval as answered',
+  ).toEqual(
+    [...answeredIds]
+      .map((id) => ({ interaction_id: id, status: 'answered' }))
+      .sort((left, right) => left.interaction_id.localeCompare(right.interaction_id)),
   );
   expect(
     await api.downloadFileText(sessionId, 'notes.txt', Math.max(1_000, terminalDeadline - Date.now())),

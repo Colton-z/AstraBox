@@ -7,17 +7,15 @@ import { AssistantWelcome } from '../../assistant/AssistantWelcome';
 
 // The scrollable message list and empty state for the main pane.
 export function SessionConversationView({
-  sessionId, messages, displayedQueueLength, isStreaming, isSubmitted, pendingToolCallId,
-  activeTurnId, hasPendingInteraction, pendingConversationScrollKey,
+  sessionId, messages, isWorking, pendingToolCallId,
+  writingMessageId, hasPendingInteraction, pendingConversationScrollKey,
   firstItemIndex, hasMore, loadingMore, loadMoreError, onLoadOlder, assistantId,
 }: {
   sessionId: string;
   messages: SDKUIMessage[];
-  displayedQueueLength: number;
-  isStreaming: boolean;
-  isSubmitted: boolean;
+  isWorking: boolean;
   pendingToolCallId: string | undefined;
-  activeTurnId: string | null;
+  writingMessageId: string | null;
   hasPendingInteraction: boolean;
   pendingConversationScrollKey: string;
   firstItemIndex: number;
@@ -29,7 +27,7 @@ export function SessionConversationView({
   assistantId?: string | null;
 }) {
   const { t } = useTranslation();
-  if (messages.length === 0 && displayedQueueLength === 0 && !isStreaming && !isSubmitted) {
+  if (messages.length === 0 && !isWorking) {
     if (assistantId) return <AssistantWelcome assistantId={assistantId} />;
     return (
       <div className="relative flex-1 min-h-0" role="log">
@@ -48,8 +46,7 @@ export function SessionConversationView({
       messages={messages}
       sessionId={sessionId}
       pendingToolCallId={pendingToolCallId}
-      activeTurnId={activeTurnId}
-      isStreaming={isStreaming}
+      writingMessageId={writingMessageId}
       shouldAutoFollow
       firstItemIndex={firstItemIndex}
       hasMore={hasMore}

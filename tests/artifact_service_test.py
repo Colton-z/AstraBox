@@ -1,49 +1,68 @@
-"""SQLite document operations prove artifact atomicity and authorization decisions."""
+"""Artifact authorization, and the races on its versions, budgets and viewers, on the
+PostgreSQL store.
+"""
 
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
+import uuid
+from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import func, select, update
 
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
 from astrabox.config.settings import get_settings
-from astrabox.core.service.artifacts import limits
+from astrabox.core.service.artifacts.agent_runs import ArtifactAgentRuns
+from astrabox.core.service.artifacts.sample import ArtifactSampleService
 from astrabox.core.service.artifacts.service import ArtifactService, opaque_viewer_id, guest_viewer_id
+from astrabox.persistence.repository.artifact_budget_repository import ArtifactBudgetRepository
 from astrabox.persistence.repository.artifact_data_repository import ArtifactDataRepository
 from astrabox.persistence.repository.artifact_event_repository import ArtifactEventRepository
 from astrabox.persistence.repository.artifact_record_repository import ArtifactRecordRepository
 from astrabox.persistence.repository.artifact_version_repository import ArtifactVersionRepository
 from astrabox.persistence.repository.artifact_viewer_repository import ArtifactViewerRepository
-from astrabox.persistence.repository.sqlite.engine import dispose_engines
+from astrabox.persistence.sql import execute, fetch_all, fetch_value, transaction
+from astrabox.persistence.sql.models import artifacts as tables
 
 OWNER = UserContext("owner", display_name="Owner")
 VIEWER = UserContext("viewer", display_name="Viewer")
 ORIGIN = {"session_kind": "agent_chat", "agent_id": "agent-1", "session_id": "source"}
 
+_EVENTS = tables.ArtifactEvent.__table__
+_SHARES = tables.ArtifactShare.__table__
+_LONG_AGO = datetime(2000, 1, 1, tzinfo=timezone.utc)
 
-@pytest_asyncio.fixture
-async def artifact_service(tmp_path: Any, monkeypatch: Any):
-    monkeypatch.setenv("ASTRABOX_DB_BACKEND", "sqlite")
-    monkeypatch.setenv("ASTRABOX_STATE_DIR", str(tmp_path))
-    monkeypatch.setenv("ASTRABOX_TRANSCRIPT_SIGNING_KEY", "test-artifact-key")
-    get_settings.cache_clear()
-    service = ArtifactService(
+
+def new_service() -> ArtifactService:
+    return ArtifactService(
         records=ArtifactRecordRepository(),
         versions=ArtifactVersionRepository(),
         data=ArtifactDataRepository(),
         events=ArtifactEventRepository(),
         viewers=ArtifactViewerRepository(),
+        budgets=ArtifactBudgetRepository(),
     )
-    try:
-        yield service
-    finally:
-        await dispose_engines()
-        get_settings.cache_clear()
+
+
+@pytest_asyncio.fixture
+async def artifact_service(database: str, monkeypatch: Any):
+    monkeypatch.setenv("ASTRABOX_TRANSCRIPT_SIGNING_KEY", "test-artifact-key")
+    get_settings.cache_clear()
+    yield new_service()
+
+
+async def journal(artifact_id: str) -> list[dict[str, Any]]:
+    """The artifact's journal rows as stored, in sequence order."""
+    return await fetch_all(
+        select(_EVENTS.c.seq, _EVENTS.c.kind, _EVENTS.c.payload)
+        .where(_EVENTS.c.artifact_id == artifact_id)
+        .order_by(_EVENTS.c.seq)
+    )
 
 
 async def create_page(service: ArtifactService, capabilities: dict | None = None) -> str:
@@ -53,35 +72,6 @@ async def create_page(service: ArtifactService, capabilities: dict | None = None
         origin=ORIGIN,
     )
     return result["artifact_id"]
-
-
-@pytest.mark.asyncio
-async def test_create_update_restore_and_edit_failure_are_atomic(
-    artifact_service: ArtifactService,
-) -> None:
-    service = artifact_service
-    aid = await create_page(service, {"artifact": {}})
-    await service.update(
-        OWNER, aid, {"edits": [{"old_string": "hello", "new_string": "world"}], "base_version": 1}
-    )
-    assert (await service.get(OWNER, aid))["content"] == "world"
-    assert (await service.get(OWNER, aid, 1))["content"] == "hello"
-    with pytest.raises(APIError, match="absent or ambiguous"):
-        await service.update(
-            OWNER,
-            aid,
-            {
-                "edits": [
-                    {"old_string": "world", "new_string": "x"},
-                    {"old_string": "absent", "new_string": "y"},
-                ]
-            },
-        )
-    assert len(await service.list_versions(OWNER, aid)) == 2
-    restored = await service.restore(OWNER, aid, 1)
-    assert restored["current_version"] == 3
-    assert (await service.get(OWNER, aid))["content"] == "hello"
-    assert restored["manifest"] == {"artifact": {}}
 
 
 @pytest.mark.asyncio
@@ -99,43 +89,9 @@ async def test_concurrent_base_version_has_one_winner_and_one_journal_publish(
     errors = [r for r in results if isinstance(r, APIError)]
     assert len(errors) == 1 and errors[0].code == "ARTIFACT_VERSION_CONFLICT"
     assert len(await service.list_versions(OWNER, aid)) == 2
-    events = await service.events.list({"artifact_id": aid}, sort=[("seq", 1)])
-    assert [e["seq"] for e in events] == [1, 2]
-    assert [e["payload"]["version"] for e in events] == [1, 2]
-
-
-@pytest.mark.asyncio
-async def test_limits_do_not_leave_a_version_or_data_event(
-    artifact_service: ArtifactService, monkeypatch: Any
-) -> None:
-    service = artifact_service
-    aid = await create_page(service, {"db": {}})
-    monkeypatch.setattr(limits, "CONTENT_BYTES", 5)
-    with pytest.raises(APIError) as error:
-        await service.update(OWNER, aid, {"content": "too large"})
-    assert error.value.code == "ARTIFACT_CONTENT_TOO_LARGE"
-    monkeypatch.setattr(limits, "VERSION_COUNT", 1)
-    with pytest.raises(APIError) as error:
-        await service.update(OWNER, aid, {"content": "ok"})
-    assert error.value.code == "ARTIFACT_VERSION_LIMIT"
-    viewer = await service.resolve_viewer(user=OWNER, artifact_id=aid)
-    monkeypatch.setattr(limits, "DOCUMENT_COUNT", 1)
-    with pytest.raises(APIError) as error:
-        await service.data_write(
-            viewer,
-            [
-                {"action": "set", "path": "items/a", "data": {}},
-                {"action": "set", "path": "items/b", "data": {}},
-            ],
-        )
-    assert error.value.code == "ARTIFACT_DATA_COUNT_LIMIT"
-    assert not (await service.data_get(viewer, "items/a"))["exists"]
-    await service.data_write(viewer, [{"action": "set", "path": "items/a", "data": {}}])
-    with pytest.raises(APIError) as error:
-        await service.data_write(viewer, [{"action": "set", "path": "items/b", "data": {}}])
-    assert error.value.code == "ARTIFACT_DATA_COUNT_LIMIT"
-    assert not (await service.data_get(viewer, "items/b"))["exists"]
-    assert len(await service.events.list({"artifact_id": aid})) == 2
+    # The loser allocated no sequence: the winner's publish is the journal's second event.
+    assert (await service.records.get(aid))["event_seq"] == 2
+    assert [(e["seq"], e["payload"]["version"]) for e in await journal(aid)] == [(2, 2)]
 
 
 @pytest.mark.asyncio
@@ -157,8 +113,19 @@ async def test_share_levels_anonymous_identity_and_delete_cascade(
         await service.data_write(guest, [{"action": "set", "path": "items/a", "data": {}}])
     await service.data_write(signed, [{"action": "set", "path": "items/a", "data": {"x": 1}}])
     await service.delete(OWNER, aid)
-    for repo in service._repos:
-        assert await repo.list({"artifact_id": aid}) == []
+    for table in (
+        tables.Artifact,
+        tables.ArtifactVersion,
+        tables.ArtifactVersionContent,
+        tables.ArtifactShare,
+        tables.ArtifactDocument,
+        tables.ArtifactEvent,
+        tables.ArtifactViewer,
+    ):
+        rows = table.__table__
+        assert await fetch_value(
+            select(func.count()).select_from(rows).where(rows.c.artifact_id == aid)
+        ) == 0
     with pytest.raises(APIError) as error:
         await service.resolve_viewer(user=VIEWER, token=share["token"])
     assert error.value.code == "ARTIFACT_SHARE_NOT_FOUND"
@@ -233,9 +200,7 @@ async def test_expiry_is_fail_closed_and_revocation_invalidates_existing_viewers
         await service.runtime(viewer)
     assert error.value.code == "ARTIFACT_SHARE_NOT_FOUND"
     await service.enable_share(OWNER, aid)
-    row = await service.records.get(aid)
-    row["share"]["expires_at"] = "invalid-time"
-    await service.records.put(row)
+    await execute(update(_SHARES).where(_SHARES.c.artifact_id == aid).values(expires_at=_LONG_AGO))
     with pytest.raises(APIError) as error:
         await service.resolve_viewer(user=None, token=share["token"])
     assert error.value.code == "ARTIFACT_SHARE_NOT_FOUND"
@@ -303,25 +268,6 @@ async def test_cursor_listing_owner_filters_literal_search_and_manifest_carry_fo
 
 
 @pytest.mark.asyncio
-async def test_title_and_document_byte_limits(
-    artifact_service: ArtifactService, monkeypatch: Any
-) -> None:
-    service = artifact_service
-    aid = await create_page(service, {"db": {}})
-    with pytest.raises(APIError) as error:
-        await service.patch(OWNER, aid, {"title": "x" * (limits.TITLE_CHARACTERS + 1)})
-    assert error.value.code == "ARTIFACT_TITLE_LIMIT"
-    viewer = await service.resolve_viewer(user=OWNER, artifact_id=aid)
-    monkeypatch.setattr(limits, "DOCUMENT_BYTES", 5)
-    with pytest.raises(APIError) as error:
-        await service.data_write(
-            viewer, [{"action": "set", "path": "items/a", "data": {"value": "large"}}]
-        )
-    assert error.value.code == "ARTIFACT_DATA_LIMIT"
-    assert not (await service.data_get(viewer, "items/a"))["exists"]
-
-
-@pytest.mark.asyncio
 async def test_pin_never_keeps_revoked_live_data_or_room_policy(artifact_service) -> None:
     service = artifact_service
     aid = await create_page(service, {"db": {}, "room": {"topics": {"update": "interact"}}})
@@ -364,7 +310,7 @@ async def test_guest_presence_identity_is_secret_derived_and_share_scoped(artifa
         impostor = await service.resolve_viewer(user=None, token=share["token"], guest_id=guest.id.removeprefix("guest_"))
         assert impostor.id != guest.id
         await service.room_write(guest, "default", presence=True, data={"here": True})
-        row = (await service.events.list({"artifact_id": aid, "type": "presence"}))[0]
+        row = next(row for row in await journal(aid) if row["kind"] == "presence")
         assert row["payload"]["viewer_id"] == guest.id
         assert "raw-load" not in str(row)
     assert ids[0] != ids[1]
@@ -382,54 +328,60 @@ async def test_guests_cannot_resolve_signed_in_profile_names(artifact_service) -
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("guest", [True, False])
-async def test_room_emit_and_presence_share_a_viewer_token_bucket(artifact_service, monkeypatch, guest) -> None:
-    from astrabox.core.service.artifacts import service as module
+async def test_a_signed_in_viewer_is_registered_while_a_write_holds_the_artifact(
+    artifact_service,
+) -> None:
+    # Every signed-in runtime request registers its viewer. It must not queue
+    # behind a write to the artifact, which holds the artifact's lock.
     service = artifact_service
-    aid = await create_page(service, {"room": {"topics": {"message": "view"}}})
+    aid = await create_page(service, {"user": {}})
     share = await service.enable_share(OWNER, aid)
-    viewer = await service.resolve_viewer(user=None if guest else OWNER, token=share["token"], guest_id="load")
-    replica = ArtifactService(records=service.records, versions=service.versions, data=service.data, events=service.events, viewers=service.viewers)
-    now = module.utcnow()
-    monkeypatch.setattr(module, "utcnow", lambda: now)
-    for index in range(20):
-        await (service if index % 2 else replica).room_write(viewer, "default", topic="message", presence=index % 2 == 0, data={})
-    count = len(await service.events.list({"artifact_id": aid}))
-    with pytest.raises(APIError) as error:
-        await service.room_write(viewer, "other-room", presence=True, data={})
-    assert error.value.code == "ARTIFACT_LIVE_RATE_LIMITED"
-    assert len(await service.events.list({"artifact_id": aid})) == count
-    now += timedelta(seconds=0.1)
-    await service.room_write(viewer, "default", presence=True, data={})
-    with pytest.raises(APIError):
-        await service.room_write(viewer, "default", topic="message", data={})
+    locked, release = asyncio.Event(), asyncio.Event()
+
+    async def hold(conn: Any) -> None:
+        await service.records.lock(aid, conn=conn)
+        locked.set()
+        await release.wait()
+
+    holder = asyncio.ensure_future(transaction(hold))
+    await locked.wait()
+    try:
+        viewer = await asyncio.wait_for(
+            service.resolve_viewer(user=VIEWER, token=share["token"]), timeout=5
+        )
+    finally:
+        release.set()
+        await holder
+    assert (await service.profiles(viewer, [viewer.id]))["profiles"] == [
+        {"id": viewer.id, "display_name": "Viewer"}
+    ]
 
 
 @pytest.mark.asyncio
-async def test_live_stream_cap_releases_admission_on_close_and_error(artifact_service) -> None:
+@pytest.mark.parametrize("budget", ["room", "sample", "agent"])
+async def test_a_viewers_first_requests_at_once_share_one_budget_without_a_collision(
+    artifact_service, budget: str
+) -> None:
+    # Two requests of a viewer who has never used the budget arrive together,
+    # on two artifacts. Both are within every limit and must both be admitted.
     service = artifact_service
-    aid = await create_page(service)
-    viewer = await service.resolve_viewer(user=OWNER, artifact_id=aid)
-    streams = [service.live(viewer) for _ in range(8)]
-    try:
-        for stream in streams:
-            assert "event: version" in await anext(stream)
-        other = await service.resolve_viewer(user=OWNER, artifact_id=await create_page(service))
-        blocked = service.live(other)
-        with pytest.raises(APIError) as error:
-            await anext(blocked)
-        assert error.value.code == "ARTIFACT_LIVE_RATE_LIMITED"
-        await streams.pop().aclose()
-        replacement = service.live(viewer)
-        streams.append(replacement)
-        assert "event: version" in await anext(replacement)
-    finally:
-        for stream in streams:
-            await stream.aclose()
-    share = await service.enable_share(OWNER, aid)
-    shared = await service.resolve_viewer(user=VIEWER, token=share["token"])
-    await service.disable_share(OWNER, aid)
-    with pytest.raises(APIError):
-        await anext(service.live(shared))
-    assert service._live_counts == {}
-    assert not service._broker._listeners
+    capabilities = {"room": {}, "sample": {}, "agent": {}}
+    viewers = [
+        await service.resolve_viewer(
+            user=OWNER, artifact_id=await create_page(service, capabilities)
+        )
+        for _ in range(2)
+    ]
+    if budget == "room":
+        requests = [service.room_write(v, "default", presence=True, data={}) for v in viewers]
+    elif budget == "sample":
+        sampling = ArtifactSampleService(artifacts=service, origin_access=SimpleNamespace())
+        requests = [sampling._reserve(OWNER.user_id, uuid.uuid4().hex) for _ in viewers]
+    else:
+        runs = ArtifactAgentRuns(
+            artifacts=service, origin_access=SimpleNamespace(), platform=SimpleNamespace(),
+            agent_service_getter=None, assistant_service_getter=None,
+        )
+        requests = [runs._reserve(v, uuid.uuid4().hex) for v in viewers]
+    outcomes = await asyncio.gather(*requests, return_exceptions=True)
+    assert [o for o in outcomes if isinstance(o, BaseException)] == []

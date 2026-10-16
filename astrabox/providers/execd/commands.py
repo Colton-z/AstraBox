@@ -37,7 +37,9 @@ from opensandbox.exceptions import (
 from opensandbox.models.execd import ExecutionHandlers, RunCommandOpts
 from opensandbox.models.sandboxes import SandboxEndpoint
 from opensandbox.services.command import Commands
+from opensandbox.transport.retry import RetryPolicy
 
+from astrabox.common.logger.logger_factory import get_logger
 from astrabox.seams.sandbox import SandboxUnreachable
 from astrabox.seams.sandbox_data import (
     SandboxCommandOutcomeUnknown,
@@ -75,6 +77,8 @@ _EMPTY_LINE_EVENT = "\n"
 #: it. The caller's side gives up first, so a command that ends just in time is
 #: never reported as stopped by the box.
 _BOX_STOP_GRACE_SECONDS = 5.0
+
+logger = get_logger(__name__)
 
 
 def join_execd_lines(lines: Iterable[str]) -> str:
@@ -164,11 +168,55 @@ class ExecdCommands:
         *,
         env: Mapping[str, str] | None = None,
         timeout: float | None = 60.0,
+        idempotent: bool = False,
     ) -> SandboxCommandResult:
         if not isinstance(command, str) or not command.strip():
             raise ValueError("a sandbox command is a non-empty shell command line")
         if timeout is not None and timeout <= 0:
             raise ValueError(f"a command deadline is a positive number of seconds, not {timeout!r}")
+        opts = RunCommandOpts(
+            envs=_checked_env(env),
+            timeout=(
+                timedelta(seconds=timeout + _BOX_STOP_GRACE_SECONDS)
+                if timeout is not None
+                else None
+            ),
+        )
+        # The SDK's own retry policy, which re-sends only an idempotent request
+        # whose connection failed after it was sent, and how often.
+        policy = RetryPolicy()
+        retries = policy.max_retries if idempotent else 0
+        backoff = policy.initial_backoff.total_seconds()
+        deadline = asyncio.timeout(timeout)
+        try:
+            async with deadline:
+                attempt = 0
+                while True:
+                    try:
+                        return await self._run_once(command, opts)
+                    except (SandboxConnectionException, httpx.TransportError) as exc:
+                        if attempt == retries:
+                            raise SandboxUnreachable(
+                                self._sandbox_id, f"execd could not run {command[:200]!r}: {exc}"
+                            ) from exc
+                        logger.warning(
+                            "execd connection failed before %r reported an exit status; "
+                            "running it again in %.1fs: %s",
+                            command[:200],
+                            backoff,
+                            exc,
+                        )
+                    attempt += 1
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * policy.backoff_multiplier, policy.max_backoff.total_seconds())
+        except TimeoutError:
+            if timeout is None or not deadline.expired():
+                raise
+            raise TimeoutError(
+                f"execd command did not complete within {timeout:g}s: {command[:200]!r}"
+            ) from None
+
+    async def _run_once(self, command: str, opts: RunCommandOpts) -> SandboxCommandResult:
         stdout: list[str] = []
         stderr: list[str] = []
         status = ReportedExitStatus()
@@ -196,29 +244,14 @@ class ExecdCommands:
             on_execution_complete=on_complete,
             skip_accumulation=True,
         )
-        opts = RunCommandOpts(
-            envs=_checked_env(env),
-            timeout=(
-                timedelta(seconds=timeout + _BOX_STOP_GRACE_SECONDS)
-                if timeout is not None
-                else None
-            ),
-        )
-        deadline = asyncio.timeout(timeout)
         try:
-            async with self._open() as commands, deadline:
+            async with self._open() as commands:
                 await commands.run(command, opts=opts, handlers=handlers)
-        except TimeoutError:
-            if timeout is None or not deadline.expired():
-                raise
-            raise TimeoutError(
-                f"execd command did not complete within {timeout:g}s: {command[:200]!r}"
-            ) from None
         except SandboxApiException as exc:
             raise SandboxCommandRefused(
                 f"execd refused to run {command[:200]!r}: {exc}"
             ) from exc
-        except (SandboxConnectionException, SandboxTimeoutException, httpx.TransportError) as exc:
+        except SandboxTimeoutException as exc:
             raise SandboxUnreachable(
                 self._sandbox_id, f"execd could not run {command[:200]!r}: {exc}"
             ) from exc

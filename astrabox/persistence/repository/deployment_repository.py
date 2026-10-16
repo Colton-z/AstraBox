@@ -1,273 +1,259 @@
+"""Deployments: the trigger bindings that start conversations on an Agent or an Assistant."""
+
 from __future__ import annotations
 
 from typing import Any
 
-from astrabox.persistence.repository.backend import (
-    ReturnDocument,
-    get_async_collection,
-    run_mongo_with_retry,
-)
-from astrabox.common.utils.settings import load_astrabox_settings
+from sqlalchemy import and_, delete, func, insert, literal, or_, select, update
+from sqlalchemy.sql import ColumnElement
+
+from astrabox.persistence.sql import ForeignKeyViolation, execute, fetch_all, fetch_one, to_iso
+from astrabox.persistence.sql.models.deployments import Deployment
+
+_DEPLOYMENTS = Deployment.__table__
+
+#: Columns a Deployment always has; every other column is reported only when
+#: the Deployment sets it, as the API has always shown absent settings.
+_ALWAYS = frozenset({
+    "deployment_id", "created_by", "enabled", "scene", "prompt_prefix",
+    "created_at", "updated_at",
+})
+
+#: Fields a write may set, by the name services use. ``schedule`` maps to its
+#: two columns; identity and scope are fixed at creation.
+_WRITABLE = frozenset({
+    "enabled", "scene", "prompt_prefix", "name", "schedule", "secret",
+    "attention_policy", "response_instruction", "execution_mode",
+    "execution_user_id", "allowed_participants", "channel_config",
+    "credentials_configured", "callback_base_url",
+})
+_IDENTITY = frozenset({
+    "deployment_id", "agent_id", "assistant_id", "created_by", "scope",
+    "owner_user_id", "owner_org_id", "source_assistant_id",
+})
+
+
+class DeploymentTargetMissing(Exception):
+    """The Agent or Assistant a new Deployment names does not exist."""
+
+
+def _const(value: str) -> ColumnElement[str]:
+    """A constant written into the SQL text rather than bound.
+
+    A partial index applies only to a plan that can prove its predicate; a
+    cached generic plan cannot see a bound value, so constants that select a
+    partial index are written into the statement.
+    """
+    return literal(value, literal_execute=True)
+
+
+def _view(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    view: dict[str, Any] = {}
+    for key, value in row.items():
+        if key in ("schedule_cron", "schedule_timezone"):
+            continue
+        if key in ("created_at", "updated_at"):
+            view[key] = to_iso(value)
+        elif key in _ALWAYS or value is not None:
+            view[key] = value
+    if row.get("schedule_cron") is not None:
+        view["schedule"] = {"cron": row["schedule_cron"], "timezone": row["schedule_timezone"]}
+    return view
+
+
+def _views(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [view for view in map(_view, rows) if view is not None]
+
+
+def _columns(fields: dict[str, Any], *, allowed: frozenset[str]) -> dict[str, Any]:
+    """Column values for ``fields``; a field no column holds is refused."""
+    unknown = set(fields) - allowed
+    if unknown:
+        raise ValueError(f"not a Deployment field: {sorted(unknown)}")
+    values = {key: value for key, value in fields.items() if key != "schedule"}
+    if "schedule" in fields:
+        schedule = fields["schedule"] or {}
+        values["schedule_cron"] = schedule.get("cron")
+        values["schedule_timezone"] = schedule.get("timezone")
+    return values
+
+
+def _scope(
+    deployment_id: str, agent_id: str, assistant_id: str, owner_user_id: str, owner_org_id: str,
+) -> ColumnElement[bool] | None:
+    """The nested-resource fence shared by every management read and write.
+
+    A Deployment belongs to one Agent or one Assistant, and a personal
+    schedule also to its owner. They are part of the statement's condition,
+    not checked by the service before an id-only write, so a race cannot
+    turn the service's visibility check into an authorization gap.
+    """
+    wid = str(deployment_id or "").strip()
+    aid = str(agent_id or "").strip()
+    sid = str(assistant_id or "").strip()
+    if not wid or bool(aid) == bool(sid) or bool(owner_user_id) != bool(owner_org_id):
+        return None
+    table = _DEPLOYMENTS.c
+    return and_(
+        table.deployment_id == wid,
+        table.agent_id == aid if aid else table.assistant_id == sid,
+        and_(
+            table.scope == _const("personal"),
+            table.owner_user_id == owner_user_id,
+            table.owner_org_id == owner_org_id,
+        ) if owner_user_id else table.scope.is_(None),
+    )
 
 
 class DeploymentRepository:
     """Trigger bindings that start conversations on an Agent or an Assistant.
 
-    One document per binding, keyed by a random ``deployment_id``. Each binding
+    One row per binding, keyed by a random ``deployment_id``. Each binding
     names one target, ``agent_id`` or ``assistant_id``; its triggers start
     conversations on that target (see
-    :mod:`astrabox.core.service.orchestrator.conversation_targets`).
+    :mod:`astrabox.core.service.orchestrator.conversation_targets`). A deleted
+    binding is gone: deletion removes the row and, with it, the binding's
+    channel records.
     """
-
-    def __init__(self) -> None:
-        settings = load_astrabox_settings()
-        self._collection_name = settings.deployments_collection
-
-    @staticmethod
-    def _active_deployment_filter(
-        deployment_id: str, agent_id: str, assistant_id: str = "", owner_user_id: str = "",
-        owner_org_id: str = "",
-    ) -> dict[str, Any] | None:
-        """The nested-resource fence shared by every management mutation.
-
-        A Deployment belongs to one Agent or one Assistant. That owning id is
-        part of the write filter, not a value checked only by the service
-        before a later id-only write.  The explicit absent/false ``deleted``
-        clauses are the live-row filter described in :meth:`list_by_agent`.
-        """
-
-        wid = str(deployment_id or "").strip()
-        aid = str(agent_id or "").strip()
-        sid = str(assistant_id or "").strip()
-        if not wid or bool(aid) == bool(sid) or bool(owner_user_id) != bool(owner_org_id):
-            return None
-        return {
-            "deployment_id": wid,
-            **({"scope": "personal", "owner_user_id": owner_user_id, "owner_org_id": owner_org_id}
-               if owner_user_id else {"scope": {"$ne": "personal"}}),
-            **({"agent_id": aid} if aid else {"assistant_id": sid}),
-            "$or": [{"deleted": {"$exists": False}}, {"deleted": False}],
-        }
 
     async def get_by_id(self, deployment_id: str) -> dict[str, Any] | None:
         wid = str(deployment_id or "").strip()
         if not wid:
             return None
-        collection = await get_async_collection(self._collection_name)
-        return await run_mongo_with_retry(
-            "deployments.get_by_id",
-            lambda: collection.find_one({"deployment_id": wid}),
-        )
+        return _view(await fetch_one(select(_DEPLOYMENTS).where(_DEPLOYMENTS.c.deployment_id == wid)))
 
     async def get_for_deployment(
         self, deployment_id: str, agent_id: str, *, assistant_id: str = "", owner_user_id: str = "",
         owner_org_id: str = "",
     ) -> dict[str, Any] | None:
-        """Return one active Deployment only inside its Agent or Assistant scope."""
-
-        query = self._active_deployment_filter(
-            deployment_id, agent_id, assistant_id, owner_user_id, owner_org_id
-        )
-        if query is None:
+        """Return one Deployment only inside its Agent or Assistant scope."""
+        fence = _scope(deployment_id, agent_id, assistant_id, owner_user_id, owner_org_id)
+        if fence is None:
             return None
-        collection = await get_async_collection(self._collection_name)
-        return await run_mongo_with_retry(
-            "deployments.get_for_deployment",
-            lambda: collection.find_one(query),
-        )
+        return _view(await fetch_one(select(_DEPLOYMENTS).where(fence)))
 
     async def list_by_agent(self, agent_id: str) -> list[dict[str, Any]]:
+        """An Agent's Deployments, oldest first; personal schedules are their owners'."""
         aid = str(agent_id or "").strip()
         if not aid:
             return []
-
-        async def _list() -> list[dict[str, Any]]:
-            collection = await get_async_collection(self._collection_name)
-            # A freshly-created webhook carries no `deleted` field at all, so the
-            # live-row filter spells out both the absent and the false case
-            # instead of depending on how a backend treats a missing field.
-            cursor = collection.find(
-                {
-                    "agent_id": aid,
-                    "scope": {"$ne": "personal"},
-                    "$or": [{"deleted": {"$exists": False}}, {"deleted": False}],
-                }
-            )
-            docs = [doc async for doc in cursor]
-            docs.sort(key=lambda item: str(item.get("created_at") or ""))
-            return docs
-
-        return await run_mongo_with_retry("deployments.list_by_agent", _list)
+        return _views(await fetch_all(
+            select(_DEPLOYMENTS)
+            .where(_DEPLOYMENTS.c.agent_id == aid, _DEPLOYMENTS.c.scope.is_(None))
+            .order_by(_DEPLOYMENTS.c.created_at, _DEPLOYMENTS.c.deployment_id)
+        ))
 
     async def list_by_assistant(self, assistant_id: str) -> list[dict[str, Any]]:
+        """An Assistant's Deployments, oldest first."""
         sid = str(assistant_id or "").strip()
         if not sid:
             return []
-
-        async def _list() -> list[dict[str, Any]]:
-            collection = await get_async_collection(self._collection_name)
-            cursor = collection.find(
-                {
-                    "assistant_id": sid,
-                    "scope": {"$ne": "personal"},
-                    "$or": [{"deleted": {"$exists": False}}, {"deleted": False}],
-                }
-            )
-            docs = [doc async for doc in cursor]
-            docs.sort(key=lambda item: str(item.get("created_at") or ""))
-            return docs
-
-        return await run_mongo_with_retry("deployments.list_by_assistant", _list)
+        return _views(await fetch_all(
+            select(_DEPLOYMENTS)
+            .where(_DEPLOYMENTS.c.assistant_id == sid, _DEPLOYMENTS.c.scope.is_(None))
+            .order_by(_DEPLOYMENTS.c.created_at, _DEPLOYMENTS.c.deployment_id)
+        ))
 
     async def list_personal_schedules(
-        self, owner_user_id: str, owner_org_id: str,
+        self, owner_user_id: str, owner_org_id: str, *, source_assistant_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Return only the authenticated owner's active personal schedules."""
+        """Return only the authenticated owner's personal schedules, oldest first.
+
+        ``source_assistant_id`` narrows them to the ones created from one Assistant.
+        """
         if not owner_user_id or not owner_org_id:
             return []
-
-        async def _list() -> list[dict[str, Any]]:
-            collection = await get_async_collection(self._collection_name)
-            cursor = collection.find({
-                "scope": "personal", "scene": "schedule", "owner_user_id": owner_user_id,
-                "owner_org_id": owner_org_id,
-                "$or": [{"deleted": {"$exists": False}}, {"deleted": False}],
-            })
-            docs = [doc async for doc in cursor]
-            docs.sort(key=lambda item: str(item.get("created_at") or ""))
-            return docs
-
-        return await run_mongo_with_retry("deployments.list_personal_schedules", _list)
+        table = _DEPLOYMENTS.c
+        statement = select(_DEPLOYMENTS).where(
+            table.scope == _const("personal"),
+            table.scene == _const("schedule"),
+            table.owner_user_id == owner_user_id,
+            table.owner_org_id == owner_org_id,
+        )
+        if source_assistant_id is not None:
+            statement = statement.where(table.source_assistant_id == source_assistant_id)
+        return _views(await fetch_all(
+            statement.order_by(table.created_at, table.deployment_id)
+        ))
 
     async def list_active(self) -> list[dict[str, Any]]:
-        """Return every live Deployment in one collection read."""
-
-        async def _list() -> list[dict[str, Any]]:
-            collection = await get_async_collection(self._collection_name)
-            cursor = collection.find(
-                {"$or": [{"deleted": {"$exists": False}}, {"deleted": False}]}
-            )
-            docs = [doc async for doc in cursor]
-            docs.sort(key=lambda item: str(item.get("created_at") or ""))
-            return docs
-
-        return await run_mongo_with_retry("deployments.list_active", _list)
+        """Every Deployment, oldest first."""
+        return _views(await fetch_all(
+            select(_DEPLOYMENTS).order_by(_DEPLOYMENTS.c.created_at, _DEPLOYMENTS.c.deployment_id)
+        ))
 
     async def list_scheduled(self) -> list[dict[str, Any]]:
-        """Return every live scheduled Deployment, for the scheduler's startup reconcile."""
-
-        async def _list() -> list[dict[str, Any]]:
-            collection = await get_async_collection(self._collection_name)
-            cursor = collection.find(
-                {
-                    "scene": "schedule",
-                    "$or": [{"deleted": {"$exists": False}}, {"deleted": False}],
-                }
-            )
-            return [doc async for doc in cursor]
-
-        return await run_mongo_with_retry("deployments.list_scheduled", _list)
+        """Every scheduled Deployment, for the scheduler's startup reconcile."""
+        return _views(await fetch_all(
+            select(_DEPLOYMENTS).where(_DEPLOYMENTS.c.scene == _const("schedule"))
+        ))
 
     async def list_channel_bindings(self) -> list[dict[str, Any]]:
-        """Return every enabled channel binding for source reconciliation."""
+        """The identity and revision of every enabled channel binding.
 
-        async def _list() -> list[dict[str, Any]]:
-            collection = await get_async_collection(self._collection_name)
-            cursor = collection.find(
-                {"$or": [{"deleted": {"$exists": False}}, {"deleted": False}]}
-            )
-            docs = [doc async for doc in cursor]
-            return [
-                doc
-                for doc in docs
-                if doc.get("enabled") is not False
-                and str(doc.get("scene") or "").startswith("channel:")
-            ]
-
-        return await run_mongo_with_retry("deployments.list_channel_bindings", _list)
+        The channel source host compares these on every pass and reads a
+        binding in full only when it starts that binding's consumer, so the
+        pass reads three columns, not every row.
+        """
+        table = _DEPLOYMENTS.c
+        rows = await fetch_all(
+            select(table.deployment_id, table.scene, table.updated_at)
+            .where(table.enabled, table.scene.like(_const("channel:%")))
+            .order_by(table.deployment_id)
+        )
+        return [{**row, "updated_at": to_iso(row["updated_at"])} for row in rows]
 
     async def advance_channel_source_cursor(
         self, deployment_id: str, *, scene: str, source_cursor: int
     ) -> bool:
         """Advance one binding's resumable source cursor monotonically.
 
-        A cursor is delivery acknowledgement state, so a disabled/deleted
+        A cursor is delivery acknowledgement state, so a disabled or deleted
         binding cannot advance it. Concurrent replicas may observe the same
-        event; the conditional write lets only a newer sequence win.
+        event; the cursor only ever takes the larger value, and an event the
+        cursor already passed is acknowledged as durable.
         """
-
         wid = str(deployment_id or "").strip()
         expected_scene = str(scene or "").strip()
         cursor_value = int(source_cursor)
         if not wid or not expected_scene.startswith("channel:") or cursor_value < 0:
             return False
-        collection = await get_async_collection(self._collection_name)
-
-        async def _advance() -> dict[str, Any] | None:
-            return await collection.find_one_and_update(
-                {
-                    "deployment_id": wid,
-                    "scene": expected_scene,
-                    "$and": [
-                        {
-                            "$or": [
-                                {"deleted": {"$exists": False}},
-                                {"deleted": False},
-                            ]
-                        },
-                        {
-                            "$or": [
-                                {"enabled": {"$exists": False}},
-                                {"enabled": True},
-                            ]
-                        },
-                        {
-                            "$or": [
-                                {"source_cursor": {"$exists": False}},
-                                {"source_cursor": {"$lt": cursor_value}},
-                            ]
-                        },
-                    ],
-                },
-                {"$set": {"source_cursor": cursor_value}},
-                return_document=ReturnDocument.AFTER,
+        table = _DEPLOYMENTS.c
+        advanced = await fetch_one(
+            update(_DEPLOYMENTS)
+            .where(
+                table.deployment_id == wid,
+                table.scene == expected_scene,
+                table.enabled,
             )
+            .values(source_cursor=func.greatest(func.coalesce(table.source_cursor, -1), cursor_value))
+            .returning(table.deployment_id)
+        )
+        return advanced is not None
 
-        updated = await run_mongo_with_retry(
-            "deployments.advance_channel_source_cursor", _advance
-        )
-        if updated is not None:
-            return True
-        current = await self.get_by_id(wid)
-        if (
-            not current
-            or current.get("deleted") is True
-            or current.get("enabled") is False
-            or str(current.get("scene") or "") != expected_scene
-        ):
-            return False
-        stored_cursor = current.get("source_cursor")
-        return (
-            isinstance(stored_cursor, int)
-            and not isinstance(stored_cursor, bool)
-            and stored_cursor >= cursor_value
-        )
+    async def create(self, deployment_id: str, doc: dict[str, Any]) -> dict[str, Any]:
+        """Insert a new Deployment; returns the stored row.
 
-    async def upsert(self, deployment_id: str, doc: dict[str, Any]) -> dict[str, Any]:
-        """Insert or update a webhook config by deployment_id; returns stored doc."""
-        wid = str(deployment_id or "").strip()
-        collection = await get_async_collection(self._collection_name)
-        doc_with_id = {**doc, "deployment_id": wid}
-        await run_mongo_with_retry(
-            "deployments.upsert",
-            lambda: collection.update_one(
-                {"deployment_id": wid},
-                {"$set": doc_with_id},
-                upsert=True,
-            ),
+        Raises :class:`DeploymentTargetMissing` when the Agent or Assistant it
+        names does not exist.
+        """
+        values = _columns(
+            {key: value for key, value in doc.items() if key != "deployment_id"},
+            allowed=_WRITABLE | _IDENTITY,
         )
-        stored = await self.get_by_id(wid)
-        return stored or doc_with_id
+        try:
+            row = await fetch_one(
+                insert(_DEPLOYMENTS)
+                .values(deployment_id=str(deployment_id or "").strip(), **values)
+                .returning(_DEPLOYMENTS)
+            )
+        except ForeignKeyViolation as exc:
+            raise DeploymentTargetMissing(str(exc.constraint or "")) from exc
+        stored = _view(row)
+        assert stored is not None
+        return stored
 
     async def update_for_deployment(
         self,
@@ -279,58 +265,56 @@ class DeploymentRepository:
         owner_user_id: str = "",
         owner_org_id: str = "",
     ) -> dict[str, Any] | None:
-        """Atomically update and return one active deployment-scoped webhook.
+        """Atomically update and return one Deployment inside its scope.
 
-        A missing, deleted, or foreign row does not match and returns ``None``.
-        Scope/identity fields can never be changed through this mutation even if
-        a future caller accidentally includes them in ``updates``.
+        A missing or foreign row does not match and returns ``None``. Identity
+        and scope fields can never be changed through this mutation, even if a
+        caller includes them in ``updates``.
         """
-
-        query = self._active_deployment_filter(
-            deployment_id, agent_id, assistant_id, owner_user_id, owner_org_id
-        )
-        if query is None:
+        fence = _scope(deployment_id, agent_id, assistant_id, owner_user_id, owner_org_id)
+        if fence is None:
             return None
-        protected = {
-            "_id", "deployment_id", "agent_id", "assistant_id", "deleted",
-            "scope", "owner_user_id", "owner_org_id", "source_assistant_id", "created_by",
-        }
-        safe_updates = {
-            key: value for key, value in dict(updates or {}).items() if key not in protected
-        }
-        collection = await get_async_collection(self._collection_name)
-        return await run_mongo_with_retry(
-            "deployments.update_for_deployment",
-            lambda: collection.find_one_and_update(
-                query,
-                {"$set": safe_updates},
-                return_document=ReturnDocument.AFTER,
-            ),
+        values = _columns(
+            {key: value for key, value in dict(updates or {}).items() if key not in _IDENTITY},
+            allowed=_WRITABLE,
         )
+        return _view(await fetch_one(
+            update(_DEPLOYMENTS)
+            .where(fence)
+            .values(**values, updated_at=func.now())
+            .returning(_DEPLOYMENTS)
+        ))
 
-    async def soft_delete_for_deployment(
+    async def delete_for_deployment(
         self, deployment_id: str, agent_id: str, *, assistant_id: str = "", owner_user_id: str = "",
         owner_org_id: str = "",
     ) -> bool:
-        """Atomically soft-delete one active deployment-scoped webhook.
+        """Atomically delete one Deployment inside its scope.
 
-        The active-row guard makes delete idempotency observable: the first
-        matching delete returns ``True``; a duplicate, missing, deleted, or
-        foreign delete returns ``False`` and the service maps all four to 404.
+        The first matching delete returns ``True``; a duplicate, missing or
+        foreign delete returns ``False`` and the service maps all three to
+        404. The binding's channel records are deleted with it.
         """
-
-        query = self._active_deployment_filter(
-            deployment_id, agent_id, assistant_id, owner_user_id, owner_org_id
-        )
-        if query is None:
+        fence = _scope(deployment_id, agent_id, assistant_id, owner_user_id, owner_org_id)
+        if fence is None:
             return False
-        collection = await get_async_collection(self._collection_name)
-        deleted = await run_mongo_with_retry(
-            "deployments.soft_delete_for_deployment",
-            lambda: collection.find_one_and_update(
-                query,
-                {"$set": {"deleted": True}},
-                return_document=ReturnDocument.AFTER,
-            ),
+        return await execute(delete(_DEPLOYMENTS).where(fence)) == 1
+
+    async def delete_for_target(
+        self, *, agent_id: str = "", assistant_id: str = "",
+    ) -> list[dict[str, Any]]:
+        """Delete every Deployment of one Agent or Assistant; returns the deleted rows.
+
+        An Assistant's include the personal schedules created from it.
+        """
+        aid = str(agent_id or "").strip()
+        sid = str(assistant_id or "").strip()
+        if bool(aid) == bool(sid):
+            raise ValueError("name exactly one Agent or Assistant")
+        table = _DEPLOYMENTS.c
+        target = (
+            table.agent_id == aid
+            if aid
+            else or_(table.assistant_id == sid, table.source_assistant_id == sid)
         )
-        return deleted is not None
+        return _views(await fetch_all(delete(_DEPLOYMENTS).where(target).returning(_DEPLOYMENTS)))

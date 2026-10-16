@@ -55,41 +55,34 @@ async def run(args: argparse.Namespace) -> None:
         return runtime
 
     platform._runtime_manager.create_runtime = observed_create
+    lifecycle = platform._session_lifecycle
     if args.mode == "follower":
-        build = platform._session_kernel._build_lifecycle_worker
+        refuse = lifecycle._refuse_while_startup_waits_on_user
 
-        def gated_worker():
-            worker = build()
-            recover = worker._recover_session_direct
+        async def gated_refuse(session):
+            # The last step before the recovery claims the Session it read.
+            (directory / "admitted").write_text("the real recovery read the old Session")
+            await wait_file(directory / "recover")
+            return await refuse(session)
 
-            async def gated_recover(**keywords):
-                (directory / "admitted").write_text("the real worker read the old Session")
-                await wait_file(directory / "recover")
-                return await recover(**keywords)
+        lifecycle._refuse_while_startup_waits_on_user = gated_refuse
 
-            worker._recover_session_direct = gated_recover
-            return worker
-
-        platform._session_kernel._build_lifecycle_worker = gated_worker
-
-    kernel = platform._session_kernel
     spawned: list[asyncio.Task] = []
-    spawn = kernel._spawn_background_task
+    spawn = lifecycle._spawn_background_task
 
     def tracked_spawn(coro, *, name=None):
         task = spawn(coro, name=name)
         spawned.append(task)
         return task
 
-    kernel._spawn_background_task = tracked_spawn
-    # The real kernel entry performs ownership/admission and command dispatch.
-    # A standalone request does not start deployment-global background sweeps.
-    await kernel.recover_session(user, args.session_id)
-    # recover_session answers before its StartSessionStartup worker finishes.
-    # That worker writes the READY Session row first and then appends
-    # session.startup_completed, which moves the lifecycle snapshot that
-    # GET /sessions/{id} renders. Leaving asyncio.run between those writes
-    # cancels the worker, so the Session reads CREATING forever.
+    lifecycle._spawn_background_task = tracked_spawn
+    # The real lifecycle entry performs ownership and admission before the
+    # claim. A standalone request does not start deployment-global background
+    # sweeps, so it skips the platform's bootstrap.
+    await lifecycle.recover_session(user, args.session_id)
+    # recover_session answers once its recovery task runs; the task writes
+    # READY. Leaving asyncio.run before it finishes cancels it, and the
+    # Session reads CREATING until the creation timeout.
     async with asyncio.timeout(120):
         await asyncio.gather(*spawned)
     if args.mode == "winner":

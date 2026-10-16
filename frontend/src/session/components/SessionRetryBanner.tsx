@@ -1,22 +1,15 @@
 import { useTranslation } from 'react-i18next';
-import { Button } from '@/components/ui/button';
 import { Ellipsis } from '@/components/shell';
-import type { RetryIntent } from '../utils/chatHelpers';
 
-// Error/retry banner shown under the header. The parent gates rendering on
-// `combinedShowRetryBanner`; this component owns only the banner body.
+// The banner under the header: the session's stream cannot be reached, or its
+// detail could not be read. The parent gates rendering; this component owns
+// only the banner body.
 export function SessionRetryBanner({
   showTransientBackendMessage,
-  retryIntent,
   bannerErrorMessage,
-  showRetryButton,
-  handleRetry,
 }: {
   showTransientBackendMessage: boolean;
-  retryIntent: RetryIntent;
   bannerErrorMessage: string;
-  showRetryButton: boolean;
-  handleRetry: () => void;
 }) {
   const { t } = useTranslation();
   return (
@@ -24,20 +17,10 @@ export function SessionRetryBanner({
       <div className="flex flex-col gap-0.5 min-w-0 text-xs">
         {showTransientBackendMessage ? (
           <span className="text-muted-foreground">{t('chat:banner.backend_unavailable')}</span>
-        ) : (
-          <>
-            {retryIntent.kind !== 'none' && <span className="font-medium text-destructive">{retryIntent.summary}</span>}
-            {bannerErrorMessage && (
-              <Ellipsis className="text-muted-foreground">{bannerErrorMessage}</Ellipsis>
-            )}
-          </>
-        )}
+        ) : bannerErrorMessage ? (
+          <Ellipsis className="text-muted-foreground">{bannerErrorMessage}</Ellipsis>
+        ) : null}
       </div>
-      {showRetryButton && (
-        <Button variant="secondary" size="sm" className="shrink-0" onClick={handleRetry}>
-          {'label' in retryIntent ? retryIntent.label : t('common:retry')}
-        </Button>
-      )}
     </div>
   );
 }

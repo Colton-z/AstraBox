@@ -4,7 +4,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Message, MessageContent } from '@/components/ai-elements/message';
 import type { ContentBlock } from '@/types';
-import { blocksToSDKParts } from '../hooks/useInitialMessages';
+import { blocksToSDKParts } from '../childRunTranscript';
 import { PartRenderer } from './MessageParts';
 import { cn } from '@/lib/utils';
 import { BotIcon, XIcon } from 'lucide-react';
@@ -23,7 +23,6 @@ import { keepsLastRead } from '@/hooks/useKeepCurrent';
 interface SubagentTranscriptDrawerProps {
   sessionId: string;
   refreshRevision: number;
-  backgroundTasksPending: boolean;
   childRunId: string | null;
   entry: SubagentEntry | undefined;
   onClose: () => void;
@@ -33,7 +32,6 @@ interface SubagentTranscriptDrawerProps {
 export function SubagentTranscriptDrawer({
   sessionId,
   refreshRevision,
-  backgroundTasksPending,
   childRunId,
   entry,
   onClose,
@@ -77,7 +75,7 @@ export function SubagentTranscriptDrawer({
   useEffect(() => {
     if (!open) return;
     void refreshTranscript();
-  }, [backgroundTasksPending, entry?.active, open, refreshRevision, refreshTranscript]);
+  }, [entry?.active, open, refreshRevision, refreshTranscript]);
 
   useEffect(() => {
     if (!open) return;
@@ -88,10 +86,10 @@ export function SubagentTranscriptDrawer({
 
   // A continuable child can be idle; poll for activity, not resumability.
   useEffect(() => {
-    if (!open || (!entry?.active && !backgroundTasksPending)) return;
+    if (!open || !entry?.active) return;
     const timer = window.setInterval(() => { void refreshTranscript(); }, 2500);
     return () => window.clearInterval(timer);
-  }, [backgroundTasksPending, entry?.active, open, refreshTranscript]);
+  }, [entry?.active, open, refreshTranscript]);
 
   const messages = useMemo(() => {
     // Results may arrive in a later message. The shared converter pairs them
@@ -103,7 +101,7 @@ export function SubagentTranscriptDrawer({
     const converted = typedTranscript.map((message, index) => ({
       id: message.message_id ?? String(index),
       role: message.role,
-      parts: blocksToSDKParts(message.content, null, blocks)
+      parts: blocksToSDKParts(message.content, blocks)
         .filter((part) => part.type !== 'text' || part.text.trim().length > 0),
     })).filter((message) => message.parts.length > 0);
     if (converted.length > 0) return converted;

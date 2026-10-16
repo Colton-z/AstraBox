@@ -30,6 +30,7 @@ import { expect, test } from '@playwright/test';
 
 import { approveGates } from '../fixtures/approveGates';
 import { AstraApi, messageText } from '../fixtures/astraApi';
+import { sessionResponseRows } from '../fixtures/dbOracle';
 import { engineProfileFor } from '../fixtures/engineProfile';
 import {
   configureNativeMcpClientAgent, serverLog, startNativeMcpServer, trackNativeMcpScene,
@@ -128,14 +129,20 @@ test.describe('HTTP on conversation tenancy', () => {
       expect((await api.getAgent(agent.agent_id)).mcp_servers)
         .toEqual({ [HTTP_SERVER]: { type: 'http', url: scene.serverUrl } });
 
-      await api.postTurnInput(scene.clientSession, [
+      const receipt = await api.postTurnInput(scene.clientSession, [
         `Call the large_output tool of the ${HTTP_SERVER} MCP server exactly once,`,
         `with the arguments ${JSON.stringify(input)}.`,
         `Do not call any other tool. After it returns, reply with exactly ${done} and nothing else.`,
       ].join(' '));
       await approveGates(api, scene.clientSession);
       const settled = await api.getSession(scene.clientSession);
-      expect(settled.last_turn_status, String(settled.last_error || '')).toBe('COMPLETED');
+      expect(settled.last_response?.outcome, String(settled.last_error || '')).toBe('completed');
+      expect(
+        sessionResponseRows(scene.clientSession)
+          .filter((row) => row.input_ids.includes(receipt.input_id))
+          .map((row) => `${row.status}/${row.outcome ?? ''}`),
+        'the message is answered by one response, and it completed',
+      ).toEqual(['ended/completed']);
 
       const log = await serverLog(api, scene);
       expect(log, 'the server served exactly one call').toHaveLength(1);

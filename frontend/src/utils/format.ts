@@ -1,7 +1,5 @@
 import i18n from '@/i18n';
 import type {
-  InteractionResponse,
-  PendingInteraction,
   PermissionMode,
   SessionRecord,
   SessionState,
@@ -34,42 +32,6 @@ export const PERMISSION_MODE_TONE_CLASS: Record<string, string> = {
   bypassPermissions: 'mode-bypass',
 };
 
-export function normalizePermissionMode(value: PermissionMode | string | undefined | null): PermissionMode {
-  return String(value ?? '').trim();
-}
-
-// The optimistic mode the composer shows while the answer is in flight. It is
-// READ off the answered option, never predicted from the tool name: the engine
-// adapter declared which mode its option applies, and the backend resolves the
-// same way (permission_mode_choices → the answered mode or the declared
-// default; otherwise applies_permission_mode). PermissionLifecycle still
-// validates the name against that engine's manifest before applying it.
-export function getInteractionPermissionMode(
-  pendingInteraction: PendingInteraction | null | undefined,
-  interactionResponse: InteractionResponse,
-): PermissionMode | null {
-  if (!pendingInteraction || pendingInteraction.presentation !== 'decision') {
-    return null;
-  }
-  const decision = String(
-    'decision' in interactionResponse ? interactionResponse.decision ?? '' : '',
-  )
-    .trim()
-    .toLowerCase();
-  const option = (pendingInteraction.options ?? []).find((item) => item.id === decision);
-  if (!option) {
-    return null;
-  }
-  if (Array.isArray(option.permission_mode_choices) && option.permission_mode_choices.length > 0) {
-    const requested =
-      'permission_mode' in interactionResponse
-        ? String((interactionResponse as { permission_mode?: string }).permission_mode ?? '')
-        : '';
-    return normalizePermissionMode(requested || option.default_permission_mode || '') || null;
-  }
-  return normalizePermissionMode(option.applies_permission_mode || '') || null;
-}
-
 export function getNextPermissionMode(
   value: PermissionMode,
   availableModes: readonly PermissionMode[],
@@ -87,26 +49,13 @@ export function isEditableKeyboardTarget(target: EventTarget | null): boolean {
   return tagName === 'TEXTAREA' || tagName === 'INPUT' || target.isContentEditable;
 }
 
-export function stateTone(state: SessionState | undefined): string {
-  if (!state) return 'state-neutral';
-  if (state === 'READY' || state === 'WAITING_INPUT') return 'state-ready';
-  if (state === 'BACKGROUND_RUNNING') return 'state-busy';
-  if (state === 'SENDING') return 'state-busy';
-  if (state === 'BUSY' || state === 'PROCESSING' || state === 'INTERRUPTING' || state === 'TERMINATING') return 'state-busy';
-  if (state === 'RECOVERY_REQUIRED' || state === 'TERMINATED') return 'state-alert';
-  return 'state-neutral';
-}
-
 export function stateLabel(state: SessionState | string | undefined): string {
   if (!state) return t('misc:state.unknown');
   if (state === 'CREATING') return t('misc:state.creating');
   if (state === 'SENDING') return t('misc:state.sending');
   if (state === 'READY') return t('misc:state.ready');
-  if (state === 'BACKGROUND_RUNNING') return t('misc:state.background_running');
   if (state === 'WAITING_INPUT') return t('misc:state.waiting_input');
-  if (state === 'BUSY') return t('misc:state.processing');
   if (state === 'PROCESSING') return t('misc:state.processing');
-  if (state === 'INTERRUPTING') return t('misc:state.processing');
   if (state === 'PROVISIONING') return t('misc:state.provisioning');
   if (state === 'ACTIVE') return t('misc:state.active');
   if (state === 'HIBERNATING') return t('misc:state.hibernating');
@@ -120,7 +69,6 @@ export function stateLabel(state: SessionState | string | undefined): string {
 
 type RuntimeAwareSession = {
   agent_id?: SessionRecord['agent_id'];
-  agent_runtime?: SessionRecord['agent_runtime'];
   engine_kind?: SessionRecord['engine_kind'];
   session_kind?: SessionRecord['session_kind'];
   source_type?: SessionRecord['source_type'];
@@ -140,32 +88,15 @@ export function isAssistantConversationSession(session: RuntimeAwareSession | nu
   return session.session_kind === 'assistant_chat';
 }
 
-export function isAgentRuntimeReadyForSession(session: RuntimeAwareSession | null | undefined): boolean {
-  if (!isAgentChatSession(session)) return true;
-  // Resource access requires this Session's sandbox attachment. A recoverable
-  // READY conversation may have no sandbox until the next message acquires one.
-  if (session?.runtime_unavailable) return false;
-  if (isAgentRuntimeDeletedForSession(session)) return false;
-  return String(session?.state ?? '').trim().toUpperCase() === 'READY'
-    && !!String(session?.sandbox_id ?? '').trim();
-}
-
-export function isAgentRuntimeDeletedForSession(session: RuntimeAwareSession | null | undefined): boolean {
-  if (!isAgentChatSession(session)) return false;
-  return String(session?.agent_runtime?.state ?? '').trim().toUpperCase() === 'DELETED';
-}
-
 // Whether the per-session SANDBOX is live and usable for resource access (files /
-// terminal). This is deliberately looser than isAgentRuntimeReadyForSession (which
-// requires the idle state READY for the "ready" label): files live on the sandbox and
-// stay available WHILE a turn is in progress. During a reply the session state is
-// BUSY / WAITING_INPUT (not READY), so gating file/terminal access on READY wrongly
-// flips the files panel to "waiting for runtime ready" mid-reply on a fully-live sandbox. The
-// sandbox is live in every non-terminal, non-creating, runtime-available state.
+// terminal). Files live on the sandbox and stay available WHILE a response is in
+// progress: during a reply the session state is PROCESSING / WAITING_INPUT (not
+// READY), so gating file/terminal access on READY wrongly flips the files panel to
+// "waiting for runtime ready" mid-reply on a fully-live sandbox. The sandbox is
+// live in every non-terminal, non-creating, runtime-available state.
 export function isSandboxLiveForSession(session: RuntimeAwareSession | null | undefined): boolean {
   if (!isAgentChatSession(session)) return true;
   if (session?.runtime_unavailable) return false;
-  if (isAgentRuntimeDeletedForSession(session)) return false;
   const state = String(session?.state ?? '').trim().toUpperCase();
   if (state === 'TERMINATED' || state === 'DELETED' || state === 'CREATING' || state === '') return false;
   return !!String(session?.sandbox_id ?? '').trim();
@@ -173,63 +104,19 @@ export function isSandboxLiveForSession(session: RuntimeAwareSession | null | un
 
 // Per-session model: an agent_chat conversation whose sandbox is gone (TTL / lease
 // expiry, out-of-band terminate, or the agent simply hibernated) stays wakeable — the
-// next user message transparently re-borrows a fresh sandbox. For the user that is a
-// non-event, so the alarming "runtime disconnected / sandbox expired / recovery required / hibernating" surfaces should
+// next user message transparently borrows a fresh sandbox. For the user that is a
+// non-event, so the alarming "runtime disconnected / sandbox expired" surfaces should
 // read "ready" instead. The only real, non-recoverable faults are session-terminal
-// (TERMINATED/DELETED) or a DELETED agent record — those must still surface their state.
+// (TERMINATED/DELETED) — those must still surface their state.
 export function isTransparentlyRecoverableAgentSession(
   session: RuntimeAwareSession | null | undefined,
 ): boolean {
   if (!isAgentChatSession(session)) return false;
   if (!session?.runtime_unavailable) return false;
-  // A DELETED agent record is terminal — there is no agent left to re-borrow against.
-  if (isAgentRuntimeDeletedForSession(session)) return false;
   const state = String(session?.state ?? '').trim().toUpperCase();
   // Only a wakeable conversation re-borrows transparently. TERMINATED/DELETED are
   // terminal; CREATING is actively provisioning and shows its own progress instead.
-  if (state === 'TERMINATED' || state === 'DELETED' || state === 'CREATING') return false;
-  // NOTE: the agent_runtime's own warm-state (HIBERNATING / runtime_unavailable, even a
-  // stale "failed to create sandbox" last_error) is deliberately NOT a gate. In the
-  // per-session model the agent record never holds the conversation's sandbox — each
-  // message borrows its own — so a dormant/blipped agent runtime still recovers
-  // transparently on the next message. Gating on it wrongly surfaced "hibernating" + "runtime disconnected"
-  // + "sandbox expired" for a conversation that simply re-borrows.
-  return true;
-}
-
-export function agentRuntimeStatusLabel(session: RuntimeAwareSession | null | undefined): string {
-  if (!isAgentChatSession(session)) return '';
-  const runtime = session?.agent_runtime;
-  if (!runtime) return t('misc:agent_runtime.status_unknown');
-  const state = String(runtime.state ?? '').trim().toUpperCase();
-  if (state === 'PROVISIONING') {
-    const progress = progressLabel(runtime.startup_progress);
-    return progress ? t('misc:agent_runtime.with_progress', { progress }) : t('misc:agent_runtime.initializing');
-  }
-  if (state === 'DELETED') return t('misc:agent_runtime.terminated');
-  if (state) return stateLabel(state);
-  if (runtime.runtime_unavailable || String(runtime.last_error ?? '').trim()) return stateLabel('FAILED');
-  return t('misc:agent_runtime.status_unknown');
-}
-
-export function agentRuntimeWakePhaseLabel(session: RuntimeAwareSession | null | undefined): string {
-  if (!isAgentChatSession(session) || isAgentRuntimeReadyForSession(session)) return '';
-  const runtime = session?.agent_runtime;
-  if (!runtime) return t('misc:agent_runtime.wake');
-  const state = String(runtime.state ?? '').trim().toUpperCase();
-  if (state === 'PROVISIONING') {
-    const progress = progressLabel(runtime.startup_progress);
-    return progress ? t('misc:agent_runtime.wake_with_progress', { progress }) : t('misc:agent_runtime.wake');
-  }
-  if (state === 'HIBERNATING') return t('misc:agent_runtime.wake');
-  // `last_error` records an attempt and may remain populated after the runtime
-  // becomes ACTIVE. Current state and `runtime_unavailable` therefore decide
-  // health; the stored error alone must not turn a healthy wake into a failure.
-  if (state === 'FAILED' || runtime.runtime_unavailable) {
-    return t('misc:agent_runtime.failed');
-  }
-  if (state) return t('misc:agent_runtime.state_generic', { label: stateLabel(state) });
-  return t('misc:agent_runtime.wake');
+  return state !== 'TERMINATED' && state !== 'DELETED' && state !== 'CREATING';
 }
 
 const SESSION_STARTUP_PROGRESS_PHASES = new Set([
@@ -245,26 +132,14 @@ function sessionStartupProgressLabel(progress: string | null | undefined): strin
   return progressLabel(normalized);
 }
 
+/** The state a session list row or header shows: a starting session names its startup step. */
 export function sessionOperationalStatusLabel(session: RuntimeAwareSession | null | undefined): string {
   if (!session) return t('misc:state.unknown');
   const baseLabel = stateLabel(String(session.state ?? ''));
-  if (session.state === 'CREATING' || session.state === 'PROVISIONING') {
+  if (session.state === 'CREATING') {
     return sessionStartupProgressLabel(session.startup_progress) || baseLabel;
   }
-  if (!isAgentChatSession(session) || session.state !== 'READY') return baseLabel;
-  if (isAgentRuntimeDeletedForSession(session)) return agentRuntimeStatusLabel(session);
-  const runtimeState = String(session.agent_runtime?.state ?? '').trim().toUpperCase();
-  const hasSessionSandbox = !!String(session.sandbox_id ?? '').trim();
-  if (!hasSessionSandbox || session.runtime_unavailable) {
-    if (runtimeState === 'FAILED' || session.agent_runtime?.runtime_unavailable) {
-      return agentRuntimeStatusLabel(session);
-    }
-    if (!session.runtime_unavailable && runtimeState === 'PROVISIONING') {
-      return agentRuntimeStatusLabel(session);
-    }
-    return baseLabel;
-  }
-  return isAgentRuntimeReadyForSession(session) ? baseLabel : agentRuntimeStatusLabel(session);
+  return baseLabel;
 }
 
 export function progressLabel(progress: string | null | undefined): string {

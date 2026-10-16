@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import stat
 import subprocess
 import sys
@@ -9,7 +8,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-from astrabox.deploy import onebox
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import rotate_local_database_secrets as database_rotation  # noqa: E402
@@ -135,58 +133,6 @@ def test_database_rotation_updates_all_files_and_uses_psql_stdin(tmp_path: Path)
     assert all(value not in " ".join(psql_args) for value in new_values.values())
 
 
-def test_database_rotation_failure_keeps_active_files_and_resumable_candidates(
-    tmp_path: Path,
-) -> None:
-    secret_dir = tmp_path / "database-secrets"
-    assert _generate_secrets(secret_dir).returncode == 0
-    old_values = {name: (secret_dir / name).read_text().strip() for name in SECRET_NAMES}
-    first_runner = _RotationRunner(psql_returncode=9)
-
-    with pytest.raises(database_rotation.RotationError, match="active secret files were not changed"):
-        database_rotation.rotate_local_database_secrets(
-            secret_dir,
-            "astrabox-postgres-1",
-            run=first_runner,
-        )
-
-    assert old_values == {
-        name: (secret_dir / name).read_text().strip() for name in SECRET_NAMES
-    }
-    pending = secret_dir / ".rotation-pending"
-    pending_values = {name: (pending / name).read_text().strip() for name in SECRET_NAMES}
-    second_runner = _RotationRunner()
-    database_rotation.rotate_local_database_secrets(
-        secret_dir,
-        "astrabox-postgres-1",
-        run=second_runner,
-    )
-    assert pending_values == {
-        name: (secret_dir / name).read_text().strip() for name in SECRET_NAMES
-    }
-    assert first_runner.calls[-1][1] == second_runner.calls[-1][1]
-
-
-def test_database_rotation_refuses_wrong_container_before_writing_candidates(
-    tmp_path: Path,
-) -> None:
-    secret_dir = tmp_path / "database-secrets"
-
-    def wrong_service(
-        args: list[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(args, 0, "server|true\n", "")
-
-    with pytest.raises(database_rotation.RotationError, match="not the maintained"):
-        database_rotation.rotate_local_database_secrets(
-            secret_dir,
-            "astrabox-server-1",
-            run=wrong_service,
-        )
-
-    assert not (secret_dir / ".rotation-pending").exists()
-
-
 def test_database_rotation_refuses_an_active_secret_symlink(tmp_path: Path) -> None:
     secret_dir = tmp_path / "database-secrets"
     secret_dir.mkdir()
@@ -202,61 +148,6 @@ def test_database_rotation_refuses_an_active_secret_symlink(tmp_path: Path) -> N
         )
 
     assert outside.read_text() == "do-not-overwrite"
-
-
-def test_onebox_builds_database_urls_from_service_scoped_secret_files(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    astrabox_password = tmp_path / "astrabox"
-    litellm_password = tmp_path / "litellm"
-    astrabox_password.write_text("astra/box:secret")
-    litellm_password.write_text("lite@llm?secret")
-    # Empty values make the launcher derive both URLs while ensuring pytest's
-    # monkeypatch restores them after the launcher writes directly to os.environ.
-    monkeypatch.setenv("ASTRABOX_DB_URL", "")
-    monkeypatch.setenv("DATABASE_URL", "")
-    monkeypatch.setenv("ASTRABOX_DB_PASSWORD_FILE", str(astrabox_password))
-    monkeypatch.setenv("LITELLM_DATABASE_PASSWORD_FILE", str(litellm_password))
-    monkeypatch.setenv("ASTRABOX_DB_HOST", "postgres.internal")
-    monkeypatch.setenv("LITELLM_DATABASE_HOST", "postgres.internal")
-
-    onebox.ensure_database_wiring()
-
-    assert os.environ["ASTRABOX_DB_URL"] == (
-        "postgresql+asyncpg://astrabox:astra%2Fbox%3Asecret@"
-        "postgres.internal:5432/astrabox"
-    )
-    assert os.environ["DATABASE_URL"] == (
-        "postgresql://litellm:lite%40llm%3Fsecret@"
-        "postgres.internal:5432/litellm"
-    )
-
-
-def test_explicit_database_urls_win_over_missing_secret_files(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("ASTRABOX_DB_URL", "postgresql://operator/astrabox")
-    monkeypatch.setenv("DATABASE_URL", "postgresql://operator/litellm")
-    monkeypatch.setenv("ASTRABOX_DB_PASSWORD_FILE", "/missing/astrabox")
-    monkeypatch.setenv("LITELLM_DATABASE_PASSWORD_FILE", "/missing/litellm")
-
-    onebox.ensure_database_wiring()
-
-    assert os.environ["ASTRABOX_DB_URL"] == "postgresql://operator/astrabox"
-    assert os.environ["DATABASE_URL"] == "postgresql://operator/litellm"
-
-
-def test_a_configured_missing_database_secret_fails_before_process_spawn(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("ASTRABOX_DB_URL", raising=False)
-    monkeypatch.delenv("DATABASE_URL", raising=False)
-    monkeypatch.setenv("ASTRABOX_DB_PASSWORD_FILE", "/missing/astrabox")
-    monkeypatch.delenv("LITELLM_DATABASE_PASSWORD_FILE", raising=False)
-
-    with pytest.raises(onebox.OneBoxError, match="ASTRABOX_DB_PASSWORD_FILE"):
-        onebox.ensure_database_wiring()
 
 
 def test_compose_keeps_postgresql_off_the_sandbox_bridge_and_uses_file_secrets() -> None:

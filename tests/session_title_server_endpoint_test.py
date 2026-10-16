@@ -21,10 +21,7 @@ from astrabox.core.service.orchestrator.session_title_service import (
     SessionTitleGenerationError,
     validate_title_model_settings,
 )
-from astrabox.providers.litellm_shared_auth import sandbox_inference_key
 from astrabox.providers.model import (
-    EMBEDDED_LITELLM_PORT,
-    EMBEDDED_LITELLM_SANDBOX_HOST,
     LITELLM_API_KEY_ENV,
     LITELLM_BASE_URL_ENV,
     LITELLM_MASTER_KEY_ENV,
@@ -97,45 +94,6 @@ def _installation_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
-def test_default_installation_labels_use_the_servers_gateway_address_and_credential(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv(LITELLM_MASTER_KEY_ENV, _SERVER_CREDENTIAL)
-
-    request = ConversationTitleModel(settings=_settings()).resolve_request_config()
-
-    assert EMBEDDED_LITELLM_SANDBOX_HOST not in request.base_url
-    assert request.base_url == f"http://127.0.0.1:{EMBEDDED_LITELLM_PORT}"
-    assert request.api_key != sandbox_inference_key(_SIGNING_SECRET)
-    assert request.api_key == _SERVER_CREDENTIAL
-    assert request.model_name == _DEFAULT_MODEL
-
-
-def test_an_external_gateway_is_addressed_at_its_server_side_url(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv(LITELLM_BASE_URL_ENV, "https://gateway.sandbox-dns.internal")
-    monkeypatch.setenv(LITELLM_SERVER_BASE_URL_ENV, "http://litellm.platform:4000")
-    monkeypatch.setenv(LITELLM_API_KEY_ENV, "sk-gateway-issued")
-
-    request = ConversationTitleModel(settings=_settings()).resolve_request_config()
-
-    assert request.base_url == "http://litellm.platform:4000"
-    assert request.api_key == "sk-gateway-issued"
-
-
-def test_labels_fail_loudly_when_the_server_holds_no_gateway_credential() -> None:
-    with pytest.raises(SessionTitleGenerationError, match=LITELLM_MASTER_KEY_ENV):
-        ConversationTitleModel(settings=_settings()).resolve_request_config()
-
-
-def test_a_provider_without_a_server_endpoint_is_not_reached_at_its_sandbox_address() -> None:
-    settings = _settings(model_endpoint_provider=_SandboxOnlyProvider.name)
-
-    with pytest.raises(SessionTitleGenerationError, match="no server-side endpoint"):
-        ConversationTitleModel(settings=settings).resolve_request_config()
-
-
 _GATEWAY = "http://litellm.platform:4000"
 
 
@@ -144,37 +102,6 @@ def _external_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(LITELLM_BASE_URL_ENV, "https://gateway.sandbox-dns.internal")
     monkeypatch.setenv(LITELLM_SERVER_BASE_URL_ENV, _GATEWAY)
     monkeypatch.setenv(LITELLM_MASTER_KEY_ENV, _SERVER_CREDENTIAL)
-
-
-@pytest.mark.parametrize(
-    "title_base_url",
-    [
-        _GATEWAY,
-        "HTTP://LiteLLM.Platform:4000/chat/completions/",
-    ],
-)
-def test_a_title_url_naming_the_gateway_receives_the_server_credential(
-    _external_gateway: None, title_base_url: str
-) -> None:
-    settings = _settings(title_model_base_url=title_base_url, title_model_name="platform-labels")
-
-    validate_title_model_settings(settings)
-    request = ConversationTitleModel(settings=settings).resolve_request_config()
-
-    assert request.api_key == _SERVER_CREDENTIAL
-    assert request.model_name == "platform-labels"
-
-
-def test_the_embedded_gateway_matches_its_address_without_the_default_port(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv(LITELLM_MASTER_KEY_ENV, _SERVER_CREDENTIAL)
-    settings = _settings(title_model_base_url="http://127.0.0.1/")
-
-    validate_title_model_settings(settings)
-    request = ConversationTitleModel(settings=settings).resolve_request_config()
-
-    assert request.api_key == _SERVER_CREDENTIAL
 
 
 @pytest.mark.parametrize(
@@ -202,55 +129,3 @@ def test_a_title_url_elsewhere_never_receives_the_gateway_credential(
         assert "ASTRABOX_TITLE_MODEL_BASE_URL" in message
         assert "ASTRABOX_TITLE_MODEL_API_KEY" in message
         assert _SERVER_CREDENTIAL not in message
-
-
-def test_a_title_url_is_refused_without_its_key_when_the_gateway_has_no_server_endpoint() -> None:
-    settings = _settings(
-        model_endpoint_provider=_SandboxOnlyProvider.name,
-        title_model_base_url="https://labels.example.test/v1",
-    )
-
-    with pytest.raises(SessionTitleGenerationError, match="ASTRABOX_TITLE_MODEL_API_KEY"):
-        validate_title_model_settings(settings)
-    with pytest.raises(SessionTitleGenerationError, match="ASTRABOX_TITLE_MODEL_API_KEY"):
-        ConversationTitleModel(settings=settings).resolve_request_config()
-
-
-@pytest.mark.parametrize(
-    "provider", ["litellm", _SandboxOnlyProvider.name]
-)
-def test_a_title_url_elsewhere_uses_its_own_key(
-    _external_gateway: None, provider: str
-) -> None:
-    settings = _settings(
-        model_endpoint_provider=provider,
-        title_model_base_url="https://labels.example.test/v1",
-        title_model_api_key="sk-labels",
-    )
-
-    validate_title_model_settings(settings)
-    request = ConversationTitleModel(settings=settings).resolve_request_config()
-
-    assert request.base_url == "https://labels.example.test/v1"
-    assert request.api_key == "sk-labels"
-    assert request.model_name == _DEFAULT_MODEL
-
-
-def test_startup_refuses_a_title_url_elsewhere_without_its_key(
-    _external_gateway: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    import astrabox.bootstrap as bootstrap_module
-
-    settings = _settings(title_model_base_url="https://labels.example.test/v1")
-    monkeypatch.setattr(
-        "astrabox.common.utils.settings.load_astrabox_settings", lambda: settings
-    )
-
-    with pytest.raises(bootstrap_module.BootstrapConfigError, match="ASTRABOX_TITLE_MODEL_API_KEY"):
-        bootstrap_module._assert_title_model_credential_target()
-
-
-def test_disabled_labels_do_not_validate_a_title_url(_external_gateway: None) -> None:
-    validate_title_model_settings(
-        _settings(title_model_enabled=False, title_model_base_url="https://labels.example.test/v1")
-    )

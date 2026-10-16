@@ -37,7 +37,6 @@ def template_mcp_servers(mcp_servers: Any) -> dict[str, Any]:
     }
 
 
-
 def artifact_tools_enabled(source_type: str | None) -> bool:
     """Whether a Session of this provenance may hold the ``artifacts`` tools.
 
@@ -219,30 +218,6 @@ def extract_mcp_server_url(config: Any) -> str:
     return ""
 
 
-def extract_mcp_service_code(config: Any) -> str:
-    if isinstance(config, str):
-        return config.strip()
-    if not isinstance(config, dict):
-        return ""
-    for key in ("service_code", "serviceCode", "server_code", "serverCode"):
-        value = config.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    url = extract_mcp_server_url(config)
-    if url:
-        try:
-            parsed = urlparse(url)
-        except Exception:
-            return ""
-        for part in parsed.query.split("&"):
-            if not part:
-                continue
-            key, _, value = part.partition("=")
-            if key == "serverCode" and value:
-                return value.strip()
-    return ""
-
-
 def is_in_sandbox_loopback_mcp_url(url: str) -> bool:
     text = str(url or "").strip()
     if not text:
@@ -420,7 +395,3 @@ def validate_direct_mcp_servers(mcp_config: Any) -> dict[str, Any]:
             )
         result[name] = normalize_sandbox_mcp_entry(config)
     return result
-
-
-def exposed_port_url_path(deployment_id: str, port: int) -> str:
-    return f"/api/v1/exposed-ports/{str(deployment_id).strip()}/{int(port)}/url"

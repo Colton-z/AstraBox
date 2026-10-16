@@ -12,17 +12,18 @@ test.afterEach(async ({ request }) => {
   agentId = '';
 });
 
-// A new conversation shows its composer while the Session is still creating, so
-// the reader starts typing at once. Its first history read can land after the
-// Session is ready; that late history must fill the open page instead of
-// swapping the composer out and dropping the keystrokes.
+// A new conversation opens from its first history read and shows its composer
+// while the Session is still creating, so the reader starts typing at once. The
+// read needs nothing from the starting box: it lands first, and only then is
+// there a composer to type into. The Session becoming ready afterwards must not
+// swap that composer out and drop the keystrokes.
 test('a prompt typed while a conversation starts survives its first history read', async ({ page, request }) => {
   const api = new AstraApi(request);
   const name = `__e2e_typing_while_starting_${Date.now()}`;
   agentId = (await api.createColdTestAgent(name)).agent_id;
 
-  // Hold the first history read until the page has observed the ready Session:
-  // this is the order in which a slow history response meets a fast start.
+  // Hold the first history read: the page opens from it, so until it lands
+  // there must be no composer whose keystrokes a late read could lose.
   let releaseHistory!: () => void;
   const historyHeld = new Promise<void>((resolve) => { releaseHistory = resolve; });
   let held = false;
@@ -42,29 +43,36 @@ test('a prompt typed while a conversation starts survives its first history read
   sessions.push(sessionId);
 
   const composer = page.getByTestId('composer-prompt');
-  await expect(composer).toBeVisible();
-  const composerNode = await composer.elementHandle();
-  await composer.click();
-  await page.keyboard.type('typed while starting');
-
-  await expect.poll(
-    async () => (await api.data<{ state: string }>('GET', `/sessions/${sessionId}`)).state,
-    { timeout: 150_000 },
-  ).not.toBe('CREATING');
-  // Wait until the page itself has applied the ready Session, or has already
-  // swapped the composer out, which the assertions below then report.
-  const pill = page.getByTestId('run-view').getByTestId('status-pill').first();
-  await expect.poll(async () => {
-    if (!(await composerNode!.evaluate((node) => node.isConnected))) return 'composer-replaced';
-    return (await pill.getAttribute('data-state', { timeout: 1_000 }).catch(() => null)) ?? 'CREATING';
-  }, { timeout: 30_000 }).not.toBe('CREATING');
-  await page.keyboard.type(' and after it is ready');
-
+  await expect.poll(() => held, { message: 'the page asks for its history as it opens' }).toBe(true);
+  await expect(composer, 'nothing to type into before the conversation\'s history lands').toHaveCount(0);
   const historyRead = page.waitForResponse(
     (response) => new URL(response.url()).pathname.endsWith(`/${sessionId}/history-blocks`),
   );
   releaseHistory();
   await historyRead;
+
+  await expect(composer).toBeVisible();
+  // A cold Agent takes seconds to start and the history read takes none, so
+  // the reader types while the page still says the conversation is starting;
+  // a Session already ready here would leave nothing below to prove.
+  const pill = page.getByTestId('run-view').getByTestId('status-pill').first();
+  await expect(pill, 'the reader types while the conversation is still starting')
+    .toHaveAttribute('data-state', 'CREATING', { timeout: 5_000 });
+  const composerNode = await composer.elementHandle();
+  await composer.click();
+  await page.keyboard.type('typed while starting');
+
+  await expect.poll(
+    async () => (await api.getSession(sessionId)).state,
+    { timeout: 150_000 },
+  ).not.toBe('CREATING');
+  // Wait until the page itself has applied the ready Session, or has already
+  // swapped the composer out, which the assertions below then report.
+  await expect.poll(async () => {
+    if (!(await composerNode!.evaluate((node) => node.isConnected))) return 'composer-replaced';
+    return (await pill.getAttribute('data-state', { timeout: 1_000 }).catch(() => null)) ?? 'CREATING';
+  }, { timeout: 30_000 }).not.toBe('CREATING');
+  await page.keyboard.type(' and after it is ready');
 
   expect(await composerNode!.evaluate((node) => node.isConnected), 'the composer stayed mounted').toBe(true);
   await expect(composer).toHaveValue('typed while starting and after it is ready');

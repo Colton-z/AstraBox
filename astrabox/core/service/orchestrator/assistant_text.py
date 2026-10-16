@@ -25,32 +25,3 @@ def is_full_assistant_snapshot(raw: Any, chunk_type: Any = None) -> bool:
         return True
 
     return False
-
-
-def collect_incremental_chunk_text(chunks: list[dict[str, Any]]) -> str:
-    parts: list[str] = []
-    for chunk in chunks:
-        text = str(chunk.get("text") or "")
-        if not text:
-            continue
-        if is_full_assistant_snapshot(chunk.get("raw"), chunk.get("type")):
-            continue
-        parts.append(text)
-    return "".join(parts)
-
-
-def coalesce_assistant_text(streamed_text: str | None, result_text: str | None) -> str:
-    """Choose the most complete assistant text between streamed chunks and result payload."""
-    streamed = streamed_text or ""
-    result = (result_text or "").strip()
-
-    if streamed and result:
-        if streamed == result:
-            return result
-        if result in streamed:
-            return streamed
-        if streamed in result:
-            return result
-        return streamed if len(streamed) >= len(result) else result
-
-    return streamed or result

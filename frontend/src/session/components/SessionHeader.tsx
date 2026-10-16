@@ -51,7 +51,7 @@ export function SessionHeader({
   // This view renders no top bar, so the document title is set from the one
   // name it does show; without it every conversation shares one browser tab
   // label and one history entry.
-  const pageName = session.title || session.template_name || session.session_id.slice(0, 8);
+  const pageName = session.title || session.session_id.slice(0, 8);
   useEffect(() => {
     document.title = pageName ? `${pageName} · AstraBox` : 'AstraBox';
   }, [pageName]);
@@ -74,7 +74,7 @@ export function SessionHeader({
             )}
           </div>
           <div className="flex items-center gap-2 min-w-0">
-            <h1 className="t-h2-tight truncate text-15 tracking-[-0.01em]">{session.title || session.template_name || t('chat:page.session_title_fallback', { id: session.session_id.slice(0, 8) })}</h1>
+            <h1 className="t-h2-tight truncate text-15 tracking-[-0.01em]">{session.title || t('chat:page.session_title_fallback', { id: session.session_id.slice(0, 8) })}</h1>
             <StatusPill tone={headerTone} state={headerRunState}>{headerStatusLabel}</StatusPill>
           </div>
           {showRuntimeUnavailableBanner && <p className="mt-1 text-11 text-citrine-fg">{t('chat:status.runtime_disconnected')}</p>}

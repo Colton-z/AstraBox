@@ -40,6 +40,7 @@ import json
 import logging
 import os
 import sys
+import tempfile
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,6 +49,7 @@ from typing import Any, Final, Iterable
 from uuid import uuid4
 
 from astrabox.common.logger.logger_factory import get_logger
+from astrabox.config.release_images import release_image
 
 logger = get_logger(__name__)
 
@@ -139,11 +141,9 @@ _SECURE_RUNTIME_DOCKER_NAME = {
     "firecracker": "firecracker",
 }
 
-EXECD_IMAGE_ENV = "ASTRABOX_SANDBOX_SERVER_EXECD_IMAGE"
-#: The official execd init image paired with the supported OpenSandbox server.
 #: Every standard create receives this server-side injection, including creates
 #: issued by AstraBox's OpenSandbox SDK client-pool creator.
-DEFAULT_EXECD_IMAGE = "opensandbox/execd:v1.1.0"
+EXECD_IMAGE_ENV = "ASTRABOX_SANDBOX_SERVER_EXECD_IMAGE"
 
 #: The oldest Docker Engine the Docker runtime supports, and the Engine API
 #: version it speaks (https://docs.docker.com/reference/api/engine/, "API
@@ -360,11 +360,11 @@ def execd_image() -> str:
 
     OpenSandbox's init container runs ``./execd`` from the init image's own
     working directory, so an arbitrary Agent image is not a valid substitute
-    merely because it also contains that binary. Use the upstream image by
-    default; an operator may override it with a compatible registry mirror.
+    merely because it also contains that binary. The release's execd image
+    carries its streaming-upload patch over the pinned supplier image.
     """
 
-    return _env(EXECD_IMAGE_ENV, DEFAULT_EXECD_IMAGE)
+    return _env(EXECD_IMAGE_ENV, "") or release_image("execd")
 
 
 def server_port() -> int:
@@ -1089,24 +1089,28 @@ def kubeconfig_for_server() -> Path | None:
         ) from exc
     _substitute_api_server(document, api_server)
     rebased = _absolutise_file_references(document, source.parent)
+    temporary_path: Path | None = None
     try:
         destination.parent.mkdir(parents=True, exist_ok=True)
-        # Created 0600 BEFORE any credential reaches it — writing first and
-        # chmod-ing after would leave the cluster credentials world-readable for
-        # the width of the write.
-        with os.fdopen(
-            os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _KUBECONFIG_MODE),
-            "w",
-            encoding="utf-8",
-        ) as handle:
+        fd, temporary_name = tempfile.mkstemp(
+            prefix=f".{destination.name}.", dir=destination.parent
+        )
+        temporary_path = Path(temporary_name)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            os.fchmod(handle.fileno(), _KUBECONFIG_MODE)
             yaml.safe_dump(document, handle, default_flow_style=False, sort_keys=False)
-        # O_CREAT keeps the mode of a file that already existed, so state it.
-        os.chmod(destination, _KUBECONFIG_MODE)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # Storage clients and replica startup read the same published file.
+        os.replace(temporary_path, destination)
     except OSError as exc:
         raise SandboxServerConfigError(
             f"cannot write the derived kubeconfig to {destination}: {exc}. Set "
             f"{METADATA_DIR_ENV} to a writable directory."
         ) from exc
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
     logger.info(
         "%s=%s applied: %s points at that API server address (derived from %s; "
         "the source file was not modified).",
@@ -2043,27 +2047,31 @@ def installation_id() -> str:
     """This installation's id, read from its database.
 
     The bundled lifecycle server starts inside the AstraBox container with the
-    same database wiring as the application, so both read the one document
-    that names the installation (:mod:`astrabox.persistence.installation`).
+    same database wiring as the application, so both read the one row that
+    names the installation (:mod:`astrabox.persistence.installation`). Its
+    schema is upgraded before this read because the lifecycle server can start
+    before the application.
     """
     import asyncio
 
     from astrabox.persistence.installation import load_installation_id
-    from astrabox.persistence.repository.backend import (
-        close_direct_mongo_for_current_loop,
-    )
+    from astrabox.persistence.sql.engine import dispose_engine
+    from astrabox.persistence.sql.migrate import upgrade_to_head
 
     async def _read() -> str:
         try:
+            await upgrade_to_head()
             return await load_installation_id()
         finally:
-            await close_direct_mongo_for_current_loop("sandbox server startup")
+            # The pool belongs to this short-lived loop; asyncpg connections
+            # cannot be closed once the loop is gone.
+            await dispose_engine()
 
     try:
         return asyncio.run(_read())
     except Exception as exc:
         raise SandboxServerConfigError(
-            "cannot read this installation's id from its database, which the "
+            "cannot initialize or read this installation's id from its database, which the "
             "sandbox server needs to leave other installations' sandboxes alone: "
             f"{type(exc).__name__}: {exc}"
         ) from exc
@@ -3081,7 +3089,6 @@ __all__ = [
     "CONFIG_FILENAME",
     "CONTAINER_OPS_MIXIN_ATTR",
     "CREATE_AND_START_ATTR",
-    "DEFAULT_EXECD_IMAGE",
     "DEFAULT_INGRESS_MODE",
     "DEFAULT_INGRESS_ROUTE_MODE",
     "DEFAULT_INGRESS_SIGNING_KEY_ID",

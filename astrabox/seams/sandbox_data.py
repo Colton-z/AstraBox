@@ -230,6 +230,7 @@ class SandboxCommands(Protocol):
         *,
         env: Mapping[str, str] | None = None,
         timeout: float | None = 60.0,
+        idempotent: bool = False,
     ) -> SandboxCommandResult:
         """Run ``command`` to its end and return how it ended.
 
@@ -237,6 +238,12 @@ class SandboxCommands(Protocol):
         side: past it, this raises ``TimeoutError``, and the implementation has
         the box stop the command shortly after. ``None`` waits for as long as
         the command runs.
+
+        ``idempotent`` declares that running the command twice has the effect
+        of running it once. Such a command is run again, within the same
+        deadline, when the connection to the box fails before its exit status
+        arrives. Any other command reports that failure at once, since the box
+        may already have run it.
 
         A non-zero exit status is returned, not raised. This raises
         :class:`SandboxCommandRefused` when the box will not start the command,

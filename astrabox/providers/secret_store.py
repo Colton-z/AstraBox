@@ -1,9 +1,8 @@
-"""Built-in ``local`` secret store and shared encrypted collection persistence.
+"""Built-in ``local`` secret store and the database persistence of sealed values.
 
 Values are sealed with AES-256-GCM under a deployment master key and stored in
-the regular collection ingress (PostgreSQL by default, or whichever repository
-backend the deployment selects), so the built-in store provides a real at-rest
-guarantee without requiring an external secret service.
+the platform's PostgreSQL database (the ``secrets`` table), so the built-in store
+provides a real at-rest guarantee without requiring an external secret service.
 
 Master key resolution (fail-loud between the two, never a mixed state):
 
@@ -25,23 +24,26 @@ import os
 import secrets as _secrets
 import tempfile
 from abc import abstractmethod
+from collections.abc import Collection, Mapping
 from pathlib import Path
-from typing import Any
+from typing import cast
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from sqlalchemy import Table, delete, select
+from sqlalchemy.dialects.postgresql import Insert, insert
+from sqlalchemy.ext.asyncio import AsyncConnection
 
-from astrabox.persistence.repository.backend import (
-    get_async_collection,
-    run_mongo_with_retry,
-)
+from astrabox.persistence.sql import execute, fetch_value
+from astrabox.persistence.sql.models.vaults import Secret
 from astrabox.seams.secrets import SecretStore, register_secret_store
 
 MASTER_KEY_ENV = "ASTRABOX_VAULT_MASTER_KEY"
 MASTER_KEY_FILENAME = "vault.key"
 _AWS_KMS_KEY_ARN_ENV = "ASTRABOX_AWS_KMS_KEY_ARN"
-_COLLECTION = "vault_secrets"
 _NONCE_BYTES = 12
+
+_SECRETS = cast(Table, Secret.__table__)
 
 
 def _state_dir() -> Path:
@@ -133,7 +135,14 @@ def load_master_key() -> bytes:
 
 
 class EncryptedCollectionSecretStore(SecretStore):
-    """Shared collection persistence for providers that return sealed strings."""
+    """Sealed values in the platform database, one ``secrets`` row per (scope, key).
+
+    Subclasses provide the sealing. Because the rows sit beside the records
+    they belong to, a caller can write them in the same transaction as those
+    records: :meth:`seal` each value first, since sealing may call a key
+    service and must not hold a transaction open, then pass the sealed values to
+    :meth:`apply` on the transaction's connection.
+    """
 
     @abstractmethod
     async def _seal_value(self, *, scope: str, key: str, value: str) -> str:
@@ -143,49 +152,73 @@ class EncryptedCollectionSecretStore(SecretStore):
     async def _unseal_value(self, *, scope: str, key: str, sealed: str) -> str:
         """Authenticate and decrypt one provider-produced representation."""
 
-    async def put(self, *, scope: str, key: str, value: str) -> None:
-        sealed = await self._seal_value(scope=scope, key=key, value=value)
+    async def seal(self, *, scope: str, key: str, value: str) -> str:
+        """``value`` sealed for ``(scope, key)``, ready for :meth:`apply`."""
+        return await self._seal_value(scope=scope, key=key, value=value)
 
-        async def _put() -> None:
-            collection = await get_async_collection(_COLLECTION)
-            await collection.update_one(
-                {"scope": scope, "key": key},
-                {"$set": {"scope": scope, "key": key, "sealed": sealed}},
-                upsert=True,
-            )
-
-        await run_mongo_with_retry("vault_secrets.put", _put)
-
-    async def get(self, *, scope: str, key: str) -> str | None:
-        async def _get() -> Any:
-            collection = await get_async_collection(_COLLECTION)
-            return await collection.find_one({"scope": scope, "key": key})
-
-        doc = await run_mongo_with_retry("vault_secrets.get", _get)
-        if not isinstance(doc, dict):
-            return None
-        sealed = str(doc.get("sealed") or "")
-        if not sealed:
-            return None
+    async def unseal(self, *, scope: str, key: str, sealed: str) -> str:
+        """Decrypt ciphertext read with its owner's record in one database snapshot."""
         return await self._unseal_value(scope=scope, key=key, sealed=sealed)
 
-    async def delete(self, *, scope: str, key: str) -> None:
-        async def _delete() -> None:
-            collection = await get_async_collection(_COLLECTION)
-            await collection.delete_many({"scope": scope, "key": key})
+    async def apply(
+        self,
+        conn: AsyncConnection,
+        *,
+        scope: str,
+        put: Mapping[str, str] | None = None,
+        remove: Collection[str] = (),
+        purge: bool = False,
+    ) -> None:
+        """Change ``scope``'s values inside the transaction ``conn`` belongs to.
 
-        await run_mongo_with_retry("vault_secrets.delete", _delete)
+        ``purge`` removes every value in the scope and ``remove`` the named
+        keys; then ``put`` stores its values, which map each key to what
+        :meth:`seal` returned for this scope and that key.
+        """
+        if purge:
+            await conn.execute(delete(_SECRETS).where(_SECRETS.c.scope == scope))
+        elif remove:
+            await conn.execute(
+                delete(_SECRETS).where(_SECRETS.c.scope == scope, _SECRETS.c.key.in_(remove))
+            )
+        if put:
+            await conn.execute(
+                _upsert([{"scope": scope, "key": key, "sealed": sealed} for key, sealed in put.items()])
+            )
+
+    async def put(self, *, scope: str, key: str, value: str) -> None:
+        sealed = await self._seal_value(scope=scope, key=key, value=value)
+        await execute(_upsert([{"scope": scope, "key": key, "sealed": sealed}]))
+
+    async def get(self, *, scope: str, key: str) -> str | None:
+        sealed = await fetch_value(
+            select(_SECRETS.c.sealed).where(_SECRETS.c.scope == scope, _SECRETS.c.key == key)
+        )
+        if not sealed:
+            return None
+        return await self.unseal(scope=scope, key=key, sealed=str(sealed))
+
+    async def delete(self, *, scope: str, key: str) -> None:
+        await execute(delete(_SECRETS).where(_SECRETS.c.scope == scope, _SECRETS.c.key == key))
 
     async def purge_scope(self, *, scope: str) -> None:
-        async def _purge() -> None:
-            collection = await get_async_collection(_COLLECTION)
-            await collection.delete_many({"scope": scope})
+        await execute(delete(_SECRETS).where(_SECRETS.c.scope == scope))
 
-        await run_mongo_with_retry("vault_secrets.purge_scope", _purge)
+
+def _upsert(rows: list[dict[str, str]]) -> Insert:
+    """Store ``rows``, replacing the sealed value of any (scope, key) already present.
+
+    One statement, so concurrent first writes of one key leave one row.
+    """
+    statement = insert(_SECRETS).values(rows)
+    return statement.on_conflict_do_update(
+        index_elements=[_SECRETS.c.scope, _SECRETS.c.key],
+        set_={"sealed": statement.excluded.sealed},
+    )
 
 
 class LocalEncryptedSecretStore(EncryptedCollectionSecretStore):
-    """AES-GCM sealed values in the ``vault_secrets`` collection."""
+    """AES-GCM sealed values in the ``secrets`` table."""
 
     name = "local"
 

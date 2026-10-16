@@ -10,11 +10,12 @@ the application's logging namespace. So capture happens at the logging layer:
 - ``AdminErrorLogHandler`` is attached at import time and appends ERROR+ records
   to a bounded in-memory ring buffer. ``emit`` is synchronous, thread-safe, and
   never raises.
-- A drain asyncio task upserts buffered records into a deduplicated, TTL-bounded
-  repository collection. It is bootstrapped lazily from the first error seen
-  inside a running loop; :func:`start_error_capture` also provides an explicit
-  bootstrap entry point. A stable signature deduplicates repeated records by
-  incrementing their counter.
+- A drain asyncio task, started lazily from the first error seen inside a
+  running loop, records each buffered record
+  (:class:`~astrabox.persistence.repository.runtime_error_repository.RuntimeErrorRepository`).
+  A stable signature deduplicates repeated records into one row that counts
+  them and keeps when the error was first and last seen. The expiration
+  watcher deletes errors that have not recurred for the retention period.
 """
 from __future__ import annotations
 
@@ -27,11 +28,9 @@ import traceback as _tb
 from datetime import datetime, timezone
 from typing import Any
 
-from astrabox.persistence.repository.backend import get_async_collection
 from astrabox.common.logger.logger_factory import MODULE_APP_NAME
+from astrabox.persistence.repository.runtime_error_repository import RuntimeErrorRepository
 
-COLLECTION_NAME = "runtime_errors"
-_TTL_SECONDS = 7 * 24 * 3600
 _BUFFER_MAXLEN = 2000
 _FLUSH_INTERVAL_SECONDS = 0.5
 
@@ -43,12 +42,6 @@ _diag = logging.getLogger("astrabox.admin_error_capture")
 _buffer: "collections.deque[dict[str, Any]]" = collections.deque(maxlen=_BUFFER_MAXLEN)
 _drain_task: "asyncio.Task[None] | None" = None
 _handler: "AdminErrorLogHandler | None" = None
-_indexes_ready = False
-_dropped = 0
-
-
-def _iso(ts: float) -> str:
-    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
 def _exc_type_name(record: logging.LogRecord) -> str | None:
@@ -71,7 +64,6 @@ class AdminErrorLogHandler(logging.Handler):
     """Append ERROR+ records to the ring buffer. Never blocks or raises."""
 
     def emit(self, record: logging.LogRecord) -> None:
-        global _dropped
         try:
             if record.levelno < logging.ERROR:
                 return
@@ -79,8 +71,6 @@ class AdminErrorLogHandler(logging.Handler):
                 message = record.getMessage()
             except Exception:
                 message = str(getattr(record, "msg", ""))
-            if len(_buffer) >= _BUFFER_MAXLEN:
-                _dropped += 1
             _buffer.append({
                 "logger": record.name,
                 "severity": record.levelname,
@@ -102,44 +92,16 @@ class AdminErrorLogHandler(logging.Handler):
                 pass
 
 
-async def _ensure_indexes(collection: Any) -> None:
-    global _indexes_ready
-    if _indexes_ready:
-        return
-    try:
-        await collection.create_index("last_seen_ts", expireAfterSeconds=_TTL_SECONDS)
-        await collection.create_index("signature", unique=True)
-    except Exception as exc:
-        _diag.warning("runtime_errors index create failed: %s", exc)
-    _indexes_ready = True
-
-
 async def _persist(item: dict[str, Any]) -> None:
-    collection = await get_async_collection(COLLECTION_NAME)
-    if collection is None:
-        return
-    await _ensure_indexes(collection)
-    sig = _signature(item)
-    ts = float(item.get("ts") or time.time())
-    # Use only $set + $inc here (no $setOnInsert), so first_seen is not tracked;
-    # last_seen + count carry the useful signal.
-    await collection.update_one(
-        {"signature": sig},
-        {
-            "$set": {
-                "signature": sig,
-                "logger": item.get("logger"),
-                "severity": item.get("severity"),
-                "error_type": item.get("error_type"),
-                "message": item.get("message"),
-                "location": item.get("location"),
-                "traceback": item.get("traceback"),
-                "last_seen_ts": ts,
-                "last_seen": _iso(ts),
-            },
-            "$inc": {"count": 1},
-        },
-        upsert=True,
+    await RuntimeErrorRepository().record(
+        signature=_signature(item),
+        logger=str(item.get("logger") or ""),
+        severity=str(item.get("severity") or "ERROR"),
+        error_type=item.get("error_type"),
+        message=str(item.get("message") or ""),
+        location=str(item.get("location") or ""),
+        traceback=item.get("traceback"),
+        seen=datetime.fromtimestamp(float(item.get("ts") or time.time()), tz=timezone.utc),
     )
 
 
@@ -160,9 +122,9 @@ async def _drain() -> None:
 def _bootstrap_drain() -> None:
     """Start the drain task once, if a running event loop is available.
 
-    Called from emit (the error path) and from start_error_capture (fresh start).
-    Safe to call repeatedly and from the loop thread; a no-op without a running
-    loop (a later loop-thread error will bootstrap it)."""
+    Called from emit (the error path). Safe to call repeatedly and from the
+    loop thread; a no-op without a running loop (a later loop-thread error
+    will bootstrap it)."""
     global _drain_task
     if _drain_task is not None and not _drain_task.done():
         return
@@ -196,24 +158,9 @@ def _attach_handler() -> None:
         _diag.warning("[ERR-CAPTURE] attach failed: %s", exc)
 
 
-def start_error_capture() -> None:
-    """Best-effort explicit bootstrap for the handler and drain task."""
-    _attach_handler()
-    _bootstrap_drain()
-    _diag.warning("[ERR-CAPTURE] runtime error capture ready")
-
-
 async def list_runtime_errors(limit: int = 200) -> list[dict[str, Any]]:
-    """Return recent captured runtime errors, newest first."""
-    try:
-        collection = await get_async_collection(COLLECTION_NAME)
-        if collection is None:
-            return []
-        cursor = collection.find({}, {"_id": 0}).sort("last_seen_ts", -1).limit(int(limit))
-        return [doc async for doc in cursor]
-    except Exception as exc:
-        _diag.warning("runtime_errors list failed: %s", exc)
-        return []
+    """The ``limit`` most recently seen captured errors, newest first."""
+    return await RuntimeErrorRepository().list_recent(int(limit))
 
 
 # Attach the handler before any application logger can emit an ERROR record.

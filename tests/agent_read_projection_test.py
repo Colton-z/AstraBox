@@ -1,9 +1,9 @@
 """What an Agent read hands out, and what it must never hand out.
 
 Two drop sets had drifted apart. ``conversation_uid_cursor``, the shared
-box's UID allocation cursor owned by ``conversation_identity``'s
-compare-and-set, was returned by both: it carries no leading underscore, so the
-rule that catches the other internals never saw it.
+box's UID allocation cursor that ``conversation_identity`` draws from, was
+returned by both: it carries no leading underscore, so the rule that catches
+the other internals never saw it.
 
 The write side is deliberately NOT symmetric with this, and that asymmetry is
 load-bearing rather than an oversight: the authoring payload is closed and
@@ -42,12 +42,8 @@ def _stored_agent() -> dict[str, Any]:
         "conversation_uid_cursor": 2007,
         "workspace_id": "ws-platform-owned",
         "credential_vault_ids": ["vault-1"],
-        "credentials_updated_by": "user-1",
-        "credentials_updated_at": "2026-08-25T00:00:00+00:00",
-        "plugin_mcp_bridge_allowlist": ["everything"],
-        "main_session_id": "session-1",
-        "_agent_prewarm_fingerprint": "fp-1",
-        "_prepared_slots": [{"state": "prepared"}],
+        "_client_pool_name": "pool-1",
+        "_runtime_generation": "generation-1",
     }
 
 
@@ -58,10 +54,6 @@ _MUST_NOT_APPEAR = (
     "conversation_uid_cursor",
     "workspace_id",
     "credential_vault_ids",
-    "credentials_updated_by",
-    "credentials_updated_at",
-    "plugin_mcp_bridge_allowlist",
-    "main_session_id",
 )
 
 

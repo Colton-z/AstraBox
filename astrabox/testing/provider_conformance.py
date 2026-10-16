@@ -11,10 +11,6 @@ engine-adapter contract suites::
         def make_provider(self):
             return MyCloudSandboxProvider()
 
-The in-tree bindings (``tests/provider_conformance_test.py``) run these over
-the built-in OpenSandbox providers, so the contract is exercised by a real
-implementation, not only documented.
-
 SCOPE — these pin the STRUCTURAL + capability contract that holds WITHOUT live
 cloud infrastructure: the required abstract methods are actually overridden
 (not left as the seam's fail-loud default), the name is a stable non-empty

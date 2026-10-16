@@ -4,33 +4,40 @@
  *
  * The foreground Bash turn must drive the session to PROCESSING while the
  * background task remains open. After both finish, the root messages remain
- * separate and contain no child lifecycle blocks; the independent Session
+ * separate and contain no child lifecycle parts; the independent Session
  * child-run projection carries the completed Agent and its transcript.
  *
- * Launching a background Agent is model-dependent. A bounded probe skips only
- * when no background state or child-run record appears.
+ * Launching a background Agent is model-dependent. A bounded probe asks once
+ * more when no background Agent appears, and fails when none does.
  */
 import { test, expect } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 
 import { insist } from '../fixtures/insist';
-import { AstraApi, messageText, type ChildRunRecord, type MessageRecord, type SessionRecord } from '../fixtures/astraApi';
+import {
+  AstraApi,
+  messageParts,
+  messageText,
+  type ChildRunRecord,
+  type MessageRecord,
+  type SessionRecord,
+} from '../fixtures/astraApi';
 import { trackSessions } from '../fixtures/sessionCleanup';
 import { appPath, parseTimeoutEnv } from '../fixtures/env';
 import { nativeRootEntries, object } from '../fixtures/nativeMcpServer';
-import { documentsByField } from '../fixtures/dbOracle';
+import { expectNoDuplicateTextBlocks } from '../fixtures/renderedTranscript';
 
 // The two Bash turns rendezvous through a sandbox-local file. The background
 // turn cannot settle before the foreground turn is active, and the foreground
 // releases it without spending most of the suite's fixed 180-second budget on
-// sleeps. Bounded probe for the first sign of a background subagent (OPEN
-// background_task_state or any lifecycle frame) before skipping.
+// sleeps. Bounded probe for a background subagent (Claude's own background
+// launch, and its child run still open) before asking again.
 const PROBE_TIMEOUT_MS = parseTimeoutEnv('ASTRABOX_E2E_BACKGROUND_PROBE_TIMEOUT_MS', 90_000);
 // Foreground-idle wait and the concurrent foreground reply wait.
 const TURN_TIMEOUT_MS = parseTimeoutEnv('ASTRABOX_E2E_TURN_TIMEOUT_MS', 180_000);
 // How long the session may take to settle the background subagent (state READY,
-// cleared background_task_state, one completed lifecycle) — the 90s sleep and
-// the overlapping foreground turn both eat into this.
+// nothing running, one closed child run) — the 90s sleep and the overlapping
+// foreground turn both eat into this.
 const BACKGROUND_SETTLED_TIMEOUT_MS = parseTimeoutEnv('ASTRABOX_E2E_BACKGROUND_SETTLED_TIMEOUT_MS', 240_000);
 // How long to wait for the overlap turn to become the active (PROCESSING) turn.
 const ACTIVE_TURN_POLL_MS = parseTimeoutEnv('ASTRABOX_E2E_ACTIVE_TURN_POLL_MS', 60_000);
@@ -42,30 +49,51 @@ const FOREGROUND_AFTER_RELEASE_SECONDS = 3;
 const BACKGROUND_RELEASE_TIMEOUT_SECONDS = 120;
 
 const LABEL = 'overlap';
-// Foreground-idle includes READY with an open background task.
-const FOREGROUND_IDLE_STATES = ['READY', 'BACKGROUND_RUNNING'] as const;
-// PROCESSING is the rendered active-turn state. BUSY is accepted defensively
-// because it can appear in stored session state during the same transition.
-const ACTIVE_TURN_STATE = /^(PROCESSING|BUSY)$/;
-const TERMINAL_STATES = new Set(['RECOVERY_REQUIRED', 'TERMINATED', 'DELETED', 'FAILED']);
+const TERMINAL_STATES = new Set(['TERMINATED', 'DELETED']);
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Engine/UI identity is independent from the platform turn lifecycle. */
+/** A message's id: the response id of an assistant message, the client message id of a user one. */
 function messageIdentity(message: MessageRecord): string {
-  const messageId = String(message.message_id || '').trim();
-  if (!messageId) throw new Error('messages API returned a row without message_id');
+  const messageId = String(message.id || '').trim();
+  if (!messageId) throw new Error('messages API returned a message without an id');
   return messageId;
 }
 
-// Materialization must not duplicate persisted assistant text blocks.
-function expectNoDuplicateTextBlocks(message: MessageRecord, label: string): void {
-  const textBlocks = (message.blocks || [])
-    .filter((block) => String(block.type || '') === 'text')
-    .map((block) => String(block.text || block.content || '').trim())
-    .filter((text) => text.length > 20);
-  const duplicates = textBlocks.filter((text, index) => textBlocks.indexOf(text) !== index);
-  expect(duplicates, `${label} should not duplicate persisted assistant text blocks`).toEqual([]);
+/** The text of every message's text parts, in history order. */
+function textParts(messages: MessageRecord[]): string[] {
+  return messages.flatMap((message) => message.parts)
+    .filter((part) => part.type === 'text').map((part) => String(part.text || ''));
+}
+
+/** Claude's own root text replies, in transcript order. */
+function nativeRootReplyTexts(sessionId: string): string[] {
+  return nativeRootEntries(sessionId).flatMap(({ entry }) => {
+    if (entry.type !== 'assistant' || entry.isSidechain === true) return [];
+    const content = object(entry.message).content;
+    return Array.isArray(content) ? content.map(object) : [];
+  }).filter((block) => block.type === 'text').map((block) => String(block.text || ''));
+}
+
+/** Claude's own Agent launches that asked to run in the background. */
+function nativeBackgroundLaunches(sessionId: string): Record<string, unknown>[] {
+  return nativeRootEntries(sessionId).flatMap(({ entry }) => {
+    if (entry.type !== 'assistant' || entry.isSidechain === true) return [];
+    const content = object(entry.message).content;
+    return Array.isArray(content) ? content.map(object) : [];
+  }).filter((block) => block.type === 'tool_use' && ['Agent', 'Task'].includes(String(block.name))
+    && object(block.input).run_in_background === true);
+}
+
+/**
+ * Nothing runs in the foreground: no response, no question, no held input.
+ *
+ * READY means the runtime has no work, including background tasks.
+ */
+function foregroundIdle(session: SessionRecord): boolean {
+  return String(session.state || '') === 'READY'
+    && (session.current_responses ?? []).length === 0
+    && !session.pending_interaction;
 }
 
 // ── Prompts ────────────────────────────────────────────────────────────────
@@ -136,9 +164,8 @@ async function openSessionView(page: Page, sessionId: string): Promise<void> {
   await expect(page.getByTestId('run-view')).toBeVisible({ timeout: 45_000 });
 }
 
-// Filling avoids key events that could submit a multiline prompt early. Once
-// accepted, the prompt is either still in the platform queue or has crossed the
-// engine-consumption boundary into the transcript.
+// Filling avoids key events that could submit a multiline prompt early. The
+// page shows the owner's message in the transcript the moment it is sent.
 async function sendPromptFromComposer(page: Page, prompt: string, echoSubstring: string): Promise<void> {
   const composer = page.getByTestId('composer-prompt');
   await expect(composer, 'the composer must be enabled before sending').toBeEnabled({ timeout: 45_000 });
@@ -146,11 +173,9 @@ async function sendPromptFromComposer(page: Page, prompt: string, echoSubstring:
   const submit = page.getByTestId('composer-submit');
   await expect(submit).toBeEnabled({ timeout: 15_000 });
   await submit.click();
-  const queuedPrompt = page.getByTestId('composer-queue').filter({ hasText: echoSubstring });
-  const consumedPrompt = page.getByTestId('user-message').filter({ hasText: echoSubstring }).last();
   await expect(
-    queuedPrompt.or(consumedPrompt).first(),
-    'the prompt should appear in the platform queue or the consumed transcript',
+    page.getByTestId('user-message').filter({ hasText: echoSubstring }).last(),
+    'the prompt should appear in the transcript',
   ).toBeVisible({ timeout: 30_000 });
 }
 
@@ -300,9 +325,10 @@ async function waitForForegroundIdleOrBackground(
     last = await api.getSession(sessionId);
     const state = String(last.state || '');
     if (
-      (FOREGROUND_IDLE_STATES as readonly string[]).includes(state) &&
-      !last.current_turn_id &&
-      !last.pending_interaction
+      ['READY', 'PROCESSING'].includes(state)
+      && (last.current_responses ?? []).length === 0
+      && (last.held_inputs ?? []).length === 0
+      && !last.pending_interaction
     ) {
       return last;
     }
@@ -348,8 +374,8 @@ async function waitForBackgroundSettledWithCompletedSubagents(
     lastChildRuns = (await api.listChildRuns(sessionId)).child_runs;
     const completed = lastChildRuns.filter((item) => item.closed);
     if (
-      String(lastSession.state || '') === 'READY' &&
-      !lastSession.background_task_state &&
+      foregroundIdle(lastSession) &&
+      lastChildRuns.every((item) => item.closed) &&
       completed.length >= expectedCompletedCount
     ) {
       return { session: lastSession, messages: page.messages || [], childRuns: lastChildRuns };
@@ -394,33 +420,34 @@ async function captureBackgroundLauncher(
 }
 
 /**
- * Require an open background manifest before starting the overlapping turn.
- * Its completion belongs to the child view, not to the launcher's speech.
- * A bounded idle grace allows the manifest projection to catch up.
+ * Require a background Agent before starting the overlapping turn: Claude's
+ * own launch with run_in_background=true, and a child run still open. Its
+ * completion belongs to the child view, not to the launcher's speech. A
+ * session that stays foreground-idle for a short grace with no open child is
+ * a model that did not launch one.
  */
-async function probeBackgroundTaskManifest(api: AstraApi, sessionId: string, timeoutMs: number): Promise<boolean> {
+async function probeBackgroundAgent(api: AstraApi, sessionId: string, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
-  const IDLE_NO_MANIFEST_GRACE_MS = 10_000;
-  let idleWithLifecycleSince = 0;
+  const IDLE_GRACE_MS = 10_000;
+  let idleSince = 0;
   while (Date.now() < deadline) {
     const session = await api.getSession(sessionId);
-    if (session.background_task_state) return true;
     if (TERMINAL_STATES.has(String(session.state || ''))) {
-      throw new Error(`session ${sessionId} reached terminal state ${session.state} during background-manifest probe`);
+      throw new Error(`session ${sessionId} reached terminal state ${session.state} during the background-Agent probe`);
     }
-    const hasLifecycle = (await api.listChildRuns(sessionId)).child_runs.length > 0;
-    const foregroundIdle =
-      (FOREGROUND_IDLE_STATES as readonly string[]).includes(String(session.state || '')) &&
-      !session.current_turn_id &&
-      !session.pending_interaction;
-    if (foregroundIdle && hasLifecycle) {
-      if (idleWithLifecycleSince === 0) {
-        idleWithLifecycleSince = Date.now();
-      } else if (Date.now() - idleWithLifecycleSince >= IDLE_NO_MANIFEST_GRACE_MS) {
+    const open = (await api.listChildRuns(sessionId)).child_runs.some((childRun) => !childRun.closed);
+    if (open) {
+      if (nativeBackgroundLaunches(sessionId).length > 0) return true;
+      // An open child whose launch the transcript mirror has not received yet.
+      idleSince = 0;
+    } else if (foregroundIdle(session)) {
+      if (idleSince === 0) {
+        idleSince = Date.now();
+      } else if (Date.now() - idleSince >= IDLE_GRACE_MS) {
         return false;
       }
     } else {
-      idleWithLifecycleSince = 0;
+      idleSince = 0;
     }
     await sleep(1_500);
   }
@@ -460,7 +487,7 @@ test('foreground turn during a background Agent lifecycle preserves both assista
       `PARENT_LAUNCHED_${LABEL}_${runId}`,
     );
 
-    // Require the actual background manifest, not merely a launch response.
+    // Require an actual background Agent, not merely a launch response.
     // Ask again rather than skip: a skip ends the round exactly as a
     // failure does, so the model's choice decided it instead of the
     // platform. A declined ask re-sends the same prompt once, then fails.
@@ -469,8 +496,8 @@ test('foreground turn during a background Agent lifecycle preserves both assista
         if (attempt > 1) await api.postTurnInput(sessionId, launchPrompt);
       },
       probe: async () =>
-        (await probeBackgroundTaskManifest(api, sessionId, PROBE_TIMEOUT_MS)) ? true : null,
-      what: `No open background manifest was observed within ${PROBE_TIMEOUT_MS}ms; the overlap prerequisite is unproven`,
+        (await probeBackgroundAgent(api, sessionId, PROBE_TIMEOUT_MS)) ? true : null,
+      what: `No open background Agent was observed within ${PROBE_TIMEOUT_MS}ms; the overlap prerequisite is unproven`,
       budgetMs: PROBE_TIMEOUT_MS * 2,
       probeMs: PROBE_TIMEOUT_MS,
     });
@@ -507,14 +534,14 @@ test('foreground turn during a background Agent lifecycle preserves both assista
     const backgroundOpen = await waitForForegroundIdleOrBackground(api, sessionId);
     expect(
       String(backgroundOpen.state || ''),
-      `session should be foreground-idle before the overlap turn; detail=${JSON.stringify(backgroundOpen)}`,
-    ).toMatch(/^(READY|BACKGROUND_RUNNING)$/);
+      `the background child keeps the runtime working before the overlap turn; detail=${JSON.stringify(backgroundOpen)}`,
+    ).toBe('PROCESSING');
 
     const parentMarker = `PARENT_LAUNCHED_${LABEL}_${runId}`;
     const parentLauncher = await captureBackgroundLauncher(api, sessionId, parentMarker);
     const backgroundChildRunId = liveChild.child_run_id;
     const parentLauncherId = messageIdentity(parentLauncher);
-    expect(parentLauncherId, 'the launcher message should expose a stable identity (message_id / turn_id)').not.toEqual('');
+    expect(parentLauncherId, 'the launcher message should expose a stable identity (its response id)').not.toEqual('');
 
     // ── CORE: dispatch a REAL Bash foreground turn WHILE the background task is
     //    still open. It must become the active (PROCESSING) turn — i.e. it truly
@@ -528,11 +555,16 @@ test('foreground turn during a background Agent lifecycle preserves both assista
     );
 
     await expect
-      .poll(async () => String((await api.getSession(sessionId)).state || ''), {
+      .poll(async () => {
+        const state = String((await api.getSession(sessionId)).state || '');
+        const child = (await api.listChildRuns(sessionId)).child_runs
+          .find((childRun) => childRun.child_run_id === liveChild.child_run_id);
+        return `${state}:${child && !child.closed ? 'open' : 'closed'}`;
+      }, {
         timeout: ACTIVE_TURN_POLL_MS,
         message: 'the foreground overlap turn should become the active (PROCESSING) turn while the background task is still open',
       })
-      .toMatch(ACTIVE_TURN_STATE);
+      .toBe('PROCESSING:open');
 
     // ── The foreground turn produces its OWN assistant reply (its marker). ────
     const foregroundLive = await waitForAssistantTextMatching(api, sessionId, new RegExp(foregroundMarker), TURN_TIMEOUT_MS);
@@ -542,7 +574,7 @@ test('foreground turn during a background Agent lifecycle preserves both assista
     ).toBeGreaterThan(beforeForegroundAssistantCount);
     expect(messageText(foregroundLive).trim(), 'foreground assistant response should not be empty').not.toEqual('');
 
-    // ── Both turns settle: the background subagent completes and materializes. ─
+    // ── Both turns settle: the background subagent completes. ───────────────
     const settled = await waitForBackgroundSettledWithCompletedSubagents(api, sessionId, 1);
     const assistantMessages = settled.messages.filter((m) => m.role === 'assistant');
 
@@ -568,7 +600,7 @@ test('foreground turn during a background Agent lifecycle preserves both assista
     await expect(expandedTool).toHaveAttribute('aria-expanded', 'true');
     expect(
       await originalToolNode!.evaluate((node) => node.isConnected && node.getAttribute('aria-expanded') === 'true'),
-      'materialization must preserve the original expanded tool, not replace and reopen it',
+      'completion must preserve the original expanded tool, not replace and reopen it',
     ).toBe(true);
     await expect(resultHeading.locator('..')).toContainText(backgroundDoneMarker(LABEL, runId));
 
@@ -579,15 +611,17 @@ test('foreground turn during a background Agent lifecycle preserves both assista
     for (const m of assistantMessages) {
       // eslint-disable-next-line no-console
       console.error('DIAG amsg identity=' + JSON.stringify(messageIdentity(m)) +
-        ' message_id=' + JSON.stringify(m.message_id) + ' turn_id=' + JSON.stringify(m.turn_id) +
-        ' child_blocks=' + JSON.stringify((m.blocks || []).filter((block) => block.type === 'subagent')) +
+        ' origin=' + JSON.stringify(m.metadata?.origin ?? null) +
+        ' input_ids=' + JSON.stringify(m.metadata?.input_ids ?? null) +
+        ' child_parts=' + JSON.stringify(messageParts(m, 'data-subagent')) +
         ' text=' + JSON.stringify(messageText(m).slice(0, 120)));
     }
     // eslint-disable-next-line no-console
     console.error('DIAG settled.childRuns=' + JSON.stringify(settled.childRuns));
     const _diagLauncher = assistantMessages.find((m) => messageIdentity(m) === parentLauncherId);
     // eslint-disable-next-line no-console
-    console.error('DIAG launcher.blocks=' + JSON.stringify((_diagLauncher?.blocks || []).map((b) => ({ type: b.type, data: b.data, id: b.id }))));
+    console.error('DIAG launcher.parts=' + JSON.stringify((_diagLauncher?.parts || [])
+      .map((part) => ({ type: part.type, id: part.id, toolCallId: part.toolCallId }))));
 
     // (1) BOTH assistant turns are preserved as separate messages.
     expect(
@@ -616,23 +650,24 @@ test('foreground turn during a background Agent lifecycle preserves both assista
         engine_status: 'completed',
       }),
     );
-    expect(backgroundAssistant!.content, 'child completion preserves the original launcher speech')
-      .toBe(parentLauncher.content);
-    expect((backgroundAssistant!.blocks || []).filter((block) => block.type === 'text'))
-      .toEqual((parentLauncher.blocks || []).filter((block) => block.type === 'text'));
-    const publicParentText = assistantMessages.flatMap((message) => message.blocks || [])
-      .filter((block) => block.type === 'text').map((block) => String(block.text || '')).join('\n');
-    await expect.poll(() => nativeRootEntries(sessionId).flatMap(({ entry }) => {
-      if (entry.type !== 'assistant' || entry.isSidechain === true) return [];
-      const content = object(entry.message).content;
-      return Array.isArray(content) ? content.map(object) : [];
-    }).filter((block) => block.type === 'text').map((block) => String(block.text || '')).join('\n'), {
+    expect(messageText(backgroundAssistant!), 'child completion preserves the original launcher speech')
+      .toBe(messageText(parentLauncher));
+    expect(textParts([backgroundAssistant!])).toEqual(textParts([parentLauncher]));
+    // Claude answers the child's completion with a response of its own, which
+    // can start after the session first reads settled: compare both records as
+    // they stand at each read.
+    await expect.poll(async () => {
+      const publicText = textParts((await api.getMessages(sessionId, 50)).messages
+        .filter((message) => message.role === 'assistant')).join('\n');
+      const nativeText = nativeRootReplyTexts(sessionId).join('\n');
+      return publicText === nativeText ? 'equal' : JSON.stringify({ publicText, nativeText });
+    }, {
       timeout: 30_000, message: 'public parent speech equals all actual native replies in order',
-    }).toBe(publicParentText);
-    expectNoDuplicateTextBlocks(backgroundAssistant!, 'materialized background launcher message');
+    }).toBe('equal');
+    expectNoDuplicateTextBlocks(backgroundAssistant!, 'background launcher message');
     expect(
-      (backgroundAssistant!.blocks || []).filter((block) => block.type === 'subagent'),
-      'the launcher message must not hide Session child lifecycle blocks',
+      messageParts(backgroundAssistant!, 'data-subagent'),
+      'the launcher message must not hide Session child lifecycle parts',
     ).toEqual([]);
 
     // (3) The foreground turn is a different message and also has no child
@@ -646,23 +681,12 @@ test('foreground turn during a background Agent lifecycle preserves both assista
       'the foreground overlap turn must be a distinct message from the background launcher',
     ).not.toEqual(parentLauncherId);
     expect(
-      (foregroundAssistant!.blocks || []).filter((block) => block.type === 'subagent'),
+      messageParts(foregroundAssistant!, 'data-subagent'),
       'the foreground overlap message must not carry Session child lifecycle',
     ).toEqual([]);
 
-    // ── UI: reload and confirm the completed background Agent materialized into
-    //    the Agents panel (session events → registry rebuild), with a real drawer. ─
-    const reconciledFrames = () => documentsByField('session_events', '$.session_id', sessionId)
-      .filter((frame) => frame.source_kind === 'engine_child_reconcile');
-    await api.listChildRuns(sessionId);
-    const beforeReads = reconciledFrames();
-    expect(beforeReads.length, 'live child history must have reached durable reconciliation').toBeGreaterThan(0);
-    await Promise.all(Array.from({ length: 3 }, () => api.listChildRuns(sessionId)));
-    const beforeSequences = new Set(beforeReads.map((frame) => frame.event_seq));
-    const beforePayloads = new Set(beforeReads.map((frame) => JSON.stringify(frame.payload)));
-    const repeatedFacts = reconciledFrames().filter((frame) =>
-      !beforeSequences.has(frame.event_seq) && beforePayloads.has(JSON.stringify(frame.payload)));
-    expect(repeatedFacts, 'concurrent child reads must not republish unchanged native history').toEqual([]);
+    // ── UI: reload and confirm the completed background Agent is in the Agents
+    //    panel, with a real drawer. ─────────────────────────────────────────────
     await openSessionView(page, sessionId);
     await showAgentsTab(page);
     await expectAgentsPanelRows(page, 1, 'settled background Agent');
@@ -677,7 +701,6 @@ test('foreground turn during a background Agent lifecycle preserves both assista
       settledRow.getByText(settledStatus, { exact: true }),
       'the settled background Agent should render its engine-authored status',
     ).toBeVisible();
-    await expect(page.getByText('Running in background')).toHaveCount(0);
     await expectSubagentDrawerOutput(page, 1);
   } finally {
     await closePageAfterAssertions(transcriptPage);

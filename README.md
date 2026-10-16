@@ -165,10 +165,9 @@ name fails with an error instead of falling back to a default.
 | Messaging platform | `astrabox.providers.channel` | Messaging platform gateway, generic JSON webhook |
 | Identity provider | `astrabox.web.identity` | Local mode, OIDC, verified JWT, trusted identity headers |
 | Secret Store | `astrabox.providers.secrets` | Local encryption, AWS KMS |
-| Data store | `astrabox.providers.repository` | PostgreSQL, MongoDB, SQLite |
 | Workspace storage | `astrabox.providers.storage` | Mounted volume, Amazon EFS |
 | Remote MCP server source | `astrabox.providers.extensions` | Administrator records in AstraBox, LiteLLM MCP gateway |
-| [Runtime preparation integrations](docs/providers/runtime-preparation.md) | `astrabox.providers.runtime_preparation` | Optional deployment-owned Agent resources, Session materials, turn preparation and user prerequisites |
+| [Runtime preparation integrations](docs/providers/runtime-preparation.md) | `astrabox.providers.runtime_preparation` | Optional deployment-owned Agent resources, Session materials, preparation before each message and user prerequisites |
 | [Channel response judges](docs/providers/channel-response.md) | `astrabox.providers.channel_response` | Built-in title-model judge; deployment-owned judge |
 
 - **Interface version** — a plugin under `astrabox.providers.*` can set
@@ -176,7 +175,7 @@ name fails with an error instead of falling back to a default.
   refuses to load it when that differs from its own.
 - **Conformance suites** — `astrabox.testing` ships reusable test suites for
   sandbox backends, workspace storage, messaging platforms, Agent programs and
-  data stores; bind one in the plugin's own tests.
+  schedulers; bind one in the plugin's own tests.
 - **Application extensions** — entry points for API routes, middleware,
   lifespan hooks and service implementations extend the application itself.
 

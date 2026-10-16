@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
-import { documentCountByField, documentsByField } from '../fixtures/dbOracle';
+import { postgresRows, sqlLiteral } from '../fixtures/dbOracle';
 import { parseTimeoutEnv } from '../fixtures/env';
 import { requireSandboxHandle, sandboxExec } from '../fixtures/sandboxOps';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
@@ -22,18 +22,40 @@ const EXPECTED_TOOL_RESULT = {
   searchCount: 0,
 };
 
+/**
+ * The session's main SessionStore transcripts that hold entries, keyed the way
+ * the runner names them (`transcript_scopes`: project key and the runtime's own
+ * session id, with an empty subpath for the main transcript).
+ */
 function mainTranscriptScopes(sessionId: string): TranscriptScopeKey[] {
-  const scopes = new Map<string, TranscriptScopeKey>();
-  for (const doc of documentsByField('transcript_entries', '$.platform_session_id', sessionId)) {
-    const projectKey = String(doc.project_key || '').trim();
-    const sdkSessionId = String(doc.session_id || '').trim();
-    if (!projectKey || !sdkSessionId || doc.subpath != null) continue;
-    scopes.set(`${projectKey}\u0000${sdkSessionId}`, {
-      project_key: projectKey,
-      session_id: sdkSessionId,
-    });
-  }
-  return [...scopes.values()];
+  return postgresRows<{ project_key: string; native_session_id: string }>(
+    `SELECT project_key, native_session_id FROM transcript_scopes `
+      + `WHERE platform_session_id = ${sqlLiteral(sessionId)} AND subpath = '' AND last_sequence > 0 `
+      + `ORDER BY scope_id`,
+  ).map((row) => ({ project_key: row.project_key, session_id: row.native_session_id }));
+}
+
+/** One stored entry of the append `appendId`, with the session whose store holds it. */
+interface AppendedEntry {
+  platform_session_id: string;
+  entry_json: string;
+}
+
+/** The entries one append stored, in whichever session's store holds them. */
+function appendedEntries(appendId: string): AppendedEntry[] {
+  return postgresRows<AppendedEntry>(
+    `SELECT s.platform_session_id, e.entry_json FROM transcript_entries e `
+      + `JOIN transcript_scopes s ON s.scope_id = e.scope_id `
+      + `WHERE e.append_id = ${sqlLiteral(appendId)} ORDER BY e.scope_id, e.seq`,
+  );
+}
+
+/** How many entries one append stored, without reading their bytes. */
+function appendedEntryCount(appendId: string): number {
+  const [row] = postgresRows<{ count: number }>(
+    `SELECT count(*)::int AS count FROM transcript_entries WHERE append_id = ${sqlLiteral(appendId)}`,
+  );
+  return Number(row?.count ?? 0);
 }
 
 let agentId = '';
@@ -95,7 +117,7 @@ test('SessionStore round-trips one 17MB entry through the scoped transcript repo
   );
   expect(evidence.entryPayloadBytes).toBe(ENTRY_PAYLOAD_BYTES);
   await expect.poll(
-    () => documentCountByField('transcript_entries', '$.append_id', evidence.appendId),
+    () => appendedEntryCount(evidence.appendId),
     {
       timeout: TURN_BUDGET_MS,
       message: 'the real runner must flush the oversized append exactly once',
@@ -112,8 +134,9 @@ test('SessionStore round-trips one 17MB entry through the scoped transcript repo
     },
   ).toBe('absent');
 
-  const stored = documentsByField('transcript_entries', '$.append_id', evidence.appendId);
+  const stored = appendedEntries(evidence.appendId);
   expect(stored, 'the acknowledged append must remain unique in the database').toHaveLength(1);
+  expect(stored[0].platform_session_id, 'the append must land in this conversation\'s store').toBe(sessionId);
   const storedEntry = JSON.parse(String(stored[0].entry_json)) as Record<string, unknown>;
   expect(storedEntry.toolUseResult, 'database storage must preserve the exact nested duration')
     .toEqual(EXPECTED_TOOL_RESULT);

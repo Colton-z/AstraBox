@@ -1,13 +1,38 @@
-/** A held native child survives idle reclamation while an idle control actually pauses. */
+/**
+ * A held native child survives idle reclamation while an idle control actually pauses.
+ *
+ * One conversation launches a Claude Code background Agent whose Bash command
+ * writes a heartbeat every second until this spec releases it; the reply that
+ * launched it ends and the user leaves. A second conversation of the same
+ * Agent, in the same Environment, does nothing at all. Both are left alone past
+ * the Agent's idle window, then the idle sweep runs
+ * (`POST /admin/sandbox-idle-sweep`, the tick `expiration_watcher.py` runs on a
+ * timer).
+ *
+ * The quiet conversation's box must be paused: that is the control proving the
+ * sweep parks this Agent's boxes at all. The working one's must not be: its
+ * sandbox stays RUNNING and the child's heartbeat keeps advancing after the
+ * sweep. Released, the child finishes its command in its own transcript, its
+ * run closes with Claude's own completed status, and the conversation comes to
+ * rest.
+ *
+ * The sweep pauses a box when the runtime's last reported status
+ * (`sessions.runtime_status`) is idle and the conversation has had no output,
+ * activity or resume for the window (`_is_idle_past`). The runtime contract
+ * counts background work the runtime started itself as `working`
+ * (`RuntimeStatus` in `engine/runtime.py`), so the child keeps its box through
+ * that status or through output inside the window, and a pause in between
+ * kills it mid-flight.
+ */
 import { expect, test } from '@playwright/test';
-import type { Page } from '@playwright/test';
+import type { Page, Response } from '@playwright/test';
 
-import { AstraApi } from '../fixtures/astraApi';
-import { sessionDoc, sessionEvents, snapshotDoc } from '../fixtures/dbOracle';
+import { AstraApi, type ChildRunRecord, type SessionRecord } from '../fixtures/astraApi';
+import { nativeTranscriptRows, postgresRows, sessionResponseRows, sqlLiteral } from '../fixtures/dbOracle';
 import { appPath, parseTimeoutEnv } from '../fixtures/env';
 import { PlatformApi } from '../fixtures/platformApi';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
-import { expectComposerEnabled, openSessionView } from '../fixtures/sessionPage';
+import { expectComposerEnabled, openSessionView, sendPrompt } from '../fixtures/sessionPage';
 test.use({ locale: 'en-US' });
 const ENV_API_KEY_SENTINEL = '••••••••';
 const IDLE_SWEEP_SCAN_LIMIT = 10;
@@ -28,7 +53,14 @@ const CHILD_SETTLED_TIMEOUT_MS = parseTimeoutEnv(
   60_000,
 );
 const CHILD_DEADLINE_SECONDS = 150;
+// Claude's Bash tool stops a command at its timeout; the held command must
+// outlive the whole idle journey, so the child asks for the tool's maximum.
+const CHILD_BASH_TIMEOUT_MS = 600_000;
 const SWEEP_ATTEMPTS = 3;
+// Claude Code keeps each Agent's conversation in a transcript of its own,
+// `subagents/agent-<id>` in the session's SessionStore mirror
+// (`engine/claude_code_background.py`).
+const AGENT_TRANSCRIPT_PREFIX = 'subagents/agent-';
 const sessions = trackSessions();
 let agentId = '';
 let parkingEnvironment = '';
@@ -55,52 +87,120 @@ function sweepCounters(payload: Record<string, unknown>): Record<string, number>
   );
 }
 
+/**
+ * What the idle sweep reads about one conversation, from the `sessions` row
+ * itself: the candidate filter (`list_idle_reclaim_candidates`), the runtime's
+ * own last status, and how long the conversation has been quiet by the
+ * timestamps `_is_idle_past` compares, measured on the database clock.
+ *
+ * `quiet_ms` is the sweep's whole reading: output, activity (a message sent,
+ * a response ended) and a resume of the box. `activity_quiet_ms` leaves out
+ * output, which a working runtime itself produces: it says how long nobody has
+ * done anything in the conversation.
+ */
+interface SweepRow {
+  state: string;
+  deleted: boolean;
+  runtime_unavailable: boolean;
+  sandbox_id: string | null;
+  expires_at: string | null;
+  lease_lapsed: boolean;
+  sandbox_parked_at: string | null;
+  runtime_status: string | null;
+  last_output_at: string | null;
+  quiet_ms: number | null;
+  activity_quiet_ms: number | null;
+}
+
+function sweepRow(sessionId: string): SweepRow | null {
+  return postgresRows<SweepRow>(
+    'SELECT state, deleted, runtime_unavailable, sandbox_id, expires_at, '
+      + '(expires_at IS NOT NULL AND expires_at <= now()) AS lease_lapsed, sandbox_parked_at, '
+      + 'runtime_status, last_output_at, '
+      + '(EXTRACT(EPOCH FROM (now() - GREATEST(last_output_at, updated_at, sandbox_resumed_at))) '
+      + '* 1000)::bigint AS quiet_ms, '
+      + '(EXTRACT(EPOCH FROM (now() - GREATEST(updated_at, sandbox_resumed_at))) * 1000)::bigint '
+      + 'AS activity_quiet_ms '
+      + `FROM sessions WHERE session_id = ${sqlLiteral(sessionId)}`,
+  )[0] ?? null;
+}
+
 function parkedMark(sessionId: string): string {
-  return String(sessionDoc(sessionId)?.sandbox_parked_at || '').trim();
+  return String(sweepRow(sessionId)?.sandbox_parked_at || '').trim();
 }
 
-function quietForMs(sessionId: string): { state: string; quietMs: number | null } {
-  const snapshot = snapshotDoc(sessionId);
-  if (!snapshot) return { state: '<no snapshot>', quietMs: null };
-  const updatedAt = Date.parse(String(snapshot.updated_at || ''));
-  return {
-    state: String(snapshot.conversation_state || ''),
-    quietMs: Number.isFinite(updatedAt) ? Date.now() - updatedAt : null,
-  };
+/** Quiet by the sweep's own reading: the runtime reports nothing running, and nothing happened for the window. */
+function quietForTheSweep(row: SweepRow | null): boolean {
+  return Boolean(row)
+    && ['', 'idle'].includes(String(row!.runtime_status ?? ''))
+    && (row!.quiet_ms ?? -1) >= IDLE_WINDOW_MS;
 }
 
-function openBackgroundManifests(sessionId: string): number[] {
-  const events = sessionEvents(sessionId);
-  const opened = events.filter((event) => event.event_type === 'turn.background_tasks_opened');
-  const materialized = new Set(
-    events
-      .filter((event) => event.event_type === 'turn.background_tasks_materialized')
-      .map((event) => {
-        const payload = event.payload;
-        if (!payload || typeof payload !== 'object') return 0;
-        return Number((payload as Record<string, unknown>).source_opened_event_seq || 0);
-      })
-      .filter((seq) => seq > 0),
-  );
-  return opened
-    .map((event) => Number(event.event_seq || 0))
-    .filter((seq) => seq > 0 && !materialized.has(seq));
+/** Nothing of the person's is running or waiting: no response, no held input, no question. */
+function atRestForItsOwner(detail: SessionRecord): boolean {
+  return (detail.current_responses ?? []).length === 0
+    && (detail.held_inputs ?? []).length === 0
+    && !detail.pending_interaction;
 }
 
 function disqualifiedFromTheSweep(sessionId: string): string {
-  const row = sessionDoc(sessionId);
+  const row = sweepRow(sessionId);
   if (!row) return 'the session row is gone';
   if (row.deleted === true) return 'the row is marked deleted';
   if (row.runtime_unavailable === true) return 'the row is marked runtime_unavailable';
   if (!String(row.sandbox_id || '').trim()) return 'the row no longer names a sandbox';
   const state = String(row.state || '');
   if (state === 'TERMINATED' || state === 'DELETED') return `the row reached ${state}`;
-  const expiresAt = Date.parse(String(row.expires_at || ''));
-  if (!Number.isFinite(expiresAt)) return `the row has no readable expires_at (${String(row.expires_at)})`;
-  if (expiresAt <= Date.now()) {
+  if (!row.expires_at) return 'the row has no expires_at';
+  if (row.lease_lapsed) {
     return `the sandbox lease already lapsed at ${String(row.expires_at)} — the dead-binding sweep owns this row, not the idle sweep`;
   }
   return '';
+}
+
+function contentBlocks(entry: Record<string, unknown>): Record<string, unknown>[] {
+  const message = entry.message;
+  if (!message || typeof message !== 'object') return [];
+  const content = (message as Record<string, unknown>).content;
+  return Array.isArray(content)
+    ? content.filter((block): block is Record<string, unknown> => Boolean(block) && typeof block === 'object')
+    : [];
+}
+
+interface ChildBashEvidence {
+  input: Record<string, unknown>;
+  /** The tool_result blocks Claude recorded for that call, in transcript order. */
+  results: Record<string, unknown>[];
+}
+
+/**
+ * The child's own Bash call for `commandFragment`, read from its transcript in
+ * the SessionStore mirror — the supplier's record of whether the held command
+ * is still running, independent of the child-run projection and of the sweep.
+ */
+function childBash(sessionId: string, commandFragment: string): ChildBashEvidence[] {
+  const entries = nativeTranscriptRows(sessionId)
+    .filter((row) => String(row.subpath ?? '').startsWith(AGENT_TRANSCRIPT_PREFIX))
+    .map((row) => JSON.parse(String(row.entry_json)) as Record<string, unknown>);
+  const blocks = entries.flatMap((entry) => contentBlocks(entry));
+  const calls = new Map<string, Record<string, unknown>>();
+  for (const block of blocks) {
+    if (block.type !== 'tool_use' || block.name !== 'Bash') continue;
+    if (!JSON.stringify(block.input ?? null).includes(commandFragment)) continue;
+    calls.set(String(block.id ?? ''), (block.input ?? {}) as Record<string, unknown>);
+  }
+  return [...calls].filter(([id]) => id).map(([id, input]) => ({
+    input,
+    results: blocks.filter((block) => block.type === 'tool_result' && block.tool_use_id === id),
+  }));
+}
+
+/** The input id the inputs route answered a composer send with. */
+async function acceptedInputId(response: Response): Promise<string> {
+  const body = (await response.json()) as { data?: { input_id?: unknown } };
+  const inputId = String(body.data?.input_id ?? '').trim();
+  expect(inputId, 'the inputs route must answer with the accepted input id').not.toBe('');
+  return inputId;
 }
 
 function heartbeatProgram(heartbeatPath: string, releasePath: string, doneMarker: string): string {
@@ -238,6 +338,13 @@ test('a background Agent still working keeps its box off the idle sweep while no
   const releaseName = `.astrabox-bg-release-${runId}`;
   const heartbeatPath = `${root}/${heartbeatName}`;
   const releasePath = `${root}/${releaseName}`;
+  // Zero until the child's command creates the file: `expect.poll` fails at
+  // once on a throwing read, so a missing file is an answer, not an error.
+  const heartbeats = async (): Promise<number> => {
+    const listing = await platform.listFiles(subject, root, 15_000);
+    if (!listing.entries?.some((entry) => entry.name === heartbeatName && entry.kind === 'file')) return 0;
+    return (await api.downloadFileText(subject, heartbeatPath)).trim().split('\n').filter(Boolean).length;
+  };
   await page.addInitScript(() => {
     try {
       window.localStorage.setItem('astrabox-lang', 'en');
@@ -249,25 +356,43 @@ test('a background Agent still working keeps its box off the idle sweep while no
   await expectComposerEnabled(page);
   const prompt = [
     'Launch exactly one Agent with run_in_background=true.',
-    'The child must use Bash to run this exact command:',
+    `The child must use Bash exactly once, with run_in_background=false and timeout=${CHILD_BASH_TIMEOUT_MS}, `
+      + 'to run this exact command and wait for it:',
     heartbeatProgram(heartbeatPath, releasePath, doneMarker),
     `The child must report ${doneMarker} verbatim after the command completes.`,
     `Immediately after launching, reply only ${parentMarker} verbatim and end your turn.`,
     'Do not wait for the child and do not run Bash in the parent.',
   ].join('\n');
-  const composer = page.getByTestId('composer-prompt');
-  await composer.fill(prompt);
-  const submit = page.getByTestId('composer-submit');
-  await expect(submit).toBeEnabled({ timeout: 15_000 });
-  await submit.click();
+  const launchInputId = await acceptedInputId(await sendPrompt(page, subject, prompt));
   const controlCreated = await api.startConversation(agentId);
   const control = String(controlCreated.session_id || '').trim();
   expect(control, 'the control conversation must open a session').not.toEqual('');
   sessions.push(control);
-  await expect.poll(async () => Boolean((await api.getSession(subject)).background_task_state), {
+
+  // The child runs before the idle window starts: the platform tracks one
+  // Claude Agent the engine reads as working, the child's own transcript holds
+  // its held Bash call, and the command is really writing heartbeats.
+  const workingChildren = async (): Promise<ChildRunRecord[]> => (await api.listChildRuns(subject)).child_runs
+    .filter((row) => row.engine_kind === 'claude_code' && !row.closed && row.active);
+  await expect.poll(async () => (await workingChildren()).length, {
     timeout: BACKGROUND_PROBE_TIMEOUT_MS,
-    message: 'the native child must open a background manifest before the idle window',
-  }).toBe(true);
+    message: 'the launch must leave exactly one Claude background Agent working before the idle window',
+  }).toBe(1);
+  const childRunId = (await workingChildren())[0]!.child_run_id;
+  await expect.poll(() => childBash(subject, heartbeatPath).length, {
+    timeout: BACKGROUND_PROBE_TIMEOUT_MS,
+    message: 'the background Agent must record its one heartbeat Bash call in its own transcript',
+  }).toBe(1);
+  expect(
+    childBash(subject, heartbeatPath)[0]!.input.run_in_background,
+    'the held command must run in the child\'s foreground, so its result stays owed until release',
+  ).not.toBe(true);
+  await expect.poll(heartbeats, {
+    timeout: BACKGROUND_PROBE_TIMEOUT_MS,
+    message: `the background Agent's command must start writing ${heartbeatPath}`,
+  }).toBeGreaterThan(0);
+  const launchReply = await api.waitForReplyTo(subject, launchInputId, { timeoutMs: BACKGROUND_PROBE_TIMEOUT_MS });
+  expect(launchReply.metadata?.outcome, 'the reply that launched the child must complete').toBe('completed');
 
   const controlReady = await api.waitForSessionReady(control, READY_TIMEOUT_MS);
   const controlSandbox = String(controlReady.sandbox_id || '').trim();
@@ -282,49 +407,73 @@ test('a background Agent still working keeps its box off the idle sweep while no
   test.info().annotations.push({
     type: 'idle_background_scene',
     description: JSON.stringify({
-      subject, subjectSandbox, control, controlSandbox, agentId,
+      subject, subjectSandbox, control, controlSandbox, agentId, childRunId,
       environment: parkingEnvironment, window_seconds: IDLE_WINDOW_SECONDS,
     }),
   });
+  // What the user sees before walking away: the tab strip counts the child
+  // still working, and the Agents panel lists it.
+  await expect(
+    page.getByRole('tab', { name: 'Agents (1)', exact: true }),
+    'the Agents tab must count the child the user is leaving running',
+  ).toBeVisible({ timeout: 45_000 });
   await showAgentsTab(page);
   await expect(
-    page.getByTestId('subagent-agents-panel').getByTestId('subagent-agent-row').first(),
+    page.getByTestId('subagent-agents-panel').locator(`[data-child-run-id="${childRunId}"]`),
     'the Agents panel must show the child the user is leaving running',
   ).toBeVisible({ timeout: 45_000 });
-  const pill = headerStatusPill(page);
-  await expect(
-    pill,
-    'the header must say the work is running in the background before the user walks away',
-  ).toHaveText('Running in background', { timeout: 45_000 });
-  await expect(pill).toHaveAttribute('data-state', 'PROCESSING');
-  await expect(pill).toHaveAttribute('data-pulse', 'true');
-  await expect(pill).toHaveAttribute('data-tone', 'astra');
   await page.goto(appPath('/sessions'), { waitUntil: 'domcontentloaded' });
+
+  // Both conversations are left alone past the window. The control must be
+  // quiet by the sweep's own reading. The subject must be as quiet as its
+  // owner left it — nothing of the person's runs or waits, and nothing has
+  // happened in the conversation for the window — while its child keeps
+  // working; whether that work keeps the box is the runtime's status and
+  // output, which is what the sweep below is asked about.
   const quietDeadline = Date.now() + QUIET_TIMEOUT_MS;
   for (;;) {
-    const subjectQuiet = quietForMs(subject);
-    const controlQuiet = quietForMs(control);
-    const bothQuiet =
-      subjectQuiet.state === 'IDLE' && (subjectQuiet.quietMs ?? -1) >= IDLE_WINDOW_MS
-      && controlQuiet.state === 'IDLE' && (controlQuiet.quietMs ?? -1) >= IDLE_WINDOW_MS;
+    const subjectDetail = await api.getSession(subject);
+    const subjectRow = sweepRow(subject);
+    const controlRow = sweepRow(control);
+    const controlDetail = await api.getSession(control);
+    const bothQuiet = atRestForItsOwner(subjectDetail) && (subjectRow?.activity_quiet_ms ?? -1) >= IDLE_WINDOW_MS
+      && atRestForItsOwner(controlDetail) && quietForTheSweep(controlRow);
     if (bothQuiet) break;
     expect(
       parkedMark(subject),
-      'the idle sweep paused the box of a conversation whose background subagent was still '
-        + `running, before either conversation had even finished its window (session=${subject} `
-        + `sandbox=${subjectSandbox} quiet=${subjectQuiet.quietMs}ms state=${subjectQuiet.state})`,
+      'the idle sweep paused the box of a conversation whose background Agent was still '
+        + 'working, before either conversation had even finished its window (session='
+        + `${subject} sandbox=${subjectSandbox} runtime_status=${String(subjectRow?.runtime_status)} `
+        + `quiet_ms=${String(subjectRow?.quiet_ms)})`,
     ).toEqual('');
     if (Date.now() >= quietDeadline) {
       throw new Error(
-        `both conversations must be IDLE past their ${IDLE_WINDOW_SECONDS}s window before the `
-          + `keeper can be asked about them, and they did not within ${QUIET_TIMEOUT_MS}ms. `
-          + `subject=${JSON.stringify(subjectQuiet)} control=${JSON.stringify(controlQuiet)}. `
-          + 'A subject that never settles means the launch turn is still running; a control '
-          + 'that never settles means its conversation is doing something it was never asked to.',
+        `both conversations must be left alone past their ${IDLE_WINDOW_SECONDS}s window before the `
+          + `keeper can be asked about them, and they were not within ${QUIET_TIMEOUT_MS}ms. `
+          + `subject: ${JSON.stringify(subjectRow)} `
+          + `current_responses=${JSON.stringify(subjectDetail.current_responses ?? [])} `
+          + `held_inputs=${JSON.stringify(subjectDetail.held_inputs ?? [])}; `
+          + `control: ${JSON.stringify(controlRow)}. A subject that never settles means something `
+          + 'of the person\'s is still running; a control that never settles means its conversation '
+          + 'is doing something it was never asked to.',
       );
     }
     await new Promise((resolve) => setTimeout(resolve, 2_000));
   }
+  /** The child's own reading and its transcript: still working, its held command owed. */
+  const childStillWorking = async (): Promise<string> => {
+    const row = (await api.listChildRuns(subject)).child_runs.find((item) => item.child_run_id === childRunId);
+    if (!row) return 'the child run is gone from the projection';
+    if (row.closed || !row.active) {
+      return `the child run reads ${JSON.stringify({ closed: row.closed, active: row.active, status: row.engine_status })}`;
+    }
+    const calls = childBash(subject, heartbeatPath);
+    if (calls.length !== 1) return `the child's transcript holds ${calls.length} heartbeat Bash calls`;
+    if (calls[0]!.results.length > 0) {
+      return `the child's held Bash call has a result: ${JSON.stringify(calls[0]!.results)}`;
+    }
+    return '';
+  };
   const ticks: Array<Record<string, number>> = [];
   let controlParkedAt = parkedMark(control);
   let shortTicks = 0;
@@ -336,13 +485,13 @@ test('a background Agent still working keeps its box off the idle sweep while no
       `the subject stopped qualifying for the idle sweep, so its survival proves nothing: `
         + `${disqualified} (session=${subject} sandbox=${subjectSandbox})`,
     ).toEqual('');
-    const stillOpen = openBackgroundManifests(subject);
+    const finished = await childStillWorking();
     expect(
-      stillOpen.length,
-      'the background subagent closed before the keeper ran, so there was no work for the '
+      finished,
+      'the background Agent finished before the keeper ran, so there was no work for the '
         + `keeper to take a box away from (session=${subject}). The child is gated on a release `
-        + 'file this spec has not written yet, so a closed manifest here means it failed.',
-    ).toBeGreaterThan(0);
+        + 'file this spec has not written yet, so a finished child here means it failed.',
+    ).toEqual('');
 
     const tick = sweepCounters(await platform.idleSweep());
     ticks.push(tick);
@@ -351,13 +500,13 @@ test('a background Agent still working keeps its box off the idle sweep while no
     shortTicks = candidates >= 1 && candidates < IDLE_SWEEP_SCAN_LIMIT ? shortTicks + 1 : 0;
     if (shortTicks >= 2) sawUntruncatedTick = true;
 
-    const subjectParkedAt = parkedMark(subject);
-    const subjectQuiet = quietForMs(subject);
+    const subjectRow = sweepRow(subject);
     expect(
-      subjectParkedAt,
+      String(subjectRow?.sandbox_parked_at || ''),
       `the idle sweep parked a working child: session=${subject} sandbox=${subjectSandbox} `
-        + `parked_at=${subjectParkedAt} quiet=${subjectQuiet.quietMs}ms `
-        + `open_manifests=${JSON.stringify(stillOpen)} tick=${JSON.stringify(tick)}`,
+        + `parked_at=${String(subjectRow?.sandbox_parked_at)} runtime_status=${String(subjectRow?.runtime_status)} `
+        + `(the runtime's own report the sweep reads) quiet_ms=${String(subjectRow?.quiet_ms)} `
+        + `last_output_at=${String(subjectRow?.last_output_at)} child=${childRunId} tick=${JSON.stringify(tick)}`,
     ).toEqual('');
 
     controlParkedAt = parkedMark(control);
@@ -368,8 +517,8 @@ test('a background Agent still working keeps its box off the idle sweep while no
   await test.info().attach('idle-sweep-ticks', {
     body: JSON.stringify({
       ticks,
-      subject: { session: subject, sandbox: subjectSandbox, parked_at: parkedMark(subject), quiet: quietForMs(subject) },
-      control: { session: control, sandbox: controlSandbox, parked_at: controlParkedAt, quiet: quietForMs(control) },
+      subject: { session: subject, sandbox: subjectSandbox, row: sweepRow(subject) },
+      control: { session: control, sandbox: controlSandbox, row: sweepRow(control) },
     }, null, 2),
     contentType: 'application/json',
   });
@@ -395,34 +544,32 @@ test('a background Agent still working keeps its box off the idle sweep while no
   }).toMatch(/^(PAUSED|SUCCEED)$/);
   expect(parkedMark(subject)).toBe('');
   expect(String((await api.getSandbox(subjectSandbox)).state || '').toUpperCase()).toBe('RUNNING');
-  expect(openBackgroundManifests(subject).length).toBeGreaterThan(0);
+  expect(await childStillWorking()).toEqual('');
 
   await openSessionView(page, subject);
-  await showAgentsTab(page);
   await expect(
-    headerStatusPill(page),
-    'coming back must find the background work still running',
-  ).toHaveText('Running in background', { timeout: 45_000 });
-  const firstBeat = (await api.downloadFileText(subject, heartbeatPath)).trim().split('\n').filter(Boolean);
+    page.getByRole('tab', { name: 'Agents (1)', exact: true }),
+    'coming back must find the background Agent still counted as working',
+  ).toBeVisible({ timeout: 45_000 });
+  const firstBeat = await heartbeats();
   expect(
-    firstBeat.length,
+    firstBeat,
     `the background subagent wrote no heartbeat at all into ${heartbeatPath}; it never started `
       + 'its command, so nothing in this run was ever at risk from the sweep',
   ).toBeGreaterThan(0);
   await expect
     .poll(
-      async () => (await api.downloadFileText(subject, heartbeatPath)).trim().split('\n').filter(Boolean).length,
+      heartbeats,
       {
         timeout: 20_000,
         intervals: [1_500, 2_000],
         message:
           'the background subagent stopped executing: its heartbeat did not advance after the '
-          + `idle sweep ran (last=${firstBeat.at(-1)}s into the child's own run, `
-          + `session=${subject} sandbox=${subjectSandbox}). An unparked database row is not the `
-          + 'same as work that survived.',
+          + `idle sweep ran (${firstBeat} beats before, session=${subject} sandbox=${subjectSandbox}). `
+          + 'An unparked database row is not the same as work that survived.',
       },
     )
-    .toBeGreaterThan(firstBeat.length);
+    .toBeGreaterThan(firstBeat);
   await api.uploadFileText(subject, root, releaseName, 'release');
   const closed = await api.waitForChildRuns(
     subject,
@@ -430,18 +577,16 @@ test('a background Agent still working keeps its box off the idle sweep while no
     CHILD_SETTLED_TIMEOUT_MS,
   );
   expect(
-    closed.length,
-    'the released background subagent must close its child run',
-  ).toBeGreaterThanOrEqual(1);
-  await expect.poll(() => sessionEvents(subject).some((event) => {
-    if (event.event_type !== 'engine.message') return false;
-    const payload = event.payload as Record<string, unknown> | undefined;
-    const message = payload?.message as Record<string, unknown> | undefined;
-    const data = message?.data as Record<string, unknown> | undefined;
-    return message?.subtype === 'task_notification'
-      && ['TaskNotificationMessage', 'SystemMessage'].includes(String(message.__sdk_type))
-      && data?.status === 'completed' && Boolean(data.task_id) && JSON.stringify(data).includes(doneMarker);
-  }), { timeout: CHILD_SETTLED_TIMEOUT_MS }).toBe(true);
+    closed.filter((row) => row.child_run_id === childRunId).map((row) => row.engine_status),
+    'the released background Agent must close its child run with Claude\'s own completed status',
+  ).toEqual(['completed']);
+  await expect.poll(
+    () => JSON.stringify(childBash(subject, heartbeatPath).map((call) => call.results)),
+    {
+      timeout: CHILD_SETTLED_TIMEOUT_MS,
+      message: 'the child\'s own transcript must hold its held command\'s result, printed after the release',
+    },
+  ).toContain(doneMarker);
   test.info().annotations.push({
     type: 'closed_child_runs',
     description: JSON.stringify(
@@ -453,21 +598,39 @@ test('a background Agent still working keeps its box off the idle sweep while no
       })),
     ),
   });
+  // Claude answers the finished child on its own: one response no input
+  // started. The conversation is at rest only once that answer has ended.
+  await expect
+    .poll(
+      () => sessionResponseRows(subject)
+        .filter((row) => row.origin === 'engine')
+        .map((row) => ({ status: row.status, input_ids: row.input_ids })),
+      {
+        timeout: CHILD_SETTLED_TIMEOUT_MS,
+        intervals: [1_000, 2_000],
+        message: 'Claude must answer the finished child with one response of its own that ends',
+      },
+    )
+    .toEqual([{ status: 'ended', input_ids: [] }]);
   await expect
     .poll(
       async () => {
         const detail = await api.getSession(subject);
-        return String(detail.state || '') === 'READY' && !detail.background_task_state;
+        return String(detail.state || '') === 'READY' && atRestForItsOwner(detail);
       },
       {
         timeout: CHILD_SETTLED_TIMEOUT_MS,
         intervals: [1_000, 2_000],
-        message: 'the completed background task must clear and the conversation project READY',
+        message: 'the conversation must come to rest once the child and the runtime\'s answer to it are done',
       },
     )
     .toBe(true);
   await expect(
+    page.getByRole('tab', { name: 'Agents', exact: true }),
+    'the Agents tab must stop counting the child once it has closed',
+  ).toBeVisible({ timeout: 45_000 });
+  await expect(
     headerStatusPill(page),
-    'the header must stop saying the work is running once the child has closed',
-  ).not.toHaveText('Running in background', { timeout: 45_000 });
+    'the header must settle once the background work is done',
+  ).toHaveAttribute('data-pulse', 'false', { timeout: 45_000 });
 });

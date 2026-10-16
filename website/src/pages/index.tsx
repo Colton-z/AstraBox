@@ -571,15 +571,6 @@ const EXTENSION_POINTS: ExtensionPoint[] = [
     ),
   },
   {
-    group: 'astrabox.providers.repository',
-    title: <Translate id="home.extend.repository">Data store</Translate>,
-    builtIn: (
-      <Translate id="home.extend.repository.builtIn">
-        Built in: PostgreSQL, MongoDB, SQLite
-      </Translate>
-    ),
-  },
-  {
     group: 'astrabox.providers.storage',
     title: <Translate id="home.extend.storage">Workspace storage</Translate>,
     builtIn: (
@@ -636,7 +627,7 @@ function ExtendSection() {
             id="home.extend.conformance"
             values={{testing: <code>astrabox.testing</code>}}>
             {
-              'Reusable conformance test suites in {testing} check sandbox backends, workspace storage, messaging platforms, Agent programs, and data stores from your own test tree.'
+              'Reusable conformance test suites in {testing} check sandbox backends, workspace storage, messaging platforms and Agent programs from your own test tree.'
             }
           </Translate>
         </p>

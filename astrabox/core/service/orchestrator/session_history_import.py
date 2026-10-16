@@ -1,39 +1,38 @@
 """Import a conversation's earlier history for reading, without running any of it.
 
 A deployment that migrates conversations from another system brings their
-messages here once. Each message becomes one ``history.imported`` event in the
-session's own journal, so it is read, paged and shared exactly like the
-conversation's later messages. An import starts no sandbox, runs no command and
-writes no turn: it changes no lifecycle, permission, active turn or pending
-interaction, and a reply whose ending the source never recorded keeps
-``completion: unknown`` instead of a success or failure it did not have.
+messages here once. A user message becomes an input no runtime is handed, and
+a reply becomes a response that has already ended, with its content as the
+browser parts the page folds; both keep the source's timestamp, so they read,
+page and share in the conversation's order like its later messages. An import
+starts no sandbox, runs no command and changes no session state, and a reply
+whose ending the source never recorded keeps ``completion: unknown`` instead
+of a success or failure it did not have.
 
 The engine's own continuation is not this: the engine resumes from its native
 SessionStore, which the deployment restores separately.
 
 Imported history precedes the conversation. A session that already holds a
-message of its own refuses an import, because the journal cannot place earlier
-history before events it has already ordered. Re-running an import is a no-op;
-reusing a source id for other content, or adding a message before ones already
+message of its own refuses an import, because history cannot be placed before
+messages the conversation has ordered. Re-running an import is a no-op; reusing
+a source id for other content, or adding a message before ones already
 imported, is refused.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal
 
 from astrabox.common.utils.errors import APIError
-from astrabox.core.service.orchestrator.session_message_view import (
-    CONVERSATION_OUTPUT_EVENT_TYPES,
-    HISTORY_IMPORTED_EVENT_TYPE,
+from astrabox.persistence.repository.session_runtime_repository import (
+    HistoryEntry,
+    SessionRuntimeRepository,
 )
-from astrabox.core.service.orchestrator.session_public_projection import (
-    PublicProjectionError,
-    project_public_message_block,
-)
+from astrabox.persistence.sql import UniqueViolation
 
 COMPLETION_COMPLETE = "complete"
 #: The source recorded no ending for this reply; it is neither a success nor a failure.
@@ -41,8 +40,17 @@ COMPLETION_UNKNOWN = "unknown"
 MAX_HISTORY_IMPORT_MESSAGES = 500
 MAX_SOURCE_ID_CHARS = 200
 
-#: Content a message carries. Platform vocabulary (turn outcomes, folded work,
-#: interface parts) describes a turn this platform ran, which history did not.
+#: Content a message carries, and the fields each block keeps. Platform
+#: vocabulary (outcomes, folded work, interface parts) describes a response
+#: this platform ran, which history did not.
+_BLOCK_FIELDS: dict[str, frozenset[str]] = {
+    "text": frozenset({"type", "text"}),
+    "image": frozenset({"type", "source"}),
+    "thinking": frozenset({"type", "thinking"}),
+    "tool_use": frozenset({"type", "id", "name", "input"}),
+    "tool_result": frozenset({"type", "tool_use_id", "content", "is_error", "tool_result_state"}),
+}
+_IMAGE_SOURCE_FIELDS = frozenset({"type", "media_type", "data"})
 _BLOCK_TYPES_BY_ROLE: dict[str, frozenset[str]] = {
     "user": frozenset({"text", "image"}),
     "assistant": frozenset({"text", "image", "thinking", "tool_use", "tool_result"}),
@@ -99,6 +107,23 @@ def _timestamp(index: int, value: Any) -> str:
     return parsed.astimezone(timezone.utc).isoformat()
 
 
+def _kept(index: int, position: int, block: dict[str, Any]) -> dict[str, Any]:
+    """The block as history keeps it; refuses fields it would drop."""
+    fields = _BLOCK_FIELDS[str(block["type"])]
+    kept = {key: deepcopy(block[key]) for key in fields if key in block}
+    if block["type"] == "image":
+        source = block.get("source")
+        if not isinstance(source, dict):
+            raise _invalid(index, f"blocks[{position}]: image source must be an object")
+        kept["source"] = {key: deepcopy(source[key]) for key in _IMAGE_SOURCE_FIELDS if key in source}
+    if kept != block:
+        dropped = sorted(set(block) - fields)
+        if block["type"] == "image" and not dropped:
+            dropped = [f"source.{key}" for key in sorted(set(block["source"]) - _IMAGE_SOURCE_FIELDS)]
+        raise _invalid(index, f"blocks[{position}] has fields the history does not keep: {dropped}")
+    return kept
+
+
 def _blocks(index: int, role: str, value: Any) -> tuple[dict[str, Any], ...]:
     if not isinstance(value, list) or not value:
         raise _invalid(index, "blocks must be a non-empty list")
@@ -115,16 +140,7 @@ def _blocks(index: int, role: str, value: Any) -> tuple[dict[str, Any], ...]:
                 f"blocks[{position}] type {block_type!r} is not importable for "
                 f"{role} messages; use one of {sorted(allowed)}",
             )
-        try:
-            public = project_public_message_block(block)
-        except PublicProjectionError as exc:
-            raise _invalid(index, f"blocks[{position}]: {exc}") from exc
-        if public != block:
-            raise _invalid(
-                index,
-                f"blocks[{position}] has fields the history does not keep: "
-                f"{sorted(set(block) - set(public or {}))}",
-            )
+        kept = _kept(index, position, block)
         if block_type == "tool_use":
             tool_use_ids.add(str(block.get("id") or ""))
         if block_type == "tool_result" and str(block.get("tool_use_id") or "") not in tool_use_ids:
@@ -134,7 +150,7 @@ def _blocks(index: int, role: str, value: Any) -> tuple[dict[str, Any], ...]:
                 index,
                 f"blocks[{position}] answers a tool_use this message has not made before it",
             )
-        blocks.append(dict(block))
+        blocks.append(kept)
     return tuple(blocks)
 
 
@@ -190,19 +206,90 @@ def validate_history_import(messages: Any) -> list[ImportedMessage]:
     return validated
 
 
-class SessionHistoryImporter:
-    """Append validated history to one session's journal, idempotently."""
+def reply_parts(message: ImportedMessage) -> list[dict[str, Any]]:
+    """A reply's blocks as the browser parts the page folds into its message."""
+    parts: list[dict[str, Any]] = []
+    for index, block in enumerate(message.blocks):
+        lane = f"{message.source_id}:{index}"
+        kind = block["type"]
+        if kind in ("text", "thinking"):
+            prefix = "text" if kind == "text" else "reasoning"
+            parts += [
+                {"type": f"{prefix}-start", "id": lane},
+                {"type": f"{prefix}-delta", "id": lane, "delta": str(block.get(kind) or "")},
+                {"type": f"{prefix}-end", "id": lane},
+            ]
+        elif kind == "tool_use":
+            parts.append({
+                "type": "tool-input-available",
+                "toolCallId": str(block.get("id") or ""),
+                "toolName": str(block.get("name") or ""),
+                "input": deepcopy(block.get("input")),
+                "dynamic": True,
+            })
+        elif kind == "tool_result" and block.get("is_error"):
+            parts.append({
+                "type": "tool-output-error",
+                "toolCallId": str(block.get("tool_use_id") or ""),
+                "errorText": str(block.get("content") or ""),
+            })
+        elif kind == "tool_result":
+            parts.append({
+                "type": "tool-output-available",
+                "toolCallId": str(block.get("tool_use_id") or ""),
+                "output": deepcopy(block.get("content")),
+            })
+        else:
+            source = block["source"]
+            parts.append({
+                "type": "file",
+                "mediaType": source.get("media_type"),
+                "url": f"data:{source.get('media_type')};base64,{source.get('data')}",
+            })
+    return parts
 
-    def __init__(self, session_events_repo: Any) -> None:
-        self._events = session_events_repo
+
+def _entry(message: ImportedMessage, *, position: int) -> HistoryEntry:
+    payload = message.payload()
+    record: dict[str, Any] = {"source_id": message.source_id, "digest": payload["digest"], "position": position}
+    if message.parent_source_id is not None:
+        record["parent_source_id"] = message.parent_source_id
+    if message.role == "user":
+        return HistoryEntry(
+            source_id=message.source_id,
+            role="user",
+            created_at=message.created_at,
+            record=record,
+            content="\n".join(str(block.get("text") or "") for block in message.blocks if block["type"] == "text"),
+            content_blocks=[dict(block) for block in message.blocks],
+            parent_source_id=message.parent_source_id,
+        )
+    record["completion"] = message.completion
+    record["parts"] = reply_parts(message)
+    return HistoryEntry(
+        source_id=message.source_id,
+        role="assistant",
+        created_at=message.created_at,
+        record=record,
+        outcome="completed" if message.completion == COMPLETION_COMPLETE else None,
+        parent_source_id=message.parent_source_id,
+    )
+
+
+class SessionHistoryImporter:
+    """Store validated history in one session, idempotently."""
+
+    def __init__(self, facts: SessionRuntimeRepository) -> None:
+        self._facts = facts
 
     async def import_messages(
         self,
         session_id: str,
         messages: list[ImportedMessage],
     ) -> dict[str, int]:
-        imported = await self._imported(session_id)
-        stored_order = list(imported)
+        stored = await self._facts.imported_history(session_id)
+        imported = {str(row["record"]["source_id"]): row["record"] for row in stored}
+        stored_order = [str(row["record"]["source_id"]) for row in stored]
         new: list[ImportedMessage] = []
         matched: list[str] = []
         for message in messages:
@@ -232,7 +319,15 @@ class SessionHistoryImporter:
                     status_code=400,
                 )
             known.add(message.source_id)
-        if new and await self._conversation_started(session_id):
+        if not new:
+            return {"imported": 0, "unchanged": len(matched)}
+        entries = [_entry(message, position=len(stored) + index) for index, message in enumerate(new)]
+        try:
+            stored_new = await self._facts.import_history(session_id, entries)
+        except UniqueViolation as exc:
+            # Another import stored one of these source ids first.
+            raise self._conflict("another import of this history is in progress") from exc
+        if not stored_new:
             raise APIError(
                 code="HISTORY_IMPORT_AFTER_CONVERSATION",
                 message=(
@@ -241,56 +336,7 @@ class SessionHistoryImporter:
                 ),
                 status_code=409,
             )
-        for message in new:
-            payload = message.payload()
-            stored, created = await self._events.try_claim_event({
-                "session_id": session_id,
-                "causation_id": f"history:{message.source_id}",
-                "event_type": HISTORY_IMPORTED_EVENT_TYPE,
-                "channel": "history",
-                "turn_id": None,
-                "payload": payload,
-            })
-            if not created and (stored.get("payload") or {}).get("digest") != payload["digest"]:
-                raise self._conflict(f"message {message.source_id!r} was imported with other content")
         return {"imported": len(new), "unchanged": len(matched)}
-
-    async def _conversation_started(self, session_id: str) -> bool:
-        """Whether the session has sent or answered a message of its own.
-
-        Every session journal starts with lifecycle commands (creation,
-        permission mode); only a turn makes it a conversation.
-        """
-        if await self._events.list_events(
-            session_id, after_seq=0, event_types=CONVERSATION_OUTPUT_EVENT_TYPES, limit=1,
-        ):
-            return True
-        after_seq = 0
-        while True:
-            batch = await self._events.list_events(
-                session_id, after_seq=after_seq, event_type="command.accepted", limit=500,
-            )
-            if any((row.get("payload") or {}).get("command_type") == "StartTurn" for row in batch):
-                return True
-            if len(batch) < 500:
-                return False
-            after_seq = max(int(row["event_seq"]) for row in batch)
-
-    async def _imported(self, session_id: str) -> dict[str, dict[str, Any]]:
-        """Already imported payloads by source id, in journal order."""
-        rows: dict[str, dict[str, Any]] = {}
-        after_seq = 0
-        while True:
-            batch = await self._events.list_events(
-                session_id, after_seq=after_seq,
-                event_types=(HISTORY_IMPORTED_EVENT_TYPE,), limit=500,
-            )
-            for row in batch:
-                payload = row.get("payload") or {}
-                rows[str(payload["source_id"])] = payload
-            if len(batch) < 500:
-                return rows
-            after_seq = max(int(row["event_seq"]) for row in batch)
 
     @staticmethod
     def _conflict(message: str) -> APIError:

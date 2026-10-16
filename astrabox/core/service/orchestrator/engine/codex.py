@@ -33,18 +33,11 @@ from typing import Any
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.config.release_images import release_image
 from astrabox.common.utils.errors import APIError
-from astrabox.core.service.orchestrator.engine.emissions import (
-    ChildResourceFact,
-    emission_from_translated_frame,
-)
 from astrabox.core.service.orchestrator.engine.base import (
     EngineAdapter,
-    EngineClient,
-    EngineConversationBinding,
     EngineKind,
     EnginePreparationContext,
     EngineStartupContext,
-    initialize_engine_client,
 )
 from astrabox.core.service.orchestrator.engine.capabilities import (
     EngineSessionLogDeclaration,
@@ -57,11 +50,11 @@ from astrabox.core.service.orchestrator.engine.extensions import (
     EngineExtensions,
     PackageKind,
 )
-from astrabox.core.service.orchestrator.engine.codex_client import (
+from astrabox.core.service.orchestrator.engine.codex_runtime_client import (
     CODEX_PLUGIN_MARKETPLACE,
     CODEX_SANDBOX_MODES,
     ENGINE_KIND,
-    CodexEngineClient,
+    CodexRuntimeClient,
 )
 from astrabox.core.service.orchestrator.engine.codex_link import (
     CODEX_APP_SERVER_PORT,
@@ -75,6 +68,7 @@ from astrabox.core.service.orchestrator.engine.provisioning import (
     in_box_service_token,
 )
 from astrabox.core.service.orchestrator.engine.registry import register_engine_adapter
+from astrabox.core.service.orchestrator.engine.runtime import initialize_runtime_client
 from astrabox.core.service.orchestrator.runtime.config_resolver import (
     resolve_runtime_template_name,
 )
@@ -488,59 +482,43 @@ async def _publish_runtime(
     base_url: str | None = None,
     config: dict[str, Any] | None = None,
     turn_start: dict[str, Any] | None = None,
-    model_catalog: bool = False,
     prepare_engine_input: Any = None,
-    resident_output_sink: Any = None,
-    event_sink: Any = None,
 ) -> SessionRuntime:
     """One live link → one conversation-bound, published SessionRuntime.
 
     Shared by the start and reattach flows so binding and publication cannot
-    drift between them. The thread is created — or rejoined by name — inside
-    `initialize_engine_client`, which is where the binding contract holds.
+    drift between them. The thread is created, or rejoined by name, before
+    :func:`initialize_runtime_client` checks the client.
     """
 
-    engine_client = CodexEngineClient(
-        session_id=session_id,
+    engine_client = CodexRuntimeClient(
         link=link,
-        native_thread_id=engine_session_key,
         cwd=terminal_cwd,
         instructions=instructions,
         model=model,
         turn_options=turn_start,
         thread_config={**(provider_config(base_url) if base_url else {}), **(config or {})},
         # Start only: a rejoin names a thread that already has its mode, and
-        # `thread/start`'s `sandbox` field has no meaning on a resume.
+        # `thread/start`'s `sandbox` field has no meaning on a resume. The
+        # session's reader applies its stored mode to a rejoined thread.
         sandbox_mode=permission_mode if engine_session_key is None else None,
-        resident_output_sink=resident_output_sink,
-        event_sink=event_sink,
     )
-    engine_manifest = await initialize_engine_client(
+    await engine_client.open(resume_thread_id=engine_session_key)
+    engine_manifest = await initialize_runtime_client(
         engine_client,
-        expected_engine_kind=ENGINE_KIND,
-        conversation_binding=EngineConversationBinding(
-            platform_session_id=session_id,
-            engine_session_key=engine_session_key,
-        ),
+        engine_kind=ENGINE_KIND,
+        resume_session_key=engine_session_key,
     )
-    if permission_mode:
-        # Re-asserted on every publish, start and reattach alike. On a start
-        # the thread already carries it and this only records the choice; on a
-        # reattach it is what arms the next turn's override, which is the only
-        # way a resumed thread's enforcement can be moved.
-        await engine_client.set_permission_mode(permission_mode)
-    runtime = SessionRuntime(
+    return SessionRuntime(
         session_id=session_id,
         agent=None,
         engine_kind=ENGINE_KIND,
         engine_client=engine_client,
         engine_manifest=engine_manifest,
-        conversation_bound=True,
         sandbox=sandbox,
         sandbox_id=extract_sandbox_id(sandbox),
         # Under the Agent-shared tenancy the box is shared; the isolated
-        # session is what teardown closes, what a reattach rebuilds from, and
-        # half of the consumption receipts' carrier identity.
+        # session is what teardown closes and what a reattach rebuilds from.
         isolated_session_id=(
             str((runtime_identity or {}).get("isolated_session_id") or "") or None
         ),
@@ -550,13 +528,6 @@ async def _publish_runtime(
         runtime_identity=runtime_identity,
         prepare_engine_input=prepare_engine_input,
     )
-    if permission_mode:
-        # The platform reconciles the mode before every dispatch and skips
-        # that round trip only when the runtime reports it verified; without
-        # the flag the next dispatch fails with "permission_mode
-        # reconciliation was not accepted before dispatch".
-        setattr(runtime, "permission_mode_verified", True)
-    return runtime
 
 
 class CodexEngineAdapter(EngineAdapter):
@@ -593,69 +564,13 @@ class CodexEngineAdapter(EngineAdapter):
             return False
         raise ChildRunProjectionError(f"Codex child turn has unknown status {status!r}")
 
-    def durable_child_resource_facts(
-        self,
-        raw_messages: list[dict[str, Any]],
-    ) -> list[tuple[int, ChildResourceFact]]:
-        """Child facts from the native reads and turn/item notifications journaled.
-
-        While no run was open, the relay persisted each child thread it read
-        as ``{"method": "thread/read", "thread": ...}``. The document names its
-        own parent through ``source.subAgent.thread_spawn.parent_thread_id``,
-        so a projection per parent thread replays the same fold the live
-        reader used. Native turn/item notifications fill the live-history gap using
-        that same projection, without manufacturing a thread/read snapshot.
-        """
-
-        from astrabox.core.service.orchestrator.engine.codex_child_runs import (
-            THREAD_READ_METHOD,
-            CodexChildResources,
-        )
-
-        async def _no_call(method: str, params: dict[str, Any]) -> Any:
-            raise RuntimeError("durable fold reads nothing from the engine")
-
-        projectors: dict[str, CodexChildResources] = {}
-        facts: list[tuple[int, ChildResourceFact]] = []
-        for index, record in enumerate(raw_messages):
-            if not isinstance(record, dict):
-                continue
-            if record.get("method") in {"turn/started", "turn/completed", "item/started", "item/completed"}:
-                for known_projector in projectors.values():
-                    for frame in known_projector.fold_notification(record):
-                        emission = emission_from_translated_frame(frame)
-                        if isinstance(emission, ChildResourceFact):
-                            facts.append((index, emission))
-                continue
-            if record.get("method") != THREAD_READ_METHOD:
-                continue
-            thread = record.get("thread")
-            if not isinstance(thread, dict):
-                continue
-            source = thread.get("source")
-            sub_agent = source.get("subAgent") if isinstance(source, dict) else None
-            spawn = sub_agent.get("thread_spawn") if isinstance(sub_agent, dict) else None
-            parent = str((spawn or {}).get("parent_thread_id") or "").strip()
-            if not parent:
-                continue
-            projector = projectors.get(parent)
-            if projector is None:
-                projector = projectors[parent] = CodexChildResources(
-                    root_thread_id=parent, call=_no_call
-                )
-            for frame in projector.fold_thread(thread):
-                emission = emission_from_translated_frame(frame)
-                if isinstance(emission, ChildResourceFact):
-                    facts.append((index, emission))
-        return facts
-
     @property
     def engine_kind(self) -> EngineKind:
         return ENGINE_KIND
 
     @property
-    def engine_client_type(self) -> type[EngineClient]:
-        return CodexEngineClient
+    def engine_client_type(self) -> type[Any]:
+        return CodexRuntimeClient
 
     @property
     def capabilities(self) -> EngineRuntimeCapabilities:
@@ -906,8 +821,6 @@ class CodexEngineAdapter(EngineAdapter):
             )
             return await _publish_runtime(
                 session_id=context.session_id,
-                resident_output_sink=context.resident_output_sink,
-                event_sink=context.event_sink,
                 sandbox=sandbox,
                 link=link,
                 engine_session_key=context.resume_session_key,
@@ -926,7 +839,6 @@ class CodexEngineAdapter(EngineAdapter):
                     deployment_id=startup_mcp_deployment_id(context),
                 ),
                 turn_start=_engine_option(template, "turn_start"),
-                model_catalog=bool(catalog),
                 prepare_engine_input=context.prepare_engine_input,
             )
         except BaseException:

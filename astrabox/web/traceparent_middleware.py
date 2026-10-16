@@ -19,7 +19,7 @@ inline in every per-resource route class:
   ASGI ``send``: the header rides the ``http.response.start`` event, so it lands
   on plain JSON, error envelopes AND streaming/SSE responses alike (a
   ``StreamingResponse`` emits exactly one ``http.response.start`` before its body
-  chunks — see ``tests/traceparent_middleware_test.py``).
+  chunks).
 
 One response path this middleware structurally cannot reach: the app's catch-all
 ``Exception`` handler (``handle_unknown_error``) runs at Starlette's

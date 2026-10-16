@@ -1,11 +1,20 @@
-import { expect, test, type Page, type Route } from '@playwright/test';
+import { expect, test, type APIResponse, type Page, type Route } from '@playwright/test';
 
-import { AstraApi, type HistoryBlockPage, type MessagePage, type MessageRecord } from '../fixtures/astraApi';
+import {
+  AstraApi,
+  messageText,
+  messageToolCalls,
+  type HistoryBlockPage,
+  type MessagePage,
+  type MessageRecord,
+} from '../fixtures/astraApi';
+import { revealAssistantProcess } from '../fixtures/assistantProcess';
 import { apiPath, appPath } from '../fixtures/env';
 import { PlatformApi } from '../fixtures/platformApi';
 import { normalizeRendered } from '../fixtures/renderedTranscript';
 import { openSessionView } from '../fixtures/sessionPage';
 import { trackSessions } from '../fixtures/sessionCleanup';
+import { mirrorSseBodies, sessionStreamBodies } from '../fixtures/sseBodies';
 
 const sessions = trackSessions();
 
@@ -140,11 +149,13 @@ async function observeHistoryUpdate(
   }
 }
 
-// Visit overlapping viewports so every durable row must actually be readable,
-// while allowing the list to unmount records that have left the viewport.
+// Visit overlapping viewports so every history message must actually be
+// readable, while allowing the list to unmount messages that have left the
+// viewport. A row's `data-message-id` is the message's own id: the input's
+// client_message_id for a user message, the response id for a reply.
 async function expectCompleteVisibleHistory(page: Page, history: MessageRecord[]) {
   const scroller = page.getByTestId('session-conversation');
-  const expected = new Map(history.map((message, index) => [message.message_id, { message, index }]));
+  const expected = new Map(history.map((message, index) => [message.id, { message, index }]));
   const seen = new Set<string>();
   const snapshot = () => scroller.evaluate((element) => {
     const viewport = element.getBoundingClientRect();
@@ -166,22 +177,22 @@ async function expectCompleteVisibleHistory(page: Page, history: MessageRecord[]
   for (let step = 0; step < 80; step += 1) {
     const current = await snapshot();
     const ids = current.rows.map((row) => row.id);
-    expect(new Set(ids).size, 'mounted history must not duplicate a record').toBe(ids.length);
+    expect(new Set(ids).size, 'mounted history must not duplicate a message').toBe(ids.length);
     const positions = current.rows.map((row) => {
-      expect(expected.has(row.id), `unexpected shared record ${row.id}`).toBe(true);
+      expect(expected.has(row.id), `unexpected shared message ${row.id}`).toBe(true);
       return expected.get(row.id)!.index;
     });
-    expect(positions, 'mounted shared records must retain durable order')
+    expect(positions, 'mounted shared messages must retain history order')
       .toEqual([...positions].sort((left, right) => left - right));
     for (const row of current.rows.filter((item) => item.visible)) {
       const { message } = expected.get(row.id)!;
       if (message.role === 'user') {
         expect(row.user).not.toBeNull();
-        expect(normalizeRendered(row.user!)).toContain(normalizeRendered(String(message.content)));
+        expect(normalizeRendered(row.user!)).toContain(normalizeRendered(messageText(message)));
       } else {
         expect(row.user).toBeNull();
-        expect(normalizeRendered(row.assistant), `shared reply ${row.id} must retain its content`)
-          .toBe(normalizeRendered(String(message.content)));
+        expect(normalizeRendered(row.assistant), `shared reply ${row.id} must retain its text`)
+          .toBe(normalizeRendered(messageText(message)));
         expect(row.assistant.trim()).not.toBe('');
       }
       seen.add(row.id);
@@ -195,15 +206,15 @@ async function expectCompleteVisibleHistory(page: Page, history: MessageRecord[]
         || next.rows.map((row) => row.id).join(',') !== ids.join(',');
     }, { message: 'the reader must advance through older shared history' }).toBe(true);
   }
-  expect(history.filter((message) => !seen.has(message.message_id)).map((message) => message.message_id),
+  expect(history.filter((message) => !seen.has(message.id)).map((message) => message.id),
     'every real user input and assistant reply must be readable in the share').toEqual([]);
 }
 
-function olderCursor(records: MessageRecord[]): string {
-  const values = records.map((record) => String(record.created_at || '').trim()).sort();
-  expect(values.every(Boolean), 'every real history row needs its pagination timestamp').toBe(true);
-  expect(values[0], 'the oldest timestamp must identify one boundary row').not.toBe(values[1]);
-  return values[0];
+/** The server-issued cursor for the page before `page`; a page with more history must carry one. */
+function olderCursor(page: MessagePage): string {
+  const cursor = String(page.before ?? '').trim();
+  expect(cursor, 'a page with history behind it must issue the cursor for it').not.toBe('');
+  return cursor;
 }
 
 test('long session history loads one page per upward arrival and preserves the reader on refresh', async ({ page, request, browser }) => {
@@ -221,35 +232,42 @@ test('long session history loads one page per upward arrival and preserves the r
   prompts[0] += '\n\nProject context: We are preparing release notes for a shared workspace.'
     + '\n\nAudience: The notes will be read by people joining the project for the first time.'
     + '\n\nStyle: Keep the notes clear, with separate paragraphs for each topic.';
-  // Real normal inputs, no imported rows or substituted responses. Each SSE
-  // completion is the boundary for the next input; no extra per-turn polling.
+  // Real normal inputs, no imported rows or substituted responses. Each
+  // response's `finish` on the session stream is the boundary for the next
+  // input; no extra per-input polling.
+  const inputIds: string[] = [];
   for (const [index, prompt] of prompts.entries()) {
     await test.step(`write real history input ${index + 1} of ${prompts.length}`, async () => {
       const result = await api.sendTurn(sessionId, prompt);
       expect(result.errorText, `input ${index + 1} must complete without an engine error`).toBeNull();
       expect(result.text.trim(), `input ${index + 1} must receive a real reply`).not.toBe('');
+      inputIds.push(result.inputId);
     });
   }
-  await api.waitForSession(sessionId, (session) => session.state === 'READY' && session.last_turn_status === 'COMPLETED');
+  await api.waitForSession(sessionId, (session) => (
+    session.state === 'READY' && session.last_response?.outcome === 'completed'
+  ));
 
   const latest = await api.getMessages(sessionId);
   expect(latest.messages).toHaveLength(50);
   expect(latest.has_more).toBe(true);
-  const firstCursor = olderCursor(latest.messages);
+  const firstCursor = olderCursor(latest);
   const middle = await api.data<MessagePage>('GET', `/sessions/${sessionId}/messages?limit=50&before=${encodeURIComponent(firstCursor)}`);
   expect(middle.messages).toHaveLength(50);
   expect(middle.has_more).toBe(true);
-  const secondCursor = olderCursor(middle.messages);
-  expect(secondCursor < firstCursor).toBe(true);
+  const secondCursor = olderCursor(middle);
+  expect(secondCursor, 'the history cursor must move backwards, not repeat').not.toBe(firstCursor);
   const earliest = await api.data<MessagePage>('GET', `/sessions/${sessionId}/messages?limit=50&before=${encodeURIComponent(secondCursor)}`);
   expect(earliest.messages).toHaveLength(2);
   expect(earliest.has_more).toBe(false);
   const history = [...earliest.messages, ...middle.messages, ...latest.messages];
-  expect(new Set(history.map((message) => message.message_id)).size).toBe(102);
+  expect(new Set(history.map((message) => message.id)).size).toBe(102);
   const users = history.filter((message) => message.role === 'user');
-  expect(users.map((message) => message.content)).toEqual(prompts);
-  expect(users.every((message) => Boolean(message.client_message_id))).toBe(true);
-  expect(new Set(users.map((message) => message.client_message_id)).size).toBe(51);
+  expect(users.map((message) => messageText(message))).toEqual(prompts);
+  // Each user message is the input its send was acknowledged for, in order:
+  // the receipts and the history name the same 51 inputs.
+  expect(users.map((message) => message.metadata?.input_id)).toEqual(inputIds);
+  expect(new Set(users.map((message) => message.id)).size, 'every input keeps its own client_message_id').toBe(51);
   expect(history.filter((message) => message.role === 'assistant')).toHaveLength(51);
 
   // The same durable history through the read the console actually makes. Its
@@ -271,9 +289,9 @@ test('long session history loads one page per upward arrival and preserves the r
   expect(earliestBlocks.has_more).toBe(false);
   expect(
     [...earliestBlocks.messages, ...middleBlocks.messages, ...newestBlocks.messages]
-      .map((message) => message.message_id),
-    'the folded read must carry the same records, in the same order, as the raw read',
-  ).toEqual(history.map((message) => message.message_id));
+      .map((message) => message.id),
+    'the folded read must carry the same messages, in the same order, as the raw read',
+  ).toEqual(history.map((message) => message.id));
 
   const historyPath = apiPath(`/sessions/${sessionId}/history-blocks`);
   const olderRequests: string[] = [];
@@ -309,8 +327,8 @@ test('long session history loads one page per upward arrival and preserves the r
       });
       expect(reply.status()).toBe(200);
       const body = await reply.json() as { data: MessagePage };
-      expect(body.data.messages.map((message) => message.message_id)).toEqual(
-        (index === 0 ? middle : earliest).messages.map((message) => message.message_id),
+      expect(body.data.messages.map((message) => message.id)).toEqual(
+        (index === 0 ? middle : earliest).messages.map((message) => message.id),
       );
       expect(olderRequests, 'one upward arrival must not chase the next page').toEqual([firstBlockCursor, secondBlockCursor].slice(0, index + 1));
       expect(stability.missingFrames, `anchor ${anchor.id} must remain mounted`).toBe(0);
@@ -328,7 +346,7 @@ test('long session history loads one page per upward arrival and preserves the r
       .find((item) => item.dataset.messageId === id);
     if (!row) throw new Error(`missing variable-height history row ${id}`);
     return row.getBoundingClientRect().height;
-  }), [users[0].message_id, users[1].message_id]);
+  }), [users[0].id, users[1].id]);
   expect(rowHeights[0] - rowHeights[1],
     'the final partial page must exercise substantially different row heights').toBeGreaterThan(60);
   expect(await scroller.locator('[data-message-id]').count(), 'offscreen loaded history must not all remain in the DOM').toBeLessThan(history.length);
@@ -386,11 +404,11 @@ test('long session history loads one page per upward arrival and preserves the r
     const reply = await retriedResponse;
     expect(reply.status()).toBe(200);
     const body = await reply.json() as { data: MessagePage };
-    expect(body.data.messages.map((message) => message.message_id)).toEqual(
-      middle.messages.map((message) => message.message_id),
+    expect(body.data.messages.map((message) => message.id)).toEqual(
+      middle.messages.map((message) => message.id),
     );
     const nearestOlderInput = middle.messages.filter((message) => message.role === 'user').at(-1)!;
-    await expect(page.getByTestId('user-message').filter({ hasText: String(nearestOlderInput.content) })).toBeVisible();
+    await expect(page.getByTestId('user-message').filter({ hasText: messageText(nearestOlderInput) })).toBeVisible();
     await expect(page.getByText(/NETWORK_ERROR|Failed to fetch/)).toHaveCount(0);
     expect(olderPageAttempts).toBe(2);
     expect(olderRequests).toEqual([firstBlockCursor, secondBlockCursor, firstBlockCursor, firstBlockCursor]);
@@ -399,7 +417,7 @@ test('long session history loads one page per upward arrival and preserves the r
   }
 
   // The same real history must also be complete for a token-only viewer.
-  // Reuse the 51 completed turns instead of generating another long session.
+  // Reuse the 51 completed responses instead of generating another long session.
   const share = await new PlatformApi(request).createShare(sessionId);
   expect(share.token).toBeTruthy();
   const viewer = await browser.newContext({
@@ -438,11 +456,180 @@ test('long session history loads one page per upward arrival and preserves the r
       .toEqual([false, false, false]);
     const sharedPages = await Promise.all(sharedResponses);
     expect(sharedPages.map((part) => part.messages.length)).toEqual([50, 50, 2]);
-    expect([...sharedPages].reverse().flatMap((part) => part.messages.map((message) => message.message_id)))
-      .toEqual(history.map((message) => message.message_id));
+    expect([...sharedPages].reverse().flatMap((part) => part.messages.map((message) => message.id)))
+      .toEqual(history.map((message) => message.id));
     await expect(sharedPage.getByTestId('composer-prompt')).toHaveCount(0);
     await expect(sharedPage.getByTestId('composer-submit')).toHaveCount(0);
   } finally {
     await viewer.close();
+  }
+});
+
+test('a delayed history read keeps the completed live reply and its tools', async ({ page, request }) => {
+  await mirrorSseBodies(page);
+  const api = new AstraApi(request);
+  const agent = await api.defaultAgent();
+  const { session_id: sessionId } = await api.startConversation(agent.agent_id);
+  sessions.push(sessionId);
+  await api.waitForSessionReady(sessionId);
+  await openSessionView(page, sessionId);
+  const run = Date.now();
+  const started = `history-${run}.started`;
+  const releaseFile = `history-${run}.release`;
+  const marker = `HISTORY_FINISHED_${run}`;
+  const historyPath = apiPath(`/sessions/${sessionId}/history-blocks`);
+  const matchesHistory = (url: URL) => url.pathname === historyPath;
+  let allowCapture!: () => void;
+  const captureAllowed = new Promise<void>((resolve) => { allowCapture = resolve; });
+  let releaseRead!: () => void;
+  const delivery = new Promise<void>((resolve) => { releaseRead = resolve; });
+  let snapshot: HistoryBlockPage | null = null;
+  let captured = false;
+  let delivered = false;
+  await page.route(matchesHistory, async (route) => {
+    if (captured) return route.continue();
+    captured = true;
+    await captureAllowed;
+    const response = await route.fetch();
+    snapshot = (await response.json()).data;
+    await delivery;
+    await route.fulfill({ response });
+    delivered = true;
+  });
+  const command = [
+    "python3 - <<'PY'", 'import time', 'from pathlib import Path',
+    `Path('/workspace/${started}').write_text('started')`,
+    'deadline = time.monotonic() + 180',
+    `while not Path('/workspace/${releaseFile}').exists():`,
+    "    if time.monotonic() >= deadline: raise RuntimeError('history acceptance release timed out')",
+    '    time.sleep(0.1)', `print('${marker}')`, 'PY',
+  ].join('\n');
+  // Submitted outside this page: the real response start must reconcile its input.
+  const turn = api.streamPrompt(sessionId,
+    `Run this command verbatim with Bash, wait for it, then reply with ${marker}.\n\n${command}`,
+    'bypassPermissions');
+  void turn.catch(() => undefined);
+  try {
+    await expect.poll(async () => {
+      try { return await api.downloadFileText(sessionId, `/workspace/${started}`); }
+      catch (error) {
+        if (/404|FILE_NOT_FOUND|path not found/.test(String(error))) return '';
+        throw error;
+      }
+    }, { timeout: 90_000 }).toBe('started');
+    allowCapture();
+    await expect.poll(() => snapshot).not.toBeNull();
+    const partial = snapshot!.messages.filter((message) => message.role === 'assistant');
+    expect(partial).toHaveLength(1);
+    expect(partial[0].metadata?.status, 'retained server snapshot precedes real completion').toBe('running');
+    await api.uploadFileText(sessionId, '/workspace', releaseFile, 'release');
+    await turn;
+    const detail = await api.waitForSession(sessionId, (value) => value.last_response?.status === 'ended');
+    expect(detail.last_response?.outcome).toBe('completed');
+    const canonical = (await api.getMessages(sessionId)).messages;
+    const response = canonical.find((message) => message.id === detail.last_response?.response_id)!;
+    const row = page.locator(`[data-message-id="${response.id}"]`);
+    await expect(row.getByTestId('assistant-text').last()).toContainText(marker);
+    await expect(page.getByTestId('run-view').getByTestId('status-pill').first()).toHaveAttribute('data-pulse', 'false');
+    await expect(row.getByTestId('assistant-turn-process-trigger')).toBeVisible();
+    await revealAssistantProcess(page, { within: row });
+    expect(normalizeRendered((await row.getByTestId('assistant-text').allTextContents()).join('')))
+      .toBe(normalizeRendered(messageText(response)));
+    const tools = messageToolCalls(response);
+    expect(tools.length).toBeGreaterThan(0);
+    for (const tool of tools) {
+      expect(tool.state).toBe('output-available');
+      await expect(row.locator(`[data-tool-call-id="${tool.toolCallId}"]`)).toBeVisible();
+      await expect(row.locator(`[data-tool-call-id="${tool.toolCallId}"]`).getByText(/^(Done|已完成)$/)).toBeVisible();
+    }
+    releaseRead();
+    await expect.poll(() => delivered).toBe(true);
+    // Observe the merge commit too: it adds the previously unknown user input.
+    await expect(page.locator(`[data-message-id="${canonical[0].id}"]`)).toHaveCount(1);
+    await expect.poll(async () => normalizeRendered((await row.getByTestId('assistant-text').allTextContents()).join('')))
+      .toBe(normalizeRendered(messageText(response)));
+    for (const tool of tools) {
+      await expect(row.locator(`[data-tool-call-id="${tool.toolCallId}"]`).getByText(/^(Done|已完成)$/)).toBeVisible();
+    }
+    expect(await row.locator('[data-tool-call-id]').evaluateAll(
+      (cards) => cards.map((element) => element.getAttribute('data-tool-call-id')),
+    )).toEqual(tools.map((tool) => tool.toolCallId));
+    await expect(page.getByTestId('run-view').getByTestId('status-pill').first()).toHaveAttribute('data-pulse', 'false');
+    expect(await page.getByTestId('session-conversation').locator('[data-message-id]').evaluateAll(
+      (rows) => rows.map((element) => element.getAttribute('data-message-id')),
+    )).toEqual(canonical.map((message) => message.id));
+  } finally {
+    allowCapture();
+    releaseRead();
+    await test.info().attach('late-history-snapshot', {
+      body: JSON.stringify({ sessionId, captured, delivered, snapshot, stream: await sessionStreamBodies(page) }),
+      contentType: 'application/json',
+    });
+    await page.unroute(matchesHistory);
+  }
+});
+
+test('a history prefix resumes one intact Markdown code block', async ({ page, request }) => {
+  await mirrorSseBodies(page);
+  const api = new AstraApi(request);
+  const agent = await api.defaultAgent();
+  const { session_id: sessionId } = await api.startConversation(agent.agent_id);
+  sessions.push(sessionId);
+  await api.waitForSessionReady(sessionId);
+  const lines = Array.from({ length: 400 }, (_, index) => String(index + 1).padStart(4, '0'));
+  const turn = api.streamPrompt(sessionId,
+    'Without tools or commentary, return one fenced text code block containing the numbers 0001 through 0400, one per line in order.');
+  void turn.catch(() => undefined);
+  let retained: APIResponse | null = null;
+  let snapshot: HistoryBlockPage | null = null;
+  try {
+    await expect.poll(async () => {
+      const response = await request.get(apiPath(`/sessions/${sessionId}/history-blocks?limit=50`));
+      expect(response.ok()).toBe(true);
+      const history = (await response.json()).data as HistoryBlockPage;
+      const reply = history.messages.find((message) => message.role === 'assistant');
+      if (!reply) return false;
+      const text = messageText(reply);
+      if (reply.metadata?.status === 'running' && text.includes('```') && text.split('```').length === 2) {
+        retained = response;
+        snapshot = history;
+        return true;
+      }
+      if (reply.metadata?.status === 'ended') {
+        throw new Error('Fault-observation precondition unavailable: no unfinished Markdown history prefix was captured');
+      }
+      return false;
+    }, { timeout: 90_000, intervals: [50, 100, 250] }).toBe(true);
+    await turn;
+    const detail = await api.waitForSession(sessionId, (value) => value.last_response?.status === 'ended');
+    expect(detail.last_response?.outcome).toBe('completed');
+    const canonical = (await api.getMessages(sessionId)).messages.find(
+      (message) => message.id === detail.last_response?.response_id,
+    )!;
+    expect(messageText(canonical).trim(), 'native answer must supply the requested Markdown scene')
+      .toBe(`\`\`\`text\n${lines.join('\n')}\n\`\`\``);
+    let supplied = false;
+    await page.route((url) => url.pathname === apiPath(`/sessions/${sessionId}/history-blocks`), async (route) => {
+      if (supplied) return route.continue();
+      supplied = true;
+      // The real partial response is delayed unchanged, never fabricated.
+      await route.fulfill({ response: retained! });
+    });
+    await openSessionView(page, sessionId);
+    expect(supplied, 'the browser must bootstrap from the retained partial history').toBe(true);
+    const row = page.locator(`[data-message-id="${canonical.id}"]`);
+    const code = row.locator('[data-testid="assistant-text"] pre code');
+    await expect(code).toHaveCount(1);
+    await expect(code).toHaveText(`${lines.join('\n')}\n`);
+    await expect(row.getByTestId('assistant-text')).toHaveCount(1);
+    await expect(page.getByTestId('run-view').getByTestId('status-pill').first()).toHaveAttribute('data-pulse', 'false');
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await expect(code).toHaveCount(1);
+    await expect(code).toHaveText(`${lines.join('\n')}\n`);
+  } finally {
+    await test.info().attach('Markdown-history-continuation', {
+      body: JSON.stringify({ sessionId, snapshot, stream: await sessionStreamBodies(page) }),
+      contentType: 'application/json',
+    });
   }
 });

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "astrabox"
-version = "0.1.8"
+version = "0.1.9"
 description = "AstraBox Community — an open, self-hosted agent runtime that streams a sandboxed coding agent to your frontend over the AI-SDK Data-Stream-Protocol."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -51,10 +51,10 @@ dependencies = [
   "mcp==2.1.1",
   # Official A2A HTTP transport; tasks project the existing Session/turn ledger.
   "a2a-sdk[http-server]==1.2.2",
-  # persistence (DEFAULT = PostgreSQL; SQLite remains for compatibility tests)
+  # persistence: PostgreSQL through SQLAlchemy 2.0, schema migrated by Alembic
   "sqlalchemy==2.0.52",
   "asyncpg==0.31.0",
-  "aiosqlite==0.22.1",
+  "alembic==1.20.0",
   # Embedded durable schedule/run engine. DBOS owns cron dispatch, distributed
   # idempotency, recovery, retries, and the workflow ledger; AstraBox keeps the
   # public Deployment/Run vocabulary and exposes none of DBOS's control plane.
@@ -74,8 +74,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# optional MongoDB collection backend behind the get_async_collection() seam
-mongo = ["pymongo==4.17.0"]
 # AWS KMS envelope encryption for stateless/multi-replica Credential Vaults.
 # The server image installs this extra; local library installs do not carry a
 # cloud SDK unless the operator selects it.
@@ -156,7 +154,6 @@ astrabox = "astrabox.cli:main"
 # Third-party plugins can register their own provider names at these SAME
 # entry-point groups without touching this codebase. Unknown configured names
 # fail loud in the seam loaders (astrabox/providers/__init__.py::load_provider,
-# astrabox/persistence/repository/backend.py::_resolve_backend,
 # astrabox/providers/identity.py::load_web_identity_resolver) — no silent fallback.
 # ---------------------------------------------------------------------------
 
@@ -240,15 +237,6 @@ dbos = "astrabox.providers.scheduler_dbos:DbosSchedulerProvider"
 # a downstream registers its controller here (self-registers on import via
 # register_admission_controller) so the turn/session hot path never needs a fork.
 
-# Default persistence backend: PostgreSQL (SQLite compatibility and Mongo are
-# registered at the same group). Targets are plain MODULES (not classes) — no backend takes
-# a per-instance db_url; both resolve the store through settings/env at the
-# single get_async_collection() seam (see astrabox/persistence/repository/backend.py).
-[project.entry-points."astrabox.providers.repository"]
-postgresql = "astrabox.persistence.repository.postgresql"
-sqlite = "astrabox.persistence.repository.sqlite"
-mongo = "astrabox.persistence.repository.mongo"
-
 # Community default identity: no API auth. One web identity seam covers the
 # browser, JSON API, and public MCP transport.
 [project.entry-points."astrabox.web.identity"]
@@ -326,10 +314,12 @@ explicit_package_bases = true
 exclude = '(^|/)(\.venv|frontend|e2e|tests/e2e)/'
 # name-defined is deliberately NOT disabled — it is the mypy half of the
 # undefined-name gate (see the ruff F821 note above); the tree is clean under it.
+# attr-defined and call-arg stay on: with them off, a call to a member that a
+# refactor removed passes this gate and fails on first use.
 disable_error_code = [
-  "arg-type", "assignment", "union-attr", "misc", "no-redef", "attr-defined",
+  "arg-type", "assignment", "union-attr", "misc", "no-redef",
   "dict-item", "return-value", "var-annotated", "type-var",
-  "index", "call-arg", "override", "method-assign", "operator", "return",
+  "index", "override", "method-assign", "operator", "return",
   "has-type", "valid-type",
 ]
 
@@ -342,9 +332,7 @@ disable_error_code = [
 # an ancestor pattern disabled, never remove it — restoring strictness for a
 # module requires enable_error_code (used here), and a wildcard here must
 # never be an ANCESTOR of a still-dirty module (it would sweep that module's
-# codes back off too — see the repository/sqlite carve-out below, which is
-# why persistence uses explicit sibling module names instead of a single
-# top-level "astrabox.persistence.*" wildcard).
+# codes back off too).
 # A missing AstraBox module is a typo, not an uninstalled optional dependency.
 # `ignore_missing_imports` above is for optional third-party packages; left
 # global it also swallows a misspelled first-party import, which then passes
@@ -375,12 +363,8 @@ module = [
   "astrabox.deploy.*",
   # providers/ — one wildcard also covers new provider modules.
   "astrabox.providers.*",
-  # Persistence modules that satisfy the full configuration. The compatibility
-  # shim and SQLite collection use the base configuration above.
   "astrabox.persistence",
   "astrabox.persistence.models.*",
-  "astrabox.persistence.migrations.*",
-  "astrabox.persistence.repository.mongo.*",
   # The codex engine adapter. Named rather than a wildcard because its
   # siblings under engine/ are not clean yet, and a wildcard here would be an
   # ancestor of theirs. Strictness matters most on this file: `manager` is
@@ -403,14 +387,12 @@ enable_error_code = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-# The live-turn e2e (tests/e2e/) needs Docker + the operator LLM key, the
-# database conformance bindings need reachable PostgreSQL/MongoDB services, and
-# the opensandbox live lane needs a reachable opensandbox-server, so those
-# integration markers are DESELECTED by default — a
-# plain `pytest` run (unit CI) skips them. Run e2e explicitly with
-# `pytest -m e2e`, database bindings with their named markers, and the
-# opensandbox lane with `pytest -m opensandbox` (each overrides its own
-# deselect on the CLI).
+# The live-turn e2e (tests/e2e/) needs a running deployment and the operator LLM
+# key, so the `e2e` marker is DESELECTED by default — a plain `pytest` run (unit
+# CI) skips it. Run it explicitly with `pytest -m e2e`, which overrides the
+# deselect on the CLI. Unit tests that touch the store run on PostgreSQL through
+# the `database` fixture: ASTRABOX_TEST_POSTGRES_URL names a role that may
+# create databases.
 # --timeout=120 (pytest-timeout): a per-test ceiling so one hung async test can
 # never wedge the unit lane. Set HERE (not in the CI invocation) so `make test`
 # and CI share one source of truth and stay 1:1.
@@ -419,15 +401,11 @@ testpaths = ["tests"]
 # --ignore-glob='**/._*': macOS AppleDouble metadata files appear alongside
 # real files when the tree lives on a non-native volume (SMB); pytest must
 # never try to collect them.
-addopts = "-m 'not e2e and not mongo and not mongo_transaction and not postgresql and not opensandbox' --timeout=120 --strict-markers --ignore-glob='**/._*'"
+addopts = "-m 'not e2e' --timeout=120 --strict-markers --ignore-glob='**/._*'"
 markers = [
   "e2e: live end-to-end turn (needs Docker + your Anthropic-compatible endpoint/model key); deselected by default in unit CI.",
   "assistant_live: live contract that requires an Assistant/Hermes environment rather than the canonical Agent environment.",
   "deployment_shape: live contract that needs a deployment built for it (a fixture provider or image); the live lanes exclude it and it runs against that deployment explicitly.",
   "backend_restart: stops or restarts a shared backend, bundled sandbox server, or database; the live runner executes these tests in its exclusive serial phase.",
   "xdist_group(name): pytest-xdist scheduling group; live e2e invocations with workers reject any scheduler other than loadgroup.",
-  "mongo: needs a reachable mongod + the [mongo] extra (pip install -e '.[mongo]'); deselected by default in unit CI.",
-  "mongo_transaction: needs a MongoDB replica set or sharded cluster and the [mongo] extra; deselected by default.",
-  "postgresql: needs a reachable PostgreSQL service; deselected by default in unit CI.",
-  "opensandbox: needs a reachable opensandbox-server (ASTRABOX_SANDBOX_OPENAPI_BASE_URL); deselected by default in unit CI.",
 ]

@@ -2,65 +2,23 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
-import subprocess
 import sys
 from collections.abc import Iterator
-from pathlib import Path
 
 import pytest
 
-# Product and development deployments default to PostgreSQL. The fast unit lane
-# deliberately keeps temporary SQLite files unless a database-backed invocation
-# sets its own backend before pytest starts.
-os.environ.setdefault("ASTRABOX_DB_BACKEND", "sqlite")
+from tests._database import database, postgres_database  # noqa: F401 - shared store fixtures
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
 _LIVE_E2E_CONTROLLER = False
-
-
-@pytest.fixture(scope="session")
-def node_toolchain_env() -> dict[str, str]:
-    """Return an environment containing the checksum-pinned Node toolchain.
-
-    Python tests that exercise JavaScript must not assume an interactive shell
-    happened to initialise nvm. Resolve the repository's one pinned runtime
-    through the same installer used by Make, CI, and the AWS E2E testbed, once
-    per pytest process, then make its bin directory explicit to every child.
-    """
-    completed = subprocess.run(
-        [
-            sys.executable,
-            str(REPO_ROOT / "scripts/node-toolchain.py"),
-            "--print-bin",
-        ],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=60,
-    )
-    if completed.returncode != 0:
-        pytest.fail(
-            "could not resolve the repository Node.js toolchain: "
-            f"{completed.stdout}{completed.stderr}",
-            pytrace=False,
-        )
-    bin_dir = completed.stdout.strip()
-    if not bin_dir:
-        pytest.fail("Node.js toolchain resolver returned an empty bin path", pytrace=False)
-    environment = dict(os.environ)
-    environment["PATH"] = f"{bin_dir}{os.pathsep}{environment.get('PATH', '')}"
-    return environment
 
 
 def selects_live_e2e(config: pytest.Config) -> bool:
     """True when this invocation actually runs the live suite.
 
     Read from the marker expression rather than from file paths: the default in
-    ``pyproject.toml`` is ``-m 'not e2e and …'`` and a live run overrides it with
+    ``pyproject.toml`` is ``-m 'not e2e'`` and a live run overrides it with
     ``-m e2e``, so the sign of the ``e2e`` term is exactly the question.
     """
     expr = " ".join(str(getattr(config.option, "markexpr", "") or "").split())
@@ -198,34 +156,6 @@ def _default_transcript_signing_key() -> object:
             os.environ.pop("ASTRABOX_TRANSCRIPT_SIGNING_KEY", None)
         else:
             os.environ["ASTRABOX_TRANSCRIPT_SIGNING_KEY"] = original
-
-
-_SQL_ENGINE_MODULE = "astrabox.persistence.repository.sqlite.engine"
-
-
-@pytest.fixture(autouse=True)
-def _dispose_sql_engines_the_test_opened() -> Iterator[None]:
-    """Close the SQL pools a test opened, whichever fixture chose its database.
-
-    The store caches one engine per database URL for the life of the process,
-    which fits a server with one database. A test that points the store at its
-    own directory creates a new URL, and without disposal every pooled
-    connection keeps its database, WAL and shared-memory descriptors open until
-    the run ends. Across the suite that exhausts the process's descriptor limit,
-    and unrelated later tests fail to open files. Engines that existed before
-    the test, such as ones a wider-scoped fixture opened, are left alone.
-    """
-    engines = sys.modules.get(_SQL_ENGINE_MODULE)
-    before = set(engines._ENGINES) if engines is not None else set()
-    yield
-    engines = sys.modules.get(_SQL_ENGINE_MODULE)
-    if engines is None:
-        return
-    opened = sorted({url for url, mode in engines._ENGINES if (url, mode) not in before})
-    for url in opened:
-        # The test's event loop is closed by now; aiosqlite and asyncpg close
-        # a connection from whichever loop awaits the close.
-        asyncio.run(engines.dispose_engines(url))
 
 
 #: The installation id the general suite runs as. Outside tests the id is read

@@ -32,7 +32,7 @@ import { randomUUID } from 'node:crypto';
 import { expect, test, type APIRequestContext } from '@playwright/test';
 
 import { approveGates } from '../fixtures/approveGates';
-import { AstraApi, type MessageRecord } from '../fixtures/astraApi';
+import { AstraApi, messageToolCalls, toolCallSettled } from '../fixtures/astraApi';
 import { engineProfileFor } from '../fixtures/engineProfile';
 import { copyEnvironment } from '../fixtures/environmentCopy';
 import { PlatformApi } from '../fixtures/platformApi';
@@ -152,11 +152,13 @@ test('a Codex Agent calls the MCP server its declared plugin carries', async ({ 
     `After it returns, reply with exactly DONE_${id} and nothing else.`,
   ].join(' '));
   await approveGates(api, sessionId);
-  const blocks = (await api.getMessages(sessionId, 100)).messages
-    .flatMap((message: MessageRecord) => (Array.isArray(message.blocks) ? message.blocks : []) as Array<Record<string, unknown>>);
-  expect(blocks.some((block) => block.type === 'tool_use' && JSON.stringify(block).includes('read_wiki_structure')),
-    'Codex called the plugin\'s DeepWiki tool').toBe(true);
-  const results = blocks.filter((block) => block.type === 'tool_result').map((block) => JSON.stringify(block.content ?? ''));
+  // History's tool parts carry Codex's own item for the call and for its
+  // result (`engine/codex_events.py`), so the tool and its answer are read
+  // off the same call.
+  const calls = (await api.getMessages(sessionId, 100)).messages.flatMap(messageToolCalls)
+    .filter((call) => JSON.stringify(call.input ?? null).includes('read_wiki_structure'));
+  expect(calls.length, 'Codex called the plugin\'s DeepWiki tool').toBeGreaterThan(0);
+  const results = calls.filter(toolCallSettled).map((call) => JSON.stringify(call.output ?? ''));
   expect(results.some((text) => text.includes('Available pages for facebook/react')),
     `DeepWiki answered through the plugin's server: ${results.join(' | ').slice(0, 600)}`).toBe(true);
 });

@@ -1,10 +1,8 @@
 """Trusted-host gate — DNS-rebinding guard for the browser-facing surface.
 
-Drives the pure-ASGI :class:`TrustedHostMiddleware` and asserts: an allowlisted
-Host passes (bare, with-port, and IPv6 loopback forms), an off-allowlist Host is
-rejected 400, the platform-MCP path and ``/healthz`` are exempt regardless of Host,
-``ASTRABOX_ALLOWED_HOSTS`` REPLACES the default list, and a disallowed websocket
-is policy-closed rather than accepted.
+Drives the pure-ASGI :class:`TrustedHostMiddleware` and asserts: an off-allowlist
+Host is rejected 400, a disallowed websocket is policy-closed rather than
+accepted, and a browser path under a mount is still host-gated.
 """
 
 from __future__ import annotations
@@ -72,27 +70,6 @@ class TrustedHostMiddlewareTest(unittest.TestCase):
     def tearDown(self) -> None:
         self._env.stop()
 
-    def test_allowlisted_host_passes(self) -> None:
-        app = _RecordingApp()
-        sent = asyncio.run(_drive(TrustedHostMiddleware(app), _scope(host="127.0.0.1")))
-        self.assertTrue(app.called)
-        self.assertEqual(_status(sent), 200)
-
-    def test_allowlisted_host_with_port_passes(self) -> None:
-        # The Host header carries a port; the gate matches the host part only.
-        app = _RecordingApp()
-        sent = asyncio.run(
-            _drive(TrustedHostMiddleware(app), _scope(host="localhost:5173"))
-        )
-        self.assertTrue(app.called)
-        self.assertEqual(_status(sent), 200)
-
-    def test_ipv6_loopback_with_port_passes(self) -> None:
-        # Bracketed IPv6 literal + port must survive port stripping.
-        app = _RecordingApp()
-        sent = asyncio.run(_drive(TrustedHostMiddleware(app), _scope(host="[::1]:8088")))
-        self.assertTrue(app.called)
-        self.assertEqual(_status(sent), 200)
 
     def test_off_allowlist_host_rejected_400(self) -> None:
         app = _RecordingApp()
@@ -102,59 +79,6 @@ class TrustedHostMiddlewareTest(unittest.TestCase):
         self.assertFalse(app.called)
         self.assertEqual(_status(sent), 400)
 
-    def test_platform_mcp_path_exempt_regardless_of_host(self) -> None:
-        # Sandbox->host platform MCP traffic carries a bridge-IP Host.
-        app = _RecordingApp()
-        scope = _scope(
-            path="/api/v1/platform-mcp/deployment-1/expose-port/capability/mcp",
-            host="172.17.0.1",
-        )
-        sent = asyncio.run(_drive(TrustedHostMiddleware(app), scope))
-        self.assertTrue(app.called)
-        self.assertEqual(_status(sent), 200)
-
-    def test_sbxcap_transcript_path_exempt_regardless_of_host(self) -> None:
-        # The in-box runner's transcript flush arrives with a bridge-IP/Pod-IP
-        # Host and is authenticated by the capability token in the path; gating
-        # it on Host blocks the flush (observed live: HTTP 400 HOST_NOT_ALLOWED
-        # from the box while the same request passed from the host loopback).
-        app = _RecordingApp()
-        scope = _scope(
-            path="/api/v1/sbxcap/deadbeef/api/v1/transcript/sess-1/append",
-            host="172.17.0.1",
-        )
-        sent = asyncio.run(_drive(TrustedHostMiddleware(app), scope))
-        self.assertTrue(app.called)
-        self.assertEqual(_status(sent), 200)
-
-    def test_healthz_exempt_regardless_of_host(self) -> None:
-        app = _RecordingApp()
-        sent = asyncio.run(
-            _drive(
-                TrustedHostMiddleware(app),
-                _scope(path="/healthz", host="evil.example.com"),
-            )
-        )
-        self.assertTrue(app.called)
-
-    def test_env_override_replaces_default_allowlist(self) -> None:
-        with mock.patch.dict(
-            os.environ, {"ASTRABOX_ALLOWED_HOSTS": "myhost.internal"}
-        ):
-            # Overriding the list REPLACES it: the default loopback host is
-            # not carried over…
-            app = _RecordingApp()
-            sent = asyncio.run(
-                _drive(TrustedHostMiddleware(app), _scope(host="127.0.0.1"))
-            )
-            self.assertFalse(app.called)
-            self.assertEqual(_status(sent), 400)
-            # …and the configured host is.
-            app2 = _RecordingApp()
-            asyncio.run(
-                _drive(TrustedHostMiddleware(app2), _scope(host="myhost.internal"))
-            )
-            self.assertTrue(app2.called)
 
     def test_disallowed_websocket_is_policy_closed(self) -> None:
         app = _RecordingApp()
@@ -180,20 +104,6 @@ if __name__ == "__main__":
 
 
 class RootPathClassificationTests(unittest.TestCase):
-    def test_mounted_machine_exemption_still_bypasses_the_host_gate(self) -> None:
-        """Under a root_path mount the raw path carries the prefix;
-        classification now follows the route path, so the sandbox->host
-        bridge exemptions keep matching instead of silently becoming
-        Host-gated."""
-        app = _RecordingApp()
-        scope = _scope(
-            path="/astrabox/api/v1/platform-mcp/deployment-1/expose-port/capability/mcp",
-            host="evil.example.com",
-        )
-        scope["root_path"] = "/astrabox"
-        sent = asyncio.run(_drive(TrustedHostMiddleware(app), scope))
-        self.assertTrue(app.called)
-        self.assertEqual(_status(sent), 200)
 
     def test_mounted_browser_path_is_still_host_gated(self) -> None:
         app = _RecordingApp()

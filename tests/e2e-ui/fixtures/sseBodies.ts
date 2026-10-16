@@ -48,10 +48,10 @@ export async function mirrorSseBodies(page: Page): Promise<void> {
   });
 }
 
-/** The mirrored bodies for the session's ai-stream channel, newest last. */
-export async function aiStreamBodies(page: Page): Promise<SseBody[]> {
+/** The mirrored bodies of the session's stream (`GET …/sessions/{id}/stream`), oldest first. */
+export async function sessionStreamBodies(page: Page): Promise<SseBody[]> {
   const bodies = await page.evaluate(
     () => (window as unknown as { __astraboxSseBodies?: SseBody[] }).__astraboxSseBodies ?? [],
   );
-  return bodies.filter((body) => body.url.includes('/ai-stream'));
+  return bodies.filter((body) => /\/sessions\/[^/]+\/stream\?/.test(body.url));
 }

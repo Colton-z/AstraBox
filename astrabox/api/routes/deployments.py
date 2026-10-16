@@ -20,8 +20,9 @@ class DeploymentRecord(BaseModel):
     """One trigger binding on an Agent or Assistant, as ``DeploymentService`` stores it.
 
     ``secret`` is the credential the calling system signs with, returned so the
-    configurer can register it there. The document is open — the service strips
-    only the storage id — so ``extra="allow"`` carries anything a scene adds.
+    configurer can register it there. A record reports the settings its binding
+    has; ``extra="allow"`` carries the ones a scene adds (``channel_config``,
+    ``schedule``, ``callback_base_url``, ...).
     """
 
     model_config = ConfigDict(extra="allow")
@@ -76,7 +77,7 @@ class DeploymentTriggerAck(BaseModel):
 
 
 class DeletedDeployment(BaseModel):
-    """The binding that is gone. ``deleted`` is the confirmed soft delete."""
+    """The binding that is gone. ``deleted`` confirms it and its channel records were deleted."""
 
     model_config = ConfigDict(extra="allow")
 

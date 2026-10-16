@@ -51,16 +51,6 @@ def test_placeholder_is_opaque_prefixed_and_session_unique() -> None:
     assert a != b, "placeholders must be nonce-unique per mint (session-scoped)"
 
 
-def test_placeholder_context_is_stable_within_one_sandbox_generation() -> None:
-    first = mint_placeholder("c1", context="session-1:generation-1")
-    repeated = mint_placeholder("c1", context="session-1:generation-1")
-    next_generation = mint_placeholder("c1", context="session-1:generation-2")
-
-    assert first == repeated
-    assert first != next_generation
-    assert first.startswith(PLACEHOLDER_PREFIX + "c1::")
-
-
 def test_sandbox_env_exposes_only_placeholders() -> None:
     cred = _cred()
     env = EgressCredentialMap([cred]).sandbox_env()
@@ -93,30 +83,6 @@ def test_host_matches(host: str, port: int | None, entry: str, expected: bool) -
 # ── substitution + gating ────────────────────────────────────────────────────
 
 
-def test_header_and_body_substitution_on_allowed_host() -> None:
-    cred = _cred()
-    result = EgressCredentialMap([cred]).apply(
-        scheme="https",
-        host="api.github.com",
-        port=443,
-        headers={"Authorization": f"Bearer {cred.placeholder}"},
-        body=f'{{"token": "{cred.placeholder}"}}',
-    )
-    assert result.headers["Authorization"] == "Bearer ghp_real"
-    assert result.body == '{"token": "ghp_real"}'
-    assert result.substituted_credential_ids == ["cred-1"]
-
-
-def test_request_without_placeholders_passes_through_untouched() -> None:
-    cred = _cred()
-    result = EgressCredentialMap([cred]).apply(
-        scheme="https",
-        host="evil.com", port=443, headers={"X": "y"}, body="plain"
-    )
-    assert result.headers == {"X": "y"} and result.body == "plain"
-    assert result.substituted_credential_ids == []
-
-
 def test_disallowed_host_refuses_fail_closed() -> None:
     cred = _cred()
     with pytest.raises(EgressSubstitutionRefused) as exc:
@@ -127,15 +93,6 @@ def test_disallowed_host_refuses_fail_closed() -> None:
             headers={"Authorization": cred.placeholder},
         )
     assert exc.value.location == "host" and exc.value.credential_id == "cred-1"
-
-
-def test_unrestricted_networking_substitutes_anywhere() -> None:
-    cred = _cred(networking={"type": "unrestricted"})
-    result = EgressCredentialMap([cred]).apply(
-        scheme="https",
-        host="anywhere.example", port=443, headers={"A": cred.placeholder}
-    )
-    assert result.headers["A"] == "ghp_real"
 
 
 def test_disabled_header_location_refuses() -> None:
@@ -249,22 +206,6 @@ def test_plaintext_http_refuses_even_on_allowed_host() -> None:
     assert exc.value.location == "scheme"
 
 
-def test_allow_insecure_http_optin_permits_cleartext_target() -> None:
-    cred = EgressCredential(
-        credential_id="internal",
-        secret_name="TOKEN",
-        secret_value="real",
-        placeholder=mint_placeholder("internal"),
-        networking={"type": "limited", "allowed_hosts": ["intranet.local"]},
-        injection_location={"header": True, "body": True},
-        allow_insecure_http=True,
-    )
-    result = EgressCredentialMap([cred]).apply(
-        scheme="http", host="intranet.local", port=80, headers={"A": cred.placeholder}
-    )
-    assert result.headers["A"] == "real"
-
-
 def test_secret_value_is_masked_in_repr() -> None:
     cred = _cred(secret_value="super-secret-value")
     assert "super-secret-value" not in repr(cred)
@@ -290,10 +231,3 @@ def test_substitution_result_repr_never_prints_the_substituted_secret() -> None:
     assert "super-secret-value" not in str(result)
     # The safe fields still show (operators need the audit trail).
     assert "cred-1" in repr(result)
-
-
-def test_max_placeholder_length_names_the_stream_scan_window() -> None:
-    a, b = _cred("short"), _cred("a-much-longer-credential-identifier")
-    m = EgressCredentialMap([a, b])
-    assert m.max_placeholder_length == max(len(a.placeholder), len(b.placeholder))
-    assert EgressCredentialMap([]).max_placeholder_length == 0

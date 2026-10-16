@@ -119,10 +119,10 @@ test('an Assistant uses the Skill, Hermes plugin and configuration its owner add
   const packages = page.getByRole('textbox', { name: 'Packages', exact: true });
   const card = page.locator('[data-slot="card"]').filter({ has: packages });
   await expect(card, 'Hermes declares packages, so the record page offers them').toBeVisible();
-  const skills = card.getByRole('group', { name: 'Skills', exact: true });
+  const skills = card.getByRole('textbox', { name: 'Skills', exact: true });
   const config = card.getByRole('textbox', { name: 'Hermes config.yaml', exact: true });
-  await skills.getByRole('button', { name: 'Add', exact: true }).click();
-  await skills.getByRole('textbox').fill(SKILL);
+  await skills.fill(JSON.stringify([SKILL]));
+  await skills.blur();
   await packages.fill(JSON.stringify([PLUGIN, DEPENDENT_PLUGIN]));
   await packages.blur();
   const personality = {
@@ -177,7 +177,8 @@ test('an Assistant uses the Skill, Hermes plugin and configuration its owner add
   });
   expect(installed.managed).toContain(`personality: ${PERSONALITY}`);
 
-  await skills.getByRole('button', { name: 'Remove item', exact: true }).click();
+  await skills.fill('[]');
+  await skills.blur();
   await packages.fill('[]');
   await packages.blur();
   await config.fill('');

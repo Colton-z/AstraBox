@@ -2,20 +2,21 @@
  * E2E: live and cold history agree on one terminal per tool call.
  *
  * The prompt requests two sequential Bash calls. Each executed toolCallId must
- * have one durable `tool-output-*` terminal, and both the live page and a cold
- * reload must show one settled Bash card per call with no failure bubble.
+ * have one `tool-output-*` terminal in the session's output log, and both the
+ * live page and a cold reload must show one settled Bash card per call with no
+ * failure bubble.
  *
  * The model may combine or omit the requested tools. The test fails when fewer
  * than two distinct Bash calls execute because there is no sequence to verify.
- * Page settle checks run only after the kernel reports the turn complete; the
- * composer's optimistic state is not a terminal oracle.
+ * Page settle checks run only after the session reports the response ended;
+ * the composer's optimistic state is not a terminal oracle.
  */
 import { test, expect } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
 import { revealAssistantProcess } from '../fixtures/assistantProcess';
 import { trackSessions } from '../fixtures/sessionCleanup';
-import { framesForTurn } from '../fixtures/dbOracle';
+import { sessionOutputRows, type SessionOutputRow } from '../fixtures/dbOracle';
 import { appPath } from '../fixtures/env';
 
 const READY_TIMEOUT_MS = 45_000;
@@ -33,15 +34,13 @@ const BASH_CARD = /^Bash\b/;
 // — the same reason the tree-order spec matches en and zh.
 const BASH_UNSETTLED = /^Bash\s+(Working|Awaiting confirmation|处理中|等待确认)/;
 
-interface EngineFramePayload {
-  type?: unknown;
-  toolCallId?: unknown;
-  toolName?: unknown;
-}
-
-function framePayload(frame: Record<string, unknown>): EngineFramePayload {
-  const payload = frame.payload;
-  return (payload && typeof payload === 'object' ? payload : {}) as EngineFramePayload;
+/** A relayed part's UI message chunk fields this spec reads. */
+function chunk(row: SessionOutputRow): { type: string; toolCallId: string; toolName: string } {
+  return {
+    type: String(row.part.type ?? ''),
+    toolCallId: String(row.part.toolCallId ?? '').trim(),
+    toolName: String(row.part.toolName ?? ''),
+  };
 }
 
 // Sessions created here are deleted only when the test passes. A failure keeps
@@ -63,11 +62,11 @@ test('live and cold history keep one terminal per tool call', async ({ page, req
   try {
     await api.waitForSessionReady(sessionId, READY_TIMEOUT_MS);
 
-    // ARRANGE through the API. The UI dispatches under the SESSION's permission
+    // ARRANGE through the API. The UI sends under the SESSION's permission
     // mode (useSessionChat sends `permission_mode: permissionModeRef.current`,
     // seeded from session.permission_mode at load), so the mode has to be armed
     // BEFORE the page opens: a Bash that stops for approval never completes the
-    // sequential projection this test verifies.
+    // sequential calls this test verifies.
     const armed = await api.setPermissionMode(sessionId, 'bypassPermissions');
     expect(
       armed.permission_mode,
@@ -98,43 +97,40 @@ test('live and cold history keep one terminal per tool call', async ({ page, req
       'the user bubble should render — proof the turn was dispatched from the page',
     ).toContainText(`sequential tools ${runId}`, { timeout: 30_000 });
 
-    // The run reads as live to the user: the send button became a stop button.
-    // Not a race with the model — `isSubmitted` flips inside the submit handler,
-    // before the send receipt (let alone a frame) can come back.
+    // The run reads as live to the user: the stop button appears beside send.
+    // Not a race with the model — the page marks the message as sending inside
+    // the submit handler, before the send receipt (let alone a part) returns.
     await expect(page.getByTestId('run-composer-stop')).toBeVisible({ timeout: 30_000 });
 
-    // ── The turn's own liveness is read from the kernel, NOT from the screen,
-    //    and that is deliberate. The console derives "busy" from a 1.5s session
-    //    poll (useSessionLifecycle), while `isSubmitted` drops the moment the
-    //    send receipt returns — so for about a second after the send the composer
-    //    and the pill BOTH read settled while the turn is very much alive. A
-    //    settle assertion taken there would pass one second into a still-live
-    //    turn and prove nothing. `current_turn_id` is the turn's own liveness,
-    //    and on a fresh conversation `current_turn_id || last_turn_id` can only
-    //    be THIS turn. No pixel: the console shows no turn id anywhere. ─────────
+    // ── The response's own liveness is read from the session, NOT from the
+    //    screen, and that is deliberate: a settle assertion taken while the
+    //    screen briefly reads idle would pass inside a live response and prove
+    //    nothing. On a fresh conversation the only response, running or
+    //    ended, is the one answering this message. No pixel: the console
+    //    shows no response id anywhere. ─────────────────────────────────────
     const running = await api.waitForSession(
       sessionId,
-      (s) => Boolean(String(s.current_turn_id || '').trim() || String(s.last_turn_id || '').trim()),
+      (s) => Boolean(s.current_responses?.[0]?.response_id || s.last_response?.response_id),
       60_000,
     );
-    const turnId =
-      String(running.current_turn_id || '').trim() ||
-      String(running.last_turn_id || '').trim();
-    expect(turnId, 'the dispatched turn should expose a durable turn id').not.toEqual('');
+    const responseId = String(
+      running.current_responses?.[0]?.response_id || running.last_response?.response_id || '',
+    ).trim();
+    expect(responseId, 'the sent message should start a response with an id').not.toEqual('');
 
-    // ── The live projection window. The browser holds the stream open across
-    //    both sequential calls. The turn is over when the kernel clears
-    //    current_turn_id and last_turn_id holds this turn.
+    // ── The live window. The browser follows the stream across both
+    //    sequential calls. The response is over when the session is at rest
+    //    and its last response is this one, ended.
     await api.waitForSession(
       sessionId,
       (s) =>
         String(s.state || '') === 'READY' &&
-        String(s.current_turn_id || '').trim() === '' &&
-        String(s.last_turn_id || '').trim() === turnId,
+        s.last_response?.response_id === responseId &&
+        s.last_response?.status === 'ended',
       TURN_BUDGET_MS,
     );
 
-    // ── ASSERT on the page, now that the kernel is done: the screen has to
+    // ── ASSERT on the page, now that the session is done: the screen has to
     //    agree, and within a bounded budget. Reply delivered but the header
     //    still pulsing is the phantom-"generating" failure — a broken screen
     //    over a correct backend, which only a browser can catch.
@@ -142,9 +138,9 @@ test('live and cold history keep one terminal per tool call', async ({ page, req
       timeout: 60_000,
     });
     await expect(
-      page.getByTestId('composer-submit'),
-      'the run must read as finished to the user: the stop button turns back into send',
-    ).toBeVisible({ timeout: 60_000 });
+      page.getByTestId('run-composer-stop'),
+      'the run must read as finished to the user: the stop button goes away',
+    ).toHaveCount(0, { timeout: 60_000 });
 
     // The reply lands where the user reads it. Count, not text: the model's
     // wording is its own business.
@@ -153,40 +149,40 @@ test('live and cold history keep one terminal per tool call', async ({ page, req
       .toBeGreaterThan(assistantBefore);
     const reply = page.getByTestId('assistant-message').last();
     await expect(reply).not.toBeEmpty();
-    // A bubble that grew the count is not yet a reply: a FAILED turn renders its
-    // error INTO the transcript as an assistant message, so "one more non-empty
-    // bubble" is satisfied by exactly the outcome under test.
+    // A bubble that grew the count is not yet a reply: a FAILED response renders
+    // its error INTO the transcript as an assistant message, so "one more
+    // non-empty bubble" is satisfied by exactly the outcome under test.
     await expect(reply).not.toContainText(/API Error|AGENT_RUNTIME_ERROR|SANDBOX_GONE|Traceback/i);
 
-    const frames = framesForTurn(turnId);
+    // The parts the session's reader relayed for this response, in order.
+    const parts = sessionOutputRows(sessionId, responseId);
 
     // ── Precondition: two distinct Bash tool calls durably executed. ─────────
-    // Without two distinct calls (deepseek combined them or skipped a tool)
-    // there is no sequential projection to exercise.
+    // Without two distinct calls (the model combined them or skipped a tool)
+    // there is no sequence to exercise.
     const bashToolCallIds = new Set(
-      frames
-        .map(framePayload)
-        .filter((p) => String(p.type ?? '') === 'tool-input-available'
-          && String(p.toolName ?? '') === 'Bash')
-        .map((p) => String(p.toolCallId ?? '').trim())
+      parts
+        .map(chunk)
+        .filter((p) => p.type === 'tool-input-available' && p.toolName === 'Bash')
+        .map((p) => p.toolCallId)
         .filter(Boolean),
     );
     expect(
       bashToolCallIds.size,
-      `deepseek did not durably execute two distinct Bash tool calls `
-        + `(${bashToolCallIds.size}) — no sequential terminal projection to exercise`,
+      `the model did not durably execute two distinct Bash tool calls `
+        + `(${bashToolCallIds.size}) — no sequence of terminals to exercise`,
     ).toBeGreaterThanOrEqual(2);
 
     // ── The user-visible half of "exactly one terminal per tool call": the
     //    live transcript shows ONE card per durably-executed Bash call, and
     //    every one carries a terminal. A duplicate in another assistant message
-    //    paints another card; a card left on "Working" means projection lost its
+    //    paints another card; a card left on "Working" means the page lost its
     //    terminal. The durable count below cannot detect either screen defect.
-    // The settled turn folds its finished cards behind one header and a closed
-    // fold keeps them out of the accessibility tree, so the count below is of
-    // what a reader sees after opening it rather than of what survived folding.
-    // That fold lands a moment after the turn settles and moves the groups
-    // under a closed header, so the reveal waits for the header first.
+    // The ended response folds its finished cards behind one header and a
+    // closed fold keeps them out of the accessibility tree, so the count below
+    // is of what a reader sees after opening it rather than of what survived
+    // folding. That fold lands a moment after the response ends and moves the
+    // groups under a closed header, so the reveal waits for the header first.
     await expect(page.getByTestId('assistant-turn-process').last()).toBeVisible({ timeout: RENDER_TIMEOUT_MS });
     await revealAssistantProcess(page);
     const bashCards = page.getByTestId('assistant-message').getByRole('button', { name: BASH_CARD });
@@ -205,30 +201,28 @@ test('live and cold history keep one terminal per tool call', async ({ page, req
       .poll(() => unsettledBashCards.count(), {
         timeout: RENDER_TIMEOUT_MS,
         message:
-          'no Bash tool card may still read as running/awaiting after the turn settled — '
-          + 'a card without its terminal is a terminal the projection dropped',
+          'no Bash tool card may still read as running/awaiting after the response ended — '
+          + 'a card without its terminal is a terminal the page dropped',
       })
       .toBe(0);
 
     // ── Durable half: exactly one tool-output terminal per Bash toolCallId. ──
-    // A duplicate terminal can repaint the same live card and merge into the
-    // same durable message segment, so only the event ledger carries the count.
-    const terminalsByTool = new Map<string, Record<string, unknown>[]>();
-    for (const frame of frames) {
-      const payload = framePayload(frame);
-      const frameType = String(payload.type ?? '');
-      const toolCallId = String(payload.toolCallId ?? '').trim();
-      if (!frameType.startsWith('tool-output-') || !toolCallId) continue;
+    // A duplicate terminal repaints the same live card and folds into the same
+    // history message, so only the output log carries the count.
+    const terminalsByTool = new Map<string, SessionOutputRow[]>();
+    for (const row of parts) {
+      const { type, toolCallId } = chunk(row);
+      if (!type.startsWith('tool-output-') || !toolCallId) continue;
       const list = terminalsByTool.get(toolCallId) || [];
-      list.push(frame);
+      list.push(row);
       terminalsByTool.set(toolCallId, list);
     }
 
     const terminalEvidence = Array.from(bashToolCallIds).map((toolCallId) => ({
       tool_call_id: toolCallId,
-      frames: (terminalsByTool.get(toolCallId) || []).map((frame) => ({
-        event_seq: frame.event_seq,
-        type: framePayload(frame).type,
+      frames: (terminalsByTool.get(toolCallId) || []).map((row) => ({
+        seq: row.seq,
+        type: chunk(row).type,
       })),
     }));
 
@@ -246,12 +240,12 @@ test('live and cold history keep one terminal per tool call', async ({ page, req
       })),
     );
 
-    // ── Cold projection: rebuild from durable state, not this tab's frames. ──
+    // ── Cold history: rebuild from what the session recorded, not this tab's stream. ──
     await page.reload({ waitUntil: 'domcontentloaded' });
     await expect(page.getByTestId('run-view')).toBeVisible({ timeout: 45_000 });
     await expect(
       page.getByTestId('user-message').filter({ hasText: `sequential tools ${runId}` }).last(),
-      'the cold transcript must retain the user turn that owns the tool calls',
+      'the cold transcript must retain the user message that asked for the tool calls',
     ).toBeVisible({ timeout: 45_000 });
     await expect(page.getByTestId('assistant-message').last()).not.toContainText(
       /API Error|AGENT_RUNTIME_ERROR|SANDBOX_GONE|Traceback/i,

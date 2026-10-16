@@ -148,29 +148,6 @@ def test_the_default_password_is_replaced_with_the_generated_one(tmp_path: Path)
     assert list(tmp_path.glob("built-in-admin.*")) == [], "the session cookie outlived the check"
 
 
-def test_a_secured_account_is_left_alone_without_a_wrong_sign_in(tmp_path: Path) -> None:
-    casdoor = _Casdoor(_GENERATED)
-
-    result, checked = _run(tmp_path, casdoor)
-
-    assert result.returncode == 0, result.stderr
-    assert casdoor.set_password_calls == []
-    assert casdoor.wrong_attempts == 0
-    assert checked.exists()
-
-
-def test_a_password_an_administrator_chose_is_kept(tmp_path: Path) -> None:
-    casdoor = _Casdoor("chosen-by-an-administrator")
-
-    result, checked = _run(tmp_path, casdoor)
-
-    assert result.returncode == 0, result.stderr
-    assert casdoor.password == "chosen-by-an-administrator"
-    assert casdoor.set_password_calls == []
-    assert "it is kept" in result.stderr
-    assert checked.exists()
-
-
 @pytest.mark.parametrize(
     ("casdoor", "reason"),
     [

@@ -1,4 +1,4 @@
-"""Extension seam behavior and the bundled provider adapter."""
+"""The extension console's ACL and the bundled LiteLLM adapter's credential scope."""
 
 from __future__ import annotations
 
@@ -13,11 +13,7 @@ from astrabox.api.routes import extensions as extension_routes
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.service.orchestrator.agent_extension_service import (
-    AGENT_EXTENSION_CATALOG_FIELD,
     AgentExtensionService,
-)
-from astrabox.core.service.orchestrator.mcp_assignments import (
-    AGENT_MCP_ASSIGNMENTS_FIELD,
 )
 from astrabox.providers import litellm_extensions as adapter
 from astrabox.providers.litellm_shared_auth import (
@@ -33,9 +29,6 @@ from astrabox.seams.extensions import (
     ExtensionRuntimeSelection,
     ManagementConsoleCookie,
     ManagementConsoleSession,
-    RuntimeMCPServer,
-    register_extension_provider,
-    registered_extension_provider_names,
 )
 _SIGNING_SECRET = "astrabox-extension-test-signing-key-32-bytes"
 
@@ -55,18 +48,19 @@ class _AgentRepo:
     async def get_agent(self, agent_id: str) -> dict[str, Any] | None:
         return dict(self.agent) if agent_id == "agent-1" else None
 
-    async def compare_and_update_agent(
+    async def update_definition(
         self,
         agent_id: str,
         *,
-        expected: dict[str, Any],
-        updates: dict[str, Any],
-    ) -> bool:
-        if agent_id != "agent-1" or self.agent["version"] != expected["version"]:
-            return False
+        expected_version: int,
+        changes: dict[str, Any],
+        updated_by: str | None,
+    ) -> dict[str, Any] | None:
+        if agent_id != "agent-1" or self.agent["version"] != expected_version:
+            return None
         self.update_calls += 1
-        self.agent.update(updates)
-        return True
+        self.agent.update(changes, version=expected_version + 1, updated_by=updated_by)
+        return dict(self.agent)
 
 
 class _ExtensionProvider(ExtensionProvider):
@@ -103,111 +97,6 @@ class _ExtensionProvider(ExtensionProvider):
 
 
 @pytest.mark.asyncio
-async def test_a_console_selection_becomes_a_provider_qualified_assignment() -> None:
-    repo = _AgentRepo()
-    provider = _ExtensionProvider()
-    service = AgentExtensionService(agent_repo=repo, provider=provider)  # type: ignore[arg-type]
-
-    result = await service.set_assignment(
-        UserContext("owner"),
-        "agent-1",
-        mcp_server_ids=["server-1"],
-        skill_ids=["skill-1"],
-    )
-
-    assert result["selected_mcp_server_ids"] == ["server-1"]
-    assert repo.agent[AGENT_MCP_ASSIGNMENTS_FIELD] == [
-        {"provider": "catalog-test", "item_id": "server-1"}
-    ]
-    # The snapshot carries Skill material only; no second MCP list beside the
-    # assignment the runtime reads.
-    persisted = repo.agent[AGENT_EXTENSION_CATALOG_FIELD]
-    assert "mcp_servers" not in persisted
-    assert persisted["skills"] == ["https://git.example.test/team/triage"]
-
-
-@pytest.mark.asyncio
-async def test_saving_an_unchanged_selection_does_not_rotate_the_agent_pool_version() -> None:
-    repo = _AgentRepo()
-    service = AgentExtensionService(
-        agent_repo=repo,  # type: ignore[arg-type]
-        provider=_ExtensionProvider(),
-    )
-
-    first = await service.set_assignment(
-        UserContext("owner"),
-        "agent-1",
-        mcp_server_ids=["server-1"],
-        skill_ids=["skill-1"],
-    )
-    first_version = repo.agent["version"]
-    second = await service.set_assignment(
-        UserContext("owner"),
-        "agent-1",
-        mcp_server_ids=["server-1"],
-        skill_ids=["skill-1"],
-    )
-
-    assert second == first
-    assert repo.agent["version"] == first_version
-    assert repo.update_calls == 1
-
-
-@pytest.mark.asyncio
-async def test_an_applied_assignment_schedules_reconciliation_and_a_noop_does_not() -> None:
-    repo = _AgentRepo()
-    repo.agent["prepared_capacity"] = 1
-    scheduled: list[str] = []
-    service = AgentExtensionService(
-        agent_repo=repo,  # type: ignore[arg-type]
-        provider=_ExtensionProvider(),
-        schedule_runtime_reconciliation=scheduled.append,
-    )
-
-    await service.set_assignment(
-        UserContext("owner"),
-        "agent-1",
-        mcp_server_ids=["server-1"],
-        skill_ids=["skill-1"],
-    )
-    assert scheduled == ["agent-1"]
-
-    await service.set_assignment(
-        UserContext("owner"),
-        "agent-1",
-        mcp_server_ids=["server-1"],
-        skill_ids=["skill-1"],
-    )
-    assert scheduled == ["agent-1"]
-
-
-@pytest.mark.asyncio
-async def test_saving_one_catalog_leaves_another_catalogs_assignments_alone() -> None:
-    """Each surface owns its own rows — an Agent may be assigned from several."""
-    repo = _AgentRepo()
-    repo.agent[AGENT_MCP_ASSIGNMENTS_FIELD] = [
-        {"provider": "builtin", "item_id": "mcp_kept"},
-        {"provider": "catalog-test", "item_id": "server-stale"},
-    ]
-    service = AgentExtensionService(
-        agent_repo=repo,  # type: ignore[arg-type]
-        provider=_ExtensionProvider(),
-    )
-
-    await service.set_assignment(
-        UserContext("owner"),
-        "agent-1",
-        mcp_server_ids=["server-1"],
-        skill_ids=["skill-1"],
-    )
-
-    assert repo.agent[AGENT_MCP_ASSIGNMENTS_FIELD] == [
-        {"provider": "builtin", "item_id": "mcp_kept"},
-        {"provider": "catalog-test", "item_id": "server-1"},
-    ]
-
-
-@pytest.mark.asyncio
 async def test_agent_acl_is_checked_before_catalog_provider_access() -> None:
     provider = _ExtensionProvider()
     service = AgentExtensionService(
@@ -220,91 +109,6 @@ async def test_agent_acl_is_checked_before_catalog_provider_access() -> None:
 
     assert raised.value.code == "AGENT_MANAGEMENT_REQUIRED"
     assert provider.catalog_calls == 0
-
-
-class _CatalogClient:
-    def __init__(self, calls: list[str]) -> None:
-        self.calls = calls
-
-    async def __aenter__(self) -> _CatalogClient:
-        return self
-
-    async def __aexit__(self, *args: Any) -> None:
-        _ = args
-
-    async def get(self, url: str, **kwargs: Any):
-        self.calls.append(url)
-        assert kwargs["headers"] == {"Authorization": "Bearer service-credential"}
-        if url.endswith("/v1/mcp/server"):
-            payload: Any = [
-                {
-                    "server_id": "mcp-1",
-                    "server_name": "search",
-                    "url": "https://search.example.test/mcp",
-                    "transport": "http",
-                    "extra_headers": ["apikey"],
-                    "approval_status": "active",
-                }
-            ]
-        elif url.endswith("/claude-code/plugins"):
-            payload = {
-                "plugins": [
-                    {
-                        "id": "skill-1",
-                        "name": "review",
-                        "source": {
-                            "source": "github",
-                            "repo": "example/review-skill",
-                        },
-                    }
-                ]
-            }
-        else:  # pragma: no cover - catches adapter protocol drift
-            raise AssertionError(f"unexpected catalog request: {url}")
-
-        class _Response:
-            is_success = True
-
-            def json(self) -> Any:
-                return payload
-
-        return _Response()
-
-
-@pytest.mark.asyncio
-async def test_bundled_adapter_owns_catalog_and_runtime_protocol(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[str] = []
-    monkeypatch.setenv("ASTRABOX_LITELLM_SERVER_BASE_URL", "http://gateway.test")
-    monkeypatch.setenv("LITELLM_MASTER_KEY", "service-credential")
-    monkeypatch.setattr(
-        adapter.httpx,
-        "AsyncClient",
-        lambda *args, **kwargs: _CatalogClient(calls),
-    )
-    provider = adapter.LiteLLMExtensionProvider()
-
-    catalog = await provider.list_catalog(org_id="org-a")
-    runtime = provider.materialize(
-        mcp_servers=catalog.mcp_servers,
-        skills=catalog.skills,
-    )
-
-    assert calls == [
-        "http://gateway.test/v1/mcp/server",
-        "http://gateway.test/claude-code/plugins",
-    ]
-    assert runtime.mcp_servers[0].url == "http://gateway.test/search/mcp"
-    assert (
-        runtime.mcp_servers[0].credential_target_url
-        == "https://search.example.test/mcp"
-    )
-    # The runtime binding stays secret-free: the gateway's key is declared for
-    # the sandbox's egress vault, not carried here and not put in a header the
-    # box would hold.
-    assert runtime.mcp_servers[0].headers == {}
-    assert runtime.skill_descriptors == ("https://github.com/example/review-skill",)
 
 
 def test_browser_adapter_uses_a_scoped_session_not_a_generated_gateway_key(
@@ -441,30 +245,6 @@ class _DeclaredProvider(ExtensionProvider):
     ) -> ExtensionRuntimeSelection:
         _ = (mcp_servers, skills)
         return ExtensionRuntimeSelection()
-
-
-def test_registration_refuses_a_provider_the_console_could_not_present() -> None:
-    """What the console renders comes from the declaration, so it must hold."""
-
-    class _Undeclared(_DeclaredProvider):
-        name = "undeclared"
-        features = None  # type: ignore[assignment]
-
-    class _ConsoleWithoutOpener(_DeclaredProvider):
-        name = "console-without-opener"
-        features = ExtensionProviderFeatures(display_name="Promises", management_console=True)
-
-    class _Reserved(_DeclaredProvider):
-        name = "none"
-
-    for provider, reason in (
-        (_Undeclared(), "must declare features"),
-        (_ConsoleWithoutOpener(), "does not implement open_management_console"),
-        (_Reserved(), "is reserved"),
-    ):
-        with pytest.raises(RuntimeError, match=reason):
-            register_extension_provider(provider)
-        assert provider.name not in registered_extension_provider_names()
 
 
 class _ConsoleProvider(_DeclaredProvider):

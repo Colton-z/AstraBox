@@ -6,6 +6,13 @@ replicas use the same PostgreSQL database, OpenSandbox client-pool Redis,
 OpenSandbox Lifecycle API, LiteLLM and channel gateway. Kubernetes schedules
 the sandboxes; AstraBox does not select a machine for each user request.
 
+Any replica serves any request. One replica at a time holds each Session's
+connection to its Agent program: a replica that accepts a message, an answer or
+an interrupt for the Session records it in the database, and a PostgreSQL
+notification wakes the replica that holds the connection. Clients following a
+Session's stream receive its output from whichever replica they reach. When the
+holding replica stops, another replica takes the Session over.
+
 This overlay assembles application connections. It does not provision those
 services, migrate an existing deployment, install a load balancer, or make a
 single service highly available.
@@ -17,10 +24,13 @@ rotation plan; it is not a seamless configuration-only migration.
 
 ## Prepare the shared services
 
-- Use the same AstraBox database, including SessionStore and encrypted Vault
-  records. Both hosts need private network access to PostgreSQL and Redis;
-  a port bound to the first host's loopback is not reachable from the second.
-  Restrict access to the participating hosts, not the public Internet.
+- Use the same AstraBox PostgreSQL database, including SessionStore and
+  encrypted Vault records. Both hosts need private network access to
+  PostgreSQL and Redis; a port bound to the first host's loopback is not
+  reachable from the second. Restrict access to the participating hosts, not
+  the public Internet. Connect the replicas to PostgreSQL directly or through a
+  pooler in session mode, and size its connection limit for every replica; see
+  [The AstraBox database](deploy.md#the-astrabox-database).
 - Use one authenticated external OpenSandbox service connected to the same
   Kubernetes cluster and namespace. Both API hosts must reach the lifecycle
   endpoint and the sandbox endpoints it returns.
@@ -184,6 +194,10 @@ wrapper prepares credentials for a local database. Do not enable the
 service dependencies and mounts no Docker socket or local database secrets.
 The entry point sees the external service URLs and does not start embedded
 OpenSandbox, LiteLLM or channel-gateway processes.
+
+At startup each replica brings the database schema to its release's version;
+replicas that start together take turns on a PostgreSQL advisory lock, so
+each schema change runs once.
 
 Check `/healthz` and `/readyz` through each replica's private address, then
 register healthy replicas with the ingress. Validate the deployment with

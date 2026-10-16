@@ -37,7 +37,9 @@ import { randomUUID } from 'node:crypto';
 
 import { expect, test, type APIRequestContext } from '@playwright/test';
 
-import { AstraApi, messageText, visibleMessages, type MessageRecord } from '../fixtures/astraApi';
+import {
+  AstraApi, messageText, messageToolCalls, toolCallSettled, visibleMessages, type MessageRecord,
+} from '../fixtures/astraApi';
 import { revealAssistantProcess } from '../fixtures/assistantProcess';
 import { channelCallback } from '../fixtures/channelCallback';
 import { apiPath, appPath } from '../fixtures/env';
@@ -111,13 +113,16 @@ async function preparedAgentBox(platform: PlatformApi, agentId: string): Promise
 /** The Gmail search calls and their results in one Session's history. */
 async function gmailSearches(api: AstraApi, sessionId: string) {
   const history = visibleMessages(await api.getMessages(sessionId, 100));
-  const blocks = history.flatMap((row: MessageRecord) => row.blocks || []);
-  // A call names the tool where its engine puts the name: the block's name
-  // for most, the `tool` of the Codex `mcpToolCall` item the block carries.
-  const calls = blocks.filter((block) => block.type === 'tool_use' && SEARCH_TOOL_NAME.test(JSON.stringify(block)));
-  const results = blocks.filter(
-    (block) => block.type === 'tool_result' && calls.some((call) => call.id === block.tool_use_id),
-  );
+  // A call names the tool where its engine puts the name: the tool part's name
+  // for most, the `tool` of the Codex `mcpToolCall` item its input carries.
+  const calls = history.flatMap((row: MessageRecord) => messageToolCalls(row))
+    .filter((call) => SEARCH_TOOL_NAME.test(JSON.stringify({ name: call.toolName, input: call.input })));
+  // A tool part holds its call's result once settled: the output, or the error
+  // the engine reported for it.
+  const results = calls.filter(toolCallSettled).map((call) => ({
+    is_error: call.state !== 'output-available',
+    content: call.state === 'output-available' ? call.output : call.errorText,
+  }));
   const reply = history.filter((row) => row.role === 'assistant').map(messageText).join('\n');
   return { calls, results, reply };
 }
@@ -375,9 +380,7 @@ test.describe.serial('Gmail connector with a real Google account', () => {
     );
     expect(turn.errorText, 'the turn must finish without a stream error').toBeNull();
     const parts = visibleMessages(await api.getMessages(sessionId, 100))
-      .flatMap((row: MessageRecord) => row.blocks || [])
-      .filter((block) => block.type === 'ui_data')
-      .map((block) => block.part as { type?: string; data?: Record<string, unknown> })
+      .flatMap((row: MessageRecord) => row.parts as Array<{ type?: string; data?: Record<string, unknown> }>)
       .filter((part) => part.type === 'data-tool-card');
     expect(parts.map((part) => part.data), 'the card is kept in the conversation').toEqual([
       expect.objectContaining({ kind: 'connection_request', connectorId: CONNECTOR, name: 'Gmail' }),

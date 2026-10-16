@@ -19,7 +19,6 @@ the next box will not find.
 from __future__ import annotations
 
 import uuid
-from typing import Any
 
 from astrabox.common.utils.errors import APIError
 from astrabox.common.logger.logger_factory import get_logger
@@ -188,48 +187,31 @@ async def _ensure_agent_workspace_id(agent_id: str | None) -> str:
             message="an Agent runtime's workspace id needs its Agent",
             status_code=500,
         )
-    repository = AgentRepository()
     # Pool replenishment and a cold Session start can reach this concurrently.
-    # Publishing with CAS is what keeps their boxes on one durable root: two
-    # blind writes could each mount a different volume and let the last write
-    # silently strand files in the first one.
-    for _attempt in range(3):
-        row = await repository.get_agent(key)
-        if row is None:
-            raise APIError(
-                code="AGENT_NOT_FOUND",
-                message=f"agent {key!r} has no row to keep a workspace id on",
-                status_code=404,
-            )
-        existing = str(row.get(WORKSPACE_ID_FIELD) or "").strip()
-        if existing:
-            return existing
-        minted = _minted()
-        expected = (
-            row.get(WORKSPACE_ID_FIELD)
-            if WORKSPACE_ID_FIELD in row
-            else {"$exists": False}
+    # The repository records the first id in one statement, which is what
+    # keeps their boxes on one durable root: two blind writes could each mount
+    # a different volume and let the last write strand files in the first one.
+    minted = _minted()
+    recorded = await AgentRepository().claim_workspace_id(key, minted)
+    if recorded is None:
+        raise APIError(
+            code="AGENT_NOT_FOUND",
+            message=f"agent {key!r} has no row to keep a workspace id on",
+            status_code=404,
         )
-        if await repository.compare_and_update_agent(
-            key,
-            expected={WORKSPACE_ID_FIELD: expected},
-            updates={WORKSPACE_ID_FIELD: minted},
-        ):
-            logger.info(
-                "minted a workspace id for agent=%s workspace=%s", key, minted
-            )
-            return minted
-    raise APIError(
-        code="NAS_MOUNT_FAILED",
-        message=(
-            f"agent {key!r} changed repeatedly while its durable workspace "
-            "identity was being published"
-        ),
-        status_code=500,
-    )
+    if recorded == minted:
+        logger.info("minted a workspace id for agent=%s workspace=%s", key, minted)
+    return recorded
 
 
 async def _ensure_assistant_workspace_id(assistant_id: str | None) -> str:
+    """Return the durable root mounted into an Assistant's workspace box.
+
+    Recorded on the Assistant's row by one conditional statement, so two first
+    mounts racing each other read back the same id rather than each keeping
+    its own and stranding files under the one that lost.
+    """
+
     from astrabox.persistence.repository.assistant_catalog_repository import (
         AssistantCatalogRepository,
     )
@@ -241,23 +223,17 @@ async def _ensure_assistant_workspace_id(assistant_id: str | None) -> str:
             message="an Assistant's workspace id needs its assistant",
             status_code=500,
         )
-    repository = AssistantCatalogRepository()
-    row: Any = await repository.get_assistant(key)
-    if row is None:
+    candidate = _minted()
+    recorded = await AssistantCatalogRepository().mint_workspace_id(key, candidate)
+    if recorded is None:
         raise APIError(
             code="ASSISTANT_NOT_FOUND",
             message=f"assistant {key!r} has no row to keep a workspace id on",
             status_code=404,
         )
-    existing = str(row.get(WORKSPACE_ID_FIELD) or "").strip()
-    if existing:
-        return existing
-    minted = _minted()
-    await repository.update_assistant(key, {WORKSPACE_ID_FIELD: minted})
-    logger.info(
-        "minted a workspace id for assistant=%s workspace=%s", key, minted
-    )
-    return minted
+    if recorded == candidate:
+        logger.info("minted a workspace id for assistant=%s workspace=%s", key, recorded)
+    return recorded
 
 
 __all__ = [

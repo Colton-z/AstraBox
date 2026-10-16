@@ -9,9 +9,10 @@ Boundaries:
   remaining occupants before destroying the shared sandbox.
 * Parking affects the whole sandbox, so one idle conversation cannot pause it.
 
-Box claims and UID allocation use compare-and-set. Concurrent conversations for
-one agent converge on the same box with different owners, and a losing caller
-uses the winner's value.
+A box claim names the admissions it counted and fails when another landed
+since, and UID allocation is one statement. Concurrent conversations for one
+agent converge on the same box with different owners, and a losing caller uses
+the winner's value.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from astrabox.common.logger.logger_factory import get_logger
@@ -69,8 +71,8 @@ RUNNER_LOG_NAME = ".astrabox-runner.log"
 #: interrupt other conversations in the same sandbox.
 CONVERSATION_MEMORY_RESERVE_BYTES = 640 * 1024 * 1024
 
-#: Row field holding conversations admitted to a box whose memory the box does
-#: not report yet.
+#: Where an Agent's ledger read lists the conversations admitted to its boxes
+#: whose memory the boxes do not report yet.
 BOX_ADMISSIONS = "box_admissions"
 
 #: How long an admission is counted against a box before the box's own reading
@@ -191,60 +193,10 @@ def pending_reservations(
     return len(young) + len(waiting)
 
 
-def surviving_admissions(agent: Any, *, now: float | None = None) -> list[dict]:
-    """Every admission still inside its grace, for any box. Expired ones drop."""
+def admissions_young_since() -> datetime:
+    """The earliest admission time that still counts against a box."""
 
-    moment = time.time() if now is None else now
-    raw = (agent or {}).get(BOX_ADMISSIONS)
-    if not isinstance(raw, (list, tuple)):
-        return []
-    kept: list[dict] = []
-    for item in raw:
-        if not isinstance(item, dict):
-            continue
-        try:
-            at = float(item.get("at") or 0.0)
-        except (TypeError, ValueError):
-            continue
-        if moment - at < ADMISSION_GRACE_SECONDS:
-            kept.append(dict(item))
-    return kept
-
-
-async def release_box_admission(
-    *, agent_repo: Any, agent_id: str, sandbox_id: str, session_id: str
-) -> None:
-    """Withdraw only the placement whose isolated sessions are confirmed closed."""
-
-    for _attempt in range(_BOX_CLAIM_ATTEMPTS):
-        row = await agent_repo.get_agent(agent_id)
-        raw = (row or {}).get(BOX_ADMISSIONS)
-        if not isinstance(raw, list):
-            return
-        kept = [
-            entry for entry in raw
-            if not (
-                isinstance(entry, dict)
-                and entry.get("sandbox_id") == sandbox_id
-                and entry.get("session_id") == session_id
-            )
-        ]
-        if len(kept) == len(raw):
-            return
-        if await agent_repo.compare_and_update_agent(
-            agent_id,
-            expected={BOX_ADMISSIONS: raw},
-            updates={BOX_ADMISSIONS: kept},
-        ):
-            return
-    raise APIError(
-        code="AGENT_RUNTIME_ERROR",
-        message=(
-            f"agent {agent_id!r} admissions changed repeatedly while releasing "
-            f"Session {session_id!r} from sandbox {sandbox_id!r}"
-        ),
-        status_code=503,
-    )
+    return datetime.fromtimestamp(time.time() - ADMISSION_GRACE_SECONDS, timezone.utc)
 
 
 @dataclass(slots=True)
@@ -288,10 +240,10 @@ class SharedSandboxLease:
         home_dir: str,
         workspace_dir: str,
         workspace_source_dir: str,
+        session_id: str,
         candidate: str | None = None,
         expected_runtime_generation: str | None = None,
         expected_sandbox_generation: str | None = None,
-        session_id: str | None = None,
         requested_uid: int | None = None,
         on_progress: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> SharedSandboxBinding | None:
@@ -861,12 +813,12 @@ class SharedSandboxLease:
         candidate: str | None,
         expected_runtime_generation: str | None,
         expected_sandbox_generation: str | None,
-        session_id: str | None = None,
+        session_id: str,
     ) -> str:
         """The agent's box if it has a usable one, else the candidate if it can
         host, else "" — meaning nothing here can carry a second conversation."""
         for _ in range(_BOX_CLAIM_ATTEMPTS):
-            agent = await self._agents.get_agent(agent_id)
+            agent = await self._agents.read_ledger(agent_id)
             if not isinstance(agent, dict):
                 # Nothing to share with. Not this layer's error to raise: the
                 # conversation still has its box.
@@ -901,7 +853,7 @@ class SharedSandboxLease:
             held_is_current = (
                 not expected_sandbox or held_sandbox_generation == expected_sandbox
             )
-            if held and held_backend in ("", self._backend) and held_is_current:
+            if held and held_backend == self._backend and held_is_current:
                 pending_entries = young_admissions(agent, held)
                 pending = pending_reservations(agent, held)
                 # One probe, and both decisions are read from it: the probe is a
@@ -922,28 +874,20 @@ class SharedSandboxLease:
                     await asyncio.sleep(_BOX_CLAIM_RETRY_SECONDS)
                     continue
                 if can_host:
-                    if not await self._record_admission(
-                        agent_id=agent_id,
-                        agent=agent,
+                    # Charged only while no other conversation was admitted
+                    # since the reading: the answer to "is there room for one
+                    # more" is given once per asker, not once per reading.
+                    if not await self._agents.admit_to_box(
+                        agent_id,
                         sandbox_id=held,
                         session_id=session_id,
+                        admissions_revision=agent["_admissions_revision"],
+                        young_since=admissions_young_since(),
                     ):
-                        # Another conversation was admitted between the reading
-                        # and the write. Re-read and ask again with it counted.
+                        # Re-read and ask again with that admission counted.
                         continue
-                    if held_backend:
-                        return held
-                    # Older rows may predate the paired backend field. Repair it
-                    # before handing the box out: after a process restart, this
-                    # row is the only authoritative route for renew and cleanup.
-                    if await self._record_backend_for_held_box(
-                        agent_id=agent_id,
-                        agent=agent,
-                        sandbox_id=held,
-                    ):
-                        return held
-                    continue
-            elif held and held_backend not in ("", self._backend):
+                    return held
+            elif held and held_backend != self._backend:
                 logger.warning(
                     "shared sandbox: agent=%s names box=%s from backend=%s; "
                     "it cannot be joined through backend=%s",
@@ -977,7 +921,7 @@ class SharedSandboxLease:
             # Remote probes leave time for siblings to join or depart. Preserve
             # their current admissions without reusing a capacity verdict after
             # the candidate gained reservations or its placement context changed.
-            current = await self._agents.get_agent(agent_id)
+            current = await self._agents.read_ledger(agent_id)
             if not isinstance(current, dict):
                 return ""
             placement_fields = (
@@ -988,55 +932,27 @@ class SharedSandboxLease:
                 continue
             if pending_reservations(current, fresh) > candidate_pending:
                 continue
-            agent = current
-            expected: dict[str, Any] = {
-                "sandbox_id": (
-                    agent.get("sandbox_id")
-                    if "sandbox_id" in agent
-                    else {"$exists": False}
-                )
+            observed: dict[str, Any] = {
+                "sandbox_id": current.get("sandbox_id"),
+                "sandbox_backend": current.get("sandbox_backend"),
             }
-            expected["sandbox_backend"] = (
-                agent.get("sandbox_backend")
-                if "sandbox_backend" in agent
-                else {"$exists": False}
-            )
             if expected_runtime:
-                expected["_runtime_generation"] = (
-                    agent.get("_runtime_generation")
-                    if "_runtime_generation" in agent
-                    else {"$exists": False}
-                )
+                observed["runtime_generation"] = current.get("_runtime_generation")
             if expected_sandbox:
-                expected["_sandbox_generation"] = expected_sandbox
+                observed["sandbox_generation"] = expected_sandbox
             # The claim charges its own conversation in the same write, so the
             # box is never published as the agent's with nothing recorded
             # against it — the window in which every later asker would read an
             # empty list.
-            charged = surviving_admissions(agent)
-            fresh_entry: dict[str, Any] = {"sandbox_id": fresh, "at": time.time()}
-            if str(session_id or "").strip():
-                fresh_entry["session_id"] = str(session_id).strip()
-            charged.append(fresh_entry)
-            expected[BOX_ADMISSIONS] = (
-                agent.get(BOX_ADMISSIONS)
-                if BOX_ADMISSIONS in agent else {"$exists": False}
-            )
-            updates = {
-                "sandbox_id": fresh,
-                "sandbox_backend": self._backend,
-                BOX_ADMISSIONS: charged,
-            }
-            if expected_sandbox:
-                updates["_resident_sandbox_generation"] = expected_sandbox
-            claimed = await self._agents.compare_and_update_agent(
+            claimed = await self._agents.claim_resident_box(
                 agent_id,
-                # Match the exact observed shape. A never-claimed row has no
-                # field; a deliberately invalidated resident has a null field.
-                # Treating both as the same `$in` predicate fails for a missing
-                # Mongo field and makes the first post-upgrade claim exhaust.
-                expected=expected,
-                updates=updates,
+                observed=observed,
+                admissions_revision=current["_admissions_revision"],
+                sandbox_id=fresh,
+                sandbox_backend=self._backend,
+                resident_generation=expected_sandbox or None,
+                session_id=session_id,
+                young_since=admissions_young_since(),
             )
             if claimed:
                 return fresh
@@ -1057,66 +973,6 @@ class SharedSandboxLease:
             agent_id, _BOX_CLAIM_ATTEMPTS,
         )
         return ""
-
-    async def _record_admission(
-        self,
-        *,
-        agent_id: str,
-        agent: dict,
-        sandbox_id: str,
-        session_id: str | None = None,
-    ) -> bool:
-        """Charge this conversation to the box, or report losing the race.
-
-        Compare-and-update on the same row the box claim uses, so two
-        conversations admitted at the same instant cannot both write the list
-        they each read. The loser re-reads and asks about capacity again with
-        the winner counted, which is the whole point: the answer to "is there
-        room for one more" has to be given once per asker, not once per
-        reading.
-        """
-
-        observed = agent.get(BOX_ADMISSIONS)
-        kept = surviving_admissions(agent)
-        entry: dict[str, Any] = {"sandbox_id": str(sandbox_id), "at": time.time()}
-        # Who was admitted, so a disposal asking "is anyone else coming" can
-        # tell its own admission from a stranger's. An entry without it (older
-        # writers) reads as a stranger — the conservative side.
-        if str(session_id or "").strip():
-            entry["session_id"] = str(session_id).strip()
-        kept.append(entry)
-        return bool(
-            await self._agents.compare_and_update_agent(
-                agent_id,
-                expected={
-                    BOX_ADMISSIONS: (
-                        observed if BOX_ADMISSIONS in agent else {"$exists": False}
-                    )
-                },
-                updates={BOX_ADMISSIONS: kept},
-            )
-        )
-
-    async def _record_backend_for_held_box(
-        self,
-        *,
-        agent_id: str,
-        agent: dict[str, Any],
-        sandbox_id: str,
-    ) -> bool:
-        expected_backend: Any = (
-            agent.get("sandbox_backend")
-            if "sandbox_backend" in agent
-            else {"$exists": False}
-        )
-        return await self._agents.compare_and_update_agent(
-            agent_id,
-            expected={
-                "sandbox_id": sandbox_id,
-                "sandbox_backend": expected_backend,
-            },
-            updates={"sandbox_backend": self._backend},
-        )
 
     async def _can_host(self, sandbox_id: str, *, pending: int = 0) -> bool:
         """Ask the BOX, never the configuration.

@@ -1,23 +1,25 @@
 /**
  * User history flushed before the SDK Result must survive loss of the sandbox
- * that was still running the tool. This pins the eager SessionStore boundary,
- * then reloads the cold page and rebuilds on a fresh box.
+ * that was still running the tool. This pins the eager SessionStore boundary:
+ * the box takes its response with it (ended `failed`, `sandbox_lost`, never
+ * replayed), then the cold page reloads and the next message rebuilds on a
+ * fresh box from the restored SessionStore.
  */
 import { expect, test } from '@playwright/test';
 
-import { AstraApi, messageText } from '../fixtures/astraApi';
+import { AstraApi, messageText, type InputReceipt } from '../fixtures/astraApi';
 import {
-  documentsByField,
-  framesForTurn,
-  lapseSessionSandboxLease,
-  sessionDoc,
-  sessionEvents,
-  snapshotDoc,
-  waitForTurnSnapshot,
-  waitForTurnTerminalProof,
+  postgresRows,
+  postgresTextRows,
+  sessionInputRows,
+  sessionInteractionRows,
+  sessionOutputRows,
+  sessionResponseRows,
+  sqlLiteral,
+  type SessionResponseRow,
 } from '../fixtures/dbOracle';
 import { appPath, parseTimeoutEnv } from '../fixtures/env';
-import { browserStreamFrames, nativeRootEntries, object } from '../fixtures/nativeMcpServer';
+import { browserStreamFrames, object } from '../fixtures/nativeMcpServer';
 import {
   killSandbox,
   requireSandboxHandle,
@@ -25,6 +27,7 @@ import {
   sandboxRunning,
   waitForSandboxStopped,
 } from '../fixtures/sandboxOps';
+import { POSTGRES_CONTAINER_HANDLE, requireServiceContainer } from '../fixtures/serviceContainer';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
 import { mirrorSseBodies } from '../fixtures/sseBodies';
@@ -32,9 +35,12 @@ import { mirrorSseBodies } from '../fixtures/sseBodies';
 const TURN_BUDGET_MS = parseTimeoutEnv('ASTRABOX_E2E_REBORROW_TURN_TIMEOUT_MS', 240_000);
 const KILL_CONVERGE_MS = parseTimeoutEnv('ASTRABOX_E2E_KILL_CONVERGE_MS', 30_000);
 
-interface TranscriptEntryDoc extends Record<string, unknown> {
-  entry_json?: string;
-  uuid?: string;
+/** One line of the conversation's main native transcript, as the runtime wrote it. */
+interface NativeRootRow {
+  seq: number;
+  uuid: string;
+  entry_json: string;
+  entry: Record<string, unknown>;
 }
 
 let agentId = '';
@@ -43,18 +49,73 @@ onPassOnly(async ({ request }) => {
   if (agentId) await new AstraApi(request).deleteAgent(agentId);
 });
 
-function userEntriesWithMarker(sessionId: string, marker: string): TranscriptEntryDoc[] {
-  return documentsByField('transcript_entries', '$.platform_session_id', sessionId)
-    .map((row) => row as TranscriptEntryDoc)
-    .filter((row) => {
-      if (typeof row.entry_json !== 'string') return false;
-      try {
-        const entry = JSON.parse(row.entry_json) as Record<string, unknown>;
-        return String(entry.type || '') === 'user' && JSON.stringify(entry).includes(marker);
-      } catch {
-        return false;
-      }
-    });
+/** The main (non-sub-agent) native transcript the platform holds, in the runtime's order. */
+function nativeRootRows(sessionId: string): NativeRootRow[] {
+  return postgresRows<{ seq: number; entry_json: string }>(
+    `SELECT e.seq, e.entry_json FROM transcript_entries e `
+      + `JOIN transcript_scopes s ON s.scope_id = e.scope_id `
+      + `WHERE s.platform_session_id = ${sqlLiteral(sessionId)} AND s.subpath = '' `
+      + `ORDER BY s.scope_id, e.seq`,
+  ).map((row) => {
+    const entry = object(JSON.parse(String(row.entry_json)));
+    return { seq: Number(row.seq), uuid: String(entry.uuid || ''), entry_json: String(row.entry_json), entry };
+  });
+}
+
+function userEntriesWithMarker(sessionId: string, marker: string): NativeRootRow[] {
+  return nativeRootRows(sessionId).filter(
+    (row) => String(row.entry.type || '') === 'user' && JSON.stringify(row.entry).includes(marker),
+  );
+}
+
+/** The responses that answer `inputId`, as the session's reader recorded them. */
+function responsesTo(sessionId: string, inputId: string): SessionResponseRow[] {
+  return sessionResponseRows(sessionId).filter((row) => row.input_ids.includes(inputId));
+}
+
+/** How one response ended, or that it has not. */
+function responseEnd(row: SessionResponseRow | undefined) {
+  return row
+    ? { status: row.status, outcome: row.outcome, native_reason: row.native_reason }
+    : null;
+}
+
+/** Whether one response has ended, and how; the runtime's own reason is not compared. */
+function responseOutcome(row: SessionResponseRow | undefined) {
+  return row ? { status: row.status, outcome: row.outcome } : null;
+}
+
+/** The session row's lifecycle and box binding. */
+interface SessionBindingRow {
+  state: string;
+  sandbox_id: string | null;
+  runtime_unavailable: boolean;
+  last_error: string | null;
+}
+
+function sessionBinding(sessionId: string): SessionBindingRow | null {
+  return postgresRows<SessionBindingRow>(
+    `SELECT state, sandbox_id, runtime_unavailable, last_error FROM sessions `
+      + `WHERE session_id = ${sqlLiteral(sessionId)}`,
+  )[0] ?? null;
+}
+
+/**
+ * Move the session's recorded lease into the past while it still names `sandboxId`.
+ *
+ * Compare-and-set on the box, so a convergence that already cleared the binding
+ * is not overwritten; the statement returns what it wrote (session, box and the
+ * stored expiry in epoch milliseconds).
+ */
+function lapseSessionLease(sessionId: string, sandboxId: string, expiredAt: string): string[][] {
+  return postgresTextRows(
+    requireServiceContainer(POSTGRES_CONTAINER_HANDLE),
+    process.env.ASTRABOX_E2E_POSTGRES_DB || 'astrabox',
+    process.env.ASTRABOX_E2E_POSTGRES_USER || 'astrabox',
+    `UPDATE sessions SET expires_at = ${sqlLiteral(expiredAt)}::timestamptz `
+      + `WHERE session_id = ${sqlLiteral(sessionId)} AND sandbox_id = ${sqlLiteral(sandboxId)} `
+      + `RETURNING session_id, sandbox_id, (extract(epoch FROM expires_at) * 1000)::bigint`,
+  ).map((line) => line.split('|'));
 }
 
 test('pre-Result user history survives sandbox death and the next-turn rebuild', async ({
@@ -73,7 +134,7 @@ test('pre-Result user history survives sandbox death and the next-turn rebuild',
   const ready = await api.waitForSessionReady(sessionId);
   await api.setPermissionMode(sessionId, 'bypassPermissions');
   const oldSandboxId = String(ready.sandbox_id || '').trim();
-  expect(oldSandboxId, 'the active turn must have a sandbox to lose').not.toEqual('');
+  expect(oldSandboxId, 'the running response must have a sandbox to lose').not.toEqual('');
   const workspace = String(ready.terminal_cwd || '').trim();
   expect(workspace, 'a READY session must publish its workspace').toMatch(/^\/.+/);
   // The fixture and the agent share this box's workspace, not their private /tmp.
@@ -83,8 +144,8 @@ test('pre-Result user history survives sandbox death and the next-turn rebuild',
   sandboxExec(oldSandbox, `touch ${holdPath}`);
   expect(sandboxExec(oldSandbox, `test -f ${holdPath} && echo yes`).trim()).toBe('yes');
 
-  // Only the old box receives permission to block. Replaying the unanswered
-  // input on a volume-free replacement must not recreate that permission.
+  // Only the old box receives permission to block. Were the input ever handed
+  // to a volume-free replacement again, it must not find that permission.
   const prompt = [
     userMarker,
     'Use the Bash tool exactly once to run this command verbatim:',
@@ -93,8 +154,17 @@ test('pre-Result user history survives sandbox death and the next-turn rebuild',
     '```',
     'Do not use another tool. Wait for Bash before replying.',
   ].join('\n');
-  const streaming = api.streamPrompt(sessionId, prompt, undefined, TURN_BUDGET_MS)
-    .catch(() => '');
+  // The response is read off the session's stream from the position before the
+  // send, so the read covers everything the response writes, its end included.
+  const afterSeq = Number((await api.getSession(sessionId)).output_seq ?? 0);
+  const receipt: InputReceipt = await api.postTurnInput(sessionId, prompt);
+  const streaming = api.readResponse(sessionId, afterSeq, receipt.input_id, Date.now() + TURN_BUDGET_MS)
+    .then((read) => ({ ...read, error: '' }))
+    .catch((error: unknown) => ({
+      frames: [] as Record<string, unknown>[],
+      raw: '',
+      error: String((error as Error)?.message ?? error),
+    }));
 
   await expect.poll(
     () => sandboxExec(oldSandbox, `test -f ${startedPath} && echo yes || true`).trim(),
@@ -114,18 +184,31 @@ test('pre-Result user history survives sandbox death and the next-turn rebuild',
   ).toBe(1);
   const originalUserEntry = userEntriesWithMarker(sessionId, userMarker)[0];
   expect(originalUserEntry.uuid, 'the pre-Result record must have its native identity').toBeTruthy();
-  const originalTurnId = String(snapshotDoc(sessionId)?.current_turn_id || '').trim();
-  expect(originalTurnId, 'the blocked tool must belong to an active platform turn').not.toBe('');
+  // The tool runs in the box while the reader records what it read, so the
+  // records are awaited rather than sampled.
+  await expect.poll(() => ({
+    responses: responsesTo(sessionId, receipt.input_id).map((row) => row.status),
+    input: sessionInputRows(sessionId).find((row) => row.input_id === receipt.input_id)?.state ?? null,
+  }), {
+    timeout: 15_000,
+    message: 'the blocked tool must belong to the one running response answering a message the runtime took',
+  }).toEqual({ responses: ['running'], input: 'admitted' });
+  const originalResponseId = responsesTo(sessionId, receipt.input_id)[0].response_id;
 
   killSandbox(oldSandbox);
   await waitForSandboxStopped(oldSandbox, KILL_CONVERGE_MS);
-  await streaming;
-  await api.waitForSession(
-    sessionId,
-    (session) => session.state === 'READY' && !String(session.current_turn_id || '').trim(),
-    TURN_BUDGET_MS,
-  );
-  await waitForTurnTerminalProof(sessionId, originalTurnId, 'FAILED');
+  // The response the box took with it ends failed, recorded once and never re-run.
+  await expect.poll(() => responseEnd(responsesTo(sessionId, receipt.input_id)[0]), {
+    timeout: TURN_BUDGET_MS,
+    intervals: [500, 1_000, 2_000],
+    message: 'the lost response must end failed with its box',
+  }).toEqual({ status: 'ended', outcome: 'failed', native_reason: 'sandbox_lost' });
+  const streamed = await streaming;
+  expect(streamed.error, 'the stream must deliver the lost response to its end').toEqual('');
+  const streamedTypes = streamed.frames.map((frame) => String(frame.type ?? ''));
+  expect(streamedTypes, 'the console is told the response failed').toContain('error');
+  expect(streamedTypes.at(-1), 'the platform closes the lost response').toBe('finish');
+  await api.waitForSession(sessionId, (session) => session.state === 'READY', TURN_BUDGET_MS);
 
   expect(
     userEntriesWithMarker(sessionId, userMarker),
@@ -144,7 +227,12 @@ test('pre-Result user history survives sandbox death and the next-turn rebuild',
     nextPrompt,
     TURN_BUDGET_MS,
   );
-  expect(result.errorText, 'the next turn must rebuild without an error frame').toBeNull();
+  expect(result.errorText, 'the next message must rebuild without an error frame').toBeNull();
+  // The stream can deliver the end before the reader has recorded it.
+  await expect.poll(() => responseOutcome(responsesTo(sessionId, result.inputId)[0]), {
+    timeout: TURN_BUDGET_MS,
+    message: 'the next message must be answered and completed on the replacement box',
+  }).toEqual({ status: 'ended', outcome: 'completed' });
   await expect.poll(async () => {
     const history = await api.getMessages(sessionId, 100);
     return history.messages.filter(
@@ -152,8 +240,12 @@ test('pre-Result user history survives sandbox death and the next-turn rebuild',
     ).length;
   }, {
     timeout: TURN_BUDGET_MS,
-    message: 'the rebuilt turn must persist one exact reply',
+    message: 'the rebuilt response must persist one exact reply',
   }).toBe(1);
+  expect(
+    responsesTo(sessionId, receipt.input_id).map((row) => row.response_id),
+    'the lost response is never replayed: the first message keeps its one failed response',
+  ).toEqual([originalResponseId]);
   const rebuilt = await api.waitForSessionReady(sessionId, TURN_BUDGET_MS);
   const rebuiltSandboxId = String(rebuilt.sandbox_id || '').trim();
   expect(rebuiltSandboxId).not.toEqual(oldSandboxId);
@@ -170,7 +262,7 @@ test('pre-Result user history survives sandbox death and the next-turn rebuild',
   const retainedOriginal = userEntriesWithMarker(sessionId, userMarker)
     .filter((entry) => entry.uuid === originalUserEntry.uuid);
   expect(retainedOriginal, 'the original native record must survive exactly once').toHaveLength(1);
-  expect(JSON.parse(retainedOriginal[0].entry_json!)).toEqual(JSON.parse(originalUserEntry.entry_json!));
+  expect(JSON.parse(retainedOriginal[0].entry_json)).toEqual(JSON.parse(originalUserEntry.entry_json));
   const history = await api.getMessages(sessionId, 100);
   expect(history.has_more).toBe(false);
   expect(history.messages.filter((message) => message.role === 'user').map(messageText))
@@ -207,22 +299,20 @@ test('pending Write pre-Result history survives background sandbox death converg
   expect(oldSandboxId).not.toBe('');
   const oldSandbox = await requireSandboxHandle(api, oldSandboxId);
   expect(sandboxRunning(oldSandbox)).toBe(true);
-  const inputs = () => sessionEvents(sessionId).filter((row) => row.event_type === 'command.accepted'
-    && object(row.payload).command_type === 'StartTurn');
-  const nativeUsers = () => nativeRootEntries(sessionId).filter((row) => row.entry.type === 'user'
+  const nativeUsers = () => nativeRootRows(sessionId).filter((row) => row.entry.type === 'user'
     && JSON.stringify(row.entry).includes(historyMarker));
 
   await mirrorSseBodies(page);
   await openSessionView(page, sessionId);
   const firstResponse = await sendPrompt(page, sessionId, prompt);
-  const firstReceipt = object(object(await firstResponse.json()).data);
+  const firstReceipt = ((await firstResponse.json()) as { data: InputReceipt }).data;
   const pending = await api.waitForPendingInteraction(sessionId, TURN_BUDGET_MS);
   expect(pending.presentation).toBe('tool_approval');
   expect(pending.tool_name).toBe('Write');
-  const turnId = String(pending.turn_id || '').trim();
+  const responseId = String(pending.response_id || '').trim();
   const interactionId = String(pending.interaction_id || '').trim();
   const toolId = String(pending.tool_call_id || '').trim();
-  for (const id of [turnId, interactionId, toolId]) expect(id).not.toBe('');
+  for (const id of [responseId, interactionId, toolId]) expect(id).not.toBe('');
   expect(String(object(pending.raw_input).file_path)).toBe(filePath);
   await expect(page.getByTestId('pending-interaction-panel')).toBeVisible();
   await expect(page.getByTestId('pending-interaction-panel')).toContainText('Write');
@@ -234,17 +324,21 @@ test('pending Write pre-Result history survives background sandbox death converg
     renderedFirstUser = await firstUser.innerText();
     return renderedFirstUser.trim();
   }, { message: 'the original input must render beyond the hidden measurement pass before capture' }).not.toBe('');
-  const paused = await waitForTurnSnapshot(sessionId, turnId);
-  expect(paused.conversation_state).toBe('WAITING_FOR_INTERACTION');
-  expect(paused.active_interaction_id).toBe(interactionId);
-  const interactionRows = () => documentsByField('interaction_snapshots', '$.session_id', sessionId)
-    .filter((row) => row.interaction_id === interactionId);
-  expect(interactionRows()).toHaveLength(1);
-  expect(interactionRows()[0]).toMatchObject({ engine_kind: 'claude_code', interaction_state: 'OPEN', active: true });
+  const interactionRow = () => sessionInteractionRows(sessionId)
+    .find((row) => row.interaction_id === interactionId);
+  await expect.poll(() => ({
+    response: responseEnd(responsesTo(sessionId, firstReceipt.input_id)[0]),
+    response_id: responsesTo(sessionId, firstReceipt.input_id)[0]?.response_id ?? null,
+    interaction: interactionRow() ? { status: interactionRow()!.status, response_id: interactionRow()!.response_id } : null,
+  }), { message: 'the response answering the message must be recorded waiting on the open approval' }).toEqual({
+    response: { status: 'waiting', outcome: null, native_reason: null },
+    response_id: responseId,
+    interaction: { status: 'open', response_id: responseId },
+  });
   await expect.poll(() => nativeUsers().length, {
     message: 'the real pending Write input must reach database custody before any SDK Result',
   }).toBe(1);
-  const nativeToolCalls = () => nativeRootEntries(sessionId).flatMap((row) => {
+  const nativeToolCalls = () => nativeRootRows(sessionId).flatMap((row) => {
     if (row.entry.type !== 'assistant') return [];
     const content = object(row.entry.message).content;
     return Array.isArray(content) ? content.map(object).filter((block) => block.type === 'tool_use'
@@ -252,57 +346,58 @@ test('pending Write pre-Result history survives background sandbox death converg
   });
   await expect.poll(() => nativeToolCalls().length).toBe(1);
   expect(String(object(nativeToolCalls()[0].input).file_path)).toBe(filePath);
-  const nativeBefore = nativeRootEntries(sessionId);
-  const originalInputs = inputs();
-  expect(originalInputs).toHaveLength(1);
-  expect(originalInputs[0]).toMatchObject({ turn_id: turnId, causation_id: firstReceipt.command_id });
-  expect(object(originalInputs[0].payload).content).toBe(prompt);
-  const nativeTerminals = (id: string) => sessionEvents(sessionId).filter((row) => row.turn_id === id
-    && row.event_type === 'engine.diagnostic' && object(row.payload).event_type === 'engine.terminal');
-  expect(nativeTerminals(turnId)).toEqual([]);
-  expect(framesForTurn(turnId).filter((row) => object(row.payload).type === 'data-result')).toEqual([]);
+  const nativeBefore = nativeRootRows(sessionId);
+  const originalInputs = sessionInputRows(sessionId);
+  expect(originalInputs.map((row) => ({ input_id: row.input_id, content: row.content, state: row.state })))
+    .toEqual([{ input_id: firstReceipt.input_id, content: prompt, state: 'admitted' }]);
 
-  // With every browser observer gone, neither a detail GET nor a new send can
-  // be mistaken for autonomous convergence of the dead, pending turn.
+  // With every browser observer gone, neither a page read nor a new send can
+  // be mistaken for autonomous convergence of the dead, waiting response; the
+  // readings below come from the database alone.
   await page.goto('about:blank');
-  expect(sessionDoc(sessionId)?.sandbox_id).toBe(oldSandboxId);
+  expect(sessionBinding(sessionId)?.sandbox_id).toBe(oldSandboxId);
   killSandbox(oldSandbox);
   await waitForSandboxStopped(oldSandbox, KILL_CONVERGE_MS);
   expect(sandboxRunning(oldSandbox)).toBe(false);
+  // A lapsed lease makes the dead box eligible for the watcher's pull probe.
   const expiredAt = new Date(Date.now() - 60 * 60 * 1_000).toISOString();
-  const lapse = lapseSessionSandboxLease(sessionId, oldSandboxId, expiredAt);
+  const lapse = lapseSessionLease(sessionId, oldSandboxId, expiredAt);
   await test.info().attach('pending-write-pre-result-fault', {
-    body: JSON.stringify({ sessionId, oldSandboxId, turnId, interactionId, toolId, pending,
+    body: JSON.stringify({ sessionId, oldSandboxId, responseId, interactionId, toolId, pending,
       firstReceipt, originalInputs, nativeBefore, expiredAt, lapse }),
     contentType: 'application/json',
   });
-  if (lapse.length) expect(lapse).toEqual([{ session_id: sessionId, sandbox_id: oldSandboxId, expires_at: expiredAt }]);
+  // No row means a push convergence already cleared the binding.
+  if (lapse.length) expect(lapse).toEqual([[sessionId, oldSandboxId, String(Date.parse(expiredAt))]]);
+  let converged: SessionBindingRow | null = null;
   await expect.poll(() => {
-    const session = sessionDoc(sessionId);
-    const snapshot = snapshotDoc(sessionId);
-    return { state: session?.state, sandbox: session?.sandbox_id || null,
-      turn: session?.current_turn_id || null, unavailable: session?.runtime_unavailable,
-      pending: Boolean(session?.pending_interaction), activeInteraction: snapshot?.active_interaction_id || null,
-      originalInteractionActive: interactionRows()[0]?.active };
+    converged = sessionBinding(sessionId);
+    return {
+      state: converged?.state,
+      sandbox: converged?.sandbox_id || null,
+      unavailable: converged?.runtime_unavailable,
+      response: responseEnd(responsesTo(sessionId, firstReceipt.input_id)[0]),
+      interaction: interactionRow()?.status ?? null,
+      openInteractions: sessionInteractionRows(sessionId).filter((row) => row.status === 'open').length,
+    };
   }, { timeout: KILL_CONVERGE_MS, intervals: [500, 1_000],
-    message: 'background lifecycle convergence must unbind dead compute and invalidate the old pending interaction without user action' })
-    .toEqual({ state: 'READY', sandbox: null, turn: null, unavailable: true,
-      pending: false, activeInteraction: null, originalInteractionActive: false });
-  await waitForTurnTerminalProof(sessionId, turnId, 'FAILED', KILL_CONVERGE_MS);
-  const convergenceEvents = () => sessionEvents(sessionId).filter((row) => {
-    if (row.event_type !== 'session.lifecycle_reconciled') return false;
-    const payload = object(row.payload);
-    const reason = String(payload.reason || '');
-    return payload.state === 'READY' && payload.runtime_unavailable === true
-      && (reason === 'sandbox_terminating_notice' || reason.startsWith('dead_binding_reconcile:')
-        || reason.startsWith('sandbox_callback_') || reason === 'engine control attach:SANDBOX_GONE');
-  });
-  await expect.poll(() => convergenceEvents().length).toBe(1);
-  const convergence = convergenceEvents()[0];
-  expect(inputs()).toEqual(originalInputs);
-  expect(nativeRootEntries(sessionId).slice(0, nativeBefore.length)).toEqual(nativeBefore);
+    message: 'background lifecycle convergence must unbind dead compute, end the waiting response with its box '
+      + 'and withdraw its approval without user action' })
+    .toEqual({
+      state: 'READY',
+      sandbox: null,
+      unavailable: true,
+      response: { status: 'ended', outcome: 'failed', native_reason: 'sandbox_lost' },
+      interaction: 'withdrawn',
+      openInteractions: 0,
+    });
+  // Every death-convergence writer records the loss on the row.
+  expect(String(converged!.last_error || '').trim(), 'the convergence must record the loss on the row').not.toEqual('');
+  expect(sessionInputRows(sessionId), 'convergence must not accept or re-deliver an input').toEqual(originalInputs);
+  expect(nativeRootRows(sessionId).slice(0, nativeBefore.length)).toEqual(nativeBefore);
   await test.info().attach('pending-write-background-convergence', {
-    body: JSON.stringify({ sessionId, oldSandboxId, convergence, interaction: interactionRows()[0] }),
+    body: JSON.stringify({ sessionId, oldSandboxId, converged, interaction: interactionRow(),
+      response: responsesTo(sessionId, firstReceipt.input_id)[0] }),
     contentType: 'application/json',
   });
 
@@ -312,21 +407,25 @@ test('pending Write pre-Result history survives background sandbox death converg
   await expect(firstUser).toHaveText(renderedFirstUser, { useInnerText: true });
   const coldHistory = await api.getMessages(sessionId, 100);
   expect(coldHistory.has_more).toBe(false);
+  expect(coldHistory.pending_interaction ?? null, 'history offers no approval to answer').toBeNull();
   expect(coldHistory.messages.filter((message) => message.role === 'user').map(messageText)).toEqual([prompt]);
 
   const nextPrompt = `Do not use tools. Reply with exactly ${replyMarker}.`;
   const nextResponse = await sendPrompt(page, sessionId, nextPrompt);
-  const nextReceipt = object(object(await nextResponse.json()).data);
-  await expect.poll(() => inputs().filter((row) => row.causation_id === nextReceipt.command_id).length).toBe(1);
-  const nextCommand = inputs().find((row) => row.causation_id === nextReceipt.command_id)!;
-  const nextTurnId = String(nextCommand.turn_id || '').trim();
-  expect(nextTurnId).not.toBe('');
-  expect(nextTurnId).not.toBe(turnId);
-  const terminal = await waitForTurnTerminalProof(sessionId, nextTurnId, 'COMPLETED', TURN_BUDGET_MS);
-  // The same diagnostic query must positively identify the real completed SDK
-  // turn; pre-fault absence alone cannot validate a terminal-evidence oracle.
-  await expect.poll(() => nativeTerminals(nextTurnId).length).toBe(1);
-  expect(nativeTerminals(nextTurnId)[0].causation_id).toBe(nextReceipt.command_id);
+  const nextReceipt = ((await nextResponse.json()) as { data: InputReceipt }).data;
+  await expect.poll(() => sessionInputRows(sessionId).filter((row) => row.input_id === nextReceipt.input_id).length)
+    .toBe(1);
+  await expect.poll(() => responseOutcome(responsesTo(sessionId, nextReceipt.input_id)[0]), {
+    timeout: TURN_BUDGET_MS,
+    message: 'the next message must be answered and completed on the replacement box',
+  }).toEqual({ status: 'ended', outcome: 'completed' });
+  const nextResponseId = responsesTo(sessionId, nextReceipt.input_id)[0].response_id;
+  expect(nextResponseId).not.toBe(responseId);
+  expect(responsesTo(sessionId, nextReceipt.input_id), 'the next message is answered once').toHaveLength(1);
+  expect(
+    responsesTo(sessionId, firstReceipt.input_id).map((row) => row.response_id),
+    'the lost response is never replayed',
+  ).toEqual([responseId]);
   await expect.poll(async () => (await api.getMessages(sessionId, 100)).messages.filter(
     (message) => message.role === 'assistant' && messageText(message).includes(replyMarker),
   ).length, { timeout: TURN_BUDGET_MS }).toBe(1);
@@ -337,28 +436,40 @@ test('pending Write pre-Result history survives background sandbox death converg
   expect(rebuilt.session_id).toBe(sessionId);
   expect(rebuilt.pending_interaction || null).toBeNull();
   expect(rebuilt.last_error || null).toBeNull();
-  expect(rebuilt.last_turn_id).toBe(nextTurnId);
-  expect(rebuilt.last_turn_status).toBe('COMPLETED');
+  expect(rebuilt.last_response?.response_id).toBe(nextResponseId);
+  expect(rebuilt.last_response?.outcome).toBe('completed');
+  // What the open page's own stream carried for the next message: from the
+  // `start` naming its input to its `finish`.
+  const isNextStart = (frame: Record<string, unknown>) => frame.type === 'start'
+    && Array.isArray((frame.messageMetadata as { input_ids?: unknown } | undefined)?.input_ids)
+    && ((frame.messageMetadata as { input_ids: unknown[] }).input_ids).map(String).includes(nextReceipt.input_id);
   const nextFrames = async () => {
     const frames = await browserStreamFrames(page);
-    const start = frames.findIndex((frame) => frame.type === 'data-input-consumed'
-      && object(frame.data).inputId === nextReceipt.input_id);
-    return start < 0 ? [] : frames.slice(start);
+    const start = frames.findIndex(isNextStart);
+    if (start < 0) return [];
+    const end = frames.findIndex((frame, index) => index > start && frame.type === 'finish');
+    return end < 0 ? frames.slice(start) : frames.slice(start, end + 1);
   };
-  await expect.poll(async () => (await nextFrames()).filter((frame) => frame.type === 'data-result').length).toBe(1);
+  await expect.poll(async () => (await nextFrames()).filter((frame) => frame.type === 'finish').length).toBe(1);
   const frames = await nextFrames();
   expect(frames.filter((frame) => frame.type === 'error' || frame.type === 'unparsed')).toEqual([]);
-  expect(frames.filter((frame) => frame.type === 'data-input-consumed')).toHaveLength(1);
+  expect(
+    (await browserStreamFrames(page)).filter(isNextStart),
+    'the page receives the response to the next message once',
+  ).toHaveLength(1);
   expect(frames.filter((frame) => frame.type === 'text-delta').map((frame) => String(frame.delta || '')).join(''))
     .toContain(replyMarker);
-  expect(framesForTurn(nextTurnId).filter((row) => object(row.payload).type === 'error')).toEqual([]);
-  const afterInputs = inputs();
+  expect(
+    sessionOutputRows(sessionId, nextResponseId).filter((row) => row.part.type === 'error'),
+    'the recorded response carries no error',
+  ).toEqual([]);
+  const afterInputs = sessionInputRows(sessionId);
   expect(afterInputs).toHaveLength(2);
   expect(afterInputs[0]).toEqual(originalInputs[0]);
-  expect(object(afterInputs[1].payload).content).toBe(nextPrompt);
+  expect(afterInputs[1].content).toBe(nextPrompt);
   // Retain the complete ordered native prefix, including metadata without a
   // UUID. Additional supplier-owned resume records are not platform inputs.
-  expect(nativeRootEntries(sessionId).slice(0, nativeBefore.length)).toEqual(nativeBefore);
+  expect(nativeRootRows(sessionId).slice(0, nativeBefore.length)).toEqual(nativeBefore);
   const history = await api.getMessages(sessionId, 100);
   expect(history.has_more).toBe(false);
   expect(history.messages.filter((message) => message.role === 'user').map(messageText)).toEqual([prompt, nextPrompt]);
@@ -378,9 +489,9 @@ test('pending Write pre-Result history survives background sandbox death converg
   await expect(nextUser).toHaveText(renderedNextUser, { useInnerText: true });
   await expect(page.getByTestId('assistant-message').filter({ hasText: replyMarker })).toHaveCount(1);
   await test.info().attach('pending-write-rebuilt-history', {
-    body: JSON.stringify({ sessionId, oldSandboxId, newSandboxId, turnId, nextTurnId,
-      convergence, terminal: terminal.last_turn_terminal_frame, afterInputs,
-      nativeBefore, nativeAfter: nativeRootEntries(sessionId) }),
+    body: JSON.stringify({ sessionId, oldSandboxId, newSandboxId, responseId, nextResponseId,
+      responses: sessionResponseRows(sessionId), afterInputs,
+      nativeBefore, nativeAfter: nativeRootRows(sessionId) }),
     contentType: 'application/json',
   });
 });

@@ -54,7 +54,7 @@ chmod 600 ~/.config/astrabox/model.env
 `--add-host host.docker.internal:host-gateway`，并以 `host.docker.internal` 作为它的主机名。
 :::
 
-## 第 2 步：启动 AstraBox
+## 第 2 步：启动 AstraBox {#step-2-start-astrabox}
 
 运行：
 
@@ -64,7 +64,7 @@ docker run -d --name astrabox --restart unless-stopped \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v astrabox-data:/data \
   --env-file ~/.config/astrabox/model.env \
-  ghcr.io/colton-z/astrabox:0.1.3
+  ghcr.io/colton-z/astrabox:0.1.9
 ```
 
 然后查看日志：
@@ -130,11 +130,19 @@ docker run -d --name astrabox --restart unless-stopped \
 ```
 
 请使用 `docker stop`，不要用 `docker rm -f`：正常停止才能让数据库干净地关闭。启动时
-AstraBox 会更新数据库，并在开放服务之前下载新版本的沙箱镜像。你的 Session 及其历史
-会保留下来。
+AstraBox 会把数据库结构更新到新版本，因此你的 Session 及其历史会保留下来；随后它在开放
+服务之前下载新版本的沙箱镜像。
 
 由其他 PostgreSQL 主版本写入的卷会被拒绝启动，并给出说明。更换主版本的发布版本会说明
 如何迁移数据。
+
+### 从 0.1.8 升级
+
+AstraBox 0.1.9 不迁移 0.1.8 安装的数据：它从空数据库开始。新数据库还会让这个安装获得
+新的标识，而 AstraBox 既不删除、也不计入其他安装创建的沙箱，因此 0.1.8 的沙箱会留在
+Docker 主机上。请用[卸载](#uninstall)中的命令删除 0.1.8 安装，这些命令会删除它的沙箱、
+代理、网络和全部数据，包括 `astrabox-data` 卷。然后使用 `ghcr.io/colton-z/astrabox:0.1.9`
+镜像运行[第 2 步](#step-2-start-astrabox)的命令；它会创建新的 `astrabox-data` 卷。
 
 ## 备份与恢复
 
@@ -144,7 +152,7 @@ AstraBox，保证备份一致：
 ```bash
 docker stop astrabox
 docker run --rm -v astrabox-data:/data -v "$PWD":/backup --entrypoint tar \
-  ghcr.io/colton-z/astrabox:0.1.3 -czf /backup/astrabox-data.tgz -C /data .
+  ghcr.io/colton-z/astrabox:0.1.9 -czf /backup/astrabox-data.tgz -C /data .
 docker start astrabox
 ```
 
@@ -153,7 +161,7 @@ docker start astrabox
 ```bash
 docker volume create astrabox-data-restored
 docker run --rm -v astrabox-data-restored:/data -v "$PWD":/backup --entrypoint tar \
-  ghcr.io/colton-z/astrabox:0.1.3 -xzf /backup/astrabox-data.tgz -C /data
+  ghcr.io/colton-z/astrabox:0.1.9 -xzf /backup/astrabox-data.tgz -C /data
 ```
 
 然后删除旧容器，用 `-v astrabox-data-restored:/data` 运行第 2 步的命令。恢复出的副本
@@ -162,7 +170,7 @@ docker run --rm -v astrabox-data-restored:/data -v "$PWD":/backup --entrypoint t
 同一时间只能有一个容器使用一个卷。在同一个卷上启动第二个容器时，它会停止并给出说明，
 第一个容器继续运行。
 
-## 卸载
+## 卸载 {#uninstall}
 
 以下命令删除 AstraBox、它创建的代理和网络、它的沙箱及沙箱卷，以及它的全部数据：
 
@@ -188,7 +196,7 @@ docker volume rm astrabox-data
 - **团队登录以及从其他电脑访问**。请使用 Compose，并配置[团队登录](team-login.md)和 TLS。
 - **外部数据库、Redis 或模型网关**。容器运行自己的这些服务。
 - **多台机器**，或在 Kubernetes 上运行沙箱。参见[分布式部署](deploy-distributed.md)。
-- **持久化工作区卷**以及**关闭 Credential Vault**。
+- **持久工作区卷**以及**关闭 Credential Vault**。
 - **把 all-in-one 安装迁移到 Compose**。目前还没有受支持的迁移步骤。
 
 每个 Docker 主机只运行一个 all-in-one 容器。

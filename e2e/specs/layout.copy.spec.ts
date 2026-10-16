@@ -29,7 +29,7 @@ const ENGLISH: Array<[string, string]> = [
   ],
   [
     "/manage/errors",
-    "Review recent Session and turn failures. Open a record to investigate the related Session.",
+    "Review recent Session failures and errors the server logged. Open a Session record to investigate it.",
   ],
   ["/manage/system", "Health and active work for this AstraBox server."],
 ];
@@ -61,7 +61,7 @@ const CHINESE: Array<[string, string]> = [
   ],
   [
     "/manage/errors",
-    "查看最近的 Session 和轮次失败记录。打开一条记录，可继续排查对应的 Session。",
+    "查看最近的 Session 失败记录和服务端记录的错误。打开一条 Session 记录，可继续排查。",
   ],
   ["/manage/system", "查看此 AstraBox 服务的健康状态和当前任务。"],
 ];
@@ -113,7 +113,7 @@ test.describe("management copy", () => {
     await settle(page);
     await expect(page.getByRole("heading", { name: "错误记录", exact: true })).toBeVisible();
     await expect(page.getByRole("columnheader", { name: "错误内容", exact: true })).toBeVisible();
-    await expect(page.getByText("轮次", { exact: true }).first()).toBeVisible();
+    await expect(page.getByText("服务端", { exact: true }).first()).toBeVisible();
     await expect(page.getByText(/^manage:errors\./)).toHaveCount(0);
   });
 
@@ -329,7 +329,6 @@ test.describe("management copy", () => {
         ? {
             session_id: "s-001",
             user_id: "u-1",
-            template_name: "release-notes-writer-1",
             title: "Draft the release notes",
             state: "CREATING",
             source_type: "agent",
@@ -340,7 +339,6 @@ test.describe("management copy", () => {
         : {
             session_id: "s-001",
             user_id: "u-1",
-            template_name: "ops-assistant",
             title: "Investigate the alert",
             state: "TERMINATED",
             source_type: "assistant",

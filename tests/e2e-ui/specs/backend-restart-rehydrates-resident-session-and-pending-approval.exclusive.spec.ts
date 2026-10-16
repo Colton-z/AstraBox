@@ -5,8 +5,15 @@
  * Restarting the server drops in-memory runtimes while the PostgreSQL database
  * and separate sandbox containers survive. After the API is ready, a full page
  * navigation must restore the warm transcript on the same sandbox and accept a
- * new turn. A second session must restore its approval card; allowing the action
- * must clear the interaction and commit a terminal finish on the same turn.
+ * new message. A second session must restore its approval card; allowing the
+ * action must clear the interaction and end the same response with its finish.
+ *
+ * The runtime holds the pending approval; the platform holds its record
+ * (`session_interactions`) and the response it pauses (`session_responses`).
+ * The process that restarts held the session's reader lease
+ * (`session_readers`); the new process takes the lease over once the dead
+ * one's lease expires and resumes reading the runtime from the recorded
+ * cursor, which is what carries the answer to the waiting runtime.
  *
  * The test resolves the server through the shared deployment-service handle. It
  * is exclusive because the restart affects every session on the host. The
@@ -21,9 +28,11 @@ import { AstraApi, type PendingInteraction } from '../fixtures/astraApi';
 import { appPath, parseTimeoutEnv } from '../fixtures/env';
 import {
   oracleDbPath,
-  turnSnapshot,
-  waitForTurnSnapshot,
-  waitForTurnTerminalProof,
+  postgresRows,
+  sessionInteractionRows,
+  sessionOutputRows,
+  sessionResponseRows,
+  sqlLiteral,
 } from '../fixtures/dbOracle';
 import {
   requireServiceContainer,
@@ -32,7 +41,7 @@ import {
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 
 // A failing restart-rehydration run must keep its sessions: the pending
-// interaction and the turn snapshot ARE the evidence.
+// interaction and the response it pauses ARE the evidence.
 /** What a user says when a model answers instead of acting. */
 const INSIST_NUDGE =
   "You answered without using the tool. Do the tool call now, exactly as asked above, before replying again. \u8bf7\u73b0\u5728\u5c31\u6309\u4e0a\u9762\u7684\u8981\u6c42\u8c03\u7528\u5de5\u5177\uff0c\u4e0d\u8981\u53ea\u7528\u6587\u5b57\u56de\u7b54\u3002";
@@ -70,7 +79,7 @@ const PAGE_PROBE_BUDGET_MS = TURN_TIMEOUT_MS + PROBE_TIMEOUT_MS;
 // restart (it is durable, so this only covers rehydration + projection lag) — on
 // the screen as well as on the API.
 const PENDING_RESURFACE_MS = parseTimeoutEnv('ASTRABOX_E2E_PENDING_RESURFACE_TIMEOUT_MS', 90_000);
-// How long to wait for the answered-post-restart turn to reach a durable terminal.
+// How long to wait for the answered-post-restart response to be recorded as ended.
 const TERMINAL_PROOF_BUDGET_MS = parseTimeoutEnv('ASTRABOX_E2E_TURN_TERMINAL_TIMEOUT_MS', 120_000);
 // `docker restart` grace: SIGTERM → (drain) → SIGKILL then start again.
 const RESTART_CMD_TIMEOUT_MS = parseTimeoutEnv('ASTRABOX_E2E_SERVER_RESTART_CMD_TIMEOUT_MS', 120_000);
@@ -89,22 +98,22 @@ const REHYDRATE_RENDER_MS = 90_000;
 // How long the console may take to draw (or re-draw, between approvals) the
 // approval card once the platform has raised the gate.
 const PANEL_RENDER_MS = 60_000;
-// The click's own POST /interaction-respond round trip.
+// The click's own POST .../interactions/{id}/answer round trip.
 const ANSWER_ACCEPTED_MS = 60_000;
 // Taken only AFTER the reply is rendered, so this is the screen's lag behind a
 // finished turn — the phantom-"generating" tail a browser is the only witness to.
 const SETTLE_MS = 60_000;
-// The answered continuation is a real model turn (the write, then the reply);
-// budget the header settle like one.
+// The answered continuation is a real model response (the write, then the
+// reply); budget the header settle like one.
 const CONTINUATION_SETTLE_MS = 240_000;
 
 // The affirmative primary button of the tool-permission card
 // (misc:composer.allow_continue / apply_suggestion_continue — en/zh; the console is
 // bilingual and the runner's default locale is en-US).
 const APPROVE_CONTINUE = /Allow and continue|Apply suggestion and continue|允许并继续|应用建议并继续/;
-// A FAILED turn renders its error INTO the transcript as an assistant message, so
-// "there is one more non-empty bubble" is satisfied by exactly the failure a lost
-// restart leaves behind.
+// A FAILED response renders its error INTO the transcript as an assistant message,
+// so "there is one more non-empty bubble" is satisfied by exactly the failure a
+// lost restart leaves behind.
 const TURN_ERROR = /API Error|AGENT_RUNTIME_ERROR|SANDBOX_GONE|Traceback/i;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -158,14 +167,13 @@ async function waitForServerBack(api: AstraApi, sessionId: string, timeoutMs: nu
 }
 
 /**
- * The next pause the turn has NOT been answered for yet, or null within the budget.
+ * The next pause the response has NOT been answered for yet, or null within the budget.
  *
- * Sampling the pending projection right after an approval reads back the one just
- * answered — its engine-side wait is already released — so identity, not presence,
- * is what tells a new gate from a stale read. Driven from the page that identity
- * check earns a second job: it gates the next CLICK, because the console hides an
- * answered card optimistically and only releases the suppression once a DIFFERENT
- * interaction is authoritative.
+ * Identity, not presence, tells a new gate from the one just answered: a read can
+ * land between the stored answer and the runtime taking it. Driven from the page
+ * that identity check earns a second job: it gates the next CLICK, because the
+ * console hides an answered card optimistically and only releases the
+ * suppression once a DIFFERENT interaction is authoritative.
  */
 async function waitForNewPause(
   api: AstraApi,
@@ -183,6 +191,39 @@ async function waitForNewPause(
   return null;
 }
 
+/** The session's reader lease: which process reads its runtime, and whether that lease is live. */
+interface ReaderLeaseRow {
+  owner: string;
+  generation: number;
+  live: boolean;
+}
+
+function readerLease(sessionId: string): ReaderLeaseRow | null {
+  return postgresRows<ReaderLeaseRow>(
+    `SELECT owner, generation, expires_at > now() AS live FROM session_readers `
+      + `WHERE session_id = ${sqlLiteral(sessionId)}`,
+  )[0] ?? null;
+}
+
+/**
+ * What the platform recorded about one paused response and the approval it
+ * waits on: the response's status, the interaction's status, and which
+ * response the interaction pauses.
+ */
+function pausedFacts(sessionId: string, responseId: string, interactionId: string): {
+  response: string | null;
+  interaction: string | null;
+  pauses: string | null;
+} {
+  const response = sessionResponseRows(sessionId).find((row) => row.response_id === responseId);
+  const interaction = sessionInteractionRows(sessionId).find((row) => row.interaction_id === interactionId);
+  return {
+    response: response?.status ?? null,
+    interaction: interaction?.status ?? null,
+    pauses: interaction?.response_id ?? null,
+  };
+}
+
 test('backend restart rehydrates a resident warm conversation and a resident pending approval', async ({
   page,
   request,
@@ -192,7 +233,7 @@ test('backend restart rehydrates a resident warm conversation and a resident pen
   const api = new AstraApi(request);
   const runId = Date.now();
 
-  // Fail fast (with the descriptive oracle error) if the document store is not
+  // Fail fast (with the descriptive oracle error) if the database is not
   // reachable — the durable half of this spec depends on it.
   test.info().annotations.push({ type: 'oracle-db', description: oracleDbPath() });
 
@@ -202,7 +243,7 @@ test('backend restart rehydrates a resident warm conversation and a resident pen
   /**
    * Open one conversation the way a user does — by loading its page. Used again
    * after the restart on the URL the tab is already on: `goto` navigates either
-   * way, so the console comes back with no client memory of the pre-restart turn.
+   * way, so the console comes back with no client memory of the pre-restart response.
    */
   const openConversation = async (sessionId: string, timeoutMs = 45_000) => {
     await page.goto(appPath(`/sessions/${sessionId}`));
@@ -223,7 +264,7 @@ test('backend restart rehydrates a resident warm conversation and a resident pen
     await submit.click();
     await expect(
       page.getByTestId('user-message').filter({ hasText: echo }).last(),
-      'the user bubble should render — proof the turn was dispatched from the page',
+      'the user bubble should render — proof the message was sent from the page',
     ).toBeVisible({ timeout: 30_000 });
   };
 
@@ -231,8 +272,8 @@ test('backend restart rehydrates a resident warm conversation and a resident pen
    * Send from the composer and wait for one more rendered assistant bubble that is
    * a REPLY. Counting bubbles, never matching prose: the backend is deepseek behind
    * a gateway and its wording is its own business. The error guard is what makes
-   * the count mean anything — a failed turn renders its error into the transcript
-   * as an assistant message and would satisfy the count on its own.
+   * the count mean anything — a failed response renders its error into the
+   * transcript as an assistant message and would satisfy the count on its own.
    */
   const sendAndReadReply = async (prompt: string, echo: string, budgetMs: number) => {
     const before = await page.getByTestId('assistant-message').count();
@@ -241,7 +282,7 @@ test('backend restart rehydrates a resident warm conversation and a resident pen
       .poll(() => page.getByTestId('assistant-message').count(), { timeout: budgetMs })
       .toBeGreaterThan(before);
     const reply = page.getByTestId('assistant-message').last();
-    await expect(reply, 'the turn should have rendered assistant content').not.toBeEmpty();
+    await expect(reply, 'the response should have rendered assistant content').not.toBeEmpty();
     await expect(reply).not.toContainText(TURN_ERROR);
     return reply;
   };
@@ -264,8 +305,11 @@ test('backend restart rehydrates a resident warm conversation and a resident pen
       approve,
       'the approval card must offer the user an enabled affirmative button',
     ).toBeEnabled({ timeout: PANEL_RENDER_MS });
+    // Any answer the page posts is caught, so an answer to a different
+    // interaction fails on the id below instead of timing out here.
     const accepted = page.waitForResponse(
-      (response) => response.request().method() === 'POST' && response.url().includes('/interaction-respond'),
+      (response) => response.request().method() === 'POST'
+        && /\/sessions\/[^/]+\/interactions\/[^/]+\/answer$/.test(new URL(response.url()).pathname),
       { timeout: ANSWER_ACCEPTED_MS },
     );
     await approve.click();
@@ -310,12 +354,10 @@ test('backend restart rehydrates a resident warm conversation and a resident pen
     pendingSessionId = pendingConversation.session_id;
     sessions.push(pendingSessionId);
     await api.waitForSessionReady(pendingSessionId);
-    // ARRANGE the permission mode through the API, and BEFORE the page opens: the
-    // console dispatches under the mode it read at LOAD (useSessionChat sends
-    // permissionModeRef.current, seeded from session.permission_mode), so a page
-    // opened first would send in bypassPermissions and nothing would ever gate.
-    // The API port passed the mode per-turn to `streamPrompt`; the page has no such
-    // per-send knob, which is why the session-level mode is the equivalent arrange.
+    // ARRANGE the permission mode through the API, and BEFORE the page opens: a
+    // message carries no permission mode of its own — the runtime applies the
+    // session's — and the console shows the mode it read at load, so the mode is
+    // set on the session first.
     await api.setPermissionMode(pendingSessionId, 'default');
 
     await openConversation(pendingSessionId);
@@ -326,26 +368,24 @@ test('backend restart rehydrates a resident warm conversation and a resident pen
       pendingMarker,
     );
 
-    // deepseek-chat may never raise a permission (the turn just finishes with stop).
-    // Probe with a bounded wait; skip — do not fake-pass, and do not restart the stack
-    // — if the platform never surfaces one.
-    // Ask again rather than skip: a skip ends the round exactly as a
+    // deepseek-chat may never raise a permission (the response just finishes with
+    // stop). Ask again rather than skip: a skip ends the round exactly as a
     // failure does, so the model's choice decided it instead of the
-    // platform. The probe returns the moment the turn settles ungated,
-    // so a declined ask costs that turn rather than the whole budget.
+    // platform. The probe returns the moment the response settles ungated,
+    // so a declined ask costs that response rather than the whole budget.
     const interaction = await insist<PendingInteraction>({
       ask: async (attempt) => {
         if (attempt > 1) await api.postTurnInput(pendingSessionId, INSIST_NUDGE);
       },
       probe: () =>
         api.waitForPendingInteractionOrSettledTurn(pendingSessionId, PAGE_PROBE_BUDGET_MS),
-      what: "deepseek-chat raised no tool-permission interaction for a Write under permission_mode 'default' " + '(the turn finished with stop) — no resident pending approval to carry across a restart',
+      what: "deepseek-chat raised no tool-permission interaction for a Write under permission_mode 'default' " + '(the response finished with stop) — no resident pending approval to carry across a restart',
       budgetMs: PAGE_PROBE_BUDGET_MS * 2,
       probeMs: PAGE_PROBE_BUDGET_MS,
     });
     expect(interaction.presentation, 'pending interaction should be a tool approval').toBe('tool_approval');
-    const pendingTurnId = String(interaction.turn_id || '').trim();
-    expect(pendingTurnId, 'pending interaction should bind to a turn').not.toEqual('');
+    const pendingResponseId = String(interaction.response_id || '').trim();
+    expect(pendingResponseId, 'pending interaction should name the response it pauses').not.toEqual('');
     const interactionId = String(interaction.interaction_id || '').trim();
     expect(interactionId, 'pending interaction should carry an interaction_id').not.toEqual('');
     // The page's identity anchor, taken from the SERVER rather than from what the
@@ -356,8 +396,8 @@ test('backend restart rehydrates a resident warm conversation and a resident pen
 
     // The resident state this restart has to preserve is not a row — it is a person
     // looking at a question. Assert it reached them: the composer is REPLACED by the
-    // approval card, naming the gated tool, and the header says the turn is waiting
-    // on THEM. Never a skip — the skip above is for the model declining to ask.
+    // approval card, naming the gated tool, and the header says the response is
+    // waiting on THEM. Never a skip — the insist above is for the model declining to ask.
     await expect(
       panel,
       'the raised permission must reach the user as the composer approval card before the restart',
@@ -367,27 +407,29 @@ test('backend restart rehydrates a resident warm conversation and a resident pen
     // label is a translation; sessionRunStatus maps the two 1:1.
     await expect(
       pill,
-      'a turn parked on a permission must read as waiting on the user, not generating',
+      'a response paused on a permission must read as waiting on the user, not generating',
     ).toHaveAttribute('data-state', 'WAITING_INPUT', { timeout: PANEL_RENDER_MS });
 
-    // Durable precondition: the paused turn records WAITING_FOR_INTERACTION
-    // pointing at THIS interaction — this is the resident state the restart must not lose.
-    // No pixel: the console renders neither a turn id nor an interaction id, so which
-    // turn is parked on which gate is only bindable in the durable record.
-    // Awaited, not sampled: the interaction is readable over HTTP the moment the
-    // kernel registers it, and the snapshot naming its turn is a separate write.
+    // Durable precondition: the response is recorded as waiting and the open
+    // approval it waits on is THIS interaction — the resident state the restart
+    // must not lose. No pixel: the console renders neither a response id nor an
+    // interaction id, so which response is paused on which gate is only bindable
+    // in the platform's records. Awaited, not sampled: the interaction and the
+    // response's status are written by the session's reader, and the detail may
+    // name the interaction a moment before the batch carrying the status lands.
     // The post-restart read below stays a single sample — THAT one is the
     // behaviour under test, and durable state that survived a restart is
     // already there or it is lost.
-    const waitingBefore = await waitForTurnSnapshot(pendingSessionId, pendingTurnId);
+    await expect.poll(
+      () => pausedFacts(pendingSessionId, pendingResponseId, interactionId),
+      { timeout: PROBE_TIMEOUT_MS, message: 'the paused response must be recorded before the restart' },
+    ).toEqual({ response: 'waiting', interaction: 'open', pauses: pendingResponseId });
+    const leaseBefore = readerLease(pendingSessionId);
+    test.info().annotations.push({ type: 'e2e_reader_lease_before_restart', description: JSON.stringify(leaseBefore) });
     expect(
-      String(waitingBefore?.conversation_state || ''),
-      'the paused turn records WAITING_FOR_INTERACTION before the restart',
-    ).toBe('WAITING_FOR_INTERACTION');
-    expect(
-      String(waitingBefore?.active_interaction_id || ''),
-      'the paused turn points at the pending interaction before the restart',
-    ).toBe(interactionId);
+      leaseBefore?.live,
+      `a reader must hold a live lease on the paused session before the restart; lease=${JSON.stringify(leaseBefore)}`,
+    ).toBe(true);
 
     // ── Resident state B — an idle warm conversation with a settled turn on a known
     //    sandbox. The warm turn is what makes the sandbox genuinely resident: a
@@ -399,8 +441,8 @@ test('backend restart rehydrates a resident warm conversation and a resident pen
     await api.waitForSessionReady(warmSessionId);
 
     // The user switches to their other conversation and works in it — the same tab,
-    // the same console. Leaving the pending one is not a problem for it: a parked
-    // turn is durable, which is the whole claim being carried across the restart.
+    // the same console. Leaving the pending one is not a problem for it: a paused
+    // response is durable, which is the whole claim being carried across the restart.
     await openConversation(warmSessionId);
     const warmMarker = `E2E restart warm ${runId}`;
     const warmReply = await sendAndReadReply(
@@ -424,8 +466,9 @@ test('backend restart rehydrates a resident warm conversation and a resident pen
     test.info().annotations.push({ type: 'e2e_warm_sandbox_id', description: warmSandboxId });
 
     // ── THE fault: restart the backend server container. Durable PostgreSQL state
-    //    and the per-session sandboxes (separate containers)
-    //    survive; every in-memory runtime is dropped and must be rehydrated. ──────────
+    //    and the per-session sandboxes (separate containers) survive; every
+    //    in-memory runtime connection and session reader is dropped, and the new
+    //    process must take the readers over and reattach. ─────────────────────────────
     const serverContainer = requireServiceContainer(SERVER_CONTAINER_HANDLE);
     test.info().annotations.push({ type: 'e2e_restarted_server_container', description: serverContainer });
     restartServerContainer(serverContainer);
@@ -485,8 +528,8 @@ test('backend restart rehydrates a resident warm conversation and a resident pen
     // ── Verify resident pending approval SURVIVED the restart and still points at the
     //    same durable interaction (rehydrated from storage, not resurrected anew). ─────
     //    Read where it matters first: a freshly loaded console must put the question
-    //    back in front of the user. An interaction that is perfect in the document
-    //    store and absent from the screen is a session nobody can unblock — which is
+    //    back in front of the user. An interaction that is perfect in the database
+    //    and absent from the screen is a session nobody can unblock — which is
     //    the failure "the pending approval survived" is supposed to rule out.
     await openConversation(pendingSessionId, REHYDRATE_RENDER_MS);
     await expect(
@@ -500,7 +543,7 @@ test('backend restart rehydrates a resident warm conversation and a resident pen
     await expect(panel, 'the rehydrated card must still be about the tool the platform gated').toContainText(toolName);
     await expect(
       pill,
-      'the rehydrated turn must still read as waiting on the user, not as generating or idle',
+      'the rehydrated response must still read as waiting on the user, not as generating or idle',
     ).toHaveAttribute('data-state', 'WAITING_INPUT', { timeout: PENDING_RESURFACE_MS });
 
     // Same interaction, not a new one raised on the way back up. No pixel — no
@@ -511,21 +554,20 @@ test('backend restart rehydrates a resident warm conversation and a resident pen
       String(survivedPending.interaction_id || ''),
       'the SAME pending approval must survive the backend restart',
     ).toBe(interactionId);
-
-    const waitingAfter = turnSnapshot(pendingSessionId, pendingTurnId);
-    expect(waitingAfter, 'the paused turn must be rehydrated from durable state after the restart').not.toBeNull();
     expect(
-      String(waitingAfter?.conversation_state || ''),
-      'the turn still records WAITING_FOR_INTERACTION after the restart',
-    ).toBe('WAITING_FOR_INTERACTION');
-    expect(
-      String(waitingAfter?.active_interaction_id || ''),
-      'the turn still points at the unanswered interaction after the restart',
-    ).toBe(interactionId);
+      String(survivedPending.response_id || ''),
+      'the surviving approval must still pause the same response',
+    ).toBe(pendingResponseId);
 
-    // ── The answered continuation commits cleanly across the restart: the user
-    //    presses the card's own button, which resumes the SAME turn
-    //    (answer_pending_interaction reuses pending.turn_id) and settles it. ──────────
+    expect(
+      pausedFacts(pendingSessionId, pendingResponseId, interactionId),
+      'after the restart the response is still recorded as waiting on the same open approval',
+    ).toEqual({ response: 'waiting', interaction: 'open', pauses: pendingResponseId });
+
+    // ── The answered continuation completes cleanly across the restart: the user
+    //    presses the card's own button; the answer is stored for the interaction,
+    //    and the session's reader — now in the new process — hands it to the
+    //    runtime, which continues the SAME response. ───────────────────────────────
     await approveFromPanel(interactionId);
 
     // Whether the engine asks AGAIN before it finishes is the model's business,
@@ -535,16 +577,16 @@ test('backend restart rehydrates a resident warm conversation and a resident pen
     // and reports it as a restart regression.
     //
     // Each gate answered must be a NEW one: identity, not presence, tells a fresh
-    // gate from a read-back of the one just answered. An answer that did NOT take
-    // therefore never re-arms this loop — it shows up right after it as the card
-    // refusing to clear and the header refusing to settle, which is the same
-    // failure caught one assertion later and with a better message.
+    // gate from the one just answered. An answer that did NOT take therefore never
+    // re-arms this loop — it shows up right after it as the card refusing to clear
+    // and the header refusing to settle, which is the same failure caught one
+    // assertion later and with a better message.
     //
     // "No new gate" is only the end after a WINDOW, never after one sample: the
     // answered gate clears BEFORE the engine opens the next, so a momentary null
     // is a gap in the chain, not the end of it. NEXT_PAUSE_TIMEOUT_MS is that
     // window — a single read would end the drain inside the gap and hand the
-    // still-gated turn to the settle assertions below as if it had finished.
+    // still-gated response to the settle assertions below as if it had finished.
     const answered = new Set<string>([interactionId]);
     let drained = false;
     for (let approvals = 1; approvals <= MAX_APPROVALS; approvals += 1) {
@@ -554,9 +596,9 @@ test('backend restart rehydrates a resident warm conversation and a resident pen
         break;
       }
       expect(
-        String(next.turn_id || ''),
-        'the answered continuation must stay on the SAME turn across the restart, not start a new one',
-      ).toBe(pendingTurnId);
+        String(next.response_id || ''),
+        'the answered continuation must stay on the SAME response across the restart, not start a new one',
+      ).toBe(pendingResponseId);
       const nextId = String(next.interaction_id || '');
       await expect(
         panel,
@@ -570,20 +612,19 @@ test('backend restart rehydrates a resident warm conversation and a resident pen
       await approveFromPanel(nextId);
       answered.add(nextId);
     }
-    expect(drained, `the turn kept gating tools past ${MAX_APPROVALS} approvals`).toBe(true);
+    expect(drained, `the response kept gating tools past ${MAX_APPROVALS} approvals`).toBe(true);
 
-    // ── The turn settles where the user watches it: the card is gone, the header
-    //    stops pulsing, the transcript ends on a reply rather than a rendered
-    //    failure, and the composer is usable again (the user-visible face of the
-    //    turn lock releasing across the restart). ────────────────────────────────────
+    // ── The response settles where the user watches it: the card is gone, the
+    //    header stops pulsing, the transcript ends on a reply rather than a
+    //    rendered failure, and the composer is usable again. ─────────────────────────
     await expect(panel, 'the answered approval should clear off the composer').toBeHidden({
       timeout: PANEL_RENDER_MS,
     });
-    await expect(pill, 'the header must settle once the resumed turn ends')
+    await expect(pill, 'the header must settle once the resumed response ends')
       .toHaveAttribute('data-pulse', 'false', { timeout: CONTINUATION_SETTLE_MS });
 
     const reply = page.getByTestId('assistant-message').last();
-    await expect(reply, 'the resumed turn should have rendered assistant content').not.toBeEmpty();
+    await expect(reply, 'the resumed response should have rendered assistant content').not.toBeEmpty();
     await expect(reply).not.toContainText(TURN_ERROR);
 
     // An EMPTY composer keeps submit disabled by design — type first, then assert.
@@ -592,34 +633,63 @@ test('backend restart rehydrates a resident warm conversation and a resident pen
 
     // ── The durable half behind the settled screen. The cleared card above is the
     //    pixel, but the console suppresses it optimistically at the click, so the
-    //    projection is asserted as well rather than instead. ────────────────────────
+    //    platform's records are asserted as well rather than instead. ──────────────
     const pendingReady = await api.waitForSessionReady(pendingSessionId);
     expect(pendingReady.pending_interaction, 'the answered interaction should clear off the session').toBeFalsy();
     const afterPending = await api.getPendingInteraction(pendingSessionId);
     expect(afterPending, 'the answered interaction is no longer active/pending after the restart').toBeNull();
 
-    const committed = await waitForTurnTerminalProof(
-      pendingSessionId,
-      pendingTurnId,
-      'COMPLETED',
-      TERMINAL_PROOF_BUDGET_MS,
-    );
+    // The paused response — not a new one — is the one that ended, completed,
+    // on its own finish part.
+    let ended = sessionResponseRows(pendingSessionId).find((row) => row.response_id === pendingResponseId);
+    await expect.poll(() => {
+      ended = sessionResponseRows(pendingSessionId).find((row) => row.response_id === pendingResponseId);
+      return ended ? `${ended.status}/${ended.outcome ?? ''}` : 'missing';
+    }, {
+      timeout: TERMINAL_PROOF_BUDGET_MS,
+      message: 'the answered response must be recorded as ended after the restart',
+    }).toBe('ended/completed');
+    expect(ended!.error, 'the continued response carries no failure').toBeNull();
+    const endedParts = sessionOutputRows(pendingSessionId, pendingResponseId).map(({ part }) => part);
     expect(
-      Boolean(committed.active_interaction_id),
-      'committing the answered turn clears the active-interaction pointer after the restart',
-    ).toBe(false);
-    const terminalProof =
-      committed.last_turn_terminal_frame && typeof committed.last_turn_terminal_frame === 'object'
-        ? (committed.last_turn_terminal_frame as Record<string, unknown>)
-        : {};
+      endedParts.filter((part) => part.type === 'error'),
+      'the continued response records no error part across the restart',
+    ).toEqual([]);
     expect(
-      String(terminalProof.type || ''),
-      'the answer continuation ends on a durable finish frame after the restart',
+      endedParts.at(-1)?.type,
+      'the answer continuation ends on its own recorded finish after the restart',
     ).toBe('finish');
+    // Every approval the user pressed was handed to the runtime and closed as
+    // answered — none withdrawn with a lost response, none left open.
+    const byInteraction = (left: { interaction_id: string }, right: { interaction_id: string }) =>
+      left.interaction_id.localeCompare(right.interaction_id);
     expect(
-      Number.isFinite(Number(terminalProof.frame_seq)),
-      'the settled turn carries a durable terminal frame_seq after the restart',
-    ).toBe(true);
+      sessionInteractionRows(pendingSessionId)
+        .filter((row) => answered.has(row.interaction_id))
+        .map((row) => ({ interaction_id: row.interaction_id, response_id: row.response_id, status: row.status }))
+        .sort(byInteraction),
+      'each answered approval is recorded closed as answered on the same response',
+    ).toEqual(
+      [...answered]
+        .map((id) => ({ interaction_id: id, response_id: pendingResponseId, status: 'answered' }))
+        .sort(byInteraction),
+    );
+
+    // The process that read this runtime before the restart is gone. A lease row
+    // is kept (a release only expires it) and every claim names its owner and
+    // moves the generation, so a new owner on a later generation is the
+    // restarted process having taken the reader over.
+    const leaseAfter = readerLease(pendingSessionId);
+    test.info().annotations.push({ type: 'e2e_reader_lease_after_restart', description: JSON.stringify(leaseAfter) });
+    expect(leaseAfter, 'the session must still have a reader lease after the restart').not.toBeNull();
+    expect(
+      leaseAfter!.owner,
+      'the reader lease must have been taken over by the restarted process',
+    ).not.toBe(leaseBefore!.owner);
+    expect(
+      Number(leaseAfter!.generation),
+      'the takeover must be a later lease generation than the one the dead process held',
+    ).toBeGreaterThan(Number(leaseBefore!.generation));
   } finally {
     // Nothing state-changing happens here. Both conversations AND the agent
     // they ran on are released on the passing path only — see the cleanup

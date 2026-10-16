@@ -2,15 +2,18 @@
 import { randomUUID } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
 
-import { AstraApi } from '../fixtures/astraApi';
-import { framesForTurn, sessionEvents, snapshotDoc, waitForTurnTerminalProof } from '../fixtures/dbOracle';
+import { AstraApi, messageToolCalls, type SessionRecord } from '../fixtures/astraApi';
+import {
+  sessionInputRows, sessionInteractionRows, sessionOutputRows, sessionResponseRows, type SessionInputRow,
+} from '../fixtures/dbOracle';
 import { engineProfiles } from '../fixtures/engineProfile';
+import { apiPath } from '../fixtures/env';
 import { nativeRows } from '../fixtures/nativeChildLifecycle';
-import { object } from '../fixtures/piChildFailure';
+import { currentPiPipe, object } from '../fixtures/piChildFailure';
 import { requireSandboxHandle, sandboxExec, type SandboxHandle } from '../fixtures/sandboxOps';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
-import { aiStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
+import { sessionStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
 
 const sessions = trackSessions();
 let sessionId = '';
@@ -23,29 +26,16 @@ test.afterEach(async ({ request, page }, info) => {
   if (!sessionId || !['failed', 'timedOut', 'interrupted'].includes(String(info.status))) return;
   const api = new AstraApi(request);
   const reads = await Promise.allSettled([
-    api.getSession(sessionId), api.getMessages(sessionId, 100), aiStreamBodies(page),
-    Promise.resolve().then(() => sessionEvents(sessionId)),
+    api.getSession(sessionId), api.getMessages(sessionId, 100), sessionStreamBodies(page),
+    Promise.resolve().then(() => sessionInputRows(sessionId)),
+    Promise.resolve().then(() => sessionResponseRows(sessionId)),
+    Promise.resolve().then(() => sessionInteractionRows(sessionId)),
     Promise.resolve().then(() => nativeRows(sessionId)),
   ]);
   await info.attach('pi-native-dialog-scene', {
     body: JSON.stringify({ sessionId, ownedAgent, observations, reads }), contentType: 'application/json',
   });
 });
-
-function pipeFor(turnId: string): string | null {
-  const anchors = [
-    object(snapshotDoc(sessionId)?.current_turn_engine_anchor).engine_turn_id,
-    ...framesForTurn(turnId).map((frame) => frame.engine_turn_id),
-    ...sessionEvents(sessionId).filter((event) => event.turn_id === turnId)
-      .map((event) => object(event.payload).engine_turn_id),
-  ].filter((value): value is string => typeof value === 'string' && value.startsWith('pi-rpc-v1.'));
-  const pipes = [...new Set(anchors.map((anchor) =>
-    String(object(JSON.parse(Buffer.from(anchor.slice('pi-rpc-v1.'.length), 'base64url').toString())).pty_session_id)))];
-  if (pipes.length === 0) return null;
-  expect(pipes, 'the actual native receipt must name exactly one retained Pi pipe').toHaveLength(1);
-  expect(pipes[0]).not.toBe('undefined');
-  return pipes[0]!;
-}
 
 /** Read supplier stdout without stealing the platform's pipe or writing any RPC. */
 function nativeOutput(handle: SandboxHandle, pipeId: string): Record<string, unknown>[] {
@@ -75,7 +65,7 @@ function nativeOutput(handle: SandboxHandle, pipeId: string): Record<string, unk
 }
 
 async function noFailure(page: Page, phase: 'live' | 'idle' = 'live'): Promise<void> {
-  const bodies = await aiStreamBodies(page);
+  const bodies = await sessionStreamBodies(page);
   const frames = bodies.flatMap((body) => body.text.slice(0, body.text.lastIndexOf('\n') + 1)
     .split('\n').flatMap((line) => {
       if (!line.startsWith('data:')) return [];
@@ -86,27 +76,46 @@ async function noFailure(page: Page, phase: 'live' | 'idle' = 'live'): Promise<v
   if (phase === 'live') {
     expect(frames.length, 'observe the real browser stream, not just its final DOM').toBeGreaterThan(0);
   }
-  expect(frames.filter((frame) => ['error', 'data-turn-failure'].includes(String(frame.type))),
+  expect(frames.filter((frame) => ['error', 'data-input-failed'].includes(String(frame.type))),
     'a transient error is a failure even when the panel later recovers').toEqual([]);
   expect(frames.filter((frame) => String(frame.type).startsWith('tool-')),
     'a native UI dialog is not a fabricated model tool call').toEqual([]);
-  expect(sessionEvents(sessionId).filter((event) => event.event_type === 'turn.failed')).toEqual([]);
-  await expect(page.getByTestId('run-view').getByText(
-    /本轮执行失败|上一条消息已送达沙箱，但这一轮执行失败了|This turn failed/i,
-  )).toHaveCount(0);
+  expect(sessionResponseRows(sessionId).filter((row) => row.outcome === 'failed')).toEqual([]);
+  expect(sessionInputRows(sessionId).filter((row) => row.state === 'failed')).toEqual([]);
+  await expect(page.getByTestId('run-view').getByText(/本轮执行失败|This turn failed/i)).toHaveCount(0);
 }
 
-async function completed(api: AstraApi, previous: string | null | undefined): Promise<string> {
-  const session = await api.waitForSession(sessionId, (value) => {
-    if (value.last_turn_status === 'FAILED' || value.last_error) {
+/**
+ * Wait for Pi to finish an extension command that writes no conversation.
+ *
+ * Pi answers the command's prompt with a `handled` receipt once its handler
+ * returns, and the session's reader admits the input at that receipt
+ * (`engine/pi_runtime_client.py`).
+ */
+async function handledCommand(api: AstraApi, content: string): Promise<SessionInputRow> {
+  const command = () => sessionInputRows(sessionId).filter((row) => row.content === content);
+  await expect.poll(() => command().map((row) => row.state), {
+    timeout: 30_000, message: `Pi must take ${content} with its own receipt`,
+  }).toEqual(['admitted']);
+  await api.waitForSession(sessionId, (value) => {
+    if (value.last_error) throw new Error(`native command failed: ${JSON.stringify(value)}`);
+    return value.state === 'READY' && !(value.current_responses ?? []).length && !value.pending_interaction;
+  }, 30_000);
+  const input = command()[0]!;
+  expect(sessionResponseRows(sessionId).filter((row) => row.input_ids.includes(input.input_id)),
+    'a command that writes no conversation is answered by no invented response').toEqual([]);
+  return input;
+}
+
+/** Wait until the response a dialog paused has ended and nothing else runs or waits. */
+async function settledOn(api: AstraApi, responseId: string): Promise<SessionRecord> {
+  return api.waitForSession(sessionId, (value) => {
+    if (value.last_response?.outcome === 'failed' || value.last_error) {
       throw new Error(`native command failed: ${JSON.stringify(value)}`);
     }
-    return Boolean(value.last_turn_id && value.last_turn_id !== previous
-      && value.last_turn_status === 'COMPLETED' && value.state === 'READY'
-      && !value.current_turn_id && !value.pending_interaction);
+    return value.state === 'READY' && !(value.current_responses ?? []).length && !value.pending_interaction
+      && value.last_response?.response_id === responseId;
   }, 30_000);
-  await waitForTurnTerminalProof(sessionId, String(session.last_turn_id), 'COMPLETED', 5_000);
-  return String(session.last_turn_id);
 }
 
 test('Pi native command dialog survives reload without inventing a tool call', async ({ page, request }) => {
@@ -192,28 +201,26 @@ test('Pi native command dialog survives reload without inventing a tool call', a
 
   await mirrorSseBodies(page);
   await openSessionView(page, sessionId);
-  const beforeReload = (await api.getSession(sessionId)).last_turn_id;
   await sendPrompt(page, sessionId, '/reload-runtime');
-  // A supplier slash command ends by RPC response, not by a made-up agent_end.
-  const reloading = await api.waitForSession(sessionId, (value) => Boolean(value.current_turn_id
-    || (value.last_turn_id && value.last_turn_id !== beforeReload)), 15_000);
-  const reloadTurn = String(reloading.current_turn_id || reloading.last_turn_id);
-  await expect.poll(() => pipeFor(reloadTurn), { timeout: 15_000 }).not.toBeNull();
-  const pipe = pipeFor(reloadTurn)!;
+  // A supplier slash command ends by its RPC receipt, not by a made-up agent_end.
+  const reload = await handledCommand(api, '/reload-runtime');
+  await expect.poll(() => currentPiPipe(sessionId), { timeout: 15_000 }).not.toBeNull();
+  const pipe = currentPiPipe(sessionId)!;
   const initialNative = nativeOutput(handle, pipe);
   expect(initialNative.filter((row) => row.type === 'response' && row.command === 'get_state')
     .some((row) => row.success === true && object(row.data).sessionId === nativeSessionId),
   'reload must run on the already initialized native conversation').toBe(true);
   const initialAcks = initialNative.filter((row) => row.type === 'response' && row.command === 'prompt');
-  expect(initialAcks).toHaveLength(1);
-  expect(initialAcks[0]).toMatchObject({ success: true });
-  observations.push({ reloadTurn, initialNative });
-  expect(await completed(api, beforeReload)).toBe(reloadTurn);
-  await noFailure(page);
+  expect(initialAcks, 'the receipt Pi wrote for the reload names its platform input').toEqual([expect.objectContaining({
+    id: reload.input_id, success: true, data: expect.objectContaining({ disposition: 'handled' }),
+  })]);
+  observations.push({ reload, initialNative });
+  // The reload writes no conversation, so the page's stream has nothing to carry yet.
+  await noFailure(page, 'idle');
 
   await sendPrompt(page, sessionId, '/astrabox-dialog');
   const waiting = await api.waitForSession(sessionId, (value) => {
-    if (value.last_turn_status === 'FAILED' || value.last_error) {
+    if (value.last_response?.outcome === 'failed' || value.last_error) {
       throw new Error(`native dialog failed: ${JSON.stringify(value)}`);
     }
     return Boolean(value.pending_interaction);
@@ -226,9 +233,14 @@ test('Pi native command dialog survives reload without inventing a tool call', a
   expect(raw.id).toEqual(expect.any(String));
   expect(String(raw.id).trim()).not.toBe('');
   expect(pending.interaction_id).toBe(raw.id);
-  expect(pending.turn_id).toEqual(expect.any(String));
-  expect(String(pending.turn_id).trim()).not.toBe('');
-  const dialogTurn = String(pending.turn_id);
+  const dialogResponse = String(pending.response_id ?? '').trim();
+  expect(dialogResponse, 'the dialog pauses a response').not.toBe('');
+  expect(sessionInteractionRows(sessionId), 'the platform keeps the dialog open on that response').toEqual([
+    expect.objectContaining({ interaction_id: raw.id, response_id: dialogResponse, status: 'open', answer: null }),
+  ]);
+  expect(object(sessionInteractionRows(sessionId)[0]!.contract).raw_input).toEqual(raw);
+  expect(sessionResponseRows(sessionId).filter((row) => row.response_id === dialogResponse))
+    .toEqual([expect.objectContaining({ status: 'waiting', outcome: null })]);
   const pausedNative = nativeOutput(handle, pipe);
   const requests = pausedNative.filter((row) => row.type === 'extension_ui_request'
     && row.method === 'confirm' && row.title === marker);
@@ -244,18 +256,21 @@ test('Pi native command dialog survives reload without inventing a tool call', a
   await expect(panel).toContainText(marker);
   expect((await api.getPendingInteraction(sessionId))?.interaction_id).toBe(raw.id);
   const historyPending = object((await api.getMessages(sessionId, 100)).pending_interaction);
-  expect(historyPending).toMatchObject({ interaction_id: raw.id, turn_id: dialogTurn });
+  expect(historyPending).toMatchObject({ interaction_id: raw.id, response_id: dialogResponse });
   expect(String(historyPending.tool_call_id ?? '')).toBe('');
   const yes = panel.getByRole('radio', { name: /^1\.\s+Yes$/ });
   await yes.click();
   await expect(yes).toBeChecked();
+  const answerPath = apiPath(`/sessions/${sessionId}/interactions/${encodeURIComponent(String(raw.id))}/answer`);
   const answerResponse = page.waitForResponse((response) => response.request().method() === 'POST'
-    && response.url().includes(`/sessions/${sessionId}/interaction-respond`));
+    && new URL(response.url()).pathname === answerPath);
   await panel.getByRole('button', { name: /Submit answer|提交回答/ }).click();
   const answered = await answerResponse;
   expect(answered.status()).toBe(200);
-  expect(object(answered.request().postDataJSON()).interaction_id).toBe(raw.id);
-  expect(await completed(api, reloadTurn)).toBe(dialogTurn);
+  const answer = object(object(answered.request().postDataJSON()).answer);
+  expect(answer.answers, 'the person chose the native Yes').toEqual([{ question_id: raw.id, option_label: 'Yes' }]);
+  const settled = await settledOn(api, dialogResponse);
+  expect(settled.last_response).toMatchObject({ status: 'ended', outcome: 'completed' });
   expect(JSON.parse(await api.downloadFileText(sessionId, resultPath, 10_000)))
     .toEqual({ marker, confirmed: true });
   const finalNative = nativeOutput(handle, pipe);
@@ -266,9 +281,6 @@ test('Pi native command dialog survives reload without inventing a tool call', a
   expect(finalNative.filter((row) => ['agent_start', 'agent_end', 'agent_settled',
     'tool_execution_start', 'tool_execution_end', 'extension_error'].includes(String(row.type)))).toEqual([]);
   observations.push({ finalNative });
-  // Pi 0.85.1 SessionManager._persist defers a new file until its first assistant
-  // message. This zero-model command still emits a real entry; retain that event
-  // in platform custody. The post-model command case checks the native file mirror.
   const appended = finalNative.filter((row) => row.type === 'entry_appended'
     && object(row.entry).customType === 'astrabox-dialog-result');
   expect(appended).toHaveLength(1);
@@ -276,25 +288,36 @@ test('Pi native command dialog survives reload without inventing a tool call', a
     type: 'custom', id: expect.any(String), data: { marker, confirmed: true },
   });
   expect(String(object(appended[0]!.entry).id).trim()).not.toBe('');
-  const persistedEntries = sessionEvents(sessionId).filter((event) => {
-    const payload = object(event.payload);
-    return event.turn_id === dialogTurn && event.event_type === 'engine.diagnostic'
-      && payload.event_type === 'pi.rpc' && payload.subtype === 'entry_appended';
-  }).map((event) => object(event.payload).raw);
-  expect(persistedEntries, 'persist the exact supplier entry event, without inventing a SessionStore file')
-    .toEqual(appended);
-  observations.push({ appended, persistedEntries });
+  observations.push({ appended });
+  // The platform's records of the same command: Pi took the person's input with
+  // its own receipt, the response the dialog paused ended with Pi's own word for
+  // that receipt, and the dialog closed with the answer the person gave.
+  const command = sessionInputRows(sessionId).filter((row) => row.content === '/astrabox-dialog');
+  expect(command).toEqual([expect.objectContaining({ input_id: acks[1]!.id, state: 'admitted' })]);
+  expect(object(acks[1]!.data).disposition).toBe('handled');
+  expect(sessionResponseRows(sessionId).filter((row) => row.response_id === dialogResponse)).toEqual([
+    expect.objectContaining({ status: 'ended', outcome: 'completed', native_reason: object(acks[1]!.data).disposition }),
+  ]);
+  expect(sessionInteractionRows(sessionId)).toEqual([
+    expect.objectContaining({ interaction_id: raw.id, response_id: dialogResponse, status: 'answered', answer }),
+  ]);
+  const parts = sessionOutputRows(sessionId, dialogResponse).map((row) => row.part);
+  expect(parts.filter((part) => part.type === 'data-interaction').map((part) => object(part.data).interaction_id))
+    .toEqual([raw.id]);
+  expect(parts.filter((part) => part.type === 'finish').map((part) => part.finishReason),
+    'the response pauses at the dialog and ends once, when the command returns').toEqual(['tool-calls', 'other']);
+  expect(parts.filter((part) => part.type === 'error' || String(part.type).startsWith('tool-'))).toEqual([]);
   const history = await api.getMessages(sessionId, 100);
-  expect(history.messages.flatMap((message) => message.blocks ?? [])
-    .filter((block) => ['tool_use', 'tool_result'].includes(String(block.type)))).toEqual([]);
+  expect(history.messages.flatMap(messageToolCalls), 'a native dialog is not shown as a tool call').toEqual([]);
   await expect(panel).toHaveCount(0);
   await noFailure(page);
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(page.getByTestId('run-view')).toBeVisible();
   await expect(panel).toHaveCount(0);
-  expect((await api.getSession(sessionId)).last_turn_status).toBe('COMPLETED');
+  expect((await api.getSession(sessionId)).last_response)
+    .toMatchObject({ response_id: dialogResponse, outcome: 'completed' });
   expect(JSON.parse(await api.downloadFileText(sessionId, resultPath, 10_000)))
     .toEqual({ marker, confirmed: true });
-  // Cold READY history does not require replaying an already completed live turn.
+  // Cold READY history does not require replaying an already completed live response.
   await noFailure(page, 'idle');
 });

@@ -1,8 +1,4 @@
-"""Shared session helpers for the session kernel.
-
-Runtime startup, recovery, and stream ownership are owned by
-``session_kernel`` workers.
-"""
+"""Session records and ownership checks shared by the session lifecycle and the API."""
 
 from __future__ import annotations
 
@@ -11,14 +7,13 @@ import time
 import uuid
 from typing import Any
 
-from astrabox.persistence.repository import MessageRepository, SessionRepository
+from astrabox.persistence.repository.session_repository import SessionRepository
 from astrabox.persistence.repository.user_profile_repository import UserProfileRepository
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.time_utils import parse_iso, plus_seconds_iso, utcnow
 from astrabox.common.utils.user_context import UserContext, default_org_id
 from astrabox.core.model import SessionState
-from astrabox.core.service.orchestrator.event_broker import SessionEventBroker
 from astrabox.core.service.orchestrator.message_blocks import normalize_message_blocks
 from astrabox.core.service.orchestrator.runtime_manager import RemoteAgentRuntimeManager
 from astrabox.core.service.orchestrator.runtime_binding import (
@@ -33,9 +28,7 @@ from astrabox.seams.sandbox import (
 # astrabox.providers.register_builtin_providers() at runtime_manager / app
 # bootstrap, so no side-effect import is needed here.
 from astrabox.core.service.orchestrator.sandbox_lifecycle import new_sandbox_callback_fields
-from astrabox.core.service.orchestrator.session_kernel.permission_lifecycle import (
-    PermissionLifecycle,
-)
+from astrabox.core.service.orchestrator.session_lifecycle.permission_modes import resolve_initial_mode
 from astrabox.core.service.orchestrator.engine.capabilities import (
     require_engine_for_session_kind,
 )
@@ -58,31 +51,24 @@ class SessionService:
         self,
         *,
         sessions_repo: SessionRepository,
-        messages_repo: MessageRepository,
         agent_config: AgentConfigService,
         runtime_manager: RemoteAgentRuntimeManager,
-        broker: SessionEventBroker,
         ttl_seconds: int,
         spawn_background_task,
         assistant_workspace_service: Any | None = None,
         vault_service: VaultService | None = None,
     ) -> None:
         self._sessions_repo = sessions_repo
-        self._messages_repo = messages_repo
         self._agent_config = agent_config
         self._runtime_manager = runtime_manager
-        self._broker = broker
         self._ttl_seconds = ttl_seconds
         self._spawn_background_task = spawn_background_task
         self._assistant_workspace_service = assistant_workspace_service
         self._vault_service = vault_service or VaultService()
-        self._session_snapshots_repo = None
-        self._interaction_snapshots_repo = None
 
     async def create_session_record(
         self,
         user: UserContext,
-        template_name: str,
         permission_mode: str | None = None,
         *,
         hidden: bool = False,
@@ -104,7 +90,7 @@ class SessionService:
         if template is None:
             raise APIError(
                 code="TEMPLATE_NOT_ALLOWED",
-                message=f"agent '{agent_id or template_name}' not found or not permitted",
+                message=f"agent '{agent_id or owner_id or ''}' not found or not permitted",
                 status_code=403,
             )
 
@@ -156,7 +142,6 @@ class SessionService:
                     kind=ADMISSION_KIND_SANDBOX,
                     user_id=str(getattr(user, "user_id", "") or ""),
                     agent_id=str(agent_id or "").strip() or None,
-                    template_name=template_name,
                 )
             )
             from astrabox.observability.metrics import (
@@ -179,7 +164,7 @@ class SessionService:
             str(getattr(template, "engine_kind", "") or "").strip(),
             session_kind,
         )
-        effective_permission_mode = PermissionLifecycle.resolve_initial_mode(
+        effective_permission_mode = resolve_initial_mode(
             permission_mode,
             session_kind=session_kind,
             engine_kind=engine_kind,
@@ -189,9 +174,6 @@ class SessionService:
             "session_id": resolved_session_id,
             "user_id": user.user_id,
             "org_id": user.org_id,
-            # Display/grouping label for the session's harness (the agent's name).
-            # Resolution keys off agent_id / workspace_ref, not this string.
-            "template_name": template.name,
             # Persisted backend (persisted truth): every session carries a concrete
             # backend name so by-id control-plane ops dispatch by it, never by guessing
             # from the sandbox id. The template's None means the deployment-configured
@@ -319,12 +301,6 @@ class SessionService:
         )
         return {"session_id": session_id, "sandbox_id": sandbox_id, "url": url}
 
-    @staticmethod
-    def _is_runtime_initialize_timeout_error(exc: APIError) -> bool:
-        if str(exc.code or "").strip() != "AGENT_RUNTIME_ERROR":
-            return False
-        message = str(exc.message or "")
-        return "Control request timeout: initialize" in message
 
     @staticmethod
     def _is_session_expired(session: dict[str, Any]) -> bool:
@@ -425,13 +401,10 @@ class SessionService:
     ) -> tuple[str | None, str | None]:
         """The client-visible recovery posture for one rendered session.
 
-        Shared by direct/admin reads and the snapshot-backed Session read so
-        the two can never drift. Outside ``RECOVERY_REQUIRED`` both
-        fields are ``None``. Inside it, the persisted reason — what the
-        recover worker actually determined (``sandbox_missing`` /
-        ``sandbox_expired`` / ``sandbox_reattach_failed``) — wins; the
-        heuristics below are only the fallback vocabulary for rows no
-        recovery pass has classified yet.
+        Shared by every Session read so they cannot drift. Outside
+        ``RECOVERY_REQUIRED`` both fields are ``None``. Inside it, the
+        persisted reason a recovery recorded wins; the fallbacks below name a
+        row no recovery has classified.
         """
         if state != SessionState.RECOVERY_REQUIRED.value:
             return None, None
@@ -442,11 +415,3 @@ class SessionService:
         if bool(row.get("runtime_unavailable")):
             return policy, "runtime_detached"
         return policy, "session_recovery_required"
-
-    @staticmethod
-    def _sanitize_message(message: dict[str, Any]) -> dict[str, Any]:
-        clean = dict(message)
-        clean.pop("_id", None)
-        if isinstance(clean.get("blocks"), list):
-            clean["blocks"] = normalize_message_blocks(clean.get("blocks"))
-        return clean

@@ -1,5 +1,7 @@
 # 分页
 
+> 使用 AstraBox 列表接口提供的游标分页和页码分页方式。
+
 AstraBox API 的 Session 分页列表采用**游标分页**（Cursor-based Pagination）。使用上一页
 响应中的 `next_cursor` 作为下一次请求的 `cursor` 参数。游标代表有序列表中的不透明位置，
 不是数据变化时保持不变的快照。
@@ -94,29 +96,31 @@ next_cursor=""
 page_num=1
 
 while true; do
-  # 构造 URL
   url="$BASE_URL/sessions?page=1&limit=50"
   if [ -n "$next_cursor" ]; then
     url="$url&cursor=$next_cursor"
   fi
 
-  # 发起请求
   response=$(curl --fail --silent --show-error "$url" \
     -H "Authorization: Bearer $ACCESS_TOKEN")
 
-  # 解析响应
   count=$(echo "$response" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d['data']['sessions']))")
   next_cursor=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin)['data'].get('next_cursor') or '')")
 
   echo "第 ${page_num} 页：获取 ${count} 条记录"
+
+  echo "$response" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)['data']['sessions']
+for item in data:
+    print(f\"  - {item['session_id']}: {item.get('title') or 'untitled'}\")
+"
 
   if [ -z "$next_cursor" ]; then
     break
   fi
 
   page_num=$((page_num + 1))
-
-  # 请求间隔，避免过快
   sleep 0.1
 done
 

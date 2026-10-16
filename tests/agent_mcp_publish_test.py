@@ -1,18 +1,13 @@
-"""Published Agent MCP journey: real client protocol, identity, and Agent ACL."""
+"""Published Agent MCP facade: real client protocol, identity, and Agent ACL."""
 
 from __future__ import annotations
 
-import asyncio
-
-from typing import Any, AsyncIterator, Mapping
+from typing import Any, Mapping
 
 import httpx
-import httpx2
 import pytest
 from fastapi import FastAPI
-from mcp import ClientSession
-from mcp.client.streamable_http import streamable_http_client
-from mcp_types.version import LATEST_HANDSHAKE_VERSION, LATEST_PROTOCOL_VERSION
+from mcp_types.version import LATEST_PROTOCOL_VERSION
 
 from astrabox.api.routes import agent_mcp as route_module
 from astrabox.common.utils.errors import APIError
@@ -23,7 +18,6 @@ from astrabox.core.service.orchestrator.mcp_client_token_service import (
 )
 from astrabox.core.service.orchestrator.agent_access import can_view_agent
 from astrabox.web.identity_middleware import WebIdentityMiddleware, _is_exempt_path
-from tests.e2e.test_mcp_client_journey import _recent_messages
 
 
 class _AgentRepository:
@@ -55,116 +49,12 @@ class _AgentRepository:
 class _Platform:
     def __init__(self) -> None:
         self.sessions: dict[str, dict[str, Any]] = {}
-        self.messages: dict[str, list[dict[str, Any]]] = {}
-        self.creating_reads_before_ready = 0
-        #: Every background task the facade handed over, by name. Modelled
-        #: rather than stubbed away: the drain outliving its tool call is part
-        #: of the contract, so a double that silently dropped it would agree
-        #: with a facade that leaks one.
-        self.spawned: list[str] = []
-
-    def _spawn_background_task(self, coro: Any, *, name: str | None = None) -> Any:
-        self.spawned.append(str(name or ""))
-        return asyncio.ensure_future(coro)
-
-    async def stream_message_events_ds(
-        self,
-        user: UserContext,
-        session_id: str,
-        instruction: str,
-        client_message_id: str | None = None,
-    ) -> AsyncIterator[dict[str, Any]]:
-        # Faithful to the real signature, and the stamp is load-bearing: the
-        # dispatch refuses unstamped input, so a facade that stopped minting
-        # one would fail here rather than four layers down on a live box.
-        assert client_message_id, "the MCP facade must stamp every send"
-        session = self.sessions[session_id]
-        assert session["owner_id"] == user.user_id
-        self.messages[session_id].append(
-            {"role": "user", "content": instruction, "turn_id": "turn-1"}
-        )
-        session["state"] = "WAITING_INPUT"
-        session["pending_interaction"] = {
-            "interaction_id": "interaction-1",
-            "tool_name": "AskUserQuestion",
-            "pending_interaction": {
-                "presentation": "form",
-                "questions": [
-                    {
-                        "id": "choice",
-                        "question": "Continue?",
-                        "options": [{"label": "Yes"}, {"label": "No"}],
-                    }
-                ],
-            },
-        }
-        yield {"type": "turn_started"}
-        yield {"type": "turn_waiting_for_input"}
-
-    async def get_session(
-        self, user: UserContext, session_id: str
-    ) -> dict[str, Any]:
-        session = self.sessions[session_id]
-        if session["owner_id"] != user.user_id:
-            raise APIError("SESSION_NOT_FOUND", "session not found", 404)
-        if session["state"] == "CREATING":
-            if self.creating_reads_before_ready > 0:
-                self.creating_reads_before_ready -= 1
-            else:
-                session["state"] = "READY"
-        return dict(session)
-
-    async def get_messages(
-        self,
-        user: UserContext,
-        session_id: str,
-        *,
-        limit: int,
-    ) -> dict[str, Any]:
-        session = self.sessions[session_id]
-        assert session["owner_id"] == user.user_id
-        return {"messages": list(self.messages[session_id][-limit:])}
-
-    async def answer_pending_interaction(
-        self,
-        user: UserContext,
-        session_id: str,
-        interaction_id: str,
-        answer: dict[str, Any],
-    ) -> None:
-        session = self.sessions[session_id]
-        assert session["owner_id"] == user.user_id
-        assert interaction_id == "interaction-1"
-        assert answer == {
-            "answers": [{"question_id": "choice", "option_label": "Yes"}]
-        }
-        session["state"] = "READY"
-        session["pending_interaction"] = None
-        self.messages[session_id].append(
-            {
-                "role": "assistant",
-                "content": "Finished after your answer.",
-                "turn_id": "turn-1",
-            }
-        )
-
-    async def interrupt(self, user: UserContext, session_id: str) -> None:
-        session = self.sessions[session_id]
-        assert session["owner_id"] == user.user_id
-        session["state"] = "READY"
-
-    async def recover_session(self, user: UserContext, session_id: str) -> None:
-        _ = user
-        self.sessions[session_id]["state"] = "READY"
 
 
 class _AgentService:
     def __init__(self) -> None:
         self._agent_repo = _AgentRepository()
         self._platform = _Platform()
-        self.started_by: list[str] = []
-        self.started_context: list[tuple[str, str, list[str]]] = []
-        self.conversation_initial_state = "READY"
 
     async def list_agents(self, user: UserContext) -> list[dict[str, Any]]:
         return [
@@ -177,17 +67,12 @@ class _AgentService:
         self, user: UserContext, agent_id: str
     ) -> dict[str, str]:
         session_id = f"session-{len(self._platform.sessions) + 1}"
-        self.started_by.append(user.user_id)
-        self.started_context.append((user.user_id, user.org_id, list(user.roles)))
         self._platform.sessions[session_id] = {
             "session_id": session_id,
             "session_kind": "agent_chat",
             "agent_id": agent_id,
             "owner_id": user.user_id,
-            "state": self.conversation_initial_state,
-            "pending_interaction": None,
         }
-        self._platform.messages[session_id] = []
         return {"session_id": session_id, "agent_id": agent_id}
 
     async def wake_agent(self, user: UserContext, agent_id: str) -> None:
@@ -225,152 +110,6 @@ def _app(monkeypatch: pytest.MonkeyPatch) -> tuple[FastAPI, _AgentService]:
         capability_bearer_paths={"/api/v1/mcp": (SECRET_PREFIX,)},
     )
     return app, agent_service
-
-
-@pytest.mark.asyncio
-async def test_real_mcp_client_completes_waiting_input_journey(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    app, agent_service = _app(monkeypatch)
-    http_client = httpx2.AsyncClient(
-        base_url="http://astrabox.test",
-        headers={"Authorization": "Bearer oidc-alice-access-token"},
-        transport=httpx2.ASGITransport(app=app),
-    )
-
-    async with http_client:
-        async with streamable_http_client(
-            "http://astrabox.test/api/v1/mcp",
-            http_client=http_client,
-            terminate_on_close=False,
-        ) as (read_stream, write_stream):
-            async with ClientSession(read_stream, write_stream) as session:
-                initialized = await session.initialize()
-                assert initialized.protocol_version == LATEST_HANDSHAKE_VERSION
-
-                tools = await session.list_tools()
-                assert {tool.name for tool in tools.tools} == {
-                    "list_agents",
-                    "create_conversation",
-                    "send_message",
-                    "get_status",
-                    "answer_interaction",
-                    "cancel_task",
-                }
-
-                listed = await session.call_tool("list_agents", {})
-                assert listed.is_error is False
-                assert listed.structured_content is not None
-                assert [
-                    agent["agent_id"]
-                    for agent in listed.structured_content["agents"]
-                ] == ["agent-a"]
-
-                created = await session.call_tool(
-                    "create_conversation", {"agent_id": "agent-a"}
-                )
-                assert created.is_error is False
-                assert created.structured_content is not None
-                session_id = str(created.structured_content["session_id"])
-                assert created.structured_content["session_url_path"] == (
-                    f"/sessions/{session_id}"
-                )
-
-                sent = await session.call_tool(
-                    "send_message",
-                    {
-                        "agent_id": "agent-a",
-                        "session_id": session_id,
-                        "instruction": "Do the work",
-                    },
-                )
-                assert sent.structured_content is not None
-                assert sent.structured_content["state"] == "SUBMITTED"
-
-                waiting = await session.call_tool(
-                    "get_status",
-                    {"agent_id": "agent-a", "session_id": session_id},
-                )
-                assert waiting.structured_content is not None
-                assert waiting.structured_content["state"] == "WAITING_INPUT"
-                pending = waiting.structured_content["pending_interaction"]
-                assert pending["interaction_id"] == "interaction-1"
-
-                answered = await session.call_tool(
-                    "answer_interaction",
-                    {
-                        "agent_id": "agent-a",
-                        "session_id": session_id,
-                        "interaction_id": "interaction-1",
-                        "answer": {
-                            "answers": [
-                                {
-                                    "question_id": "choice",
-                                    "option_label": "Yes",
-                                }
-                            ]
-                        },
-                    },
-                )
-                assert answered.is_error is False
-
-                completed = await session.call_tool(
-                    "get_status",
-                    {"agent_id": "agent-a", "session_id": session_id},
-                )
-                assert completed.structured_content is not None
-                assert completed.structured_content["state"] == "READY"
-                assert _recent_messages(completed.structured_content)[-1]["content"] == (
-                    "Finished after your answer."
-                )
-
-    assert agent_service.started_by == ["alice"]
-    assert agent_service.started_context == [
-        ("alice", "oidc-tenant", ["developer"])
-    ]
-
-
-@pytest.mark.asyncio
-async def test_immediate_message_waits_for_conversation_creation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    app, agent_service = _app(monkeypatch)
-    agent_service.conversation_initial_state = "CREATING"
-    agent_service._platform.creating_reads_before_ready = 1
-    monkeypatch.setattr(
-        "astrabox.core.service.orchestrator.agent.agent_mcp_service."
-        "_SESSION_CREATION_POLL_SECONDS",
-        0.001,
-    )
-    http_client = httpx2.AsyncClient(
-        base_url="http://astrabox.test",
-        headers={"Authorization": "Bearer oidc-alice-access-token"},
-        transport=httpx2.ASGITransport(app=app),
-    )
-
-    async with http_client:
-        async with streamable_http_client(
-            "http://astrabox.test/api/v1/mcp",
-            http_client=http_client,
-            terminate_on_close=False,
-        ) as (read_stream, write_stream):
-            async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
-                created = await session.call_tool(
-                    "create_conversation", {"agent_id": "agent-a"}
-                )
-                assert created.structured_content is not None
-                sent = await session.call_tool(
-                    "send_message",
-                    {
-                        "agent_id": "agent-a",
-                        "session_id": created.structured_content["session_id"],
-                        "instruction": "Start as soon as provisioning is ready",
-                    },
-                )
-
-    assert sent.structured_content is not None
-    assert sent.structured_content["state"] == "SUBMITTED"
 
 
 @pytest.mark.asyncio
@@ -511,6 +250,7 @@ def test_public_mcp_is_not_exempt_from_shared_http_identity() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("database")
 async def test_a_deployment_issued_key_passes_the_strict_front_door(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

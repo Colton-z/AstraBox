@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from sqlalchemy import select
 
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
@@ -25,23 +26,13 @@ from astrabox.core.service.orchestrator.mcp_client_token_service import (
     digest_secret,
     require_scope_for_tool,
 )
-from astrabox.persistence.repository.mcp_client_token_repository import (
-    MCP_CLIENT_TOKENS_COLLECTION,
-    MCPClientTokenRepository,
-)
-from astrabox.persistence.repository.backend import get_async_collection
+from astrabox.persistence.repository.mcp_client_token_repository import MCPClientTokenRepository
+from astrabox.persistence.sql import fetch_one
+from astrabox.persistence.sql.models.mcp import MCPClientToken
 
+pytestmark = pytest.mark.usefixtures("database")
 
-@pytest.fixture(autouse=True)
-def _isolated_sqlite_state(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
-    from astrabox.config.settings import get_settings
-
-    monkeypatch.setenv("ASTRABOX_STATE_DIR", str(tmp_path))
-    monkeypatch.setenv("ASTRABOX_DB_BACKEND", "sqlite")
-    monkeypatch.delenv("ASTRABOX_DB_URL", raising=False)
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
+_TOKENS = MCPClientToken.__table__
 
 
 _ALICE = UserContext(user_id="u-alice")
@@ -111,30 +102,6 @@ async def test_the_gate_is_wired_at_the_dispatch_point_not_only_available() -> N
     assert caught.value.code == "MCP_TOKEN_SCOPE_INSUFFICIENT"
 
 
-async def test_a_converse_key_reaches_every_tool() -> None:
-    """The other side of the same fence — a scope that refused everything
-    would satisfy the test above on its own."""
-    service = _service()
-    issued = await service.issue(_ALICE, name="cursor", scope=SCOPE_CONVERSE)
-    _user, scope = await service.resolve(issued["secret"])
-
-    for tool in (
-        "list_agents",
-        "get_status",
-        "create_conversation",
-        "send_message",
-        "answer_interaction",
-        "cancel_task",
-    ):
-        require_scope_for_tool(scope, tool)
-
-
-async def test_a_full_identity_is_not_narrowed() -> None:
-    """`None` is a person who signed in, not an absent restriction."""
-    for tool in ("list_agents", "send_message"):
-        require_scope_for_tool(None, tool)
-
-
 # --- what stops granting ----------------------------------------------------
 
 
@@ -154,21 +121,6 @@ async def test_a_revoked_key_stops_working_on_the_next_call() -> None:
     # whoever is probing which one they hold, and changes nothing a caller does.
     assert envelope["code"] == "UNAUTHORIZED"
     assert envelope["status_code"] == 401
-
-
-async def test_an_expired_key_says_so_because_the_recovery_differs() -> None:
-    service = _service()
-    issued = await service.issue(_ALICE, name="old", scope=SCOPE_CONVERSE)
-    collection = await get_async_collection(MCP_CLIENT_TOKENS_COLLECTION)
-    await collection.update_one(
-        {"token_id": issued["token_id"]},
-        {"$set": {"expires_at": "2000-01-01T00:00:00Z"}},
-    )
-
-    with pytest.raises(APIError) as caught:
-        await service.resolve(issued["secret"])
-
-    assert caught.value.to_error_envelope()["code"] == "TOKEN_EXPIRED"
 
 
 async def test_an_unknown_secret_is_refused_without_naming_why() -> None:
@@ -202,8 +154,7 @@ async def test_the_row_holds_a_digest_and_never_the_secret() -> None:
     issued = await service.issue(_ALICE, name="laptop", scope=SCOPE_CONVERSE)
     secret = issued["secret"]
 
-    collection = await get_async_collection(MCP_CLIENT_TOKENS_COLLECTION)
-    row = await collection.find_one({"token_id": issued["token_id"]})
+    row = await fetch_one(select(_TOKENS).where(_TOKENS.c.token_id == issued["token_id"]))
 
     assert row is not None
     stored = " ".join(str(value) for value in row.values())
@@ -248,46 +199,3 @@ async def test_an_unusable_scope_or_name_is_refused_at_issuance() -> None:
 
     with pytest.raises(APIError):
         await service.issue(_ALICE, name="ok", scope=SCOPE_READ, expires_in_days=0)
-
-
-async def test_send_message_refuses_a_blank_instruction_before_a_turn_exists() -> None:
-    """The argument that carries the message is enforced where it is named.
-
-    Unenforced, an empty instruction travels unexamined into the turn worker,
-    which creates a turn, dispatches it, and fails it — so a client that got the
-    field name wrong is answered with a FAILED turn and "content is empty" from
-    four layers down, rather than being told which argument it got wrong. The
-    agent service explodes on any attribute access, so this also pins that the
-    refusal happens before anything downstream is touched.
-    """
-    class _AgentRepo:
-        async def get_agent(self, agent_id: str) -> dict[str, Any]:
-            return {"agent_id": agent_id, "state": "ACTIVE", "access": "public"}
-
-    class _VisibleAgentNoTurns:
-        """Visible, active, and unable to start a turn.
-
-        The access check legitimately runs first — an argument must not be
-        validated for an agent the caller cannot see — so the double satisfies
-        that and explodes on the platform instead. Reaching `_platform` is
-        precisely the failure this test exists to catch: it is where a turn gets
-        created.
-        """
-
-        _agent_repo = _AgentRepo()
-
-        def __getattr__(self, name: str) -> Any:
-            raise AssertionError(f"a blank instruction reached {name}")
-
-    service = AgentMCPService(agent_service=_VisibleAgentNoTurns())
-
-    with pytest.raises(APIError) as caught:
-        await service.handle_tool_call(
-            _ALICE,
-            "send_message",
-            {"agent_id": "a-1", "session_id": "s-1", "message": "wrong field name"},
-            scope="converse",
-        )
-
-    assert caught.value.code == "INVALID_REQUEST"
-    assert "instruction" in caught.value.message

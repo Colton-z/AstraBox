@@ -177,16 +177,17 @@ test('AstraBox, LiteLLM, and Casdoor use isolated production PostgreSQL database
     'casdoor->casdoor|true',
   ]);
 
+  // The platform's own schema is in place: its session table and the
+  // revision the schema was brought to.
   expect(
-    Number(
-      postgresTextRows(
-        postgresContainer,
-        'astrabox',
-        'astrabox',
-        "SELECT to_regclass('public.astrabox_documents') IS NOT NULL;",
-      )[0] === 't',
+    postgresTextRows(
+      postgresContainer,
+      'astrabox',
+      'astrabox',
+      "SELECT (to_regclass('public.sessions') IS NOT NULL)::text || '|' "
+        + "|| (SELECT count(*) FROM alembic_version)::text;",
     ),
-  ).toBe(1);
+  ).toEqual(['true|1']);
   expect(
     Number(postgresTextRows(
       postgresContainer,

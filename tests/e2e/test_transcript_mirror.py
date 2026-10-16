@@ -1,36 +1,27 @@
-"""E2E proof that the in-box transcript mirror lands on the host store and comes back.
+"""A lost box: its open response fails, and a replacement box carries the conversation on.
 
-This is the load-bearing networking + producer proof for restoring a session
-into a replacement box. Every engine's box POSTs its transcript lines to the
-host ``/api/v1/transcript/{session_id}/append`` endpoint (the URL is built from
-``ASTRABOX_MCP_PROXY_BASE_URL``); the host persists each line into the durable
-``transcript_entries`` store — the externalized runtime truth recovery reads
-instead of the (possibly-dead) sandbox.
+The runtime owns its conversation and writes its own transcript; every engine's
+box mirrors that transcript to the platform (``transcript_scopes`` /
+``transcript_entries``), and that custody is what a replacement runtime resumes
+from when the box that wrote it is gone.
 
-A turn that streams text but leaves ``transcript_entries`` empty is the failure
-signature this test exists to catch: the container could not reach the host (a
-mis-wired / unreachable ``ASTRABOX_MCP_PROXY_BASE_URL`` — e.g. pointing at
-``host.docker.internal`` on a box where that is intercepted, instead of the host's
-LAN IP). That is a hard ``assert`` here, never a silent pass.
+What is proven, against a box destroyed the way a lost node destroys it:
 
-What it proves, end to end:
+* the response that was running when the box died ends ``failed`` with the
+  platform's reason ``sandbox_lost`` — on the stream, in history and in the
+  platform's own record — and its input is not run again;
+* the next message, which the dead runtime never received, gets a new box,
+  and that box answers it from the restored transcript: the project label it
+  asks for was said only to the box that is gone.
 
-* a first real turn plants a marker, and its ``transcript_entries`` rows land in
-  the running stack's PostgreSQL before the box is killed; and
-* a replacement box answers with the marker, which only the restored transcript
-  holds.
+Conversation tenancy is required for the same reason the kill is: the proof
+rests on the box that heard the label being gone. Under agent tenancy the box
+is the Agent's and outlives this conversation.
 
-Run it against the WIRED running stack (reuses it; boots nothing):
+Run it against a running deployment:
 
-    ASTRABOX_E2E_BASE_URL=http://localhost:8000 \
+    ASTRABOX_E2E_BASE_URL=http://localhost:8000 \\
       .venv/bin/python -m pytest tests/e2e/test_transcript_mirror.py -m e2e -s
-
-The SQL collection adapter stores every logical "collection" as rows in a single
-``astrabox_documents`` table partitioned by the ``collection`` column, with the
-document in the JSONB ``doc`` column; so ``transcript_entries`` rows are
-``collection='transcript_entries'`` and the mirror fields (``platform_session_id``,
-``entry_json`` …) live inside ``doc`` (see
-the shared SQL document adapter).
 """
 
 from __future__ import annotations
@@ -38,7 +29,6 @@ from __future__ import annotations
 import json
 import os
 import shlex
-import subprocess
 import time
 import uuid
 
@@ -46,67 +36,40 @@ import httpx
 import pytest
 
 from tests.e2e._sandbox_helpers import (
+    answer_in_history,
+    assert_database_is_the_live_stack,
     create_agent_variant_session,
-    environment_with_tenancy,
+    deadline_after,
+    destroy_box,
     engine_kind,
-    data,
+    environment_with_tenancy,
+    follow_reply,
     get_admin_session_detail,
     get_session,
-    release_session,
+    history,
+    permission_mode,
     poll_until_agent_ready,
-    stream_turn,
+    recorded_input,
+    recorded_response,
+    release_session,
+    send_and_follow,
+    tool_name,
+    transcript_entries,
+    user_messages,
+    wait_for_file,
     wait_until_settled,
-)
-from tests.e2e._service_containers import (
-    POSTGRES_CONTAINER_HANDLE,
-    require_service_container,
+    workspace_path,
 )
 
 pytestmark = pytest.mark.e2e
 
-# The mirror flush (batcher -> HTTP POST -> host persist) is async + best-effort,
-# so poll for it to land rather than reading once.
-MIRROR_LAND_TIMEOUT_S = float(os.getenv("ASTRABOX_E2E_MIRROR_TIMEOUT", "90"))
-
-
-def _sql_literal(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
-
-
-def _postgres_container() -> str:
-    return require_service_container(POSTGRES_CONTAINER_HANDLE)
-
-
-def _psql(sql: str) -> list[str]:
-    database = os.getenv("ASTRABOX_E2E_POSTGRES_DB", "astrabox")
-    user = os.getenv("ASTRABOX_E2E_POSTGRES_USER", "astrabox")
-    output = subprocess.check_output(
-        [
-            "docker",
-            "exec",
-            _postgres_container(),
-            "psql",
-            "-X",
-            "-A",
-            "-t",
-            "-q",
-            "-v",
-            "ON_ERROR_STOP=1",
-            "-U",
-            user,
-            "-d",
-            database,
-            "-c",
-            sql,
-        ],
-        text=True,
-        timeout=20,
-    )
-    return [line for line in output.splitlines() if line]
+# The mirror is the box's resident relay on a poll, so "the box answered" and
+# "the platform holds the transcript" are different moments; wait for the latter.
+MIRROR_LAND_TIMEOUT_S = float(os.getenv("ASTRABOX_E2E_MIRROR_TIMEOUT", "60"))
 
 
 def _assert_pi_settings(client: httpx.Client, sid: str, expected: dict) -> None:
-    """Read native config from the actual original or restored conversation."""
+    """Read native config from the actual original or replacement box."""
 
     from tests.e2e.test_terminal import _run_terminal
 
@@ -121,101 +84,25 @@ def _assert_pi_settings(client: httpx.Client, sid: str, expected: dict) -> None:
     assert {key: actual[key] for key in expected} == expected
 
 
-def _query_mirror_docs(platform_session_id: str) -> list[dict]:
-    """Read ``transcript_entries`` docs for one platform session, in append order.
-
-    Reads the live backend's committed PostgreSQL rows directly.
-    """
-    rows = _psql(
-        "SELECT doc::text FROM astrabox_documents "
-        "WHERE collection='transcript_entries' "
-        f"AND doc ->> 'platform_session_id' = {_sql_literal(platform_session_id)} "
-        "ORDER BY doc -> 'seq', seq"
-    )
-    return [json.loads(row) for row in rows]
-
-
-def _wait_for_mirror_docs(
-    platform_session_id: str, timeout: float, *, until: tuple[str, ...] = ()
-) -> list[dict]:
-    """Wait for the rows the caller is about to assert on, not for any row.
-
-    "Any row" is not the same question for every engine: one opens its log when
-    the conversation is created and has already recorded the permission preset
-    the platform set, so a wait for a non-empty store returns instantly with a
-    set that predates the turn — and the assertion below then fails on a mirror
-    that was merely still catching up.
-    """
-
-    deadline = time.monotonic() + timeout
-    docs: list[dict] = []
+def _wait_for_custody(sid: str, marker: str) -> None:
+    """Wait until the platform's copy of the runtime's transcript holds ``marker``."""
+    deadline = deadline_after(MIRROR_LAND_TIMEOUT_S)
+    entries: list[dict] = []
     while time.monotonic() < deadline:
-        docs = _query_mirror_docs(platform_session_id)
-        if docs:
-            present = {json.loads(d["entry_json"]).get("type") for d in docs}
-            if all(name in present for name in until):
-                return docs
-        time.sleep(1.5)
-    return docs
-
-
-def _assert_db_is_the_live_stack(sid: str, timeout: float = 15.0) -> None:
-    """Prove the selected PostgreSQL container belongs to the live deployment."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        rows = _psql(
-            "SELECT 1 FROM astrabox_documents "
-            f"WHERE doc ->> 'session_id' = {_sql_literal(sid)} LIMIT 1"
-        )
-        if rows:
+        entries = transcript_entries(sid)
+        if marker in json.dumps(entries):
             return
-        time.sleep(1.0)
+        time.sleep(1.5)
     pytest.fail(
-        f"session {sid} is not in PostgreSQL container {_postgres_container()} — "
-        "set ASTRABOX_E2E_POSTGRES_CONTAINER to the database used by the server."
+        f"the platform never held session {sid}'s transcript with {marker!r} before the "
+        f"box was destroyed ({len(entries)} entries); the replacement cannot be under test"
     )
-
-
-def _terminate_sandbox(client: httpx.Client, sid: str) -> str:
-    """Reclaim the session's sandbox and return the id it reports killing.
-
-    A turn's stream can close a beat before `conversation_state` leaves
-    STREAMING, so a terminate right after a settled turn can race a still-active
-    turn — a 409 the server marks retryable.
-    """
-    deadline = time.monotonic() + 30.0
-    while True:
-        resp = client.post(f"/api/v1/sessions/{sid}/sandbox/terminate", timeout=60.0)
-        if resp.status_code == 409 and time.monotonic() < deadline:
-            time.sleep(1.0)
-            continue
-        return str(data(resp).get("sandbox_id") or "")
 
 
 @pytest.mark.xdist_group("conversation-tenancy-box")
 def test_a_replacement_box_answers_from_the_restored_transcript(
     e2e_client: httpx.Client,
 ) -> None:
-    """The lines leave the box, come BACK, and only they can answer.
-
-    A first turn plants a marker, that sandbox is terminated, recovery provisions
-    a new one, and the next turn is asked what the marker was. The box
-    that heard it does not exist any more, so a correct answer can only come from
-    the transcript the platform put back.
-
-    Waiting for the store before the kill is part of the contract, not a
-    workaround: the relay is a resident program on a poll, so "the box streamed a
-    turn" and "the store holds that turn" are different moments. Killing between
-    them exercises the dropped-resume-key path instead, which is a different
-    behaviour with its own gates.
-
-    It needs **conversation** tenancy for the same reason it needs the kill: the
-    proof rests on the box that heard the marker being gone. Under agent tenancy
-    terminate closes this conversation's isolated session and leaves the Agent's
-    box running, so the engine could answer from the box and the test would pass
-    without the mirror doing anything.
-    """
-
     marker = "MEM" + uuid.uuid4().hex[:6].upper()
     pi_settings = {
         "defaultThinkingLevel": "off",
@@ -227,63 +114,116 @@ def test_a_replacement_box_answers_from_the_restored_transcript(
         name_suffix="mirror-restore",
         engine_options={"settings": pi_settings} if engine_kind() == "pi" else {},
         environment_name=environment_with_tenancy(e2e_client, "conversation"),
+        permission_mode=permission_mode("unattended"),
     )
     sid = str(created.get("session_id") or "")
     assert sid, f"no session_id in create response: {created}"
     try:
         poll_until_agent_ready(e2e_client, sid)
+        assert_database_is_the_live_stack(sid)
         first_box = str(get_session(e2e_client, sid).get("sandbox_id") or "")
         assert first_box, "a READY session should hold a sandbox_id"
         if engine_kind() == "pi":
             _assert_pi_settings(e2e_client, sid, pi_settings)
 
-        res = stream_turn(
+        labelled = send_and_follow(
             e2e_client,
             sid,
-            content=(
-                f"Our hypothetical investment research project is labelled {marker}. "
-                "For this project, explain in one sentence what revenue growth measures. "
-                "Include the project label in your answer. This is a general definition, "
-                "so no external research or workspace artifact is needed."
-            ),
+            f"Our hypothetical investment research project is labelled {marker}. "
+            "For this project, explain in one sentence what revenue growth measures. "
+            "Include the project label in your answer. This is a general definition, "
+            "so no external research or workspace artifact is needed.",
+            until="end",
         )
-        assert res.error is None, f"first turn errored: {res.error}"
-        assert res.n_text_delta > 0, "first turn streamed no text-delta"
-        assert marker.upper() in res.text.upper(), (
-            f"first turn did not establish the project label: {res.text!r}"
+        assert labelled.error is None and labelled.finish_reason == "stop", (
+            f"the first response did not end normally: {labelled.error!r} {labelled.finish_reason!r}"
+        )
+        assert marker.upper() in labelled.text.upper(), (
+            f"the first response did not establish the project label: {labelled.text!r}"
         )
         wait_until_settled(e2e_client, sid)
+        _wait_for_custody(sid, marker)
 
-        docs = _wait_for_mirror_docs(sid, timeout=MIRROR_LAND_TIMEOUT_S)
-        assert docs, (
-            f"nothing mirrored for session {sid} before the kill; the restore "
-            "path cannot be under test"
+        # A response that is running when the box dies: a real command waiting
+        # on a release file nobody creates.
+        gate = f"lost_box_{uuid.uuid4().hex[:12]}"
+        started_path = workspace_path(e2e_client, sid, f"{gate}.started")
+        release_path = workspace_path(e2e_client, sid, f"{gate}.release")
+        command = "sh -c " + shlex.quote(
+            f"printf started > {shlex.quote(started_path)}; "
+            f"while [ ! -e {shlex.quote(release_path)} ]; do sleep 0.1; done"
+        )
+        running = send_and_follow(
+            e2e_client,
+            sid,
+            f"Use the {tool_name('command')} tool to run exactly this one command in the "
+            "foreground and wait for it to finish; I will create the release file when it is time. "
+            "Do not create the release file yourself or run "
+            f"any other command: {command}",
+            until="output",
+        )
+        assert wait_for_file(e2e_client, sid, started_path, timeout=30.0) == b"started", (
+            "the command never started, so no response was running when the box died"
+        )
+        assert running.response is not None and not running.ended, running.response
+
+        assert recorded_input(sid, running.input_id)["state"] == "admitted", (
+            "the running response's own input was never taken by the runtime"
         )
 
-        killed = _terminate_sandbox(e2e_client, sid)
-        assert killed == first_box, f"terminate reclaimed {killed!r}, not {first_box!r}"
+        destroy_box(first_box)
 
-        data(e2e_client.post(f"/api/v1/sessions/{sid}/recover", timeout=60.0))
-        poll_until_agent_ready(e2e_client, sid)
-        second_box = str(get_session(e2e_client, sid).get("sandbox_id") or "")
+        # The response the box took with it ends failed, on the stream as the
+        # console sees it: an error, then a finish the platform wrote.
+        follow_reply(e2e_client, running, until="end")
+        assert running.outcome == "failed" and running.error, (
+            f"the lost response did not end failed with an error on the stream: "
+            f"outcome={running.outcome!r} error={running.error!r} finish={running.finish_reason!r}"
+        )
+        lost = recorded_response(sid, str(running.response_id))
+        assert (lost["status"], lost["outcome"], lost["native_reason"]) == (
+            "ended", "failed", "sandbox_lost",
+        ), f"the platform did not record the box loss on the response: {lost}"
+
+        # The next message: the dead runtime never received it, and a
+        # replacement box answers it from the conversation it resumed.
+        recalled = send_and_follow(
+            e2e_client,
+            sid,
+            "What was the project label I gave you for our revenue-growth discussion? "
+            "Reply with that original label.",
+            until="end",
+        )
+        assert recalled.error is None and recalled.finish_reason == "stop", (
+            f"the replacement's response did not end normally: "
+            f"{recalled.error!r} {recalled.finish_reason!r}"
+        )
+        assert marker.upper() in recalled.text.upper(), (
+            f"the replacement box did not recall {marker!r} from the restored transcript; "
+            f"it answered: {recalled.text!r}"
+        )
+        settled = wait_until_settled(e2e_client, sid)
+        second_box = str(settled.get("sandbox_id") or "")
         assert second_box and second_box != first_box, (
-            f"recovery reused {second_box!r}; the restore must run in a NEW box"
+            f"the conversation is still on the destroyed box {first_box!r}: {second_box!r}"
         )
+        assert recorded_input(sid, recalled.input_id)["state"] == "admitted"
         if engine_kind() == "pi":
             _assert_pi_settings(e2e_client, sid, pi_settings)
 
-        recalled = stream_turn(
-            e2e_client,
-            sid,
-            content=(
-                "What was the project label I gave you for our revenue-growth discussion? "
-                "Reply with that original label."
-            ),
-        )
-        assert recalled.error is None, f"second turn errored: {recalled.error}"
-        assert marker.upper() in recalled.text.upper(), (
-            f"the replacement box did not recall {marker!r} from the restored "
-            f"transcript; it answered: {recalled.text!r}"
-        )
+        # History tells the same story once: three messages, the lost response
+        # failed and never re-run, the replacement's answer completed.
+        messages = history(e2e_client, sid)
+        assert [m["id"] for m in user_messages(messages)] == [
+            labelled.client_message_id,
+            running.client_message_id,
+            recalled.client_message_id,
+        ], [m["id"] for m in user_messages(messages)]
+        lost_answer = answer_in_history(messages, running.input_id)
+        assert lost_answer["id"] == running.response_id
+        assert lost_answer["metadata"].get("outcome") == "failed", lost_answer["metadata"]
+        assert lost_answer["metadata"].get("native_reason") == "sandbox_lost", lost_answer["metadata"]
+        answer = answer_in_history(messages, recalled.input_id)
+        assert answer["metadata"].get("outcome") == "completed", answer["metadata"]
     finally:
         release_session(sid)

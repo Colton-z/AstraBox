@@ -1,7 +1,7 @@
 /** Native launch evidence and a real, fixture-released child workload. */
 import { expect } from '@playwright/test';
 
-import { documentsByField, sessionEvents } from './dbOracle';
+import { nativeTranscriptRows, type NativeTranscriptRow } from './dbOracle';
 import type { EngineProfile } from './engineProfile';
 
 export type ChildMode = 'foreground' | 'background';
@@ -13,8 +13,9 @@ export interface ChildGate {
   completed: string;
 }
 
-export function nativeRows(sessionId: string): Record<string, unknown>[] {
-  return documentsByField('transcript_entries', '$.platform_session_id', sessionId);
+/** The session's runtime transcript entries; see `nativeTranscriptRows`. */
+export function nativeRows(sessionId: string): NativeTranscriptRow[] {
+  return nativeTranscriptRows(sessionId);
 }
 
 interface NativeCall {
@@ -63,7 +64,7 @@ export function childToolEvidence(
       .filter((call) => call.name === 'exec_command' && String(call.input.cmd).includes(gate.started));
     const tools = new Map<string, NativeChildTool>();
     for (const call of calls) {
-      const metadata = children.get(call.subpath)!;
+      const metadata = children.get(call.subpath as string | null)!;
       const nativeThreadId = String(metadata.id);
       tools.set(`${nativeThreadId}:${call.id}`, {
         ...call, name: 'commandExecution', commandArguments: call.input, nativeThreadId,
@@ -92,23 +93,6 @@ export function childToolEvidence(
       const key = `${String(children.get(row.subpath)!.id)}:${payload.call_id}`;
       const call = tools.get(key);
       if (call) tools.set(key, { ...call, recordedFunctionOutput: payload.output });
-    }
-    // Native thread/read documents provide an additional presentation check
-    // when journaled; they are not required to prove either lifecycle stage.
-    for (const event of sessionEvents(sessionId)) {
-      const payload = event.payload as Record<string, unknown> | undefined;
-      const message = payload?.message as Record<string, unknown> | undefined;
-      if (message?.method !== 'thread/read') continue;
-      const thread = message.thread as Record<string, unknown>;
-      for (const item of objects(thread.turns)) {
-        if (item.type !== 'commandExecution' || !String(item.command).includes(gate.started)) continue;
-        const key = `${String(thread.id)}:${String(item.id)}`;
-        const call = tools.get(key);
-        if (!call) continue;
-        tools.set(key, {
-          ...call, input: item,
-        });
-      }
     }
     return [...tools.values()];
   }

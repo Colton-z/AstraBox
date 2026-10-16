@@ -1,12 +1,14 @@
 /**
- * E2E: a turn's close, stop control, and console record agree after reload.
+ * E2E: a response's close, stop control, and console record agree after reload.
  *
  * The completed summary exposes duration, cost, usage, and stop reason. Raw
  * system envelopes stay suppressed whether their discriminator is `type` or
- * `__sdk_type`; the localized stop control reports its stopping state; and a
- * failed frame read clears the prior turn's frames. Turns use the real composer
- * against a READY API-created Session, while a page-error listener covers
- * render-time failures in the built transcript.
+ * `__sdk_type`; the localized stop control reports its stopping state; a stop
+ * ends the response cancelled and says so quietly, never as a failure; and the
+ * console record's response selector replaces one response's parts with
+ * another's instead of showing the previous ones under the new name. Messages
+ * use the real composer against a READY API-created Session, while a
+ * page-error listener covers render-time failures in the built transcript.
  */
 import { test, expect, type Locator, type Page } from '@playwright/test';
 
@@ -21,28 +23,32 @@ import {
   startPromptDelivery,
 } from '../fixtures/sessionPage';
 
-// A short turn from dispatch to the meter that closes it. On the demo
+// A short response from dispatch to the meter that closes it. On the demo
 // deployment a one-line answer renders in ~2.5s and the composer frees at
 // ~2.7s; the budget is sized for a slow host, not for a hung one.
 const TURN_SETTLE_MS = parseTimeoutEnv('ASTRABOX_E2E_METER_TURN_SETTLE_MS', 60_000);
-// Dispatch → the turn actually streaming. The stop control is mounted the
+// Dispatch → the response actually streaming. The stop control is mounted the
 // moment the send is in flight but stays disabled until `isStreaming`, so this
 // is the window between the two.
 const STREAM_START_MS = parseTimeoutEnv('ASTRABOX_E2E_METER_STREAM_START_MS', 60_000);
 // The stop click → the header settled and the composer usable again. Longer
-// than a turn's own settle: the engine has to be interrupted mid-stream first.
+// than a response's own settle: the engine has to be interrupted mid-stream first.
 const INTERRUPT_SETTLE_MS = parseTimeoutEnv('ASTRABOX_E2E_METER_INTERRUPT_SETTLE_MS', 90_000);
 // How long a console record page may take to draw. Not env-tunable on purpose:
 // a card that is a minute late is a defect, not a deployment.
 const RECORD_RENDER_MS = 30_000;
 
 // misc:prompt_input.stop_generating / .stopping — the two names the composer's
-// stop control answers to while a turn is live. The vendored PromptInputSubmit
-// underneath says "Stop"; neither of these can come from it.
+// stop control answers to while a response is live. The vendored
+// PromptInputSubmit underneath says "Stop"; neither of these can come from it.
 const STOP_GENERATING = 'Stop generating';
 const STOPPING = 'Stopping';
-// manage:sessions.no_frames — the other thing the Turn detail panel can say.
-const NO_FRAMES = 'No frames for this turn';
+// manage:sessions.no_parts — the other thing the Response detail panel can say.
+const NO_PARTS = 'No parts for this response';
+// manage:sessions.response_placeholder — the response selector's accessible name.
+const RESPONSE_SELECTOR = 'Select a response';
+// chat:process.stopped — the quiet line under a response its user stopped.
+const STOPPED_LINE = /^(This response stopped early\.|本次回复提前结束。)$/;
 
 // Sessions created here are deleted only when the test passes. A failure keeps
 // the scene and names it in the report tail — see fixtures/sessionCleanup.ts.
@@ -59,8 +65,8 @@ function card(page: Page, heading: string): Locator {
  * Record every accessible name the composer's stop control ever wears.
  *
  * `isStopping` is a state the product added and the page passes through in
- * about a second — the interrupt POST, the forced refresh, and the projection
- * moving off the stopped turn. Sampling for it after the click is a race, and a
+ * about a second — the interrupt POST, the forced refresh, and the page
+ * moving off the stopped response. Sampling for it after the click is a race, and a
  * spec that loses the race reads as a broken button rather than as a spec that
  * blinked. A MutationObserver installed BEFORE the send cannot miss it: it
  * fires on the attribute write itself, so what is asserted afterwards is the
@@ -99,25 +105,25 @@ function stopControlNames(page: Page): Promise<string[]> {
 }
 
 /**
- * What the Turn detail panel is showing, in one string.
+ * What the Response detail panel is showing, in one string.
  *
- * The first frame row's sequence number and type, or the empty state when the
- * chosen turn recorded none. `frame_seq` is allocated per SESSION
- * (`allocate_session_frame_seq`), so two turns cannot open on the same number —
- * which is what makes "this changed" a statement about the panel refetching
- * rather than about the two turns happening to differ in length.
+ * The first part row's sequence number and type, or the empty state when the
+ * chosen response recorded none. A part's number is its place in the SESSION's
+ * output (`session_output.seq`), so two responses cannot open on the same
+ * number — which is what makes "this changed" a statement about the panel
+ * refetching rather than about the two responses happening to differ in length.
  *
  * `''` means the panel has not answered yet: it is loading, or it is showing
  * its error note. The caller reads that as "unchanged" rather than as a change,
- * because a spec that accepted the loading frame as the new turn's answer would
- * pass on a panel that never refetched at all.
+ * because a spec that accepted the loading state as the new response's answer
+ * would pass on a panel that never refetched at all.
  */
-async function turnFramesShowing(turnDetail: Locator): Promise<string> {
-  const rows = turnDetail.locator('[data-slot="collapsible-trigger"]');
+async function responsePartsShowing(responseDetail: Locator): Promise<string> {
+  const rows = responseDetail.locator('[data-slot="collapsible-trigger"]');
   if ((await rows.count()) > 0) {
     return (await rows.first().innerText()).replace(/\s+/g, ' ').trim();
   }
-  if ((await turnDetail.getByText(NO_FRAMES).count()) > 0) return NO_FRAMES;
+  if ((await responseDetail.getByText(NO_PARTS).count()) > 0) return NO_PARTS;
   return '';
 }
 
@@ -132,9 +138,9 @@ test('a turn closes with its meter, stops when asked, and reads back the same fr
 
   const api = new AstraApi(request);
   const runId = Date.now();
-  // Carried by the interrupted turn's prompt so its row can be found again in
-  // the console's digest — which is what makes "the panel opened THIS document"
-  // an assertion rather than "a document opened".
+  // Carried by the interrupted message's prompt so its row can be found again
+  // in the console's digest — which is what makes "the panel opened THIS
+  // document" an assertion rather than "a document opened".
   const marker = `E2E-METER-${runId}`;
   const longPrompt = `Count slowly from 1 to 300, one number per line. (${marker})`;
 
@@ -156,11 +162,20 @@ test('a turn closes with its meter, stops when asked, and reads back the same fr
   const settled = (why: string) =>
     expect(pill, why).toHaveAttribute('data-state', 'READY', { timeout: TURN_SETTLE_MS });
   const assertQuietStop = async () => {
-    const detail = await api.getSession(sessionId);
-    expect(detail.last_turn_status, 'stopping must not settle as a failed turn').toBe('COMPLETED');
-    expect(detail.last_turn_error || '').toBe('');
+    // Waited for, not read once: the header can turn READY from the stream's
+    // own end before the session's reader has recorded the response as ended.
+    const detail = await api.waitForSession(
+      sessionId,
+      (session) => session.state === 'READY' && (session.current_responses ?? []).length === 0,
+      INTERRUPT_SETTLE_MS,
+    );
+    expect(detail.last_response?.outcome, 'stopping must end the response cancelled, never failed').toBe('cancelled');
+    expect(detail.last_response?.error ?? null, 'a stopped response carries no failure').toBeNull();
     await expect(runView.getByText(/this turn failed|本轮执行失败|上一条消息已送达沙箱，但这一轮执行失败了/i)).toHaveCount(0);
-    await expect(page.getByText(/^(Stopped|已停止)$/i), 'stopping quietly needs no completion notice').toHaveCount(0);
+    await expect(
+      runView.getByText(STOPPED_LINE),
+      'the stop must say it took, quietly, under the stopped response',
+    ).toBeVisible({ timeout: RECORD_RENDER_MS });
   };
 
   // ── 1. before anything has been said ──────────────────────────────────────
@@ -195,24 +210,24 @@ test('a turn closes with its meter, stops when asked, and reads back the same fr
   ).toBeVisible();
   await runView.getByRole('tab', { name: 'Files', exact: true }).click();
 
-  // ── 2. one short turn, and the line that closes it ────────────────────────
+  // ── 2. one short response, and the line that closes it ────────────────────
   await sendPrompt(page, sessionId, 'What is 137 + 42? Reply with only the number.');
 
-  // The closing meter, on the turn's own message. Four values nobody acts on,
-  // which is why nothing else would report them missing: a turn that streamed
-  // text but lost its meter is a turn the reader cannot account for.
+  // The closing meter, on the response's own message. Four values nobody acts
+  // on, which is why nothing else would report them missing: a response that
+  // streamed text but lost its meter is one the reader cannot account for.
   const closing = page.getByTestId('assistant-message').last();
   await expect(
     closing.getByText(/^\d+(\.\d+)?s$/),
-    'the turn must close on a duration',
+    'the response must close on a duration',
   ).toBeVisible({ timeout: TURN_SETTLE_MS });
   await expect(
     closing.getByText(/In: \d/),
-    'the turn must close on its input token count (chat:result.input_tokens)',
+    'the response must close on its input token count (chat:result.input_tokens)',
   ).toBeVisible({ timeout: TURN_SETTLE_MS });
   await expect(
     closing.getByText(/Out: \d/),
-    'the turn must close on its output token count (chat:result.output_tokens)',
+    'the response must close on its output token count (chat:result.output_tokens)',
   ).toBeVisible();
 
   // In the same breath, because this is the only place it can be seen: the
@@ -223,19 +238,24 @@ test('a turn closes with its meter, stops when asked, and reads back the same fr
     "the CLI's SystemMessage envelope must never reach the transcript — RawEventCard suppresses it",
   ).toHaveCount(0);
 
-  await settled('the header must return to Ready once the turn closes');
+  await settled('the header must return to Ready once the response closes');
 
-  // ── 3. a second turn, so the session owns more than one ───────────────────
-  // SessionTurnFrames renders its selector only above one turn (§5: one turn is
-  // not a choice), and step 6 is about what the selector does.
+  // ── 3. a second message, so the session owns more than one response ──────
+  // ResponseParts renders its selector only above one response (§5: one
+  // response is not a choice), and step 6 is about what the selector does.
+  const firstResponseId = (await api.getSession(sessionId)).last_response?.response_id;
   await sendPrompt(page, sessionId, 'What is 8 times 9? Reply with only the number.');
   await expect(
     page.getByTestId('user-message'),
     'both prompts must be in the transcript the page dispatched them from',
   ).toHaveCount(2, { timeout: TURN_SETTLE_MS });
-  await settled('the header must return to Ready once the second turn closes');
+  await api.waitForSession(sessionId, (detail) => (
+    detail.state === 'READY' && detail.last_response?.status === 'ended'
+    && detail.last_response.response_id !== firstResponseId
+  ), TURN_SETTLE_MS);
+  await settled('the header must return to Ready once the second response closes');
 
-  // ── 4. a third turn, stopped from the composer ────────────────────────────
+  // ── 4. a third message, its response stopped from the composer ───────────
   await recordStopControlNames(page);
   const delivery = await startPromptDelivery(page, sessionId, longPrompt);
 
@@ -245,25 +265,25 @@ test('a turn closes with its meter, stops when asked, and reads back the same fr
   // below come from the wrapper — the vendored button says "Stop".
   await expect(
     stop,
-    'the composer must offer a stop control the moment a turn is in flight',
+    'the composer must offer a stop control the moment a message is in flight',
   ).toHaveAccessibleName(STOP_GENERATING, { timeout: RECORD_RENDER_MS });
   await expectPromptDelivered(delivery);
   await expect(
     pill,
-    'the header must read as running while the turn is live',
+    'the header must read as running while the response is live',
   ).toHaveAttribute('data-state', 'PROCESSING', { timeout: RECORD_RENDER_MS });
 
-  // Enabled only once the turn is actually streaming — there is nothing to
+  // Enabled only once the response is actually streaming — there is nothing to
   // interrupt while the input is still being delivered.
   await expect(
     stop,
-    'the stop control must become pressable once the turn is streaming',
+    'the stop control must become pressable once the response is streaming',
   ).toBeEnabled({ timeout: STREAM_START_MS });
   await stop.click();
 
   await expect(
     pill,
-    'an interrupted turn must settle the header, not leave it running',
+    'an interrupted response must settle the header, not leave it running',
   ).toHaveAttribute('data-state', 'READY', { timeout: INTERRUPT_SETTLE_MS });
   await expectComposerEnabled(page);
   await assertQuietStop();
@@ -274,7 +294,7 @@ test('a turn closes with its meter, stops when asked, and reads back the same fr
   const names = await stopControlNames(page);
   expect(
     names,
-    `the stop control must have been named "${STOP_GENERATING}" while the turn ran; saw [${names.join(' → ')}]`,
+    `the stop control must have been named "${STOP_GENERATING}" while the response ran; saw [${names.join(' → ')}]`,
   ).toContain(STOP_GENERATING);
   expect(
     names,
@@ -311,48 +331,48 @@ test('a turn closes with its meter, stops when asked, and reads back the same fr
     'the opened document must be the one that row summarised, not another message',
   ).toContainText(longPrompt);
 
-  // ── 6. the console's record: Turn detail, switched turn by turn ───────────
-  const turnDetail = card(page, 'Turn detail');
+  // ── 6. the console's record: Response detail, switched response by response
+  const responseDetail = card(page, 'Response detail');
   await expect(
-    turnDetail,
-    'a session with recorded frames must offer the frame-by-frame card',
+    responseDetail,
+    'a session with recorded parts must offer the part-by-part card',
   ).toBeVisible({ timeout: RECORD_RENDER_MS });
 
-  const turnSelect = turnDetail.getByRole('combobox');
+  const responseSelect = responseDetail.getByRole('combobox', { name: RESPONSE_SELECTOR });
   await expect(
-    turnSelect,
-    'a session with three turns must offer the turn selector (it renders only above one turn)',
+    responseSelect,
+    'a session with three responses must offer the response selector (it renders only above one response)',
   ).toBeVisible({ timeout: RECORD_RENDER_MS });
 
   await expect
-    .poll(() => turnFramesShowing(turnDetail), {
+    .poll(() => responsePartsShowing(responseDetail), {
       timeout: RECORD_RENDER_MS,
-      message: 'the Turn detail card must be showing a turn before another one is chosen',
+      message: 'the Response detail card must be showing a response before another one is chosen',
     })
     .not.toEqual('');
-  const before = await turnFramesShowing(turnDetail);
+  const before = await responsePartsShowing(responseDetail);
 
   // The selector's refetch, identified by the query it adds: the page's own
-  // first read of the trace carries no turn_id. Caught rather than left to
+  // first read of the trace carries no response_id. Caught rather than left to
   // reject, so a failure below reports the missing request instead of an
   // unhandled rejection from a promise nobody is waiting on any more.
   const refetched = page.waitForResponse(
     (response) =>
       response.request().method() === 'GET'
       && response.url().includes(apiPath(`/admin/sessions/${sessionId}/trace`))
-      && new URL(response.url()).searchParams.get('turn_id') !== null,
+      && new URL(response.url()).searchParams.get('response_id') !== null,
     { timeout: RECORD_RENDER_MS },
   ).catch(() => null);
 
-  await turnSelect.click();
+  await responseSelect.click();
   // Picked by aria-selected rather than by label. The option label is the
-  // turn's time to the MINUTE plus its message count, and three turns a few
-  // seconds apart can render two identical labels — clicking one by its text
-  // could re-pick the turn already showing and assert nothing.
+  // response's start time to the MINUTE plus its outcome, and three responses a
+  // few seconds apart can render two identical labels — clicking one by its
+  // text could re-pick the response already showing and assert nothing.
   const options = page.getByRole('option');
   await expect(options.first(), 'the selector must open its menu').toBeVisible();
   const optionCount = await options.count();
-  expect(optionCount, 'the selector must offer every turn the session recorded').toBeGreaterThan(1);
+  expect(optionCount, 'the selector must offer every response the session recorded').toBeGreaterThan(1);
   let picked = false;
   for (let index = 0; index < optionCount; index += 1) {
     const option = options.nth(index);
@@ -361,33 +381,33 @@ test('a turn closes with its meter, stops when asked, and reads back the same fr
     picked = true;
     break;
   }
-  expect(picked, 'the selector must offer a turn other than the one already showing').toBe(true);
+  expect(picked, 'the selector must offer a response other than the one already showing').toBe(true);
 
   expect(
     (await refetched)?.status(),
-    'choosing a turn must ask the server for THAT turn (GET .../trace?turn_id=…)',
+    'choosing a response must ask the server for THAT response (GET .../trace?response_id=…)',
   ).toBe(200);
 
   await expect
     .poll(
       async () => {
-        const showing = await turnFramesShowing(turnDetail);
+        const showing = await responsePartsShowing(responseDetail);
         // A panel that has not answered yet reads as unchanged, so the poll
-        // waits it out instead of accepting the loading frame as the answer.
+        // waits it out instead of accepting the loading state as the answer.
         return showing === '' ? before : showing;
       },
       {
         timeout: RECORD_RENDER_MS,
         message:
-          'choosing another turn must replace the frame list. It still opens on ' +
-          `"${before}" — the previous turn's frames under the new turn's name is the exact ` +
-          'failure TurnFrames clears its state to avoid. (A panel stuck on its error note ' +
-          'reaches this message too; check the trace request.)',
+          'choosing another response must replace the part list. It still opens on ' +
+          `"${before}" — the previous response's parts under the new response's name is the ` +
+          'exact failure ResponseParts clears its state to avoid. (A panel stuck on its error ' +
+          'note reaches this message too; check the trace request.)',
       },
     )
     .not.toEqual(before);
 
-  // ── 7. back to the conversation, rebuilt from the durable record ──────────
+  // ── 7. back to the conversation, rebuilt from the recorded history ────────
   // A second full mount of the transcript, from history rather than from the
   // live stream. This is where the suppressed-envelope regression showed
   // itself last time — the conversation changed on reload — and it is the
@@ -399,7 +419,7 @@ test('a turn closes with its meter, stops when asked, and reads back the same fr
   ).toBeVisible({ timeout: RECORD_RENDER_MS });
   await expect(
     runView.getByText(/In: \d/).first(),
-    'the meter must survive the reload — it is rebuilt from the durable result block',
+    'the meter must survive the reload — it is rebuilt from the recorded result part',
   ).toBeVisible({ timeout: RECORD_RENDER_MS });
   await expect(
     runView.getByText('__sdk_type'),

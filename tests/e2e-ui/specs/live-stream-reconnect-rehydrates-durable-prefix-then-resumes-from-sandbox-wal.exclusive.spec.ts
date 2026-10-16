@@ -1,47 +1,63 @@
 /**
- * E2E: reloading the browser mid-turn rehydrates the durable prefix and resumes
- * the same live turn to completion.
+ * E2E: reloading the browser mid-response restores what the response has
+ * written so far and follows the same response to its end.
  *
- * Before reload, the active-turn overlay must expose a non-terminal durable
- * frame cursor. The page reload closes only the reader; the detached worker
- * continues. The browser must reconnect with after_seq at or beyond that
- * watermark, restore the user message and partial reply, then render additional
- * text without duplication.
+ * An E2E-only barrier (`response_part_read`, armed through
+ * `fixtures/frameHold.ts`) holds the session's reader right after it reads the
+ * response's first `text-delta`, once that part is committed. The engine keeps
+ * running in its box; nothing it writes after that part reaches the session
+ * until the spec releases the hold, so the response is open for as long as the
+ * spec needs and model speed cannot finish it before the cut.
  *
- * Durable state must record one normal turn.completed event, no turn.recovered
- * event, exactly one finish, no recovery adapter frame, and a later live source
- * cursor. An E2E-only bridge barrier holds the first text delta until the page
- * has reconnected, so model generation speed cannot turn coverage into a skip.
+ * The reload throws away the page. The new page reads history, which folds the
+ * open response through the output position it was read at (`output_seq`),
+ * and follows the session's stream from exactly that position. It must show
+ * the user's message and the reply text so far, then the rest of the response
+ * once the hold is released, without painting anything twice. The rest of a
+ * text part history already folded arrives as its continuation, which is the
+ * seam this spec watches.
+ *
+ * The platform's records must show one response answering the message, ended
+ * `completed`, with exactly one stored `finish` and no `error` part, and stored
+ * parts after the position the reloaded page started from.
+ *
+ * The second half keeps the same page idle and breaks its stream request three
+ * times in a row: each time it must come back on its own, from the same cursor,
+ * without a response part arriving and without the page leaving READY.
  */
-import fs from 'node:fs';
-import path from 'node:path';
-
 import { test, expect, type Page } from '@playwright/test';
 
-import { AstraApi, type MessageRecord } from '../fixtures/astraApi';
+import { AstraApi, answersInput, messageText, type InputReceipt } from '../fixtures/astraApi';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { apiPath, appPath, parseTimeoutEnv } from '../fixtures/env';
 import {
-  framesForTurn,
-  sessionEvents,
+  armFrameHoldFault,
+  clearFrameHoldFault,
+  frameHoldConsumed,
+  frameHoldFaultPath,
+  releaseFrameHoldFault,
+} from '../fixtures/frameHold';
+import {
   oracleDbPath,
-  waitForTurnTerminalProof,
+  sessionOutputRows,
+  sessionResponseRows,
 } from '../fixtures/dbOracle';
+import {
+  assistantTranscript,
+  expectNoDuplicateTextBlocks,
+  firstRepeatedWindow,
+  normalizeRendered,
+} from '../fixtures/renderedTranscript';
 
-// One sandbox provision + a long streamed turn + the mid-stream disconnect + the
-// browser's reconnect + the durable terminal settle sit above the suite default;
-// keep the budget generous and env-tunable.
-// Upper bound on waiting for the armed bridge barrier to observe a text delta.
-const POST_ABORT_TIMEOUT_MS = parseTimeoutEnv('ASTRABOX_E2E_LIVE_RECONNECT_POST_TIMEOUT_MS', 90_000);
-// How long to wait for the active turn's durable overlay cursor to appear.
-const OVERLAY_BUDGET_MS = parseTimeoutEnv('ASTRABOX_E2E_LIVE_RECONNECT_OVERLAY_TIMEOUT_MS', 90_000);
-// Upper bound on the reconnected page tailing the rest of the answer in.
+// Upper bound on the response reaching its first text delta at the barrier.
+const HOLD_TIMEOUT_MS = parseTimeoutEnv('ASTRABOX_E2E_LIVE_RECONNECT_POST_TIMEOUT_MS', 90_000);
+// Upper bound on the reconnected page receiving the rest of the answer.
 const RESUME_TIMEOUT_MS = parseTimeoutEnv('ASTRABOX_E2E_LIVE_RECONNECT_RESUME_TIMEOUT_MS', 180_000);
-// How long to wait for the turn's terminal proof to become durable.
+// How long the response's recorded end may take to land.
 const TERMINAL_PROOF_BUDGET_MS = parseTimeoutEnv('ASTRABOX_E2E_TURN_TERMINAL_TIMEOUT_MS', 120_000);
 
-// One rendered character proves the first text delta reached the browser. The
-// barrier, rather than an arbitrary amount of prose, proves the turn is live.
+// One rendered character proves the held text delta reached the browser. The
+// barrier, rather than an arbitrary amount of prose, proves the response is live.
 const LIVE_PREFIX_MIN_CHARS = 1;
 // Require a visible suffix of the answer after reconnect, measured from text
 // parts only. Reasoning, progress labels and usage are not reply content.
@@ -50,11 +66,10 @@ const RESUMED_GROWTH_MIN_CHARS = 40;
 // replayed prefix. Compared over normalized text (see normalizeRendered).
 const DUPLICATE_WINDOW_CHARS = 48;
 
-// A FAILED turn renders its error INTO the transcript as an assistant message,
-// so "there is a reply bubble" is satisfied by exactly the failure under test —
-// and a failed turn ends on an `error` terminal, which would let the resume
-// assertions pass on a turn that never reached a clean `finish`.
-const TURN_ERROR = /API Error|AGENT_RUNTIME_ERROR|SANDBOX_GONE|Traceback/i;
+// A FAILED response renders its error INTO the transcript as an assistant
+// message (`chat:result.turn_failed*`), so "there is a reply bubble" is
+// satisfied by exactly the failure under test.
+const RESPONSE_ERROR = /This turn failed|本轮执行失败|API Error|AGENT_RUNTIME_ERROR|SANDBOX_GONE|Traceback/i;
 
 interface BrowserConnection {
   id: number;
@@ -72,38 +87,65 @@ type ReconnectWindow = Window & typeof globalThis & {
   __idleReconnect: {
     connections: BrowserConnection[];
     cursor: (id: number) => number;
+    /** Lines since the idle observation began that carry anything but a cursor or a session notice. */
+    businessSinceIdle: (id: number) => string[];
     arm: (id: number, minimumCursor: number) => number;
     fail: (id: number) => Promise<void>;
     disarm: () => void;
   };
 };
 
-// The donor's body error is retained; only actual backend responses can establish
-// a connection. No business frames or successful HTTP responses are fabricated.
+// Only real backend responses establish a connection; a fault only ever errors
+// the body the page is reading. No part or successful response is fabricated.
 async function installIdleDisconnects(page: Page, sessionId: string): Promise<void> {
   await page.addInitScript(({ streamPath }) => {
     const originalFetch = window.fetch.bind(window);
     const faults = new Map<number, () => Promise<void>>();
     let faultsEnabled = true;
     let idleArmed = false;
+    // A cursor follows every burst, and a change to the session record (its
+    // generated title) arrives as a transient notice between responses. Both
+    // belong to no response, so an idle stream may carry them.
+    const idleTypes = new Set(['data-resume-cursor', 'data-session-changed']);
+    const completeEvents = (raw: string): string[] => raw.split(/\r?\n\r?\n/).slice(0, -1);
     const state: ReconnectWindow['__idleReconnect'] = {
       connections: [],
       cursor: (id) => {
         const record = state.connections[id];
         let cursor = record.afterSeq ?? 0;
         // Only complete SSE events establish a delivered cursor.
-        for (const block of record.raw.split(/\r?\n\r?\n/).slice(0, -1)) {
+        for (const block of completeEvents(record.raw)) {
           const data = block.split(/\r?\n/).filter((line) => line.startsWith('data:'))
             .map((line) => line.slice(5).replace(/^ /, '')).join('\n');
           if (!data || data === '[DONE]') continue;
           const frame = JSON.parse(data);
           if (frame.type === 'data-resume-cursor') {
-            const next = frame.data?.frameSeq;
+            const next = frame.data?.seq;
             if (!Number.isInteger(next) || next < cursor) throw new Error('invalid delivered cursor');
             cursor = next;
           }
         }
         return cursor;
+      },
+      businessSinceIdle: (id) => {
+        const record = state.connections[id];
+        const business: string[] = [];
+        for (const line of record.raw.slice(record.idleStart).split(/\r?\n/)) {
+          if (!line.trim() || line.startsWith(':')) continue;
+          if (!line.startsWith('data:')) {
+            business.push(line);
+            continue;
+          }
+          let type = '';
+          try {
+            type = String((JSON.parse(line.slice(5).trim()) as { type?: unknown }).type ?? '');
+          } catch {
+            business.push(line);
+            continue;
+          }
+          if (!idleTypes.has(type)) business.push(line);
+        }
+        return business;
       },
       arm: (id, minimumCursor) => {
         if (idleArmed) throw new Error('idle observation is already armed');
@@ -133,7 +175,7 @@ async function installIdleDisconnects(page: Page, sessionId: string): Promise<vo
       const method = String(init?.method ?? request?.method ?? 'GET').toUpperCase();
       const url = new URL(request?.url ?? String(input), window.location.href);
       const response = await originalFetch(input, init);
-      if (method !== 'GET' || url.pathname !== streamPath || url.searchParams.get('follow') !== 'session') {
+      if (method !== 'GET' || url.pathname !== streamPath) {
         return response;
       }
       const rawCursor = url.searchParams.get('after_seq');
@@ -156,7 +198,7 @@ async function installIdleDisconnects(page: Page, sessionId: string): Promise<vo
           if (!faultsEnabled) return;
           faults.set(record.id, async () => {
             if (record.closed || record.faulted) throw new Error(`connection ${record.id} is not open`);
-            if (record.raw.slice(record.idleStart).split(/\r?\n/).some((line) => line.trim() && !line.startsWith(':'))) {
+            if (state.businessSinceIdle(record.id).length > 0) {
               throw new Error(`connection ${record.id} received data before the idle disconnect`);
             }
             record.faulted = true;
@@ -195,223 +237,18 @@ async function installIdleDisconnects(page: Page, sessionId: string): Promise<vo
       });
       return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
     };
-  }, { streamPath: apiPath(`/sessions/${sessionId}/ai-stream`) });
+  }, { streamPath: apiPath(`/sessions/${sessionId}/stream`) });
 }
 
 async function browserConnections(page: Page): Promise<BrowserConnection[]> {
   return page.evaluate(() => (window as ReconnectWindow).__idleReconnect.connections);
 }
 
-const FAULT_BASE = (
-  process.env.ASTRABOX_E2E_TURN_TERMINAL_DROP_FAULT_FILE
-  || '/tmp/astrabox-e2e-turn-terminal-drop-faults.json'
-).trim();
-const FAULT_DIR = `${FAULT_BASE}.d`;
-
-interface FrameHoldFault {
-  faults: { hold_after_frame: number };
-  match: { session_id: string; frame_type: string };
-  release: boolean;
-  consumed: unknown[];
-}
-
-function frameHoldFaultPath(sessionId: string): string {
-  const slug = `${test.info().title} ${sessionId}`
-    .replace(/[^a-zA-Z0-9_.-]+/g, '-')
-    .replace(/^-|-$/g, '');
-  return path.join(FAULT_DIR, `w${test.info().workerIndex}-${process.pid}-${slug}.json`);
-}
-
-function writeFrameHoldFault(faultPath: string, payload: FrameHoldFault): void {
-  const temporary = `${faultPath}.${process.pid}.tmp`;
-  fs.writeFileSync(temporary, JSON.stringify(payload), 'utf8');
-  fs.chmodSync(temporary, 0o644);
-  fs.renameSync(temporary, faultPath);
-}
-
-function armFrameHoldFault(faultPath: string, sessionId: string): void {
-  fs.mkdirSync(FAULT_DIR, { recursive: true });
-  fs.chmodSync(FAULT_DIR, 0o777);
-  writeFrameHoldFault(faultPath, {
-    faults: { hold_after_frame: 1 },
-    match: { session_id: sessionId, frame_type: 'text-delta' },
-    release: false,
-    consumed: [],
-  });
-}
-
-function readFrameHoldFault(faultPath: string): FrameHoldFault | null {
-  if (!fs.existsSync(faultPath)) return null;
-  try {
-    return JSON.parse(fs.readFileSync(faultPath, 'utf8')) as FrameHoldFault;
-  } catch {
-    return null;
-  }
-}
-
-function releaseFrameHoldFault(faultPath: string): void {
-  const payload = readFrameHoldFault(faultPath);
-  if (!payload || payload.release) return;
-  writeFrameHoldFault(faultPath, { ...payload, release: true });
-}
-
-function clearFrameHoldFault(faultPath: string): void {
-  if (faultPath && fs.existsSync(faultPath)) fs.rmSync(faultPath, { force: true });
-}
-
-/** Rendered reply parts only; reasoning can collapse across reload or settlement. */
-async function assistantTranscript(page: Page): Promise<string> {
-  return (await page.getByTestId('assistant-text').allInnerTexts()).join('\n');
-}
-
-/**
- * Rendered prose with layout and markdown decoration removed.
- *
- * Comparisons here run across a page reload and across the stream/settled
- * boundary, where the SAME text is not the same string: a half-arrived `**` is
- * literal mid-stream and gone once the emphasis closes, and line wrapping moves
- * with the panel. Normalizing keeps the assertions about content.
- */
-function normalizeRendered(text: string): string {
-  return text.replace(/\s+/g, '').replace(/[*_`#>|~\-–—·•]/g, '');
-}
-
-/**
- * The first stretch of `text` that appears twice, or null.
- *
- * The page-side reading of "no duplicated assistant text": a reconnect that
- * rehydrates the prefix and then replays it AGAIN off the resumed stream shows
- * the user the same sentences twice. A window this long cannot recur in prose by
- * accident, so a hit is a repaint defect and not a wordy model.
- */
-function firstRepeatedWindow(text: string, size: number): string | null {
-  if (text.length < size * 2) return null;
-  const seen = new Map<string, number>();
-  for (let i = 0; i + size <= text.length; i += 1) {
-    const chunk = text.slice(i, i + size);
-    const first = seen.get(chunk);
-    if (first !== undefined) {
-      // The window alone cannot be diagnosed — say WHERE both occurrences sit
-      // and what surrounds them, or the failure is a scavenger hunt through a
-      // transcript nobody kept.
-      return [
-        `window=${JSON.stringify(chunk)}`,
-        `first@${first}: ${JSON.stringify(text.slice(Math.max(0, first - 120), first + size + 120))}`,
-        `second@${i}: ${JSON.stringify(text.slice(Math.max(0, i - 120), i + size + 120))}`,
-      ].join('\n');
-    }
-    seen.set(chunk, i);
-  }
-  return null;
-}
-
-interface DurableOverlayCursor {
-  turnId: string;
-  frameSeq: number;
-}
-
-// The messages overlay is the cursor source the console reads on mount. Returning
-// null lets the caller classify an early model completion as an unmet precondition.
-async function waitForDurableOverlayCursor(
-  api: AstraApi,
-  sessionId: string,
-  timeoutMs: number,
-): Promise<DurableOverlayCursor | null> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const page = await api.getMessages(sessionId, 50);
-    const overlay = page.active_turn_overlay;
-    const turnId = String(overlay?.turn_id ?? overlay?.resume_cursor?.turn_id ?? '').trim();
-    const frameSeq = overlay?.resume_cursor?.frame_seq;
-    if (turnId && typeof frameSeq === 'number' && Number.isInteger(frameSeq) && frameSeq >= 0) {
-      return { turnId, frameSeq };
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1_000));
-  }
-  return null;
-}
-
-interface MinimalFrame {
-  frame_seq: number;
-  type: string;
-  live_seq?: number;
-  source_kind?: string;
-}
-
-// Keep only fields needed to compare durable replay and live-source progress.
-function minimalFramesForTurn(turnId: string): MinimalFrame[] {
-  return framesForTurn(turnId).map((frame) => {
-    const payload =
-      frame.payload && typeof frame.payload === 'object'
-        ? (frame.payload as { type?: unknown })
-        : {};
-    const rawLiveSeq = Number(frame.live_seq);
-    const rawSourceKind = frame.source_kind;
-    return {
-      frame_seq: Number(frame.event_seq),
-      type: String(payload.type ?? '').trim(),
-      live_seq:
-        frame.live_seq === undefined ||
-        frame.live_seq === null ||
-        !Number.isFinite(rawLiveSeq)
-          ? undefined
-          : rawLiveSeq,
-      source_kind:
-        rawSourceKind === undefined || rawSourceKind === null
-          ? undefined
-          : String(rawSourceKind),
-    };
-  });
-}
-
-// A null result means no live-source cursor was durable at the reconnect watermark.
-function maxLiveSourceSeqAtOrBefore(frames: MinimalFrame[], frameSeq: number): number | null {
-  const seqs = frames
-    .filter(
-      (frame) =>
-        Number.isFinite(frame.frame_seq) &&
-        frame.frame_seq <= frameSeq &&
-        frame.live_seq !== undefined,
-    )
-    .map((frame) => Number(frame.live_seq))
-    .filter((seq) => Number.isFinite(seq));
-  return seqs.length > 0 ? Math.max(...seqs) : null;
-}
-
-// Event counts distinguish normal live completion from recovery settlement.
-function journalTerminalCounts(sessionId: string, turnId: string): Record<string, number> {
-  const counts: Record<string, number> = {};
-  for (const event of sessionEvents(sessionId)) {
-    if (String(event.turn_id ?? '').trim() !== turnId) continue;
-    const eventType = String(event.event_type ?? '').trim();
-    if (!eventType) continue;
-    counts[eventType] = (counts[eventType] || 0) + 1;
-  }
-  return counts;
-}
-
-// The page and persisted duplicate checks cover separate writers. The page can
-// replay a prefix twice; the worker can materialize the same text block twice.
-// Short duplicate blocks also fall below the rendered sliding-window threshold.
-function expectNoDuplicateTextBlocks(message: MessageRecord, label: string): void {
-  const textBlocks = (message.blocks || [])
-    .filter((block) => String(block.type || '') === 'text')
-    .map((block) => String(block.text || block.content || '').trim())
-    .filter((text) => text.length > 20);
-  const duplicates = textBlocks.filter((text, index) => textBlocks.indexOf(text) !== index);
-  expect(duplicates, `${label} should not duplicate persisted assistant text blocks`).toEqual([]);
-}
-
-// Teardown that changes state runs on the passing path only. The settling
-// hook is registered BEFORE `trackSessions()` on purpose: afterEach hooks run
-// in registration order, and the session delete cannot succeed until the turn
-// has settled — a DELETE against a still-STREAMING session answers
-// SESSION_BUSY and leaves the orphan this ordering exists to avoid.
-//
-// A probe-skip can leave the detached worker still streaming (DELETE would
-// then 409 SESSION_BUSY); interrupt first to settle it, then delete. Both are
-// best-effort — the happy path is already READY and interrupt is a harmless
-// no-op there.
+// Teardown that changes state runs on the passing path only. The interrupt is
+// registered BEFORE `trackSessions()` because afterEach hooks run in
+// registration order and a response still running cannot be cleaned up after.
+// The declaration is removed only on a pass, so a failed run leaves it on disk
+// for diagnosis.
 let sessionId = '';
 let frameHoldPath = '';
 onPassOnly(async ({ request }) => {
@@ -427,8 +264,8 @@ test('live stream reconnect rehydrates durable prefix then resumes from sandbox 
   const api = new AstraApi(request);
   const runId = Date.now();
 
-  // Fail fast (with the descriptive oracle error) if the document store is not
-  // reachable — the durable half of this spec depends on it.
+  // Fail fast (with the descriptive oracle error) if the database is not
+  // reachable — the platform half of this spec depends on it.
   test.info().annotations.push({ type: 'oracle-db', description: oracleDbPath() });
 
   const agent = await api.defaultAgent();
@@ -436,17 +273,32 @@ test('live stream reconnect rehydrates durable prefix then resumes from sandbox 
   sessionId = created.session_id;
   sessions.push(sessionId);
 
-  // Every GET the BROWSER makes on the session's stream, with the cursor it asked
-  // from. Registered before the first navigation so the console's first channel
-  // open is captured too. `page.on('request')` reads the page's own network
-  // without touching the SSE body the page is reading — the only oracle that says
-  // whether the console came back FROM A CURSOR or restarted from the head.
-  const streamOpens: { url: string; afterSeq: number | null }[] = [];
+  // Every GET the BROWSER makes on the session's stream, with the cursor it
+  // asked from, and every newest-history read with the position it carried.
+  // Registered before the first navigation. `page.on` reads the page's own
+  // network without touching the bodies the page reads — the only oracle that
+  // says whether the console came back FROM A POSITION or restarted from the head.
+  const streamPath = apiPath(`/sessions/${sessionId}/stream`);
+  const historyPath = apiPath(`/sessions/${sessionId}/history-blocks`);
+  const streamOpens: { at: number; afterSeq: number | null }[] = [];
+  const historyPositions: { at: number; outputSeq: number | null }[] = [];
   page.on('request', (req) => {
-    if (req.method() !== 'GET' || !req.url().includes('/ai-stream')) return;
+    if (req.method() !== 'GET' || new URL(req.url()).pathname !== streamPath) return;
     const raw = new URL(req.url()).searchParams.get('after_seq');
     const parsed = raw === null ? Number.NaN : Number(raw);
-    streamOpens.push({ url: req.url(), afterSeq: Number.isFinite(parsed) ? parsed : null });
+    streamOpens.push({ at: Date.now(), afterSeq: Number.isFinite(parsed) ? parsed : null });
+  });
+  page.on('response', async (resp) => {
+    const url = new URL(resp.url());
+    if (resp.request().method() !== 'GET' || url.pathname !== historyPath || url.searchParams.has('before')) return;
+    const at = Date.now();
+    try {
+      const body = (await resp.json()) as { data?: { output_seq?: unknown } };
+      const seq = body.data?.output_seq;
+      historyPositions.push({ at, outputSeq: typeof seq === 'number' ? seq : null });
+    } catch {
+      historyPositions.push({ at, outputSeq: null });
+    }
   });
 
   try {
@@ -457,14 +309,12 @@ test('live stream reconnect rehydrates durable prefix then resumes from sandbox 
     await expect(page.getByTestId('run-view')).toBeVisible({ timeout: 45_000 });
 
     frameHoldPath = frameHoldFaultPath(sessionId);
-    armFrameHoldFault(frameHoldPath, sessionId);
-    test.info().annotations.push({ type: 'e2e_turn_frame_hold_file', description: frameHoldPath });
+    armFrameHoldFault(frameHoldPath, sessionId, 'text-delta');
+    test.info().annotations.push({ type: 'e2e_reader_part_hold_file', description: frameHoldPath });
 
-    // ── The user sends one long turn from the composer. ──────────────────────
-    // The bridge pauses immediately after its first text delta. This keeps a real
-    // vendor turn and real sandbox transport in flight while making the cut point
-    // independent of model speed. `.fill()` sets the value without key events, so
-    // the multi-line prompt is not submitted early by an Enter newline.
+    // ── The user sends one long message from the composer. ───────────────────
+    // `.fill()` sets the value without key events, so the multi-line prompt is
+    // not submitted early by an Enter newline.
     const prompt = [
       `E2E live reconnect ${runId}：请直接用中文回答，不要使用任何工具。`,
       '请写一篇约 500 字的科普短文，介绍中国茶文化的起源、主要茶类（绿茶、红茶、乌龙茶、普洱）以及基本的冲泡与品饮礼仪。',
@@ -474,303 +324,216 @@ test('live stream reconnect rehydrates durable prefix then resumes from sandbox 
     await expect(composer, 'the composer must be enabled before sending').toBeEnabled({
       timeout: 45_000,
     });
+    const inputPath = apiPath(`/sessions/${sessionId}/inputs`);
+    const sent = page.waitForResponse((response) => (
+      response.request().method() === 'POST' && new URL(response.url()).pathname === inputPath
+    ), { timeout: 30_000 });
     await composer.fill(prompt);
     await page.getByTestId('composer-submit').click();
+    const receiptResponse = await sent;
+    expect(receiptResponse.status(), 'the platform must accept the message').toBe(200);
+    const receipt = ((await receiptResponse.json()) as { data: InputReceipt }).data;
     await expect(
       page.getByTestId('user-message').last(),
-      'the user bubble should render — proof the turn was dispatched from the page',
+      'the user bubble should render — proof the message was sent from the page',
     ).toContainText(String(runId), { timeout: 30_000 });
 
-    // Anti-vacuity: the server must consume this session's exact fault. Otherwise
-    // every assertion below could pass on an ordinary, already-settled turn.
+    // Anti-vacuity: the reader must have consumed this session's exact hold.
+    // Otherwise every assertion below could pass on an ordinary response that
+    // had already ended — or on a deployment where the barrier is not armed.
     await expect
-      .poll(
-        () => {
-          const consumed = readFrameHoldFault(frameHoldPath)?.consumed;
-          return Array.isArray(consumed)
-            ? consumed.some((entry) => {
-                const record = entry as { session_id?: unknown; frame_type?: unknown };
-                return record.session_id === sessionId && record.frame_type === 'text-delta';
-              })
-            : false;
-        },
-        {
-          timeout: POST_ABORT_TIMEOUT_MS,
-          message: 'the real turn worker must consume the text-delta frame hold',
-        },
-      )
+      .poll(() => frameHoldConsumed(frameHoldPath, sessionId, 'text-delta'), {
+        timeout: HOLD_TIMEOUT_MS,
+        message:
+          'the session reader must consume the text-delta hold; if it never does, the deployment '
+          + `is not running with ASTRABOX_E2E_FAULTS=1 or ${frameHoldPath} is not the path the backend reads`,
+      })
       .toBe(true);
-
-    // An unfinished Markdown delimiter is visible text while the bridge is held.
-    // Strip decoration only when comparing prose across stream settlement.
+    // An unfinished Markdown delimiter is visible text while the reader is
+    // held. Strip decoration only when comparing prose across settlement.
     await expect
       .poll(async () => (await assistantTranscript(page)).trim().length, {
-        timeout: POST_ABORT_TIMEOUT_MS,
-        message: 'the held text delta must render before the browser disconnects',
+        timeout: HOLD_TIMEOUT_MS,
+        message: 'the held text delta must render before the browser reloads',
       })
       .toBeGreaterThanOrEqual(LIVE_PREFIX_MIN_CHARS);
-
-    // ── The durable reconnect cursor: the active turn's overlay watermark. ───
-    // The barrier keeps the turn active while the asynchronous durable writer
-    // commits the first delta. This is the same first-page read the console makes
-    // on mount, taken here because the cursor itself has no pixel.
-    const cursor = await waitForDurableOverlayCursor(api, sessionId, OVERLAY_BUDGET_MS);
-    expect(cursor, 'the held turn must expose a durable active_turn_overlay cursor').not.toBeNull();
-    const durableCursor = cursor as DurableOverlayCursor;
-
-    // ── Rehydrate the durable prefix and prove its live WAL provenance. ───────
-    // Frames at/before the cursor are the durable prefix. They must (1) carry a
-    // server-side live source position (`live_seq`) and (2) NOT yet contain the
-    // terminal finish (the cut lands mid-turn). Filtering by frame_seq <= cursor
-    // keeps this stable even if the worker races ahead and writes the finish
-    // before this read; one read feeds both derivations so they see the same
-    // frame set.
-    const prefixArtifactFrames = minimalFramesForTurn(durableCursor.turnId);
-    const prefixFrames = prefixArtifactFrames.filter(
-      (frame) => frame.frame_seq <= durableCursor.frameSeq,
-    );
-
-    expect(
-      prefixFrames.some((frame) => frame.type === 'finish'),
-      'the barrier must hold the bridge before the durable terminal finish',
-    ).toBe(false);
-
-    // `live_seq` is the server-side WAL source position persisted from the agent
-    // stream. It remains an internal recovery oracle; the browser resumes from
-    // the public durable `resume_cursor.frame_seq` asserted below.
-    const prefixSourceSeq = maxLiveSourceSeqAtOrBefore(
-      prefixArtifactFrames,
-      durableCursor.frameSeq,
-    );
-    expect(
-      prefixSourceSeq,
-      'durable prefix must prove a live WAL source cursor (live_seq)',
-    ).not.toBeNull();
+    const heldResponse = sessionResponseRows(sessionId).find((row) => row.input_ids.includes(receipt.input_id));
+    expect(heldResponse?.status, 'the response answering the message must be running while the reader is held')
+      .toBe('running');
+    const responseId = heldResponse!.response_id;
+    test.info().annotations.push({ type: 'e2e_response_id', description: responseId });
 
     // ── THE CUT: the browser drops mid-answer and comes back. ────────────────
-    // A reload is the real thing, not a simulation of it: it kills the channel
+    // A reload is the real thing, not a simulation of it: it kills the stream
     // the console was reading and throws away every byte the tab had in memory.
     // Nothing the page draws from here can come from client state.
     //
-    // Sampled HERE, not at the probe above: the answer kept streaming while the
-    // cursor was read, and "the rest of it arrived after the cut" is only a claim
-    // about new content if it is measured against what the dropped tab actually
-    // had on screen.
+    // The output position read just before the reload is the floor the new
+    // page's history read cannot be below: positions only grow.
     const preCutText = (await assistantTranscript(page)).trim();
-    expect(preCutText.length, 'the cut must retain a nonempty displayed reply prefix')
-      .toBeGreaterThanOrEqual(LIVE_PREFIX_MIN_CHARS);
     const preCutRendered = normalizeRendered(preCutText);
-    const streamOpensBeforeCut = streamOpens.length;
+    const outputSeqBeforeReload = Number((await api.getSession(sessionId)).output_seq ?? 0);
+    expect(outputSeqBeforeReload, 'the open response must have stored parts before the reload').toBeGreaterThan(0);
+    expect(
+      sessionOutputRows(sessionId, responseId).some((row) => row.part.type === 'finish'),
+      'the hold must keep the response open: no finish may be stored before the reload',
+    ).toBe(false);
+    const reloadAt = Date.now();
     await page.reload({ waitUntil: 'domcontentloaded' });
     await expect(page.getByTestId('run-view')).toBeVisible({ timeout: 60_000 });
 
     // Claim 1, with pixels: the conversation the user was in is intact and the
-    // answer-so-far is back on screen. The tab that watched it live is gone, so
-    // this is durable state the console re-fetched — the messages first page plus
-    // the active turn's overlay — which is what "rehydrate the durable prefix"
-    // means to the person reading it.
+    // answer so far is back on screen, read from history — the response is one
+    // message, and it is still the one the reader holds open.
     await expect(
       page.getByTestId('user-message').filter({ hasText: String(runId) }).last(),
-      'the reconnected page must still hold the message that started the live turn',
+      'the reconnected page must still hold the message that started the response',
     ).toBeVisible({ timeout: 60_000 });
-    // Existence FIRST, then content: a negated Playwright matcher passes on an
-    // element that was never found, so `not.toBeEmpty()` alone would be green on
-    // the exact failure this line is here for — a transcript that came back with
-    // no answer in it at all.
-    const rehydratedReply = page.getByTestId('assistant-message').last();
+    const responseOnPage = page.locator(`[data-message-id="${responseId}"]`);
     await expect(
-      rehydratedReply,
-      'the reconnected page must rehydrate the answer-so-far, not an empty transcript',
-    ).toBeVisible({ timeout: 60_000 });
-    await expect(rehydratedReply).not.toBeEmpty();
+      responseOnPage,
+      'the reconnected page must show the open response, from history, once',
+    ).toHaveCount(1, { timeout: 60_000 });
     // The held prefix has not advanced, so its literal rendering must survive
-    // reload even when it consists entirely of unfinished Markdown decoration.
+    // the reload even when it consists entirely of unfinished Markdown.
     await expect
       .poll(async () => (await assistantTranscript(page)).trim(), {
         timeout: 60_000,
-        message: 'the reconnected page must restore the displayed reply prefix before release',
+        message: 'the reconnected page must restore the reply text it had shown before the reload',
       })
       .toBe(preCutText);
-    // Same guard as the settled reply below, one step earlier: a turn that FAILED
-    // renders its error INTO the transcript as an assistant bubble, so "an
-    // assistant bubble came back with content in it" is satisfied by exactly the
-    // failure this spec must not pass on — and catching it here fails in seconds
-    // instead of after the whole RESUME_TIMEOUT_MS growth poll expires.
-    await expect(rehydratedReply).not.toContainText(TURN_ERROR);
+    await expect(responseOnPage).not.toContainText(RESPONSE_ERROR);
 
-    // And it reconnected FROM THE CURSOR. The console reopens its channel as GET
-    // ai-stream?follow=session&after_seq=<overlay frame_seq>; a reconnect without
-    // a cursor would replay the whole turn on top of the prefix it just painted,
-    // which is the duplication asserted against below.
+    // And it reconnected FROM THE POSITION its history was read at. The page
+    // follows its stream from the history page's `output_seq`; anything lower
+    // would replay parts that history already folded into the message.
     await expect
-      .poll(() => streamOpens.length - streamOpensBeforeCut, {
+      .poll(() => historyPositions.filter((entry) => entry.at >= reloadAt).length, {
+        timeout: 60_000,
+        message: 'the reloaded page must read its newest history page',
+      })
+      .toBeGreaterThan(0);
+    const historyAfterReload = historyPositions.filter((entry) => entry.at >= reloadAt)[0];
+    expect(
+      historyAfterReload.outputSeq,
+      'the newest history page must carry the position it was read at',
+    ).not.toBeNull();
+    expect(historyAfterReload.outputSeq!).toBeGreaterThanOrEqual(outputSeqBeforeReload);
+    // Counted from the history read on: the reloaded page opens its stream only
+    // once it has the history window, so an earlier request can only be the
+    // unloading page's.
+    await expect
+      .poll(() => streamOpens.filter((entry) => entry.at >= historyAfterReload.at).length, {
         timeout: 60_000,
         message: 'the reconnected console must reopen the session stream',
       })
       .toBeGreaterThan(0);
-    const reconnectCursors = streamOpens
-      .slice(streamOpensBeforeCut)
-      .map((open) => open.afterSeq)
-      .filter((seq): seq is number => seq !== null && seq >= 0);
+    const reconnects = streamOpens.filter((entry) => entry.at >= historyAfterReload.at);
     expect(
-      reconnectCursors.length,
-      'the reconnect must carry a durable cursor (after_seq), not open the channel cursorless',
-    ).toBeGreaterThan(0);
-    const browserReconnectCursor = Math.max(...reconnectCursors);
-    // Not merely "some after_seq": `after_seq=0` IS a restart from the head, so a
-    // presence check cannot say what this line has to say. The floor is the
-    // watermark captured mid-turn, because the console reads the SAME overlay on
-    // mount (useSessionChat cursorFromOverlay ← active_turn_overlay.resume_cursor)
-    // and that watermark — source_frame_seq_applied, the highest durable frame
-    // folded into the overlay message — only advances within a turn. So the
-    // browser's own cursor is necessarily at or past that watermark, and anything below it
-    // means the console went back for frames it had already painted.
-    expect(
-      browserReconnectCursor,
-      'the reconnect must resume AT OR PAST the durable watermark the turn had mid-flight, ' +
-        'not restart the stream from the head',
-    ).toBeGreaterThanOrEqual(durableCursor.frameSeq);
+      reconnects[0].afterSeq,
+      'the first stream request after the reload must start where the history page was read',
+    ).toBe(historyAfterReload.outputSeq);
     test.info().annotations.push({
       type: 'e2e_browser_reconnect_after_seq',
-      description: String(browserReconnectCursor),
+      description: String(reconnects[0].afterSeq),
     });
 
-    // The reconnected browser has proven it opened from the durable watermark.
-    // Release the real worker now; every remaining frame is the suffix this new
-    // channel must tail without repainting the prefix.
+    // The reloaded page is following from the position history was read at.
+    // Release the reader now; every remaining part is the rest this new page
+    // must receive without repainting what it already shows.
     releaseFrameHoldFault(frameHoldPath);
 
-    // ── Claim 2, with pixels: the SAME turn finishes on the reconnected page. ─
-    // The answer grows past what the dropped tab had seen — content that can only
-    // have arrived on the connection this page opened after the cut — and then
+    // ── Claim 2, with pixels: the SAME response finishes on the reloaded page.
+    // The answer grows past what the dropped tab had seen — content that can
+    // only have arrived on the stream this page opened after the cut — and then
     // the header stops pretending to work.
     await expect
       .poll(async () => normalizeRendered(await assistantTranscript(page)).length, {
         timeout: RESUME_TIMEOUT_MS,
-        message: 'the resumed stream must deliver the rest of the answer to the reconnected page',
+        message: 'the followed stream must deliver the rest of the answer to the reloaded page',
       })
       .toBeGreaterThan(preCutRendered.length + RESUMED_GROWTH_MIN_CHARS);
+    const statusPill = page.getByTestId('run-view').getByTestId('status-pill').first();
     await expect(
-      page.getByTestId('run-view').getByTestId('status-pill').first(),
-      'the header must settle once the resumed turn reaches its terminal frame',
+      statusPill,
+      'the header must settle once the response ends',
     ).toHaveAttribute('data-pulse', 'false', { timeout: 60_000 });
 
-    // A reply, not a rendered failure. Wording is never pinned — the backend is
-    // deepseek and non-deterministic — so what is asserted is that the last bubble
-    // carries content and is not the failure bubble a lost turn leaves.
-    const reply = page.getByTestId('assistant-message').last();
-    await expect(reply, 'the resumed turn should have rendered assistant content').not.toBeEmpty();
-    await expect(reply).not.toContainText(TURN_ERROR);
+    // A reply, not a rendered failure, and still one message for the response.
+    // Wording is never pinned — the model is its own business.
+    await expect(responseOnPage).toHaveCount(1);
+    await expect(responseOnPage, 'the response should have rendered assistant content').not.toBeEmpty();
+    await expect(responseOnPage).not.toContainText(RESPONSE_ERROR);
 
-    // No stretch of the answer twice. This is the rehydrate/resume seam: the page
-    // painted the durable prefix and then tailed from the cursor, so anything the
-    // resume replayed over the prefix shows up here as repeated prose.
+    // No stretch of the answer twice. This is the history/stream seam: the page
+    // painted the folded prefix and then followed from the position, so
+    // anything the stream replayed over the prefix shows up here as repeated
+    // prose.
     const settledTranscript = normalizeRendered(await assistantTranscript(page));
     expect(
       firstRepeatedWindow(settledTranscript, DUPLICATE_WINDOW_CHARS),
-      'rehydrate + resume must not render the same stretch of the answer twice',
+      'history + stream must not render the same stretch of the answer twice',
     ).toBeNull();
-
-    // ── Durable half: the committed turn advanced past the reconnect cursor,
-    //    finished exactly once, completed LIVE (not recovered), and did not
-    //    append a synthetic recovery finish. None of this has a pixel: a turn the
-    //    live worker completed and one a recovery path rebuilt render the same
-    //    finished answer, and that difference is the spec. ────────────────────
-    // The same turn must record COMPLETED as well as a durable terminal frame.
-    await waitForTurnTerminalProof(
-      sessionId,
-      durableCursor.turnId,
-      'COMPLETED',
-      TERMINAL_PROOF_BUDGET_MS,
-    );
-    const finalFrames = minimalFramesForTurn(durableCursor.turnId);
-    const finalFrameSeqs = finalFrames
-      .map((frame) => frame.frame_seq)
-      .filter((seq) => Number.isFinite(seq));
-    const finalMaxFrameSeq = finalFrameSeqs.length > 0 ? Math.max(...finalFrameSeqs) : durableCursor.frameSeq;
-
     expect(
-      finalMaxFrameSeq,
-      'durable frames should advance after the WAL-suffix resume',
-    ).toBeGreaterThan(durableCursor.frameSeq);
-    const finalTypes = finalFrames.map((frame) => frame.type);
-    expect(finalTypes, 'final durable frames should include terminal finish').toContain('finish');
-    expect(
-      finalFrames.filter((frame) => frame.type === 'finish'),
-      'live/WAL resume should commit exactly one durable finish frame',
-    ).toHaveLength(1);
+      settledTranscript.startsWith(preCutRendered),
+      'the answer on the reloaded page must continue the prefix it restored, not replace it',
+    ).toBe(true);
 
-    const finalCounts = journalTerminalCounts(sessionId, durableCursor.turnId);
+    // ── Platform half: one response answered the message, it completed, it
+    //    stored one `finish` and no error, and it stored parts after the
+    //    position the reloaded page started from. None of this has a pixel. ──
+    await expect
+      .poll(() => sessionResponseRows(sessionId).find((row) => row.response_id === responseId)?.status ?? 'missing', {
+        timeout: TERMINAL_PROOF_BUDGET_MS,
+        message: 'the platform must record the response as ended',
+      })
+      .toBe('ended');
+    const responses = sessionResponseRows(sessionId).filter((row) => row.input_ids.includes(receipt.input_id));
+    expect(responses, 'exactly one response answers the message').toHaveLength(1);
+    expect(responses[0].outcome, 'the response must complete, not fail').toBe('completed');
+    const output = sessionOutputRows(sessionId, responseId);
+    const outputTypes = output.map((row) => String(row.part.type ?? ''));
+    expect(outputTypes.filter((type) => type === 'finish'), 'the response stores exactly one finish').toHaveLength(1);
+    expect(outputTypes, 'the response stores no error part').not.toContain('error');
+    const finalMaxSeq = Math.max(...output.map((row) => row.seq));
     expect(
-      finalCounts['turn.completed'] || 0,
-      'live/WAL resume should write exactly one normal completed terminal event',
-    ).toBe(1);
-    expect(
-      finalCounts['turn.recovered'] || 0,
-      'the browser reconnect must not write turn.recovered while the live worker completes',
-    ).toBe(0);
+      finalMaxSeq,
+      'the response must have stored parts after the position the reloaded page followed from',
+    ).toBeGreaterThan(historyAfterReload.outputSeq!);
 
-    // The cursor the BROWSER reconnected on must itself land inside the durable
-    // WAL — the original spec asserted this of the cursor the test chose; now that
-    // the console picks its own, it is asserted of that one.
-    expect(
-      maxLiveSourceSeqAtOrBefore(finalFrames, browserReconnectCursor),
-      "the browser's reconnect cursor must map to a live WAL source cursor (live_seq)",
-    ).not.toBeNull();
+    // History: the message the response is, with no text part written twice.
+    // The page merges history and the stream, so a rendered answer alone does
+    // not prove what was recorded.
+    const recorded = await api.waitForReplyTo(sessionId, receipt.input_id, { timeoutMs: TERMINAL_PROOF_BUDGET_MS });
+    expect(recorded.id).toBe(responseId);
+    expect(answersInput(recorded, receipt.input_id)).toBe(true);
+    expect(recorded.metadata?.outcome).toBe('completed');
+    expectNoDuplicateTextBlocks(recorded, 'the reloaded response');
+    expect(messageText(recorded).trim(), 'the response must have recorded its answer').not.toEqual('');
 
-    expect(
-      finalFrames.map((frame) => frame.source_kind),
-      'live/WAL resume should not append a synthetic turn-recovery finish',
-    ).not.toContain('turn_recovery');
-
-    // Materialization, which has no pixel of its own: the settled transcript on
-    // screen is the console's merge of durable records and the frames it tailed,
-    // so a rendered answer does NOT prove the worker committed an assistant
-    // message. This asserts the durable row exists and does not carry the same
-    // text twice — see expectNoDuplicateTextBlocks for why it stands beside the
-    // page-side duplicate scan rather than being replaced by it.
-    const finalMessages = await api.getMessages(sessionId, 50);
-    const finalAssistantMessages = (finalMessages.messages || []).filter(
-      (message) => message.role === 'assistant',
-    );
-    const finalAssistant = finalAssistantMessages[finalAssistantMessages.length - 1];
-    expect(finalAssistant, 'live/WAL resume should persist a final assistant message').toBeTruthy();
-    expectNoDuplicateTextBlocks(finalAssistant as MessageRecord, 'live/WAL resume final assistant');
-
-    const finalSourceSeq = maxLiveSourceSeqAtOrBefore(finalFrames, finalMaxFrameSeq);
-    expect(
-      finalSourceSeq,
-      'final durable live source cursor should advance past the prefix',
-    ).toBeGreaterThan(prefixSourceSeq as number);
-
-    // The source case is idle: two failures in the SAME mounted page, without
-    // receiving another frame that could reset its cursor or reconnect budget.
+    // ── The idle half: the same mounted page, its stream broken while idle. ──
+    // Two failures in a row on the SAME page, with nothing arriving in between
+    // that could move its cursor.
     const idle = await api.getSession(sessionId);
     expect(idle.state).toBe('READY');
-    expect(idle.current_turn_id).toBeFalsy();
-    const statusPill = page.getByTestId('run-view').getByTestId('status-pill').first();
+    expect(idle.current_responses ?? []).toEqual([]);
     await expect(statusPill).toHaveAttribute('data-state', 'READY');
     await expect(composer).toBeEnabled();
     const pageInstance = await page.evaluate(() => performance.timeOrigin);
     const userMessages = await page.getByTestId('user-message').count();
     const idleTranscript = normalizeRendered(await assistantTranscript(page));
-    // First-turn title publication follows READY. It must finish before the
-    // no-business-frame window, not before this subscription was established.
-    await expect.poll(() => minimalFramesForTurn(durableCursor.turnId)
-      .some((frame) => frame.type === 'data-session-changed'), {
-      timeout: 10_000, message: 'the first-turn title notification must be published before idle faults',
-    }).toBe(true);
-    const idleFrameSeq = Math.max(...minimalFramesForTurn(durableCursor.turnId).map((frame) => frame.frame_seq));
+    const storedBeforeIdle = sessionOutputRows(sessionId).length;
+    const idleFloor = Math.max(...sessionOutputRows(sessionId).map((row) => row.seq));
     await expect.poll(async () => (await browserConnections(page)).filter(
       (connection) => !connection.closed,
-    ).length, { timeout: 10_000, message: 'a real idle subscription must open beyond the completed reply' }).toBe(1);
+    ).length, { timeout: 10_000, message: 'an idle stream request must open past the completed reply' }).toBe(1);
     const initialIdle = (await browserConnections(page)).find((connection) => !connection.closed)!;
     await expect.poll(() => page.evaluate((id) => (window as ReconnectWindow).__idleReconnect.cursor(id), initialIdle.id), {
-      timeout: 10_000, message: 'the real idle stream must receive the post-turn durable cursor',
-    }).toBeGreaterThanOrEqual(idleFrameSeq);
+      timeout: 10_000, message: 'the idle stream must start at or past the last stored part',
+    }).toBeGreaterThanOrEqual(idleFloor);
     const idleCursor = await page.evaluate(({ id, minimum }) =>
-      (window as ReconnectWindow).__idleReconnect.arm(id, minimum), { id: initialIdle.id, minimum: idleFrameSeq });
-    expect(idleCursor).toBeGreaterThanOrEqual(finalMaxFrameSeq);
+      (window as ReconnectWindow).__idleReconnect.arm(id, minimum), { id: initialIdle.id, minimum: idleFloor });
+    expect(idleCursor).toBeGreaterThanOrEqual(finalMaxSeq);
 
     for (let index = 0; index < 3; index += 1) {
       const connectionId = initialIdle.id + index;
@@ -783,11 +546,13 @@ test('live stream reconnect rehydrates durable prefix then resumes from sandbox 
       expect(connection.contentType).toContain('text/event-stream');
       expect(connection.closed).toBe(false);
       if (index > 0) {
-        expect(connection.afterSeq, 'the application must resume at the same delivered idle cursor after each fault')
+        expect(connection.afterSeq, 'the page must resume at the same cursor after each fault')
           .toBe(idleCursor);
       }
-      expect(connection.raw.slice(connection.idleStart).split(/\r?\n/).filter((line) => line.trim() && !line.startsWith(':')),
-        'an idle connection may receive keepalive comments but no business frame').toEqual([]);
+      expect(
+        await page.evaluate((id) => (window as ReconnectWindow).__idleReconnect.businessSinceIdle(id), connectionId),
+        'an idle stream request may receive keepalives, cursors and session notices, but no response part',
+      ).toEqual([]);
       await expect(page.getByText('network error', { exact: true })).not.toBeVisible();
       await expect(statusPill).toHaveAttribute('data-state', 'READY');
       await expect(composer).toBeEnabled();
@@ -797,17 +562,17 @@ test('live stream reconnect rehydrates durable prefix then resumes from sandbox 
         closed: true, faulted: true, readerCancelled: true,
       });
     }
-    expect(await page.evaluate(() => performance.timeOrigin), 'no reload may reset the reconnect budget').toBe(pageInstance);
+    expect(await page.evaluate(() => performance.timeOrigin), 'no reload may stand in for the reconnects').toBe(pageInstance);
     await expect(page.getByTestId('user-message')).toHaveCount(userMessages);
     expect(normalizeRendered(await assistantTranscript(page))).toBe(idleTranscript);
     const stillIdle = await api.getSession(sessionId);
     expect(stillIdle.state).toBe('READY');
-    expect(stillIdle.current_turn_id).toBeFalsy();
-    expect(journalTerminalCounts(sessionId, durableCursor.turnId)).toEqual(finalCounts);
+    expect(stillIdle.current_responses ?? []).toEqual([]);
+    expect(sessionOutputRows(sessionId), 'the idle reconnects must not record anything').toHaveLength(storedBeforeIdle);
   } finally {
-    // A failed assertion must not strand the real worker at the E2E barrier. The
-    // declaration remains on disk on failure for diagnosis; passing cleanup is
-    // handled by onPassOnly above.
+    // A failed assertion must not strand the reader at the barrier. The
+    // declaration stays on disk on failure for diagnosis; a pass removes it in
+    // onPassOnly above.
     releaseFrameHoldFault(frameHoldPath);
     if (!page.isClosed()) {
       await page.evaluate(() => (window as ReconnectWindow).__idleReconnect?.disarm());

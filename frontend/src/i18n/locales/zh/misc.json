@@ -26,14 +26,11 @@
     "copy_output": "复制输出"
   },
   "composer": {
-    "queue_n": "队列 {{index}}",
     "queue_sending": "发送中",
     "queue_failed": "发送失败",
     "queue_waiting": "等待发送",
     "retry": "重试",
-    "retry_queued": "重试排队消息",
     "send_again": "重新发送",
-    "send_again_queued": "作为新消息再次发送",
     "retry_disabled": "当前会话不可重试",
     "remove_queued": "删除排队消息",
     "blocking": "阻塞中",
@@ -102,7 +99,6 @@
     "creating": "创建中",
     "sending": "发送中",
     "ready": "就绪",
-    "background_running": "后台运行中",
     "waiting_input": "等待回答",
     "processing": "处理中",
     "provisioning": "创建中",
@@ -113,16 +109,6 @@
     "terminated": "已终止",
     "recovery_required": "待恢复",
     "deleted": "已删除"
-  },
-  "agent_runtime": {
-    "status_unknown": "Agent 状态未知",
-    "with_progress": "Agent {{progress}}",
-    "initializing": "Agent 初始化中",
-    "terminated": "已终止",
-    "wake": "唤醒 Agent",
-    "wake_with_progress": "唤醒 Agent：{{progress}}",
-    "failed": "Agent 异常",
-    "state_generic": "Agent {{label}}"
   },
   "progress": {
     "creating_workspace": "准备工作区",

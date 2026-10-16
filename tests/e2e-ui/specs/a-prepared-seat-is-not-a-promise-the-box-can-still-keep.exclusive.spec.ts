@@ -225,7 +225,7 @@ test('a conversation is not handed a prepared seat in a shared box that filled u
     name: agentName,
     model: await api.configuredAgentModel(RESEARCH_AGENT, SHARED_ENVIRONMENT),
     environment_name: SHARED_ENVIRONMENT,
-    prepared_capacity: 1,
+    prepared_capacity: 2,
     terminal_panel: true,
   });
   agentId = String(created.agent_id || '').trim();

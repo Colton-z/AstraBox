@@ -4,10 +4,21 @@ import { randomUUID } from 'node:crypto';
 
 import { expect, test } from '@playwright/test';
 
-import { AstraApi, messageText } from '../fixtures/astraApi';
+import { AstraApi, answersInput, messageText } from '../fixtures/astraApi';
 import { channelCallback } from '../fixtures/channelCallback';
-import { documentsByField, sessionEvents } from '../fixtures/dbOracle';
+import {
+  nativeTranscriptRows,
+  sessionInputRows,
+  sessionResponseRows,
+  type SessionResponseRow,
+} from '../fixtures/dbOracle';
 import { absoluteBaseUrl, apiPath } from '../fixtures/env';
+import {
+  channelMessageInputs,
+  channelOutboxRows,
+  sessionChannelInboundRows,
+  type ChannelInboundRow,
+} from '../fixtures/ingressRecords';
 import {
   installInputAckGate, readInputAckGate, signalInputAckGateRelease, waitForInputAckGateEntered,
   type InputAckGateState,
@@ -32,7 +43,7 @@ function object(value: unknown): Record<string, unknown> {
 }
 
 function nativeRootRows(sessionId: string) {
-  return documentsByField('transcript_entries', '$.platform_session_id', sessionId)
+  return nativeTranscriptRows(sessionId)
     .filter((row) => row.subpath == null)
     .map((row) => ({ seq: Number(row.seq), uuid: row.uuid, entry: object(JSON.parse(String(row.entry_json))) }))
     .sort((a, b) => a.seq - b.seq);
@@ -47,6 +58,21 @@ function nativeInputs(sessionId: string, prompt: string) {
         .filter((block) => block.type === 'text').map((block) => String(block.text || '')).join('');
       return text === prompt;
     });
+}
+
+/** The inputs the Session accepted, by their identity and content. */
+function inputs(sessionId: string) {
+  return sessionInputRows(sessionId).map((row) => ({
+    input_id: row.input_id, client_message_id: row.client_message_id, source: row.source, content: row.content,
+  }));
+}
+
+/** A message record's facts that change only when the message itself does. */
+function messageRecord(row: ChannelInboundRow) {
+  return {
+    item_id: row.item_id, state: row.state, session_id: row.session_id, generation: row.generation,
+    attempts: row.attempts, content: row.content, frozen_content: row.frozen_content,
+  };
 }
 
 function responseWindow(gate: InputAckGateState, inputId: string) {
@@ -110,7 +136,7 @@ test('a channel turn completed before its runner receipt recovers after backend 
     sessions.push(sessionId);
     await expect.poll(() => recipient.deliveries.length, { timeout: 60_000 }).toBe(1);
     expect(recipient.errors).toEqual([]);
-    const ready = await api.waitForSession(sessionId, (row) => row.state === 'READY' && !row.current_turn_id, 30_000);
+    const ready = await api.waitForSessionReady(sessionId, 30_000);
     expect(ready.last_error ?? null).toBeNull();
     const detail = await api.adminSessionDetail(sessionId);
     expect(String(detail.runtime_identity?.isolated_session_id || ''), 'the fault owns the whole runner').toBe('');
@@ -123,17 +149,22 @@ test('a channel turn completed before its runner receipt recovers after backend 
     evidence.entered = entered;
     const held = entered.entered!;
     expect(held.ack_duplicate).toBe(false);
-    const accepted = sessionEvents(sessionId).filter((event) => event.event_type === 'command.accepted'
-      && event.causation_id === held.command_id);
-    expect(accepted).toHaveLength(1);
-    expect(object(accepted[0].payload)).toMatchObject({ input_id: held.input_id, content: prompt });
-    const turnId = String(accepted[0].turn_id || '');
-    expect(turnId).not.toEqual('');
+    // The held receipt is for the input the channel message became: its item
+    // id is the input's client message id, and the runner wire carries the
+    // input id as both the command and the SDK message identity.
+    const inbound = sessionChannelInboundRows(sessionId).filter((row) => row.content === prompt);
+    expect(inbound).toHaveLength(1);
+    expect(inbound[0].state, 'the Session holds the message, so the channel has sent it').toBe('SETTLED');
+    const messageInputs = channelMessageInputs(inbound[0].item_id);
+    expect(messageInputs.map((row) => ({ session_id: row.session_id, input_id: row.input_id, content: row.content })))
+      .toEqual([{ session_id: sessionId, input_id: held.input_id, content: prompt }]);
+    expect(held.command_id).toBe(held.input_id);
+    const inputId = held.input_id;
     const box = sandbox;
-    await expect.poll(() => responseWindow(readInputAckGate(box), held.input_id).results.length, {
+    await expect.poll(() => responseWindow(readInputAckGate(box), inputId).results.length, {
       timeout: 30_000, message: 'the original native input must reach a real Result while its receipt remains held',
     }).toBe(1);
-    const beforeWindow = responseWindow(readInputAckGate(sandbox), held.input_id);
+    const beforeWindow = responseWindow(readInputAckGate(sandbox), inputId);
     expect(beforeWindow.input).not.toBeNull();
     expect(object(beforeWindow.results[0].message)).toMatchObject({ is_error: false, stop_reason: 'end_turn' });
     expect(Number(beforeWindow.results[0].store_sequence)).toBeGreaterThan(0);
@@ -145,31 +176,23 @@ test('a channel turn completed before its runner receipt recovers after backend 
       return content.filter((block) => block.type === 'text').map((block) => String(block.text || ''));
     }).join('');
     expect(originalAnswer.trim()).not.toEqual('');
-    const originalCommands = sessionEvents(sessionId).filter((event) => event.event_type === 'command.accepted');
-    const receipts = sessionEvents(sessionId).filter((event) => ['input.delivered', 'input.consumed'].includes(String(event.event_type))
-      && event.causation_id === held.command_id);
-    expect(receipts, 'the platform must not have received the held delivery receipt').toEqual([]);
+    const originalInputs = inputs(sessionId);
+    const heldInput = sessionInputRows(sessionId).find((row) => row.input_id === inputId);
+    expect(
+      { state: heldInput?.state, delivered_at: heldInput?.delivered_at, response_id: heldInput?.response_id },
+      'the platform must not have received the held delivery receipt',
+    ).toEqual({ state: 'pending', delivered_at: null, response_id: null });
+    expect(sessionResponseRows(sessionId).filter((row) => row.input_ids.includes(inputId)),
+      'no response is recorded for an input the platform has not seen taken').toEqual([]);
     expect(recipient.deliveries).toHaveLength(1);
     expect(readInputAckGate(sandbox).state).toBe('entered');
-    evidence.beforeRestart = { sessionId, turnId, beforeWindow, originalInput, originalAnswers, originalAnswer, originalCommands, receipts };
-    const inbound = documentsByField('channel_inbound', '$.session_id', sessionId)
-      .filter((row) => object(row.payload).content === prompt);
-    expect(inbound).toHaveLength(1);
-    expect(inbound[0].state).toBe('DISPATCHING');
-    expect(Number(inbound[0].lease_expires_epoch)).toBeGreaterThan(Date.now() / 1000);
-    evidence.inboundBeforeStop = inbound[0];
+    const inboundBeforeStop = messageRecord(inbound[0]);
+    evidence.beforeRestart = { sessionId, inputId, beforeWindow, originalInput, originalAnswers, originalAnswer,
+      originalInputs, heldInput, inbound: inbound[0] };
 
     serverCommand(['stop', '--time', '10']);
     stopped = true;
     expect(serverCommand(['inspect', '--format', '{{.State.Running}}'])).toBe('false');
-    const handedBack = documentsByField('channel_inbound', '$.session_id', sessionId)
-      .find((row) => row._id === inbound[0]._id);
-    evidence.inboundAfterStop = handedBack;
-    expect(handedBack).toMatchObject({
-      state: 'DISPATCHING', generation: inbound[0].generation,
-      owner_token: inbound[0].owner_token, attempts: inbound[0].attempts,
-    });
-    expect(Number(handedBack!.lease_expires_epoch), 'stopped worker must hand back its durable task').toBeLessThanOrEqual(Date.now() / 1000);
     signalInputAckGateRelease(sandbox);
     await restartServerContainer(absoluteBaseUrl(), 60_000, server);
     stopped = false;
@@ -177,31 +200,40 @@ test('a channel turn completed before its runner receipt recovers after backend 
       timeout: 45_000, message: 'the recovered original turn must reach the real channel recipient',
     }).toBe(2);
     expect(recipient.errors).toEqual([]);
-    const settled = await api.waitForSession(sessionId, (row) => row.state === 'READY' && !row.current_turn_id, 30_000);
-    expect(settled).toMatchObject({ last_turn_id: turnId, last_turn_status: 'COMPLETED' });
+    let answered: SessionResponseRow | undefined;
+    await expect.poll(() => {
+      const rows = sessionResponseRows(sessionId).filter((row) => row.input_ids.includes(inputId));
+      answered = rows[0];
+      return rows.map((row) => `${row.status}/${row.outcome ?? ''}`).join(',');
+    }, { timeout: 30_000, message: 'exactly one response must answer the original input and complete' })
+      .toBe('ended/completed');
+    const settled = await api.waitForSessionReady(sessionId, 30_000);
+    expect(settled.last_response).toMatchObject({ response_id: answered!.response_id, outcome: 'completed' });
     expect(settled.last_error ?? null).toBeNull();
+    expect(sessionInputRows(sessionId).find((row) => row.input_id === inputId))
+      .toMatchObject({ state: 'admitted', response_id: answered!.response_id });
     expect(nativeInputs(sessionId, prompt)).toEqual([originalInput]);
     expect(nativeRootRows(sessionId).filter((row) => row.seq > originalInput.seq && row.entry.type === 'assistant'))
       .toEqual(originalAnswers);
-    expect(sessionEvents(sessionId).filter((event) => event.event_type === 'command.accepted')).toEqual(originalCommands);
-    const recoveredInbound = documentsByField('channel_inbound', '$.session_id', sessionId)
-      .find((row) => row._id === inbound[0]._id);
-    expect(recoveredInbound).toMatchObject({ state: 'SETTLED', attempts: inbound[0].attempts });
-    expect(Number(recoveredInbound!.generation)).toBeGreaterThan(Number(inbound[0].generation));
+    expect(inputs(sessionId), 'recovery must not accept a second input').toEqual(originalInputs);
+    const recoveredInbound = sessionChannelInboundRows(sessionId).find((row) => row.item_id === inbound[0].item_id);
+    expect(recoveredInbound && messageRecord(recoveredInbound)).toEqual(inboundBeforeStop);
+    expect(channelMessageInputs(inbound[0].item_id).map((row) => row.input_id)).toEqual([inputId]);
     const finalGate = readInputAckGate(sandbox);
     expect(finalGate.state).toBe('released');
     expect(finalGate.timed_out_at).toBeUndefined();
-    expect(responseWindow(finalGate, held.input_id)).toEqual(beforeWindow);
-    const outboxes = documentsByField('channel_outbox', '$.session_id', sessionId);
+    expect(responseWindow(finalGate, inputId)).toEqual(beforeWindow);
+    const outboxes = channelOutboxRows(sessionId);
     expect(outboxes).toHaveLength(2);
     const history = await api.getMessages(sessionId, 50);
     expect(history.has_more).toBe(false);
     expect(history.messages.filter((row) => row.role === 'user').map(messageText)).toEqual([baselinePrompt, prompt]);
     const replies = history.messages.filter((row) => row.role === 'assistant');
     expect(replies).toHaveLength(2);
-    expect(replies[1].turn_id).toBe(turnId);
-    expect(outboxes.filter((row) => row.turn_id === turnId)).toEqual([
-      expect.objectContaining({ response_id: replies[1].message_id, state: 'DELIVERED' }),
+    expect(answersInput(replies[1], inputId)).toBe(true);
+    expect(replies[1].id).toBe(answered!.response_id);
+    expect(outboxes.filter((row) => row.response_id === answered!.response_id)).toEqual([
+      expect.objectContaining({ response_id: replies[1].id, state: 'DELIVERED' }),
     ]);
     expect(messageText(replies[1])).toBe(originalAnswer);
     expect(recipient.deliveries.map((row) => row.text)).toEqual(replies.map((row) => messageText(row).trim()));
@@ -209,7 +241,7 @@ test('a channel turn completed before its runner receipt recovers after backend 
     await expect(page.getByTestId('user-message')).toHaveText([baselinePrompt, prompt]);
     await expect(page.getByTestId('assistant-text')).toHaveText(replies.map(messageText));
     expect(recipient.deliveries).toHaveLength(2);
-    evidence.recovered = { settled, recoveredInbound, finalGate, outboxes, history };
+    evidence.recovered = { settled, answered, recoveredInbound, finalGate, outboxes, history };
   } finally {
     try {
       if (stopped) serverCommand(['start']);

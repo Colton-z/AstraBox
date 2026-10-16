@@ -340,6 +340,39 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "astrabox.config.settings",
     ),
     (
+        "ASTRABOX_ASSISTANT_SANDBOX_CPU_LIMIT",
+        "public",
+        "1",
+        "CPU limit of an Assistant's workspace box, as a Kubernetes quantity, "
+        "for every such box. The box stays running between messages so the "
+        "Assistant can answer its channels and run its scheduled jobs.",
+        "astrabox.config.settings",
+    ),
+    (
+        "ASTRABOX_ASSISTANT_SANDBOX_MEMORY_LIMIT",
+        "public",
+        "1Gi",
+        "Memory limit of an Assistant's workspace box, as a Kubernetes quantity. "
+        "Hermes and its desktop use about 860Mi when idle.",
+        "astrabox.config.settings",
+    ),
+    (
+        "ASTRABOX_ASSISTANT_SANDBOX_CPU_REQUEST",
+        "public",
+        "100m",
+        "CPU request of an Assistant's workspace box. An idle Assistant uses "
+        "about 50m. Startup refuses one above ASTRABOX_ASSISTANT_SANDBOX_CPU_LIMIT.",
+        "astrabox.config.settings",
+    ),
+    (
+        "ASTRABOX_ASSISTANT_SANDBOX_MEMORY_REQUEST",
+        "public",
+        "1Gi",
+        "Memory request of an Assistant's workspace box. Startup refuses one "
+        "above ASTRABOX_ASSISTANT_SANDBOX_MEMORY_LIMIT.",
+        "astrabox.config.settings",
+    ),
+    (
         "ASTRABOX_SANDBOX_QUOTA_BOXES",
         "public",
         "",
@@ -412,15 +445,7 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "./.astrabox",
         "Root directory for session workspaces, generated deployment keys, "
         "OpenSandbox metadata, and other local artifacts. Database records live "
-        "in PostgreSQL by default.",
-        "astrabox.config.settings",
-    ),
-    (
-        "ASTRABOX_DB_BACKEND",
-        "public",
-        "postgresql",
-        "Persistence backend name. PostgreSQL is the deployment default; SQLite "
-        "is included, and the [mongo] extra registers MongoDB.",
+        "in PostgreSQL.",
         "astrabox.config.settings",
     ),
     (
@@ -430,8 +455,7 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "Scheduler provider that runs scheduled Deployments (cron dispatch, Run "
         "ledger, retries and recovery); 'none' disables scheduled Deployments, "
         "and startup then refuses while an enabled one is stored. The built-in "
-        "'dbos' keeps its state in the repository's SQL database, so startup "
-        "refuses it with a repository backend that has none (MongoDB). Other "
+        "'dbos' keeps its state in the platform's PostgreSQL database. Other "
         "providers install through the astrabox.providers.scheduler entry-point "
         "group.",
         "astrabox.config.settings",
@@ -440,10 +464,10 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ASTRABOX_DB_URL",
         "public",
         "",
-        "Database connection URL. The maintained local launchers populate it from "
-        "generated service-scoped credentials; direct and external deployments must "
-        "set it explicitly. A PostgreSQL, MongoDB, or SQLite URL also selects the "
-        "matching backend.",
+        "PostgreSQL connection URL (postgresql://). The maintained local launchers "
+        "populate it from generated service-scoped credentials; direct and external "
+        "deployments must set it explicitly. The server does not start with any "
+        "other database URL.",
         "astrabox.config.settings",
     ),
     (
@@ -1455,39 +1479,6 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "astrabox.api.app",
     ),
     (
-        "ASTRABOX_RECONCILE_SCAN_INTERVAL_S",
-        "public",
-        "10",
-        "Interval in seconds for finding unfinished turns whose worker has stopped "
-        "reporting. Lower values reduce recovery latency during a rolling deployment.",
-        "astrabox.core.service.orchestrator.session_kernel.workers.reconcile_worker",
-    ),
-    (
-        "ASTRABOX_LOOP_STALL_DUMP_S",
-        "public",
-        "5.0",
-        "An event-loop stall longer than this many seconds dumps every thread's "
-        "stack to stderr. The independent loop-delay warning starts at one second.",
-        "astrabox.core.service.orchestrator.session_kernel.service_mixins.bootstrap",
-    ),
-    (
-        "ASTRABOX_PERSISTENCE_SLOW_OP_S",
-        "public",
-        "1.0",
-        "A persistence operation slower than this many seconds logs a warning "
-        "naming the operation. This diagnostic threshold does not cancel the "
-        "operation.",
-        "astrabox.persistence.repository.backend",
-    ),
-    (
-        "ASTRABOX_RECONCILE_HEARTBEAT_STALE_S",
-        "public",
-        "20",
-        "A worker heartbeat older than this marks the turn stale and eligible for "
-        "recovery by another worker.",
-        "astrabox.core.service.orchestrator.session_kernel.workers.reconcile_worker",
-    ),
-    (
         "ASTRABOX_WEBHOOK_HMAC_WINDOW_SECONDS",
         "public",
         "300",
@@ -2080,10 +2071,12 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
     (
         "ASTRABOX_SANDBOX_SERVER_EXECD_IMAGE",
         "internal",
-        "opensandbox/execd:v1.1.0",
+        "derived",
         "Image the lifecycle server copies the execd init binary from into every "
-        "new sandbox. Prewarmed Agent images include the same release. A custom "
-        "value must be a compatible private-registry mirror.",
+        "new sandbox, including prepared boxes. Unset, it is the release image "
+        "<ASTRABOX_IMAGE_PREFIX>execd:<ASTRABOX_IMAGE_TAG>, which carries the "
+        "streaming-upload patch over OpenSandbox execd v1.1.0. A custom value "
+        "must provide the compatible execd init image layout.",
         "astrabox.deploy.sandbox_server",
     ),
     (
@@ -2182,53 +2175,6 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ports at all.",
         "astrabox.deploy.sandbox_server",
     ),
-    # ---- persistence / mongo ------------------------------------------------
-    (
-        "ASTRABOX_DB_NAME",
-        "public",
-        "astrabox",
-        "Mongo database name fallback when the connection URI carries none (mongo backend).",
-        "astrabox.persistence.repository.mongo.__init__",
-    ),
-    (
-        "ASTRABOX_MONGODB_URI",
-        "public",
-        "",
-        "Mongo connection URI (mongo backend); checked after ASTRABOX_DB_URL and "
-        "before the plain MONGODB_URI in the mongo backend's URI resolution chain.",
-        "astrabox.persistence.repository.mongo.__init__",
-    ),
-    (
-        "MONGODB_URI",
-        "public",
-        "",
-        "Plain (non-namespaced) Mongo connection URI; last in the mongo backend's "
-        "URI resolution chain, after ASTRABOX_DB_URL and ASTRABOX_MONGODB_URI.",
-        "astrabox.persistence.repository.mongo.__init__",
-    ),
-    (
-        "ASTRABOX_MONGO_RETRY_ATTEMPTS",
-        "internal",
-        "3",
-        "Max attempts for a retried Mongo operation (clamped to 1-6).",
-        "astrabox.persistence.repository.backend",
-    ),
-    (
-        "ASTRABOX_MONGO_RETRY_BASE_DELAY_SECONDS",
-        "internal",
-        "0.2",
-        "Base backoff delay between retried Mongo operations.",
-        "astrabox.persistence.repository.backend",
-    ),
-    (
-        "ASTRABOX_RUNTIME_INDEX_CREATION_ENABLED",
-        "public",
-        "true",
-        "Whether this process may CREATE missing unique indexes itself, vs. only "
-        "verifying they already exist — set false for a managed-Mongo operator "
-        "whose DBAs pre-create indexes out-of-band.",
-        "astrabox.persistence.repository.index_verification",
-    ),
     # ---- API / web app -------------------------------------------------------
     (
         "ASTRABOX_FRONTEND_DIST",
@@ -2237,13 +2183,6 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "Path to the built console SPA served at '/'; set in the server image. "
         "Absent means API-only (a from-source checkout that hasn't run `npm run build`).",
         "astrabox.api.app",
-    ),
-    (
-        "ASTRABOX_STREAM_START_TIMEOUT_SECONDS",
-        "internal",
-        "5",
-        "How long the stream-start endpoint waits for the first SSE event before giving up.",
-        "astrabox.api.routes._shared",
     ),
     (
         "ASTRABOX_LOGGING_PATH",
@@ -2260,13 +2199,6 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "Timeout for the full Session creation pipeline (provision and connect). "
         "The request returns a timeout error after this limit.",
         "astrabox.core.service.orchestrator.session_service",
-    ),
-    (
-        "ASTRABOX_STARTUP_SETTLE_RETRY_WINDOW_SECONDS",
-        "internal",
-        "120",
-        "How long the lifecycle worker keeps retrying while a session settles at startup.",
-        "astrabox.core.service.orchestrator.session_kernel.workers.lifecycle.retry",
     ),
     (
         "ASTRABOX_SANDBOX_CONTROL_DEADLINE_S",
@@ -2397,9 +2329,9 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "HOSTNAME",
         "internal",
         "",
-        "Container hostname, used as the machine-id fallback when set (falls back "
-        "further to socket.gethostname() when absent).",
-        "astrabox.core.service.orchestrator.stream_errors",
+        "Container hostname; names this replica in the agent pool's lease owner "
+        "(socket.gethostname() when absent).",
+        "astrabox.providers.open_sandbox.agent_pool",
     ),
     # ---- Hermes engine: config-merge runtime (sandbox-side) -----------------
     (
@@ -2940,15 +2872,15 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ASTRABOX_E2E_FAULTS",
         "test",
         "false",
-        "Arms E2E fault-injection support (turn-terminal-drop, "
+        "Arms E2E fault-injection support (reader part hold, "
         "transcript-append-5xx, sandbox-egress). This setting is reserved for the "
         "automated test deployment.",
         "astrabox.testing.e2e_faults",
     ),
     (
-        "ASTRABOX_E2E_TURN_TERMINAL_DROP_FAULT_FILE",
+        "ASTRABOX_E2E_FAULT_FILE",
         "test",
-        "/tmp/astrabox-e2e-turn-terminal-drop-faults.json",
+        "/tmp/astrabox-e2e-faults.json",
         "Shared E2E fault-file base path; the backend also scans <base>.d/*.json. "
         "Only read when ASTRABOX_E2E_FAULTS is armed.",
         "astrabox.testing.e2e_faults",

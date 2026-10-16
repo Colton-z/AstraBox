@@ -110,7 +110,7 @@ def register_agent_catalog_routes(app: Any) -> None:
     )
     async def list_admin_agent_categories(request: Request):
         await get_current_user_context(request)
-        counts = await get_agent_service().category_agent_counts()
+        counts = await agent_catalog.category_agent_counts()
         rows = await agent_catalog.list_categories()
         return success_response(
             [{**row, "agents": counts.get(row["category_id"], 0)} for row in rows]
@@ -148,9 +148,5 @@ def register_agent_catalog_routes(app: Any) -> None:
     )
     async def delete_agent_category(category_id: str, request: Request):
         await get_current_user_context(request)
-        await agent_catalog.require_category(category_id)
-        # Agents first: an Agent left naming a deleted category could not be
-        # saved again until its author removed the id.
-        unbound = await get_agent_service().unbind_category(category_id)
-        await agent_catalog.delete_category(category_id)
+        unbound = await agent_catalog.delete_category(category_id)
         return success_response({"category_id": category_id, "unbound_agents": unbound})

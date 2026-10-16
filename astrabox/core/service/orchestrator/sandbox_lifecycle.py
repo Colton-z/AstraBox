@@ -204,9 +204,6 @@ def terminal_session_updates(
     re-provisions a fresh sandbox and restores history. TERMINATED is reserved
     for explicit end/delete and must never be produced by sandbox death, for
     any session kind.
-
-    Busy locks and current-turn markers are cleared: a session whose sandbox
-    is gone cannot have a live turn.
     """
     _ = session  # one shape for every session kind — the sandbox is invisible to users
     return {
@@ -214,11 +211,7 @@ def terminal_session_updates(
         "runtime_unavailable": True,
         "last_error": last_error,
         "sandbox_id": None,
-        "sandbox_endpoint": None,
         "expires_at": None,
-        "current_turn_id": None,
-        "current_turn_seq": None,
-        "current_turn_partial": None,
         "startup_progress": None,
     }
 
@@ -350,13 +343,11 @@ class SandboxLifecycleService:
             agent_id = str((agent or {}).get("agent_id") or "").strip()
             if not agent_id:
                 continue
-            if await self._agent_repo.compare_and_update_agent(
+            if await self._agent_repo.realign_resident_lease(
                 agent_id,
-                expected={
-                    "sandbox_id": target,
-                    "expires_at": agent.get("expires_at", {"$exists": False}),
-                },
-                updates={"expires_at": resolved_expires_at},
+                sandbox_id=target,
+                observed_expires_at=agent.get("expires_at"),
+                expires_at=resolved_expires_at,
             ):
                 realigned_agents.append(agent_id)
 
@@ -469,14 +460,6 @@ class SandboxLifecycleService:
         if not updated:
             return {"handled": False, "ignored": "stale_race"}
 
-        with contextlib.suppress(Exception):
-            await self._platform._sync_lifecycle_projection_from_session(
-                session=current,
-                session_id=session_id,
-                updates=updates,
-                reason=f"sandbox_callback_{status}",
-            )
-
         return {
             "handled": True,
             "subject_type": CALLBACK_SUBJECT_SESSION,
@@ -495,10 +478,12 @@ class SandboxLifecycleService:
 
         Push (status callback) and pull (probe reconciler) both end here so the
         durable convergence happens once, one way: the canonical
-        ``terminal_session_updates`` dict, runtime eviction, and the kernel
-        lifecycle projection. The exact ``sandbox_id`` predicate is
-        the idempotency and ABA fence: a repeated or late fact cannot match an
-        already-cleared binding or a replacement sandbox.
+        ``terminal_session_updates`` dict and runtime eviction. The write sends
+        the session's ``reader`` notice, so the process reading the session, or
+        any process if none is, re-checks its runtime and records what the dead
+        box took with it. The exact ``sandbox_id`` predicate is the idempotency
+        and ABA fence: a repeated or late fact cannot match an already-cleared
+        binding or a replacement sandbox.
 
         Callers must hold control-plane-confirmed evidence that the sandbox is
         terminal (a terminal status callback, or a lifecycle probe returning
@@ -512,20 +497,19 @@ class SandboxLifecycleService:
         if not sandbox_id:
             return False
         updates = terminal_session_updates(session=session, last_error=last_error)
+        # A session already CREATING has a replacement under way, which probed
+        # this box itself; converging it now would reset the replacement's row.
         applied = await self._sessions_repo.compare_and_update_session(
             session_id,
-            expected={"sandbox_id": sandbox_id},
+            expected={"sandbox_id": sandbox_id, "state": {"$ne": SessionState.CREATING.value}},
             updates=updates,
             touch_updated_at=False,
+            notify="reader",
         )
         if not applied:
             return False
-        await self._apply_terminal_side_effects(
-            session=session,
-            session_id=session_id,
-            updates=updates,
-            reason=reason,
-        )
+        with contextlib.suppress(Exception):
+            await self._platform._runtime_manager.evict_runtime(session_id)
         logger.warning(
             "sandbox death convergence applied session=%s reason=%s last_error=%s",
             session_id,
@@ -540,18 +524,30 @@ class SandboxLifecycleService:
         *,
         reason: str,
     ) -> None:
-        """Project a newly usable Session sandbox through the lifecycle channel."""
+        """Announce a newly usable Session sandbox to the session's reader host.
+
+        The notice goes out only while the row still names that sandbox as
+        usable, so a binding replaced meanwhile is not announced.
+        """
 
         session_id = str((session or {}).get("session_id") or "").strip()
         sandbox_id = str((session or {}).get("sandbox_id") or "").strip()
         if not session_id or not sandbox_id or bool(session.get("runtime_unavailable")):
             raise ValueError("a ready Session runtime requires session_id and sandbox_id")
-        await self._platform._sync_lifecycle_projection_from_session(
-            session=session,
-            session_id=session_id,
+        announced = await self._sessions_repo.compare_and_update_session(
+            session_id,
+            expected={"sandbox_id": sandbox_id, "runtime_unavailable": False},
             updates={},
-            reason=reason,
+            touch_updated_at=False,
+            notify="reader",
         )
+        if not announced:
+            logger.info(
+                "session runtime no longer bound when announced session=%s sandbox=%s reason=%s",
+                session_id,
+                sandbox_id,
+                reason,
+            )
 
     async def converge_dead_sandbox_owners(
         self,
@@ -697,21 +693,3 @@ class SandboxLifecycleService:
             result.ignored_assistant_workspaces or {},
         )
         return result
-
-    async def _apply_terminal_side_effects(
-        self,
-        *,
-        session: dict[str, Any],
-        session_id: str,
-        updates: dict[str, Any],
-        reason: str,
-    ) -> None:
-        with contextlib.suppress(Exception):
-            await self._platform._runtime_manager.evict_runtime(session_id)
-        with contextlib.suppress(Exception):
-            await self._platform._sync_lifecycle_projection_from_session(
-                session=session,
-                session_id=session_id,
-                updates=updates,
-                reason=reason,
-            )

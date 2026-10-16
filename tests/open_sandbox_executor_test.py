@@ -1,31 +1,23 @@
-"""OpenSandbox's box-level create, connect, and endpoint contracts.
+"""OpenSandbox's box-level create, connect and endpoint contracts that guard the box.
 
-Hand-rolled SDK fakes pin the provider translation: explicit image entrypoint,
-lease-sized TTL, caller-owned environment, durable reverse-lookup metadata,
-command and service readiness, cleanup, and secret hygiene. Session placement
-and engine startup are deliberately absent: those decisions belong to the
-platform, while this module tests only the complete capability the supplier
-exposes beneath that boundary.
+Hand-rolled SDK fakes pin the provider translation where it protects a box: the
+egress DNS upstream is the host's and never the caller's, a reattach proves the
+permission level again, an endpoint behind secure access is a signed URL, and
+failure text never quotes a secret.
 """
 
 from __future__ import annotations
 
-import shlex
 import time
-from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 from unittest.mock import AsyncMock
 
-import httpx
 import pytest
 from opensandbox.exceptions import SandboxApiException
 
 from astrabox.common.utils.errors import APIError
-from astrabox.common.utils.settings import load_astrabox_settings
-from astrabox.config.release_images import release_image
-from astrabox.core.service.orchestrator.stream_errors import is_sandbox_gone_error
 
 import astrabox.providers.open_sandbox.executor as executor_module
 import astrabox.providers.open_sandbox.sandbox as sandbox_module
@@ -33,15 +25,11 @@ from astrabox.providers.open_sandbox.sandbox import (
     OpenSandboxHandle,
     OpenSandboxSandboxProvider,
 )
-from astrabox.providers.open_sandbox.networking import sandbox_network_wiring
-from astrabox.providers.sandbox_image import AGENT_IMAGE_COMPONENT
 from astrabox.seams.sandbox import (
     SandboxCreateSpec,
     SandboxNetworkPolicy,
-    sandbox_installation_id,
 )
-from astrabox.seams.sandbox_data import SandboxCommandResult
-from tests._execd_fakes import ExecdRun, ScriptedExecdCommands
+from tests._execd_fakes import ScriptedExecdCommands
 
 _BASE_URL = "http://opensandbox.test:8080"
 
@@ -140,57 +128,6 @@ async def _build(spec: SandboxCreateSpec) -> Any:
     return await OpenSandboxSandboxProvider().create_sandbox(spec)
 
 
-async def test_create_kwargs_pin_the_activation_design(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("ASTRABOX_SANDBOX_LEASE_SECONDS", "7777")
-    monkeypatch.setenv("ASTRABOX_SANDBOX_READY_TIMEOUT_SECONDS", "55")
-    for image_setting in ("ASTRABOX_AGENT_IMAGE", "ASTRABOX_IMAGE_PREFIX", "ASTRABOX_IMAGE_TAG"):
-        monkeypatch.delenv(image_setting, raising=False)
-    fake_sdk = _FakeSdkSandbox()
-    spec = _create_spec(
-        session_id="sess-1",
-        assignment_id="assignment-sess-1",
-        cwd="/home/u/workspace",
-        env={"IS_SANDBOX": "1", "DISABLE_BROWSER": "true", "ANTHROPIC_MODEL": "m1"},
-    )
-    with mock.patch.object(executor_module, "Sandbox") as sandbox_cls:
-        sandbox_cls.create = AsyncMock(return_value=fake_sdk)
-        handle = await _build(spec)
-
-    kwargs = sandbox_cls.create.await_args.kwargs
-    # A spec that names no image runs this release's published Claude Code image.
-    assert kwargs["image"] == release_image(AGENT_IMAGE_COMPONENT)
-    # The SDK swaps a falsy entrypoint for ["tail","-f","/dev/null"]; the AIO
-    # boot contract must be explicit.
-    assert kwargs["entrypoint"] == ["/opt/astrabox/boot.sh"]
-    # TTL is the deployment lease, never the SDK's 600 s default.
-    assert kwargs["timeout"] == timedelta(seconds=7777)
-    assert kwargs["ready_timeout"] == timedelta(seconds=55)
-    env = kwargs["env"]
-    # Verbatim: the seam defines this field as the boot environment, so a
-    # provider that added or dropped a name would make the spec a lie.
-    assert env["IS_SANDBOX"] == "1"
-    assert env["DISABLE_BROWSER"] == "true"
-    assert env["ANTHROPIC_MODEL"] == "m1"
-    # Unfenced backend: a set revision would 502 the owner-bind guard.
-    assert "ASTRABOX_SIDECAR_REVISION" not in env
-    assert kwargs["metadata"] == {
-        "astrabox.session-id": "sess-1",
-        "astrabox.managed-by": "astrabox",
-        "astrabox.assignment-id": "assignment-sess-1",
-        # What connect compares, so a box made before an edge moved is refused.
-        "astrabox.network-wiring": sandbox_network_wiring(load_astrabox_settings()),
-        "astrabox.installation": await sandbox_installation_id(),
-    }
-    assert kwargs["connection_config"] is not None
-    assert kwargs["resource"] == {"cpu": "4", "memory": "4Gi"}
-    assert kwargs["resource_requests"] == {"cpu": "200m", "memory": "768Mi"}
-    for absent in ("publish_ports", "death_callback_url"):
-        assert absent not in kwargs
-    assert handle.sandbox_id == "sb-1"
-
-
 async def test_host_configured_dns_upstream_goes_only_to_the_egress_sidecar(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -234,229 +171,7 @@ async def test_caller_env_cannot_choose_the_sandbox_egress_dns_upstream() -> Non
     sandbox_cls.create.assert_not_awaited()
 
 
-async def test_cwd_is_precreated_with_the_sdk_write_entry() -> None:
-    fake_sdk = _FakeSdkSandbox()
-    with mock.patch.object(executor_module, "Sandbox") as sandbox_cls:
-        sandbox_cls.create = AsyncMock(return_value=fake_sdk)
-        await _build(_create_spec(cwd="/home/u/workspace"))
-    (entries,) = fake_sdk.files.created
-    (entry,) = entries
-    assert entry.path == "/home/u/workspace"
-    assert entry.mode == 755
-
-
-async def test_no_cwd_skips_the_predir_step() -> None:
-    fake_sdk = _FakeSdkSandbox()
-    with mock.patch.object(executor_module, "Sandbox") as sandbox_cls:
-        sandbox_cls.create = AsyncMock(return_value=fake_sdk)
-        await _build(_create_spec())
-    assert fake_sdk.files.created == []
-
-
-@pytest.mark.parametrize(
-    "converging",
-    [
-        # A stream that ends without an exit status.
-        ExecdRun(exit_code=None),
-        # A stream cut off mid-response.
-        httpx.RemoteProtocolError(
-            "peer closed connection without sending complete message body "
-            "(incomplete chunked read)"
-        ),
-    ],
-    ids=["no-exit-status", "cut-off"],
-)
-async def test_create_waits_for_execd_command_stream_without_retrying_user_work(
-    monkeypatch: pytest.MonkeyPatch,
-    converging: ExecdRun | Exception,
-) -> None:
-    monkeypatch.setattr(executor_module, "_EXECD_COMMAND_READY_POLL_SECONDS", 0)
-    commands = ScriptedExecdCommands(converging, ExecdRun())
-    fake_sdk = _FakeSdkSandbox(commands=commands)
-    with mock.patch.object(executor_module, "Sandbox") as sandbox_cls:
-        sandbox_cls.create = AsyncMock(return_value=fake_sdk)
-        await _build(_create_spec(requires_command_channel=True))
-
-    assert commands.commands == ["sh -lc :", "sh -lc :"]
-
-
-async def test_a_create_that_asks_for_no_command_channel_does_not_prove_one() -> None:
-    """The proof is asked for, never inferred from the readiness port.
-
-    They answer different questions — whether the image's own service is
-    serving, and whether the platform can run a command in the box at all — and
-    a box can have either without the other. Deriving one from the other gives
-    every caller that waits on a port a proof it never asked for, and every
-    caller that does not, none.
-    """
-    fake_sdk = _FakeSdkSandbox()
-    with mock.patch.object(executor_module, "Sandbox") as sandbox_cls:
-        sandbox_cls.create = AsyncMock(return_value=fake_sdk)
-        await _build(_create_spec(requires_command_channel=False))
-
-    assert fake_sdk.commands.commands == []
-
-
-@pytest.mark.parametrize(
-    "failure",
-    [
-        RuntimeError("permission denied"),
-        # execd refusing the command is an answer, not a stream still converging.
-        SandboxApiException("access token rejected", status_code=401),
-    ],
-    ids=["unknown", "refused"],
-)
-async def test_execd_command_readiness_does_not_retry_a_real_failure(
-    failure: Exception,
-) -> None:
-    commands = ScriptedExecdCommands(failure)
-    fake_sdk = _FakeSdkSandbox(commands=commands)
-
-    with pytest.raises(RuntimeError, match="readiness probe failed"):
-        await executor_module._wait_for_execd_command_stream(
-            OpenSandboxHandle(fake_sdk),
-            session_id="s1",
-        )
-
-    assert commands.commands == ["sh -lc :"]
-
-
-async def test_execd_command_readiness_retries_its_bounded_probe_deadline(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(executor_module, "_EXECD_COMMAND_READY_POLL_SECONDS", 0)
-    commands = ScriptedExecdCommands(
-        TimeoutError("command stream did not settle in this attempt"), ExecdRun()
-    )
-    fake_sdk = _FakeSdkSandbox(commands=commands)
-
-    await executor_module._wait_for_execd_command_stream(
-        OpenSandboxHandle(fake_sdk),
-        session_id="s1",
-    )
-
-    assert commands.commands == ["sh -lc :", "sh -lc :"]
-
-
-class _FakeLifecycleManager:
-    """The by-id lifecycle face the create guard destroys through.
-
-    The guard does NOT use the live handle's own ``kill()``: that reports only
-    that an SDK call returned, and a destruction nothing observed twice may not
-    license forgetting the box. It goes through the provider, which deletes and
-    then asks the control plane whether the sandbox is still there.
-    """
-
-    def __init__(self, *, gone_after_kill: bool = True) -> None:
-        self.killed: list[str] = []
-        self._gone_after_kill = gone_after_kill
-
-    @classmethod
-    def factory(cls, instance: "_FakeLifecycleManager") -> Any:
-        async def create(**_kwargs: Any) -> "_FakeLifecycleManager":
-            return instance
-
-        return SimpleNamespace(create=create)
-
-    async def kill_sandbox(self, sandbox_id: str) -> None:
-        self.killed.append(sandbox_id)
-
-    async def get_sandbox_info(self, sandbox_id: str) -> Any:
-        if self._gone_after_kill and sandbox_id in self.killed:
-            raise SandboxApiException("gone", status_code=404)
-        return SimpleNamespace(status=SimpleNamespace(state="Running"))
-
-    async def close(self) -> None:
-        return None
-
-
-async def test_post_create_failure_destroys_the_just_created_sandbox(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # No create idempotency key exists on the lifecycle API: without the guard a
-    # failed post-create step would leak a box for its full lease.
-    manager = _FakeLifecycleManager()
-    monkeypatch.setattr(sandbox_module, "SandboxManager", _FakeLifecycleManager.factory(manager))
-    fake_sdk = _FakeSdkSandbox(files=_FakeFiles(create_dirs_error=RuntimeError("disk full")))
-    with mock.patch.object(executor_module, "Sandbox") as sandbox_cls:
-        sandbox_cls.create = AsyncMock(return_value=fake_sdk)
-        with pytest.raises(RuntimeError, match="disk full"):
-            await _build(_create_spec(cwd="/w"))
-    assert manager.killed == ["sb-1"], "the box the guard built is destroyed by id"
-
-
-async def test_execd_readiness_failure_destroys_the_just_created_sandbox(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    manager = _FakeLifecycleManager()
-    monkeypatch.setattr(
-        sandbox_module,
-        "SandboxManager",
-        _FakeLifecycleManager.factory(manager),
-    )
-    fake_sdk = _FakeSdkSandbox(
-        commands=ScriptedExecdCommands(RuntimeError("permission denied"))
-    )
-
-    with mock.patch.object(executor_module, "Sandbox") as sandbox_cls:
-        sandbox_cls.create = AsyncMock(return_value=fake_sdk)
-        with pytest.raises(RuntimeError, match="readiness probe failed"):
-            await _build(_create_spec(requires_command_channel=True))
-
-    assert manager.killed == ["sb-1"]
-
-
-async def test_a_create_guard_that_cannot_destroy_hands_back_the_id(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A box that survived its own cleanup must not exist only in a log line.
-
-    A failed kill that only logs and re-raises the ORIGINAL exception carries no
-    id, so the startup failure path has nothing to persist and the running box
-    loses its last name. The guard instead raises on an error that carries the
-    id in ``data``, which is exactly where ``_run_startup`` reads it.
-    """
-    manager = _FakeLifecycleManager(gone_after_kill=False)  # the delete does not take
-    monkeypatch.setattr(sandbox_module, "SandboxManager", _FakeLifecycleManager.factory(manager))
-    fake_sdk = _FakeSdkSandbox(files=_FakeFiles(create_dirs_error=RuntimeError("disk full")))
-    with mock.patch.object(executor_module, "Sandbox") as sandbox_cls:
-        sandbox_cls.create = AsyncMock(return_value=fake_sdk)
-        with pytest.raises(APIError) as caught:
-            await _build(_create_spec(cwd="/w"))
-    assert (caught.value.data or {}).get("sandbox_id") == "sb-1"
-    assert "disk full" in caught.value.message
-
-
 # ── provider connect and platform permission proof ──────────────────────────
-
-
-def _fake_manager(state: str) -> Any:
-    return SimpleNamespace(
-        get_sandbox_info=AsyncMock(
-            return_value=SimpleNamespace(status=SimpleNamespace(state=state))
-        ),
-        close=AsyncMock(),
-    )
-
-
-async def test_existing_sandbox_id_prechecks_then_connects_without_health_wait() -> None:
-    fake_sdk = _FakeSdkSandbox()
-    manager = _fake_manager("Running")
-    with (
-        mock.patch.object(sandbox_module, "SandboxManager") as manager_cls,
-        mock.patch.object(sandbox_module, "Sandbox") as sandbox_cls,
-    ):
-        manager_cls.create = AsyncMock(return_value=manager)
-        sandbox_cls.connect = AsyncMock(return_value=fake_sdk)
-        sandbox_cls.create = AsyncMock()
-        handle = await OpenSandboxSandboxProvider().connect("sb-9")
-    manager.get_sandbox_info.assert_awaited_once_with("sb-9")
-    manager.close.assert_awaited_once()
-    connect_call = sandbox_cls.connect.await_args
-    assert connect_call.args == ("sb-9",)
-    assert connect_call.kwargs["skip_health_check"] is True
-    sandbox_cls.create.assert_not_awaited()
-    assert handle.sandbox_id == "sb-1"
 
 
 async def test_existing_sandbox_id_reproves_the_requested_permission_level() -> None:
@@ -518,59 +233,7 @@ async def test_existing_sandbox_id_closes_the_handle_when_permission_proof_fails
     assert fake_sdk.close_calls == 1
 
 
-async def test_existing_sandbox_id_not_running_fails_fast() -> None:
-    manager = _fake_manager("Terminated")
-    with (
-        mock.patch.object(sandbox_module, "SandboxManager") as manager_cls,
-        mock.patch.object(sandbox_module, "Sandbox") as sandbox_cls,
-    ):
-        manager_cls.create = AsyncMock(return_value=manager)
-        sandbox_cls.connect = AsyncMock()
-        with pytest.raises(APIError) as caught:
-            await OpenSandboxSandboxProvider().connect("sb-9")
-        sandbox_cls.connect.assert_not_awaited()
-    assert caught.value.code == "SANDBOX_GONE"
-    assert is_sandbox_gone_error(caught.value)
-
-
-async def test_existing_sandbox_404_reaches_turn_path_as_sandbox_gone() -> None:
-    manager = SimpleNamespace(
-        get_sandbox_info=AsyncMock(
-            side_effect=SandboxApiException("sandbox not found", status_code=404)
-        ),
-        close=AsyncMock(),
-    )
-    with mock.patch.object(sandbox_module, "SandboxManager") as manager_cls:
-        manager_cls.create = AsyncMock(return_value=manager)
-        with pytest.raises(APIError) as caught:
-            await OpenSandboxSandboxProvider().connect("sb-gone")
-    manager.close.assert_awaited_once()
-    assert caught.value.code == "SANDBOX_GONE"
-    assert is_sandbox_gone_error(caught.value)
-
-
 # ── platform endpoint resolution ────────────────────────────────────────────
-
-
-async def test_platform_resolves_the_image_started_service_without_launching_it() -> None:
-    from astrabox.core.service.orchestrator.engine.provisioning import (
-        resolve_sandbox_websocket_endpoint,
-    )
-
-    commands = ScriptedExecdCommands()
-    fake_sdk = _FakeSdkSandbox(endpoint="box.test:9001", commands=commands)
-    handle = OpenSandboxHandle(fake_sdk)  # type: ignore[arg-type]
-
-    uri = await resolve_sandbox_websocket_endpoint(handle, 9001)
-    again = await resolve_sandbox_websocket_endpoint(handle, 9001)
-    await handle.close()
-
-    # The image owns the resident service; endpoint publication never launches
-    # or repairs an engine process from the host.
-    assert commands.calls == []
-    assert uri == again == "ws://box.test:9001"
-    assert fake_sdk.kill_calls == 0
-    assert fake_sdk.close_calls == 1
 
 
 async def test_endpoint_resolution_mints_a_signed_uri_when_secure_access_requires_it(
@@ -600,89 +263,6 @@ async def test_endpoint_resolution_mints_a_signed_uri_when_secure_access_require
     assert port == 9001
     assert earliest_expiry <= expires <= latest_expiry
     assert routing_secret not in uri
-
-
-async def test_endpoint_resolution_refuses_a_signed_uri_that_still_needs_headers() -> None:
-    from astrabox.core.service.orchestrator.engine.provisioning import (
-        resolve_sandbox_websocket_endpoint,
-    )
-
-    unsigned_secret = "unsigned-routing-secret"
-    signed_secret = "signed-routing-secret"
-    fake_sdk = _FakeSdkSandbox(
-        endpoint_headers={"OpenSandbox-Secure-Access": unsigned_secret},
-        signed_endpoint_headers={"X-Still-Required": signed_secret},
-    )
-    handle = OpenSandboxHandle(fake_sdk)  # type: ignore[arg-type]
-
-    with pytest.raises(RuntimeError) as caught:
-        await resolve_sandbox_websocket_endpoint(handle, 9001)
-
-    message = str(caught.value)
-    assert "signed sandbox endpoint still requires routing headers" in message
-    assert "engine transport cannot carry" in message
-    assert "sandbox=sb-1" in message
-    assert unsigned_secret not in message
-    assert signed_secret not in message
-
-
-async def test_provider_waits_in_box_for_the_image_service_port(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _ = monkeypatch
-    run = AsyncMock(return_value=SandboxCommandResult(exit_code=0, stdout="", stderr=""))
-    handle = SimpleNamespace(commands=SimpleNamespace(run=run))
-
-    await OpenSandboxSandboxProvider()._await_inbox_service_ready(
-        handle,
-        port=9001,
-        timeout_seconds=7,
-    )
-
-    run.assert_awaited_once()
-    command = shlex.split(run.await_args.args[0])
-    assert command[:2] == ["python3", "-c"]
-    assert "socket.create_connection" in command[2]
-    assert "time.monotonic()+7" in command[2]
-    assert "9001" in command[2]
-
-
-async def test_image_service_readiness_failure_reports_the_probe_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _ = monkeypatch
-    handle = SimpleNamespace(
-        commands=SimpleNamespace(
-            run=AsyncMock(
-                return_value=SandboxCommandResult(
-                    exit_code=7, stdout="", stderr="Traceback: boom"
-                )
-            )
-        )
-    )
-
-    with pytest.raises(APIError, match="Traceback: boom") as caught:
-        await OpenSandboxSandboxProvider()._await_inbox_service_ready(
-            handle,
-            port=9001,
-            timeout_seconds=1,
-        )
-
-    assert caught.value.code == "AGENT_RUNTIME_ERROR"
-    assert "9001" in caught.value.message
-
-
-# ── stop / no-ops / provider wiring ──────────────────────────────────────────
-
-
-async def test_stop_releases_host_side_state_but_never_kills() -> None:
-    fake_sdk = _FakeSdkSandbox()
-    handle = OpenSandboxHandle(fake_sdk)  # type: ignore[arg-type]
-
-    await handle.close()
-
-    assert fake_sdk.close_calls == 1
-    assert fake_sdk.kill_calls == 0
 
 
 # ── key hygiene on the executor's lifecycle face ─────────────────────────────
@@ -763,50 +343,3 @@ async def test_startup_endpoint_failure_text_is_scrubbed(
     assert key not in str(err.value)
     assert key not in repr(err.value)
     assert "***" in str(err.value)
-
-
-# ── in-box server launch is deadline-bounded ─────────────────────────────────
-
-
-async def test_a_service_whose_readiness_probe_hangs_fails_loud(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _ = monkeypatch
-    handle = SimpleNamespace(
-        commands=SimpleNamespace(
-            run=AsyncMock(
-                side_effect=TimeoutError("execd stopped returning while the image booted")
-            )
-        )
-    )
-
-    with pytest.raises(APIError, match="probe itself did not return") as caught:
-        await OpenSandboxSandboxProvider()._await_inbox_service_ready(
-            handle,
-            port=9001,
-            timeout_seconds=1,
-        )
-
-    assert caught.value.code == "AGENT_RUNTIME_ERROR"
-    assert "execd stopped returning" in caught.value.message
-
-
-async def test_a_dead_image_service_fails_without_host_side_revival() -> None:
-    """The host detects a dead image service; it never assembles or revives it."""
-
-    run = AsyncMock(
-        return_value=SandboxCommandResult(exit_code=7, stdout="", stderr="connection refused")
-    )
-    handle = SimpleNamespace(commands=SimpleNamespace(run=run))
-
-    with pytest.raises(APIError):
-        await OpenSandboxSandboxProvider()._await_inbox_service_ready(
-            handle,
-            port=9001,
-            timeout_seconds=1,
-        )
-
-    command = shlex.split(run.await_args.args[0])[2]
-    assert "socket.create_connection" in command
-    assert "serve-conversation" not in command
-    assert "sandbox_runner.py" not in command

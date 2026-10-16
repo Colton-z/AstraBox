@@ -1,50 +1,32 @@
-import React, { useCallback, useRef } from 'react';
+import { useCallback, useMemo } from 'react';
 import { useSessionUserAction } from './hooks/useSessionUserAction';
 import { SessionUserAction } from './components/SessionUserAction';
 import { useTranslation } from 'react-i18next';
 import { useParams, useNavigate } from 'react-router-dom';
-import type { UIMessage as SDKUIMessage } from 'ai';
-import { Queue, QueueItem, QueueItemIndicator, QueueItemContent } from '@/components/ai-elements/queue';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 import { useSessionLifecycle } from './hooks/useSessionLifecycle';
 import { useMarkSessionRead } from './hooks/useMarkSessionRead';
-import { useFirstPageMessages } from './hooks/useFirstPageMessages';
+import { useSessionHistory } from './hooks/useSessionHistory';
 import { useSessionChat } from './hooks/useSessionChat';
 import { useSessionBootstrapEffects } from './hooks/useSessionBootstrapEffects';
-import { useMessageQueue } from './hooks/useMessageQueue';
 import { useComposerInput } from './hooks/useComposerInput';
 import { usePendingInteractionDisplay } from './hooks/usePendingInteractionDisplay';
 import { usePermissionModeControl } from './hooks/usePermissionModeControl';
 import { useSessionTermination } from './hooks/useSessionTermination';
 import { useSessionRightPanelState } from './hooks/useSessionRightPanelState';
-import { useInitialMessagesCache } from './hooks/useInitialMessagesCache';
 import { useSessionRefreshEffects } from './hooks/useSessionRefreshEffects';
 import { useSessionBanners } from './hooks/useSessionBanners';
-import { prepareInitialMessages } from './prepareInitialMessages';
-import {
-  shouldShowHistoryBlockingLoader,
-  shouldShowInitialHistoryLoadError,
-} from './sessionPageLoading';
-import {
-  doesFirstPageBelongToRoute,
-  doesSessionDetailBelongToRoute,
-} from './sessionBootstrapOwnership';
+import { isTransientHistoryLoadError } from './sessionPageLoading';
+import { doesSessionDetailBelongToRoute } from './sessionBootstrapOwnership';
+import type { HistoryWindow } from './historyPages';
+import { inputFailure } from './sessionMessages';
 import {
   SessionLoadingState,
   SessionUnavailableState,
   SessionHistoryBlockingState,
   SessionHistoryErrorState,
 } from './components/SessionBootstrapStates';
-import type {
-  InteractionResponse,
-  PendingInteraction,
-  SessionRecord,
-} from '../types';
-import { stateLabel } from '../utils/format';
 import { stopSessionChildRun } from '../api';
-import {
-  getSdkMessageTurnId,
-} from './utils/chatHelpers';
 import { computeSessionRunStatus } from './sessionRunStatus';
 import { SubagentTranscriptDrawer } from './components/SubagentTranscriptDrawer';
 import { SubagentNavigationProvider } from './components/subagentNavigation';
@@ -55,82 +37,50 @@ import { SessionConversationView } from './components/SessionConversationView';
 import { SessionPendingInteractionFooter } from './components/SessionPendingInteractionFooter';
 import { SessionComposerBox } from './components/SessionComposerBox';
 import { SessionRightPanel } from './components/SessionRightPanel';
+import { SessionSendContext, type SessionSendState } from './components/UserMessageStatus';
 import { ArtifactNavigationProvider } from '@/artifacts/navigation';
 import { useArtifactPanelNavigation } from '@/artifacts/useArtifactPanelNavigation';
 import { useFrontendReleaseHold } from '@/hooks/useFrontendReleaseHold';
 
-const NO_DURABLE_RECORDS: ReturnType<typeof useFirstPageMessages>['durableRecords'] = [];
-
 // ── Outer component: bootstrap ─────────────────────────────────
 
+/**
+ * A conversation opens from its session detail and the newest window of its
+ * history; the history's `output_seq` is where the page follows the session's
+ * stream from, so nothing that happens after the history was read is missed
+ * and nothing in it is shown twice.
+ */
 export function SessionPage({
   onSessionChanged,
 }: {
   onSessionChanged: () => Promise<void>;
 }) {
-  const { t } = useTranslation();
   const { sessionId = '' } = useParams();
   const navigate = useNavigate();
 
   const lifecycle = useSessionLifecycle(sessionId);
   useMarkSessionRead(sessionId, lifecycle.session?.last_output_at);
-  const firstPage = useFirstPageMessages(
-    sessionId,
-    lifecycle.bootstrapPendingInteraction,
-  );
+  const history = useSessionHistory(sessionId);
   const retryInitialLoad = useCallback(async () => {
     await Promise.allSettled([
       lifecycle.refresh({ force: true }),
-      firstPage.refetch(),
+      history.refetch(),
     ]);
-  }, [firstPage, lifecycle]);
+  }, [history, lifecycle]);
 
   const detailBelongsToRoute = doesSessionDetailBelongToRoute(sessionId, lifecycle.session);
-  const historyBelongsToRoute = doesFirstPageBelongToRoute(sessionId, firstPage.ownerSessionId);
   const effectiveSession = detailBelongsToRoute ? lifecycle.session : null;
-  const effectivePendingInteraction = detailBelongsToRoute ? lifecycle.pendingInteraction : null;
   const effectiveLifecycleState =
     detailBelongsToRoute || lifecycle.lifecycleState === 'error'
       ? lifecycle.lifecycleState
       : 'loading';
-  // A route-mismatched history stands in as empty, and that placeholder is a
-  // module constant on purpose: everything downstream keys effects on this
-  // array's identity, so a fresh literal here re-runs them on every render for
-  // as long as the mismatch lasts.
-  const effectiveHistory = historyBelongsToRoute
-    ? firstPage
-    : {
-        ...firstPage,
-        durableRecords: NO_DURABLE_RECORDS,
-        overlay: null,
-        sessionFrameSeq: null,
-        loading: true,
-        error: null,
-        loadedOnce: false,
-      };
-
-  const initialMessagesRef = useInitialMessagesCache({
-    sessionId,
-    effectiveLifecycleState,
-    effectiveSession,
-    effectiveHistory,
-  });
 
   useSessionBootstrapEffects({
     sessionId,
     effectiveSession,
-    effectiveLifecycleState,
-    effectiveHistory,
     lifecycle,
-    firstPage,
     onSessionChanged,
   });
-  // The composer may already be on screen while the Session is still creating.
-  // History that arrives, or fails, after that point fills the open page; it
-  // must not swap the page for a loader, which would remount the composer and
-  // drop what the reader is typing.
-  const composerShownForRef = useRef<string | null>(null);
-  const composerShown = composerShownForRef.current === sessionId;
 
   if (effectiveLifecycleState === 'loading') {
     return <SessionLoadingState />;
@@ -146,60 +96,35 @@ export function SessionPage({
     );
   }
 
-  if (!composerShown && shouldShowHistoryBlockingLoader({
-    historyLoading: effectiveHistory.loading,
-    lifecycleState: effectiveLifecycleState,
-    messageCount: effectiveHistory.durableRecords.length,
-    historyLoadedOnce: effectiveHistory.loadedOnce,
-    historyError: effectiveHistory.error,
-  })) {
-    return <SessionHistoryBlockingState historyError={effectiveHistory.error} />;
+  const window = history.ownerSessionId === sessionId ? history.window : null;
+  if (!window) {
+    if (history.error && !isTransientHistoryLoadError(history.error)) {
+      return <SessionHistoryErrorState historyError={history.error} onRetry={() => { void retryInitialLoad(); }} />;
+    }
+    return <SessionHistoryBlockingState historyError={history.error} />;
+  }
+  if (window.outputSeq === null) {
+    return (
+      <SessionHistoryErrorState
+        historyError="SESSION_HISTORY_POSITION_MISSING: the history page carried no output_seq"
+        onRetry={() => { void retryInitialLoad(); }}
+      />
+    );
   }
 
-  if (!composerShown && shouldShowInitialHistoryLoadError({
-    historyLoading: effectiveHistory.loading,
-    lifecycleState: effectiveLifecycleState,
-    messageCount: effectiveHistory.durableRecords.length,
-    historyLoadedOnce: effectiveHistory.loadedOnce,
-    historyError: effectiveHistory.error,
-  })) {
-    return <SessionHistoryErrorState historyError={effectiveHistory.error} onRetry={() => { void retryInitialLoad(); }} />;
-  }
-
-  const needsResume = effectiveLifecycleState === 'busy';
-  const initialMessages =
-    initialMessagesRef.current?.sessionId === sessionId
-      ? initialMessagesRef.current.messages
-      : prepareInitialMessages(effectiveHistory.durableRecords, effectiveHistory.overlay, effectiveSession);
-
-  composerShownForRef.current = sessionId;
   return (
     <SessionPageReady
       key={sessionId}
       sessionId={sessionId}
-      durableRecords={effectiveHistory.durableRecords}
-      initialMessages={initialMessages}
-      overlay={effectiveHistory.overlay}
-      sessionFrameSeq={effectiveHistory.sessionFrameSeq}
-      needsResume={needsResume}
+      history={{ ...window, outputSeq: window.outputSeq }}
       session={effectiveSession}
-      pendingInteraction={effectivePendingInteraction}
       lifecycleState={effectiveLifecycleState}
       lifecycleError={lifecycle.error}
       lifecycleDetailStale={lifecycle.detailStale}
-      historyError={effectiveHistory.error}
-      historyHasMore={effectiveHistory.hasMore}
-      historyLoadingMore={effectiveHistory.loadingMore}
-      historyLoadMoreError={effectiveHistory.loadMoreError}
-      loadOlderHistory={effectiveHistory.loadOlder}
       refresh={lifecycle.refresh}
-      refreshAuthoritativeHistory={effectiveHistory.refetch}
-      clearPendingInteraction={lifecycle.clearPendingInteraction}
-      interrupt={lifecycle.interrupt}
       terminate={lifecycle.terminate}
       endConversation={lifecycle.endConversation}
       recover={lifecycle.recover}
-      deleteSession={lifecycle.deleteSession}
       onSessionChanged={onSessionChanged}
       navigate={navigate}
     />
@@ -210,58 +135,28 @@ export function SessionPage({
 
 function SessionPageReady({
   sessionId,
-  durableRecords,
-  initialMessages,
-  overlay,
-  sessionFrameSeq,
-  needsResume,
+  history,
   session,
-  pendingInteraction: sessionPendingInteraction,
   lifecycleState,
   lifecycleError,
   lifecycleDetailStale,
-  historyError,
-  historyHasMore,
-  historyLoadingMore,
-  historyLoadMoreError,
-  loadOlderHistory,
   refresh,
-  refreshAuthoritativeHistory,
-  clearPendingInteraction,
-  interrupt,
   terminate,
   endConversation,
   recover,
-  deleteSession,
   onSessionChanged,
   navigate,
 }: {
   sessionId: string;
-  durableRecords: ReturnType<typeof useFirstPageMessages>['durableRecords'];
-  initialMessages: SDKUIMessage[];
-  overlay: ReturnType<typeof useFirstPageMessages>['overlay'];
-  sessionFrameSeq: ReturnType<typeof useFirstPageMessages>['sessionFrameSeq'];
-  needsResume: boolean;
+  history: HistoryWindow & { outputSeq: number };
   session: NonNullable<ReturnType<typeof useSessionLifecycle>['session']>;
-  pendingInteraction: PendingInteraction | null;
   lifecycleState: string;
   lifecycleError: string | null;
   lifecycleDetailStale: boolean;
-  historyError: string | null;
-  historyHasMore: boolean;
-  historyLoadingMore: boolean;
-  historyLoadMoreError: string | null;
-  loadOlderHistory: () => Promise<void>;
-  refresh: (options?: { force?: boolean }) => Promise<any>;
-  refreshAuthoritativeHistory: ReturnType<typeof useFirstPageMessages>['refetch'];
-  clearPendingInteraction: ReturnType<
-    typeof useSessionLifecycle
-  >['clearPendingInteraction'];
-  interrupt: () => Promise<void>;
+  refresh: ReturnType<typeof useSessionLifecycle>['refresh'];
   terminate: () => Promise<void>;
   endConversation: () => Promise<void>;
   recover: () => Promise<void>;
-  deleteSession: () => Promise<void>;
   onSessionChanged: () => Promise<void>;
   navigate: ReturnType<typeof useNavigate>;
 }) {
@@ -269,7 +164,6 @@ function SessionPageReady({
   // ── Permission mode ──────────────────────────────────────────
   const {
     permissionMode,
-    permissionModeRef,
     modeSwitching,
     canChangePermissionMode,
     cyclePermissionMode,
@@ -277,88 +171,57 @@ function SessionPageReady({
     hasPermissionModes,
   } = usePermissionModeControl({
     sessionId,
-    initialPermissionMode: session.permission_mode,
+    initialPermissionMode: session.permission_mode ?? undefined,
     availableModes: session.engine_capabilities?.permission_modes ?? [],
     lifecycleState,
   });
 
-  // ── Core chat hook ───────────────────────────────────────────
+  // ── The conversation ─────────────────────────────────────────
+  const artifacts = useArtifactPanelNavigation(history.messages, () => setRightTab('artifacts'));
   const chat = useSessionChat({
     sessionId,
     session,
-    durableRecords,
-    initialMessages,
-    overlay,
-    sessionFrameSeq,
-    needsResume,
-    lifecycleState,
-    liveSubscriptionEnabled: (
-      lifecycleState === 'ready'
-      || lifecycleState === 'background'
-      || lifecycleState === 'busy'
-    ),
-    pendingInteraction: sessionPendingInteraction,
-    permissionModeRef,
+    history,
     refresh,
-    refreshAuthoritativeHistory,
-    clearPendingInteraction,
-    interrupt,
-    recover,
+    onSessionChanged: () => { void onSessionChanged(); },
+    onArtifactAppeared: artifacts.appeared,
   });
-
-  const {
-    messages, childRunRevision, status, chatError, clearError, historyFirstItemIndex,
-    isSubmitted, isStreaming, outbox, setOutbox,
-    isInterruptSettling,
-    retryIntent, transientBannerVisible,
-    showRetryBanner, showRetryButton, interactionSubmitting,
-    sendClientMessageNow, handleInteractionSubmit, handleStopGeneration,
-    handleRehydrate, handleRetry, handleRecover,
-  } = chat;
-
-  const activeTurnId = String(session.current_turn_id ?? '').trim() || null;
-  const isTerminated = session.state === 'TERMINATED' || lifecycleState === 'terminated' || lifecycleState === 'deleted';
+  const { messages, isWorking, isSending, isStopping } = chat;
+  const isTerminated = session.state === 'TERMINATED' || lifecycleState === 'terminated' || lifecycleState === 'deleted'
+    || session.agent_state === 'DELETING' || session.agent_state === 'DELETED';
 
   // ── Pending interaction ──────────────────────────────────────
   const {
     visiblePendingInteraction, hasPendingInteraction, pendingToolCallId,
-    pendingConversationScrollKey, handleVisibleInteractionSubmit,
+    pendingConversationScrollKey,
   } = usePendingInteractionDisplay({
     messages,
-    sessionPendingInteraction,
+    pendingInteraction: chat.pendingInteraction,
     isTerminated,
-    interactionSubmitting,
-    handleInteractionSubmit,
   });
 
-  // ── Effective lifecycle + send capability ─────────────────────
+  // ── Header and send capability ───────────────────────────────
   const {
-    isAgentRuntimeDeleted, transparentlyRecoverable, canSendNow, canQueueMessage,
+    transparentlyRecoverable, canSendNow, canQueueMessage,
     canSend, headerStatusLabel, headerIsLive, headerTone, headerRunState,
   } = computeSessionRunStatus({
     session,
     lifecycleState,
     isTerminated,
     hasPendingInteraction,
-    isSubmitted,
-    isStreaming,
-    isInterruptSettling,
+    isSending,
+    isWorking,
+    isStopping,
     t,
   });
-  // A creating runtime has no engine FIFO to receive an input yet. Once
-  // created, both idle and busy Agents accept into the same durable queue.
-  const prerequisite = useSessionUserAction(
-    sessionId, session.user_id ?? '',
-    outbox.filter((item) => item.user_action).map((item) => item.client_message_id).join(','),
-  );
-  const composerCanSend = prerequisite.ready && canSend && lifecycleState !== 'creating';
-  const { displayedQueue, canRetryQueued, removeQueueItem, retryQueueItem } = useMessageQueue({
-    outbox,
-    setOutbox,
-    canSendNow: prerequisite.ready && canSendNow,
-    canQueueMessage: prerequisite.ready && canQueueMessage,
-    sendClientMessageNow,
-  });
+  // A message the deployment refused for want of the owner's action asks the
+  // gate again, so the composer shows that action.
+  const userActionInvalidation = useMemo(() => [
+    ...[...chat.unsent].filter(([, entry]) => entry.userAction).map(([id]) => id),
+    ...messages.filter((message) => inputFailure(message)?.user_action).map((message) => message.id),
+  ].join(','), [chat.unsent, messages]);
+  const prerequisite = useSessionUserAction(sessionId, session.user_id ?? '', userActionInvalidation);
+  const composerCanSend = prerequisite.ready && canSend;
 
   // ── Composer input (draft, slash commands, history, keydown) ─
   const {
@@ -369,19 +232,27 @@ function SessionPageReady({
     messages,
     slashCommandDetails: session.slash_command_details,
     canSend: composerCanSend,
-    sendClientMessageNow,
+    sendMessage: chat.sendMessage,
     canChangePermissionMode,
     cyclePermissionMode,
   });
 
-  // ── Interrupt loading ────────────────────────────────────────
-  const wrappedStopGeneration = useCallback(async () => {
-    if (isInterruptSettling) return;
-    await handleStopGeneration();
-  }, [isInterruptSettling, handleStopGeneration]);
+  const stopGeneration = useCallback(async () => {
+    await chat.handleStopGeneration();
+  }, [chat]);
 
-  // ── Send label ───────────────────────────────────────────────
-  const sendLabel = isTerminated || isAgentRuntimeDeleted ? t('chat:status.terminated') : canQueueMessage && !canSendNow ? t('chat:composer.queue') : t('chat:composer.send');
+  const sendLabel = isTerminated
+    ? t('chat:status.terminated')
+    : canQueueMessage && !canSendNow ? t('chat:composer.queue') : t('chat:composer.send');
+
+  const sendState = useMemo<SessionSendState>(() => ({
+    unsent: chat.unsent,
+    heldInputIds: chat.heldInputIds,
+    canSend: composerCanSend,
+    retryUnsent: chat.retryUnsent,
+    removeUnsent: chat.removeUnsent,
+    sendAgain: chat.sendAgain,
+  }), [chat.heldInputIds, chat.removeUnsent, chat.retryUnsent, chat.sendAgain, chat.unsent, composerCanSend]);
 
   // ── Terminate / delete ───────────────────────────────────────
   const { isAgentChat, isAssistantConversation, terminateLoading, handleTerminate, handleEndConversation } = useSessionTermination({
@@ -397,7 +268,10 @@ function SessionPageReady({
   useFrontendReleaseHold(draft.trim().length > 0);
 
   // ── Auto-refresh (files panel when work ends; manual-refresh event) ─
-  const { filesRefreshNonce } = useSessionRefreshEffects({ isStreaming, isSubmitted, lifecycleState, handleRehydrate });
+  const { filesRefreshNonce } = useSessionRefreshEffects({
+    working: isWorking || isSending,
+    handleRehydrate: chat.rehydrate,
+  });
 
   // ── Right-panel derived state (tabs, diff data, availability) ─
   const {
@@ -408,11 +282,9 @@ function SessionPageReady({
     session,
     messages,
     lifecycleState,
-    isAgentRuntimeDeleted,
+    working: isWorking,
     t,
   });
-
-  const artifacts = useArtifactPanelNavigation(initialMessages, () => setRightTab('artifacts'));
 
   // ── Subagent (Agent / Task tool) registry + overlay drawer ──
   const {
@@ -424,19 +296,17 @@ function SessionPageReady({
     openSubagent,
   } = useSubagentDrawer({
     sessionId,
-    childRunRevision,
+    childRunRevision: chat.childRunRevision,
     rightPanelCaps,
     setRightTab,
-    lifecycleState,
-    isSubmitted,
-    isStreaming,
+    working: isWorking,
     hasPendingInteraction,
   });
 
   // ── Banners ──────────────────────────────────────────────────
   const {
     showRuntimeUnavailableBanner, showSessionLastError, showRecoverButton,
-    combinedShowRetryBanner, bannerErrorMessage, showTransientBackendMessage,
+    showBanner, bannerErrorMessage, showTransientBackendMessage,
   } = useSessionBanners({
     session,
     hasPendingInteraction,
@@ -444,20 +314,18 @@ function SessionPageReady({
     isTerminated,
     transparentlyRecoverable,
     isAssistantConversation,
-    isAgentRuntimeDeleted,
-    lifecycleState,
-    showRetryBanner,
     lifecycleError,
-    historyError,
-    chatErrorMessage: chatError?.message,
-    transientBannerVisible,
+    streamTrouble: chat.streamTrouble,
+    isWorking,
+    isSending,
   });
 
   // ── Render ───────────────────────────────────────────────────
 
   return (
-    <ArtifactNavigationProvider open={artifacts.open} appeared={artifacts.appeared} setComposer={setDraft}>
+    <ArtifactNavigationProvider open={artifacts.open} setComposer={setDraft}>
     <SubagentNavigationProvider openSubagent={openSubagent} agents={subagentRegistry.agents}>
+    <SessionSendContext.Provider value={sendState}>
     {/* react-resizable-panels' Group overwrites a data-testid prop with its
         own `id ?? useId()` — the id prop is therefore the only way to get a
         stable data-testid="run-view" into the DOM (the e2e anchor). */}
@@ -479,16 +347,13 @@ function SessionPageReady({
           handleEndConversation={handleEndConversation}
           handleTerminate={handleTerminate}
           showRecoverButton={showRecoverButton}
-          handleRecover={handleRecover}
+          handleRecover={() => { void recover(); }}
         />
 
-        {combinedShowRetryBanner && (
+        {showBanner && (
           <SessionRetryBanner
             showTransientBackendMessage={showTransientBackendMessage}
-            retryIntent={retryIntent}
             bannerErrorMessage={bannerErrorMessage}
-            showRetryButton={showRetryButton}
-            handleRetry={handleRetry}
           />
         )}
 
@@ -499,24 +364,21 @@ function SessionPageReady({
         <SessionConversationView
           sessionId={sessionId}
           messages={messages}
-          displayedQueueLength={displayedQueue.length}
-          isStreaming={isStreaming}
-          isSubmitted={isSubmitted}
+          isWorking={isWorking || isSending}
           pendingToolCallId={pendingToolCallId}
-          activeTurnId={activeTurnId}
+          writingMessageId={chat.writingMessageId}
           hasPendingInteraction={hasPendingInteraction}
           pendingConversationScrollKey={pendingConversationScrollKey}
-          firstItemIndex={historyFirstItemIndex}
-          hasMore={historyHasMore}
-          loadingMore={historyLoadingMore}
-          loadMoreError={historyLoadMoreError}
-          onLoadOlder={loadOlderHistory}
+          firstItemIndex={chat.firstItemIndex}
+          hasMore={chat.hasMore}
+          loadingMore={chat.loadingMore}
+          loadMoreError={chat.loadMoreError}
+          onLoadOlder={chat.loadOlder}
           assistantId={isAssistantConversation ? session.assistant_id : null}
         />
         <SubagentTranscriptDrawer
           sessionId={sessionId}
-          refreshRevision={childRunRevision}
-          backgroundTasksPending={Boolean(session.background_task_state)}
+          refreshRevision={chat.childRunRevision}
           childRunId={selectedChildRunId}
           entry={
             selectedChildRunId
@@ -533,15 +395,11 @@ function SessionPageReady({
 
         {visiblePendingInteraction ? (
           <SessionPendingInteractionFooter
-            displayedQueue={displayedQueue}
-            removeQueueItem={removeQueueItem}
-            retryQueueItem={retryQueueItem}
-            canRetryQueued={canRetryQueued}
-            interaction={visiblePendingInteraction as PendingInteraction}
-            submitting={interactionSubmitting}
-            onSubmit={handleVisibleInteractionSubmit}
-            isInterruptSettling={isInterruptSettling}
-            onStop={wrappedStopGeneration}
+            interaction={visiblePendingInteraction}
+            submitting={chat.interactionSubmitting}
+            onSubmit={chat.handleInteractionSubmit}
+            isInterruptSettling={isStopping}
+            onStop={stopGeneration}
             permissionMode={permissionMode}
             permissionModes={session.engine_capabilities?.permission_modes ?? []}
             showPermissionMode={hasPermissionModes}
@@ -554,10 +412,6 @@ function SessionPageReady({
           <SessionComposerBox
             userAction={<SessionUserAction gate={prerequisite} />}
             sessionId={sessionId}
-            displayedQueue={displayedQueue}
-            removeQueueItem={removeQueueItem}
-            retryQueueItem={retryQueueItem}
-            canRetryQueued={canRetryQueued}
             hasSlashCommands={hasSlashCommands}
             showSlashPopup={showSlashPopup}
             slashPopupRef={slashPopupRef}
@@ -571,11 +425,9 @@ function SessionPageReady({
             setDraft={setDraft}
             handleKeyDown={handleKeyDown}
             canSend={composerCanSend}
-            isAgentRuntimeDeleted={isAgentRuntimeDeleted}
             isTerminated={isTerminated}
-            lifecycleState={lifecycleState}
-            isStreaming={isStreaming}
-            isSubmitted={isSubmitted}
+            isStreaming={isWorking}
+            isSubmitted={isSending}
             hasPendingInteraction={hasPendingInteraction}
             permissionMode={permissionMode}
             permissionModes={session.engine_capabilities?.permission_modes ?? []}
@@ -584,8 +436,8 @@ function SessionPageReady({
             modeSwitching={modeSwitching}
             cyclePermissionMode={cyclePermissionMode}
             selectPermissionMode={selectPermissionMode}
-            isInterruptSettling={isInterruptSettling}
-            wrappedStopGeneration={wrappedStopGeneration}
+            isInterruptSettling={isStopping}
+            wrappedStopGeneration={stopGeneration}
           />
         )}
       </ResizablePanel>
@@ -622,6 +474,7 @@ function SessionPageReady({
         setSelectedDiffFile={setSelectedDiffFile}
       />
     </ResizablePanelGroup>
+    </SessionSendContext.Provider>
     </SubagentNavigationProvider>
     </ArtifactNavigationProvider>
   );

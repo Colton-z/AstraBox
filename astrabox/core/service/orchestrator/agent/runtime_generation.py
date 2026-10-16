@@ -259,7 +259,6 @@ async def reconcile_runtime_generation(
     """Publish the generation and fence any older prepared/shared capacity."""
 
     from astrabox.core.service.orchestrator.agent.prepared_slots import (
-        PREPARED_SLOTS_FIELD,
         retire_prepared_runtime,
     )
     from astrabox.persistence.repository.agent_repository import AgentRepository
@@ -320,22 +319,11 @@ async def reconcile_runtime_generation(
                 ),
                 status_code=502,
             )
-        await repo.compare_and_update_agent(
+        await repo.clear_stale_resident(
             agent_id,
-            expected={
-                "sandbox_id": sandbox_id,
-                "sandbox_backend": current.get("sandbox_backend"),
-                "_resident_sandbox_generation": (
-                    current.get("_resident_sandbox_generation")
-                    if "_resident_sandbox_generation" in current
-                    else {"$exists": False}
-                ),
-            },
-            updates={
-                "sandbox_id": None,
-                "sandbox_backend": None,
-                "_resident_sandbox_generation": None,
-            },
+            sandbox_id=sandbox_id,
+            sandbox_backend=backend,
+            resident_generation=resident_generation or None,
         )
 
     for _ in range(3):
@@ -359,12 +347,9 @@ async def reconcile_runtime_generation(
             agent_repo=repo,
             runtime_manager=runtime_manager,
         )
-        current = await repo.get_agent(agent_id)
+        current = await repo.read_ledger(agent_id)
         if not isinstance(current, dict):
             continue
-
-        def _expected(key: str) -> Any:
-            return current.get(key) if key in current else {"$exists": False}
 
         # A retired namespace cannot be restarted, even when its recipe is
         # selected again. Persist one lifetime before any supplier is started;
@@ -379,26 +364,16 @@ async def reconcile_runtime_generation(
             and current.get("_sandbox_generation") == sandbox_generation
             else uuid.uuid4().hex
         )
-        updated = await repo.compare_and_update_agent(
+        # Published only while nothing the retirement above judged has
+        # changed: a slot added or a box claimed since sends this pass back to
+        # retire it under the new generation.
+        if await repo.publish_runtime_generation(
             agent_id,
-            expected={
-                "_runtime_generation": _expected("_runtime_generation"),
-                "sandbox_id": _expected("sandbox_id"),
-                "sandbox_backend": _expected("sandbox_backend"),
-                "_sandbox_generation": _expected("_sandbox_generation"),
-                "_client_pool_epoch": _expected("_client_pool_epoch"),
-                "_resident_sandbox_generation": _expected(
-                    "_resident_sandbox_generation"
-                ),
-                PREPARED_SLOTS_FIELD: _expected(PREPARED_SLOTS_FIELD),
-            },
-            updates={
-                "_runtime_generation": generation,
-                "_sandbox_generation": sandbox_generation,
-                "_client_pool_epoch": epoch,
-            },
-        )
-        if updated:
+            observed=current,
+            runtime_generation=generation,
+            sandbox_generation=sandbox_generation,
+            client_pool_epoch=epoch,
+        ):
             _publish_pool_epoch(epoch)
             await _retire_empty_stale_resident()
             return generation

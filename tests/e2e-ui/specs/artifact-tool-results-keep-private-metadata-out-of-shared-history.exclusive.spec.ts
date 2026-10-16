@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 
+import { messageParts, messageToolCalls, type MessageRecord } from '../fixtures/astraApi';
 import { storedArtifact, expectStoredVersion, nativeArtifactCalls } from '../fixtures/artifactsApi';
 import { PlatformApi } from '../fixtures/platformApi';
 import { apiPath } from '../fixtures/env';
@@ -40,10 +41,24 @@ test('artifact tool results keep owner and share credentials out of shared histo
     const response = await anonymous.request.get(apiPath(`/share/${sessionShare.token}/history-blocks?limit=100`));
     expect(response.ok()).toBe(true);
     const shared = (await response.json()).data;
-    for (const history of [await scene.api.getHistoryBlocks(scene.sessionId, 100), shared]) {
-      const results = history.messages.flatMap((message: { blocks?: Array<Record<string, unknown>> }) =>
-        (message.blocks ?? []).filter((block) => block.type === 'tool_result'));
-      expect(results, 'all four artifact tool results must be present outside process folds').toHaveLength(4);
+    for (const [history, client, route] of [
+      [await scene.api.getHistoryBlocks(scene.sessionId, 100), request, `/sessions/${scene.sessionId}/history-blocks`],
+      [shared, anonymous.request, `/share/${sessionShare.token}/history-blocks`],
+    ] as const) {
+      const messages: MessageRecord[] = [...history.messages];
+      for (const message of history.messages) {
+        for (const part of messageParts(message, 'data-process-block')) {
+          const block = part.data as { block_id: string; cursor: string };
+          const detail = await client.get(apiPath(
+            `${route}/${encodeURIComponent(block.block_id)}?cursor=${encodeURIComponent(block.cursor)}`,
+          ));
+          expect(detail.ok()).toBe(true);
+          messages.push(...(await detail.json()).data.messages);
+        }
+      }
+      const results = messages.flatMap(messageToolCalls)
+        .filter((call) => call.state === 'output-available').map((call) => call.output);
+      expect(results, 'all four artifact tool results must remain readable in history').toHaveLength(4);
       const serialized = JSON.stringify(results);
       expect(serialized).toContain('astrabox_artifact');
       expect(serialized).toContain(artifact.artifact_id);

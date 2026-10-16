@@ -2,8 +2,7 @@
 
 Owned by :class:`AgentPlatformService`, run once (under ``_bootstrap_lock``) the
 first time ``ensure_bootstrap`` is called. Structurally identical to
-``expiration_watcher.py``'s scan-and-reconcile shape (a sibling, not a
-per-session ``session_kernel`` concern): the repository selects only interrupted
+``expiration_watcher.py``'s scan-and-reconcile shape: the repository selects only interrupted
 startup candidates, and the reconciler fences each write against the row it
 judged stale.
 """
@@ -44,20 +43,16 @@ class BootstrapReconciler:
         platform = self._platform
         platform._raise_if_quiesced()
         if platform._bootstrapped:
-            platform._session_kernel.ensure_background_tasks_started()
             return
         async with platform._bootstrap_lock:
             platform._raise_if_quiesced()
-            platform._session_kernel.ensure_background_tasks_started()
             if platform._bootstrapped:
                 return
             try:
-                await platform._session_kernel.ensure_bootstrap()
-                await platform._sessions_repo.ensure_indexes()
                 await self._reconcile_bootstrap_session_states()
                 platform._bootstrapped = True
             except Exception as exc:
-                logger.warning("bootstrap deferred (mongodb may be temporarily unavailable): %s", exc)
+                logger.warning("bootstrap deferred (the database may be temporarily unavailable): %s", exc)
             with contextlib.suppress(Exception):
                 platform._expiration_watcher.ensure_started()
             # The channel spine's recovery owner: its first tick re-drives
@@ -78,10 +73,10 @@ class BootstrapReconciler:
         - Recent CREATING remains in flight.
         - Every other state is absent from the repository query.
 
-        Replaying the accepted startup command is unsafe because the sandbox
+        Restarting the interrupted startup is unsafe because the sandbox
         provider has no create idempotency key. A normal startup failure also
         terminates the Session, so process loss converges to that same public
-        outcome instead of leaving an Agent-only state that no worker owns.
+        outcome instead of leaving a CREATING row that no startup drives.
         """
         sessions_repo = self._platform._sessions_repo
         await self._platform._runtime_manager.reconcile_startup_allocations(
@@ -127,52 +122,7 @@ class BootstrapReconciler:
                 )
                 if not updated:
                     continue
-                await self._sync_lifecycle_projection_from_session(
-                    session=session,
-                    session_id=session_id,
-                    updates=updates,
-                    reason="stale_creating",
-                )
                 logger.info("bootstrap: session %s stale CREATING → TERMINATED", session_id)
-
-    async def _sync_lifecycle_projection_from_session(
-        self,
-        *,
-        session: dict[str, Any],
-        session_id: str,
-        updates: dict[str, Any],
-        reason: str,
-    ) -> None:
-
-        projected_session = {
-            **dict(session),
-            **dict(updates),
-        }
-        event = await self._platform._session_events_repo.append_event(
-            {
-                "session_id": session_id,
-                "channel": "lifecycle",
-                "event_type": "session.lifecycle_reconciled",
-                "causation_id": f"lifecycle:{session_id}:{reason}",
-                "correlation_id": f"lifecycle:{session_id}:{reason}",
-                "payload": {
-                    "reason": reason,
-                    "previous_state": str(session.get("state") or "").strip() or None,
-                    "state": str(projected_session.get("state") or "").strip() or None,
-                    "runtime_unavailable": bool(projected_session.get("runtime_unavailable")),
-                    "last_error": str(projected_session.get("last_error") or "").strip() or None,
-                },
-            }
-        )
-        # Public kernel contract for this cross-module call (see lifecycle.py).
-        await self._platform._session_kernel.project_lifecycle_snapshot_from_session(
-            session_id=session_id,
-            event_seq=int(event.get("event_seq") or 0),
-            session=projected_session,
-            fallback_permission_mode=(
-                str(projected_session.get("permission_mode") or "").strip() or None
-            ),
-        )
 
     @staticmethod
     def _is_recent_creating_session(session: dict[str, Any]) -> bool:

@@ -26,17 +26,18 @@ type NativeAgent = {
   created_by?: string; visibility?: string; admins?: string[]; allowed_user_ids?: string[];
 };
 
+/** The Agents the `agents` table holds, a deleted one (state DELETED) left out. */
 function nativeAgents(): NativeAgent[] {
   return postgresTextRows(
     requireServiceContainer(POSTGRES_CONTAINER_HANDLE),
     process.env.ASTRABOX_E2E_POSTGRES_DB || 'astrabox',
     process.env.ASTRABOX_E2E_POSTGRES_USER || 'astrabox',
     `SELECT json_build_object(
-      'agent_id', doc->'agent_id', 'name', doc->'name', 'deleted', doc->'deleted',
-      'enabled', doc->'enabled', 'created_by', doc->'created_by',
-      'visibility', doc->'visibility', 'admins', doc->'admins',
-      'allowed_user_ids', doc->'allowed_user_ids')::text
-      FROM astrabox_documents WHERE collection = 'agents'`,
+      'agent_id', agent_id, 'name', name, 'deleted', state = 'DELETED',
+      'enabled', enabled, 'created_by', created_by,
+      'visibility', visibility, 'admins', admins,
+      'allowed_user_ids', allowed_user_ids)::text
+      FROM agents`,
   ).map((line) => JSON.parse(line) as NativeAgent).filter((row) => row.deleted !== true);
 }
 

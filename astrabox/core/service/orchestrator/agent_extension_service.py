@@ -12,7 +12,6 @@ from typing import Any
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
-from astrabox.common.utils.time_utils import utcnow_iso
 from astrabox.common.utils.user_context import UserContext
 from astrabox.common.utils.user_context import default_org_id
 from astrabox.core.service.orchestrator.agent_access import can_manage_agent
@@ -22,7 +21,7 @@ from astrabox.core.service.orchestrator.mcp_assignments import (
     normalize_assignments,
     replace_provider_assignments,
 )
-from astrabox.persistence.repository import AgentRepository
+from astrabox.persistence.repository.agent_repository import AgentRepository
 from astrabox.seams.extensions import (
     EXTENSION_PROVIDER_NONE,
     ExtensionCatalog,
@@ -395,11 +394,10 @@ class AgentExtensionService:
             )
             if current_snapshot == snapshot and current_mcp == selected_mcp:
                 return self._view(agent, catalog, provider.name)
-            version = _version(agent)
-            applied = await self._agents.compare_and_update_agent(
+            updated = await self._agents.update_definition(
                 str(agent.get("agent_id") or agent_id),
-                expected={"version": version},
-                updates={
+                expected_version=_version(agent),
+                changes={
                     AGENT_EXTENSION_CATALOG_FIELD: snapshot,
                     # Only this provider's rows change; servers assigned from
                     # the administrator API or another catalog stay put.
@@ -408,13 +406,10 @@ class AgentExtensionService:
                         provider.name,
                         selected_mcp,
                     ),
-                    "version": version + 1,
-                    "updated_at": utcnow_iso(),
-                    "updated_by": user.user_id,
                 },
+                updated_by=user.user_id,
             )
-            if applied:
-                updated = await self.assert_can_manage(user, agent_id)
+            if updated is not None:
                 self._schedule_runtime_reconciliation_after_write(agent, updated)
                 return self._view(updated, catalog, provider.name)
         raise _failure(
@@ -432,19 +427,13 @@ class AgentExtensionService:
             agent = await self.assert_can_manage(user, agent_id)
             if not catalog_selection(agent):
                 return self._view(agent, ExtensionCatalog(), "")
-            version = _version(agent)
-            applied = await self._agents.compare_and_update_agent(
+            updated = await self._agents.update_definition(
                 str(agent.get("agent_id") or agent_id),
-                expected={"version": version},
-                updates={
-                    **cleared,
-                    "version": version + 1,
-                    "updated_at": utcnow_iso(),
-                    "updated_by": user.user_id,
-                },
+                expected_version=_version(agent),
+                changes=cleared,
+                updated_by=user.user_id,
             )
-            if applied:
-                updated = await self.assert_can_manage(user, agent_id)
+            if updated is not None:
                 self._schedule_runtime_reconciliation_after_write(agent, updated)
                 return self._view(updated, ExtensionCatalog(), "")
         raise _failure(

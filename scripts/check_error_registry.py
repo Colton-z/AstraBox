@@ -33,7 +33,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from astrabox.common.utils.errors import _ERROR_SPECS  # noqa: E402
 
 # Four constructions reach the error envelope. A checker that knows only the
-# first two reports REQUEST_CANCELLED as an unraised row: route handlers that
+# first two reports APPEND_ID_CONFLICT as an unraised row: route handlers that
 # return rather than raise build the envelope through `error_response`.
 CODE_KEYWORDS = ("code", "error_code")
 POSITIONAL_CODE_ARG = {
@@ -45,13 +45,17 @@ POSITIONAL_CODE_ARG = {
 
 # Codes that reach an envelope without appearing as a literal at a construction
 # site. The in-box sidecar sends the first two; runtime-binding resolution
-# forwards the third through ``APIError(code=resolution.reason_code)``. Declared
+# forwards the third through ``APIError(code=resolution.reason_code)``; the
+# session reader records the last two on refused inputs. Declared
 # because the static collector cannot distinguish them from an unused row.
 NON_LITERAL_CODES = frozenset(
     {
-        "SIDECAR_ATTACH_IDENTITY_INVALID",
-        "SIDECAR_ATTACH_IDENTITY_MISMATCH",
         "ASSISTANT_WORKSPACE_NOT_READY",
+        # Recorded as an input's failure (``data-input-failed``) by the session
+        # reader rather than raised.
+        "TURN_PREPARATION_FAILED",
+        "CONVERSATION_ENDED",
+        "RUNTIME_START_FAILED",
     }
 )
 

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 
 import { AstraApi, messageText } from '../fixtures/astraApi';
+import { sessionInputRows } from '../fixtures/dbOracle';
 import { engineProfileFor } from '../fixtures/engineProfile';
 import { nativeRows } from '../fixtures/nativeChildLifecycle';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
@@ -40,12 +41,15 @@ test('DSH answers through a configured gateway alias outside its native catalog'
   ).toContainEqual({ model, provider: 'astrabox-gateway' });
 
   await openSessionView(page, sessionId);
-  const before = await api.assistantCount(sessionId);
-  await sendPrompt(page, sessionId, `Reply exactly ${marker}. Do not use tools.`);
-  const settled = await api.waitForSession(sessionId, (session) =>
-    session.last_turn_status === 'COMPLETED' || session.last_turn_status === 'FAILED');
-  expect(settled.last_turn_status, String(settled.last_turn_error ?? '')).toBe('COMPLETED');
-  await api.waitForAssistantMessageMatching(sessionId, before, (message) => messageText(message).includes(marker));
+  const delivery = await sendPrompt(page, sessionId, `Reply exactly ${marker}. Do not use tools.`);
+  const clientMessageId = String(delivery.request().postDataJSON().client_message_id || '');
+  const inputs = sessionInputRows(sessionId).filter((row) => row.client_message_id === clientMessageId);
+  expect(inputs, 'the page message is one accepted input').toHaveLength(1);
+  // A reply that does not complete still ends; the assertion message carries
+  // the error its response recorded.
+  const reply = await api.waitForReplyTo(sessionId, inputs[0]!.input_id);
+  expect(reply.metadata?.outcome, JSON.stringify(reply.metadata?.error ?? null)).toBe('completed');
+  expect(messageText(reply)).toContain(marker);
   await api.waitForSessionReady(sessionId);
   await expect(page.getByTestId('assistant-message').last()).toContainText(marker);
   await page.reload();

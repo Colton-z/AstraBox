@@ -1,7 +1,5 @@
 import type { SessionRecord } from '../types';
 import {
-  agentRuntimeWakePhaseLabel,
-  isAgentRuntimeDeletedForSession,
   isTransparentlyRecoverableAgentSession,
   sessionOperationalStatusLabel,
 } from '../utils/format';
@@ -10,9 +8,10 @@ import { toneForState, type PillTone } from '../components/AstraConsole';
 type TranslateFn = (key: string, opts?: Record<string, unknown>) => string;
 
 export interface SessionRunStatus {
-  isAgentRuntimeDeleted: boolean;
   transparentlyRecoverable: boolean;
+  /** A message sent now goes straight to an idle runtime. */
   canSendNow: boolean;
+  /** A message sent now waits behind the response that runs, or for the session to start. */
   canQueueMessage: boolean;
   canSend: boolean;
   headerStatusLabel: string;
@@ -22,119 +21,84 @@ export interface SessionRunStatus {
 }
 
 /**
- * Derive send eligibility and every header run indicator from one effective
- * lifecycle state so the controls, label, pulse, tone, and data state agree.
+ * Derive send eligibility and every header run indicator from one view of the
+ * session so the controls, label, pulse, tone, and data state agree.
+ *
+ * The session accepts a message in every state but TERMINATED and DELETED: a
+ * message sent while a response runs, or while the session starts, waits its
+ * turn on the server.
  */
 export function computeSessionRunStatus({
   session,
   lifecycleState,
   isTerminated,
   hasPendingInteraction,
-  isSubmitted,
-  isStreaming,
-  isInterruptSettling,
+  isSending,
+  isWorking,
+  isStopping,
   t,
 }: {
   session: SessionRecord;
   lifecycleState: string;
   isTerminated: boolean;
   hasPendingInteraction: boolean;
-  isSubmitted: boolean;
-  isStreaming: boolean;
-  isInterruptSettling: boolean;
+  isSending: boolean;
+  isWorking: boolean;
+  isStopping: boolean;
   t: TranslateFn;
 }): SessionRunStatus {
-  const effectiveLifecycleState = isTerminated
-    ? 'terminated'
-    : hasPendingInteraction
-    ? 'interaction'
-    : isSubmitted || isStreaming
-      ? 'busy'
-      : lifecycleState;
-  const isAgentRuntimeDeleted = isAgentRuntimeDeletedForSession(session);
-  // Per-session: a reclaimed/expired sandbox re-borrows transparently on the next
-  // message, so it reads ready — never runtime disconnected / sandbox expired / recovery required.
   const transparentlyRecoverable = isTransparentlyRecoverableAgentSession(session);
-  // An `auto` recovery is restored by the send itself (the server recovers
-  // the runtime before dispatch), so the message is the trigger.
-  const restoresOnSend = effectiveLifecycleState === 'recovery' && session.recovery_policy === 'auto';
-  const canSendNow = (effectiveLifecycleState === 'ready' || effectiveLifecycleState === 'background' || restoresOnSend) && !isAgentRuntimeDeleted && !isStreaming && !isSubmitted && !hasPendingInteraction && !isInterruptSettling;
-  const canQueueMessage = !isAgentRuntimeDeleted && !hasPendingInteraction && !isInterruptSettling && (effectiveLifecycleState === 'busy' || effectiveLifecycleState === 'creating' || lifecycleState === 'creating');
-  const canSend = canSendNow || canQueueMessage;
-  // `isSubmitted` covers the delivery window while the durable lifecycle
-  // projection can still read `ready`. `isStreaming` begins after that gap, so
-  // it cannot identify the locally bridged busy state.
-  const isLocallyBridgedBusy = isSubmitted && lifecycleState === 'ready';
-  const sendingWakePhaseLabel = isSubmitted ? agentRuntimeWakePhaseLabel(session) : '';
-  // "Sending" names the pre-delivery wake and dispatch window. After the sandbox
-  // receives the turn, the Agent is processing it even if the local chat status
-  // remains `submitted` until the first streamable chunk. The server's
-  // `delivery_state` distinguishes those phases for the header label.
-  const turnDeliveredToSandbox = String(session.delivery_state ?? '').trim().toUpperCase() === 'RECEIVED';
+  const accepting = !isTerminated
+    && (lifecycleState === 'ready' || lifecycleState === 'busy' || lifecycleState === 'creating')
+    && !hasPendingInteraction
+    && !isStopping;
+  const waits = isWorking || lifecycleState === 'creating';
+  const canSendNow = accepting && !waits;
+  const canQueueMessage = accepting && waits;
+  const headerIsLive = !isTerminated && (isWorking || isSending);
   const headerStatusLabel = isTerminated
     ? t('chat:status.terminated')
-    : isAgentRuntimeDeleted
-    ? t('chat:status.terminated')
     : hasPendingInteraction
-    ? t('chat:status.awaiting_answer')
-    : isInterruptSettling
-      ? t('chat:status.stopping')
-      : isSubmitted
-        ? turnDeliveredToSandbox
+      ? t('chat:status.awaiting_answer')
+      : isStopping
+        ? t('chat:status.stopping')
+        : isWorking
           ? t('chat:status.processing')
-          : sendingWakePhaseLabel
-            ? t('chat:status.sending_with_phase', { phase: sendingWakePhaseLabel })
-            : t('chat:status.sending')
-        : isStreaming
-          // Live-stream and post-stream durable settlement both read "processing".
-          // Committing the terminal frame and projecting READY is an internal,
-          // sub-second boundary; separate labels would expose that boundary as a
-          // generating → processing flicker before the user-visible ready state.
-          ? t('chat:status.processing')
-          : effectiveLifecycleState === 'recovery'
-            ? transparentlyRecoverable ? t('chat:status.ready') : t('chat:status.pending_recovery')
-            : effectiveLifecycleState === 'background'
-              ? t('chat:status.background_running')
-            : isLocallyBridgedBusy
-              ? t('chat:status.processing')
-              // A transparently-recoverable agent_chat (sandbox gone / agent hibernating,
-              // re-borrows on next message) reads ready — not hibernating / runtime disconnected / sandbox expired.
-              : transparentlyRecoverable
-                ? t('chat:status.ready')
-                : sessionOperationalStatusLabel(session);
-  // Header live/tone derivation — drives the astra pulse + the status pill color.
-  const headerIsLive = isStreaming || isSubmitted || effectiveLifecycleState === 'busy' || effectiveLifecycleState === 'background';
-  const headerTone: PillTone = isTerminated || isAgentRuntimeDeleted
+          : isSending
+            ? t('chat:status.sending')
+            : transparentlyRecoverable
+              // A conversation whose sandbox is gone borrows a new one with the
+              // next message, so it reads ready.
+              ? t('chat:status.ready')
+              : sessionOperationalStatusLabel(session);
+  // Derive tone from state because the label is translated. Matching English
+  // label text would classify localized live states as idle.
+  const headerTone: PillTone = isTerminated
     ? 'idle'
     : hasPendingInteraction
       ? 'pending'
       : headerIsLive
         ? 'running'
-        // Derive tone from state because the label is translated. Matching
-        // English label text would classify localized live states as idle.
         : transparentlyRecoverable
           ? 'done'
           : toneForState(session.state);
   // Raw run-state string for the pill's `data-state`, kept consistent with the
-  // tone above so a live turn reads PROCESSING+astra and a settled one READY+mint.
-  const headerRunState: string = isTerminated || isAgentRuntimeDeleted
+  // tone above so a live response reads PROCESSING and a settled one READY.
+  const headerRunState: string = isTerminated
     ? 'TERMINATED'
     : hasPendingInteraction
       ? 'WAITING_INPUT'
       : headerIsLive
         ? 'PROCESSING'
-        : effectiveLifecycleState === 'creating'
+        : lifecycleState === 'creating'
           ? 'CREATING'
-          : effectiveLifecycleState === 'recovery'
-            ? 'RECOVERY_REQUIRED'
-            : String(session.state || 'READY').toUpperCase();
+          : String(session.state || 'READY').toUpperCase();
 
   return {
-    isAgentRuntimeDeleted,
     transparentlyRecoverable,
     canSendNow,
     canQueueMessage,
-    canSend,
+    canSend: canSendNow || canQueueMessage,
     headerStatusLabel,
     headerIsLive,
     headerTone,

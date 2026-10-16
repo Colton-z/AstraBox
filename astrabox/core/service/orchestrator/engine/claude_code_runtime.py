@@ -24,9 +24,9 @@ import json
 from collections.abc import Awaitable, Callable
 from enum import Enum
 from pathlib import Path
-from typing import Any, cast, get_args
+from typing import Any, get_args
 
-from claude_agent_sdk import ClaudeAgentOptions, PermissionMode, SessionStore
+from claude_agent_sdk import ClaudeAgentOptions, PermissionMode
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
@@ -35,13 +35,10 @@ from astrabox.seams.egress_credentials import (
     EGRESS_HELD_PLACEHOLDER,
 )
 from astrabox.core.model import AgentView
+from astrabox.core.service.orchestrator.engine.runtime import initialize_runtime_client
 from astrabox.core.service.orchestrator.engine.base import (
-    EngineConversationBinding,
-    EngineEventSink,
     EnginePreparationContext,
     EngineStartupContext,
-    ResidentOutputSink,
-    initialize_engine_client,
 )
 from astrabox.core.service.orchestrator.engine.provisioning import (
     EngineSandboxRequest,
@@ -50,9 +47,6 @@ from astrabox.core.service.orchestrator.engine.provisioning import (
 )
 from astrabox.core.service.orchestrator.engine.claude_code_options import (
     CLAUDE_WIRE_OPTION_KEYS,
-)
-from astrabox.core.service.orchestrator.engine.input_delivery import (
-    consumption_carrier,
 )
 from astrabox.core.service.orchestrator.engine.claude_code_config import (
     ModelConfig,
@@ -78,7 +72,6 @@ from astrabox.providers.sandbox_image import (
     IN_BOX_SIDECAR_PORT,
 )
 from astrabox.seams.sandbox import sandbox_for_sandbox
-from astrabox.persistence.transcript_session_store import TranscriptSessionStore
 
 logger = get_logger(__name__)
 
@@ -363,10 +356,6 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
                 message="the platform supplied Claude no ready runner endpoint",
                 status_code=500,
             )
-        carrier = consumption_carrier(
-            context.sandbox_id,
-            str((context.runtime_identity or {}).get("isolated_session_id") or ""),
-        )
         from astrabox.core.service.orchestrator.engine.runner_link import (
             RUNNER_TOKEN_FILE_NAME,
             runner_activation_token,
@@ -389,14 +378,9 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
                 runner_uri,
                 activation_token=activation_token,
                 session_id=context.session_id,
-                workspace_dir=str(options.cwd or ""),
                 sdk_options=_runner_configure_options(runner_options),
                 transcript_store=context.transcript_store,
                 sandbox_death_notice=context.sandbox_death_notice,
-                consumer_carrier=carrier,
-                event_sink=context.event_sink,
-                resident_output_sink=context.resident_output_sink,
-                observe_only=context.attach_mode == "observe",
             )
             logger.info(
                 "runtime reattached (%s): session=%s sandbox=%s resume=%s",
@@ -411,7 +395,6 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
                 slot_id=str(prepared.get("slot_id") or ""),
                 activation_token=activation_token,
                 session_id=context.session_id,
-                workspace_dir=str(options.cwd or ""),
                 permission_mode=context.permission_mode,
                 resume_session_key=context.resume_session_key,
                 activation_mcp_servers=[
@@ -421,9 +404,6 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
                 ],
                 transcript_store=context.transcript_store,
                 sandbox_death_notice=context.sandbox_death_notice,
-                consumer_carrier=carrier,
-                event_sink=context.event_sink,
-                resident_output_sink=context.resident_output_sink,
             )
         else:
             runner_options = _disable_plugin_mcp_autostart(
@@ -447,21 +427,14 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
                 runner_uri,
                 activation_token=activation_token,
                 session_id=context.session_id,
-                workspace_dir=str(options.cwd or ""),
                 sdk_options=_runner_configure_options(runner_options),
                 transcript_store=context.transcript_store,
                 sandbox_death_notice=context.sandbox_death_notice,
-                consumer_carrier=carrier,
-                event_sink=context.event_sink,
-                resident_output_sink=context.resident_output_sink,
             )
-        engine_manifest = await initialize_engine_client(
+        engine_manifest = await initialize_runtime_client(
             engine_client,
-            expected_engine_kind="claude_code",
-            conversation_binding=EngineConversationBinding(
-                platform_session_id=context.session_id,
-                engine_session_key=context.resume_session_key,
-            ),
+            engine_kind="claude_code",
+            resume_session_key=context.resume_session_key,
         )
     except APIError:
         if engine_client is not None:
@@ -495,19 +468,12 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
         if failure is not exc:
             raise failure from exc
         raise
-    # The link is resident from here on and the runner keeps receiving after
-    # every Result. Output the engine produces on its own — a queued task
-    # notification's answer — has a publisher only once this observer reads
-    # the link between turns; a turn consumer takes the read position over
-    # for its own input and hands it back at its terminal.
-    engine_client.start_resident_observation()
     return SessionRuntime(
         session_id=context.session_id,
         agent=None,
         engine_kind="claude_code",
         engine_client=engine_client,
         engine_manifest=engine_manifest,
-        conversation_bound=True,
         sandbox=context.sandbox,
         sandbox_id=context.sandbox_id,
         isolated_session_id=(
@@ -605,22 +571,6 @@ def _runner_configure_options(options: Any) -> dict[str, Any]:
             status_code=500,
         ) from exc
     return out
-
-
-def _template_platform_mcp_servers(template: Any) -> list[str]:
-    """Platform-hosted MCP servers available to this runtime binding."""
-
-    return sorted(
-        str(name)
-        for name, config in binding_mcp_server_definitions(
-            getattr(template, "mcp_servers", None),
-            session_source_type=getattr(template, "session_source_type", None),
-            agent_id=getattr(template, "agent_id", None),
-            assistant_id=getattr(template, "assistant_id", None),
-            artifacts_enabled=getattr(template, "artifacts_enabled", True),
-        ).items()
-        if isinstance(config, dict) and is_platform_mcp_server(config)
-    )
 
 
 def _activation_mcp_server_names(template: Any) -> list[str]:
@@ -738,132 +688,14 @@ async def prepare_runtime(context: EnginePreparationContext) -> dict[str, Any]:
 _ENGINE_BOUNDARY_MESSAGE_TYPES = frozenset({"StreamEvent", "AssistantMessage"})
 
 
-def _runner_event_persister(
-    session_id: str,
-    *,
-    event_sink: EngineEventSink,
-    consumer_carrier: str | None = None,
-) -> Callable[[dict[str, Any]], Awaitable[None]]:
-    """Persist resident SDK messages and FIFO consumption before cursor advance.
-
-    The runner link is session-resident and keeps receiving after a turn's
-    Result. Its persistence callback commits the external-input consumption
-    boundary, task notices and hook envelopes, including before the first turn.
-    Interpreting their user-facing meaning remains the Claude adapter's job
-    when a read projection asks for it through the engine seam.
-    ``consumer_carrier`` signs those consumption receipts with the runtime
-    generation this link is bound to, so a receipt orphaned by that
-    generation's death reopens its FIFO row for redelivery.
-    """
-
-    normalized_session_id = str(session_id or "").strip()
-    if not normalized_session_id:
-        raise ValueError("session_id is required for runner event persistence")
-
-    async def persist(frame: dict[str, Any]) -> None:
-        from astrabox.core.service.orchestrator.engine.frame_translator import (
-            CLAUDE_SDK_TASK_MESSAGE_TYPES,
-        )
-
-        if str(frame.get("session_id") or "").strip() != normalized_session_id:
-            raise ValueError("runner durable event belongs to another session")
-        sequence = frame.get("seq")
-        if (
-            isinstance(sequence, bool)
-            or not isinstance(sequence, int)
-            or sequence < 1
-        ):
-            raise ValueError("runner durable event requires a positive seq")
-        message_type = str(frame.get("message_type") or "").strip()
-        engine_boundary = frame.get("engine_boundary") is True
-        if engine_boundary:
-            # The runner's declaration that a root assistant response began
-            # with nothing platform-owned in flight: the first root
-            # `message_start`, or the complete AssistantMessage without
-            # partial events. It is the durable boundary the resident
-            # observer opens the engine-owned response at, and it is
-            # committed before the runner may compact it.
-            if message_type not in _ENGINE_BOUNDARY_MESSAGE_TYPES:
-                raise ValueError(
-                    "runner marked an unsupported SDK message as an engine-owned "
-                    f"response boundary: {message_type!r}"
-                )
-        elif (
-            message_type not in CLAUDE_SDK_TASK_MESSAGE_TYPES
-            and message_type not in {"UserMessage", "HookEventMessage"}
-        ):
-            raise ValueError(
-                f"runner marked an unsupported SDK message durable: {message_type!r}"
-            )
-        message = frame.get("message")
-        if not isinstance(message, dict):
-            raise ValueError("runner durable event has no SDK message object")
-        if str(message.get("__sdk_type") or "").strip() != message_type:
-            raise ValueError("runner durable event SDK type disagrees with its envelope")
-        if engine_boundary and message.get("parent_tool_use_id") is not None:
-            raise ValueError("runner engine-owned response boundary is not a root message")
-
-        if message_type == "UserMessage":
-            input_id = str(message.get("uuid") or "").strip()
-            content = message.get("content")
-            if (
-                message.get("parent_tool_use_id") is not None
-                or not input_id
-                or not isinstance(content, str)
-            ):
-                raise ValueError(
-                    "runner durable UserMessage is not an SDK FIFO root boundary"
-                )
-            await event_sink.confirm_input_consumed(
-                input_id=input_id,
-                content=content,
-                consumer_carrier=consumer_carrier,
-            )
-            return
-
-        event_uuid = str(message.get("uuid") or "").strip()
-        if not event_uuid:
-            canonical_message = json.dumps(
-                message,
-                ensure_ascii=False,
-                separators=(",", ":"),
-                sort_keys=True,
-            )
-            event_uuid = hashlib.sha256(canonical_message.encode("utf-8")).hexdigest()
-        persisted = await event_sink.persist_event(
-            engine_kind="claude_code",
-            causation_id=f"claude_code:{message_type}:{event_uuid}",
-            payload={
-                "runner_sequence": sequence,
-                "message": dict(message),
-                **({"engine_boundary": True} if engine_boundary else {}),
-            },
-        )
-        persisted_payload = persisted.get("payload")
-        if (
-            not isinstance(persisted_payload, dict)
-            or persisted_payload.get("engine_kind") != "claude_code"
-            or persisted_payload.get("message") != message
-        ):
-            raise RuntimeError(
-                "runner SDK event identity collided with different durable content"
-            )
-
-    return persist
-
-
 async def _connect_runner_engine_client(
     runner_uri: str,
     *,
     activation_token: str,
     session_id: str,
-    workspace_dir: str,
     sdk_options: dict[str, Any],
     transcript_store: dict[str, Any] | None,
     sandbox_death_notice: dict[str, Any] | None,
-    consumer_carrier: str | None = None,
-    event_sink: EngineEventSink | None = None,
-    resident_output_sink: ResidentOutputSink | None = None,
 ) -> Any:
     """Connect the host to a just-launched in-box runner and hand back its
     engine client. Module-level seam (patched by the hosted-flow
@@ -879,9 +711,7 @@ async def _connect_runner_engine_client(
     # Deferred import: the engine package's adapter registration imports this
     # module at load; importing the client chain at module level closes a
     # cycle through engine.base.
-    from astrabox.core.service.orchestrator.engine.claude_code_client import (
-        ClaudeCodeEngineClient,
-    )
+    from astrabox.core.service.orchestrator.engine.claude_runtime_client import ClaudeRuntimeClient
     from astrabox.core.service.orchestrator.engine.runner_link import RunnerLink
 
     store_base_url = str((transcript_store or {}).get("base_url") or "").strip()
@@ -904,24 +734,10 @@ async def _connect_runner_engine_client(
             message="the platform supplied Claude no sandbox death notice",
             status_code=500,
         )
-    if event_sink is None:
-        raise APIError(
-            code="AGENT_RUNTIME_ERROR",
-            message="the platform supplied Claude no durable engine event sink",
-            status_code=500,
-        )
-    link = RunnerLink(
-        runner_uri,
-        activation_token=activation_token,
-        persistent_event_handler=_runner_event_persister(
-            session_id,
-            event_sink=event_sink,
-            consumer_carrier=consumer_carrier,
-        ),
-    )
+    link = RunnerLink(runner_uri, activation_token=activation_token)
     await link.__aenter__()
     try:
-        await link.configure(
+        hello = await link.configure(
             session_id,
             options=sdk_options,
             store={"base_url": store_base_url},
@@ -931,13 +747,11 @@ async def _connect_runner_engine_client(
         with contextlib.suppress(Exception):
             await link.close()
         raise
-    return ClaudeCodeEngineClient(
+    return ClaudeRuntimeClient(
         link,
         session_id=session_id,
-        workspace_dir=workspace_dir,
-        transcript_store=cast(SessionStore, TranscriptSessionStore(platform_session_id=session_id)),
+        hello=hello,
         resume_session_key=str(sdk_options.get("resume") or "").strip() or None,
-        resident_output_sink=resident_output_sink,
     )
 
 
@@ -947,15 +761,11 @@ async def _activate_runner_engine_client(
     slot_id: str,
     activation_token: str,
     session_id: str,
-    workspace_dir: str,
     permission_mode: str | None,
     resume_session_key: str | None,
     activation_mcp_servers: list[str],
     transcript_store: dict[str, Any] | None,
     sandbox_death_notice: dict[str, Any] | None,
-    consumer_carrier: str | None = None,
-    event_sink: EngineEventSink | None = None,
-    resident_output_sink: ResidentOutputSink | None = None,
 ) -> Any:
     """Claim a prepared slot's runner for one platform Session.
 
@@ -968,9 +778,7 @@ async def _activate_runner_engine_client(
     names the old native Session and reconnects its SDK process in this box.
     """
 
-    from astrabox.core.service.orchestrator.engine.claude_code_client import (
-        ClaudeCodeEngineClient,
-    )
+    from astrabox.core.service.orchestrator.engine.claude_runtime_client import ClaudeRuntimeClient
     from astrabox.core.service.orchestrator.engine.runner_link import RunnerLink
 
     store_base_url = str((transcript_store or {}).get("base_url") or "").strip()
@@ -993,24 +801,10 @@ async def _activate_runner_engine_client(
             message="the platform supplied Claude no sandbox death notice",
             status_code=500,
         )
-    if event_sink is None:
-        raise APIError(
-            code="AGENT_RUNTIME_ERROR",
-            message="the platform supplied Claude no durable engine event sink",
-            status_code=500,
-        )
-    link = RunnerLink(
-        runner_uri,
-        activation_token=activation_token,
-        persistent_event_handler=_runner_event_persister(
-            session_id,
-            event_sink=event_sink,
-            consumer_carrier=consumer_carrier,
-        ),
-    )
+    link = RunnerLink(runner_uri, activation_token=activation_token)
     await link.__aenter__()
     try:
-        await link.activate(
+        hello = await link.activate(
             slot_id,
             session_id,
             permission_mode=normalize_claude_permission_mode(permission_mode),
@@ -1023,13 +817,11 @@ async def _activate_runner_engine_client(
         with contextlib.suppress(Exception):
             await link.close()
         raise
-    return ClaudeCodeEngineClient(
+    return ClaudeRuntimeClient(
         link,
         session_id=session_id,
-        workspace_dir=workspace_dir,
-        transcript_store=cast(SessionStore, TranscriptSessionStore(platform_session_id=session_id)),
+        hello=hello,
         resume_session_key=resume_session_key,
-        resident_output_sink=resident_output_sink,
     )
 
 
@@ -1038,14 +830,9 @@ async def _attach_runner_engine_client(
     *,
     activation_token: str,
     session_id: str,
-    workspace_dir: str,
     sdk_options: dict[str, Any],
     transcript_store: dict[str, Any] | None,
     sandbox_death_notice: dict[str, Any] | None,
-    consumer_carrier: str | None = None,
-    event_sink: EngineEventSink | None = None,
-    resident_output_sink: ResidentOutputSink | None = None,
-    observe_only: bool = False,
 ) -> tuple[Any, str]:
     """Attach to the box's live runner, or configure a relaunched one.
 
@@ -1061,55 +848,30 @@ async def _attach_runner_engine_client(
     Module-level seam, patched by the flow characterization suite. Returns
     ``(engine_client, "attached" | "configured")``.
     """
-    from astrabox.core.service.orchestrator.engine.claude_code_client import (
-        ClaudeCodeEngineClient,
-    )
+    from astrabox.core.service.orchestrator.engine.claude_runtime_client import ClaudeRuntimeClient
     from astrabox.core.service.orchestrator.engine.runner_link import RunnerLink
 
-    if event_sink is None:
-        raise APIError(
-            code="AGENT_RUNTIME_ERROR",
-            message="the platform supplied Claude no durable engine event sink",
-            status_code=500,
-        )
-    link = RunnerLink(
-        runner_uri,
-        activation_token=activation_token,
-        persistent_event_handler=_runner_event_persister(
-            session_id,
-            event_sink=event_sink,
-            consumer_carrier=consumer_carrier,
-        ),
-    )
+    link = RunnerLink(runner_uri, activation_token=activation_token)
     await link.__aenter__()
     try:
-        await link.attach(
+        hello = await link.attach(
             session_id,
             last_seen_seq=0,
-            observe_only=observe_only,
             required_option_keys=sdk_options.keys(),
             permission_mode=str(sdk_options.get("permission_mode") or "default"),
         )
         return (
-            ClaudeCodeEngineClient(
+            ClaudeRuntimeClient(
                 link,
                 session_id=session_id,
-                workspace_dir=workspace_dir,
-                transcript_store=cast(
-                    SessionStore, TranscriptSessionStore(platform_session_id=session_id)
-                ),
-                resume_session_key=(
-                    str(sdk_options.get("resume") or "").strip() or None
-                ),
-                resident_output_sink=resident_output_sink,
+                hello=hello,
+                resume_session_key=str(sdk_options.get("resume") or "").strip() or None,
             ),
             "attached",
         )
     except Exception as attach_exc:
         with contextlib.suppress(Exception):
             await link.close()
-        if observe_only:
-            raise
         logger.info(
             "runner attach refused, configuring with resume: session=%s err=%s",
             session_id,
@@ -1119,13 +881,9 @@ async def _attach_runner_engine_client(
         runner_uri,
         activation_token=activation_token,
         session_id=session_id,
-        workspace_dir=workspace_dir,
         sdk_options=sdk_options,
         transcript_store=transcript_store,
         sandbox_death_notice=sandbox_death_notice,
-        consumer_carrier=consumer_carrier,
-        event_sink=event_sink,
-        resident_output_sink=resident_output_sink,
     )
     return client, "configured"
 

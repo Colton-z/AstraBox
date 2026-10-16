@@ -19,19 +19,24 @@ import contextlib
 import hashlib
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from astrabox.persistence.repository.assistant_catalog_repository import (
+    LIST_STATUSES,
     AssistantCatalogRepository,
+    AssistantEnvironmentMissing,
+    AssistantExists,
+    AssistantSandboxRetained,
+    AssistantSessionMissing,
 )
 from astrabox.persistence.repository.keyset import (
     InvalidListCursor,
     decode_list_cursor,
     encode_list_cursor,
-    read_filtered_page,
 )
+from astrabox.persistence.sql import from_iso
 from astrabox.persistence.repository.session_repository import SessionRepository
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.core.service.orchestrator.engine.capabilities import (
@@ -50,7 +55,7 @@ from astrabox.core.service.orchestrator.runtime.conversation_identity import (
 )
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.settings import load_astrabox_settings
-from astrabox.common.utils.time_utils import parse_iso, utcnow_iso
+from astrabox.common.utils.time_utils import parse_iso, utcnow, utcnow_iso
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.service.orchestrator.agent_access import assert_may_author
 from astrabox.core.service.orchestrator.author_boundary import (
@@ -58,27 +63,23 @@ from astrabox.core.service.orchestrator.author_boundary import (
 )
 from astrabox.core.service.orchestrator.assistant.assistant_workspace_service import (
     AssistantWorkspaceService,
+    get_assistant_profile_ready_marker,
 )
 from astrabox.seams.sandbox_disposal import SandboxDestruction, may_sever_last_name
 
 logger = get_logger(__name__)
 
-#: The workspace narrowings the Assistant list page accepts.
-ASSISTANT_LIST_STATUSES = frozenset({"all", "ready", "dormant"})
 _ASSISTANT_LIST_CURSOR_KEYS = ("updated_at", "assistant_id")
 
 
-def _assistant_matches(row: dict[str, Any], *, needle: str, status: str) -> bool:
-    """Whether a listed Assistant passes the list page's search and status narrowing."""
-
-    ready = row.get("workspace_state") == "READY"
-    if (status == "ready" and not ready) or (status == "dormant" and ready):
-        return False
-    if not needle:
-        return True
-    return any(
-        needle in str(row.get(field) or "").lower()
-        for field in ("display_name", "assistant_id", "environment_name", "engine_kind")
+def _version_conflict(assistant_id: str) -> APIError:
+    return APIError(
+        code="ASSISTANT_VERSION_CONFLICT",
+        message=(
+            f"assistant={assistant_id} was modified concurrently; retry with the "
+            "latest version"
+        ),
+        status_code=409,
     )
 
 # Engine validity comes from the single matrix (domain-model.md §2).
@@ -96,6 +97,8 @@ _TERMINAL_SESSION_STATES = frozenset({"TERMINATED", "DELETED"})
 #: that was merely slow. See ``_stalled_materializer_session``.
 _MATERIALIZATION_STALL_READY_TIMEOUT_MULTIPLE = 3
 _MATERIALIZATION_STALL_FLOOR_SECONDS = 900
+#: How long a profile refresh has to publish before the same revision is claimed again.
+_PROFILE_REFRESH_RETRY_SECONDS = 600
 
 
 @dataclass(frozen=True)
@@ -294,7 +297,7 @@ class AssistantService:
         self,
         *,
         agent_config: Any,
-        session_kernel: Any,
+        session_lifecycle: Any,
         runtime_manager: Any | None = None,
         catalog_repo: AssistantCatalogRepository | None = None,
         workspace_service: AssistantWorkspaceService | None = None,
@@ -303,7 +306,7 @@ class AssistantService:
         spawn_background_task: Callable[..., Any],
     ) -> None:
         self._agent_config = agent_config
-        self._session_kernel = session_kernel
+        self._session_lifecycle = session_lifecycle
         self._runtime_manager = runtime_manager
         self._catalog_repo = catalog_repo or AssistantCatalogRepository()
         self._workspace_service = workspace_service or AssistantWorkspaceService()
@@ -361,11 +364,7 @@ class AssistantService:
             reason=f"{reason_prefix}:{evidence}",
         )
         refreshed = await self._workspace_service.get_workspace(
-            user_id=str(
-                workspace.get("created_by_user_id")
-                or workspace.get("user_id")
-                or ""
-            ).strip(),
+            user_id=str(workspace.get("created_by_user_id") or "").strip(),
             assistant_id=assistant_id,
         )
         if refreshed is None:
@@ -517,14 +516,31 @@ class AssistantService:
             "skills": config.get("skills"),
             "engine_options": dict(config.get("engine_options") or {}),
         }
-        created = await self._catalog_repo.create_assistant(payload)
+        try:
+            created = await self._catalog_repo.create_assistant(payload)
+        except AssistantEnvironmentMissing:
+            raise APIError(
+                code="ASSISTANT_ENVIRONMENT_MISSING",
+                message=f"environment '{environment_name}' not found or disabled",
+                status_code=403,
+            ) from None
+        # An Assistant is resident: its workspace is prepared now, so its
+        # first conversation attaches to a running one.
+        try:
+            await self.wake_workspace(user, assistant_id)
+        except Exception:
+            logger.warning(
+                "Assistant workspace was not prepared at creation; its first "
+                "conversation prepares it assistant=%s",
+                assistant_id, exc_info=True,
+            )
         return self._sanitize_assistant(created)
 
     async def list_assistants(self, user: UserContext) -> list[dict[str, Any]]:
         """Every Assistant the caller owns, the most recently edited first."""
 
         rows = await self._catalog_repo.list_owner_assistants(user.user_id)
-        return await self._with_workspace_state(user, rows)
+        return [self._listed(assistant, workspace) for assistant, workspace in rows]
 
     async def list_assistants_page(
         self,
@@ -539,93 +555,74 @@ class AssistantService:
 
         ``query`` matches the display name, id, environment and engine,
         case-insensitively; ``status`` keeps Assistants whose workspace is
-        ``ready`` or not (``dormant``). Both apply before the page is cut, so a
-        page is short only at the end of the list. The first page (no
-        ``cursor``) also counts every Assistant the caller owns, and how many
-        of their workspaces are ready, whatever the narrowing.
+        ``ready`` or not (``dormant``). Both narrow the query that reads the
+        page, so a page is short only at the end of the list. The first page
+        (no ``cursor``) also counts every Assistant the caller owns, and how
+        many of their workspaces are ready, whatever the narrowing.
         """
 
-        if status not in ASSISTANT_LIST_STATUSES:
+        if status not in LIST_STATUSES:
             raise APIError(
                 code="INVALID_REQUEST",
-                message=f"status must be one of {sorted(ASSISTANT_LIST_STATUSES)}",
+                message=f"status must be one of {sorted(LIST_STATUSES)}",
                 status_code=400,
             )
+        after: tuple[datetime, str] | None = None
         try:
-            after = decode_list_cursor(cursor, _ASSISTANT_LIST_CURSOR_KEYS)
-        except InvalidListCursor as exc:
+            decoded = decode_list_cursor(cursor, _ASSISTANT_LIST_CURSOR_KEYS)
+            if decoded is not None:
+                updated_at = from_iso(decoded[0])
+                if updated_at is None:
+                    raise InvalidListCursor("list cursor without a time")
+                after = (updated_at, decoded[1])
+        except (InvalidListCursor, ValueError) as exc:
             raise APIError(
                 code="INVALID_REQUEST",
                 message="cursor is not one this list returned",
                 status_code=400,
             ) from exc
-        needle = str(query or "").strip().lower()
-
-        async def _page(after_key: Any, size: int) -> list[dict[str, Any]]:
-            rows = await self._catalog_repo.list_owner_assistants_page(
-                user.user_id, after=after_key, limit=size
-            )
-            # The raw page's length tells read_filtered_page whether the set
-            # ended, so the join keeps every row it was given.
-            return await self._with_workspace_state(user, rows)
-
-        rows, has_more = await read_filtered_page(
-            _page,
+        page_size = max(1, int(limit))
+        rows = await self._catalog_repo.list_owner_assistants_page(
+            user.user_id,
             after=after,
-            key_of=lambda row: (str(row.get("updated_at") or ""), str(row.get("assistant_id") or "")),
-            keep=lambda row: _assistant_matches(row, needle=needle, status=status),
-            limit=limit,
+            limit=page_size + 1,
+            query=query,
+            status=status,
         )
+        has_more = len(rows) > page_size
+        listed = [self._listed(assistant, workspace) for assistant, workspace in rows[:page_size]]
         page: dict[str, Any] = {
-            "assistants": rows,
+            "assistants": listed,
             "has_more": has_more,
             "next_cursor": (
                 encode_list_cursor(
                     {
-                        "updated_at": str(rows[-1].get("updated_at") or ""),
-                        "assistant_id": str(rows[-1].get("assistant_id") or ""),
+                        "updated_at": str(listed[-1].get("updated_at") or ""),
+                        "assistant_id": str(listed[-1].get("assistant_id") or ""),
                     }
                 )
-                if has_more and rows
+                if has_more and listed
                 else None
             ),
         }
         if after is None:
-            owned = await self.list_assistants(user)
-            page["total"] = len(owned)
-            page["ready"] = sum(row.get("workspace_state") == "READY" for row in owned)
+            page["total"], page["ready"] = await self._catalog_repo.count_owner_assistants(
+                user.user_id
+            )
         return page
 
-    async def _with_workspace_state(
-        self, user: UserContext, rows: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
-        """Catalog rows as the list renders them, with their workspace joined."""
+    def _listed(
+        self, assistant: dict[str, Any], workspace: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        """A catalog row as the list renders it, with its workspace's posture."""
 
-        workspaces = await self._workspace_service.list_user_workspaces(
-            user_id=user.user_id,
-            assistant_ids=[str((row or {}).get("assistant_id") or "") for row in rows],
+        item = self._sanitize_assistant(assistant)
+        item["workspace_state"] = (
+            str((workspace or {}).get("state") or "").strip() or "NOT_MATERIALIZED"
         )
-        workspace_by_assistant = {
-            str(workspace.get("assistant_id") or "").strip(): workspace
-            for workspace in workspaces
-            if str(workspace.get("assistant_id") or "").strip()
-        }
-        rendered: list[dict[str, Any]] = []
-        for row in rows:
-            if str((row or {}).get("owner_id") or "").strip() != user.user_id:
-                continue
-            item = self._sanitize_assistant(row)
-            workspace = workspace_by_assistant.get(
-                str(item.get("assistant_id") or "").strip()
-            )
-            item["workspace_state"] = (
-                str((workspace or {}).get("state") or "").strip()
-                or "NOT_MATERIALIZED"
-            )
-            if workspace:
-                item["current_sandbox_id"] = workspace.get("current_sandbox_id")
-            rendered.append(item)
-        return rendered
+        if workspace:
+            item["current_sandbox_id"] = workspace.get("current_sandbox_id")
+        return item
 
     async def get_assistant(
         self, user: UserContext, assistant_id: str
@@ -719,60 +716,69 @@ class AssistantService:
         its first conversation. A user whose Assistants predate this has their
         earliest marked primary instead. Its id is derived from the owner and
         how many primaries they have had, deleted ones included (deletion
-        keeps the record), so two concurrent calls create one and a deleted
-        primary is followed by a new one. Answers the Assistant and whether
-        this call created it.
+        keeps the record), so a deleted primary is followed by a new one. An
+        owner has at most one live primary: of concurrent calls one inserts it
+        and the others read it. Answers the Assistant and whether this call
+        created it.
         """
 
-        created = False
-        rows = await self._catalog_repo.list_owner_assistants(user.user_id)
-        primary = next((row for row in rows if row.get("primary") is True), None)
-        if primary is None and rows:
-            earliest = min(rows, key=lambda row: str(row.get("created_at") or ""))
-            await self._catalog_repo.update_assistant(str(earliest["assistant_id"]), {"primary": True})
-            primary = earliest
-        if primary is None:
-            from astrabox.core.service.orchestrator.assistant.assistant_layers import (
-                default_environment_name,
-                inherited_layers,
-            )
-            from astrabox.persistence.repository.environment_repository import EnvironmentRepository
+        primary_id = await self._live_primary_id(user.user_id)
+        if primary_id is not None:
+            return await self.get_assistant(user, primary_id), False
+        from astrabox.core.service.orchestrator.assistant.assistant_layers import (
+            default_environment_name,
+            inherited_layers,
+        )
+        from astrabox.persistence.repository.environment_repository import EnvironmentRepository
 
-            environment_name = await default_environment_name(
-                await inherited_layers(), await EnvironmentRepository().list_all()
+        environment_name = await default_environment_name(
+            await inherited_layers(), await EnvironmentRepository().list_all()
+        )
+        if not environment_name:
+            raise APIError(
+                code="ASSISTANT_DEFAULTS_UNAVAILABLE",
+                message=(
+                    "this deployment has no Environment for Assistants: an administrator "
+                    "chooses one in the Assistant defaults, or enables one that runs Assistants"
+                ),
+                status_code=409,
             )
-            if not environment_name:
-                raise APIError(
-                    code="ASSISTANT_DEFAULTS_UNAVAILABLE",
-                    message=(
-                        "this deployment has no Environment for Assistants: an administrator "
-                        "chooses one in the Assistant defaults, or enables one that runs Assistants"
-                    ),
-                    status_code=409,
-                )
-            generation = await self._catalog_repo.count_owner_primaries(user.user_id)
-            assistant_id = "asst_" + hashlib.sha256(
-                f"primary:{user.user_id}:{generation}".encode()
-            ).hexdigest()[:16]
-            if await self._catalog_repo.get_assistant(assistant_id) is None:
-                try:
-                    await self.create_assistant(
-                        user,
-                        {
-                            "display_name": display_name,
-                            "environment_name": environment_name,
-                            "timezone": timezone,
-                        },
-                        assistant_id=assistant_id,
-                        primary=True,
-                    )
-                    created = True
-                except Exception:
-                    # A concurrent call created it first; anything else re-raises.
-                    if await self._catalog_repo.get_assistant(assistant_id) is None:
-                        raise
-            primary = {"assistant_id": assistant_id}
-        return await self.get_assistant(user, str(primary["assistant_id"])), created
+        generation = await self._catalog_repo.count_owner_primaries(user.user_id)
+        candidate = "asst_" + hashlib.sha256(
+            f"primary:{user.user_id}:{generation}".encode()
+        ).hexdigest()[:16]
+        try:
+            await self.create_assistant(
+                user,
+                {
+                    "display_name": display_name,
+                    "environment_name": environment_name,
+                    "timezone": timezone,
+                },
+                assistant_id=candidate,
+                primary=True,
+            )
+        except AssistantExists:
+            # A concurrent call inserted this owner's primary first, under this
+            # id or, having counted before this one's insert, under the next.
+            winner = await self._catalog_repo.get_owner_primary(user.user_id)
+            if winner is None:
+                raise
+            return await self.get_assistant(user, str(winner["assistant_id"])), False
+        return await self.get_assistant(user, candidate), True
+
+    async def _live_primary_id(self, owner_id: str) -> str | None:
+        """The owner's live primary, marking their earliest Assistant when none is marked."""
+
+        current = await self._catalog_repo.get_owner_primary(owner_id)
+        if current is not None:
+            return str(current["assistant_id"])
+        try:
+            return await self._catalog_repo.mark_earliest_primary(owner_id)
+        except AssistantExists:
+            # Another Assistant of the owner became the primary first.
+            current = await self._catalog_repo.get_owner_primary(owner_id)
+            return str(current["assistant_id"]) if current is not None else None
 
     async def list_scheduled_jobs(self, user: UserContext, assistant_id: str) -> dict[str, Any]:
         """The jobs an Assistant scheduled for itself, read live from its running workspace.
@@ -842,7 +848,17 @@ class AssistantService:
         started = await self.start_conversation(
             user, assistant_id, idempotency_key=f"assistant-main:{assistant_id}:{current or 'first'}"
         )
-        await self._catalog_repo.update_assistant(assistant_id, {"main_session_id": started["session_id"]})
+        try:
+            await self._catalog_repo.set_main_session(assistant_id, str(started["session_id"]))
+        except AssistantSessionMissing:
+            raise APIError(
+                code="SESSION_NOT_FOUND",
+                message=(
+                    f"assistant={assistant_id} main conversation {started['session_id']} "
+                    "was deleted before it was recorded"
+                ),
+                status_code=404,
+            ) from None
         return started
 
     async def update_assistant(
@@ -938,11 +954,27 @@ class AssistantService:
         )
         if sanitized_updates:
             # The Assistant's definition changed only if an authored field did.
-            if any(assistant.get(key) != value for key, value in sanitized_updates.items()):
-                sanitized_updates["updated_at"] = utcnow_iso()
-            await self._catalog_repo.update_assistant(assistant_id, sanitized_updates)
+            changed = any(assistant.get(key) != value for key, value in sanitized_updates.items())
+            if not await self._catalog_repo.update_definition(
+                assistant_id,
+                expected_version=int(assistant["version"]),
+                values=sanitized_updates,
+                touch=changed,
+            ):
+                raise _version_conflict(assistant_id)
+            await self._refresh_workspace_profile_logged(user, assistant_id)
         refreshed = await self._catalog_repo.get_assistant(assistant_id)
         return self._sanitize_assistant(refreshed or assistant)
+
+    async def _refresh_workspace_profile_logged(self, user: UserContext, assistant_id: str) -> None:
+        try:
+            await self.refresh_workspace_profile(user, assistant_id)
+        except Exception:
+            logger.warning(
+                "Assistant workspace profile was not refreshed after an edit; the "
+                "next conversation prepares it assistant=%s",
+                assistant_id, exc_info=True,
+            )
 
     async def set_connector_servers(
         self,
@@ -968,9 +1000,14 @@ class AssistantService:
         if connectors_off is not None:
             updates["connectors_off"] = sorted(set(connectors_off)) or None
         if any(assistant.get(key) != value for key, value in updates.items()):
-            await self._catalog_repo.update_assistant(
-                assistant_id, {**updates, "updated_at": utcnow_iso()}
-            )
+            turned_off = updates.get("connectors_off", assistant.get("connectors_off"))
+            if not await self._catalog_repo.set_connectors(
+                assistant_id,
+                expected_version=int(assistant["version"]),
+                servers=updates["connector_servers"] or {},
+                turned_off=list(turned_off or []),
+            ):
+                raise _version_conflict(assistant_id)
         refreshed = await self._catalog_repo.get_assistant(assistant_id)
         return self._sanitize_assistant(refreshed or assistant)
 
@@ -1030,10 +1067,13 @@ class AssistantService:
         provider = configured_extension_provider()
         if provider is None:
             cleared = clear_catalog_selection(mcp_server_ids=mcp_server_ids, skill_ids=skill_ids)
-            if catalog_selection(assistant):
-                await self._catalog_repo.update_assistant(
-                    assistant_id, {**cleared, "updated_at": utcnow_iso()}
-                )
+            if catalog_selection(assistant) and not await self._catalog_repo.set_extension_selection(
+                assistant_id,
+                expected_version=int(assistant["version"]),
+                extension_catalog=cleared[AGENT_EXTENSION_CATALOG_FIELD],
+                mcp_assignments=cleared[AGENT_MCP_ASSIGNMENTS_FIELD],
+            ):
+                raise _version_conflict(assistant_id)
             refreshed = await self._catalog_repo.get_assistant(assistant_id) or assistant
             return {
                 "assistant_id": assistant_id,
@@ -1052,10 +1092,15 @@ class AssistantService:
                 assistant.get(AGENT_MCP_ASSIGNMENTS_FIELD), provider.name, selected_mcp
             ),
         }
-        if any(assistant.get(key) != value for key, value in updates.items()):
-            await self._catalog_repo.update_assistant(
-                assistant_id, {**updates, "updated_at": utcnow_iso()}
-            )
+        if any(
+            assistant.get(key) != value for key, value in updates.items()
+        ) and not await self._catalog_repo.set_extension_selection(
+            assistant_id,
+            expected_version=int(assistant["version"]),
+            extension_catalog=updates[AGENT_EXTENSION_CATALOG_FIELD],
+            mcp_assignments=updates[AGENT_MCP_ASSIGNMENTS_FIELD],
+        ):
+            raise _version_conflict(assistant_id)
         refreshed = await self._catalog_repo.get_assistant(assistant_id) or assistant
         return {
             "assistant_id": assistant_id,
@@ -1065,21 +1110,20 @@ class AssistantService:
     async def delete_assistant(
         self, user: UserContext, assistant_id: str
     ) -> dict[str, Any]:
-        """Delete the catalog row — but only once its sandbox is proven gone.
+        """Delete the Assistant — but only once its sandbox is proven gone.
 
-        Deleting the catalog row is a name-severing act carried out by
-        unreachability rather than by a write: ``_must_use_assistant`` resolves
-        through ``get_assistant``, whose query excludes deleted rows, so after
-        the soft-delete every path that could ever act on this workspace —
-        wake (the only retry of a pending destruction), hibernate, the console
-        URL — answers 404 forever. The workspace row survives holding
-        ``current_sandbox_id``, and nothing can read it and act.
+        Deleting is a name-severing act: the workspace row goes with the
+        catalog row, and with it ``current_sandbox_id``, the only record of the
+        box the workspace runs in. After it, every path that could act on that
+        box — wake (the only retry of a pending destruction), hibernate, the
+        console URL — answers 404.
 
         So the destruction happens first, and the delete is refused if it
         cannot be confirmed. That refusal is the conservative failure
-        direction, and it is also the recoverable one: the catalog row stays
-        resolvable, so the user (or wake) can retry — which soft-deleting first
-        would have made impossible. A workspace that never held a sandbox
+        direction, and it is also the recoverable one: the Assistant stays
+        resolvable, so the user (or wake) can retry. The deletion itself is one
+        transaction that is refused the same way when a concurrent wake bound
+        a new box after the destruction. A workspace that never held a sandbox
         deletes with no destroy at all.
         """
         await self._must_use_assistant(user, assistant_id)
@@ -1111,7 +1155,27 @@ class AssistantService:
                     status_code=409,
                     data={"sandbox_id": sandbox_id, "retryable": True},
                 )
-        await self._catalog_repo.soft_delete(assistant_id)
+        try:
+            deleted = await self._catalog_repo.delete_assistant(
+                assistant_id, owner_id=user.user_id
+            )
+        except AssistantSandboxRetained as retained:
+            raise APIError(
+                code="ASSISTANT_SANDBOX_UNDESTROYED",
+                message=(
+                    f"assistant={assistant_id} workspace bound sandbox "
+                    f"{retained.sandbox_id} while it was being deleted; the assistant "
+                    "is kept so that box stays nameable — retry the delete"
+                ),
+                status_code=409,
+                data={"sandbox_id": retained.sandbox_id, "retryable": True},
+            ) from None
+        if not deleted:
+            raise APIError(
+                code="ASSISTANT_NOT_FOUND",
+                message=f"assistant={assistant_id} not found",
+                status_code=404,
+            )
         return {"assistant_id": assistant_id, "deleted": True}
 
     async def acquire_workspace_for_session(
@@ -1384,6 +1448,48 @@ class AssistantService:
         )
         return acquisition.response
 
+    async def refresh_workspace_profile(self, user: UserContext, assistant_id: str) -> bool:
+        """Prepare a READY workspace's profile for the Assistant's current revision.
+
+        The workspace keeps running; a workspace Session prepares the new
+        revision on the same box, so the next conversation starts on a profile
+        that is already current instead of preparing it itself. Returns whether
+        a refresh was started. A workspace that is materializing, hibernated by
+        its owner, or awaiting recovery is left to that lifecycle.
+        """
+
+        workspace = await self._workspace_service.get_workspace(
+            user_id=user.user_id, assistant_id=assistant_id,
+        )
+        if str((workspace or {}).get("state") or "").strip() != "READY":
+            return False
+        sandbox_id = str((workspace or {}).get("current_sandbox_id") or "").strip()
+        view = await self._agent_config.resolve_session_harness(
+            {"workspace_ref": {"kind": "assistant", "assistant_id": assistant_id}},
+        )
+        revision = str(getattr(view, "assistant_revision", None) or "").strip()
+        if not sandbox_id or not revision or get_assistant_profile_ready_marker(
+            workspace, user_id=user.user_id, assistant_id=assistant_id,
+            sandbox_id=sandbox_id, configuration_revision=revision,
+        ) is not None:
+            return False
+        session_id = str(uuid.uuid4())
+        if not await self._workspace_service.claim_profile_refresh(
+            user_id=user.user_id, assistant_id=assistant_id, sandbox_id=sandbox_id,
+            revision=revision, session_id=session_id,
+            retry_before=utcnow() - timedelta(seconds=_PROFILE_REFRESH_RETRY_SECONDS),
+        ):
+            return False
+        assistant = await self._must_use_assistant(user, assistant_id)
+        await self._create_workspace_session(
+            user=user, assistant=assistant, assistant_id=assistant_id, session_id=session_id,
+        )
+        logger.info(
+            "Assistant workspace profile refresh started assistant=%s sandbox=%s session=%s",
+            assistant_id, sandbox_id, session_id,
+        )
+        return True
+
     async def _acquire_workspace_materialization(
         self,
         *,
@@ -1604,6 +1710,38 @@ class AssistantService:
     ) -> None:
         """Create the lifecycle Session used only by an explicit workspace wake."""
 
+        try:
+            await self._create_workspace_session(
+                user=user, assistant=assistant, assistant_id=assistant_id,
+                session_id=provisioning_session_id,
+            )
+        except BaseException as exc:
+            mismatch = (
+                isinstance(exc, APIError)
+                and exc.code == "ASSISTANT_WORKSPACE_MATERIALIZER_IDENTITY_MISMATCH"
+            )
+            with contextlib.suppress(BaseException):
+                await self._workspace_service.mark_materialization_failed(
+                    user_id=user.user_id,
+                    assistant_id=assistant_id,
+                    provisioning_session_id=provisioning_session_id,
+                    provisioning_sandbox_generation=None,
+                    failure_phase=(
+                        "session_identity_mismatch" if mismatch else "session_create_failed"
+                    ),
+                )
+            raise
+
+    async def _create_workspace_session(
+        self,
+        *,
+        user: UserContext,
+        assistant: dict[str, Any],
+        assistant_id: str,
+        session_id: str,
+    ) -> None:
+        """Create a hidden Session that prepares the workspace, not a conversation."""
+
         environment_name = str(assistant.get("environment_name") or "").strip()
         if not environment_name:
             raise APIError(
@@ -1612,48 +1750,25 @@ class AssistantService:
                 status_code=500,
             )
         engine_kind = self._require_engine_kind(assistant)
-        try:
-            result = await self._session_kernel.create_session(
-                user,
-                # The runtime configuration resolves by the Assistant workspace_ref
-                # (kind=assistant), not by this positional ref, which carries the
-                # Environment for display.
-                environment_name,
-                permission_mode=(
-                    str(assistant.get("permission_mode_default") or "").strip()
-                    or None
-                ),
-                session_id=provisioning_session_id,
-                session_kind="assistant_chat",
-                workspace_ref={
-                    "kind": "assistant",
-                    "user_id": user.user_id,
-                    "assistant_id": assistant_id,
-                    "engine_kind": engine_kind,
-                },
-                hidden=True,
-                owner_type="assistant_workspace",
-                owner_id=assistant_id,
-            )
-        except BaseException:
-            with contextlib.suppress(BaseException):
-                await self._workspace_service.mark_materialization_failed(
-                    user_id=user.user_id,
-                    assistant_id=assistant_id,
-                    provisioning_session_id=provisioning_session_id,
-                    provisioning_sandbox_generation=None,
-                    failure_phase="session_create_failed",
-                )
-            raise
-        new_provisioning_session_id = str(result.get("session_id") or "").strip()
-        if new_provisioning_session_id != provisioning_session_id:
-            await self._workspace_service.mark_materialization_failed(
-                user_id=user.user_id,
-                assistant_id=assistant_id,
-                provisioning_session_id=provisioning_session_id,
-                provisioning_sandbox_generation=None,
-                failure_phase="session_identity_mismatch",
-            )
+        result = await self._session_lifecycle.create_session(
+            user,
+            permission_mode=(
+                str(assistant.get("permission_mode_default") or "").strip()
+                or None
+            ),
+            session_id=session_id,
+            session_kind="assistant_chat",
+            workspace_ref={
+                "kind": "assistant",
+                "user_id": user.user_id,
+                "assistant_id": assistant_id,
+                "engine_kind": engine_kind,
+            },
+            hidden=True,
+            owner_type="assistant_workspace",
+            owner_id=assistant_id,
+        )
+        if str(result.get("session_id") or "").strip() != session_id:
             raise APIError(
                 code="ASSISTANT_WORKSPACE_MATERIALIZER_IDENTITY_MISMATCH",
                 message=(
@@ -1903,12 +2018,8 @@ class AssistantService:
                     "retryable": True,
                     "recovery_pending_sandbox_id": leaked_sandbox_id,
                 }
-            reopened = await self._workspace_service.transition_state(
-                user_id=user_id,
-                assistant_id=assistant_id,
-                expected_state="RECOVERY_REQUIRED",
-                new_state="MATERIALIZING",
-                expected_extra={"current_sandbox_id": None, "provisioning_session_id": None},
+            reopened = await self._workspace_service.reopen_materialization(
+                user_id=user_id, assistant_id=assistant_id
             )
             return None if reopened else stalled_posture
         claimed = await self._workspace_service.claim_stalled_materialization(
@@ -2192,14 +2303,10 @@ class AssistantService:
             or str(assistant.get("permission_mode_default") or "").strip()
             or None
         )
-        # engine_kind goes into workspace_ref so the lifecycle worker's startup
-        # command can pick the right engine adapter without making a second
-        # round-trip to assistant_catalog. The catalog row's engine_kind is
-        # immutable-after-materialize (see _IMMUTABLE_AFTER_MATERIALIZE at the
-        # top of this module), so caching it on the session's workspace_ref is
-        # not stale-data-prone — any change to engine_kind requires destroying
-        # and recreating the workspace, which would mean creating a fresh
-        # assistant row anyway.
+        # The workspace_ref names the Assistant this conversation runs as. Its
+        # engine_kind is the Assistant's, which cannot change once the
+        # workspace is materialized (see _IMMUTABLE_AFTER_MATERIALIZE at the
+        # top of this module).
         create_options: dict[str, Any] = {
             "permission_mode": effective_permission_mode,
             "session_kind": "assistant_chat",
@@ -2212,11 +2319,7 @@ class AssistantService:
         }
         if idempotency_key is not None:
             create_options["idempotency_key"] = idempotency_key
-        return await self._session_kernel.create_session(
-            user,
-            environment_name,
-            **create_options,
-        )
+        return await self._session_lifecycle.create_session(user, **create_options)
 
     async def _must_use_assistant(
         self, user: UserContext, assistant_id: str
@@ -2241,8 +2344,8 @@ class AssistantService:
         if not doc:
             return {}
         clean = dict(doc)
-        clean.pop("_id", None)
         clean.pop("deleted", None)
+        clean.pop("version", None)
         clean.pop("credential_vault_ids", None)
         clean.pop("credentials_updated_by", None)
         clean.pop("credentials_updated_at", None)

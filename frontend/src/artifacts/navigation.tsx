@@ -1,8 +1,6 @@
 import { createContext, useContext, type ReactNode } from 'react';
-import type { ArtifactMarker } from './types';
 interface ArtifactNavigation {
   open?: (id: string) => void;
-  appeared?: (marker: ArtifactMarker, toolCallId: string) => void;
   setComposer?: (text: string) => void;
   sharedTranscript?: boolean;
 }

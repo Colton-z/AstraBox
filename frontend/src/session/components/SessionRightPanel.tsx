@@ -154,7 +154,7 @@ export function SessionRightPanel({
           <TabsContent value="terminal" className="flex-1 min-h-0 overflow-hidden">
             <TerminalPanel
               sessionId={sessionId}
-              enabled={runtimeAccessReady && (lifecycleState === 'ready' || lifecycleState === 'busy' || lifecycleState === 'background')}
+              enabled={runtimeAccessReady && (lifecycleState === 'ready' || lifecycleState === 'busy')}
               initialCwd={terminalCwd}
               onCwdChange={setTerminalCwd}
             />

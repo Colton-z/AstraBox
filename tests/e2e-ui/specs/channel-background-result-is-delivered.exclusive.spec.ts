@@ -4,10 +4,15 @@ import { execFileSync } from 'node:child_process';
 
 import { expect, test } from '@playwright/test';
 
-import { AstraApi, messageText } from '../fixtures/astraApi';
+import { AstraApi, messageText, type MessageRecord } from '../fixtures/astraApi';
 import { channelCallback } from '../fixtures/channelCallback';
-import { deleteDocs, documentsByField, framesForTurn, replaceDocs, sessionEvents } from '../fixtures/dbOracle';
+import { nativeTranscriptRows, sessionOutputRows, sessionResponseRows } from '../fixtures/dbOracle';
+import { textBlockValues } from '../fixtures/dshOutput';
 import { absoluteBaseUrl, apiPath } from '../fixtures/env';
+import {
+  channelInbound, channelInboundRows, channelOutboxRows, channelOutputSubscriptions,
+  deleteOutputSubscriptions, rewindOutputSubscriptions,
+} from '../fixtures/ingressRecords';
 import { PlatformApi } from '../fixtures/platformApi';
 import { restartServerContainer } from '../fixtures/sandboxOps';
 import { satoriReplyTexts, satoriSource } from '../fixtures/satoriSource';
@@ -22,6 +27,14 @@ onPassOnly(async ({ request }) => {
   if (deploymentId) await new PlatformApi(request).deleteDeployment(agentId, deploymentId);
   if (agentId) await new AstraApi(request).deleteAgent(agentId);
 });
+
+/**
+ * What a text-only channel is sent for one reply: the reply's text parts as
+ * paragraphs (`channel_replies.segment_reply`), read here from history.
+ */
+function replyText(message: MessageRecord): string {
+  return textBlockValues(message.parts).filter(Boolean).join('\n\n').trim();
+}
 
 const cases = [
   { mode: 'generic', title: 'a background completion reaches its channel without a second inbound message' },
@@ -91,9 +104,7 @@ for (const scenario of cases) test(scenario.title, async ({
         message: { id, content: `<at id="${source.botId}"/>${content}`, created_at: Date.now() } });
       await expect.poll(() => {
         healthy();
-        const inbound = documentsByField('channel_inbound', '$.deployment_id', deploymentId)
-          .find((row) => row.dedup_key === `e2e:${source.botId}:channel:${id}:message:${id}`);
-        sessionId = String(inbound?.session_id || '');
+        sessionId = String(channelInbound(deploymentId, `e2e:${source.botId}:channel:${id}:message:${id}`)?.session_id || '');
         return sessionId;
       }, { timeout: 75_000 }).not.toBe('');
     } else {
@@ -118,7 +129,7 @@ for (const scenario of cases) test(scenario.title, async ({
       .toEqual([scenario.mode === 'browser' ? expect.stringMatching(/\S/) : expect.stringContaining(launched)]);
     const initialDelivery = (await deliveries())[0];
     expect(initialDelivery).not.toContain(completed);
-    await expect.poll(() => documentsByField('channel_outbox', '$.session_id', sessionId)
+    await expect.poll(() => channelOutboxRows(sessionId)
       .filter((row) => row.state === 'DELIVERED').length).toBe(1);
     if (scenario.mode === 'browser') {
       await openSessionView(page, sessionId);
@@ -128,7 +139,13 @@ for (const scenario of cases) test(scenario.title, async ({
     const children = await api.waitForChildRuns(sessionId,
       (rows) => rows.length === 1 && rows[0].active, 15_000);
     evidence.heldChildren = children;
-    const initialHistory = await api.getMessages(sessionId, 50);
+    // The launch reply ends while its child is still held.
+    let initialHistory = await api.getMessages(sessionId, 50);
+    await expect.poll(async () => {
+      initialHistory = await api.getMessages(sessionId, 50);
+      return initialHistory.messages.filter((row) => row.role === 'assistant'
+        && row.metadata?.status !== 'ended').length;
+    }, { timeout: 30_000, message: 'the launch reply must end while the child is held' }).toBe(0);
     expect(initialHistory.messages.filter((row) => row.role === 'user').map(messageText)).toEqual(expectedInputs);
     const initialReplies = initialHistory.messages.filter((row) => row.role === 'assistant');
     evidence.initialHistory = initialHistory;
@@ -138,22 +155,17 @@ for (const scenario of cases) test(scenario.title, async ({
       expect(await deliveries()).toEqual([initialDelivery]);
     }
     if (scenario.mode === 'historical') {
-      const permissionMode = String((await api.getSession(sessionId)).permission_mode || '');
-      expect(permissionMode).not.toBe('');
+      // Model a conversation no channel followed yet: with the platform
+      // stopped, its only subscription goes away. After the restart the
+      // platform reopens the conversation's live runtime by itself.
       const server = requireServiceContainer(SERVER_CONTAINER_HANDLE);
       execFileSync('docker', ['stop', '--time', '10', server], { timeout: 30_000 });
       stoppedServer = server;
-      const removed = deleteDocs('channel_output_subscriptions', { '$.session_id': sessionId });
+      const removed = deleteOutputSubscriptions(sessionId);
       expect(removed).toHaveLength(1);
       evidence.preSubscriptionHistory = removed;
       await restartServerContainer(absoluteBaseUrl(), 60_000, server);
       stoppedServer = '';
-      // Model a pre-subscription conversation whose existing runtime is opened
-      // through a user control. The native acknowledgement proves cold-cache
-      // control recovery without sending another prompt or enabling replies.
-      const control = await api.setPermissionMode(sessionId, permissionMode);
-      expect(control).toMatchObject({ session_id: sessionId, permission_mode: permissionMode, applied: true });
-      evidence.recoveredControl = control;
     }
 
     // A workspace file releases the native child; it is not a second user turn.
@@ -161,7 +173,8 @@ for (const scenario of cases) test(scenario.title, async ({
     await expect.poll(async () => {
       const history = await api.getMessages(sessionId, 50);
       return history.messages.filter((row) => row.role === 'assistant'
-        && !initialReplies.some((initial) => initial.message_id === row.message_id))
+        && row.metadata?.status === 'ended'
+        && !initialReplies.some((initial) => initial.id === row.id))
         .map(messageText).join('\n');
     }, { timeout: 60_000, message: 'the completed child must produce a distinct durable parent reply' })
       .toContain(completed);
@@ -170,12 +183,17 @@ for (const scenario of cases) test(scenario.title, async ({
     const completedHistory = await api.getMessages(sessionId, 50);
     evidence.completedHistory = completedHistory;
     const completionReplies = completedHistory.messages.filter((row) => row.role === 'assistant'
-      && !initialReplies.some((initial) => initial.message_id === row.message_id)
+      && !initialReplies.some((initial) => initial.id === row.id)
       && messageText(row).includes(completed));
     expect(completionReplies).toHaveLength(1);
-    const nativeTranscript = documentsByField('transcript_entries', '$.platform_session_id', sessionId)
+    // The runtime answered the completion notice on its own: a response no
+    // input started, ended as the engine reported it.
+    const completionResponse = sessionResponseRows(sessionId)
+      .find((row) => row.response_id === completionReplies[0].id);
+    expect(completionResponse, 'the completion reply is a recorded response').toBeTruthy();
+    expect(completionResponse).toMatchObject({ origin: 'engine', input_ids: [], status: 'ended', outcome: 'completed' });
+    const nativeTranscript = nativeTranscriptRows(sessionId)
       .filter((row) => row.subpath == null)
-      .sort((left, right) => Number(left.seq) - Number(right.seq))
       .map((row) => JSON.parse(String(row.entry_json)) as {
         type: string; message?: { content?: Array<{ type: string; text?: string }> };
       });
@@ -186,11 +204,11 @@ for (const scenario of cases) test(scenario.title, async ({
     expect(nativeAssistantText, 'the completion must exist in the engine transcript').toContain(completed);
 
     let expectedDeliveries = [
-      ...initialReplies.map((row) => messageText(row).trim()),
-      messageText(completionReplies[0]).trim(),
+      ...initialReplies.map(replyText).filter(Boolean),
+      replyText(completionReplies[0]),
     ];
     if (scenario.mode === 'historical') {
-      expect(documentsByField('channel_output_subscriptions', '$.session_id', sessionId)).toEqual([]);
+      expect(channelOutputSubscriptions(sessionId)).toEqual([]);
       expect(await deliveries()).toEqual([initialDelivery]);
       const nextPrompt = `Conversation ${id}. Explain what a calendar is in one short sentence. Do not use tools.`;
       const nextId = randomUUID();
@@ -202,12 +220,15 @@ for (const scenario of cases) test(scenario.title, async ({
       });
       expect(next.ok(), await next.text()).toBe(true);
       expect((await next.json()).data.session_id).toBe(sessionId);
-      await expect.poll(() => documentsByField('channel_inbound', '$.deployment_id', deploymentId)
-        .find((row) => row.dedup_key === nextId)?.state, { timeout: 60_000 }).toBe('SETTLED');
-      const later = (await api.getMessages(sessionId, 50)).messages.filter((row) => row.role === 'assistant'
-        && !completedHistory.messages.some((old) => old.message_id === row.message_id));
-      expect(later).toHaveLength(1);
-      expectedDeliveries = [initialDelivery, messageText(later[0]).trim()];
+      await expect.poll(() => channelInbound(deploymentId, nextId)?.state, { timeout: 60_000 }).toBe('SETTLED');
+      let later: MessageRecord[] = [];
+      await expect.poll(async () => {
+        later = (await api.getMessages(sessionId, 50)).messages.filter((row) => row.role === 'assistant'
+          && row.metadata?.status === 'ended'
+          && !completedHistory.messages.some((old) => old.id === row.id));
+        return later.length;
+      }, { timeout: 60_000, message: 'the next channel message must be answered' }).toBe(1);
+      expectedDeliveries = [initialDelivery, replyText(later[0])];
     }
     {
       await expect.poll(() => {
@@ -216,18 +237,16 @@ for (const scenario of cases) test(scenario.title, async ({
       }, { timeout: 30_000, message: 'the channel must receive the visible completion without another input' })
         .toEqual(expectedDeliveries);
     }
-    const terminal = sessionEvents(sessionId).find((row) => row.turn_id === completionReplies[0].turn_id
-      && row.event_type === 'turn.completed');
-    expect(terminal).toBeTruthy();
-    const completionFrames = framesForTurn(String(completionReplies[0].turn_id));
-    const completionCursor = Math.max(...completionFrames.map((row) => Number(row.event_seq)));
+    // The subscription has projected past the completion's last recorded part
+    // before the absence of any further delivery is asserted.
+    const completionCursor = Math.max(...sessionOutputRows(sessionId, completionReplies[0].id).map((row) => row.seq));
     expect(Number.isFinite(completionCursor)).toBe(true);
-    const subscription = () => documentsByField('channel_output_subscriptions', '$.session_id', sessionId)[0];
+    const subscription = () => channelOutputSubscriptions(sessionId)[0];
     await expect.poll(() => Number(subscription()?.after_seq), {
       timeout: 30_000, message: 'channel routing must finish before asserting no unwanted delivery',
     }).toBeGreaterThanOrEqual(completionCursor);
     expect(await deliveries()).toEqual(expectedDeliveries);
-    const outboxes = () => documentsByField('channel_outbox', '$.session_id', sessionId);
+    const outboxes = () => channelOutboxRows(sessionId);
     await expect.poll(() => outboxes().filter((row) => row.state === 'DELIVERED').length)
       .toBe(expectedDeliveries.length);
     const deliveredRows = outboxes();
@@ -240,8 +259,7 @@ for (const scenario of cases) test(scenario.title, async ({
       execFileSync('docker', ['stop', '--time', '10', server], { timeout: 30_000 });
       stoppedServer = server;
       const saved = subscription();
-      expect(replaceDocs('channel_output_subscriptions', { '$.session_id': sessionId }, { ...saved, after_seq: 0 }))
-        .toEqual([saved]);
+      expect(rewindOutputSubscriptions(sessionId, 0)).toEqual([{ ...saved, after_seq: 0 }]);
       await restartServerContainer(absoluteBaseUrl(), 60_000, server);
       stoppedServer = '';
       await expect.poll(() => Number(subscription()?.after_seq), { timeout: 30_000 })
@@ -249,7 +267,7 @@ for (const scenario of cases) test(scenario.title, async ({
       expect(await deliveries()).toEqual(expectedDeliveries);
       expect(outboxes()).toEqual(deliveredRows);
     }
-    expect(documentsByField('channel_inbound', '$.deployment_id', deploymentId)
+    expect(channelInboundRows(deploymentId)
       .filter((row) => !source || row.dedup_key === `e2e:${source.botId}:channel:${id}:message:${id}`))
       .toHaveLength(scenario.mode === 'historical' ? 2 : 1);
     const finalHistory = await api.getMessages(sessionId, 50);
@@ -261,8 +279,8 @@ for (const scenario of cases) test(scenario.title, async ({
         body: JSON.stringify({ ...evidence, sessionId, deploymentId,
           deliveries: source?.deliveries ?? recipient?.deliveries,
           recipientErrors: recipient?.errors, sourceErrors: source?.errors,
-          events: sessionId ? sessionEvents(sessionId) : [],
-          outbox: sessionId ? documentsByField('channel_outbox', '$.session_id', sessionId) : [],
+          responses: sessionId ? sessionResponseRows(sessionId) : [],
+          outbox: sessionId ? channelOutboxRows(sessionId) : [],
         }),
         contentType: 'application/json',
       });

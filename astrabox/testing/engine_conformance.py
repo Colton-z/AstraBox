@@ -1,6 +1,6 @@
 """Reusable conformance suite for :class:`EngineAdapter` implementations.
 
-Third-engine authors bind this exactly like the collection contract suite::
+Third-engine authors bind it from their own test tree::
 
     # your_plugin/tests/engine_conformance_test.py
     from astrabox.testing.engine_conformance import EngineAdapterContractSuite
@@ -9,17 +9,13 @@ Third-engine authors bind this exactly like the collection contract suite::
         def make_adapter(self):
             return MyEngineAdapter()
 
-The in-tree binding (``tests/engine_adapter_conformance_test.py``) runs the
-same suite over both built-in adapters, so the contract these checks encode
-is exercised by real implementations, not just documented.
-
 What conformance means for an adapter (the REQUIRED surface):
 
 * ``engine_kind`` — non-empty, stable identity string;
 * ``capabilities`` — an explicit :class:`EngineRuntimeCapabilities` declaration
   naming the session products it can drive and its optional config directory;
-* ``engine_client_type`` — the concrete class implementing the complete
-  conversation-resume, FIFO, stream and stop surface;
+* ``engine_client_type`` — the concrete :class:`RuntimeClient` class: submit,
+  the event stream after a cursor, state, answers, interrupt and close;
 * ``sandbox_request`` — declares box requirements without allocating one;
 * ``activate_runtime`` — starts or reconnects only the engine in a
   platform-prepared box.
@@ -107,28 +103,23 @@ class EngineAdapterContractSuite:
             type(adapter).activate_runtime is not EngineAdapter.activate_runtime
         ), "activate_runtime must activate only the engine protocol"
 
-# ── EngineClient ─────────────────────────────────────────────────────────────
+# ── Runtime client ───────────────────────────────────────────────────────────
 
-class EngineClientContractSuite:
-    """Structural conformance for an engine's :class:`EngineClient`.
+class RuntimeClientContractSuite:
+    """Structural conformance for an engine's runtime client.
 
-    Engines are how the platform absorbs agent-tool diversity: every admitted
-    tool completes the same conversation-resume, FIFO, stream and stop journey
-    through this small surface and speaks one output language (AI SDK frames,
-    via the engine's translator). Optional controls are separate capability
-    protocols; this suite deliberately does not make an engine invent them. A
-    new engine binds this suite next to
+    The client serves the runtime contract
+    (:class:`~astrabox.core.service.orchestrator.engine.runtime.RuntimeClient`):
+    the platform reads and drives every engine through it, in the engine's own
+    vocabulary. A new engine binds this suite next to
     :class:`EngineAdapterContractSuite`::
 
-        class TestMyEngineClient(EngineClientContractSuite):
+        class TestMyRuntimeClient(RuntimeClientContractSuite):
             def client_type(self):
-                return MyEngineClient
+                return MyRuntimeClient
 
-    Structural only — driving a real turn needs a live deployment and belongs
-    to the engine's integration tests plus the live e2e. The in-tree binding
-    runs this over BOTH built-in clients (a resident websocket link and
-    per-request HTTP), so the contract is pinned by two shape-divergent
-    implementations rather than documented.
+    Structural only: driving a real conversation needs a live deployment and
+    belongs to the engine's end-to-end tests.
     """
 
     def client_type(self) -> type[Any]:

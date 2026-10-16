@@ -78,7 +78,7 @@ docker run -d --name astrabox --restart unless-stopped \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v astrabox-data:/data \
   --env-file ~/.config/astrabox/model.env \
-  ghcr.io/colton-z/astrabox:0.1.3
+  ghcr.io/colton-z/astrabox:0.1.9
 ```
 
 Then follow the log:
@@ -155,13 +155,25 @@ docker run -d --name astrabox --restart unless-stopped \
 ```
 
 Use `docker stop`, not `docker rm -f`: stopping lets the database shut down
-cleanly. At startup AstraBox updates its database, then downloads the new
-version's sandbox image before it serves. Your Sessions and their history carry
-over.
+cleanly. At startup AstraBox brings its database schema up to the new version,
+so your Sessions and their history carry over, then downloads the new
+version's sandbox image before it serves.
 
 A volume written by a different PostgreSQL major version is refused with a
 message instead of being started. A release that changes the major version says
 how to move the data.
+
+### Upgrade from 0.1.8
+
+AstraBox 0.1.9 does not migrate the data of a 0.1.8 installation: it starts
+with an empty database. A new database also gives the installation a new
+identity, and AstraBox neither removes nor counts sandboxes that another
+installation created, so the 0.1.8 sandboxes would stay on the Docker host.
+Remove the 0.1.8 installation with the commands in [Uninstall](#uninstall),
+which delete its sandboxes, proxies, network and all of its data, including the
+`astrabox-data` volume. Then run the [Step 2](#step-2-start-astrabox) command
+with the `ghcr.io/colton-z/astrabox:0.1.9` image; it creates a new
+`astrabox-data` volume.
 
 ## Back up and restore
 
@@ -172,7 +184,7 @@ the copy is consistent:
 ```bash
 docker stop astrabox
 docker run --rm -v astrabox-data:/data -v "$PWD":/backup --entrypoint tar \
-  ghcr.io/colton-z/astrabox:0.1.3 -czf /backup/astrabox-data.tgz -C /data .
+  ghcr.io/colton-z/astrabox:0.1.9 -czf /backup/astrabox-data.tgz -C /data .
 docker start astrabox
 ```
 
@@ -181,7 +193,7 @@ To restore, extract the backup into a new volume:
 ```bash
 docker volume create astrabox-data-restored
 docker run --rm -v astrabox-data-restored:/data -v "$PWD":/backup --entrypoint tar \
-  ghcr.io/colton-z/astrabox:0.1.3 -xzf /backup/astrabox-data.tgz -C /data
+  ghcr.io/colton-z/astrabox:0.1.9 -xzf /backup/astrabox-data.tgz -C /data
 ```
 
 Then remove the old container and run the Step 2 command with

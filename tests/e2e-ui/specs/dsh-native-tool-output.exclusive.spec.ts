@@ -2,9 +2,11 @@
 import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 
-import { AstraApi, messageText } from '../fixtures/astraApi';
+import {
+  AstraApi, answersInput, messageParts, messageText, messageToolCalls, type MessageRecord,
+} from '../fixtures/astraApi';
 import { revealAssistantProcess } from '../fixtures/assistantProcess';
-import { framesForTurn, sessionEvents } from '../fixtures/dbOracle';
+import { sessionInputRows, sessionOutputRows, sessionResponseRows } from '../fixtures/dbOracle';
 import { events, messageProseBlocks, textBlockValues, textBlocks } from '../fixtures/dshOutput';
 import type { NativeEvent } from '../fixtures/dshOutput';
 import { engineProfileFor } from '../fixtures/engineProfile';
@@ -18,25 +20,42 @@ onPassOnly(async ({ request }) => {
   if (agentId) await new AstraApi(request).deleteAgent(agentId);
 });
 
+/**
+ * The usage the harness last reported for one turn.
+ *
+ * Each model attempt settles as `assistant/message` or `assistant/attempt`
+ * with that step's usage; the turn's usage is the last one reported, not a sum
+ * the supplier never gave.
+ */
+function nativeTurnUsage(source: NativeEvent[], nativeTurn: unknown): unknown {
+  const settled = source.filter((event) => (event.type === 'assistant/message' || event.type === 'assistant/attempt')
+    && event.data.turn === nativeTurn && event.data.usage && typeof event.data.usage === 'object');
+  return settled.at(-1)?.data.usage;
+}
+
+/** The input the page sent with `clientMessageId`, as the platform recorded it. */
+function pageInputId(sessionId: string, clientMessageId: string): string {
+  const rows = sessionInputRows(sessionId).filter((row) => row.client_message_id === clientMessageId);
+  expect(rows, 'the page message is one accepted input').toHaveLength(1);
+  return rows[0]!.input_id;
+}
+
+/** The ended reply to the page's message; how it ended is asserted by the caller. */
+async function replyToPage(api: AstraApi, sessionId: string, clientMessageId: string): Promise<MessageRecord> {
+  return api.waitForReplyTo(sessionId, pageInputId(sessionId, clientMessageId));
+}
+
 function expectNativeDelivery(
-  sessionId: string, answer: { turn_id: string; message_id: string; blocks?: Record<string, unknown>[] },
-  prompt: string, clientMessageId: string, source: NativeEvent[], nativeSessionId: string,
+  sessionId: string, answer: MessageRecord, prompt: string, clientMessageId: string, source: NativeEvent[],
 ): { terminal: NativeEvent; inputId: string; nativeTurn: unknown } {
-  const journal = sessionEvents(sessionId);
-  const accepted = journal.filter((event) => event.event_type === 'command.accepted'
-    && (event.payload as Record<string, unknown>).client_message_id === clientMessageId
-    && (event.payload as Record<string, unknown>).content === prompt);
-  expect(accepted).toHaveLength(1);
-  const inputId = String((accepted[0]!.payload as Record<string, unknown>).input_id || '');
-  expect(inputId).not.toBe('');
-  expect(accepted[0]!.turn_id).toBe(answer.turn_id);
-  const consumed = journal.filter((event) => event.event_type === 'input.consumed'
-    && (event.payload as Record<string, unknown>).input_id === inputId);
-  expect(consumed).toEqual([expect.objectContaining({
-    turn_id: answer.turn_id,
-    payload: expect.objectContaining({ input_id: inputId, client_message_id: clientMessageId,
-      content: prompt, response_message_id: answer.message_id }),
-  })]);
+  // The platform's record: the person's one message, taken by the runtime into
+  // the response history shows for it.
+  const accepted = sessionInputRows(sessionId).filter((row) => row.client_message_id === clientMessageId);
+  expect(accepted).toEqual([expect.objectContaining({ content: prompt, state: 'admitted', response_id: answer.id })]);
+  const inputId = accepted[0]!.input_id;
+  expect(answersInput(answer, inputId), 'the reply answers exactly this input').toBe(true);
+  expect(answer.metadata?.input_ids).toEqual([inputId]);
+
   const inputs = source.filter((event) => event.type === 'user/message'
     && (event.data.source as Record<string, unknown> | undefined)?.kind === 'user'
     && textBlocks(event.data.content) === prompt);
@@ -57,15 +76,14 @@ function expectNativeDelivery(
   expect(terminal.seq).toBeGreaterThan(input.seq);
   expect(terminal.data.reason).toEqual({ kind: 'completed' });
 
-  const frames = framesForTurn(answer.turn_id).map((row) => row.payload as Record<string, unknown>);
-  const boundaries = frames.filter((frame) => frame.type === 'data-input-consumed');
-  expect(boundaries).toEqual([expect.objectContaining({ data: expect.objectContaining({
-    inputId, responseMessageId: answer.message_id, content: prompt,
-  }) })]);
-  const consumptionIndex = frames.indexOf(boundaries[0]!);
+  const frames = sessionOutputRows(sessionId, answer.id).map((row) => row.part);
+  // The response names its input from its first part, although the native
+  // turn records the message only once its first step has started.
+  expect(frames[0]).toMatchObject({ type: 'start', messageId: answer.id,
+    messageMetadata: { response_id: answer.id, input_ids: [inputId], origin: 'input' } });
   const stepIndex = frames.findIndex((frame) => frame.type === 'start-step');
   const textIndex = frames.findIndex((frame) => frame.type === 'text-delta');
-  expect(stepIndex).toBeGreaterThan(consumptionIndex);
+  expect(stepIndex).toBeGreaterThan(0);
   expect(textIndex).toBeGreaterThan(stepIndex);
   const stepsBeforeEcho = source.filter((event) => event.type === 'step/start'
     && event.data.turn === nativeTurn && event.seq < input.seq);
@@ -76,15 +94,18 @@ function expectNativeDelivery(
   expect(frames.filter((frame) => frame.type === 'finish')).toEqual([
     expect.objectContaining({ finishReason: 'stop' }),
   ]);
-  expect(framesForTurn(answer.turn_id).filter((row) => (row.payload as Record<string, unknown>).type === 'data-result')).toEqual([
-    expect.objectContaining({
-      engine_kind: 'deepseek_harness', engine_turn_id: rpcId,
-      engine_output_cursor: expect.objectContaining({ sessionId: nativeSessionId, seq: terminal.seq }),
-      payload: expect.objectContaining({ data: expect.objectContaining({ finish_reason: 'stop' }) }),
-    }),
-  ]);
+  // Nothing of this response is written after its end.
+  expect(frames.at(-1)).toMatchObject({ type: 'finish', finishReason: 'stop' });
   expect(frames.filter((frame) => frame.type === 'data-raw-event' || frame.type === 'error')).toEqual([]);
-  expect((answer.blocks ?? []).filter((block) => block.type === 'raw_event')).toEqual([]);
+  expect(messageParts(answer, 'data-raw-event')).toEqual([]);
+  // The platform's record of the ending carries the supplier's own last usage.
+  const usage = nativeTurnUsage(source, nativeTurn);
+  expect(usage).toEqual(expect.any(Object));
+  expect(sessionResponseRows(sessionId).filter((row) => row.response_id === answer.id)).toEqual([
+    expect.objectContaining({ origin: 'input', status: 'ended', outcome: 'completed', native_reason: 'completed',
+      input_ids: [inputId], usage }),
+  ]);
+  expect(answer.metadata).toMatchObject({ origin: 'input', status: 'ended', outcome: 'completed' });
   return { terminal, inputId, nativeTurn };
 }
 
@@ -109,8 +130,8 @@ test('DSH retains native tool results and step boundaries across reload', async 
   const delivery = await sendPrompt(page, sessionId, prompt);
   const clientMessageId = String(delivery.request().postDataJSON().client_message_id || '');
   expect(clientMessageId).not.toBe('');
-  const answer = await api.waitForAssistantMessageMatching(sessionId, 0,
-    (message) => messageText(message).includes(marker));
+  const answer = await replyToPage(api, sessionId, clientMessageId);
+  expect(messageText(answer)).toContain(marker);
   await api.waitForSessionReady(sessionId);
 
   const native = () => nativeRows(sessionId).flatMap((row) => events(JSON.parse(String(row.entry_json))))
@@ -136,7 +157,7 @@ test('DSH retains native tool results and step boundaries across reload', async 
   expect(result.isError ?? false).toBe(false);
   expect(textBlocks(result.content)).toContain(note);
 
-  const frames = framesForTurn(answer.turn_id).map((row) => row.payload as Record<string, unknown>);
+  const frames = sessionOutputRows(sessionId, answer.id).map((row) => row.part);
   expect(frames.filter((frame) => frame.type === 'tool-input-start')).toEqual([
     expect.objectContaining({ toolCallId: call.data.callId, toolName: 'bash', dynamic: true }),
   ]);
@@ -153,37 +174,19 @@ test('DSH retains native tool results and step boundaries across reload', async 
   expect(frames.filter((frame) => frame.type === 'start-step' || frame.type === 'finish-step')
     .map((frame) => frame.type)).toEqual(steps.map((event) => event.type === 'step/start' ? 'start-step' : 'finish-step'));
   expect(source.find((event) => event.type === 'turn/end')!.data.reason).toEqual({ kind: 'completed' });
-  expect(frames.filter((frame) => frame.type === 'finish')).toEqual([
-    expect.objectContaining({ finishReason: 'stop' }),
-  ]);
-  const terminalIndex = frames.findIndex((frame) => frame.type === 'finish');
-  // Title generation follows the reply terminal in the Session journal.
-  // Only that metadata notification may follow; assistant output must end.
-  for (const frame of frames.slice(terminalIndex + 1)) {
-    expect(frame).toEqual({ type: 'data-session-changed', transient: true, data: { sessionId } });
-  }
   const messages = source.filter((event) => event.type === 'assistant/message');
   const expectedText = messages
     .flatMap((event) => textBlockValues((event.data.message as Record<string, unknown>).content));
   expect(expectedText.join('\n')).toContain(marker);
-  const retained = (await api.getMessages(sessionId)).messages.find((message) => message.message_id === answer.message_id)!;
+  const retained = (await api.getMessages(sessionId)).messages.find((message) => message.id === answer.id)!;
   expect(messageProseBlocks(retained)).toEqual(expectedText);
-  const firstDelivery = expectNativeDelivery(sessionId, retained, prompt, clientMessageId, source, nativeSessionId);
-  const usage = messages.at(-1)!.data.usage;
-  expect(usage).toEqual(expect.any(Object));
-  expect(frames.filter((frame) => frame.type === 'data-result')).toEqual([
-    expect.objectContaining({ data: expect.objectContaining({ usage }) }),
-  ]);
-  const completed = sessionEvents(sessionId).filter((event) => event.turn_id === answer.turn_id
-    && event.event_type === 'turn.completed');
-  expect(completed).toHaveLength(1);
-  const completedBlocks = (completed[0]!.payload as { blocks: Record<string, unknown>[] }).blocks;
-  expect(completedBlocks.filter((block) => block.type === 'result')).toEqual([
-    expect.objectContaining({ usage }),
-  ]);
-  expect((retained.blocks ?? []).filter((block) => block.type === 'result')).toEqual([
-    expect.objectContaining({ usage }),
-  ]);
+  const firstDelivery = expectNativeDelivery(sessionId, retained, prompt, clientMessageId, source);
+  // History holds the call once, with the input the supplier recorded and the
+  // output it returned.
+  expect(messageToolCalls(retained)).toEqual([expect.objectContaining({
+    toolCallId: call.data.callId, toolName: 'bash', input: JSON.parse(String(call.data.arguments)),
+    state: 'output-available', output: { content: result.content, isError: false },
+  })]);
 
   const nativeBlocks = messages.flatMap((event) =>
     (event.data.message as { content: Record<string, unknown>[] }).content);
@@ -191,7 +194,7 @@ test('DSH retains native tool results and step boundaries across reload', async 
   expect(reasoning.length, 'the native thinking route must exercise reasoning custody').toBeGreaterThan(0);
   expect(reasoning.some((block) => typeof block.text === 'string' && block.text.length > 0)).toBe(true);
   await test.info().attach('native-output-coverage', {
-    body: JSON.stringify({ sessionId, turnId: answer.turn_id, nativeReasoningBlocks: reasoning.length,
+    body: JSON.stringify({ sessionId, responseId: answer.id, nativeReasoningBlocks: reasoning.length,
       nativeToolCalls: calls.length, nativeSteps: steps.filter((event) => event.type === 'step/start').length }),
     contentType: 'application/json',
   });
@@ -203,11 +206,9 @@ test('DSH retains native tool results and step boundaries across reload', async 
     const text = opened.map((id) => frames.filter((frame) => frame.type === `${kind}-delta` && frame.id === id)
       .map((frame) => frame.delta).join(''));
     expect(text).toEqual(nativeBlocks.filter((block) => block.type === kind).map((block) => block.text));
-    const storedKind = kind === 'reasoning' ? 'thinking' : 'text';
-    // Empty native blocks still have stream boundaries, but contribute no
-    // prose to completed history. Every non-empty block must survive verbatim.
-    expect((retained.blocks ?? []).filter((block) => block.type === storedKind).map((block) => block[storedKind]))
-      .toEqual(text.filter((value) => value !== ''));
+    // History folds the same parts the stream carried: every native block, in
+    // order and verbatim, including an empty one.
+    expect(messageParts(retained, kind).map((part) => part.text)).toEqual(text);
   }
   let stepOpen = false;
   const blocks = new Set<unknown>();
@@ -231,9 +232,9 @@ test('DSH retains native tool results and step boundaries across reload', async 
 
   for (const reload of [false, true]) {
     if (reload) await page.reload();
-    const reply = page.locator(`[data-message-id="${answer.message_id}"]`);
+    const reply = page.locator(`[data-message-id="${answer.id}"]`);
     await expect(reply).toContainText(marker);
-    await expect(reply.getByTestId(/^assistant-(turn-)?process$/).first()).toBeAttached();
+    await expect(reply.getByTestId('assistant-turn-process')).toBeAttached();
     await revealAssistantProcess(page, { within: reply });
     const card = reply.locator(`[data-tool-call-id="${String(call.data.callId)}"]`);
     await expect(card).toBeVisible();
@@ -242,26 +243,24 @@ test('DSH retains native tool results and step boundaries across reload', async 
     await expect(card).toContainText(marker);
   }
 
-  // The real turn worker stops reading at the native terminal, rather than
-  // draining the engine generator. Only a second delivery can prove the
-  // adapter released its turn slot at that boundary.
+  // The response ends at the native turn's terminal. Only a second delivery
+  // can prove the conversation takes its next message after that boundary,
+  // as a response of its own.
   const nextReceipt = `NEXT_${randomUUID()}`;
   const nextPrompt = `Reply exactly ${nextReceipt}. Do not use tools or delegate.`;
   const nextDelivery = await sendPrompt(page, sessionId, nextPrompt);
   const nextClientMessageId = String(nextDelivery.request().postDataJSON().client_message_id || '');
   expect(nextClientMessageId).not.toBe('');
-  const nextAnswer = await api.waitForAssistantMessageMatching(sessionId, 0,
-    (message) => messageText(message) === nextReceipt);
+  const nextAnswer = await replyToPage(api, sessionId, nextClientMessageId);
+  expect(messageText(nextAnswer)).toBe(nextReceipt);
   await api.waitForSessionReady(sessionId);
   const laterNative = () => native().filter((event) => event.seq > firstDelivery.terminal.seq);
   await expect.poll(() => laterNative().filter((event) => event.type === 'turn/end')).toHaveLength(1);
   const nextRetained = (await api.getMessages(sessionId)).messages
-    .find((message) => message.message_id === nextAnswer.message_id)!;
-  const secondDelivery = expectNativeDelivery(sessionId, nextRetained, nextPrompt,
-    nextClientMessageId, laterNative(), nativeSessionId);
+    .find((message) => message.id === nextAnswer.id)!;
+  const secondDelivery = expectNativeDelivery(sessionId, nextRetained, nextPrompt, nextClientMessageId, laterNative());
   expect(secondDelivery.inputId).not.toBe(firstDelivery.inputId);
-  expect(nextRetained.turn_id).not.toBe(retained.turn_id);
-  expect(nextRetained.message_id).not.toBe(retained.message_id);
+  expect(nextRetained.id).not.toBe(retained.id);
   expect(secondDelivery.nativeTurn).not.toBe(firstDelivery.nativeTurn);
   const nextNativeBlocks = laterNative().filter((event) => event.type === 'assistant/message')
     .flatMap((event) => textBlockValues((event.data.message as Record<string, unknown>).content));
@@ -269,24 +268,27 @@ test('DSH retains native tool results and step boundaries across reload', async 
   expect(messageProseBlocks(nextRetained)).toEqual(nextNativeBlocks);
   expect(laterNative().filter((event) => event.type === 'tool/call')).toEqual([]);
   const finalHistory = (await api.getMessages(sessionId)).messages;
-  expect(finalHistory.map((message) => ({ role: message.role, id: message.message_id }))).toEqual([
-    { role: 'user', id: `${firstDelivery.inputId}:user` },
-    { role: 'assistant', id: retained.message_id },
-    { role: 'user', id: `${secondDelivery.inputId}:user` },
-    { role: 'assistant', id: nextRetained.message_id },
+  expect(finalHistory.map((message) => ({ role: message.role, id: message.id }))).toEqual([
+    { role: 'user', id: clientMessageId },
+    { role: 'assistant', id: retained.id },
+    { role: 'user', id: nextClientMessageId },
+    { role: 'assistant', id: nextRetained.id },
   ]);
-  expect(finalHistory.find((message) => message.message_id === retained.message_id)!.blocks).toEqual(retained.blocks);
+  expect(finalHistory.find((message) => message.id === retained.id)!.parts).toEqual(retained.parts);
+  expect(nativeRows(sessionId).map((row) => JSON.parse(String(row.entry_json)) as Record<string, unknown>)
+    .filter((entry) => entry.type === 'session').map((entry) => entry.id),
+  'the next message is answered by the same native Session').toEqual([nativeSessionId]);
   for (const reload of [false, true]) {
     if (reload) await page.reload();
-    const nextReply = page.locator(`[data-message-id="${nextRetained.message_id}"]`);
+    const nextReply = page.locator(`[data-message-id="${nextRetained.id}"]`);
     await expect(nextReply.getByTestId('assistant-text')).toHaveText(nextReceipt);
-    await expect(page.locator(`[data-message-id="${retained.message_id}"]`)).toContainText(marker);
+    await expect(page.locator(`[data-message-id="${retained.id}"]`)).toContainText(marker);
   }
   await test.info().attach('dsh-native-delivery-scene', {
     body: JSON.stringify({ sessionId, nativeSessionId, clientMessageId, nextClientMessageId,
       firstDelivery, secondDelivery, native: native(), history: finalHistory,
-      firstFrames: framesForTurn(retained.turn_id), nextFrames: framesForTurn(nextRetained.turn_id),
-      journal: sessionEvents(sessionId) }),
+      firstFrames: sessionOutputRows(sessionId, retained.id), nextFrames: sessionOutputRows(sessionId, nextRetained.id),
+      inputs: sessionInputRows(sessionId), responses: sessionResponseRows(sessionId) }),
     contentType: 'application/json',
   });
 });

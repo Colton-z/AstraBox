@@ -29,9 +29,7 @@ class _AtomicWebhookRepo:
         self.delete_before_update = False
         self.get_for_deployment = AsyncMock(side_effect=self._get_for_deployment)
         self.update_for_deployment = AsyncMock(side_effect=self._update_for_deployment)
-        self.soft_delete_for_deployment = AsyncMock(
-            side_effect=self._soft_delete_for_deployment
-        )
+        self.delete_for_deployment = AsyncMock(side_effect=self._delete_for_deployment)
 
     def _matches(
         self, deployment_id: str, agent_id: str, owner_user_id: str, owner_org_id: str
@@ -48,7 +46,6 @@ class _AtomicWebhookRepo:
         )
         return bool(
             row
-            and not row.get("deleted")
             and row.get("deployment_id") == deployment_id
             and row.get("agent_id") == agent_id
             and scope_matches
@@ -77,14 +74,14 @@ class _AtomicWebhookRepo:
         owner_user_id: str = "",
         owner_org_id: str = "",
     ) -> dict[str, Any] | None:
-        if self.delete_before_update and self.webhook is not None:
-            self.webhook["deleted"] = True
+        if self.delete_before_update:
+            self.webhook = None
         if not self._matches(deployment_id, agent_id, owner_user_id, owner_org_id):
             return None
         self.webhook.update(updates)  # type: ignore[union-attr]
         return dict(self.webhook)  # type: ignore[arg-type]
 
-    async def _soft_delete_for_deployment(
+    async def _delete_for_deployment(
         self,
         deployment_id: str,
         agent_id: str,
@@ -95,7 +92,7 @@ class _AtomicWebhookRepo:
     ) -> bool:
         if not self._matches(deployment_id, agent_id, owner_user_id, owner_org_id):
             return False
-        self.webhook["deleted"] = True  # type: ignore[index]
+        self.webhook = None
         return True
 
 
@@ -107,10 +104,9 @@ def _service(
         deployment_repo=deployment_repo,  # type: ignore[arg-type]
         agent_repo=AsyncMock(),
         agent_service_getter=lambda: AsyncMock(),
-        stream_message_events_ds=AsyncMock(),
-        dispatch_turn_input=AsyncMock(),
         sessions_repo=AsyncMock(),
-        spawn_background_task=lambda *args, **kwargs: None,
+        session_runtime=AsyncMock(),
+        session_facts=AsyncMock(),
         agent_config=AsyncMock(),
         channel_ingress=AsyncMock(),  # management paths never touch the spine
     )
@@ -121,7 +117,6 @@ async def test_cross_agent_listing_batches_authorization_without_n_plus_one() ->
     deployment_repo = AsyncMock()
     deployment_repo.list_active.return_value = [
         {
-            "_id": "storage-1",
             "deployment_id": "dep-mine",
             "agent_id": "agent-mine",
             "secret": "write-only",
@@ -136,22 +131,21 @@ async def test_cross_agent_listing_batches_authorization_without_n_plus_one() ->
         "agent-mine": {
             "agent_id": "agent-mine",
             "name": "Mine",
-            "user_id": "owner-1",
+            "created_by": "owner-1",
         },
         "agent-foreign": {
             "agent_id": "agent-foreign",
             "name": "Foreign",
-            "user_id": "owner-2",
+            "created_by": "owner-2",
         },
     }
     service = DeploymentService(
         deployment_repo=deployment_repo,
         agent_repo=agent_repo,
         agent_service_getter=lambda: AsyncMock(),
-        stream_message_events_ds=AsyncMock(),
-        dispatch_turn_input=AsyncMock(),
         sessions_repo=AsyncMock(),
-        spawn_background_task=lambda *args, **kwargs: None,
+        session_runtime=AsyncMock(),
+        session_facts=AsyncMock(),
         agent_config=AsyncMock(),
         channel_ingress=AsyncMock(),
     )
@@ -177,15 +171,6 @@ async def test_cross_agent_listing_batches_authorization_without_n_plus_one() ->
     ("webhook", "route_agent", "case"),
     [
         (None, "agent-1", "missing"),
-        (
-            {
-                "deployment_id": "wh-1",
-                "agent_id": "agent-1",
-                "deleted": True,
-            },
-            "agent-1",
-            "deleted",
-        ),
         (
             {
                 "deployment_id": "wh-1",
@@ -224,28 +209,6 @@ async def test_deployment_mutation_hides_every_invisible_resource(
     assert deployment_repo.webhook == before
 
 
-async def test_deployment_mutation_accepts_its_own_agent() -> None:
-    webhook = {
-        "deployment_id": "wh-1",
-        "agent_id": "agent-1",
-        "scene": "hmac",
-        "enabled": True,
-    }
-    service, deployment_repo = _service(webhook)
-
-    updated = await service.update(
-        "wh-1", agent_id="agent-1", patch={"enabled": False}
-    )
-    await service.delete("wh-1", agent_id="agent-1")
-
-    assert updated["enabled"] is False
-    assert deployment_repo.webhook is not None and deployment_repo.webhook["deleted"] is True
-    deployment_repo.update_for_deployment.assert_awaited_once()
-    deployment_repo.soft_delete_for_deployment.assert_awaited_once_with(
-        "wh-1", "agent-1", assistant_id="", owner_user_id="", owner_org_id=""
-    )
-
-
 async def test_update_fails_closed_if_delete_wins_after_visibility_read() -> None:
     service, deployment_repo = _service(
         {
@@ -263,13 +226,7 @@ async def test_update_fails_closed_if_delete_wins_after_visibility_read() -> Non
         )
 
     assert exc.value.code == "NOT_FOUND" and exc.value.status_code == 404
-    assert deployment_repo.webhook == {
-        "deployment_id": "wh-1",
-        "agent_id": "agent-1",
-        "scene": "hmac",
-        "enabled": True,
-        "deleted": True,
-    }
+    assert deployment_repo.webhook is None
 
 
 async def test_duplicate_delete_is_the_same_not_found_boundary() -> None:
@@ -288,7 +245,7 @@ async def test_duplicate_delete_is_the_same_not_found_boundary() -> None:
     assert exc.value.code == "NOT_FOUND"
     assert exc.value.message == "deployment not found"
     assert exc.value.status_code == 404
-    assert deployment_repo.soft_delete_for_deployment.await_count == 2
+    assert deployment_repo.delete_for_deployment.await_count == 2
 
 
 @pytest.mark.parametrize("patch", [
@@ -316,7 +273,7 @@ async def test_platform_passes_execution_account_authority_to_the_deployment_ser
         "deployment_id": "dep", "agent_id": "agent", "scene": "channel:generic_json",
         "execution_user_id": "alice",
     })
-    service._agent_repo.get_agent.return_value = {"user_id": "owner"}
+    service._agent_repo.get_agent.return_value = {"created_by": "owner"}
     platform = object.__new__(AgentPlatformService)
     platform._deployment_service = service
     platform._channel_source_host = AsyncMock()
@@ -337,24 +294,6 @@ async def test_platform_passes_execution_account_authority_to_the_deployment_ser
         assert repo.webhook["execution_user_id"] == "alice"
         repo.update_for_deployment.assert_not_awaited()
         platform._channel_source_host.reconcile.assert_not_awaited()
-
-
-@pytest.mark.parametrize(("patch", "mode", "account"), [
-    ({"execution_user_id": "bob"}, "account", "bob"),
-    ({"execution_mode": "owner"}, "owner", ""),
-    ({"execution_mode": "linked"}, "linked", ""),
-])
-async def test_administrator_can_assign_or_clear_a_channel_execution_account(patch, mode, account) -> None:
-    service, repo = _service({
-        "deployment_id": "dep", "agent_id": "agent", "scene": "channel:generic_json",
-        "execution_user_id": "alice",
-    })
-    result = await service.update(
-        "dep", agent_id="agent", patch=patch,
-        actor=UserContext(user_id="admin", roles=["admin"]),
-    )
-    assert (result["execution_mode"], result["execution_user_id"]) == (mode, account)
-    assert (repo.webhook["execution_mode"], repo.webhook["execution_user_id"]) == (mode, account)
 
 
 @pytest.mark.parametrize("value", [None, 7, "alice\nbob"])

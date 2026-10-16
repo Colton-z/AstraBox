@@ -23,7 +23,6 @@ services:
     environment: !override
       ASTRABOX_HOST: 0.0.0.0
       ASTRABOX_PORT: "8000"
-      ASTRABOX_DB_BACKEND: postgresql
       ASTRABOX_DB_URL: ${ASTRABOX_DB_URL:?set the shared AstraBox PostgreSQL URL}
       ASTRABOX_AGENT_PREWARM_REDIS_URL: ${ASTRABOX_AGENT_PREWARM_REDIS_URL:?set the shared pool Redis URL}
       ASTRABOX_SANDBOX_BACKEND: open_sandbox

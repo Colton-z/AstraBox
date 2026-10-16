@@ -15,17 +15,17 @@
       "playwright": {
         "parallel": [],
         "exclusive": [
-          "specs/agent-workspace-resume.exclusive.spec.ts \u203a the same Agent conversation reads its persisted workspace after sandbox rebuild",
-          "specs/agent-workspace-resume.exclusive.spec.ts \u203a deepseek_harness: the same Agent conversation reads its persisted workspace after sandbox rebuild",
-          "specs/agent-workspace-resume.exclusive.spec.ts \u203a pi: the same Agent conversation reads its persisted workspace after sandbox rebuild",
-          "specs/agent-workspace-resume.exclusive.spec.ts \u203a codex: the same Agent conversation reads its persisted workspace after sandbox rebuild",
-          "specs/agent-workspace-resume.exclusive.spec.ts \u203a cross-host: the same Agent conversation reads its persisted workspace after sandbox rebuild",
-          "specs/agent-workspace-resume.exclusive.spec.ts \u203a cross-host: deepseek_harness: the same Agent conversation reads its persisted workspace after sandbox rebuild",
-          "specs/agent-workspace-resume.exclusive.spec.ts \u203a cross-host: pi: the same Agent conversation reads its persisted workspace after sandbox rebuild",
-          "specs/agent-workspace-resume.exclusive.spec.ts \u203a cross-host: codex: the same Agent conversation reads its persisted workspace after sandbox rebuild",
-          "specs/assistant-workspace-files-survive-park-and-wake.exclusive.spec.ts \u203a assistant workspace profile survives hibernate and wake on a fresh box",
-          "specs/distributed-prewarm.exclusive.spec.ts \u203a two live backends share prepared capacity without crossing conversation files or history",
-          "specs/cross-host-backend-claim.exclusive.spec.ts \u203a backend on B claims the prepared sandbox on A and serves its files and live turn"
+          "specs/agent-workspace-resume.exclusive.spec.ts › the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/agent-workspace-resume.exclusive.spec.ts › deepseek_harness: the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/agent-workspace-resume.exclusive.spec.ts › pi: the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/agent-workspace-resume.exclusive.spec.ts › codex: the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/agent-workspace-resume.exclusive.spec.ts › cross-host: the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/agent-workspace-resume.exclusive.spec.ts › cross-host: deepseek_harness: the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/agent-workspace-resume.exclusive.spec.ts › cross-host: pi: the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/agent-workspace-resume.exclusive.spec.ts › cross-host: codex: the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/assistant-workspace-files-survive-park-and-wake.exclusive.spec.ts › assistant workspace profile survives hibernate and wake on a fresh box",
+          "specs/distributed-prewarm.exclusive.spec.ts › two live backends share prepared capacity without crossing conversation files or history",
+          "specs/cross-host-backend-claim.exclusive.spec.ts › backend on B claims the prepared sandbox on A and serves its files and live turn"
         ]
       }
     },
@@ -42,9 +42,9 @@
   ],
   "playwright": {
     "exclusive": {
-      "files": 177,
-      "parallel_files": 108,
-      "parallel_tests": 195,
+      "files": 167,
+      "parallel_files": 104,
+      "parallel_tests": 197,
       "serial_files": [
         "specs/a-prepared-seat-is-not-a-promise-the-box-can-still-keep.exclusive.spec.ts",
         "specs/a2a-stream-and-interaction.exclusive.spec.ts",
@@ -61,15 +61,10 @@
         "specs/an-idle-assistant-whose-box-dies-comes-back-unprompted.exclusive.spec.ts",
         "specs/assistant-channel-cron-result-reaches-the-chat.exclusive.spec.ts",
         "specs/assistant-native-a2a-approval.exclusive.spec.ts",
-        "specs/assistant-record-page-reaches-ready-without-a-reload.exclusive.spec.ts",
-        "specs/assistant-steering-changes-the-active-task.exclusive.spec.ts",
         "specs/assistant-tool-card-live-and-cold.exclusive.spec.ts",
         "specs/assistant-workspace-files-survive-park-and-wake.exclusive.spec.ts",
         "specs/assistant-workspace-oob-death-recovers-on-open.exclusive.spec.ts",
-        "specs/backend-restart-completed-journal-projection-lag.exclusive.spec.ts",
-        "specs/backend-restart-delivered-answer-projection-gap.exclusive.spec.ts",
         "specs/backend-restart-rehydrates-resident-session-and-pending-approval.exclusive.spec.ts",
-        "specs/background-result-outlives-a-newer-manifest-backlog.exclusive.spec.ts",
         "specs/background-work-keeps-its-box-off-the-idle-sweep.exclusive.spec.ts",
         "specs/channel-account-change-refuses-old-replies.exclusive.spec.ts",
         "specs/channel-background-result-is-delivered.exclusive.spec.ts",
@@ -95,7 +90,6 @@
         "specs/idle-park-refuses-a-box-holding-a-prepared-slot.exclusive.spec.ts",
         "specs/idle-parked-conversation-serves-its-workspace-and-its-next-message.exclusive.spec.ts",
         "specs/investment-research-production-journey.exclusive.spec.ts",
-        "specs/metadata-transient-fault-first-turn.exclusive.spec.ts",
         "specs/native-diff-failure-and-recovery.exclusive.spec.ts",
         "specs/non-terminal-background-bash-task-update.exclusive.spec.ts",
         "specs/opensandbox-agent-prewarm-real-extensions.exclusive.spec.ts",
@@ -116,9 +110,9 @@
         "specs/subagent-replay-recovery.exclusive.spec.ts",
         "specs/untouched-tab-catches-up-after-backend-restart.exclusive.spec.ts"
       ],
-      "serial_tests": 114,
+      "serial_tests": 104,
       "serial_workers": 1,
-      "tests": 309,
+      "tests": 301,
       "workers": 5
     },
     "parallel": {
@@ -139,7 +133,7 @@
         "tests/e2e/test_conversation_end.py::test_assistant_answers_a_second_message_in_the_same_conversation",
         "tests/e2e/test_conversation_end.py::test_assistant_conversation_end_starts_fresh_context_on_same_workspace",
         "tests/e2e/test_durable_workspace.py::test_an_assistant_remembers_its_conversations_after_its_box_is_destroyed",
-        "tests/e2e/test_interrupt.py::test_assistant_interrupt_with_lost_terminal_keeps_the_cancelled_result_and_next_turn"
+        "tests/e2e/test_interrupt.py::test_assistant_interrupt_stops_a_running_command_and_the_next_message_is_answered"
       ],
       "restart_node_ids": [],
       "tests": 10,
@@ -166,17 +160,20 @@
         "codex",
         "pi"
       ],
-      "matrix_tests": 240,
+      "matrix_tests": 248,
       "parallel_node_ids": [
         "tests/e2e/agent_instruction_install_test.py::test_authored_instructions_reach_the_first_reply[cold-conversation]",
         "tests/e2e/agent_instruction_install_test.py::test_authored_instructions_reach_the_first_reply[cold-agent]",
         "tests/e2e/agent_instruction_install_test.py::test_authored_instructions_reach_the_first_reply[prepared-conversation]",
         "tests/e2e/agent_instruction_install_test.py::test_authored_instructions_reach_the_first_reply[prepared-agent]",
         "tests/e2e/artifacts_switch_test.py::test_turning_artifacts_off_takes_the_tools_from_every_conversation_of_the_agent",
+        "tests/e2e/codex_queued_schema_test.py::test_a_busy_codex_input_is_refused_instead_of_losing_its_output_schema",
+        "tests/e2e/input_capability_test.py::test_a_text_only_engine_refuses_images_without_accepting_them",
         "tests/e2e/pool_create_cancellation_test.py::test_retirement_reclaims_a_create_before_its_response_reaches_the_sdk",
         "tests/e2e/sandbox_data_conformance_test.py::test_a_box_keeps_the_data_plane_contract",
         "tests/e2e/test_background_subagent.py::test_background_subagent_surfaces_on_stream_and_stays_sendable",
         "tests/e2e/test_background_subagent.py::test_background_subagent_stop_is_accepted",
+        "tests/e2e/test_background_subagent.py::test_a_background_task_finishing_after_the_reply_starts_an_engine_response",
         "tests/e2e/test_cli_journey.py::test_status_reports_a_live_deployment",
         "tests/e2e/test_cli_journey.py::test_schema_serves_the_write_contract",
         "tests/e2e/test_cli_journey.py::test_get_lists_what_the_deployment_holds",
@@ -199,11 +196,11 @@
         "tests/e2e/test_files.py::test_files_upload_list_download_round_trip",
         "tests/e2e/test_files.py::test_a_file_larger_than_the_servers_memory_budget_round_trips",
         "tests/e2e/test_files.py::test_files_download_refusals_and_edge_names_answer_before_the_body",
+        "tests/e2e/test_input_queue.py::test_a_message_sent_while_a_response_runs_is_answered_after_it",
         "tests/e2e/test_interactions.py::test_exit_plan_mode_approve_settles",
         "tests/e2e/test_interactions.py::test_ask_user_question_answer_settles",
         "tests/e2e/test_interactions.py::test_codex_plan_mode_question_answer_settles",
-        "tests/e2e/test_interrupt.py::test_interrupt_streaming_turn_settles_and_session_stays_usable",
-        "tests/e2e/test_interrupt.py::test_interrupt_with_lost_terminal_keeps_the_cancelled_result_and_next_turn",
+        "tests/e2e/test_interrupt.py::test_interrupt_stops_a_running_command_and_the_next_message_is_answered",
         "tests/e2e/test_interrupt.py::test_interrupt_clears_pending_interaction_and_settles",
         "tests/e2e/test_mcp_client_journey.py::test_a_converse_key_carries_a_client_through_a_whole_conversation",
         "tests/e2e/test_mcp_client_journey.py::test_a_read_key_is_refused_the_moment_it_tries_to_spend",
@@ -223,10 +220,9 @@
         "tests/e2e/test_shared_box_cohabitation.py::test_evicted_last_shared_conversation_reclaims_box",
         "tests/e2e/test_shared_box_cohabitation.py::test_new_conversation_replaces_a_dead_shared_box",
         "tests/e2e/test_stale_interaction_answer_lands_nowhere.py::test_replaying_the_first_answer_does_not_resolve_the_second",
-        "tests/e2e/test_stream_close_admits_next_send.py::test_a_send_during_a_running_turn_queues_behind_it",
-        "tests/e2e/test_stream_close_admits_next_send.py::test_the_session_is_usable_after_the_no_gap_pair",
         "tests/e2e/test_terminal.py::test_terminal_nonzero_exit_propagates",
         "tests/e2e/test_terminal.py::test_an_interrupt_stops_the_command_in_a_conversation_box_terminal",
+        "tests/e2e/test_terminal.py::test_terminal_replay_closes_at_or_after_its_exit_cursor",
         "tests/e2e/test_tool_permission.py::test_tool_permission_approve_runs_the_write",
         "tests/e2e/test_tool_permission.py::test_tool_permission_deny_blocks_the_write",
         "tests/e2e/test_transcript_mirror.py::test_a_replacement_box_answers_from_the_restored_transcript",
@@ -235,16 +231,16 @@
         "tests/e2e/test_user_profile.py::test_an_administrator_sees_a_conversations_owner_by_name"
       ],
       "restart_node_ids": [
-        "tests/e2e/test_reattach.py::test_sandbox_and_session_survive_backend_restart",
-        "tests/e2e/test_reattach.py::test_reattach_turn_reuses_sandbox_without_rebuild",
+        "tests/e2e/test_reattach.py::test_a_response_in_progress_completes_once_across_a_platform_restart",
         "tests/e2e/test_skill_content.py::test_a_named_ssh_key_installs_a_private_skill",
-        "tests/e2e/test_skill_content.py::test_an_installed_content_provider_supplies_a_skill"
+        "tests/e2e/test_skill_content.py::test_an_installed_content_provider_supplies_a_skill",
+        "tests/e2e/test_terminal.py::test_a_command_after_runner_loss_uses_a_fresh_shell"
       ],
-      "tests": 69,
+      "tests": 71,
       "workers": 5
     },
-    "matrix_tests": 250,
-    "tests": 79
+    "matrix_tests": 258,
+    "tests": 81
   },
   "suites": {
     "exclusive": {

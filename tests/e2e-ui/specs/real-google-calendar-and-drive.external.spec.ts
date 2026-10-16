@@ -24,7 +24,9 @@ import { randomUUID } from 'node:crypto';
 
 import { expect, test } from '@playwright/test';
 
-import { AstraApi, messageText, visibleMessages, type MessageRecord } from '../fixtures/astraApi';
+import {
+  AstraApi, messageText, messageToolCalls, toolCallSettled, visibleMessages, type MessageRecord,
+} from '../fixtures/astraApi';
 import { closePageAfterAssertions, openSessionView } from '../fixtures/sessionPage';
 import {
   callHubTool, connectorRow, connectPerson, setUpGoogleConnector, type HubAnswer,
@@ -96,18 +98,18 @@ async function ask(api: AstraApi, sessionId: string, prompt: string) {
   const turn = await api.sendTurn(sessionId, prompt, 150_000);
   expect(turn.errorText, 'the turn must finish without a stream error').toBeNull();
   const history = visibleMessages(await api.getMessages(sessionId, 200));
-  const blocks = history.flatMap((row: MessageRecord) => row.blocks || []);
+  const toolCalls = history.flatMap((row: MessageRecord) => messageToolCalls(row));
   const lastAssistant = [...history].reverse().find((row) => row.role === 'assistant');
   return {
-    calls: (pattern: RegExp) => blocks.filter(
-      (block) => block.type === 'tool_use' && pattern.test(String(block.name || '')),
-    ),
-    resultsOf: (pattern: RegExp) => {
-      const ids = new Set(blocks
-        .filter((block) => block.type === 'tool_use' && pattern.test(String(block.name || '')))
-        .map((block) => block.id));
-      return blocks.filter((block) => block.type === 'tool_result' && ids.has(block.tool_use_id));
-    },
+    calls: (pattern: RegExp) => toolCalls.filter((call) => pattern.test(call.toolName)),
+    // A tool part holds its call's result once settled: the output, or the
+    // error the engine reported for it.
+    resultsOf: (pattern: RegExp) => toolCalls
+      .filter((call) => pattern.test(call.toolName) && toolCallSettled(call))
+      .map((call) => ({
+        is_error: call.state !== 'output-available',
+        content: call.state === 'output-available' ? call.output : call.errorText,
+      })),
     reply: lastAssistant ? messageText(lastAssistant) : '',
   };
 }
@@ -257,9 +259,7 @@ test.describe.serial('Google Calendar and Drive connectors with a real Google ac
     );
     expect(turn.errorText, 'the turn must finish without a stream error').toBeNull();
     const parts = visibleMessages(await api.getMessages(sessionId, 100))
-      .flatMap((row: MessageRecord) => row.blocks || [])
-      .filter((block) => block.type === 'ui_data')
-      .map((block) => block.part as { type?: string; data?: Record<string, unknown> })
+      .flatMap((row: MessageRecord) => row.parts as Array<{ type?: string; data?: Record<string, unknown> }>)
       .filter((part) => part.type === 'data-tool-card');
     expect(parts.map((part) => part.data), 'the card is kept in the conversation').toEqual([
       expect.objectContaining({ kind: 'connection_request', connectorId: CALENDAR, name: 'Google Calendar' }),

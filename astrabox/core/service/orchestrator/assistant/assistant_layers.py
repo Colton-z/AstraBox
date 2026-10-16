@@ -41,6 +41,23 @@ LAYER_FIELDS = (
     "credential_vault_ids",
 )
 
+#: What of a layer changes what the Assistants beneath it run: everything it
+#: provides, and its catalog selection. Not ``environment_name``, which only
+#: chooses the Environment of Assistants created later, and not the layer's
+#: bookkeeping (``version``, ``updated_by``, ``updated_at``), so a save that
+#: changes neither prepares no Assistant again.
+LAYER_RUNTIME_FIELDS = (
+    "model_name",
+    "instructions",
+    "skills",
+    "mcp_servers",
+    "packages",
+    "engine_options",
+    "credential_vault_ids",
+    "extension_catalog",
+    "mcp_assignments",
+)
+
 
 async def inherited_layers(
     *, repo: AssistantDefaultsRepository | None = None

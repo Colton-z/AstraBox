@@ -1,10 +1,31 @@
+/**
+ * E2E: what a person sees of the engine's own input handling in one
+ * conversation — a message sent while a response runs, Stop, a native
+ * question, and a page reloaded in the middle of each.
+ *
+ * The session accepts a message at once and holds it (`held_inputs` on the
+ * session detail) until the engine takes it; when that happens is the
+ * engine's decision. Each message Claude takes starts a response of its own
+ * (`claude_runtime_client.py`). The transcript shows a message from the moment
+ * it is sent, marked Queued while the session holds it.
+ *
+ * The oracles are the platform's own records (`session_inputs`,
+ * `session_responses` and `session_output`, read through `dbOracle`) and the
+ * history the page loads, compared with what the page shows.
+ */
 import { expect, test } from '@playwright/test';
-import type { APIRequestContext, Page } from '@playwright/test';
+import type { APIRequestContext, Locator, Page, Response } from '@playwright/test';
 
 import {
   AstraApi,
+  answersInput,
+  messageParts,
   messageText,
+  messageToolCalls,
+  toolCallSettled,
   visibleMessages,
+  type InputReceipt,
+  type MessageRecord,
   type SessionRecord,
 } from '../fixtures/astraApi';
 import { insist } from '../fixtures/insist';
@@ -12,18 +33,25 @@ import { openLiveProcessGroup, revealAssistantProcess } from '../fixtures/assist
 import { trackSessions } from '../fixtures/sessionCleanup';
 import { apiPath, parseTimeoutEnv } from '../fixtures/env';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
-import { aiStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
-import { sessionEvents } from '../fixtures/dbOracle';
+import { sessionStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
+import { sessionInputRows, sessionOutputRows, sessionResponseRows } from '../fixtures/dbOracle';
 
 const TOOL_START_TIMEOUT_MS = parseTimeoutEnv('ASTRABOX_E2E_TOOL_START_TIMEOUT_MS', 150_000);
 const TURN_TIMEOUT_MS = parseTimeoutEnv('ASTRABOX_E2E_TURN_TIMEOUT_MS', 180_000);
 const FILE_NOT_FOUND = /404|FILE_NOT_FOUND|path not found/;
+// misc:composer.queue_waiting in both locales: the line under a message the
+// session holds.
+const QUEUED = /^(Queued|等待发送)$/;
+const INPUT_ID = /^[0-9a-f-]{36}$/;
+// The input states in which the session still holds a message: accepted, and
+// at most handed to the runtime, which has not taken it.
+const HELD_STATES = ['pending', 'delivered'];
 
 // Sessions created here are deleted only when the test passes. A failure keeps
 // the scene and names it in the report tail — see fixtures/sessionCleanup.ts.
 //
-// One tracker for all six tests: it splices its array in each afterEach, so
-// a test only ever owns the ids it pushed.
+// One tracker for every test in this file: it splices its array in each
+// afterEach, so a test only ever owns the ids it pushed.
 const sessions = trackSessions();
 
 test.describe.configure({ mode: 'serial' });
@@ -92,8 +120,9 @@ async function filesExist(
   }));
 }
 
+/** The Bash calls one response carries, which commands they target, and which have a result. */
 function activeBashEvidence(
-  message: Record<string, unknown> | undefined,
+  message: MessageRecord | undefined,
   targetPaths: string[],
 ): {
   bashCalls: number;
@@ -101,66 +130,57 @@ function activeBashEvidence(
   matchedTargets: string[];
   resultIds: string[];
 } {
-  const blocks = Array.isArray(message?.blocks)
-    ? message.blocks.filter((block): block is Record<string, unknown> => (
-      Boolean(block) && typeof block === 'object'
-    ))
+  const bashCalls = message
+    ? messageToolCalls(message).filter((call) => call.toolName === 'Bash')
     : [];
-  const bashCalls = blocks.filter((block) => (
-    String(block.type || '') === 'tool_use' && String(block.name || '') === 'Bash'
-  ));
-  const toolCallIds = bashCalls
-    .map((block) => String(block.id || '').trim())
-    .filter(Boolean);
-  const matchedTargets = bashCalls.flatMap((block) => {
-    const input = block.input && typeof block.input === 'object'
-      ? block.input as Record<string, unknown>
+  const toolCallIds = bashCalls.map((call) => call.toolCallId.trim()).filter(Boolean);
+  const matchedTargets = bashCalls.flatMap((call) => {
+    const input = call.input && typeof call.input === 'object'
+      ? call.input as Record<string, unknown>
       : {};
     const command = String(input.command || '');
     return targetPaths.filter((target) => command.includes(target));
   });
-  const toolCallIdSet = new Set(toolCallIds);
-  const resultIds = blocks
-    .filter((block) => String(block.type || '') === 'tool_result')
-    .map((block) => String(block.tool_use_id || '').trim())
-    .filter((toolCallId) => toolCallIdSet.has(toolCallId));
+  const resultIds = bashCalls
+    .filter(toolCallSettled)
+    .map((call) => call.toolCallId.trim())
+    .filter(Boolean);
   return {
     bashCalls: bashCalls.length,
-    distinctToolCallIds: toolCallIdSet.size,
+    distinctToolCallIds: new Set(toolCallIds).size,
     matchedTargets: [...matchedTargets].sort(),
     resultIds: [...resultIds].sort(),
   };
 }
 
+/**
+ * Wait until every `startedPaths` file exists: the blocking command is running.
+ *
+ * Answers false as soon as the session is at rest without it — the model
+ * replied without the tool. With `inputId`, at rest also needs the response
+ * to that input to have ended, so a session that has not taken the input yet
+ * is not read as one that answered it.
+ */
 async function waitForToolStart(
   api: AstraApi,
   sessionId: string,
   startedPaths: string[],
   timeoutMs = TOOL_START_TIMEOUT_MS,
-  terminalInputId?: string,
+  inputId?: string,
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const results = await filesExist(api, sessionId, startedPaths);
     if (results.every(Boolean)) return true;
-    // A FIFO input may finish inside the first input's platform turn. Bind
-    // terminal evidence to the consumed input, not the turn's first command.
-    // Read its durable owner before the snapshot so the old READY handoff gap
-    // cannot stand in for completion of an input that has not been consumed.
-    const consumedInput = terminalInputId
-      ? (await api.getMessages(sessionId, 100)).messages.find((message) => (
-        message.role === 'user' && message.message_id === `${terminalInputId}:user`
+    const answered = inputId
+      ? visibleMessages(await api.getMessages(sessionId, 50)).some((message) => (
+        answersInput(message, inputId) && message.metadata?.status === 'ended'
       ))
-      : undefined;
+      : true;
     const detail = await api.getSession(sessionId);
-    if (
-      !detail.current_turn_id
-      && String(detail.state || '') === 'READY'
-      && (
-        !terminalInputId
-        || (Boolean(consumedInput?.turn_id) && detail.last_turn_id === consumedInput?.turn_id)
-      )
-    ) return false;
+    // The detail's READY: nothing runs, nothing waits on the owner and the
+    // session holds no message.
+    if (answered && String(detail.state || '') === 'READY') return false;
     await new Promise((resolve) => setTimeout(resolve, 1_000));
   }
   return false;
@@ -168,11 +188,10 @@ async function waitForToolStart(
 
 async function releaseFiles(api: AstraApi, sessionId: string, paths: string[]): Promise<void> {
   if (paths.length === 0) return;
-  // Loud. A swallowed release turns a diagnosable failure into a timeout sixty
-  // seconds later, against an assertion about something else entirely: the
-  // blocking Bash keeps blocking, the queued input keeps queueing, and the
-  // report names the queue. One round read exactly that way — the first turn
-  // ran for six minutes while the spec waited a minute for the second message.
+  // Loud. A swallowed release turns a diagnosable failure into a timeout
+  // sixty seconds later, against an assertion about something else entirely:
+  // the blocking Bash keeps blocking, the held message stays held, and the
+  // report names the wait for it.
   //
   // Then prove the file is there. `touch` exiting 0 is the terminal's verdict
   // on its own command, not evidence that the Bash tool waiting on this path
@@ -194,31 +213,55 @@ async function releaseFiles(api: AstraApi, sessionId: string, paths: string[]): 
   }
 }
 
+/** The receipt `POST /inputs` answered the page with, checked against what the page sent. */
+async function receiptOf(response: Response): Promise<InputReceipt> {
+  const body = await response.json() as { data?: InputReceipt };
+  const receipt = body.data as InputReceipt;
+  const sent = response.request().postDataJSON() as { client_message_id?: string };
+  expect(receipt.client_message_id, 'the receipt names the message the page sent').toBe(
+    sent.client_message_id,
+  );
+  expect(receipt.duplicate, 'a message sent once is a new input').toBe(false);
+  expect(receipt.input_id).toMatch(INPUT_ID);
+  return receipt;
+}
+
+interface SentMessage {
+  inputId: string;
+  clientMessageId: string;
+}
+
+/** The person's message in the transcript, found by the id it has from the moment it is sent. */
+function userMessageRow(page: Page, clientMessageId: string): Locator {
+  return page.locator(`[data-message-id="${clientMessageId}"]`).getByTestId('user-message');
+}
+
+/** The Queued line under a message the session holds. */
+function queuedLabel(page: Page, clientMessageId: string): Locator {
+  return userMessageRow(page, clientMessageId).getByRole('status').filter({ hasText: QUEUED });
+}
+
+/** The state the session recorded for one input. */
+function inputState(sessionId: string, inputId: string): string | undefined {
+  return sessionInputRows(sessionId).find((row) => row.input_id === inputId)?.state;
+}
+
+/** Send a message from the composer while a response runs; the session holds it. */
 async function queueFromComposer(
   page: Page,
   sessionId: string,
   marker: string,
-): Promise<string> {
+): Promise<SentMessage> {
   const composer = page.getByTestId('composer-prompt');
-  await expect(composer, 'busy conversations must keep the composer queueable').toBeEnabled({
+  await expect(composer, 'a busy conversation keeps the composer open for the next message').toBeEnabled({
     timeout: 30_000,
   });
-  const response = await sendPrompt(page, sessionId, marker);
-  const body = await response.json() as {
-    data?: Record<string, unknown>;
-    [key: string]: unknown;
-  };
-  const delivery = body.data ?? body;
-  expect(delivery.status).toBe('delivered');
-  const commandId = String(delivery.command_id ?? '').trim();
-  expect(commandId).not.toEqual('');
-  const inputId = String(delivery.input_id ?? '').trim();
-  expect(inputId).toMatch(/^[0-9a-f-]{36}$/);
+  const receipt = await receiptOf(await sendPrompt(page, sessionId, marker));
   await expect(
-    page.getByTestId('composer-queue').filter({ hasText: marker }),
-    'the busy input must be visible in the composer queue before handoff',
+    queuedLabel(page, receipt.client_message_id),
+    'the transcript shows the message at once, marked Queued while the session holds it',
   ).toHaveCount(1, { timeout: 15_000 });
-  return inputId;
+  return { inputId: receipt.input_id, clientMessageId: receipt.client_message_id };
 }
 
 async function waitForAssistantMarker(
@@ -226,20 +269,23 @@ async function waitForAssistantMarker(
   sessionId: string,
   marker: string,
   timeoutMs = TURN_TIMEOUT_MS,
-  failWhenTurnSettles = false,
-): Promise<void> {
+  failWhenSettled = false,
+): Promise<MessageRecord> {
   const deadline = Date.now() + timeoutMs;
   let lastAssistantText = '';
   while (Date.now() < deadline) {
-    const detail = failWhenTurnSettles
+    // The detail is read before the history: the parts that end a response
+    // are recorded with its end, so a session the detail calls READY has its
+    // whole answer in the history read after it.
+    const detail = failWhenSettled
       ? await api.getSession(sessionId)
       : null;
-    const history = await api.getMessages(sessionId, 100);
+    const history = await api.getMessages(sessionId, 50);
     const messages = visibleMessages(history);
     const matchingMessages = messages.filter((message) => (
       message.role === 'assistant' && messageText(message).includes(marker)
     ));
-    if (matchingMessages.length === 1) return;
+    if (matchingMessages.length === 1) return matchingMessages[0];
     if (matchingMessages.length > 1) {
       throw new Error(`assistant response contains ${marker} more than once`);
     }
@@ -248,18 +294,10 @@ async function waitForAssistantMarker(
       .map(messageText)
       .filter(Boolean)
       .at(-1) || '';
-    if (
-      detail
-      && !detail.current_turn_id
-      && ['COMPLETED', 'FAILED', 'CANCELLED'].includes(String(detail.last_turn_status || ''))
-    ) {
-      // Terminal projection writes the final UI message before it exposes the
-      // terminal session snapshot. Read in that order so a turn settling
-      // between two independent requests cannot make a stale message page look
-      // like a markerless terminal result.
+    if (detail && String(detail.state || '') === 'READY') {
       throw new Error(
-        `turn settled as ${detail.last_turn_status} without assistant marker ${marker}; `
-        + `last assistant response=${JSON.stringify(lastAssistantText)}`,
+        `the session came to rest (last response ${String(detail.last_response?.outcome)}) `
+        + `without assistant marker ${marker}; last assistant response=${JSON.stringify(lastAssistantText)}`,
       );
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
@@ -279,8 +317,9 @@ async function answerWithStaleDetail(request: APIRequestContext, page: Page, col
   const questionMarker = `SDK_LIVE_ASK_STALE_DETAIL_${runId}`;
   const finalMarker = `SDK_LIVE_ASK_ANSWERED_${runId}`;
   let stalePendingDetailCount = 0;
-  // Live recovery gets one stale response; cold recovery hides detail authority
-  // only after reload, so the first message page must restore the question.
+  // A live page reads one stale detail; a reloaded page reads stale details
+  // from its first load on, so its history's first page must carry the
+  // question.
   let forceStalePendingDetail = !coldBootstrap;
 
   try {
@@ -339,14 +378,15 @@ async function answerWithStaleDetail(request: APIRequestContext, page: Page, col
     const toolCallId = String(pending?.tool_call_id || '').trim();
     expect(toolCallId, 'the live questionnaire must expose the engine tool id').not.toEqual('');
 
-    expect(String(pending.turn_id || '').trim()).not.toBe('');
+    const pausedResponseId = String(pending.response_id || '').trim();
+    expect(pausedResponseId, 'the question names the response it pauses').not.toBe('');
     await expect.poll(async () => (
-      visibleMessages(await api.getMessages(sessionId)).filter((message) => (
+      visibleMessages(await api.getMessages(sessionId, 50)).filter((message) => (
         message.role === 'assistant'
-        && message.blocks?.some((block) => block.type === 'tool_use' && block.id === toolCallId)
-      )).map((message) => message.turn_id)
-    ), { message: 'the pending tool must have one owner in the exact interaction turn' })
-      .toEqual([pending.turn_id]);
+        && messageToolCalls(message).some((call) => call.toolCallId === toolCallId)
+      )).map((message) => message.id)
+    ), { message: 'the pending tool must have one owner: the response the question pauses' })
+      .toEqual([pausedResponseId]);
     const panel = page.getByTestId('pending-interaction-panel');
     if (!coldBootstrap) {
       await expect.poll(() => stalePendingDetailCount, {
@@ -440,18 +480,18 @@ async function answerWithStaleDetail(request: APIRequestContext, page: Page, col
       submit,
       'the questionnaire action must remain fully visible after navigating questions',
     ).toBeInViewport({ ratio: 1 });
-    const answeredResponse = page.waitForResponse((response) => (
-      response.request().method() === 'POST'
-      && response.url().includes(`/sessions/${sessionId}/interaction-respond`)
-    ));
+    const answeredResponse = page.waitForResponse((response) => {
+      if (response.request().method() !== 'POST') return false;
+      const path = new URL(response.url()).pathname;
+      return path.startsWith(apiPath(`/sessions/${sessionId}/interactions/`)) && path.endsWith('/answer');
+    });
     await submit.click();
     const answered = await answeredResponse;
     expect(answered.status(), 'the browser answer must reach the interaction endpoint').toBe(200);
-    const answeredBody = await answered.json() as Record<string, unknown>;
-    const answeredData = answeredBody.data && typeof answeredBody.data === 'object'
-      ? answeredBody.data as Record<string, unknown>
-      : answeredBody;
+    const answeredBody = await answered.json() as { data?: Record<string, unknown> };
+    const answeredData = answeredBody.data ?? {};
     expect(String(answeredData.interaction_id || '').trim()).toBe(pending?.interaction_id);
+    expect(answeredData.answered, 'the session must record the answer').toBe(true);
 
     await waitForAssistantMarker(api, sessionId, finalMarker, TURN_TIMEOUT_MS, true);
     await api.waitForSessionReady(sessionId, TURN_TIMEOUT_MS);
@@ -460,21 +500,20 @@ async function answerWithStaleDetail(request: APIRequestContext, page: Page, col
     await expect(visibleAnswer, 'the continuation must reach the browser, not only durable history').toHaveCount(1);
     await expect(visibleAnswer).toBeVisible();
 
+    // One AskUserQuestion call under the engine's own id, and the result the
+    // answer produced on that same call.
     const canonicalAskEvidence = async () => {
-      const history = await api.getMessages(sessionId, 100);
-      const blocks = history.messages.flatMap((message) => message.blocks || []);
-      const askIds = blocks
-        .filter((block) => (
-          block.type === 'tool_use'
-          && block.name === 'AskUserQuestion'
-          && JSON.stringify(block.input || {}).includes(questionMarker)
+      const calls = visibleMessages(await api.getMessages(sessionId, 50)).flatMap(messageToolCalls);
+      const askIds = calls
+        .filter((call) => (
+          call.toolName === 'AskUserQuestion'
+          && JSON.stringify(call.input ?? {}).includes(questionMarker)
         ))
-        .map((block) => String(block.id || '').trim())
+        .map((call) => call.toolCallId.trim())
         .filter(Boolean);
-      const resultIds = blocks
-        .filter((block) => block.type === 'tool_result')
-        .map((block) => String(block.tool_use_id || '').trim())
-        .filter((id) => id === toolCallId);
+      const resultIds = calls
+        .filter((call) => call.toolCallId === toolCallId && toolCallSettled(call))
+        .map((call) => call.toolCallId);
       return { askIds, resultIds };
     };
     await expect.poll(canonicalAskEvidence, {
@@ -524,48 +563,51 @@ test('completed multi-step response survives a cold history bootstrap', async ({
     'Do not use any other tool.',
     `After all ${toolCallCount} Bash results arrive, give a brief completion report.`,
   ].join('\n');
-  await sendPrompt(page, sessionId, prompt);
-  const settled = await api.waitForSession(sessionId, (detail) => (
-    !detail.current_turn_id && detail.state === 'READY'
-    && detail.last_turn_status === 'COMPLETED' && Boolean(detail.last_turn_id)
-  ));
-  expect(settled.last_turn_error || '').toBe('');
-  const durable = await api.getMessages(sessionId);
-  expect(durable.active_turn_overlay, 'a live snapshot must not mask missing durable history').toBeFalsy();
+  const receipt = await receiptOf(await sendPrompt(page, sessionId, prompt));
+  const reply = await api.waitForReplyTo(sessionId, receipt.input_id, { timeoutMs: TURN_TIMEOUT_MS });
+  expect(reply.metadata?.outcome, 'the response must complete').toBe('completed');
+  expect(reply.metadata?.error ?? null, 'a completed response carries no error').toBeNull();
+  await api.waitForSessionReady(sessionId, TURN_TIMEOUT_MS);
+  const durable = await api.getMessages(sessionId, 50);
+  expect(
+    durable.messages
+      .filter((message) => message.role === 'assistant')
+      .every((message) => message.metadata?.status === 'ended'),
+    'a session at rest has no open response in its history',
+  ).toBe(true);
   expect(durable.messages.filter((message) => message.role === 'user').map(messageText)).toEqual([prompt]);
-  const replies = durable.messages.filter((message) => (
-    message.role === 'assistant' && message.turn_id === settled.last_turn_id
-  ));
-  const blocks = replies.flatMap((message) => message.blocks || []);
-  const calls = blocks.filter((block) => block.type === 'tool_use');
+  const replies = durable.messages.filter((message) => answersInput(message, receipt.input_id));
+  expect(replies, 'one message is answered by one response').toHaveLength(1);
+  const parts = replies[0].parts;
+  const calls = messageToolCalls(replies[0]);
   expect(calls).toHaveLength(toolCallCount);
-  const toolIds = calls.map((call) => String(call.id || '').trim());
+  const toolIds = calls.map((call) => call.toolCallId.trim());
   expect(toolIds.every(Boolean)).toBe(true);
   expect(new Set(toolIds).size).toBe(toolCallCount);
   for (const [index, call] of calls.entries()) {
-    expect(call.name).toBe('Bash');
+    expect(call.toolName).toBe('Bash');
     expect(call.input).toMatchObject({ command: `printf '${toolMarkers[index]}'` });
-    const results = blocks.filter((block) => block.type === 'tool_result' && block.tool_use_id === call.id);
-    expect(results, 'each executed call must retain exactly one result').toHaveLength(1);
-    expect(results[0]!.is_error).not.toBe(true);
-    expect(JSON.stringify(results[0]!.content)).toContain(toolMarkers[index]);
+    expect(call.state, 'each executed call must carry its successful result').toBe('output-available');
+    expect(JSON.stringify(call.output)).toContain(toolMarkers[index]);
   }
-  const lastResultIndex = blocks.map((block) => block.type).lastIndexOf('tool_result');
-  const terminalText = blocks.slice(lastResultIndex + 1).filter((block) => block.type === 'text')
-    .map((block) => String(block.text || '')).join('').trim();
+  const isToolPart = (part: Record<string, unknown>) => (
+    part.type === 'dynamic-tool' || String(part.type || '').startsWith('tool-')
+  );
+  const lastToolIndex = parts.map(isToolPart).lastIndexOf(true);
+  const terminalText = parts.slice(lastToolIndex + 1).filter((part) => part.type === 'text')
+    .map((part) => String(part.text || '')).join('').trim();
   expect(terminalText, 'the actual model must answer after all tool results').not.toBe('');
   const replyText = page.getByTestId('assistant-message').getByTestId('assistant-text');
-  const textBlocks = blocks.filter((block) => block.type === 'text' && String(block.text || '').trim());
+  const textParts = parts.filter((part) => part.type === 'text' && String(part.text || '').trim());
   await expect(replyText, 'the live page must include the final prose block after the tools')
-    .toHaveCount(textBlocks.length);
+    .toHaveCount(textParts.length);
   await expect(replyText.last()).toBeVisible();
   await expect(replyText.last()).not.toHaveText('');
   // Compare rendered prose with rendered prose: Markdown source contains
   // syntax that is intentionally absent from the visible answer.
   const renderedReply = await replyText.allTextContents();
 
-  // A fresh route must rebuild from the database. The unified messages read
-  // carries history and overlay together; no separate bootstrap is involved.
+  // A fresh route rebuilds the page from history alone.
   await page.goto('about:blank', { waitUntil: 'domcontentloaded' });
   await openSessionView(page, sessionId);
   const assertColdHistory = async () => {
@@ -584,9 +626,8 @@ test('completed multi-step response survives a cold history bootstrap', async ({
     await expect(page.getByTestId('assistant-message').getByRole('button', {
       name: /^Bash\s+(Working|Awaiting confirmation|处理中|等待确认)/,
     })).toHaveCount(0);
-    const cold = await api.getMessages(sessionId);
-    expect(cold.active_turn_overlay).toBeFalsy();
-    expect(cold.messages, 'cold reads must retain all message identities, tool pairs and final text')
+    const cold = await api.getMessages(sessionId, 50);
+    expect(cold.messages, 'cold reads must retain all message identities, tool calls and final text')
       .toEqual(durable.messages);
   };
   await assertColdHistory();
@@ -616,37 +657,46 @@ test('Cancel hands stopping state to an already queued next input', async ({ req
   try {
     await openSessionView(page, sessionId);
     const startedPrompt = blockingPrompt(firstMarker, startedPath, releasePath, `CANCELLED_RESULT_${runId}`, `NEVER_REQUIRED_${runId}`);
-    await sendPrompt(page, sessionId, startedPrompt);
+    let firstInputId = (await receiptOf(await sendPrompt(page, sessionId, startedPrompt))).input_id;
     // Ask again rather than skip: a skip ends the round exactly as a
     // failure does, so the model's choice decided it instead of the
-    // platform. `waitForToolStart` already returns false the moment the
-    // turn settles without the tool, so a declined ask costs that turn.
-    const started = await insist<true>({
+    // platform. `waitForToolStart` answers false the moment the response
+    // ends without the tool, so a declined ask costs that response.
+    await insist<true>({
       ask: async (attempt) => {
-        if (attempt > 1) await api.postTurnInput(sessionId, startedPrompt);
+        if (attempt > 1) firstInputId = (await api.postTurnInput(sessionId, startedPrompt)).input_id;
       },
       probe: async () =>
-        (await waitForToolStart(api, sessionId, [startedPath])) ? true : null,
+        (await waitForToolStart(api, sessionId, [startedPath], TOOL_START_TIMEOUT_MS, firstInputId))
+          ? true
+          : null,
       what: 'the configured model did not enter the requested blocking Bash tool',
       budgetMs: TOOL_START_TIMEOUT_MS * 2,
       probeMs: TOOL_START_TIMEOUT_MS,
     });
 
-    await queueFromComposer(
+    const followup = await queueFromComposer(
       page,
       sessionId,
       `${followupMarker}: do not use tools; reply with exactly ${followupMarker}_DONE`,
     );
     await page.getByTestId('run-composer-stop').click();
 
-    await expect(page.getByTestId('composer-queue')).toHaveCount(0, { timeout: 60_000 });
+    await expect(
+      queuedLabel(page, followup.clientMessageId),
+      'Stop ends the running response and the engine takes the held message next',
+    ).toHaveCount(0, { timeout: 60_000 });
     await expect(
       page.getByTestId('user-message').filter({ hasText: followupMarker }),
-      'the queued input must replace the cancelled turn in the transcript',
+      'the held message stays one message in the transcript',
     ).toHaveCount(1, { timeout: 60_000 });
-    await waitForAssistantMarker(api, sessionId, `${followupMarker}_DONE`);
+    const answer = await waitForAssistantMarker(api, sessionId, `${followupMarker}_DONE`);
+    expect(answersInput(answer, followup.inputId), 'the answer is the response to the held message').toBe(true);
     const ready = await api.waitForSessionReady(sessionId, TURN_TIMEOUT_MS);
-    expect(ready.last_turn_status).toBe('COMPLETED');
+    expect(ready.last_response?.response_id).toBe(answer.id);
+    expect(ready.last_response?.outcome).toBe('completed');
+    const stopped = await api.waitForReplyTo(sessionId, firstInputId, { timeoutMs: 30_000 });
+    expect(stopped.metadata?.outcome, 'Stop must end the running response as cancelled').toBe('cancelled');
     await expect(page.getByText(/API Error|AGENT_RUNTIME_ERROR|Traceback/i)).toHaveCount(0);
   } finally {
     await releaseFiles(api, sessionId, [releasePath]).catch(() => {});
@@ -671,23 +721,25 @@ test('Cancel remains non-fatal and the next input dequeues before model response
   try {
     await openSessionView(page, sessionId);
     const firstDidStartPrompt = blockingPrompt(`SDK_CANCEL_FIRST_${runId}`, firstStarted, firstRelease, `SDK_CANCEL_FIRST_RESULT_${runId}`, `SDK_CANCEL_FIRST_FINAL_${runId}`);
-    await sendPrompt(page, sessionId, firstDidStartPrompt);
+    let firstInputId = (await receiptOf(await sendPrompt(page, sessionId, firstDidStartPrompt))).input_id;
     // Ask again rather than skip: a skip ends the round exactly as a
     // failure does, so the model's choice decided it instead of the
-    // platform. `waitForToolStart` already returns false the moment the
-    // turn settles without the tool, so a declined ask costs that turn.
-    const firstDidStart = await insist<true>({
+    // platform. `waitForToolStart` answers false the moment the response
+    // ends without the tool, so a declined ask costs that response.
+    await insist<true>({
       ask: async (attempt) => {
-        if (attempt > 1) await api.postTurnInput(sessionId, firstDidStartPrompt);
+        if (attempt > 1) firstInputId = (await api.postTurnInput(sessionId, firstDidStartPrompt)).input_id;
       },
       probe: async () =>
-        (await waitForToolStart(api, sessionId, [firstStarted])) ? true : null,
+        (await waitForToolStart(api, sessionId, [firstStarted], TOOL_START_TIMEOUT_MS, firstInputId))
+          ? true
+          : null,
       what: 'the configured model did not enter the first blocking Bash tool',
       budgetMs: TOOL_START_TIMEOUT_MS * 2,
       probeMs: TOOL_START_TIMEOUT_MS,
     });
 
-    const nextInputId = await queueFromComposer(page, sessionId, blockingPrompt(
+    const next = await queueFromComposer(page, sessionId, blockingPrompt(
       nextUserMarker,
       nextStarted,
       nextRelease,
@@ -701,22 +753,29 @@ test('Cancel remains non-fatal and the next input dequeues before model response
       sessionId,
       [nextStarted],
       180_000,
-      nextInputId,
+      next.inputId,
     );
-    expect(nextDidStart, 'the consumed follow-up finished without executing its required Bash tool').toBe(true);
-    await expect(page.getByTestId('composer-queue')).toHaveCount(0, { timeout: 30_000 });
+    expect(nextDidStart, 'the next message was answered without executing its required Bash tool').toBe(true);
+    await expect(
+      queuedLabel(page, next.clientMessageId),
+      'the engine took the next message, so the session does not hold it',
+    ).toHaveCount(0, { timeout: 30_000 });
     await expect(page.getByTestId('user-message').filter({ hasText: nextUserMarker })).toHaveCount(1);
     await expect(
       page.getByTestId('assistant-message').filter({ hasText: nextFinalMarker }),
-      'the queued user input must dequeue before its model response exists',
+      'the engine takes the next message before its response has an answer',
     ).toHaveCount(0);
     await expect(page.getByTestId('run-composer-stop')).toBeEnabled();
     await expect(page.getByText(/API Error|AGENT_RUNTIME_ERROR|Traceback/i)).toHaveCount(0);
+    const stopped = await api.waitForReplyTo(sessionId, firstInputId, { timeoutMs: 30_000 });
+    expect(stopped.metadata?.outcome, 'Stop must end the first response as cancelled').toBe('cancelled');
 
     await releaseFiles(api, sessionId, [nextRelease]);
-    await waitForAssistantMarker(api, sessionId, nextFinalMarker);
+    const answer = await waitForAssistantMarker(api, sessionId, nextFinalMarker);
+    expect(answersInput(answer, next.inputId), 'the answer is the response to the next message').toBe(true);
     const ready = await api.waitForSessionReady(sessionId, TURN_TIMEOUT_MS);
-    expect(ready.last_turn_status).toBe('COMPLETED');
+    expect(ready.last_response?.response_id).toBe(answer.id);
+    expect(ready.last_response?.outcome).toBe('completed');
   } finally {
     await releaseFiles(api, sessionId, [firstRelease, nextRelease]).catch(() => {});
     // The session is not deleted here — `trackSessions()` decides in an
@@ -738,71 +797,85 @@ test('adapter-buffered input moves once from the queue at SDK consumption', asyn
   try {
     await openSessionView(page, sessionId);
     const startedPrompt = blockingPrompt(firstUserMarker, startedPath, releasePath, `SDK_SEQUENTIAL_FIRST_RESULT_${runId}`, `SDK_SEQUENTIAL_FIRST_DONE_${runId}`);
-    await sendPrompt(page, sessionId, startedPrompt);
+    let firstInputId = (await receiptOf(await sendPrompt(page, sessionId, startedPrompt))).input_id;
     // Ask again rather than skip: a skip ends the round exactly as a
     // failure does, so the model's choice decided it instead of the
-    // platform. `waitForToolStart` already returns false the moment the
-    // turn settles without the tool, so a declined ask costs that turn.
-    const started = await insist<true>({
+    // platform. `waitForToolStart` answers false the moment the response
+    // ends without the tool, so a declined ask costs that response.
+    await insist<true>({
       ask: async (attempt) => {
-        if (attempt > 1) await api.postTurnInput(sessionId, startedPrompt);
+        if (attempt > 1) firstInputId = (await api.postTurnInput(sessionId, startedPrompt)).input_id;
       },
       probe: async () =>
-        (await waitForToolStart(api, sessionId, [startedPath])) ? true : null,
+        (await waitForToolStart(api, sessionId, [startedPath], TOOL_START_TIMEOUT_MS, firstInputId))
+          ? true
+          : null,
       what: 'the configured model did not enter the requested blocking Bash tool',
       budgetMs: TOOL_START_TIMEOUT_MS * 2,
       probeMs: TOOL_START_TIMEOUT_MS,
     });
 
-    await queueFromComposer(
+    const second = await queueFromComposer(
       page,
       sessionId,
       `${secondUserMarker}: do not use tools; acknowledge this input briefly`,
     );
     await expect(
       page.getByTestId('user-message').filter({ hasText: secondUserMarker }),
-      'the queue exclusively owns an input until the SDK consumes it',
-    ).toHaveCount(0);
+      'the transcript shows the held message once, from the moment it is sent',
+    ).toHaveCount(1);
+    expect(
+      HELD_STATES,
+      'the engine does not take the message while the first response runs',
+    ).toContain(inputState(sessionId, second.inputId));
 
     await releaseFiles(api, sessionId, [releasePath]);
-    await expect(page.getByTestId('user-message').filter({ hasText: secondUserMarker })).toHaveCount(1, {
-      timeout: 60_000,
-    });
     await expect(
-      page.getByTestId('composer-queue').filter({ hasText: secondUserMarker }),
-      'SDK consumption hands the input from the queue to one transcript row',
-    ).toHaveCount(0);
+      queuedLabel(page, second.clientMessageId),
+      'the engine takes the held message once the first response ends',
+    ).toHaveCount(0, { timeout: 60_000 });
+    await expect(
+      page.getByTestId('user-message').filter({ hasText: secondUserMarker }),
+      'taking the message leaves it one transcript row',
+    ).toHaveCount(1);
     await expect.poll(async () => {
-      const history = visibleMessages(await api.getMessages(sessionId, 100));
-      const userIndexes = history.flatMap((message, index) => (
+      const history = visibleMessages(await api.getMessages(sessionId, 50));
+      const users = history.filter((message) => (
         message.role === 'user' && messageText(message).includes(secondUserMarker)
-          ? [index]
-          : []
       ));
-      if (userIndexes.length !== 1) {
-        return { users: userIndexes.length, responses: 0, nonEmpty: false };
-      }
+      const userIndex = history.findIndex((message) => message.id === second.clientMessageId);
       const nextUserIndex = history.findIndex((message, index) => (
-        index > userIndexes[0] && message.role === 'user'
+        index > userIndex && message.role === 'user'
       ));
-      const responseWindow = history.slice(
-        userIndexes[0] + 1,
+      const responseWindow = userIndex < 0 ? [] : history.slice(
+        userIndex + 1,
         nextUserIndex < 0 ? undefined : nextUserIndex,
       ).filter((message) => message.role === 'assistant');
+      const replies = history.filter((message) => answersInput(message, second.inputId));
       return {
-        users: userIndexes.length,
-        responses: responseWindow.length,
-        nonEmpty: responseWindow.some((message) => messageText(message).trim().length > 0),
+        users: users.length,
+        replies: replies.length,
+        windowIsTheReply: responseWindow.length === 1 && responseWindow[0].id === replies[0]?.id,
+        ended: replies.length === 1 && replies[0].metadata?.status === 'ended',
+        nonEmpty: replies.some((message) => messageText(message).trim().length > 0),
       };
     }, {
       timeout: TURN_TIMEOUT_MS,
       intervals: [250, 500, 1_000],
       message: [
-        'the SDK may group streaming inputs into fewer ResultMessages, but the',
-        'consumed input must own one non-empty response window',
+        'the message the engine took is answered by one non-empty response,',
+        'right after it in history',
       ].join(' '),
-    }).toEqual({ users: 1, responses: 1, nonEmpty: true });
+    }).toEqual({ users: 1, replies: 1, windowIsTheReply: true, ended: true, nonEmpty: true });
     await api.waitForSessionReady(sessionId, TURN_TIMEOUT_MS);
+    const reply = await api.waitForReplyTo(sessionId, second.inputId, { timeoutMs: 30_000 });
+    const inputRows = sessionInputRows(sessionId).filter((row) => (
+      row.client_message_id === second.clientMessageId
+    ));
+    expect(
+      inputRows.map((row) => ({ state: row.state, response: row.response_id })),
+      'the session recorded one input for the message, taken by the response that answered it',
+    ).toEqual([{ state: 'admitted', response: reply.id }]);
 
     await page.reload({ waitUntil: 'domcontentloaded' });
     await expect(page.getByTestId('run-view')).toBeVisible({ timeout: 60_000 });
@@ -811,12 +884,12 @@ test('adapter-buffered input moves once from the queue at SDK consumption', asyn
     await expect(secondUser).toHaveCount(1);
     await expect.poll(async () => secondUser.evaluate((element) => {
       const log = element.closest('[role="log"]');
-      if (!log) throw new Error('the consumed input must belong to the conversation log');
+      if (!log) throw new Error('the message must belong to the conversation log');
       const messages = Array.from(log.querySelectorAll(
         '[data-testid="user-message"], [data-testid="assistant-message"]',
       ));
       const userIndex = messages.indexOf(element);
-      if (userIndex < 0) throw new Error('the conversation log must contain the consumed input');
+      if (userIndex < 0) throw new Error('the conversation log must contain the message');
       const nextUserIndex = messages.findIndex((message, index) => (
         index > userIndex && message.getAttribute('data-testid') === 'user-message'
       ));
@@ -828,9 +901,9 @@ test('adapter-buffered input moves once from the queue at SDK consumption', asyn
       };
     }), {
       timeout: 60_000,
-      message: 'reload must preserve the consumed input and its response window',
+      message: 'reload must preserve the message and the one response that answered it',
     }).toEqual({ responses: 1, nonEmpty: true });
-    await expect(page.getByTestId('composer-queue')).toHaveCount(0);
+    await expect(queuedLabel(page, second.clientMessageId)).toHaveCount(0);
   } finally {
     await releaseFiles(api, sessionId, [releasePath]).catch(() => {});
     // The session is not deleted here — `trackSessions()` decides in an
@@ -863,14 +936,11 @@ test('queued input stays visible during a native question and is consumed once a
     await waitForToolStart(api, sessionId, [startedPath]),
     'the first input must reach the real Bash barrier before the second input is accepted',
   ).toBe(true);
-  const inputId = await queueFromComposer(page, sessionId, secondPrompt);
+  const second = await queueFromComposer(page, sessionId, secondPrompt);
   const queuedUser = page.getByTestId('user-message').filter({ hasText: secondPrompt });
-  await expect(queuedUser, 'acceptance must not manufacture an SDK-consumed user row').toHaveCount(0);
-  const consumedEvents = () => sessionEvents(sessionId).filter((event) => (
-    event.event_type === 'input.consumed'
-    && (event.payload as Record<string, unknown> | undefined)?.input_id === inputId
-  ));
-  expect(consumedEvents()).toHaveLength(0);
+  await expect(queuedUser, 'the transcript shows the held message once').toHaveCount(1);
+  expect(HELD_STATES, 'accepting the message is not the engine taking it')
+    .toContain(inputState(sessionId, second.inputId));
 
   await releaseFiles(api, sessionId, [releasePath]);
   const pending = await api.waitForPendingInteractionOrSettledTurn(sessionId, TOOL_START_TIMEOUT_MS);
@@ -884,13 +954,18 @@ test('queued input stays visible during a native question and is consumed once a
   await expect(page.getByTestId('composer-prompt')).toHaveCount(0);
   await expect(page.getByTestId('session-conversation-shell'))
     .toHaveAttribute('data-pending-tool-call-id', toolCallId);
-  const pendingQueue = panel.getByTestId('composer-queue');
-  await expect(pendingQueue, 'the pending form must retain the same accepted queue item').toHaveCount(1);
-  await expect(pendingQueue).toContainText(secondPrompt);
-  await expect(pendingQueue).toBeInViewport({ ratio: 1 });
-  await expect(pendingQueue.getByRole('button'), 'an accepted native input has no fake delete or retry action').toHaveCount(0);
-  await expect(queuedUser).toHaveCount(0);
-  expect(consumedEvents(), 'waiting for the answer must not consume the queued input').toHaveLength(0);
+  await expect(
+    queuedLabel(page, second.clientMessageId),
+    'the held message stays in the transcript, Queued, while the question waits',
+  ).toHaveCount(1);
+  await expect(
+    userMessageRow(page, second.clientMessageId).getByRole('button', {
+      name: /^(Retry|重试|Send again|重新发送|Remove queued message|删除排队消息)$/,
+    }),
+    'an accepted message offers no retry or removal',
+  ).toHaveCount(0);
+  expect(HELD_STATES, 'waiting for the answer must not hand the held message to the engine')
+    .toContain(inputState(sessionId, second.inputId));
   const choice = panel.getByRole('radio', { name: /developers/i }).first();
   await expect(choice).toBeEnabled();
   await choice.click();
@@ -898,38 +973,49 @@ test('queued input stays visible during a native question and is consumed once a
   await expect(submit).toBeInViewport({ ratio: 1 });
   const answerResponse = page.waitForResponse((response) => (
     response.request().method() === 'POST'
-    && response.url().includes(`/sessions/${sessionId}/interaction-respond`)
+    && new URL(response.url()).pathname.startsWith(apiPath(`/sessions/${sessionId}/interactions/`))
   ));
   await submit.click();
   expect((await answerResponse).status()).toBe(200);
 
-  await expect(queuedUser).toHaveCount(1, { timeout: TURN_TIMEOUT_MS });
-  await expect(page.getByTestId('composer-queue')).toHaveCount(0);
+  await expect(
+    queuedLabel(page, second.clientMessageId),
+    'the engine takes the held message after the answer',
+  ).toHaveCount(0, { timeout: TURN_TIMEOUT_MS });
+  await expect(queuedUser).toHaveCount(1);
   await expect(panel).toHaveCount(0);
   await expect.poll(async () => {
-    const history = visibleMessages(await api.getMessages(sessionId, 100));
+    const history = visibleMessages(await api.getMessages(sessionId, 50));
     const users = history.filter((message) => message.role === 'user' && messageText(message) === secondPrompt);
-    const userIndex = history.findIndex((message) => message.message_id === `${inputId}:user`);
-    const replies = userIndex < 0 ? [] : history.slice(userIndex + 1)
-      .filter((message) => message.role === 'assistant' && messageText(message).trim().length > 0);
-    return { userIds: users.map((message) => message.message_id), replies: replies.length };
+    const replies = history.filter((message) => (
+      answersInput(message, second.inputId) && messageText(message).trim().length > 0
+    ));
+    return { userIds: users.map((message) => message.id), replies: replies.length };
   }, {
     timeout: TURN_TIMEOUT_MS,
-    message: 'the exact SDK-consumed input must own one nonempty answer, without a wording oracle',
+    message: 'the exact message the engine took must own one nonempty answer, without a wording oracle',
   })
-    .toEqual({ userIds: [`${inputId}:user`], replies: 1 });
+    .toEqual({ userIds: [second.clientMessageId], replies: 1 });
   await api.waitForSessionReady(sessionId);
-  const consumed = consumedEvents();
-  expect(consumed, 'the same accepted input must have exactly one durable consumption boundary').toHaveLength(1);
-  expect((consumed[0].payload as Record<string, unknown>).content).toBe(secondPrompt);
-  const blocks = (await api.getMessages(sessionId, 100)).messages.flatMap((message) => message.blocks || []);
-  expect(blocks.filter((block) => block.type === 'tool_use' && block.id === toolCallId)).toHaveLength(1);
-  expect(blocks.filter((block) => block.type === 'tool_result' && block.tool_use_id === toolCallId)).toHaveLength(1);
+  const reply = await api.waitForReplyTo(sessionId, second.inputId, { timeoutMs: 30_000 });
+  const inputRows = sessionInputRows(sessionId).filter((row) => row.client_message_id === second.clientMessageId);
+  expect(
+    inputRows.map((row) => ({ content: row.content, state: row.state, response: row.response_id })),
+    'the session recorded the message once, taken by exactly the response that answered it',
+  ).toEqual([{ content: secondPrompt, state: 'admitted', response: reply.id }]);
+  expect(
+    sessionResponseRows(sessionId).filter((row) => row.input_ids.includes(second.inputId)).map((row) => row.response_id),
+    'one response answers the message',
+  ).toEqual([reply.id]);
+  const askCalls = visibleMessages(await api.getMessages(sessionId, 50))
+    .flatMap(messageToolCalls)
+    .filter((call) => call.toolCallId === toolCallId);
+  expect(askCalls, 'the question is one tool call').toHaveLength(1);
+  expect(toolCallSettled(askCalls[0]), 'the answered question carries its result').toBe(true);
 
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await expect(queuedUser, 'cold history must retain one input, not recreate the queue').toHaveCount(1);
-  await expect(page.getByTestId('composer-queue')).toHaveCount(0);
-  expect(consumedEvents()).toHaveLength(1);
+  await expect(queuedUser, 'cold history must retain one message').toHaveCount(1);
+  await expect(queuedLabel(page, second.clientMessageId)).toHaveCount(0);
   // No finally release or interrupt: trackSessions retains the still-held
   // tool/question and its accepted input when any assertion fails.
 });
@@ -969,36 +1055,27 @@ test('accepted input waits for the Result boundary and survives live bootstrap',
   try {
     await mirrorSseBodies(page);
     await openSessionView(page, sessionId);
-    await sendPrompt(page, sessionId, firstPrompt);
+    let firstInputId = (await receiptOf(await sendPrompt(page, sessionId, firstPrompt))).input_id;
     // Ask again rather than skip: a skip ends the round exactly as a
     // failure does, so the model's choice decided it instead of the
-    // platform. `waitForToolStart` already returns false the moment the
-    // turn settles without the tool, so a declined ask costs that turn.
-    const firstDidStart = await insist<true>({
+    // platform. `waitForToolStart` answers false the moment the response
+    // ends without the tool, so a declined ask costs that response.
+    await insist<true>({
       ask: async (attempt) => {
-        if (attempt > 1) await api.postTurnInput(sessionId, firstPrompt);
+        if (attempt > 1) firstInputId = (await api.postTurnInput(sessionId, firstPrompt)).input_id;
       },
       probe: async () =>
-        (await waitForToolStart(api, sessionId, [firstStarted])) ? true : null,
+        (await waitForToolStart(api, sessionId, [firstStarted], TOOL_START_TIMEOUT_MS, firstInputId))
+          ? true
+          : null,
       what: 'the configured model did not enter the first blocking Bash tool',
       budgetMs: TOOL_START_TIMEOUT_MS * 2,
       probeMs: TOOL_START_TIMEOUT_MS,
     });
 
-    const secondResponse = await sendPrompt(page, sessionId, secondPrompt);
-    expect(
-      new URL(secondResponse.url()).pathname,
-      'input submitted before the first Result must enter the durable FIFO',
-    ).toContain(`/sessions/${sessionId}/turn-inputs`);
-    const secondBody = await secondResponse.json() as {
-      data?: Record<string, unknown>;
-      [key: string]: unknown;
-    };
-    const secondDelivery = secondBody.data ?? secondBody;
-    expect(secondDelivery.status).toBe('delivered');
-    const secondInputId = String(secondDelivery.input_id ?? '').trim();
-    expect(secondInputId).toMatch(/^[0-9a-f-]{36}$/);
-    await expect(page.getByTestId('composer-queue')).toContainText(secondUserMarker);
+    const second = await queueFromComposer(page, sessionId, secondPrompt);
+    expect(HELD_STATES, 'a message sent before the first Result waits in the session')
+      .toContain(inputState(sessionId, second.inputId));
 
     await releaseFiles(api, sessionId, [firstRelease]);
     const secondDidStart = await waitForToolStart(
@@ -1006,71 +1083,90 @@ test('accepted input waits for the Result boundary and survives live bootstrap',
       sessionId,
       [secondStarted],
       180_000,
+      second.inputId,
     );
-    test.skip(!secondDidStart, 'the configured model did not enter the queued Bash tool');
+    // A failure, not a skip: a skipped result ends the whole Playwright
+    // process group, which costs the lane instead of this one test.
+    expect(secondDidStart, 'the configured model did not enter the queued Bash tool').toBe(true);
 
-    await expect.poll(async () => {
-      const history = await api.getMessages(sessionId, 100);
-      const activeMessages = history.active_turn_overlay?.messages ?? [];
-      const roots = activeMessages.filter((message) => message.role === 'user');
-      const blocks = activeMessages.flatMap((message) => (
-        Array.isArray(message.blocks) ? message.blocks : []
-      ));
+    const bashOf = (message: MessageRecord | undefined) => (
+      message ? messageToolCalls(message).filter((call) => call.toolName === 'Bash') : []
+    );
+    const responsesSoFar = async () => {
+      const history = visibleMessages(await api.getMessages(sessionId, 50));
+      const firstReply = history.find((message) => answersInput(message, firstInputId));
+      const secondReply = history.find((message) => answersInput(message, second.inputId));
       return {
-        first: roots.filter((message) => messageText(message).includes(firstUserMarker)).length,
-        second: roots.filter((message) => (
-          String(message.message_id ?? '').trim() === `${secondInputId}:user`
+        first: history.filter((message) => (
+          message.role === 'user' && messageText(message).includes(firstUserMarker)
+        )).length,
+        second: history.filter((message) => (
+          message.role === 'user'
+          && message.id === second.clientMessageId
           && messageText(message).includes(secondUserMarker)
         )).length,
-        bash: blocks.filter((block) => (
-          String(block.type ?? '') === 'tool_use'
-          && String(block.name ?? '') === 'Bash'
-        )).length,
-        results: blocks.filter((block) => String(block.type ?? '') === 'result').length,
+        firstReply: firstReply ? {
+          status: firstReply.metadata?.status,
+          outcome: firstReply.metadata?.outcome,
+          results: messageParts(firstReply, 'data-result').length,
+          bash: bashOf(firstReply).length,
+          bashSettled: bashOf(firstReply).every(toolCallSettled),
+        } : null,
+        secondReply: secondReply ? {
+          status: secondReply.metadata?.status,
+          bash: bashOf(secondReply).length,
+          bashSettled: bashOf(secondReply).some(toolCallSettled),
+        } : null,
       };
-    }, {
+    };
+    await expect.poll(responsesSoFar, {
       timeout: 90_000,
       intervals: [250, 500, 1_000],
-      message: 'the queued input must begin only after the first SDK Result boundary',
-    }).toEqual({ first: 1, second: 1, bash: 2, results: 1 });
-
-    const activeHistory = await api.getMessages(sessionId, 100);
-    const activeOverlay = activeHistory.active_turn_overlay;
-    const activeAssistants = (activeOverlay?.messages ?? []).filter(
-      (message) => message.role === 'assistant',
-    );
-    expect(activeAssistants).toHaveLength(2);
-    const lastAssistant = activeAssistants[activeAssistants.length - 1];
-    expect(
-      activeOverlay?.message,
-      'the active message must contain only the last consumed input response',
-    ).toMatchObject({
-      message_id: lastAssistant.message_id,
-      turn_id: lastAssistant.turn_id,
-      role: lastAssistant.role,
-      content: lastAssistant.content,
-      blocks: lastAssistant.blocks,
+      message: 'the first response ends at its Result before the engine answers the second message',
+    }).toEqual({
+      first: 1,
+      second: 1,
+      firstReply: { status: 'ended', outcome: 'completed', results: 1, bash: 1, bashSettled: true },
+      secondReply: { status: 'running', bash: 1, bashSettled: false },
     });
-    const responseOwners = activeAssistants.map((message) => {
-      const calls = (message.blocks ?? []).filter((block) => (
-        block.type === 'tool_use' && block.name === 'Bash'
-      ));
+
+    const activeHistory = visibleMessages(await api.getMessages(sessionId, 50));
+    const firstReply = activeHistory.find((message) => answersInput(message, firstInputId))!;
+    const secondReply = activeHistory.find((message) => answersInput(message, second.inputId))!;
+    // The session's own record of the order: the first response's finish is
+    // relayed before the second response starts.
+    const output = sessionOutputRows(sessionId);
+    const firstFinish = output
+      .filter((row) => row.response_id === firstReply.id && row.part.type === 'finish')
+      .map((row) => Number(row.seq))
+      .at(-1);
+    const secondStart = output
+      .find((row) => row.response_id === secondReply.id && row.part.type === 'start')?.seq;
+    expect(firstFinish, 'the first response must have finished').toBeDefined();
+    expect(secondStart, 'the second response must have started').toBeDefined();
+    expect(
+      Number(firstFinish) < Number(secondStart),
+      'the engine takes the second message only after the first response finished',
+    ).toBe(true);
+
+    const responseOwners = [firstReply, secondReply].map((message) => {
+      const calls = bashOf(message);
       expect(calls).toHaveLength(1);
-      const toolCallId = String(calls[0].id ?? '').trim();
+      const toolCallId = calls[0].toolCallId.trim();
       expect(toolCallId).not.toEqual('');
-      return { messageId: message.message_id, toolCallId };
+      return { messageId: message.id, toolCallId };
     });
     expect(new Set(responseOwners.map((owner) => owner.toolCallId)).size).toBe(2);
 
     const browserResponseOwners = async () => {
-      const bodies = await aiStreamBodies(page);
+      const bodies = await sessionStreamBodies(page);
       const seenOwners = new Set<string>();
       let completedReplyCursor = -1;
       for (const body of bodies) {
         const requestedCursor = new URL(body.url).searchParams.get('after_seq');
         expect(
           requestedCursor === null ? -1 : Number(requestedCursor),
-          'reply handoff must not replay a reply whose terminal cursor was received',
+          'following on must not replay a reply whose finish the page received',
         ).toBeGreaterThanOrEqual(completedReplyCursor);
         let messageId = '';
         let replyFinished = false;
@@ -1082,8 +1178,8 @@ test('accepted input waits for the Result boundary and survives live bootstrap',
           if (frame.type === 'start') messageId = String(frame.messageId ?? '');
           if (frame.type === 'finish' && frame.finishReason === 'stop') replyFinished = true;
           if (frame.type === 'data-resume-cursor' && replyFinished) {
-            const cursor = frame.data as { frameSeq: number };
-            completedReplyCursor = Math.max(completedReplyCursor, cursor.frameSeq);
+            const cursor = frame.data as { seq: number };
+            completedReplyCursor = Math.max(completedReplyCursor, cursor.seq);
           }
           if (frame.type !== 'tool-input-start' || frame.toolName !== 'Bash') continue;
           const toolCallId = String(frame.toolCallId ?? '');
@@ -1095,41 +1191,63 @@ test('accepted input waits for the Result boundary and survives live bootstrap',
       }
       return [...seenOwners].sort();
     };
-    const assertBrowserResponseOwners = async (stage: string, expected: string[]) => {
+    const assertBrowserResponseOwners = async (stage: string, expected: string[], message: string) => {
       try {
-        await expect.poll(browserResponseOwners, {
-          message: 'the browser must receive each reply under its durable message identity',
-          timeout: 30_000,
-        }).toEqual([...expected].sort());
+        await expect.poll(browserResponseOwners, { message, timeout: 30_000 }).toEqual([...expected].sort());
       } finally {
-        await test.info().attach(`fifo-${stage}-browser-streams`, {
-          body: JSON.stringify(await aiStreamBodies(page)),
+        await test.info().attach(`responses-${stage}-browser-streams`, {
+          body: JSON.stringify(await sessionStreamBodies(page)),
           contentType: 'application/json',
         });
       }
     };
-    // One response has settled and folded its call behind a header; the other is
+    // One response has ended and folded its call behind a header; the other is
     // still running and holds its card in a group that starts closed. Both are
     // opened, because the count below is of what the reader can reach.
     await revealAssistantProcess(page);
-    await expect(page.getByRole('button', { name: /Bash/ })).toHaveCount(2);
-    await assertBrowserResponseOwners('live', responseOwners.map((owner) => owner.messageId));
+    await expect(page.locator('[data-tool-call-id]').getByRole('button', { name: /^Bash\b/ })).toHaveCount(2);
+    await assertBrowserResponseOwners(
+      'live',
+      responseOwners.map((owner) => owner.messageId),
+      'the browser must receive each reply under its durable message identity',
+    );
 
+    const historyPath = apiPath(`/sessions/${sessionId}/history-blocks`);
+    const reloadedHistory = page.waitForResponse((response) => {
+      if (response.request().method() !== 'GET') return false;
+      const url = new URL(response.url());
+      return url.pathname === historyPath && !url.searchParams.get('before');
+    });
     await page.reload({ waitUntil: 'domcontentloaded' });
+    const reloadedPage = await (await reloadedHistory).json() as { data?: { output_seq?: number } };
+    const reloadedOutputSeq = Number(reloadedPage.data?.output_seq);
+    expect(Number.isFinite(reloadedOutputSeq), 'the reloaded history names its output position').toBe(true);
     await expect(page.getByTestId('run-view')).toBeVisible({ timeout: 60_000 });
     await expect(page.getByTestId('user-message').filter({ hasText: firstUserMarker })).toHaveCount(1);
     await expect(page.getByTestId('user-message').filter({ hasText: secondUserMarker })).toHaveCount(1);
     await revealAssistantProcess(page);
     await expect(
-      page.getByRole('button', { name: /Bash/ }),
+      page.locator('[data-tool-call-id]').getByRole('button', { name: /^Bash\b/ }),
       'cold bootstrap must retain both assistant tool cards across the Result boundary',
     ).toHaveCount(2, { timeout: 60_000 });
-    await assertBrowserResponseOwners('resumed', [lastAssistant.message_id]);
+    await expect.poll(async () => (await sessionStreamBodies(page)).length, {
+      message: 'the reloaded page must follow the session stream',
+    }).toBeGreaterThan(0);
+    const firstFollow = (await sessionStreamBodies(page))[0];
+    expect(
+      Number(new URL(firstFollow.url).searchParams.get('after_seq')),
+      'the reloaded page follows the stream from where its history ends',
+    ).toBeGreaterThanOrEqual(reloadedOutputSeq);
+    await assertBrowserResponseOwners(
+      'resumed',
+      [],
+      'the reloaded page reads both calls from history; its stream replays neither',
+    );
     await expect(page.getByTestId('run-composer-stop')).toBeEnabled();
 
     await releaseFiles(api, sessionId, [secondRelease]);
     await expect.poll(async () => {
-      const history = await api.getMessages(sessionId, 100);
+      const history = await api.getMessages(sessionId, 50);
       return {
         first: history.messages.filter((message) => (
           message.role === 'user' && messageText(message).includes(firstUserMarker)
@@ -1137,34 +1255,35 @@ test('accepted input waits for the Result boundary and survives live bootstrap',
         second: history.messages.filter((message) => (
           message.role === 'user' && messageText(message).includes(secondUserMarker)
         )).length,
+        open: history.messages.filter((message) => (
+          message.role === 'assistant' && message.metadata?.status !== 'ended'
+        )).length,
       };
     }, {
       timeout: 180_000,
       intervals: [500, 1_000],
-      message: 'the eventual Result must commit both root inputs to SessionStore',
-    }).toEqual({ first: 1, second: 1 });
+      message: 'both messages stay in history once each, and both responses end',
+    }).toEqual({ first: 1, second: 1, open: 0 });
     await api.waitForSessionReady(sessionId, TURN_TIMEOUT_MS);
     await expect.poll(async () => {
-      const history = await api.getMessages(sessionId, 100);
-      const ownedBlocks = history.messages.flatMap((message) => (
-        (message.blocks ?? []).map((block) => ({ messageId: message.message_id, block }))
-      ));
+      const history = visibleMessages(await api.getMessages(sessionId, 50));
       return responseOwners.map(({ toolCallId }) => ({
         toolCallId,
-        callOwners: ownedBlocks.filter(({ block }) => (
-          block.type === 'tool_use' && block.id === toolCallId
-        )).map(({ messageId }) => messageId),
-        resultOwners: ownedBlocks.filter(({ block }) => (
-          block.type === 'tool_result' && block.tool_use_id === toolCallId
-        )).map(({ messageId }) => messageId),
+        owners: history
+          .filter((message) => messageToolCalls(message).some((call) => call.toolCallId === toolCallId))
+          .map((message) => message.id),
+        settled: history
+          .flatMap(messageToolCalls)
+          .filter((call) => call.toolCallId === toolCallId)
+          .every(toolCallSettled),
       }));
     }, {
       timeout: 45_000,
-      message: 'settlement must retain each tool call and result only in its original response',
+      message: 'each tool call and its result stay only in their original response',
     }).toEqual(responseOwners.map(({ messageId, toolCallId }) => ({
       toolCallId,
-      callOwners: [messageId],
-      resultOwners: [messageId],
+      owners: [messageId],
+      settled: true,
     })));
   } finally {
     await releaseFiles(api, sessionId, [firstRelease, secondRelease]).catch(() => {});
@@ -1189,29 +1308,34 @@ test('same-turn Bash calls survive cold bootstrap without replacing their siblin
 
   try {
     await openSessionView(page, sessionId);
-    await sendPrompt(page, sessionId, [
+    const receipt = await receiptOf(await sendPrompt(page, sessionId, [
       `E2E same-turn Bash tools ${runId}.`,
       'In one assistant response, invoke exactly two Bash tools:',
       `- ${firstCommand}`,
       `- ${secondCommand}`,
       'Submit both calls in that response before waiting for either result and use no other tool.',
       `After both results arrive, reply with exactly ${finalMarker}.`,
-    ].join('\n'));
+    ].join('\n')));
 
     // Claude Code executes state-changing Bash calls sequentially even when
-    // the model emits both tool_use blocks in one response. The first marker
-    // anchors the unresolved turn; its projection must already retain both.
-    const firstDidStart = await waitForToolStart(api, sessionId, [firstStarted]);
-    test.skip(!firstDidStart, 'the configured model did not issue the requested same-turn Bash calls');
+    // the model emits both calls in one response. The first marker anchors
+    // the running response; its history must already carry both calls.
+    const firstDidStart = await waitForToolStart(api, sessionId, [firstStarted], TOOL_START_TIMEOUT_MS, receipt.input_id);
+    // A failure, not a skip: a skipped result ends the whole Playwright
+    // process group, which costs the lane instead of this one test.
+    expect(firstDidStart, 'the configured model did not issue the requested same-turn Bash calls').toBe(true);
 
     const toolTargets = [firstStarted, secondStarted].sort();
     await expect.poll(async () => {
-      const history = await api.getMessages(sessionId, 100);
-      return activeBashEvidence(history.active_turn_overlay?.message, toolTargets);
+      const history = visibleMessages(await api.getMessages(sessionId, 50));
+      const running = history.find((message) => (
+        answersInput(message, receipt.input_id) && message.metadata?.status === 'running'
+      ));
+      return activeBashEvidence(running, toolTargets);
     }, {
       timeout: 30_000,
       intervals: [250, 500, 1_000],
-      message: 'the active assistant overlay must retain two distinct unresolved sibling Bash calls',
+      message: 'the running response must carry two distinct sibling Bash calls without results',
     }).toEqual({
       bashCalls: 2,
       distinctToolCallIds: 2,
@@ -1219,8 +1343,8 @@ test('same-turn Bash calls survive cold bootstrap without replacing their siblin
       resultIds: [],
     });
 
-    // The turn is still running, so its two sibling calls sit in a process group
-    // that starts closed — on this page and again on the reloaded one.
+    // The response is still running, so its two sibling calls sit in a process
+    // group that starts closed — on this page and again on the reloaded one.
     await openLiveProcessGroup(page);
     await expect(page.getByRole('button', { name: /Bash/ })).toHaveCount(2, { timeout: 60_000 });
     await page.reload({ waitUntil: 'domcontentloaded' });

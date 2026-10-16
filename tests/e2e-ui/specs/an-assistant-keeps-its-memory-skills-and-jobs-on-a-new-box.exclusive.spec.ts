@@ -16,9 +16,20 @@ import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
-import { documentsByField } from '../fixtures/dbOracle';
+import { postgresRows, sqlLiteral } from '../fixtures/dbOracle';
 import { requireSandboxHandle, sandboxExec } from '../fixtures/sandboxOps';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
+
+/**
+ * The published snapshots of the Assistant's profile state: the archive the
+ * platform keeps beside the engine's native session store, one head per owner.
+ */
+function profileStateHeads(id: string): Array<{ snapshot_id: string }> {
+  return postgresRows<{ snapshot_id: string }>(
+    `SELECT snapshot_id FROM runtime_state_heads WHERE archive = 'profile_state' `
+      + `AND subject_kind = 'assistant' AND subject_id = ${sqlLiteral(id)}`,
+  );
+}
 
 const sessions = trackSessions();
 let assistantId = '';
@@ -55,10 +66,7 @@ test('an Assistant keeps its memory, its own skill and its scheduled job on a ne
   expect(taught.errorText).toBeFalsy();
   expect(taught.text).toContain('DONE');
   // The mirror publishes the profile on its own; pausing also saves it.
-  await expect.poll(
-    () => documentsByField('runtime_profile_snapshot_heads', '$.subject_id', assistantId).length,
-    { timeout: 30_000 },
-  ).toBe(1);
+  await expect.poll(() => profileStateHeads(assistantId).length, { timeout: 30_000 }).toBe(1);
 
   await api.hibernateWorkspace(assistantId);
   const secondBox = String((await api.waitForWorkspaceReady(assistantId, 90_000)).current_sandbox_id || '');

@@ -1,11 +1,11 @@
-"""Shared helpers for the sandbox e2e capability suite.
+"""Shared helpers for the live e2e suite.
 
-Leading-underscore module → never collected as a test. Centralizes the
-``{code,message,data}`` envelope unwrap, the session create/READY poll, the
-AI-SDK Data-Stream-Protocol SSE reader, the file API, and the interaction
-respond / settle helpers so the per-capability test files stay readable. Mirrors
-the wiring of ``test_files.py`` exactly (same endpoints, same envelope, same
-READY contract) — no divergent paths.
+Leading-underscore module, never collected as a test. It holds the
+``{code,message,data}`` envelope unwrap, session creation and the READY poll,
+the file and terminal APIs, the conversation as the console drives it (send an
+input, follow the session's stream, answer, interrupt, wait until settled, read
+history) and reads of the facts the platform records in its database, so the
+per-capability test files stay readable and use one path for each.
 """
 
 from __future__ import annotations
@@ -23,6 +23,10 @@ from urllib.parse import urlparse
 import httpx
 import pytest
 
+from tests.e2e._service_containers import (
+    POSTGRES_CONTAINER_HANDLE,
+    require_service_container,
+)
 from tests.e2e._engine_profile import (
     agent_id as agent_id,
     approval_presentation as approval_presentation,
@@ -42,8 +46,8 @@ READY_TIMEOUT_S = float(os.getenv("ASTRABOX_E2E_READY_TIMEOUT", "180"))
 STREAM_TIMEOUT_S = float(os.getenv("ASTRABOX_E2E_STREAM_TIMEOUT", "240"))
 SETTLE_TIMEOUT_S = float(os.getenv("ASTRABOX_E2E_SETTLE_TIMEOUT", "120"))
 
-# UI states (data_stream contract) that are terminal-before-ready failures.
-TERMINAL_STATES = {"TERMINATED", "RECOVERY_REQUIRED", "DELETED"}
+#: Session states a conversation does not come back from.
+TERMINAL_STATES = {"TERMINATED", "DELETED"}
 
 
 def data(resp: httpx.Response, *, expect: int = 200) -> dict:
@@ -214,7 +218,7 @@ def _set_permission_mode_once_settable(
     state the refusal is about rather than retrying blind — a session that never
     settles fails with what it was doing instead of exhausting a retry budget.
     """
-    deadline = time.monotonic() + timeout
+    deadline = deadline_after(timeout)
     while time.monotonic() < deadline:
         detail = get_session(client, sid)
         state = str(detail.get("state") or "")
@@ -233,7 +237,7 @@ def _set_permission_mode_once_settable(
             return
         time.sleep(0.5)
     pytest.fail(
-        f"session {sid} stayed CREATING for {timeout:.0f}s; never became settable"
+        f"session {sid} stayed CREATING until the deadline; never became settable"
     )
 
 
@@ -477,6 +481,88 @@ def destroy_sandbox_pod(*, pod: str, kubeconfig: str, namespace: str) -> None:
     )
 
 
+def kube_access() -> tuple[str, str]:
+    """The deployment's cluster access: kubeconfig path and sandbox namespace."""
+    kubeconfig = os.getenv("ASTRABOX_E2E_KUBECONFIG", "").strip()
+    namespace = os.getenv("ASTRABOX_E2E_KUBE_NAMESPACE", "").strip()
+    assert kubeconfig and namespace, (
+        "destroying a box needs the deployment's cluster access "
+        "(ASTRABOX_E2E_KUBECONFIG, ASTRABOX_E2E_KUBE_NAMESPACE)"
+    )
+    return kubeconfig, namespace
+
+
+def destroy_box(sandbox_id: str) -> None:
+    """Remove a box the way losing its node would: its BatchSandbox and Pod are gone.
+
+    Nothing orderly happens first — no terminate, no hibernate — so the
+    platform learns of the loss only from the runtime's connection and the
+    control plane. Every process in the box is killed outright before the
+    BatchSandbox is deleted: a deleted Pod's containers get its 30 s grace
+    period, in which the egress stops serving the box's credentials while the
+    engine still runs, and an engine that reports what it saw then (a model
+    call refused) is not a box that vanished. Returns once neither the
+    BatchSandbox nor a Pod it owned exists, so what the test then observes is
+    the platform reacting to a box that is really gone. The Pods are found by
+    their owner reference, as :func:`assert_kubernetes_runtime_image` finds them.
+    """
+    kubeconfig, namespace = kube_access()
+    command = ["kubectl", "--kubeconfig", kubeconfig, "--namespace", namespace]
+    resource = "batchsandboxes.sandbox.opensandbox.io"
+
+    def kubectl_json(*args: str) -> dict:
+        done = subprocess.run(
+            [*command, *args, "-o", "json"], capture_output=True, text=True, timeout=30, check=False
+        )
+        assert done.returncode == 0, f"kubectl {' '.join(args)} failed: {done.stderr[-400:]}"
+        return json.loads(done.stdout)
+
+    batch_uid = str((kubectl_json("get", resource, sandbox_id).get("metadata") or {}).get("uid") or "")
+    assert batch_uid, f"BatchSandbox {sandbox_id} has no uid"
+
+    def owned_pods() -> list[str]:
+        return [
+            str((item.get("metadata") or {}).get("name"))
+            for item in kubectl_json("get", "pods").get("items") or []
+            if any(
+                owner.get("kind") == "BatchSandbox" and owner.get("uid") == batch_uid
+                for owner in (item.get("metadata") or {}).get("ownerReferences") or []
+            )
+        ]
+
+    pods = owned_pods()
+    assert pods, f"BatchSandbox {sandbox_id} owns no Pod; this is not the box the session runs in"
+    for pod in pods:
+        for container in (kubectl_json("get", "pod", pod).get("spec") or {}).get("containers") or []:
+            # SIGKILL to every process but the container's init, which then has
+            # nothing left to run; the Pod's deletion follows at once.
+            killed = subprocess.run(
+                [*command, "exec", pod, "-c", str(container["name"]), "--", "sh", "-c", "kill -9 -1"],
+                capture_output=True, text=True, timeout=30, check=False,
+            )
+            # Killing the container's processes may also kill the exec session.
+            assert killed.returncode in (0, 137), (
+                f"could not kill the processes of {pod}/{container['name']}: {killed.stderr[-400:]}"
+            )
+    deleted = subprocess.run(
+        [*command, "delete", resource, sandbox_id, "--cascade=foreground", "--wait=false"],
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert deleted.returncode == 0, f"could not delete BatchSandbox {sandbox_id}: {deleted.stderr[-400:]}"
+    deadline = deadline_after(90.0)
+    remaining: list[str] = []
+    while time.monotonic() < deadline:
+        batch = subprocess.run(
+            [*command, "get", resource, sandbox_id, "--ignore-not-found", "-o", "name"],
+            capture_output=True, text=True, timeout=30, check=True,
+        ).stdout.strip()
+        remaining = ([batch] if batch else []) + [pod for pod in owned_pods() if pod in pods]
+        if not remaining:
+            return
+        time.sleep(0.5)
+    pytest.fail(f"box {sandbox_id} was not physically removed: {remaining}")
+
+
 def assert_kubernetes_runtime_image(
     *,
     sandbox_id: str,
@@ -712,7 +798,7 @@ def poll_until_ready(
 ) -> list[str]:
     """Poll any Session until READY and optionally prove its sandbox image."""
     seen: list[str] = []
-    deadline = time.monotonic() + timeout
+    deadline = deadline_after(timeout)
     while time.monotonic() < deadline:
         detail = get_session(client, sid)
         state = str(detail.get("state") or "")
@@ -766,7 +852,10 @@ def poll_until_ready(
                 f"(last_error={detail.get('last_error')!r}); states={seen}"
             )
         time.sleep(0.3)
-    pytest.fail(f"session {sid} did not reach READY within {timeout:.0f}s; states={seen}")
+    pytest.fail(
+        f"session {sid} did not reach READY in time; states={seen}; "
+        f"{json.dumps(_session_facts(client, sid))[:1500]}"
+    )
 
 
 def box_is_running(*, sandbox_id: str, client: httpx.Client) -> bool:
@@ -888,7 +977,7 @@ def download(client: httpx.Client, sid: str, abspath: str) -> httpx.Response:
 def wait_for_file(client: httpx.Client, sid: str, abspath: str, timeout: float = 60.0) -> bytes | None:
     """Poll the file API until ``abspath`` downloads with 200; return its bytes or None."""
     name = abspath.rsplit("/", 1)[-1]
-    deadline = time.monotonic() + timeout
+    deadline = deadline_after(timeout)
     while time.monotonic() < deadline:
         if name in file_names(client, sid):
             dl = download(client, sid, abspath)
@@ -898,126 +987,571 @@ def wait_for_file(client: httpx.Client, sid: str, abspath: str, timeout: float =
     return None
 
 
-# ── AI-SDK Data-Stream-Protocol SSE reader ─────────────────────────────────────
+# ── the conversation: send, follow, answer, interrupt, settle ─────────────────
+#
+# The console sends with ``POST /sessions/{id}/inputs`` and hears everything on
+# ``GET /sessions/{id}/stream?after_seq=``. One HTTP response of that stream
+# ends after the part that finishes a response (``finish`` or ``error``), and
+# each burst of parts is followed by a ``data-resume-cursor`` carrying the
+# sequence to reconnect from. A response opens with a ``start`` part whose
+# ``messageMetadata`` names it (``response_id``), the inputs it answers
+# (``input_ids``) and who started it (``origin``); a paused response reopens
+# with a bare ``start`` naming the same ``messageId``.
+
+#: Parts that show the runtime produced something for a response: model text
+#: or reasoning, or a tool call. ``start`` is the platform's announcement, not
+#: output.
+OUTPUT_PART_TYPES = frozenset(
+    {
+        "text-start",
+        "text-delta",
+        "reasoning-start",
+        "reasoning-delta",
+        "tool-input-start",
+        "tool-input-delta",
+        "tool-input-available",
+    }
+)
+
+#: Longer than the stream's 15s keep-alive, so a quiet stream never times out
+#: a read while the server is alive; a dead connection still fails the read.
+_STREAM_READ_TIMEOUT_S = 45.0
+
+#: The monotonic time by which the running test's helpers give their verdict.
+#: ``conftest.live_test_deadline`` sets it for every live test from the test's
+#: own budget: pytest-timeout kills the process where it stands, so a helper
+#: that waits up to the hard ceiling dies without saying what it saw.
+TEST_DEADLINE: float | None = None
+
+
+def deadline_after(timeout: float | None) -> float:
+    """The earlier of ``timeout`` from now and the running test's own deadline."""
+    candidates = [time.monotonic() + (STREAM_TIMEOUT_S if timeout is None else timeout)]
+    if TEST_DEADLINE is not None:
+        candidates.append(TEST_DEADLINE)
+    return min(candidates)
 
 
 @dataclass
-class StreamResult:
-    """Parsed result of one ``ai-stream`` POST.
+class Response:
+    """One response as the stream delivered it: its own parts, in order."""
 
-    ``interactions`` are the ``data-interaction`` payloads (each carries an
-    ``interaction_id`` + ``tool_name`` + ``kind``). ``finish_reason`` is the
-    ``finish`` frame's reason (``tool-calls`` when the turn paused on an
-    interaction, ``stop`` when it completed). ``error`` is the in-band error
-    frame text, if any.
-    """
-
-    n_text_delta: int = 0
+    response_id: str
+    origin: str | None = None
+    input_ids: tuple[str, ...] = ()
+    #: ``messageMetadata`` of its ``start`` and ``finish`` parts, merged.
+    metadata: dict = field(default_factory=dict)
+    parts: list[dict] = field(default_factory=list)
     text: str = ""
+    n_text_delta: int = 0
     interactions: list[dict] = field(default_factory=list)
     tool_names: list[str] = field(default_factory=list)
-    results: list[dict] = field(default_factory=list)
-    finish_reason: str | None = None
+    #: Every ``finish`` the response sent: ``tool-calls`` for each pause on an
+    #: interaction, then the engine's own reason (or none) for its end.
+    finish_reasons: list[str | None] = field(default_factory=list)
     error: str | None = None
-    saw_ui_header: bool = False
-    content_type: str = ""
+    #: ``time.monotonic()`` when its ``start`` arrived and when its first text did.
+    started_at: float = field(default_factory=time.monotonic)
+    first_text_at: float | None = None
+    first_text_wall: float | None = None
+    ended_wall: float | None = None
 
     @property
-    def last_interaction_id(self) -> str | None:
-        return self.interactions[-1].get("interaction_id") if self.interactions else None
+    def finish_reason(self) -> str | None:
+        return self.finish_reasons[-1] if self.finish_reasons else None
+
+    @property
+    def paused(self) -> bool:
+        return bool(self.finish_reasons) and self.finish_reasons[-1] == "tool-calls"
+
+    @property
+    def ended(self) -> bool:
+        return bool(self.finish_reasons) and self.finish_reasons[-1] != "tool-calls"
+
+    @property
+    def produced_output(self) -> bool:
+        return any(part.get("type") in OUTPUT_PART_TYPES for part in self.parts)
+
+    def take(self, part: dict) -> None:
+        self.parts.append(part)
+        kind = part.get("type")
+        if kind == "text-delta":
+            if self.first_text_at is None:
+                self.first_text_at = time.monotonic()
+                self.first_text_wall = time.time()
+            self.n_text_delta += 1
+            delta = part.get("delta")
+            if isinstance(delta, str):
+                self.text += delta
+        elif kind == "data-interaction":
+            record = part.get("data")
+            assert isinstance(record, dict), f"an interaction part carries no record: {part}"
+            self.interactions.append(record)
+        elif kind == "tool-input-available":
+            name = part.get("toolName")
+            if name:
+                self.tool_names.append(str(name))
+        elif kind == "error":
+            self.error = str(part.get("errorText") or "unknown error")
+        elif kind == "finish":
+            reason = part.get("finishReason")
+            self.finish_reasons.append(str(reason) if reason is not None else None)
+            if isinstance(part.get("messageMetadata"), dict):
+                self.metadata.update(part["messageMetadata"])
+            if reason != "tool-calls":
+                self.ended_wall = time.time()
+
+    def summary(self) -> dict:
+        return {
+            "response_id": self.response_id,
+            "origin": self.origin,
+            "input_ids": list(self.input_ids),
+            "finish_reasons": self.finish_reasons,
+            "error": self.error,
+            "text": self.text[:200],
+            "parts": len(self.parts),
+        }
 
 
-def stream_turn(
+@dataclass
+class SessionStream:
+    """What the console's stream delivered for one session, response by response.
+
+    ``cursor`` is the sequence to reconnect from; it only moves at a burst
+    boundary, so stopping between two connections neither drops nor repeats a
+    part. ``open_response`` is the response whose message segment is open at
+    the cursor: its later parts arrive without another ``start``.
+    """
+
+    session_id: str
+    cursor: int = 0
+    responses: dict[str, Response] = field(default_factory=dict)
+    input_failures: dict[str, dict] = field(default_factory=dict)
+    #: Parts that belong to no open message (session-scoped engine output).
+    outside: list[dict] = field(default_factory=list)
+    open_response: str | None = None
+    connections: int = 0
+    saw_ui_header: bool = True
+    #: An ``error`` outside any open message, held until a ``finish`` names
+    #: the response it ended (see :meth:`_take`).
+    #: ``data-session-changed`` parts: the session record changed (its title),
+    #: which belongs to no response and is never stored with one.
+    session_changes: int = 0
+
+    def answering(self, input_id: str) -> Response | None:
+        """The response whose ``start`` names this input, once it started."""
+        for response in self.responses.values():
+            if input_id in response.input_ids:
+                return response
+        return None
+
+    def from_engine(self) -> list[Response]:
+        """Responses the runtime started on its own, in the order they started."""
+        return [r for r in self.responses.values() if r.origin == "engine"]
+
+    def summary(self) -> dict:
+        return {
+            "cursor": self.cursor,
+            "connections": self.connections,
+            "responses": [r.summary() for r in self.responses.values()],
+            "input_failures": self.input_failures,
+            "outside_parts": [part.get("type") for part in self.outside],
+            "session_changes": self.session_changes,
+        }
+
+    def _take(self, part: dict) -> None:
+        kind = part.get("type")
+        if kind == "start":
+            message_id = str(part.get("messageId") or "")
+            assert message_id, f"a start part names no message: {part}"
+            metadata = part.get("messageMetadata")
+            response = self.responses.get(message_id)
+            if isinstance(metadata, dict):
+                assert response is None, (
+                    f"response {message_id} was announced twice on one stream: {part}"
+                )
+                assert metadata.get("response_id") == message_id, (
+                    f"a start part's metadata names another response: {part}"
+                )
+                input_ids = metadata.get("input_ids")
+                assert isinstance(input_ids, list), f"a start part lists no input_ids: {part}"
+                response = Response(
+                    response_id=message_id,
+                    origin=str(metadata.get("origin") or "") or None,
+                    input_ids=tuple(str(item) for item in input_ids),
+                    metadata=dict(metadata),
+                )
+                self.responses[message_id] = response
+            elif response is None:
+                # A response announced before this stream's starting position,
+                # reopening after a pause: nothing here says whose it is.
+                response = Response(response_id=message_id)
+                self.responses[message_id] = response
+            response.parts.append(part)
+            self.open_response = message_id
+            return
+        if kind == "data-session-changed":
+            self.session_changes += 1
+            return
+        if kind == "data-input-failed":
+            failure = part.get("data")
+            assert isinstance(failure, dict) and failure.get("input_id"), (
+                f"a refused input names no input: {part}"
+            )
+            self.input_failures[str(failure["input_id"])] = dict(failure)
+            return
+        if self.open_response is None:
+            # Every response part follows its message's ``start``, including
+            # the error and finish that close a response the runtime lost.
+            self.outside.append(part)
+            return
+        self.responses[self.open_response].take(part)
+        if kind == "finish":
+            self.open_response = None
+
+
+def _stream_parts(resp: httpx.Response, deadline: float, describe: str):
+    """The stream's parts as dicts, failing loudly at the deadline or on a malformed part."""
+    for raw in resp.iter_lines():
+        if time.monotonic() > deadline:
+            raise TimeoutError(describe)
+        line = raw.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[len("data:"):].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        part = json.loads(payload)
+        assert isinstance(part, dict) and part.get("type"), (
+            f"the session stream sent a part that is not a typed object: {payload[:300]}"
+        )
+        yield part
+
+
+def follow_stream(
+    client: httpx.Client,
+    stream: SessionStream,
+    until,
+    *,
+    describe: str,
+    timeout: float | None = None,
+) -> SessionStream:
+    """Follow the session's stream from ``stream.cursor`` until ``until(stream)`` holds.
+
+    ``until`` is checked at every burst boundary and when an HTTP response
+    ends; the stream reconnects from the cursor after each response it
+    finishes, as the console does. Fails with everything it saw when the
+    deadline passes, with ``describe`` naming what it waited for.
+    """
+    deadline = deadline_after(timeout)
+    sid = stream.session_id
+    while True:
+        if until(stream):
+            return stream
+        try:
+            with client.stream(
+                "GET",
+                f"/api/v1/sessions/{sid}/stream",
+                params={"after_seq": str(stream.cursor)},
+                headers={"Accept": "text/event-stream"},
+                timeout=httpx.Timeout(_STREAM_READ_TIMEOUT_S, connect=30.0),
+            ) as resp:
+                if resp.status_code != 200:
+                    body = resp.read()[:400]
+                    raise AssertionError(
+                        f"GET stream after_seq={stream.cursor} -> {resp.status_code}: {body!r}"
+                    )
+                content_type = resp.headers.get("content-type", "")
+                assert "text/event-stream" in content_type, (
+                    f"the session stream is not an event stream (content-type={content_type!r})"
+                )
+                stream.saw_ui_header = stream.saw_ui_header and (
+                    resp.headers.get("x-vercel-ai-ui-message-stream") == "v1"
+                )
+                stream.connections += 1
+                for part in _stream_parts(resp, deadline, describe):
+                    if part.get("type") == "data-resume-cursor":
+                        seq = (part.get("data") or {}).get("seq")
+                        assert isinstance(seq, int) and seq >= stream.cursor, (
+                            f"a resume cursor went backwards or is not a sequence: {part} "
+                            f"(cursor was {stream.cursor})"
+                        )
+                        stream.cursor = seq
+                        if until(stream):
+                            return stream
+                        continue
+                    stream._take(part)
+        except TimeoutError:
+            pass
+        except httpx.TransportError as exc:
+            raise AssertionError(
+                f"session {sid}: the stream connection failed while waiting for {describe}: "
+                f"{exc!r}; it had delivered {json.dumps(stream.summary())[:3000]}"
+            ) from exc
+        if until(stream):
+            return stream
+        if time.monotonic() > deadline:
+            raise AssertionError(
+                f"session {sid}: {describe} did not happen in time. The stream delivered "
+                f"{json.dumps(stream.summary())[:3000]}; the session reads "
+                f"{json.dumps(_session_facts(client, sid))[:1500]}"
+            )
+
+
+def _session_facts(client: httpx.Client, sid: str) -> dict:
+    """What the session detail says about the runtime, for a failure message."""
+    try:
+        detail = get_session(client, sid)
+    except Exception as exc:  # noqa: BLE001 - a diagnostic must not hide the failure it explains
+        return {"unreadable": str(exc)}
+    return {
+        key: detail.get(key)
+        for key in (
+            "state",
+            "runtime_status",
+            "current_responses",
+            "held_inputs",
+            "last_response",
+            "pending_interaction",
+            "last_error",
+            "runtime_unavailable",
+            "sandbox_id",
+            "output_seq",
+        )
+    }
+
+
+def output_position(client: httpx.Client, sid: str) -> int:
+    """Where the session's output stands now: a page follows the stream from here."""
+    seq = get_session(client, sid).get("output_seq")
+    assert isinstance(seq, int) and seq >= 0, f"session {sid} names no output position: {seq!r}"
+    return seq
+
+
+def send_input(
     client: httpx.Client,
     sid: str,
+    content: str | list,
     *,
-    content: str | None = None,
-    interaction_response: dict | None = None,
-    permission_mode: str | None = None,
-    timeout: float = STREAM_TIMEOUT_S,
     client_message_id: str | None = None,
-) -> StreamResult:
-    """POST ai-stream and parse the SSE to a :class:`StreamResult` (fails loud on non-SSE).
+    permission_mode: str | None = None,
+    duplicate: bool = False,
+) -> dict:
+    """Send one message as the console does and return the platform's receipt.
 
-    ``client_message_id`` is the caller's when it needs one: a retry that mints
-    a fresh id is a SECOND input, not the same one again, and the engine then
-    consumes them out of order (`Hermes input consumption is not the FIFO
-    head`). A caller retrying one message passes the id it used the first time.
+    ``duplicate`` is what the receipt must say: a new ``client_message_id`` is
+    a new input, the same one again is the earlier input's receipt.
     """
-    body: dict = {}
-    if content is not None:
-        body["content"] = content
-        body["client_message_id"] = client_message_id or str(uuid.uuid4())
-    if interaction_response is not None:
-        body["interaction_response"] = interaction_response
+    body: dict = {"content": content, "client_message_id": client_message_id or str(uuid.uuid4())}
     if permission_mode is not None:
         body["permission_mode"] = permission_mode
+    receipt = data(client.post(f"/api/v1/sessions/{sid}/inputs", json=body))
+    assert receipt.get("session_id") == sid and receipt.get("input_id"), (
+        f"the input receipt names no input of this session: {receipt}"
+    )
+    assert receipt.get("client_message_id") == body["client_message_id"], receipt
+    assert receipt.get("duplicate") is duplicate, (
+        f"expected duplicate={duplicate} for this send: {receipt}"
+    )
+    return receipt
 
-    res = StreamResult()
-    parts: list[str] = []
-    with client.stream(
-        "POST",
-        f"/api/v1/sessions/{sid}/ai-stream",
-        json=body,
-        headers={"Accept": "text/event-stream"},
-        timeout=httpx.Timeout(timeout, connect=30.0),
-    ) as resp:
-        res.content_type = resp.headers.get("content-type", "")
-        assert "text/event-stream" in res.content_type, (
-            f"ai-stream did not return SSE (content-type={res.content_type!r}); "
-            f"body={resp.read()[:400]!r}"
+
+@dataclass
+class Reply:
+    """A message the test sent and what the stream delivered for it."""
+
+    session_id: str
+    input_id: str
+    client_message_id: str
+    stream: SessionStream
+    sent_at: float = 0.0
+    sent_wall: float = 0.0
+
+    @property
+    def response(self) -> Response | None:
+        return self.stream.answering(self.input_id)
+
+    @property
+    def input_failure(self) -> dict | None:
+        return self.stream.input_failures.get(self.input_id)
+
+    @property
+    def response_id(self) -> str | None:
+        return self.response.response_id if self.response else None
+
+    @property
+    def text(self) -> str:
+        return self.response.text if self.response else ""
+
+    @property
+    def n_text_delta(self) -> int:
+        return self.response.n_text_delta if self.response else 0
+
+    @property
+    def interactions(self) -> list[dict]:
+        return self.response.interactions if self.response else []
+
+    @property
+    def tool_names(self) -> list[str]:
+        return self.response.tool_names if self.response else []
+
+    @property
+    def finish_reason(self) -> str | None:
+        return self.response.finish_reason if self.response else None
+
+    @property
+    def error(self) -> str | None:
+        return self.response.error if self.response else None
+
+    @property
+    def paused(self) -> bool:
+        return bool(self.response and self.response.paused)
+
+    @property
+    def ended(self) -> bool:
+        return bool(self.response and self.response.ended)
+
+    @property
+    def outcome(self) -> str | None:
+        """``failed`` when the platform closed a response the runtime lost; the
+        engine's own endings carry their reason in ``finish_reason``."""
+        return self.response.metadata.get("outcome") if self.response else None
+
+    @property
+    def saw_ui_header(self) -> bool:
+        return self.stream.saw_ui_header and self.stream.connections > 0
+
+    @property
+    def cursor(self) -> int:
+        return self.stream.cursor
+
+
+def follow_reply(
+    client: httpx.Client,
+    reply: Reply,
+    *,
+    until: str = "pause",
+    timeout: float | None = None,
+    allow_refusal: bool = False,
+) -> Reply:
+    """Follow the stream until the response to ``reply``'s input next reaches ``until``.
+
+    ``output``: the runtime produced text, reasoning or a tool call for it
+    since this call began (or it paused or ended first); ``pause``: it paused
+    on an interaction again, or ended; ``end``: it ended. A refused input
+    (``data-input-failed``) fails the caller unless ``allow_refusal``: nothing
+    will answer it.
+    """
+    assert until in ("output", "pause", "end"), until
+    before = reply.response
+    finishes_before = len(before.finish_reasons) if before else 0
+    parts_before = len(before.parts) if before else 0
+
+    def reached(stream: SessionStream) -> bool:
+        if reply.input_id in stream.input_failures:
+            return True
+        response = stream.answering(reply.input_id)
+        if response is None:
+            return False
+        if response.ended:
+            return True
+        paused_again = len(response.finish_reasons) > finishes_before
+        if until == "pause":
+            return paused_again
+        if until == "output":
+            return paused_again or any(
+                part.get("type") in OUTPUT_PART_TYPES for part in response.parts[parts_before:]
+            )
+        return False
+
+    follow_stream(
+        client,
+        reply.stream,
+        reached,
+        describe=f"the response to input {reply.input_id} reaching {until!r}",
+        timeout=timeout,
+    )
+    if reply.input_failure is not None and not allow_refusal:
+        raise AssertionError(
+            f"session {reply.session_id} refused input {reply.input_id}: {reply.input_failure}"
         )
-        res.saw_ui_header = resp.headers.get("x-vercel-ai-ui-message-stream") == "v1"
-        for raw in resp.iter_lines():
-            line = raw.strip() if isinstance(raw, str) else raw.decode("utf-8", "replace").strip()
-            if not line or not line.startswith("data:"):
-                continue
-            payload = line[len("data:"):].strip()
-            if not payload or payload == "[DONE]":
-                continue
-            try:
-                ev = json.loads(payload)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(ev, dict):
-                continue
-            etype = ev.get("type")
-            if etype == "text-delta":
-                res.n_text_delta += 1
-                delta = ev.get("delta")
-                if isinstance(delta, str):
-                    parts.append(delta)
-            elif etype == "data-interaction":
-                d = ev.get("data")
-                if isinstance(d, dict):
-                    res.interactions.append(d)
-            elif etype == "tool-input-available":
-                name = ev.get("toolName")
-                if name:
-                    res.tool_names.append(str(name))
-            elif etype == "data-result":
-                result = ev.get("data")
-                assert isinstance(result, dict), "reply result is not an object"
-                res.results.append(result)
-            elif etype == "finish":
-                res.finish_reason = str(ev.get("finishReason") or "")
-            elif etype == "error":
-                res.error = str(ev.get("errorText") or "unknown error")
-    res.text = "".join(parts)
-    return res
+    return reply
 
 
-# ── interaction respond / settle ──────────────────────────────────────────────
+def send_and_follow(
+    client: httpx.Client,
+    sid: str,
+    content: str | list,
+    *,
+    until: str = "pause",
+    client_message_id: str | None = None,
+    permission_mode: str | None = None,
+    timeout: float | None = None,
+    allow_refusal: bool = False,
+) -> Reply:
+    """Send one message and follow the stream until its response reaches ``until``.
+
+    The output position is read before sending, so the response to this input
+    lies after it; anything else the stream delivers on the way (an earlier
+    input's response, the runtime's own) is kept on ``reply.stream`` too.
+    """
+    stream = SessionStream(sid, cursor=output_position(client, sid))
+    sent_at, sent_wall = time.monotonic(), time.time()
+    receipt = send_input(
+        client, sid, content, client_message_id=client_message_id, permission_mode=permission_mode
+    )
+    reply = Reply(
+        session_id=sid,
+        input_id=str(receipt["input_id"]),
+        client_message_id=str(receipt["client_message_id"]),
+        stream=stream,
+        sent_at=sent_at,
+        sent_wall=sent_wall,
+    )
+    return follow_reply(client, reply, until=until, timeout=timeout, allow_refusal=allow_refusal)
 
 
-def respond_interaction(client: httpx.Client, sid: str, interaction_id: str, answer: dict) -> dict:
-    """The FE's primary approve/deny path: ``POST /interaction-respond``."""
-    return data(
+def answer_interaction(client: httpx.Client, sid: str, interaction_id: str, answer: dict) -> dict:
+    """Answer an open interaction as the console does; the platform must take it."""
+    receipt = data(
         client.post(
-            f"/api/v1/sessions/{sid}/interaction-respond",
-            json={"interaction_id": interaction_id, "answer": answer},
+            f"/api/v1/sessions/{sid}/interactions/{interaction_id}/answer",
+            json={"answer": answer},
         )
     )
+    assert receipt.get("answered") is True and receipt.get("interaction_id") == interaction_id, (
+        f"the answer to {interaction_id} was not taken: {receipt}"
+    )
+    return receipt
+
+
+def answer_interaction_refusal(
+    client: httpx.Client, sid: str, interaction_id: str, answer: dict
+) -> tuple[int, str]:
+    """POST an answer that must be refused; ``(status, error code)`` without raising."""
+    resp = client.post(
+        f"/api/v1/sessions/{sid}/interactions/{interaction_id}/answer",
+        json={"answer": answer},
+    )
+    if resp.status_code < 400:
+        return resp.status_code, ""
+    try:
+        return resp.status_code, str(resp.json().get("code") or "")
+    except ValueError:
+        return resp.status_code, resp.text[:200]
+
+
+def interrupt(client: httpx.Client, sid: str, *, expect: str = "accepted") -> dict:
+    """Ask the conversation's runtime to stop, and hold the receipt to ``expect``.
+
+    ``accepted``: a reader will pass the stop to the running runtime;
+    ``idle``: nothing was running to stop.
+    """
+    receipt = data(client.post(f"/api/v1/sessions/{sid}/interrupt", timeout=30.0))
+    assert receipt == {"session_id": sid, "status": expect}, (
+        f"expected the interrupt to be {expect!r}: {receipt}"
+    )
+    return receipt
 
 
 def pending_interaction(client: httpx.Client, sid: str) -> dict | None:
@@ -1029,7 +1563,7 @@ def wait_for_pending_interaction(
     client: httpx.Client, sid: str, *, exclude_id: str | None = None, timeout: float = 20.0
 ) -> dict | None:
     """Poll session detail for a pending interaction (optionally one whose id != ``exclude_id``)."""
-    deadline = time.monotonic() + timeout
+    deadline = deadline_after(timeout)
     while time.monotonic() < deadline:
         pi = pending_interaction(client, sid)
         if pi and (exclude_id is None or str(pi.get("interaction_id")) != exclude_id):
@@ -1038,25 +1572,210 @@ def wait_for_pending_interaction(
     return None
 
 
-def wait_until_settled(client: httpx.Client, sid: str, timeout: float = SETTLE_TIMEOUT_S) -> dict:
-    """Poll until the turn settles: state READY with no pending interaction.
+def is_settled(detail: dict) -> bool:
+    """Whether the detail shows the conversation at rest.
 
-    Returns the final detail. Fails loud on a terminal state or timeout.
+    READY with no response running, no input the platform still holds and
+    nothing waiting on the owner. The four are asked separately because the
+    state is computed from the others and a disagreement is itself a defect.
     """
-    deadline = time.monotonic() + timeout
+    current = detail.get("current_responses")
+    held = detail.get("held_inputs")
+    assert isinstance(current, list) and isinstance(held, list), (
+        f"the session detail does not report its responses and held inputs: {detail}"
+    )
+    return (
+        detail.get("state") == "READY"
+        and not current
+        and not held
+        and not detail.get("pending_interaction")
+    )
+
+
+def wait_until_settled(client: httpx.Client, sid: str, timeout: float = SETTLE_TIMEOUT_S) -> dict:
+    """Poll until the conversation is at rest (see :func:`is_settled`); return the detail.
+
+    Fails loudly on a terminal state or at the deadline, with what the session
+    was doing.
+    """
+    deadline = deadline_after(timeout)
     last: dict = {}
     while time.monotonic() < deadline:
         last = get_session(client, sid)
         state = str(last.get("state") or "")
         if state in TERMINAL_STATES:
-            pytest.fail(f"session {sid} went terminal ({state}) while settling: {last.get('last_error')!r}")
-        if state == "READY" and not last.get("pending_interaction"):
+            pytest.fail(
+                f"session {sid} went terminal ({state}) while settling: {last.get('last_error')!r}"
+            )
+        if is_settled(last):
             return last
         time.sleep(0.3)
     pytest.fail(
-        f"session {sid} did not settle (READY, no pending) within {timeout:.0f}s; "
-        f"state={last.get('state')!r} pending={bool(last.get('pending_interaction'))}"
+        f"session {sid} did not settle within its budget; "
+        f"{json.dumps(_session_facts(client, sid))[:1500]}"
     )
+
+
+# ── history ──────────────────────────────────────────────────────────────────
+
+
+def history(client: httpx.Client, sid: str, *, page_size: int = 50) -> list[dict]:
+    """The whole conversation as the console loads it: UI messages, oldest first."""
+    pages: list[list[dict]] = []
+    before: str | None = None
+    while True:
+        params: dict = {"limit": str(page_size)}
+        if before:
+            params["before"] = before
+        page = data(client.get(f"/api/v1/sessions/{sid}/messages", params=params))
+        messages = page.get("messages")
+        assert isinstance(messages, list), f"history page carries no messages list: {page}"
+        pages.append(messages)
+        if not page.get("has_more"):
+            break
+        before = page.get("before")
+        assert before, f"history says it has more but gives no cursor: {page}"
+    return [message for chunk in reversed(pages) for message in chunk]
+
+
+def message_text(message: dict) -> str:
+    """The visible text of one UI message: its text parts, in order."""
+    return "".join(
+        str(part.get("text") or "")
+        for part in message.get("parts") or []
+        if isinstance(part, dict) and part.get("type") == "text"
+    )
+
+
+def user_messages(messages: list[dict]) -> list[dict]:
+    return [m for m in messages if m.get("role") == "user"]
+
+
+def assistant_messages(messages: list[dict]) -> list[dict]:
+    return [m for m in messages if m.get("role") == "assistant"]
+
+
+def answer_in_history(messages: list[dict], input_id: str) -> dict:
+    """The one assistant message that answers ``input_id``; fails unless there is exactly one."""
+    found = [
+        m
+        for m in assistant_messages(messages)
+        if input_id in ((m.get("metadata") or {}).get("input_ids") or [])
+    ]
+    assert len(found) == 1, (
+        f"history holds {len(found)} answers to input {input_id}: "
+        f"{[(m.get('id'), (m.get('metadata') or {}).get('input_ids')) for m in assistant_messages(messages)]}"
+    )
+    return found[0]
+
+
+# ── what the platform recorded (its PostgreSQL tables) ──────────────────────
+
+
+def _postgres_container() -> str:
+    return require_service_container(POSTGRES_CONTAINER_HANDLE)
+
+
+def sql_literal(value: str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def psql(sql: str) -> list[str]:
+    """Rows of one query against the deployment's own database, as psql prints them."""
+    database = os.getenv("ASTRABOX_E2E_POSTGRES_DB", "astrabox")
+    user = os.getenv("ASTRABOX_E2E_POSTGRES_USER", "astrabox")
+    output = subprocess.check_output(
+        [
+            "docker", "exec", _postgres_container(),
+            "psql", "-X", "-A", "-t", "-q", "-v", "ON_ERROR_STOP=1",
+            "-U", user, "-d", database, "-c", sql,
+        ],
+        text=True,
+        timeout=20,
+    )
+    return [line for line in output.splitlines() if line]
+
+
+def psql_rows(sql: str, *, order_by: str | None = None) -> list[dict]:
+    """Rows of one query as dicts, ordered by the named output columns."""
+    ordering = f" ORDER BY {order_by}" if order_by else ""
+    return [json.loads(line) for line in psql(f"SELECT row_to_json(q)::text FROM ({sql}) q{ordering}")]
+
+
+def assert_database_is_the_live_stack(sid: str, timeout: float = 15.0) -> None:
+    """Prove the selected PostgreSQL container is the one the server writes."""
+    deadline = deadline_after(timeout)
+    while time.monotonic() < deadline:
+        if psql(f"SELECT 1 FROM sessions WHERE session_id = {sql_literal(sid)}"):
+            return
+        time.sleep(1.0)
+    pytest.fail(
+        f"session {sid} is not in PostgreSQL container {_postgres_container()}; "
+        "set ASTRABOX_E2E_POSTGRES_CONTAINER to the database the server uses"
+    )
+
+
+def transcript_entries(sid: str) -> list[dict]:
+    """The runtime's own transcript the platform keeps for a session, in append order.
+
+    Each row is one entry the runtime wrote (``entry`` decoded from its JSON),
+    with the transcript file it belongs to (``subpath`` ``""`` for the main
+    one). This is the custody a replacement runtime resumes from.
+    """
+    rows = psql_rows(
+        "SELECT s.subpath, e.seq, e.entry_json FROM transcript_entries e "
+        "JOIN transcript_scopes s ON s.scope_id = e.scope_id "
+        f"WHERE s.platform_session_id = {sql_literal(sid)}",
+        order_by="subpath, seq",
+    )
+    return [
+        {"subpath": row["subpath"], "seq": row["seq"], "entry": json.loads(row["entry_json"])}
+        for row in rows
+    ]
+
+
+def recorded_output(sid: str, response_id: str) -> list[dict]:
+    """The browser parts the session's reader recorded for one response, in order."""
+    return [
+        row["part"]
+        for row in psql_rows(
+            "SELECT seq, part FROM session_output "
+            f"WHERE session_id = {sql_literal(sid)} AND response_id = {sql_literal(response_id)}",
+            order_by="seq",
+        )
+    ]
+
+
+def recorded_input(sid: str, input_id: str) -> dict:
+    """The platform's custody record of one input (``state``, ``failure``, times)."""
+    rows = psql_rows(
+        "SELECT input_id, state, response_id, failure, created_at, delivered_at, admitted_at "
+        f"FROM session_inputs WHERE session_id = {sql_literal(sid)} AND input_id = {sql_literal(input_id)}"
+    )
+    assert len(rows) == 1, f"session {sid} has {len(rows)} records of input {input_id}"
+    return rows[0]
+
+
+def recorded_response(sid: str, response_id: str) -> dict:
+    """What the reader recorded about one response, with the inputs it answers."""
+    rows = psql_rows(
+        "SELECT r.response_id, r.origin, r.status, r.outcome, r.native_reason, r.error, "
+        "COALESCE((SELECT array_agg(i.input_id ORDER BY i.input_id) FROM session_response_inputs i "
+        "WHERE i.session_id = r.session_id AND i.response_id = r.response_id), '{}') AS input_ids "
+        f"FROM session_responses r WHERE r.session_id = {sql_literal(sid)} "
+        f"AND r.response_id = {sql_literal(response_id)}"
+    )
+    assert len(rows) == 1, f"session {sid} has {len(rows)} records of response {response_id}"
+    return rows[0]
+
+
+def reader_lease(sid: str) -> dict | None:
+    """Which process holds the session's reader lease, and its generation."""
+    rows = psql_rows(
+        "SELECT owner, generation, expires_at > now() AS live FROM session_readers "
+        f"WHERE session_id = {sql_literal(sid)}"
+    )
+    return rows[0] if rows else None
 
 
 #: Sessions this test opened. The reaper fixture in ``conftest`` empties it —
@@ -1096,7 +1815,7 @@ def release_agent(agent_id: str) -> None:
 
 
 def delete_session(client: httpx.Client, sid: str) -> None:
-    """Interrupt a busy turn (so DELETE isn't 409), then delete. Best effort.
+    """Interrupt a working runtime (so DELETE isn't 409), then delete. Best effort.
 
     The reaper calls this for a passing test. A test that is ASSERTING deletion
     calls the API itself; this is teardown, not a fixture for that.
@@ -1142,7 +1861,7 @@ def workspace_path(client: httpx.Client, sid: str, filename: str) -> str:
     runtime identity. Read it there so the suite proves the deployed image and
     host agree without widening the owner-facing Session DTO.
     """
-    deadline = time.monotonic() + READY_TIMEOUT_S
+    deadline = deadline_after(READY_TIMEOUT_S)
     identity: dict = {}
     while time.monotonic() < deadline:
         detail = get_admin_session_detail(client, sid)

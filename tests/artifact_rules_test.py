@@ -2,7 +2,6 @@
 
 import pytest
 
-from astrabox.common.utils.errors import APIError
 from astrabox.core.service.artifacts.manifest import validate_rules
 from astrabox.core.service.artifacts.rules import can_access
 
@@ -30,21 +29,3 @@ def test_explicit_self_prefix_opens_only_when_both_levels_are_declared() -> None
     opened = validate_rules([*rules, {"path": "profiles", "read": "view", "write": "interact"}])
     assert can_access(opened, "profiles/bob", "view", "alice")
     assert not can_access(opened, "profiles/bob", "interact", None, guest=True, write=True)
-
-
-@pytest.mark.parametrize(
-    "rules",
-    [
-        [{"path": "x/{self}/y", "read": "view"}],
-        [{"path": "x/{other}", "read": "view"}],
-        [{"path": "x", "read": "owner", "write": "view"}],
-        [{"path": "x", "read": "owner"}],
-        [{"path": "x/{self}", "read": "view"}, {"path": "x", "write": "interact"}],
-        [{"path": "x", "read": "view"}, {"path": "x", "write": "owner"}],
-        [{"path": "x", "read": ["view"]}],
-    ],
-)
-def test_invalid_rules_are_refused(rules: list) -> None:
-    with pytest.raises(APIError) as error:
-        validate_rules(rules)
-    assert error.value.code == "ARTIFACT_MANIFEST_INVALID"

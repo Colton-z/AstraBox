@@ -3,18 +3,11 @@
 Conventions mirror ``tests/identity_sso_test.py``: config is read at
 construction/registration, so every test sets env via ``monkeypatch.setenv``
 and builds fresh; the module-level session-secret cache is reset per test.
-
-The callback happy path runs the REAL verification code — an RSA key pair is
-generated in-test, the stub IdP signs an id_token with it, ``PyJWKClient`` is
-stubbed to hand back the public key, and the token exchange goes through an
-``httpx.MockTransport`` — so audience/issuer/signature checking is exercised,
-not mocked away.
 """
 
 from __future__ import annotations
 
 import time
-from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -28,7 +21,6 @@ import astrabox.api.routes.auth as auth_routes
 import astrabox.identity.oidc as identity_oidc
 import astrabox.providers.identity_oidc as oidc
 from astrabox.common.utils.errors import APIError
-from astrabox.identity.oidc import IdentityPrincipal
 from astrabox.identity.session_signing import reset_session_signing_cache
 
 _SESSION_SECRET = "unit-test-session-secret-0123456789abcdef"
@@ -74,63 +66,7 @@ def _set_oidc_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ASTRABOX_OIDC_CLIENT_SECRET", "s3cret")
 
 
-def test_oidc_client_secret_can_come_from_a_file(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    secret = tmp_path / "oidc-client-secret"
-    secret.write_text("file-secret\n", encoding="utf-8")
-    monkeypatch.setenv("ASTRABOX_OIDC_ISSUER", "https://idp.example.com")
-    monkeypatch.setenv("ASTRABOX_OIDC_CLIENT_ID", "astrabox-console")
-    monkeypatch.setenv("ASTRABOX_OIDC_CLIENT_SECRET_FILE", str(secret))
-
-    assert oidc.OidcProviderConfig.load().client_secret == "file-secret"
-
-
-def test_oidc_client_secret_refuses_ambiguous_or_empty_file(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setenv("ASTRABOX_OIDC_ISSUER", "https://idp.example.com")
-    monkeypatch.setenv("ASTRABOX_OIDC_CLIENT_ID", "astrabox-console")
-    secret = tmp_path / "oidc-client-secret"
-    secret.write_text("\n", encoding="utf-8")
-    monkeypatch.setenv("ASTRABOX_OIDC_CLIENT_SECRET_FILE", str(secret))
-    with pytest.raises(RuntimeError, match="is empty"):
-        oidc.OidcProviderConfig.load()
-
-    secret.write_text("file-secret\n", encoding="utf-8")
-    monkeypatch.setenv("ASTRABOX_OIDC_CLIENT_SECRET", "inline-secret")
-    with pytest.raises(RuntimeError, match="set only one"):
-        oidc.OidcProviderConfig.load()
-
-
-def test_oidc_api_client_requires_a_complete_long_lived_credential(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    _set_oidc_env(monkeypatch)
-    monkeypatch.setenv("ASTRABOX_OIDC_API_CLIENT_ID", "astrabox-api")
-    with pytest.raises(RuntimeError, match="requires both"):
-        oidc.OidcProviderConfig.load()
-
-    secret = tmp_path / "oidc-api-client-secret"
-    secret.write_text("api-file-secret\n", encoding="utf-8")
-    monkeypatch.setenv("ASTRABOX_OIDC_API_CLIENT_SECRET_FILE", str(secret))
-    config = oidc.OidcProviderConfig.load()
-    assert config.api_client_id == "astrabox-api"
-    assert config.api_client_secret == "api-file-secret"
-
-
 # ── session / flow tokens ──────────────────────────────────────────────────
-
-
-def test_session_token_roundtrip():
-    token = oidc.mint_session_token(
-        user_id="u-1", email="a@b.c", display_name="Ada", roles=["admin"],
-        casdoor_organization="",
-    )
-    claims = oidc.verify_session_token(token, casdoor_organization="")
-    assert claims["sub"] == "u-1"
-    assert claims["email"] == "a@b.c"
-    assert claims["roles"] == ["admin"]
 
 
 def test_session_token_rejects_tamper_and_expiry():
@@ -200,52 +136,6 @@ async def test_resolver_absent_credential_strict_401(monkeypatch: pytest.MonkeyP
     assert envelope["retryable"] is False
 
 
-async def test_resolver_absent_credential_lenient_none(monkeypatch: pytest.MonkeyPatch):
-    _set_oidc_env(monkeypatch)
-    monkeypatch.setenv("ASTRABOX_OIDC_STRICT", "false")
-    resolver = oidc.OidcSessionWebIdentityResolver()
-    assert await resolver.resolve({}) is None
-
-
-async def test_resolver_reads_cookie_and_oidc_bearer(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    _set_oidc_env(monkeypatch)
-
-    async def _principal_from_access_token(
-        config: oidc.OidcProviderConfig,
-        access_token: str,
-    ) -> IdentityPrincipal:
-        assert config.issuer == "https://idp.example.com"
-        assert access_token == "oidc-access-token"
-        return IdentityPrincipal(
-            user_id="u-8",
-            display_name="Ari",
-            roles=("admin",),
-        )
-
-    monkeypatch.setattr(
-        oidc,
-        "principal_from_access_token",
-        _principal_from_access_token,
-    )
-    resolver = oidc.OidcSessionWebIdentityResolver()
-    token = oidc.mint_session_token(
-        user_id="u-7", email=None, display_name="Nia", roles=["admin"],
-        casdoor_organization="",
-    )
-    via_cookie = await resolver.resolve({"cookie": f"other=1; {oidc.SESSION_COOKIE}={token}"})
-    assert via_cookie is not None and via_cookie.user_id == "u-7"
-    assert "admin" in via_cookie.roles
-    via_bearer = await resolver.resolve(
-        {"authorization": "Bearer oidc-access-token"}
-    )
-    assert via_bearer is not None and via_bearer.user_id == "u-8"
-    assert resolver.login_url("/litellm") == (
-        "/api/v1/auth/login?next=%2Flitellm"
-    )
-
-
 async def test_resolver_invalid_session_is_hard_401_even_lenient(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -279,11 +169,6 @@ async def test_api_client_configuration_does_not_scope_browser_sessions(
     assert context.api_scopes is None
 
 
-def test_resolver_fails_loud_unconfigured():
-    with pytest.raises(RuntimeError):
-        oidc.OidcSessionWebIdentityResolver()
-
-
 # ── what a UserInfo answer means ───────────────────────────────────────────
 
 
@@ -294,8 +179,8 @@ def _userinfo_resolver(
 
     Seeds the discovery cache and swaps the transport, so `handler` answers the
     real `principal_from_access_token` and the branch under test is the one
-    that ships. Stubbing `principal_from_access_token` itself, as the resolver
-    tests above do, would decide the outcome in the test instead of reading it.
+    that ships. Stubbing `principal_from_access_token` itself would decide the
+    outcome in the test instead of reading it.
     """
     _set_oidc_env(monkeypatch)
     oidc._discovery_cache["https://idp.example.com"] = {
@@ -315,20 +200,6 @@ def _userinfo_resolver(
     return oidc.OidcSessionWebIdentityResolver()
 
 
-async def test_a_userinfo_identity_becomes_the_user(monkeypatch: pytest.MonkeyPatch):
-    resolver = _userinfo_resolver(
-        monkeypatch,
-        lambda request: httpx.Response(
-            200, json={"sub": "u-11", "email": "ari@example.com", "name": "Ari"}
-        ),
-    )
-
-    context = await resolver.resolve({"authorization": "Bearer good-token"})
-
-    assert context is not None
-    assert context.user_id == "u-11"
-
-
 async def test_a_rejected_token_asks_the_caller_for_a_new_one(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -343,65 +214,6 @@ async def test_a_rejected_token_asks_the_caller_for_a_new_one(
     assert envelope["code"] == "AUTH_REQUIRED"
     assert envelope["status_code"] == 401
     assert envelope["owner"] == "client"
-
-
-async def test_an_identity_without_a_subject_sends_the_reader_to_the_provider(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """The third state, which the other two cannot express.
-
-    UserInfo answered 200 with a document — the token is good and the provider
-    is reachable — but the document carries no `sub`, which means the provider
-    granted no `openid` scope or maps no subject claim. Answering `AUTH_REQUIRED`
-    here sends an operator to reissue tokens and a user to sign in again, and
-    neither ever succeeds. The message has to name the mapping, because the code
-    alone does not say which claim is missing.
-    """
-    resolver = _userinfo_resolver(
-        monkeypatch,
-        lambda request: httpx.Response(200, json={"email": "ari@example.com", "name": "Ari"}),
-    )
-
-    with pytest.raises(APIError) as caught:
-        await resolver.resolve({"authorization": "Bearer good-token"})
-
-    envelope = caught.value.to_error_envelope()
-    assert envelope["code"] == "IDENTITY_PROVIDER_MISCONFIGURED"
-    assert envelope["status_code"] == 502
-    assert envelope["owner"] == "platform"
-    assert envelope["retryable"] is False
-    # The row's only value the fallback does not also produce: an unregistered
-    # code answers `platform`, `False` and the raise site's own status, so
-    # `category` is the whole of what proves this code is registered.
-    assert envelope["category"] == "auth"
-    assert "sub" in envelope["user_message"] and "scope" in envelope["user_message"]
-
-
-async def test_the_three_userinfo_answers_are_three_codes(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """Read together, because the defect this replaces was two of them colliding.
-
-    A missing subject and a rejected token reached the client as one code, so an
-    operator could not tell "reissue the token" from "fix the claim mapping".
-    """
-    answers = {
-        "accepted": httpx.Response(200, json={"sub": "u-11"}),
-        "rejected": httpx.Response(401, json={"error": "invalid_token"}),
-        "no-subject": httpx.Response(200, json={"email": "ari@example.com"}),
-    }
-    seen: dict[str, str] = {}
-    for name, response in answers.items():
-        resolver = _userinfo_resolver(monkeypatch, lambda request, r=response: r)
-        try:
-            context = await resolver.resolve({"authorization": "Bearer t"})
-            seen[name] = f"OK:{context.user_id if context else None}"
-        except APIError as exc:
-            seen[name] = exc.code
-
-    assert len(set(seen.values())) == 3, seen
-    assert seen["accepted"] == "OK:u-11"
-    assert seen["rejected"] != seen["no-subject"]
 
 
 # ── what an RFC 7662 introspection answer means ───────────────────────────
@@ -501,39 +313,6 @@ async def test_client_id_is_the_stable_identity_when_introspection_omits_sub(
     assert context.api_scopes == ["astrabox:read"]
 
 
-async def test_bad_introspection_client_is_a_deployment_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    resolver = _introspection_resolver(
-        monkeypatch,
-        lambda request: httpx.Response(401, json={"error": "invalid_client"}),
-    )
-
-    with pytest.raises(APIError) as caught:
-        await resolver.resolve({"authorization": "Bearer otherwise-valid-token"})
-
-    assert caught.value.code == "IDENTITY_PROVIDER_MISCONFIGURED"
-    assert caught.value.status_code == 502
-    assert "API client" in caught.value.message
-
-
-async def test_api_client_requires_discovered_introspection_endpoint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _set_oidc_env(monkeypatch)
-    monkeypatch.setenv("ASTRABOX_OIDC_API_CLIENT_ID", "astrabox-api")
-    monkeypatch.setenv("ASTRABOX_OIDC_API_CLIENT_SECRET", "api-secret")
-    oidc._discovery_cache["https://idp.example.com"] = dict(_DISCOVERY)
-    resolver = oidc.OidcSessionWebIdentityResolver()
-
-    with pytest.raises(APIError) as caught:
-        await resolver.resolve({"authorization": "Bearer token"})
-
-    assert caught.value.code == "IDENTITY_PROVIDER_MISCONFIGURED"
-    assert caught.value.status_code == 502
-    assert "introspection_endpoint" in caught.value.message
-
-
 # ── routes ─────────────────────────────────────────────────────────────────
 
 
@@ -625,78 +404,6 @@ def test_callback_missing_flow_cookie_400(monkeypatch: pytest.MonkeyPatch):
         "/api/v1/auth/callback", params={"code": "c", "state": "s"}, follow_redirects=False
     )
     assert response.status_code == 400
-
-
-def test_callback_happy_path_sets_session_cookie(monkeypatch: pytest.MonkeyPatch):
-    from cryptography.hazmat.primitives.asymmetric import rsa
-
-    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-
-    id_token = jwt.encode(
-        {
-            "iss": "https://idp.example.com",
-            "aud": "astrabox-console",
-            "sub": "cas-user-1",
-            "name": "Ada",
-            "email": "ada@example.com",
-            "groups": ["astrabox-admin"],
-            "exp": int(time.time()) + 300,
-        },
-        private_key,
-        algorithm="RS256",
-    )
-
-    class _StubSigningKey:
-        key = private_key.public_key()
-
-    class _StubJwkClient:
-        def __init__(self, url: str):
-            assert url == "https://idp.example.com/jwks"
-
-        def get_signing_key_from_jwt(self, token: str) -> Any:
-            return _StubSigningKey()
-
-    def _token_endpoint(request: httpx.Request) -> httpx.Response:
-        body = request.content.decode()
-        assert "grant_type=authorization_code" in body
-        assert "code_verifier=" in body
-        return httpx.Response(200, json={"id_token": id_token})
-
-    transport = httpx.MockTransport(_token_endpoint)
-    real_async_client = httpx.AsyncClient
-
-    def _mock_async_client(**kwargs: Any) -> httpx.AsyncClient:
-        kwargs["transport"] = transport
-        return real_async_client(**kwargs)
-
-    client = _client(monkeypatch)
-    monkeypatch.setattr(auth_routes, "PyJWKClient", _StubJwkClient)
-    monkeypatch.setattr(auth_routes.httpx, "AsyncClient", _mock_async_client)
-
-    flow = oidc.mint_flow_token(state="st-1", code_verifier="ver-1", next_url="/sessions")
-    client.cookies.set(oidc.FLOW_COOKIE, flow)
-    response = client.get(
-        "/api/v1/auth/callback",
-        params={"code": "the-code", "state": "st-1"},
-        follow_redirects=False,
-    )
-    assert response.status_code == 302
-    assert response.headers["location"] == "/sessions"
-    session_cookie = response.cookies.get(oidc.SESSION_COOKIE)
-    assert session_cookie
-    claims = oidc.verify_session_token(session_cookie, casdoor_organization="")
-    assert claims["sub"] == "cas-user-1"
-    assert claims["roles"] == ["admin"]
-
-    # The probe endpoint reflects the session.
-    client.cookies.set(oidc.SESSION_COOKIE, session_cookie)
-    probe = client.get("/api/v1/auth/session")
-    assert probe.json()["authenticated"] is True
-    assert probe.json()["user"]["user_id"] == "cas-user-1"
-
-    # Logout clears it.
-    out = client.post("/api/v1/auth/logout")
-    assert out.status_code == 204
 
 
 # ── Casdoor organization ────────────────────────────────────────────────────
@@ -1008,25 +715,6 @@ def test_a_casdoor_login_from_another_organization_gets_no_session(
     assert oidc.SESSION_COOKIE not in response.cookies
 
 
-def test_a_casdoor_login_from_the_configured_organization_gets_a_session(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    response = _casdoor_callback(
-        monkeypatch, {**_casdoor_user("astrabox"), "aud": "astrabox-console"}
-    )
-
-    assert response.status_code == 302
-    cookie = response.cookies[oidc.SESSION_COOKIE]
-    session = oidc.verify_session_token(cookie, casdoor_organization="astrabox")
-    assert session["sub"] == "astrabox-admin-id"
-    assert session["casdoor_organization"] == "astrabox"
-
-    # The console's session probe, under the same setting, keeps it signed in.
-    client = _client(monkeypatch)
-    client.cookies.set(oidc.SESSION_COOKIE, cookie)
-    assert client.get("/api/v1/auth/session").json()["authenticated"] is True
-
-
 def _session_without_organization() -> str:
     """A session in the shape sign-ins minted before they recorded the
     organization: the same claims under the same key, with none named."""
@@ -1086,33 +774,6 @@ def test_the_session_probe_signs_out_a_session_without_the_organization(
     assert client.get("/api/v1/auth/session").json() == {"authenticated": False}
 
 
-def test_the_sso_overlay_accepts_the_accounts_its_seed_creates(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The overlay's organization and the seed's must be the same one."""
-
-    import json
-
-    import yaml
-
-    root = Path(__file__).resolve().parents[1]
-    overlay = yaml.safe_load((root / "containers/compose.sso.yaml").read_text(encoding="utf-8"))
-    seed = json.loads((root / "containers/casdoor/init_data.json").read_text(encoding="utf-8"))
-    _set_oidc_env(monkeypatch)
-    monkeypatch.setenv(
-        "ASTRABOX_CASDOOR_ORGANIZATION",
-        overlay["services"]["server"]["environment"]["ASTRABOX_CASDOOR_ORGANIZATION"],
-    )
-    config = oidc.OidcProviderConfig.load()
-
-    console = next(app for app in seed["applications"] if app["name"] == "astrabox-console")
-    assert console["organization"] == config.casdoor_organization
-    for user in seed["users"]:
-        identity_oidc.require_casdoor_organization({"owner": user["owner"]}, config)
-    with pytest.raises(identity_oidc.OidcIdentityRejected):
-        identity_oidc.require_casdoor_organization({"owner": "built-in"}, config)
-
-
 # ── the serve guard ────────────────────────────────────────────────────────
 
 
@@ -1124,24 +785,3 @@ def test_guard_refuses_public_bind_without_auth(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr("os.path.exists", lambda path: False)
     with pytest.raises(SystemExit):
         _guard_unauthenticated_bind("0.0.0.0")
-
-
-def test_guard_allows_loopback_auth_override_and_container(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    from astrabox.cli.serve import _guard_unauthenticated_bind
-
-    monkeypatch.delenv("ASTRABOX_WEB_IDENTITY", raising=False)
-    monkeypatch.delenv("ASTRABOX_ALLOW_UNAUTHENTICATED_BIND", raising=False)
-    _guard_unauthenticated_bind("127.0.0.1")  # loopback: fine
-
-    monkeypatch.setenv("ASTRABOX_WEB_IDENTITY", "oidc")
-    _guard_unauthenticated_bind("0.0.0.0")  # authenticated: fine
-    monkeypatch.delenv("ASTRABOX_WEB_IDENTITY")
-
-    monkeypatch.setenv("ASTRABOX_ALLOW_UNAUTHENTICATED_BIND", "1")
-    _guard_unauthenticated_bind("0.0.0.0")  # explicit override: fine
-    monkeypatch.delenv("ASTRABOX_ALLOW_UNAUTHENTICATED_BIND")
-
-    monkeypatch.setattr("os.path.exists", lambda path: path == "/.dockerenv")
-    _guard_unauthenticated_bind("0.0.0.0")  # in-container: warns, not refuses

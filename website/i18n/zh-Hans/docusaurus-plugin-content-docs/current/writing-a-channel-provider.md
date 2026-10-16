@@ -51,11 +51,11 @@ AstraBox 会先保存入站任务，再返回确认。适配器提供稳定的 `
 | `reply_context` | 投递回复时使用的非敏感路由信息 |
 | `attention` | 私聊、提及和回复信号 |
 | `participant` | 随消息记录的外部发送者身份，并与触发配置的“允许的发送者”比对；设置了该列表的触发配置会拒绝不带此字段的消息 |
-| `signal` | 这条入站对其消息的说明：`message`、`observation` 或 `authorization`（见下文） |
+| `signal` | 这条入站事件对其消息的说明：`message`、`observation` 或 `authorization`（见下文） |
 
-`reference` 将入站回复关联到之前的平台消息，格式与 `dedup_key` 和投递回执 ID 相同。`dedup_key`、`reference` 和回执 ID 在同一个 Deployment 内必须唯一：平台在不同聊天中会重复的消息编号需要加上聊天标识。`ack_extra` 在回调响应中加入产品要求的字段；`alias_link` 记录投递后才获取的平台消息 ID；`ignore_reason` 标记不应触发执行的已认证事件。
+`reference` 将入站回复关联到之前的平台消息，格式与 `dedup_key` 和投递回执 ID 相同。`dedup_key`、`reference` 和回执 ID 在同一个 Deployment 内必须唯一：平台在不同聊天中会重复的消息编号需要加上聊天标识。`ack_extra` 在回调响应中加入产品要求的字段；`alias_link` 记录投递后才获取的平台消息 ID；`ignore_reason` 标记不得送达 Agent 的已认证事件。
 
-Deployment 的 `attention_policy` 决定一条已认证消息是否需要私聊、提及或回复信号。适配器只报告这些事实，不负责决定策略。策略未唤起的消息会保留为对话上下文，因此之后针对同一 `dedup_key` 唤起它的信号仍可以让它执行。
+Deployment 的 `attention_policy` 决定一条已认证消息是否需要私聊、提及或回复信号。适配器只报告这些事实，不负责决定策略。不满足该策略的消息会保留为对话上下文，因此之后针对同一 `dedup_key`、满足策略的信号仍可以让它执行。在 `participated` 和 `proactive` 回应策略下，核心服务会就普通的保留消息询问回应判断器；适配器照常报告同样的事实，不要为了让消息执行而伪造信号。
 
 ### 上下文与触发分属两路
 
@@ -67,7 +67,7 @@ Deployment 的 `attention_policy` 决定一条已认证消息是否需要私聊�
 | `observation` | 仅作为上下文投递的消息 | `dedup_key`、`participant`、`conversation_key`、`message_timestamp`、`retain_context=True`；不带 `reply_context` |
 | `authorization` | 执行同一 `dedup_key` 已观察消息的许可 | `dedup_key`、`participant`、一个 `attention` 信号；不带 `content`、`reference`、`message_timestamp` 或 `retain_context` |
 
-AstraBox 为每个 `dedup_key` 只保留一条记录，并且最多为它执行一次。无论 `attention_policy` 如何，observation 都不会执行。authorization 以已观察消息的文本和自身的 `reply_context` 执行；它先到达时，AstraBox 最多等待观察一天，之后告知参与者该消息未被回复。消息首次记录的内容会被保留：发送者或对话不一致的信号会被拒绝，在授权前被撤回的消息永远不会执行。
+AstraBox 为每个 `dedup_key` 只保留一条记录，并且最多为它执行一次。无论 `attention_policy` 如何，observation 都不会执行。authorization 以已观察消息的文本和自身的 `reply_context` 执行；authorization 先到达时，AstraBox 最多等待对应的 observation 一天，之后告知参与者该消息未被回复。消息首次记录的内容会被保留：发送者或对话不一致的信号会被拒绝，在授权前被撤回的消息永远不会执行。
 
 ### 将消息划分为对话
 
@@ -89,7 +89,7 @@ return ChannelInbound(
 )
 ```
 
-AstraBox 会记录每条消息所属的对话。对回复的回复、对 Agent 回答的回复，都会加入回复链起点所在的对话，尽管适配器只给出了它引用的那条消息。保留的上下文按同样的对话划分，因此每条回复链只读取自己未被唤起的回复。如果需要让每个 Deployment 在“按群划分”和“按回复链划分”之间选择，请把这个选择作为适配器的一个配置字段提供。
+AstraBox 会记录每条消息所属的对话。对回复的回复、对 Agent 回答的回复，都会加入回复链起点所在的对话，尽管适配器只给出了它引用的那条消息。保留的上下文按同样的对话划分，因此每条回复链只读取自己未发给 Agent 的回复。如果需要让每个 Deployment 在“按群划分”和“按回复链划分”之间选择，请把这个选择作为适配器的一个配置字段提供。
 
 ### 执行身份
 
@@ -101,11 +101,11 @@ AstraBox 会记录每条消息所属的对话。对回复的回复、对 Agent �
 
 如果消息产品通过消息队列、长连接或官方 SDK 投递消息，而不是 HTTP 回调，请使用消息源连接。
 
-设置 `supports_source = True` 并实现 `open_source()`。每条 `ChannelSourceEnvelope` 都应带有稳定的 `dedup_key`。只有 AstraBox 返回持久化接收凭据后才能确认消息；写入失败时应拒绝消息，让上游重新投递。
+设置 `supports_source = True` 并实现 `open_source()`。从中逐条产出（yield）带有稳定 `dedup_key` 的 `ChannelSourceEnvelope`。只有 AstraBox 返回持久化接收回执后才能确认消息；接收失败时拒绝该消息，让消息源重新投递。
 
 消息源支持有序重放游标时，请同时提供 `source_cursor`。AstraBox 在消息持久化后保存游标，并在重新建立连接时传回。
 
-`verify_and_resolve()` 仍是必需方法。只使用消息源连接的适配器应明确拒绝共用 HTTP trigger，例如返回状态码为 `404` 的 `APIError`；不得在未使用的路径上接受未经认证的请求。
+`verify_and_resolve()` 仍是必需方法。只使用消息源连接的适配器必须明确拒绝共用 HTTP trigger，例如抛出状态码为 `404` 的 `APIError`；不得在未使用的路径上接受未经认证的请求。
 
 ## 配置与凭证
 
@@ -135,9 +135,7 @@ requires-python = ">=3.11"
 example = "astrabox_channel_example:ExampleChannelProvider"
 ```
 
-`ExampleChannelProvider.name` 会成为渠道场景名 `channel:example`；入口点请使用同一个名称，确保插件发现名称与产品配置一致。AstraBox 启动时会加载、校验并注册这个插件组。入口点重名或能力接口不完整会导致启动失败。
-
-适配器类也可以声明 `seams_api_version`；声明的版本不兼容时，AstraBox 会在启动阶段报错，而不是等到第一条消息到达后才失败。
+`ExampleChannelProvider.name` 会成为渠道场景名 `channel:example`；入口点请使用同一个名称，确保插件发现名称与产品配置一致。AstraBox 启动时会加载、校验并注册这个插件组。入口点重名或能力接口不完整会导致启动失败。适配器类也可以声明 `seams_api_version`；声明的版本不兼容时，AstraBox 会在启动阶段报错，而不是等到第一条消息到达后才失败。
 
 ## 实现适配器
 
@@ -226,7 +224,7 @@ class ExampleChannelProvider(ChannelProvider):
         )
 ```
 
-`verify_and_resolve()` 会在回调请求中同步执行，传入的 Header 名称均为小写。应先根据原始字节验证签名，再解析正文；认证失败时，返回状态码为 `401` 的 `APIError`。示例中的 `verify_official_signature_and_decode()` 代表消息产品要求的验证函数，请严格按照该产品的官方规范实现。
+`verify_and_resolve()` 会在回调请求中同步执行，传入的 Header 名称均为小写。应先根据原始字节验证签名，再解析正文；认证失败时，抛出状态码为 `401` 的 `APIError`。示例中的 `verify_official_signature_and_decode()` 代表消息产品要求的验证函数，请严格按照该产品的官方规范实现。
 
 ## 投递 Agent 回复 {#deliver-agent-replies}
 
@@ -234,16 +232,16 @@ class ExampleChannelProvider(ChannelProvider):
 
 AstraBox 会为目标渠道订阅 Session 输出，与 Web 读取同一份内容，因此投递不依赖新的
 入站消息。原生后台任务或扩展可以唤醒主 Agent，为接入的目标渠道产生新回复。适配器通过
-普通投递方法收到回复，不需要检查原生对话记录、轮询子任务或另起 Agent 执行。
+普通投递方法收到回复，不需要检查原生对话记录、轮询子任务，也不向 Agent 另发消息。
 
-返回 `ChannelDeliveryReceipt`，其中包含本次创建或更新的全部平台消息 ID。AstraBox 会先保存这些 ID，再把投递标记为完成，让后续入站回复可以解析 `reference`。Receipt 本身不能保证外部发送幂等：如果发送成功但 Receipt 持久化失败，投递可能再次执行。产品 API 提供幂等支持时，应使用该能力。
+返回 `ChannelDeliveryReceipt`，其中包含本次创建或更新的全部平台消息 ID。AstraBox 会先保存这些 ID，再把投递标记为完成，让后续入站回复可以解析 `reference`。回执本身不能保证外部发送幂等：如果发送成功但回执持久化失败，投递可能再次执行。产品 API 提供幂等支持时，应使用该能力。
 
-如果消息产品支持在 Agent 执行期间更新消息，请设置 `supports_streaming_delivery = True` 并实现 `open_delivery()`。依次处理 `turn_started`、`progress`、`settled` 和 `failed` 事件。`prior_aliases` 参数包含之前一次投递已保存的平台消息 ID；应更新这些消息，不要创建替代消息。
+如果消息产品支持在 Agent 执行期间更新消息，请设置 `supports_streaming_delivery = True` 并实现 `open_delivery()`。处理 `turn_started`、`progress`、`settled` 和 `failed` 事件。`prior_aliases` 参数包含之前一次投递已保存的平台消息 ID；应更新这些消息，不要创建替代消息。
 
-使用 `ChannelEvent.response_id` 标识主 Agent 回复，无需依赖它的触发来源。`turn_id`
-是产生该回复的 Session 轮次，原生 Session 输出的 `turn_id` 可以为空；不应以存在入站消息作为投递条件。`progress`
-包含回复的累计正文，包括之前的文本块；更新消息时应替换正文。纯文本投递省略没有正文的
-回复，原生工具卡片仍可在 Web 查看。
+使用 `ChannelEvent.response_id` 标识主 Agent 回复，无需依赖它的触发来源；不应以存在入站消息作为投递条件。
+`progress` 包含回复的累计正文，包括之前的文本块；更新消息时应替换正文。既没有正文、也没有
+问题和失败的回复不会投递：纯文本投递会省略它，流式投递也不会为它收到 `turn_started`。原生
+工具卡片仍可在 Web 查看。
 
 ### 提问与审批 {#questions-and-approvals}
 
@@ -251,8 +249,8 @@ Agent 停下来提问或请求审批时，到此为止的回复会连同问题�
 
 如需显示按钮，请设置 `supports_interaction_actions = True`，并让 `deliver_outbound()` 接受 `interaction` 参数。它是一个 `ChannelInteraction`：为每个带有 `action` 的选项渲染一个按钮，点击时上报一个 `action` 为该字符串的 `ChannelInbound`。AstraBox 会把 action 解析到对应的问题；适配器不解析答案，也不跟踪问题状态。
 
-AstraBox 保留订阅游标，并在重启后从 Session 事件记录重新构建未完成的回复。持久化
-outbox 负责重试，provider 负责展示和目标平台 API 的幂等行为。
+AstraBox 保留每个订阅在 Session 输出日志中的位置，并在重启后从该日志重新读取未完成的
+回复。持久化 outbox 负责重试，适配器负责展示和目标平台 API 的幂等行为。
 
 每个可选能力开关都必须与对应方法一起实现。注册时会拒绝不完整的能力组合。
 
@@ -271,11 +269,11 @@ class TestExampleChannelProvider(ChannelProviderContractSuite):
         return ExampleChannelProvider()
 ```
 
-再加入从消息产品采集的测试样例，覆盖签名验证、事件结构变化、事件重复投递、回复引用和出站 API 错误。最后验证完整链路：
+再加入从消息产品采集的测试样例，覆盖签名验证、各种 payload 形态、事件重复投递、回复引用和出站 API 错误。最后验证完整链路：
 
 1. 适配器出现在渠道配置页面，字段符合预期；
 2. 已签名事件创建或继续预期的对话；
-3. 重复事件 ID 不会再次触发执行；
+3. 重复的事件 ID 不会让这条消息再次执行；
 4. 提及和私聊遵循 Deployment 的 `attention_policy`；
 5. Agent 回复到达原始对话或话题；
 6. 产品 API 拒绝回复时，服务会报告明确的投递错误。

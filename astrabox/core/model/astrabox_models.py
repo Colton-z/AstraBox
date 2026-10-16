@@ -5,65 +5,25 @@ from typing import Any
 
 
 class SessionState(str, Enum):
+    """A session's lifecycle state.
+
+    ``RECOVERY_REQUIRED`` is never stored: a read shows it for a ``READY``
+    session whose runtime is unavailable, until a message replaces the runtime.
+    """
+
     CREATING = "CREATING"
     READY = "READY"
-    BACKGROUND_RUNNING = "BACKGROUND_RUNNING"
-    BUSY = "BUSY"
-    INTERRUPTING = "INTERRUPTING"
     TERMINATED = "TERMINATED"
     RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
     DELETED = "DELETED"
 
 
-VALID_TRANSITIONS: dict[str, set[str]] = {
-    SessionState.CREATING.value: {
-        SessionState.READY.value, SessionState.TERMINATED.value,
-    },
-    SessionState.READY.value: {
-        SessionState.BACKGROUND_RUNNING.value,
-        SessionState.BUSY.value,
-        SessionState.TERMINATED.value,
-        SessionState.DELETED.value, SessionState.RECOVERY_REQUIRED.value,
-    },
-    SessionState.BACKGROUND_RUNNING.value: {
-        SessionState.READY.value,
-        SessionState.BUSY.value,
-        SessionState.TERMINATED.value,
-        SessionState.DELETED.value, SessionState.RECOVERY_REQUIRED.value,
-    },
-    SessionState.BUSY.value: {
-        SessionState.READY.value, SessionState.INTERRUPTING.value,
-        SessionState.RECOVERY_REQUIRED.value, SessionState.TERMINATED.value,
-    },
-    SessionState.INTERRUPTING.value: {
-        SessionState.READY.value, SessionState.RECOVERY_REQUIRED.value,
-    },
-    SessionState.RECOVERY_REQUIRED.value: {
-        SessionState.READY.value, SessionState.CREATING.value,
-        SessionState.TERMINATED.value, SessionState.DELETED.value,
-    },
-    SessionState.TERMINATED.value: {
-        SessionState.CREATING.value, SessionState.DELETED.value,
-    },
-    SessionState.DELETED.value: set(),
-}
-
-
-def validate_transition(from_state: str, to_state: str) -> bool:
-    """Return True if the transition is valid per the state diagram."""
-    allowed = VALID_TRANSITIONS.get(from_state)
-    if allowed is None:
-        return True
-    return to_state in allowed
-
-
-class ErrorCode(str, Enum):
-    UNAUTHORIZED = "UNAUTHORIZED"
-    TEMPLATE_NOT_ALLOWED = "TEMPLATE_NOT_ALLOWED"
-    SESSION_BUSY = "SESSION_BUSY"
-    SESSION_NOT_FOUND = "SESSION_NOT_FOUND"
-    AGENT_RUNTIME_ERROR = "AGENT_RUNTIME_ERROR"
-    INVALID_REQUEST = "INVALID_REQUEST"
+class AgentState(str, Enum):
+    HIBERNATING = "HIBERNATING"
+    PROVISIONING = "PROVISIONING"
+    ACTIVE = "ACTIVE"
+    DELETING = "DELETING"
+    DELETED = "DELETED"
 
 
 @dataclass
@@ -208,37 +168,6 @@ class AgentView:
     client_pool_epoch: str | None = None
     #: Explicit administrator refresh, including unchanged Git branch names.
     prewarm_revision: str | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass
-class SessionSummary:
-    session_id: str
-    user_id: str
-    template_name: str
-    state: SessionState
-    sandbox_id: str | None = None
-    engine_session_key: str | None = None
-    title: str | None = None
-    created_at: str | None = None
-    updated_at: str | None = None
-    deleted: bool = False
-
-    def to_dict(self) -> dict[str, Any]:
-        payload = asdict(self)
-        payload["state"] = self.state.value
-        return payload
-
-
-@dataclass
-class MessageRecord:
-    session_id: str
-    turn_id: str
-    role: str
-    content: str
-    created_at: str
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

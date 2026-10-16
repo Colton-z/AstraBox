@@ -3,26 +3,31 @@
 Hermes stores no creator on a job a TUI session schedules: the job's
 ``origin`` is filled only from a messaging platform's chat
 (``tools/cronjob_job_args.py`` at the pinned commit), and an Assistant
-conversation is not one. One document per (Hermes profile, job id) records
-the conversation that created the job and the last run already delivered to
-it, so a run is reported once even when several readers see it.
+conversation is not one. One row per (Hermes profile, job id) records the
+conversation that created the job and the newest run already delivered to it,
+so a run is reported once even when several readers see it. The row is
+deleted with its conversation.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from astrabox.common.utils.time_utils import utcnow_iso
-from astrabox.persistence.repository.backend import (
-    get_async_collection,
-    run_mongo_with_retry,
-)
+from sqlalchemy import delete, or_, select, update
+from sqlalchemy.dialects.postgresql import insert
 
-HERMES_CRON_JOBS_COLLECTION = "hermes_cron_jobs"
+from astrabox.persistence.sql import execute, fetch_all, from_iso, to_iso
+from astrabox.persistence.sql.models.platform import HermesCronJob
+
+_JOBS = HermesCronJob.__table__
 
 
-def _job_doc_id(profile_key: str, job_id: str) -> str:
-    return f"{profile_key}|{job_id}"
+def _view(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **row,
+        "delivered_run_at": to_iso(row["delivered_run_at"]),
+        "created_at": to_iso(row["created_at"]),
+    }
 
 
 class HermesCronJobRepository:
@@ -30,51 +35,42 @@ class HermesCronJobRepository:
 
     async def claim(self, *, profile_key: str, job_id: str, session_id: str) -> None:
         """Record the conversation that created ``job_id``; the first claim wins."""
-
-        collection = await get_async_collection(HERMES_CRON_JOBS_COLLECTION)
-        await run_mongo_with_retry(
-            "hermes_cron_jobs.claim",
-            lambda: collection.update_one(
-                {"_id": _job_doc_id(profile_key, job_id)},
-                {
-                    "$setOnInsert": {
-                        "profile_key": profile_key,
-                        "job_id": job_id,
-                        "session_id": session_id,
-                        "delivered_run_at": None,
-                        "created_at": utcnow_iso(),
-                    }
-                },
-                upsert=True,
-            ),
+        await execute(
+            insert(_JOBS)
+            .values(profile_key=profile_key, job_id=job_id, session_id=session_id)
+            .on_conflict_do_nothing(index_elements=[_JOBS.c.profile_key, _JOBS.c.job_id])
         )
 
     async def list_for_session(
         self, *, profile_key: str, session_id: str
     ) -> list[dict[str, Any]]:
-        collection = await get_async_collection(HERMES_CRON_JOBS_COLLECTION)
-
-        async def _list() -> list[dict[str, Any]]:
-            cursor = collection.find({"profile_key": profile_key, "session_id": session_id})
-            return [row async for row in cursor]
-
-        return await run_mongo_with_retry("hermes_cron_jobs.list_for_session", _list)
-
-    async def mark_delivered(
-        self, *, profile_key: str, job_id: str, run_at: str
-    ) -> None:
-        collection = await get_async_collection(HERMES_CRON_JOBS_COLLECTION)
-        await run_mongo_with_retry(
-            "hermes_cron_jobs.mark_delivered",
-            lambda: collection.update_one(
-                {"_id": _job_doc_id(profile_key, job_id)},
-                {"$set": {"delivered_run_at": run_at}},
-            ),
+        rows = await fetch_all(
+            select(_JOBS)
+            .where(_JOBS.c.session_id == session_id, _JOBS.c.profile_key == profile_key)
+            .order_by(_JOBS.c.job_id)
         )
+        return [_view(row) for row in rows]
+
+    async def mark_delivered(self, *, profile_key: str, job_id: str, run_at: str) -> bool:
+        """Move the job's watermark forward to ``run_at``.
+
+        False when the watermark is already at or past ``run_at``: a reader
+        that saw an older run cannot move it back and have a newer run
+        delivered again.
+        """
+        delivered = from_iso(run_at)
+        moved = await execute(
+            update(_JOBS)
+            .where(
+                _JOBS.c.profile_key == profile_key,
+                _JOBS.c.job_id == job_id,
+                or_(_JOBS.c.delivered_run_at.is_(None), _JOBS.c.delivered_run_at < delivered),
+            )
+            .values(delivered_run_at=delivered)
+        )
+        return moved == 1
 
     async def forget(self, *, profile_key: str, job_id: str) -> None:
-        collection = await get_async_collection(HERMES_CRON_JOBS_COLLECTION)
-        await run_mongo_with_retry(
-            "hermes_cron_jobs.forget",
-            lambda: collection.delete_one({"_id": _job_doc_id(profile_key, job_id)}),
+        await execute(
+            delete(_JOBS).where(_JOBS.c.profile_key == profile_key, _JOBS.c.job_id == job_id)
         )

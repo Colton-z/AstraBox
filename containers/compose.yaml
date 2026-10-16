@@ -222,6 +222,10 @@ services:
       ASTRABOX_SHARED_SANDBOX_MEMORY_LIMIT: ${ASTRABOX_SHARED_SANDBOX_MEMORY_LIMIT:-}
       ASTRABOX_SHARED_SANDBOX_CPU_REQUEST: ${ASTRABOX_SHARED_SANDBOX_CPU_REQUEST:-}
       ASTRABOX_SHARED_SANDBOX_MEMORY_REQUEST: ${ASTRABOX_SHARED_SANDBOX_MEMORY_REQUEST:-}
+      ASTRABOX_ASSISTANT_SANDBOX_CPU_LIMIT: ${ASTRABOX_ASSISTANT_SANDBOX_CPU_LIMIT:-}
+      ASTRABOX_ASSISTANT_SANDBOX_MEMORY_LIMIT: ${ASTRABOX_ASSISTANT_SANDBOX_MEMORY_LIMIT:-}
+      ASTRABOX_ASSISTANT_SANDBOX_CPU_REQUEST: ${ASTRABOX_ASSISTANT_SANDBOX_CPU_REQUEST:-}
+      ASTRABOX_ASSISTANT_SANDBOX_MEMORY_REQUEST: ${ASTRABOX_ASSISTANT_SANDBOX_MEMORY_REQUEST:-}
       # Ceilings on everything one sandbox backend runs; empty keeps the
       # default (on this Docker host, a memory ceiling of its memory less 4Gi).
       ASTRABOX_SANDBOX_QUOTA_BOXES: ${ASTRABOX_SANDBOX_QUOTA_BOXES:-}
@@ -254,6 +258,7 @@ services:
       # OpenSandbox Secure Access for sandbox endpoints: Kubernetes with the
       # ingress gateway only. The bundled Docker runtime refuses it at startup.
       ASTRABOX_SANDBOX_SECURE_ACCESS: ${ASTRABOX_SANDBOX_SECURE_ACCESS:-false}
+      ASTRABOX_SANDBOX_SERVER_EXECD_IMAGE: ${ASTRABOX_SANDBOX_SERVER_EXECD_IMAGE:-}
       ASTRABOX_SANDBOX_EGRESS_IMAGE: ${ASTRABOX_SANDBOX_EGRESS_IMAGE:-opensandbox/egress:v1.1.7}
       ASTRABOX_SANDBOX_EGRESS_MODE: ${ASTRABOX_SANDBOX_EGRESS_MODE:-dns+nft}
       ASTRABOX_SANDBOX_SERVER_NETWORK_MODE: bridge
@@ -281,11 +286,9 @@ services:
       ASTRABOX_SANDBOX_GATEWAY_IP: ${ASTRABOX_SANDBOX_GATEWAY_IP:-}
       ASTRABOX_SANDBOX_EGRESS_DNS_UPSTREAM: ${ASTRABOX_SANDBOX_EGRESS_DNS_UPSTREAM:-}
       ASTRABOX_SANDBOX_EGRESS_DNS_UPSTREAM_DEFAULT: ""
-      ASTRABOX_DB_BACKEND: postgresql
       ASTRABOX_DB_URL: ${ASTRABOX_DB_URL:-}
       # The engine that runs scheduled Deployments. The built-in dbos keeps its
-      # state in the SQL database above; with a mongodb:// ASTRABOX_DB_URL set
-      # none, which turns scheduled Deployments off.
+      # state in the PostgreSQL database above; none turns them off.
       ASTRABOX_SCHEDULER_PROVIDER: ${ASTRABOX_SCHEDULER_PROVIDER:-dbos}
       ASTRABOX_DB_PASSWORD_FILE: /run/secrets/astrabox_database_password
       ASTRABOX_DB_HOST: postgres

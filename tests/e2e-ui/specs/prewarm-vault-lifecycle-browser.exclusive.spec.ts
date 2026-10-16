@@ -244,11 +244,13 @@ test(`an administrator reprepares installed extensions without interrupting an e
   // Same real public extension sources used by the existing preparation suite.
   const skills = page.locator('#agent-skills');
   await skills.fill(JSON.stringify(['https://github.com/anthropics/skills.git@main#skills/skill-creator']));
+  await skills.blur();
   await page.locator('#agent-packages').fill(JSON.stringify([{
     kind: 'claude-plugin',
     url: 'https://github.com/anthropics/claude-plugins-official.git',
     protocol: 'https', branch: 'main', depth: 1, paths: ['plugins/frontend-design'],
   }]));
+  await page.locator('#agent-packages').blur();
   const saved = responseFor(page, `/agents/${agent.agent_id}`, 'PUT');
   await page.locator('[data-slot="card"]').filter({ has: skills }).getByRole('button', { name: 'Save', exact: true }).click();
   await data(await saved);

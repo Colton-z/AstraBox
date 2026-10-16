@@ -24,7 +24,7 @@ OpenSandbox 也维护自己的[服务部署](https://open-sandbox.ai/components/
 [Kubernetes 部署](https://open-sandbox.ai/kubernetes/deployment)文档。AstraBox 使用
 OpenSandbox Lifecycle API，不会取代这些文档中的控制器、容器运行时或集群网络。
 
-## 在 Kubernetes 中运行沙箱
+## 在 Kubernetes 中运行沙箱 {#run-sandboxes-on-kubernetes}
 
 先安装 OpenSandbox 控制器和 CRD，再创建沙箱 Pod 所在的命名空间。AstraBox 会检查
 命名空间、所选 workload CRD、Kubernetes API 访问和必要权限，但不会创建集群级资源
@@ -99,10 +99,10 @@ Docker 挂载点下的目录；而工作区视图数据卷只有在容器按名�
 不要依赖每个 Session 单独执行的初始化脚本：预热沙箱可能在使用它的 Session 出现之前
 就已经创建。
 
-OpenSandbox provider 通过 OpenSandbox 在每个沙箱中启动的 execd 实现 AstraBox 的沙箱契约：
+OpenSandbox provider 通过 OpenSandbox 在每个沙箱中启动的 execd 实现 AstraBox 的沙箱接口约定：
 文件、命令以及终端的 shell、Pi 程序这类长驻进程都交给 execd，端点来自 OpenSandbox 的端点
-API。内置镜像仍以 AIO 负责启动和工作负载账户生命周期，最终进入 `/opt/gem/run.sh`；自定义
-基础镜像需要提供等效生命周期，并配置匹配的 entrypoint。
+API。内置镜像需要 AIO，因为它们的启动和工作负载账户生命周期最终进入 `/opt/gem/run.sh`；
+自定义基础镜像需要提供等效生命周期，并配置匹配的 entrypoint。
 
 [容器参考](../container-reference.md)说明镜像与工作区约定。AstraBox 创建的每个沙箱都使用
 平台统一的资源规格：运行上限为 `4` CPU 和 `4Gi` 内存，调度请求为 `200m` CPU 和
@@ -115,18 +115,18 @@ API。内置镜像仍以 AIO 负责启动和工作负载账户生命周期，最
 
 在 Agent 上启用预热，可以在用户开始对话之前准备好完整运行时。两种 tenancy 都使用
 OpenSandbox 官方 SDK client pool 完成创建、协调、补位、重试和原子领取。Agent tenancy
-领取的箱子用于 Agent 共享，保留已有根目录，并为各会话分配隔离目录；conversation
+领取的沙箱用于 Agent 共享，保留已有根目录，并为各会话分配隔离目录；conversation
 tenancy 则由领取的 Session 独享整箱，配置持久化存储时，平台在激活预热运行时之前，
 将工作区视图绑定到新建或已有的 Session 目录。两种模式都不会更换运行中 Session 的
 工作区。多进程或多机器部署通过
 `ASTRABOX_AGENT_PREWARM_REDIS_URL` 共享 SDK client pool 状态。
 
 两种模式都在引擎准备好后才报告可用容量，领取时激活已准备的运行时。独享模式在 SDK
-发布池成员之前完成准备，临时交接记录放在箱子的私有 home 中，不进入 Workspace。
-共享模式在常驻箱子里准备隔离的引擎位置。这些交接记录都不是持久的 SessionStore。
+发布池成员之前完成准备，临时交接记录放在沙箱的私有 home 中，不进入 Workspace。
+共享模式在常驻沙箱里准备隔离的引擎位置。这些交接记录都不是持久的 SessionStore。
 
-修改独享模式 Agent 的启动配置会替换尚未领取的预热容量，已领取的箱子仍属于原 Session。
-共享模式中，可以注入的配置变更只替换等待中的引擎位置，不替换常驻箱子。
+修改独享模式 Agent 的启动配置会替换尚未领取的预热容量，已领取的沙箱仍属于原 Session。
+共享模式中，可以注入的配置变更只替换等待中的引擎位置，不替换常驻沙箱。
 
 平台决定 Agent 版本、持久工作区挂载、凭证和启动要求。OpenSandbox 提供沙箱生命周期
 与池能力，不参与 AstraBox 的用户或 Session 流程。
@@ -156,6 +156,9 @@ OpenSandbox 部署支持快照时，Environment 可以在沙箱闲置后暂停�
 ```bash
 astrabox verify-opensandbox-snapshots
 ```
+
+在 Linux overlayfs 节点上，可选的[快照 differ](opensandbox-snapshot-differ.md) 让创建快照时
+无需扫描未改变的父镜像文件。
 
 还要为快照仓库设置保留策略。删除 OpenSandbox 快照元数据本身不会清理 OCI 镜像数据。
 控制器和镜像仓库要求见 OpenSandbox 的
@@ -193,8 +196,8 @@ AstraBox 不配置部署级出站令牌。支持的请求匹配方式和验证�
 路径都会先准备凭证绑定，再下载 Skill 与 Plugin。
 
 该绑定只匹配 HTTPS 443 端口、指定路径及其子路径，以及 `GET`、`HEAD`、`POST` 方法，
-不会向其他仓库路径注入凭证。这是通用鉴权方式，不是 Git 专属的引擎能力。配置方法见
-[Vault 凭证](../credentials.md)和 OpenSandbox 的
+不会向其他仓库路径注入凭证。这是通用鉴权方式，不是 Git 专属的引擎能力。参见
+[Vault 配置示例](../credentials.md#2-add-a-credential)和 OpenSandbox 的
 [原生 Git 凭证指南](https://github.com/opensandbox-group/OpenSandbox/blob/2f03f68c25644a68fee31d0759915de0b104b4ca/docs/guides/credential-vault.md#git-and-curl-with-vault-injected-credentials)。
 
 ## 选择沙箱运行时
@@ -221,11 +224,68 @@ SSE 和 WebSocket（`ASTRABOX_SANDBOX_ENDPOINT_VIA_SERVER_PROXY`）。项目维�
 部署采用直接连接：它自带的 Lifecycle API 运行在 AstraBox 容器内，把沙箱端口发布在
 Docker bridge 网关上，AstraBox 在同一个容器内就能访问这些端口。只有 AstraBox 无法访问
 沙箱地址时才使用转发。转发会删除每个请求的 `Cookie` 和 `Authorization` 头并替换
-`Host`，因此 DeepSeek Harness 和 Hermes 引擎无法经由转发向各自的箱内服务认证。
+`Host`，因此 DeepSeek Harness 和 Hermes 引擎无法经由转发向各自的沙箱内服务认证。
 
-Kubernetes 部署可以直接路由到 Pod，也可以使用 OpenSandbox ingress 组件。向不可信
+平台到沙箱的流量在 Kubernetes 部署中可以直接路由到 Pod，也可以使用 OpenSandbox ingress
+组件。面向浏览器的功能（HTML 预览、Browser 面板和 `expose_port`）需要 ingress Gateway。
+Pod 直连地址只在集群内有效；把它返回给公网上的控制台，并不能让用户的浏览器访问它。
+内置的 Kubernetes 后端在直连模式下会拒绝浏览器端点请求，并给出配置指引。向不可信
 网络开放沙箱服务前，请启用 OpenSandbox Secure Access，并为 AstraBox 和 ingress
 组件配置相同的签名密钥。AstraBox 会先检查 Session 鉴权，再签发短期访问地址。
+
+### 配置面向浏览器的 Kubernetes Gateway {#configure-a-browser-facing-kubernetes-gateway}
+
+在 `opensandbox-system` 中安装官方 OpenSandbox ingress Gateway，设置
+`gateway.dataplaneNamespace=opensandbox` 和 `gateway.gatewayRouteMode=uri`，并用
+`gateway.secureAccess.existingSecret` 指定该命名空间中的一个 Secret。这个 Secret 的
+`keys` 条目包含 `a=<base64-encoded-secret>`；密钥 ID `a` 必须与服务端配置一致。Secret
+和 Lifecycle 服务的密钥都要妥善保密。提交 `c806a49c62ee1fc3baa036165e9044e7b0efd97f`
+中的[官方 chart](https://github.com/opensandbox-group/OpenSandbox/tree/c806a49c62ee1fc3baa036165e9044e7b0efd97f/manifests/charts/ingress-gateway)
+的 chart 和镜像版本为 1.1.1。检出该提交并准备好签名 Secret 后，用以下命令安装：
+
+```bash
+helm upgrade --install opensandbox-ingress \
+  ./manifests/charts/ingress-gateway \
+  --namespace opensandbox-system \
+  --set gateway.gatewayRouteMode=uri \
+  --set gateway.secureAccess.existingSecret=opensandbox-ingress-signing
+```
+
+为 Gateway 分配一个浏览器可以访问的主机名，例如 `sandbox.example.com`，并在部署的
+ingress 或反向代理上终止 TLS。把完整路径转发到 Gateway Service 的 80 端口，并支持
+WebSocket 升级。不要去掉沙箱 ID 或签名路由前缀：Gateway 会校验并移除它。在集群中
+使用 Caddy 时，站点配置如下：
+
+```caddyfile
+sandbox.example.com {
+    reverse_proxy opensandbox-ingress-gateway.opensandbox-system.svc.cluster.local:80
+}
+```
+
+为 AstraBox 内置的 Lifecycle 服务配置相同的主机名和密钥：
+
+```dotenv
+ASTRABOX_SANDBOX_SERVER_RUNTIME=kubernetes
+ASTRABOX_SANDBOX_SERVER_INGRESS_MODE=gateway
+ASTRABOX_SANDBOX_SERVER_INGRESS_GATEWAY_ADDRESS=sandbox.example.com
+ASTRABOX_SANDBOX_SERVER_INGRESS_ROUTE_MODE=uri
+ASTRABOX_SANDBOX_ENDPOINT_SCHEME=https
+ASTRABOX_SANDBOX_SECURE_ACCESS=true
+ASTRABOX_SANDBOX_SERVER_INGRESS_SIGNING_KEY_ID=a
+ASTRABOX_SANDBOX_SERVER_INGRESS_SIGNING_KEY=<same-base64-encoded-secret>
+```
+
+地址中不包含 URL scheme；`ASTRABOX_SANDBOX_ENDPOINT_SCHEME` 单独设置数据通路使用的
+scheme，与 Lifecycle API 无关。使用 HTTPS 的控制台需要 HTTPS 端点：HTTP 的 iframe 或
+WebSocket 流量会被当作混合内容拦截。普通的浏览器链接无法使用基于请求头的路由。连接
+外部 Lifecycle 服务时，请按相同拓扑配置它原生的 `[ingress]` 设置；AstraBox 的
+`ASTRABOX_SANDBOX_SERVER_*` 设置只作用于内置服务。参见 OpenSandbox 的
+[Secure Access 指南](https://github.com/opensandbox-group/OpenSandbox/blob/c806a49c62ee1fc3baa036165e9044e7b0efd97f/docs/guides/secure-access.md)。
+
+请在创建要使用 Secure Access 的沙箱之前启用它；修改服务端配置不会为已有沙箱启用它。
+通过 Gateway 的 `/status.ok` 端点和 TLS 证书检查部署健康状况。验收还需要从实际的
+控制台源（origin）打开 HTML 资源并操作 Browser 面板。本地 Docker 要求用户的浏览器
+能访问它发布的 execd 端点；Kubernetes Gateway 设置不会配置 Docker 运行时。
 
 ### 隔离沙箱 Pod 与集群中的其他 Pod {#sandbox-network-policy}
 

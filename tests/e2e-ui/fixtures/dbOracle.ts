@@ -1,11 +1,14 @@
 /**
- * Document-store oracle for the community backend.
+ * Database oracle for the community backend.
  *
- * The community deployment persists documents as PostgreSQL JSONB in one
- * `astrabox_documents(seq, collection, doc_id, doc)` table. The oracle executes
- * `psql` inside the selected deployment database container, so it observes the
- * same committed data as the server without depending on a host-mounted database
- * file or a second client library.
+ * The deployment stores everything in PostgreSQL tables. A session's runtime
+ * facts live in typed tables (`session_inputs`, `session_responses`,
+ * `session_output`, `session_interactions`, and the runtime transcripts in
+ * `transcript_scopes` / `transcript_entries`), which the readers under
+ * "Session runtime facts" read; `postgresRows` answers any other query. The
+ * oracle executes `psql` inside the selected deployment database container,
+ * so it observes the same committed data as the server without depending on a
+ * host-mounted database file or a second client library.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 
@@ -14,18 +17,6 @@ import {
   requireServiceContainer,
 } from './serviceContainer';
 import type { DockerResult, DockerRunner } from './serviceContainer';
-
-// Frames and snapshots are returned as opaque documents (verbatim stored
-// docs) so specs read whatever fields they need without this oracle pinning a
-// frame schema.
-
-const COLLECTIONS = {
-  agents: 'agents',
-  sessions: 'sessions',
-  snapshots: 'session_snapshots',
-  events: 'session_events',
-  assistantWorkspaces: 'assistant_workspace',
-} as const;
 
 let _postgresContainer: string | null = null;
 
@@ -89,12 +80,12 @@ export function postgresTextRows(
 }
 
 /** Single-quote a value for a SQL string literal (doubling embedded quotes). */
-function sqlLiteral(value: string): string {
+export function sqlLiteral(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
 /** Run a query and return each result row as a JSON object. */
-function postgresRows<T = Record<string, unknown>>(sql: string, timeoutMs = 20_000): T[] {
+export function postgresRows<T = Record<string, unknown>>(sql: string, timeoutMs = 20_000): T[] {
   const database = process.env.ASTRABOX_E2E_POSTGRES_DB || 'astrabox';
   const user = process.env.ASTRABOX_E2E_POSTGRES_USER || 'astrabox';
   const inner = sql.trim().replace(/;$/, '');
@@ -120,654 +111,151 @@ function postgresRows<T = Record<string, unknown>>(sql: string, timeoutMs = 20_0
   return text.split('\n').filter(Boolean).map((line) => JSON.parse(line) as T);
 }
 
-function jsonField(jsonPath: string): string {
-  const match = /^\$\.([A-Za-z_][A-Za-z0-9_]*)$/.exec(jsonPath);
-  if (!match) throw new Error(`dbOracle: only top-level JSON paths are supported, got ${jsonPath}`);
-  return match[1];
+// ── Session runtime facts (typed tables) ──────────────────────────────────
+//
+// What the session's reader recorded, read from the tables it writes
+// (`astrabox/persistence/sql/models/sessions.py`): the inputs the session
+// accepted, the responses the runtime produced, the parts relayed for each,
+// and the interactions a response waited on. These are the platform's own
+// records, independent of the page and of the API projection under test.
+
+/** One accepted input (`session_inputs`). */
+export interface SessionInputRow {
+  input_id: string;
+  seq: number;
+  client_message_id: string;
+  author_user_id: string | null;
+  source: string | null;
+  content: string;
+  content_blocks: unknown[] | null;
+  /** `pending`, `delivered`, `admitted` or `failed`. */
+  state: string;
+  response_id: string | null;
+  failure: Record<string, unknown> | null;
+  created_at: string;
+  delivered_at: string | null;
+  admitted_at: string | null;
 }
 
-/**
- * Load full documents from one collection whose JSON field at `jsonPath` equals
- * `value`.
- */
-function loadDocs(
-  collection: string,
-  jsonPath: string,
-  value: string,
-  orderByJsonPath?: string,
-): Record<string, unknown>[] {
-  const field = jsonField(jsonPath);
-  const where = `collection = ${sqlLiteral(collection)} AND doc ->> ${sqlLiteral(field)} = ${sqlLiteral(value)}`;
-  const order = orderByJsonPath
-    ? `doc -> ${sqlLiteral(jsonField(orderByJsonPath))} ASC, seq ASC`
-    : 'seq ASC';
-  const rows = postgresRows<{ doc: Record<string, unknown> }>(
-    `SELECT doc FROM astrabox_documents WHERE ${where} ORDER BY ${order};`,
-  );
-  return rows.map((row) => row.doc);
+/** One response the runtime produced (`session_responses`), with the inputs it answers. */
+export interface SessionResponseRow {
+  response_id: string;
+  seq: number;
+  /** `input`, or `engine` for one the runtime started itself. */
+  origin: string;
+  /** `running`, `waiting` or `ended`. */
+  status: string;
+  /** `completed`, `failed` or `cancelled` once ended. */
+  outcome: string | null;
+  native_reason: string | null;
+  usage: Record<string, unknown> | null;
+  error: Record<string, unknown> | null;
+  started_at: string;
+  ended_at: string | null;
+  input_ids: string[];
 }
 
-// ── Public oracle surface ─────────────────────────────────────────────────
-
-/** Full documents matching one top-level JSON field, for cross-boundary E2E checks. */
-export function documentsByField(
-  collection: string,
-  jsonPath: string,
-  value: string,
-): Record<string, unknown>[] {
-  return loadDocs(collection, jsonPath, value);
+/** One relayed browser part (`session_output`). */
+export interface SessionOutputRow {
+  seq: number;
+  response_id: string | null;
+  part: Record<string, unknown>;
 }
 
-/** Count matching documents without materializing their JSON payloads. */
-export function documentCountByField(
-  collection: string,
-  jsonPath: string,
-  value: string,
-): number {
-  const field = jsonField(jsonPath);
-  const rows = postgresRows<{ count: number }>(
-    `SELECT count(*)::int AS count FROM astrabox_documents `
-      + `WHERE collection = ${sqlLiteral(collection)} `
-      + `AND doc ->> ${sqlLiteral(field)} = ${sqlLiteral(value)};`,
-  );
-  return Number(rows[0]?.count ?? 0);
+/** One approval or question a response waited on (`session_interactions`). */
+export interface SessionInteractionRow {
+  interaction_id: string;
+  response_id: string;
+  contract: Record<string, unknown>;
+  /** `open`, `answered`, `withdrawn` or `expired`. */
+  status: string;
+  answer: Record<string, unknown> | null;
+  answered_by: string | null;
+  opened_at: string;
+  answered_at: string | null;
+  closed_at: string | null;
 }
 
-/** The `sessions`-collection document for a session (or null). Keyed by `session_id`. */
-export function sessionDoc(sessionId: string): Record<string, unknown> | null {
-  return loadDocs(COLLECTIONS.sessions, '$.session_id', sessionId)[0] ?? null;
-}
-
-/** The `session_snapshots` projection document for a session (or null). Keyed by `session_id`. */
-export function snapshotDoc(sessionId: string): Record<string, unknown> | null {
-  return loadDocs(COLLECTIONS.snapshots, '$.session_id', sessionId)[0] ?? null;
-}
-
-/** All canonical engine-frame events for a turn, ordered by the shared event sequence. */
-export function framesForTurn(turnId: string): Record<string, unknown>[] {
-  return loadDocs(COLLECTIONS.events, '$.turn_id', turnId, '$.event_seq').filter(
-    (event) => event.event_kind === 'engine_frame',
-  );
-}
-
-/**
- * The session snapshot, but ONLY while it is describing `turnId` — else null.
- *
- * The durable record of one turn's progress is the session snapshot, not a
- * per-turn row: the kernel writes a single authority, keyed by session, that
- * carries (`conversation_state`, `active_interaction_id`, terminal proof) for
- * whichever turn it is currently on.
- *
- * The turn binding is the reason this exists rather than callers reaching for
- * `snapshotDoc`. A snapshot is per SESSION: read it without checking whose turn
- * it describes and "this turn is paused on this interaction" quietly weakens to
- * "some turn is" — an assertion that still passes while proving less.
- */
-export function turnSnapshot(sessionId: string, turnId: string): Record<string, unknown> | null {
-  const snap = snapshotDoc(sessionId);
-  if (!snap) return null;
-  return String(snap.current_turn_id ?? '').trim() === turnId ? snap : null;
-}
-
-/**
- * `turnSnapshot`, awaited — for a precondition that a live API already revealed.
- *
- * The pending interaction becomes readable over HTTP as soon as the kernel
- * registers it; the snapshot naming the turn it parked on is a separate durable
- * write. Sampling `turnSnapshot` once at the instant the API answers reads a
- * convergence as though it were an instant, and fails on the interval between
- * the two writes rather than on anything the spec is about.
- *
- * Waiting does not weaken what is asserted: the snapshot must still be on THIS
- * turn before the spec proceeds, and a snapshot that never gets there throws
- * with what it was on instead — which IS the defect this precondition guards
- * (a restart in that state has nothing durable to rehydrate from).
- */
-export async function waitForTurnSnapshot(
-  sessionId: string,
-  turnId: string,
-  timeoutMs = 30_000,
-): Promise<Record<string, unknown>> {
-  const deadline = Date.now() + timeoutMs;
-  let lastSeen: string | null = null;
-  for (;;) {
-    const snap = turnSnapshot(sessionId, turnId);
-    if (snap) return snap;
-    lastSeen = String(snapshotDoc(sessionId)?.current_turn_id ?? '<no snapshot>');
-    if (Date.now() >= deadline) break;
-    await new Promise((r) => setTimeout(r, 500));
-  }
-  throw new Error(
-    `dbOracle: session ${sessionId} snapshot never reached turn ${turnId} within ${timeoutMs}ms; ` +
-      `it was on current_turn_id=${lastSeen}. Read from ${oracleDbPath()}; set ` +
-      'ASTRABOX_E2E_POSTGRES_CONTAINER if that is not the database used by the server.',
+/** The inputs a session accepted, in acceptance order. */
+export function sessionInputRows(sessionId: string): SessionInputRow[] {
+  return postgresRows<SessionInputRow>(
+    `SELECT input_id, seq, client_message_id, author_user_id, source, content, content_blocks, `
+      + `state, response_id, failure, created_at, delivered_at, admitted_at `
+      + `FROM session_inputs WHERE session_id = ${sqlLiteral(sessionId)} ORDER BY seq`,
   );
 }
 
-/** Platform command/lifecycle events, excluding canonical engine-frame events. */
-export function sessionEvents(sessionId: string): Record<string, unknown>[] {
-  return loadDocs(COLLECTIONS.events, '$.session_id', sessionId, '$.event_seq').filter(
-    (event) => event.event_kind !== 'engine_frame',
+/** The responses a session's runtime produced, oldest first. */
+export function sessionResponseRows(sessionId: string): SessionResponseRow[] {
+  return postgresRows<SessionResponseRow>(
+    `SELECT r.response_id, r.seq, r.origin, r.status, r.outcome, r.native_reason, r.usage, r.error, `
+      + `r.started_at, r.ended_at, COALESCE((SELECT array_agg(ri.input_id ORDER BY ri.input_id) `
+      + `FROM session_response_inputs ri WHERE ri.session_id = r.session_id `
+      + `AND ri.response_id = r.response_id), ARRAY[]::text[]) AS input_ids `
+      + `FROM session_responses r WHERE r.session_id = ${sqlLiteral(sessionId)} ORDER BY r.seq`,
+  );
+}
+
+/** The parts relayed for a session, in order; only one response's when `responseId` is given. */
+export function sessionOutputRows(sessionId: string, responseId?: string): SessionOutputRow[] {
+  const response = responseId === undefined ? '' : ` AND response_id = ${sqlLiteral(responseId)}`;
+  return postgresRows<SessionOutputRow>(
+    `SELECT seq, response_id, part FROM session_output `
+      + `WHERE session_id = ${sqlLiteral(sessionId)}${response} ORDER BY seq`,
+  );
+}
+
+/** The interactions a session's responses waited on, in the order they opened. */
+export function sessionInteractionRows(sessionId: string): SessionInteractionRow[] {
+  return postgresRows<SessionInteractionRow>(
+    `SELECT interaction_id, response_id, contract, status, answer, answered_by, opened_at, `
+      + `answered_at, closed_at FROM session_interactions `
+      + `WHERE session_id = ${sqlLiteral(sessionId)} ORDER BY opened_at, interaction_id`,
   );
 }
 
 /**
- * Await the turn's expected outcome and durable terminal proof.
- *
- * Both the snapshot's last-turn outcome and its terminal frame must belong to
- * the requested turn. A terminal frame alone only proves the turn ended.
+ * One entry of a runtime transcript (`transcript_entries`) with the file it
+ * belongs to (`transcript_scopes`). `subpath` is `null` for the main
+ * transcript and the sub-file's path for a sub-agent's; `entry_json` is the
+ * entry as the runtime wrote it, and `uuid` is that entry's own `uuid` field
+ * when it has one (the table keeps the entry, not a column for it).
  */
-export async function waitForTurnTerminalProof(
-  sessionId: string,
-  turnId: string,
-  expectedState: string,
-  timeoutMs = 90_000,
-): Promise<Record<string, unknown>> {
-  const deadline = Date.now() + timeoutMs;
-  let lastSnapshot: Record<string, unknown> | null = null;
-  while (Date.now() < deadline) {
-    const snap = snapshotDoc(sessionId);
-    lastSnapshot = snap;
-    const frame = (snap?.last_turn_terminal_frame ?? null) as Record<string, unknown> | null;
-    if (
-      snap
-      && String(snap.last_turn_id ?? '') === turnId
-      && String(snap.last_turn_status ?? '') === expectedState
-      && frame
-      && String(frame.turn_id ?? '') === turnId
-    ) return snap;
-    await new Promise((r) => setTimeout(r, 1_000));
-  }
-  throw new Error(
-    `dbOracle: turn ${sessionId}/${turnId} did not reach ${expectedState} with a durable terminal proof within ${timeoutMs}ms; ` +
-      `last_turn_id=${String(lastSnapshot?.last_turn_id ?? '<none>')}; ` +
-      `last_turn_status=${String(lastSnapshot?.last_turn_status ?? '<none>')}; ` +
-      `last_turn_error=${String(lastSnapshot?.last_turn_error ?? '<none>')}; ` +
-      `last_turn_terminal_frame=${JSON.stringify(lastSnapshot?.last_turn_terminal_frame ?? null)}`,
-  );
+export interface NativeTranscriptRow {
+  seq: number;
+  uuid: string | null;
+  entry_json: string;
+  subpath: string | null;
+  native_session_id: string;
+  project_key: string;
+}
+
+/**
+ * A session's runtime transcripts, the main one first, each file in the order
+ * the runtime appended to it. This is the supplier's own record, independent
+ * of what the platform projected from it.
+ *
+ * The table keeps each entry only as the JSON text the runtime sent
+ * (`persistence/repository/transcript_entry_repository.py`), so an entry's
+ * `uuid` is read from that text rather than from a column.
+ */
+export function nativeTranscriptRows(sessionId: string): NativeTranscriptRow[] {
+  return postgresRows<Omit<NativeTranscriptRow, 'uuid'>>(
+    `SELECT e.seq, e.entry_json, NULLIF(s.subpath, '') AS subpath, s.native_session_id, `
+      + `s.project_key FROM transcript_entries e JOIN transcript_scopes s ON s.scope_id = e.scope_id `
+      + `WHERE s.platform_session_id = ${sqlLiteral(sessionId)} `
+      + `ORDER BY (s.subpath <> ''), s.subpath, e.seq`,
+  ).map((row) => ({ ...row, uuid: entryUuid(row.entry_json) }));
+}
+
+/** An entry's own `uuid`, or `null` for an entry that carries none. Every stored entry is JSON. */
+function entryUuid(entryJson: string): string | null {
+  const entry: unknown = JSON.parse(entryJson);
+  const uuid = entry && typeof entry === 'object' ? (entry as { uuid?: unknown }).uuid : undefined;
+  return typeof uuid === 'string' && uuid ? uuid : null;
 }
 
 /** Effective database target in use (kept under the existing diagnostic API). */
 export function oracleDbPath(): string {
   return `postgresql://${postgresContainerName()}/${process.env.ASTRABOX_E2E_POSTGRES_DB || 'astrabox'}`;
-}
-
-// ── Write-mutators (recovery fault simulation) ────────────────────────────
-//
-// Recovery specs need to REWRITE stored documents (simulate a soft-deleted
-// session, park a turn unresolved) and restore them in
-// cleanup. Writes run in the real PostgreSQL service. Every mutator returns the
-// pre-mutation document so `finally` blocks can restore verbatim.
-
-/** Remove exact, observed event sequences from one test-owned Session; return the removed evidence. */
-export function deleteSessionEvents(sessionId: string, eventSeqs: number[]): Record<string, unknown>[] {
-  if (!sessionId.trim() || eventSeqs.length === 0
-    || eventSeqs.some((seq) => !Number.isSafeInteger(seq) || seq <= 0)
-    || new Set(eventSeqs).size !== eventSeqs.length) {
-    throw new Error('dbOracle.deleteSessionEvents requires one Session and distinct positive event sequences');
-  }
-  const sql = `WITH removed AS (
-    DELETE FROM astrabox_documents
-    WHERE collection = ${sqlLiteral(COLLECTIONS.events)}
-      AND doc ->> 'session_id' = ${sqlLiteral(sessionId)}
-      AND (doc ->> 'event_seq')::bigint IN (${eventSeqs.join(',')})
-    RETURNING doc
-  ) SELECT doc::text FROM removed ORDER BY (doc ->> 'event_seq')::bigint;`;
-  const removed = postgresTextRows(
-    postgresContainerName(), process.env.ASTRABOX_E2E_POSTGRES_DB || 'astrabox',
-    process.env.ASTRABOX_E2E_POSTGRES_USER || 'astrabox', sql, { timeoutMs: 20_000 },
-  ).map((row) => JSON.parse(row) as Record<string, unknown>);
-  if (removed.length !== eventSeqs.length) {
-    throw new Error(`dbOracle.deleteSessionEvents removed ${removed.length} of ${eventSeqs.length} events for ${sessionId}`);
-  }
-  return removed;
-}
-
-function postgresWrite(sql: string, timeoutMs = 20_000): void {
-  const database = process.env.ASTRABOX_E2E_POSTGRES_DB || 'astrabox';
-  const user = process.env.ASTRABOX_E2E_POSTGRES_USER || 'astrabox';
-  try {
-    execFileSync(
-      'docker',
-      [
-        'exec', postgresContainerName(), 'psql', '-X', '-q', '-v', 'ON_ERROR_STOP=1',
-        '-U', user, '-d', database, '-c', sql,
-      ],
-      { encoding: 'utf8', timeout: timeoutMs, stdio: ['ignore', 'pipe', 'pipe'] },
-    );
-  } catch (error) {
-    const err = error as { stderr?: Buffer | string; message?: string };
-    const stderr = typeof err.stderr === 'string' ? err.stderr : err.stderr?.toString() ?? '';
-    throw new Error(`dbOracle: PostgreSQL write failed: ${stderr.trim() || err.message}\nSQL: ${sql.slice(0, 400)}`);
-  }
-}
-
-function docWhere(collection: string, matches: Record<string, string>): string {
-  const clauses = Object.entries(matches).map(
-    ([jsonPath, value]) => `doc ->> ${sqlLiteral(jsonField(jsonPath))} = ${sqlLiteral(value)}`,
-  );
-  return [`collection = ${sqlLiteral(collection)}`, ...clauses].join(' AND ');
-}
-
-/**
- * Replace matching documents wholesale with `nextDoc` (serialized verbatim).
- * Returns the pre-mutation documents (empty array when nothing matched).
- */
-export function replaceDocs(
-  collection: string,
-  matches: Record<string, string>,
-  nextDoc: Record<string, unknown>,
-): Record<string, unknown>[] {
-  const where = docWhere(collection, matches);
-  const beforeRows = postgresRows<{ doc: Record<string, unknown> }>(
-    `SELECT doc FROM astrabox_documents WHERE ${where};`,
-  );
-  const before = beforeRows.map((row) => row.doc);
-  if (before.length > 0) {
-    postgresWrite(
-      `UPDATE astrabox_documents SET doc = ${sqlLiteral(JSON.stringify(nextDoc))}::jsonb WHERE ${where};`,
-    );
-  }
-  return before;
-}
-
-/** Remove only the matching fault-fixture records and return their prior contents. */
-export function deleteDocs(
-  collection: string,
-  matches: Record<string, string>,
-): Record<string, unknown>[] {
-  if (!Object.keys(matches).length) throw new Error('deleteDocs requires an exact fixture scope');
-  return postgresTextRows(
-    postgresContainerName(), process.env.ASTRABOX_E2E_POSTGRES_DB || 'astrabox',
-    process.env.ASTRABOX_E2E_POSTGRES_USER || 'astrabox',
-    `DELETE FROM astrabox_documents WHERE ${docWhere(collection, matches)} RETURNING doc::text;`,
-  ).map((row) => JSON.parse(row) as Record<string, unknown>);
-}
-
-/**
- * Shallow-merge `patch` into every matching document (a `patch` value of null
- * DELETES that key). Returns the pre-mutation documents.
- */
-export function patchDocs(
-  collection: string,
-  matches: Record<string, string>,
-  patch: Record<string, unknown>,
-): Record<string, unknown>[] {
-  const where = docWhere(collection, matches);
-  const beforeRows = postgresRows<{ doc: Record<string, unknown> }>(
-    `SELECT doc FROM astrabox_documents WHERE ${where};`,
-  );
-  const before = beforeRows.map((row) => row.doc);
-  // The identity keys in `matches` are unique per document for every caller
-  // (session_id / session_id+turn_id), so patch the single matched doc. A
-  // byte-equality guard on the original doc text cannot work across
-  // serializers (Python json.dumps vs JS JSON.stringify formatting).
-  if (before.length !== 1) {
-    throw new Error(
-      `dbOracle.patchDocs expects exactly one matched doc, got ${before.length} `
-        + `for ${collection} ${JSON.stringify(matches)}`,
-    );
-  }
-  const next: Record<string, unknown> = { ...before[0] };
-  for (const [key, value] of Object.entries(patch)) {
-    if (value === null) delete next[key];
-    else next[key] = value;
-  }
-  postgresWrite(
-    `UPDATE astrabox_documents SET doc = ${sqlLiteral(JSON.stringify(next))}::jsonb WHERE ${where};`,
-  );
-  return before;
-}
-
-/** Convenience typed wrappers for common recovery-simulation collections. */
-export function patchSessionDoc(sessionId: string, patch: Record<string, unknown>): Record<string, unknown>[] {
-  return patchDocs(COLLECTIONS.sessions, { '$.session_id': sessionId }, patch);
-}
-
-/**
- * Lapse only this still-bound sandbox's lease; never restore a concurrently cleared binding.
- *
- * The `RETURNING` projection is the read-back: the expiration watcher writes
- * this row, and realigns a lapsed lease over a live box on its next tick.
- */
-export function lapseSessionSandboxLease(
-  sessionId: string, sandboxId: string, expiresAt: string,
-): Record<string, unknown>[] {
-  const timestamp = Date.parse(expiresAt);
-  if (!sessionId.trim() || !sandboxId.trim() || !Number.isFinite(timestamp) || timestamp >= Date.now()) {
-    throw new Error('lease lapse requires an exact Session, sandbox and past expiry');
-  }
-  const sql = `WITH lapsed AS (
-    UPDATE astrabox_documents
-    SET doc = jsonb_set(doc, '{expires_at}', ${sqlLiteral(JSON.stringify(expiresAt))}::jsonb, true)
-    WHERE ${docWhere(COLLECTIONS.sessions, { '$.session_id': sessionId, '$.sandbox_id': sandboxId })}
-    RETURNING doc
-  ) SELECT json_build_object('session_id', doc -> 'session_id',
-    'sandbox_id', doc -> 'sandbox_id', 'expires_at', doc -> 'expires_at')::text FROM lapsed;`;
-  const rows = postgresTextRows(
-    postgresContainerName(), process.env.ASTRABOX_E2E_POSTGRES_DB || 'astrabox',
-    process.env.ASTRABOX_E2E_POSTGRES_USER || 'astrabox', sql, { timeoutMs: 20_000 },
-  ).map((row) => JSON.parse(row) as Record<string, unknown>);
-  if (rows.length > 1) throw new Error(`lease lapse matched ${rows.length} rows for ${sessionId}/${sandboxId}`);
-  // Zero means the exact old binding is gone, not that convergence
-  // succeeded. The caller must independently prove READY and its real cause.
-  return rows;
-}
-
-/**
- * Lapse only this still-bound Assistant workspace lease, and return what landed.
- *
- * The same fencing discipline as `lapseSessionSandboxLease`, on the owner
- * collection a workspace lives in: matching `assistant_id` AND
- * `current_sandbox_id` means a workspace that has already republished a
- * different box is left alone rather than dragged back onto a dead pointer.
- *
- * One statement, not a read-modify-write: `patchDocs` would rewrite the whole
- * document from a value read in a separate `psql` call, and the expiration
- * watcher writes this row. The `RETURNING` projection is also the read-back —
- * the caller asserts the intended past expiry from the same statement that
- * wrote it, rather than from a second query that could observe a later one.
- *
- * Zero rows means the exact binding is already gone, which is a broken premise
- * for any caller that just proved the workspace was READY on that box; the
- * caller says what that means for its own journey.
- */
-export function lapseAssistantWorkspaceLease(
-  assistantId: string, sandboxId: string, expiresAt: string,
-): Record<string, unknown>[] {
-  const timestamp = Date.parse(expiresAt);
-  if (!assistantId.trim() || !sandboxId.trim() || !Number.isFinite(timestamp) || timestamp >= Date.now()) {
-    throw new Error('workspace lease lapse requires an exact Assistant, sandbox and past expiry');
-  }
-  const sql = `WITH lapsed AS (
-    UPDATE astrabox_documents
-    SET doc = jsonb_set(doc, '{current_sandbox_expires_at}', ${sqlLiteral(JSON.stringify(expiresAt))}::jsonb, true)
-    WHERE ${docWhere(COLLECTIONS.assistantWorkspaces, {
-      '$.assistant_id': assistantId,
-      '$.current_sandbox_id': sandboxId,
-    })}
-    RETURNING doc
-  ) SELECT json_build_object('assistant_id', doc -> 'assistant_id',
-    'current_sandbox_id', doc -> 'current_sandbox_id',
-    'current_sandbox_expires_at', doc -> 'current_sandbox_expires_at')::text FROM lapsed;`;
-  const rows = postgresTextRows(
-    postgresContainerName(), process.env.ASTRABOX_E2E_POSTGRES_DB || 'astrabox',
-    process.env.ASTRABOX_E2E_POSTGRES_USER || 'astrabox', sql, { timeoutMs: 20_000 },
-  ).map((row) => JSON.parse(row) as Record<string, unknown>);
-  if (rows.length > 1) {
-    throw new Error(
-      `workspace lease lapse matched ${rows.length} rows for ${assistantId}/${sandboxId}`,
-    );
-  }
-  return rows;
-}
-
-export function patchSnapshotDoc(sessionId: string, patch: Record<string, unknown>): Record<string, unknown>[] {
-  return patchDocs(COLLECTIONS.snapshots, { '$.session_id': sessionId }, patch);
-}
-
-/** Restore only the injected missing address, refusing a changed placement. */
-export function restoreSessionSandboxPointer(original: Record<string, unknown>): void {
-  for (const field of ['session_id', 'agent_id', 'sandbox_id']) {
-    if (typeof original[field] !== 'string' || !String(original[field]).trim()) {
-      throw new Error(`sandbox-pointer repair requires the original ${field}`);
-    }
-  }
-  const identity = ['session_id', 'agent_id', 'isolated_session_id', 'terminal_isolated_session_id']
-    .map((field) => `COALESCE(doc -> ${sqlLiteral(field)}, 'null'::jsonb) = `
-      + `${sqlLiteral(JSON.stringify(original[field] ?? null))}::jsonb`).join(' AND ');
-  const sql = `WITH repaired AS (
-    UPDATE astrabox_documents
-    SET doc = jsonb_set(doc, '{sandbox_id}', ${sqlLiteral(JSON.stringify(original.sandbox_id))}::jsonb, true)
-    WHERE collection = ${sqlLiteral(COLLECTIONS.sessions)} AND ${identity}
-      AND doc ->> 'sandbox_id' IS NULL
-    RETURNING doc
-  ) SELECT doc::text FROM repaired;`;
-  const rows = postgresTextRows(
-    postgresContainerName(), process.env.ASTRABOX_E2E_POSTGRES_DB || 'astrabox',
-    process.env.ASTRABOX_E2E_POSTGRES_USER || 'astrabox', sql, { timeoutMs: 20_000 },
-  );
-  if (rows.length !== 1) {
-    throw new Error(`sandbox-pointer repair expected one unchanged placement for ${original.session_id}, got ${rows.length}`);
-  }
-}
-
-export function restoreDoc(
-  collection: keyof typeof COLLECTIONS,
-  matches: Record<string, string>,
-  originalDoc: Record<string, unknown>,
-): void {
-  replaceDocs(COLLECTIONS[collection], matches, originalDoc);
-}
-
-// ── Background-continuation window ────────────────────────────────────────
-//
-// The sweep that carries a finished background Agent's result back into its
-// conversation reads the fifty NEWEST opened manifests deployment-wide, and
-// nothing narrows that to the ones still waiting: `find({channel, event_type})`
-// `.sort([(occurred_at,-1),(event_seq,-1)]).limit(50)` (background_continuation
-// .py:136-159). `session_events` is append-only and never pruned, so the window
-// is a queue that history fills. Proving what happens to a manifest that falls
-// out of it means putting fifty newer ones in front of it, and fifty real
-// background launches do not fit a 180s wall.
-//
-// A seeded pair is an ALREADY SETTLED manifest: an opened row plus the
-// materialized counterpart the sweep looks up by causation id. It occupies a
-// window slot and does no work —
-// `_materialize_background_continuation_event` returns at its first line when
-// that counterpart exists (background_continuation.py:258-263). That is the
-// defect's own shape, not a fabricated failure, and the seeding is faithful in
-// the only two properties the sweep reads: a newer `(occurred_at, event_seq)`
-// sort key, and a counterpart that is already claimed.
-
-/** Field stamped on every seeded row, so cleanup is an equality, not a guess. */
-const SEEDED_MANIFEST_TAG_FIELD = 'e2e_seed_tag';
-
-/**
- * Tag prefix for seeded manifests. No SQL `LIKE` metacharacter (`_`, `%`) may
- * appear in it: the leftover sweep matches on this prefix directly.
- */
-export const SEEDED_MANIFEST_TAG_PREFIX = 'e2e-bgwindow-';
-
-/** A tag is this prefix plus lowercase-safe, metacharacter-free identity. */
-const SEEDED_MANIFEST_TAG_RE = new RegExp(`^${SEEDED_MANIFEST_TAG_PREFIX}[a-z0-9-]+$`);
-
-export interface SeededBackgroundManifests {
-  tag: string;
-  /** Settled manifests written (one opened row + one materialized row each). */
-  manifests: number;
-  /** Rows written — twice `manifests`, read back from the INSERT itself. */
-  rows: number;
-  firstOccurredAt: string;
-  lastOccurredAt: string;
-}
-
-export interface OpenedManifestWindowRow {
-  session_id: string;
-  event_seq: number;
-  occurred_at: string;
-}
-
-/**
- * Write `count` settled background manifests stamped just after `afterOccurredAt`.
- *
- * Timestamps are computed in SQL from the caller's own ISO string, so the
- * seeded rows keep the source row's microseconds and land strictly after it —
- * a JavaScript `Date` would truncate to milliseconds first and could stamp a
- * row that ties the event it is supposed to bury. They are past, never future:
- * `afterOccurredAt` is an observed row's `occurred_at` and the offsets are
- * milliseconds.
- *
- * One statement, so a killed worker cannot leave half a backlog: both
- * data-modifying CTEs run to completion exactly once, and the returned counts
- * come from the inserts themselves rather than a second query.
- */
-export function seedSettledBackgroundManifests(options: {
-  count: number;
-  afterOccurredAt: string;
-  tag: string;
-}): SeededBackgroundManifests {
-  const { count, afterOccurredAt, tag } = options;
-  if (!Number.isSafeInteger(count) || count < 1 || count > 500) {
-    throw new Error(`dbOracle.seedSettledBackgroundManifests: count must be 1..500, got ${count}`);
-  }
-  if (!SEEDED_MANIFEST_TAG_RE.test(tag)) {
-    throw new Error(
-      `dbOracle.seedSettledBackgroundManifests: tag must match ${SEEDED_MANIFEST_TAG_RE.source}, got ${JSON.stringify(tag)}`,
-    );
-  }
-  if (!Number.isFinite(Date.parse(afterOccurredAt))) {
-    throw new Error(
-      `dbOracle.seedSettledBackgroundManifests: afterOccurredAt must be an ISO timestamp, got ${JSON.stringify(afterOccurredAt)}`,
-    );
-  }
-  const tagLiteral = sqlLiteral(tag);
-  const tagField = sqlLiteral(SEEDED_MANIFEST_TAG_FIELD);
-  const sql = `WITH base AS (
-    SELECT (${sqlLiteral(afterOccurredAt)})::timestamptz AT TIME ZONE 'UTC' AS at
-  ), stamped AS (
-    SELECT g.n,
-           ${tagLiteral} || '-' || g.n AS session_id,
-           to_char(
-             (SELECT at FROM base) + (g.n || ' milliseconds')::interval,
-             'YYYY-MM-DD"T"HH24:MI:SS.US'
-           ) || '+00:00' AS occurred_at
-    FROM generate_series(1, ${count}) AS g(n)
-  ), opened AS (
-    INSERT INTO astrabox_documents (collection, doc_id, doc)
-    SELECT ${sqlLiteral(COLLECTIONS.events)}, s.session_id || '-opened', jsonb_build_object(
-      '_id', s.session_id || '-opened',
-      'session_id', s.session_id,
-      'channel', 'conversation',
-      'turn_id', s.session_id || '-turn',
-      'event_type', 'turn.background_tasks_opened',
-      'event_seq', 1,
-      'event_kind', 'command',
-      'causation_id', 'cmd-' || s.n || ':background-continuation',
-      'correlation_id', s.session_id,
-      'idempotency_key', s.session_id || '-opened',
-      'occurred_at', s.occurred_at,
-      'payload', jsonb_build_object(
-        'command_id', 'cmd-' || s.n,
-        'source', 'e2e_seeded_background_task',
-        'engine_refs', jsonb_build_array(s.session_id || '-child')
-      ),
-      ${tagField}, ${tagLiteral}
-    ) FROM stamped s
-    RETURNING 1
-  ), settled AS (
-    INSERT INTO astrabox_documents (collection, doc_id, doc)
-    SELECT ${sqlLiteral(COLLECTIONS.events)}, s.session_id || '-materialized', jsonb_build_object(
-      '_id', s.session_id || '-materialized',
-      'session_id', s.session_id,
-      'channel', 'conversation',
-      'turn_id', s.session_id || '-turn',
-      'event_type', 'turn.background_tasks_materialized',
-      'event_seq', 2,
-      'event_kind', 'command',
-      'causation_id', '1:background-tasks-materialized',
-      'correlation_id', s.session_id,
-      'idempotency_key', s.session_id || '-materialized',
-      'occurred_at', s.occurred_at,
-      'payload', jsonb_build_object(
-        'source', 'e2e_seeded_background_task',
-        'source_opened_event_seq', 1,
-        'blocks', jsonb_build_array()
-      ),
-      ${tagField}, ${tagLiteral}
-    ) FROM stamped s
-    RETURNING 1
-  ) SELECT json_build_object(
-      'opened', (SELECT count(*) FROM opened),
-      'settled', (SELECT count(*) FROM settled),
-      'first_occurred_at', (SELECT min(occurred_at) FROM stamped),
-      'last_occurred_at', (SELECT max(occurred_at) FROM stamped)
-    )::text;`;
-  const rows = postgresTextRows(
-    postgresContainerName(), process.env.ASTRABOX_E2E_POSTGRES_DB || 'astrabox',
-    process.env.ASTRABOX_E2E_POSTGRES_USER || 'astrabox', sql, { timeoutMs: 30_000 },
-  ).map((row) => JSON.parse(row) as Record<string, unknown>);
-  const result = rows[0];
-  if (!result) {
-    throw new Error(`dbOracle.seedSettledBackgroundManifests wrote nothing for ${tag}`);
-  }
-  const opened = Number(result.opened ?? 0);
-  const settled = Number(result.settled ?? 0);
-  if (opened !== count || settled !== count) {
-    throw new Error(
-      `dbOracle.seedSettledBackgroundManifests wrote ${opened} opened and ${settled} materialized rows, expected ${count} of each`,
-    );
-  }
-  return {
-    tag,
-    manifests: count,
-    rows: opened + settled,
-    firstOccurredAt: String(result.first_occurred_at ?? ''),
-    lastOccurredAt: String(result.last_occurred_at ?? ''),
-  };
-}
-
-/**
- * Delete seeded manifests by exact tag, or sweep every leftover under the prefix.
- *
- * Matching is on the seeding field these rows carry and no product row has, so
- * this can never reach a real conversation's journal. Returns the row count
- * removed; zero from an exact tag means the backlog was already gone.
- */
-export function removeSeededBackgroundManifests(
-  match: { tag: string } | { prefix: string },
-): number {
-  const predicate = 'tag' in match
-    ? `doc ->> ${sqlLiteral(SEEDED_MANIFEST_TAG_FIELD)} = ${sqlLiteral(match.tag)}`
-    : `doc ->> ${sqlLiteral(SEEDED_MANIFEST_TAG_FIELD)} LIKE ${sqlLiteral(`${match.prefix}%`)}`;
-  if ('tag' in match) {
-    if (!SEEDED_MANIFEST_TAG_RE.test(match.tag)) {
-      throw new Error(`dbOracle.removeSeededBackgroundManifests: unknown tag ${JSON.stringify(match.tag)}`);
-    }
-  } else if (!match.prefix.startsWith(SEEDED_MANIFEST_TAG_PREFIX)) {
-    throw new Error(
-      `dbOracle.removeSeededBackgroundManifests: a sweep prefix must start with ${SEEDED_MANIFEST_TAG_PREFIX}, got ${JSON.stringify(match.prefix)}`,
-    );
-  }
-  const sql = `WITH removed AS (
-    DELETE FROM astrabox_documents
-    WHERE collection = ${sqlLiteral(COLLECTIONS.events)} AND ${predicate}
-    RETURNING 1
-  ) SELECT count(*)::text FROM removed;`;
-  const rows = postgresTextRows(
-    postgresContainerName(), process.env.ASTRABOX_E2E_POSTGRES_DB || 'astrabox',
-    process.env.ASTRABOX_E2E_POSTGRES_USER || 'astrabox', sql, { timeoutMs: 30_000 },
-  );
-  return Number(rows[0] ?? 0);
-}
-
-/**
- * The newest opened manifests deployment-wide, newest first.
- *
- * This is the production query's ordering written a second time, in SQL, which
- * is exactly why it is scaffolding and never a verdict: if the sweep's sort key
- * changes and this does not, it will report a window the sweep does not have.
- * `COLLATE "C"` is what keeps it comparable at all — the sweep sorts these ISO
- * strings in Python, by code point, and a database collation orders punctuation
- * by its own rules.
- */
-export function newestOpenedManifestWindow(limit = 50): OpenedManifestWindowRow[] {
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
-    throw new Error(`dbOracle.newestOpenedManifestWindow: limit must be 1..500, got ${limit}`);
-  }
-  const sql = `SELECT json_build_object(
-      'session_id', doc ->> 'session_id',
-      'event_seq', (doc ->> 'event_seq')::bigint,
-      'occurred_at', doc ->> 'occurred_at'
-    )::text
-    FROM astrabox_documents
-    WHERE collection = ${sqlLiteral(COLLECTIONS.events)}
-      AND doc ->> 'channel' = 'conversation'
-      AND doc ->> 'event_type' = 'turn.background_tasks_opened'
-    ORDER BY (doc ->> 'occurred_at') COLLATE "C" DESC, (doc ->> 'event_seq')::bigint DESC
-    LIMIT ${limit};`;
-  return postgresTextRows(
-    postgresContainerName(), process.env.ASTRABOX_E2E_POSTGRES_DB || 'astrabox',
-    process.env.ASTRABOX_E2E_POSTGRES_USER || 'astrabox', sql, { timeoutMs: 30_000 },
-  ).map((row) => JSON.parse(row) as OpenedManifestWindowRow);
 }

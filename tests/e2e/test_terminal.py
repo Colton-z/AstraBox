@@ -18,7 +18,9 @@ Run it explicitly (deselected in the default unit run):
 from __future__ import annotations
 
 import json
+import re
 import shlex
+import subprocess
 import threading
 import time
 import uuid
@@ -32,10 +34,13 @@ from tests.e2e._sandbox_helpers import (
     create_agent_variant_session,
     data,
     environment_with_tenancy,
+    get_session,
     release_session,
     create_session,
     poll_until_agent_ready,
 )
+from tests.e2e._service_containers import SERVER_CONTAINER_HANDLE, require_service_container
+from tests.e2e.conftest import _wait_health
 
 pytestmark = pytest.mark.e2e
 
@@ -169,6 +174,41 @@ def test_terminal_nonzero_exit_propagates(e2e_client: httpx.Client) -> None:
         release_session(sid)
 
 
+def test_terminal_replay_closes_at_or_after_its_exit_cursor(e2e_client: httpx.Client) -> None:
+    """A completed command has no more output after its final cursor."""
+    created = create_session(e2e_client)
+    sid = str(created["session_id"])
+    try:
+        poll_until_agent_ready(e2e_client, sid)
+        marker = f"TERMINAL_REPLAY_{uuid.uuid4().hex}"
+        out, _err, code, events = _run_terminal(e2e_client, sid, f"printf '{marker}\\n'")
+        assert (code, marker in out) == (0, True), events
+        command_id = next(event["command_id"] for event in events if event.get("type") == "ack")
+        path = f"/api/v1/sessions/{sid}/terminal/stream"
+        replay = e2e_client.get(path, params={"command_id": command_id}, timeout=8.0)
+        assert replay.status_code == 200, replay.text
+        recorded = [json.loads(line[5:]) for line in replay.text.splitlines() if line.startswith("data:")]
+        assert marker in "".join(str(event.get("text") or "") for event in recorded if event.get("type") == "stdout"), recorded
+        final = recorded[-1]
+        assert final["type"] == "exit" and final["exit_code"] == 0, recorded
+        cursor = final["seq"]
+        assert isinstance(cursor, int), final
+
+        tail = e2e_client.get(
+            path, params={"command_id": command_id, "after_seq": cursor - 1}, timeout=8.0,
+        )
+        assert tail.status_code == 200, tail.text
+        assert [json.loads(line[5:]) for line in tail.text.splitlines() if line.startswith("data:")] == [final]
+        for after_seq in (cursor, cursor + 1):
+            ended = e2e_client.get(
+                path, params={"command_id": command_id, "after_seq": after_seq}, timeout=8.0,
+            )
+            assert ended.status_code == 200, ended.text
+            assert ended.text == "", ended.text
+    finally:
+        release_session(sid)
+
+
 def test_an_interrupt_stops_the_command_in_a_conversation_box_terminal(
     e2e_client: httpx.Client,
 ) -> None:
@@ -208,7 +248,7 @@ def test_an_interrupt_stops_the_command_in_a_conversation_box_terminal(
         started = time.monotonic()
         running = pool.submit(_run_terminal, e2e_client, sid, command, _watch)
         assert announced.wait(timeout=60), "the command never announced itself"
-        result = data(e2e_client.post(f"/api/v1/sessions/{sid}/interrupt", timeout=60.0))
+        result = data(e2e_client.post(f"/api/v1/sessions/{sid}/terminal/interrupt", timeout=60.0))
         assert result.get("status") == "completed", result
         _out, _err, code, events = running.result(timeout=60)
     assert code == 130, f"the interrupted command did not end with the interrupt's status: {events}"
@@ -230,3 +270,95 @@ def test_an_interrupt_stops_the_command_in_a_conversation_box_terminal(
     assert (code, "STOPPED" in out) == (0, True), (
         f"the interrupted command kept running in the box: out={out!r} events={events}"
     )
+
+
+@pytest.mark.backend_restart
+@pytest.mark.xdist_group("backend-restart")
+def test_a_command_after_runner_loss_uses_a_fresh_shell(
+    e2e_client: httpx.Client,
+    e2e_base_url: str,
+    e2e_auth_headers: dict[str, str],
+) -> None:
+    """A lost terminal runner cannot hand its still-busy shell to another command."""
+    server = require_service_container(SERVER_CONTAINER_HANDLE)
+    created = create_agent_variant_session(
+        e2e_client,
+        name_suffix="terminal-runner-loss",
+        engine_options={},
+        environment_name=environment_with_tenancy(e2e_client, "conversation"),
+    )
+    sid = str(created["session_id"])
+    try:
+        poll_until_agent_ready(e2e_client, sid)
+        sandbox_id = get_session(e2e_client, sid)["sandbox_id"]
+        command_id = ""
+        output = ""
+        command = (
+            "printf 'OLD_SHELL=%s\\n' \"$$\"; sleep 240 & old_child=$!; "
+            "printf 'OLD_CHILD=%s\\n' \"$old_child\"; wait \"$old_child\"; "
+            "printf 'OLD_COMPLETED\\n'"
+        )
+        with e2e_client.stream(
+            "POST", f"/api/v1/sessions/{sid}/terminal/stream",
+            json={"command": command}, timeout=45.0,
+        ) as response:
+            assert response.status_code == 200
+            for line in response.iter_lines():
+                if not line.startswith("data:"):
+                    continue
+                event = json.loads(line[5:])
+                if event.get("type") == "ack":
+                    command_id = str(event["command_id"])
+                if event.get("type") == "stdout":
+                    output += str(event.get("text") or "")
+                if re.search(r"OLD_CHILD=\d+", output):
+                    break
+            old_shell = re.search(r"OLD_SHELL=(\d+)", output)
+            old_child = re.search(r"OLD_CHILD=(\d+)", output)
+            assert command_id and old_shell and old_child, output
+            # No graceful cancellation can interrupt the in-box command.
+            subprocess.run(
+                ["docker", "restart", "--time", "0", server],
+                capture_output=True, text=True, timeout=120, check=True,
+            )
+        _wait_health(e2e_base_url)
+
+        with httpx.Client(base_url=e2e_base_url, headers=e2e_auth_headers) as client:
+            assert get_session(client, sid)["sandbox_id"] == sandbox_id
+            lost = client.get(
+                f"/api/v1/sessions/{sid}/terminal/stream",
+                params={"command_id": command_id}, timeout=45.0,
+            )
+            assert lost.status_code == 200, lost.text
+            lost_events = [json.loads(line[5:]) for line in lost.text.splitlines() if line.startswith("data:")]
+            assert any(event.get("type") == "exit" and event.get("exit_code") is None for event in lost_events), lost_events
+            assert not any(
+                event.get("type") == "stdout" and "OLD_COMPLETED" in str(event.get("text") or "")
+                for event in lost_events
+            ), lost_events
+
+            next_command = (
+                f"kill -0 {old_child.group(1)} && "
+                "printf 'OLD_CHILD_STILL_RUNNING\\n'; "
+                "export TERMINAL_AFTER_LOSS=fresh; printf 'NEW_SHELL=%s\\n' \"$$\""
+            )
+            # Shorter than both the original command and the SSE keep-alive.
+            result = client.post(
+                f"/api/v1/sessions/{sid}/terminal/stream",
+                json={"command": next_command}, timeout=8.0,
+            )
+            assert result.status_code == 200, result.text
+            events = [json.loads(line[5:]) for line in result.text.splitlines() if line.startswith("data:")]
+            next_output = "".join(str(event.get("text") or "") for event in events if event.get("type") == "stdout")
+            new_shell = re.search(r"NEW_SHELL=(\d+)", next_output)
+            assert new_shell and new_shell.group(1) != old_shell.group(1), next_output
+            assert "OLD_CHILD_STILL_RUNNING" in next_output, next_output
+            assert "OLD_COMPLETED" not in next_output, next_output
+            assert events[-1] == {"type": "exit", "exit_code": 0}, events
+
+            out, _err, code, events = _run_terminal(
+                client, sid, "printf 'REUSED=%s:%s\\n' \"$$\" \"$TERMINAL_AFTER_LOSS\"",
+            )
+            assert (code, f"REUSED={new_shell.group(1)}:fresh" in out) == (0, True), events
+    finally:
+        release_session(sid)

@@ -7,7 +7,6 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from astrabox.common.utils.errors import APIError
-from astrabox.common.utils.time_utils import utcnow_iso
 from astrabox.common.utils.user_context import UserContext, default_org_id
 from astrabox.core.service.orchestrator.agent_extension_service import (
     extension_catalog_disabled,
@@ -18,7 +17,9 @@ from astrabox.core.service.orchestrator.mcp_assignments import (
     assignments_for_provider,
     replace_provider_assignments,
 )
-from astrabox.persistence.repository import AgentRepository, MCPServerRepository
+from astrabox.persistence.repository.agent_repository import AgentRepository
+from astrabox.persistence.repository.mcp_server_repository import MCPServerRepository
+from astrabox.persistence.repository.mcp_server_repository import MCPServerNameTaken
 from astrabox.providers.builtin_extensions import BuiltinExtensionProvider
 
 #: The provider these records are assigned under. This service is the built-in
@@ -33,6 +34,14 @@ _TRANSPORT_ALIASES = {
     "streamable-http": "streamable_http",
     "sse": "sse",
 }
+
+
+def _name_exists(name: str) -> APIError:
+    return APIError(
+        code="MCP_SERVER_NAME_EXISTS",
+        message=f"an MCP server named '{name}' already exists",
+        status_code=409,
+    )
 
 
 def _invalid(message: str) -> APIError:
@@ -63,24 +72,21 @@ class MCPRegistryService:
     ) -> dict[str, Any]:
         org_id = self._org_id(user)
         normalized_name = self._normalize_name(name)
-        if await self._repo.get_by_name(org_id=org_id, name=normalized_name):
-            raise APIError(
-                code="MCP_SERVER_NAME_EXISTS",
-                message=f"an MCP server named '{normalized_name}' already exists",
-                status_code=409,
+        try:
+            doc = await self._repo.create(
+                {
+                    "org_id": org_id,
+                    "name": normalized_name,
+                    "description": self._normalize_description(description),
+                    "url": self._normalize_url(url),
+                    "transport": self._normalize_transport(transport),
+                    "enabled": bool(enabled),
+                    "created_by": user.user_id,
+                    "updated_by": user.user_id,
+                }
             )
-        doc = await self._repo.create(
-            {
-                "org_id": org_id,
-                "name": normalized_name,
-                "description": self._normalize_description(description),
-                "url": self._normalize_url(url),
-                "transport": self._normalize_transport(transport),
-                "enabled": bool(enabled),
-                "created_by": user.user_id,
-                "updated_by": user.user_id,
-            }
-        )
+        except MCPServerNameTaken:
+            raise _name_exists(normalized_name) from None
         return self._view(doc)
 
     async def list_servers(self, user: UserContext) -> list[dict[str, Any]]:
@@ -119,19 +125,11 @@ class MCPRegistryService:
         if not clean:
             raise _invalid("provide at least one field to update")
 
-        new_name = str(clean.get("name") or current.get("name") or "")
-        if new_name != current.get("name"):
-            duplicate = await self._repo.get_by_name(
-                org_id=self._org_id(user), name=new_name
-            )
-            if duplicate and duplicate.get("mcp_server_id") != mcp_server_id:
-                raise APIError(
-                    code="MCP_SERVER_NAME_EXISTS",
-                    message=f"an MCP server named '{new_name}' already exists",
-                    status_code=409,
-                )
         clean["updated_by"] = user.user_id
-        updated = await self._repo.update(mcp_server_id, clean)
+        try:
+            updated = await self._repo.update(mcp_server_id, clean)
+        except MCPServerNameTaken:
+            raise _name_exists(str(clean.get("name") or current.get("name") or "")) from None
         if updated is None:
             raise self._not_found(mcp_server_id)
         return self._view(updated)
@@ -186,26 +184,22 @@ class MCPRegistryService:
 
         for _ in range(3):
             agent = await self._must_access_agent(user, agent_id)
-            version = self._version(agent)
             # Only the built-in rows are replaced. An Agent may also be
             # assigned servers from another catalog, and this API does not
             # show or own those.
             assignments = replace_provider_assignments(
                 agent.get(AGENT_MCP_ASSIGNMENTS_FIELD), BUILTIN_PROVIDER, ids
             )
-            updates: dict[str, Any] = {
-                AGENT_MCP_ASSIGNMENTS_FIELD: assignments,
-                "version": version + 1,
-            }
             # The assignment is authored: a changed one is a changed definition.
-            if agent.get(AGENT_MCP_ASSIGNMENTS_FIELD) != assignments:
-                updates.update(updated_at=utcnow_iso(), updated_by=user.user_id)
-            applied = await self._agents.compare_and_update_agent(
+            if agent.get(AGENT_MCP_ASSIGNMENTS_FIELD) == assignments:
+                return await self.get_agent_assignment(user, agent_id)
+            applied = await self._agents.update_definition(
                 agent_id,
-                expected={"version": version},
-                updates=updates,
+                expected_version=self._version(agent),
+                changes={AGENT_MCP_ASSIGNMENTS_FIELD: assignments},
+                updated_by=user.user_id,
             )
-            if applied:
+            if applied is not None:
                 return await self.get_agent_assignment(user, agent_id)
         raise APIError(
             code="AGENT_VERSION_CONFLICT",

@@ -1,10 +1,11 @@
-"""Backend HTTP interface for the externalized transcript truth (SessionStore mirror).
+"""Backend HTTP interface for the runtime's own transcripts (the SessionStore mirror).
 
 The per-session sandbox runs Claude with a sandbox-side ``SpoolSessionStore``.
 It fsyncs SDK transcript batches locally, then uses these endpoints to append,
-load, and enumerate child transcript keys in ``TranscriptEntryRepository`` on
-the configured persistence backend. Recovery reads the same repository
-directly, without the sandbox.
+load, and enumerate child transcript keys in ``TranscriptEntryRepository``.
+Engines that write their own session logs reach the same append endpoint
+through the image-resident mirror. Restoring a replacement box reads the same
+repository directly, without the sandbox.
 
 **Append is idempotent per batch.** The body carries an ``append_id`` naming the
 batch and a ``payload_sha256`` over ``{key, entries}``; both are required, and an
@@ -26,7 +27,8 @@ carries; a token cannot address another Session's transcript.
 The unscoped ``/api/v1/transcript/*`` routes are **fail-closed** by default
 (401). A single-tenant, network-isolated deployment that cannot use the token
 scheme may set ``ASTRABOX_TRANSCRIPT_CAPABILITY_REQUIRED=false`` to enable
-them explicitly.
+them explicitly. They read and write the transcripts of the session their path
+names, which nothing authenticates there.
 """
 
 from __future__ import annotations
@@ -48,7 +50,9 @@ from astrabox.core.service.orchestrator.transcript_capability import (
     verify_transcript_capability_token,
 )
 from astrabox.persistence.repository.transcript_entry_repository import (
+    TranscriptBatchConflict,
     TranscriptEntryRepository,
+    TranscriptSessionMissing,
 )
 
 logger = get_logger(__name__)
@@ -249,7 +253,7 @@ def register_transcript_routes(app: Any) -> None:
             return success_response(
                 {"ok": True, "count": len(entries), "store_sequence": store_sequence}
             )
-        except RuntimeError as exc:
+        except TranscriptBatchConflict as exc:
             # The append_id names a batch the store already holds with different
             # entries. 409 rather than 500: the request is what conflicts, and
             # re-sending it unchanged will conflict again.
@@ -261,6 +265,17 @@ def register_transcript_routes(app: Any) -> None:
             )
             return JSONResponse(
                 status_code=409, content=error_response("APPEND_ID_CONFLICT", str(exc))
+            )
+        except TranscriptSessionMissing:
+            # A token is verified without reading the store, and the unscoped
+            # routes take any id, so the path can name a session with no row.
+            # Its batch can never be stored; the sender treats 404 as final
+            # rather than retrying it.
+            return JSONResponse(
+                status_code=404,
+                content=error_response(
+                    "SESSION_NOT_FOUND", "the transcript's platform session does not exist"
+                ),
             )
         except ValueError as exc:
             # The caller is a machine — the in-box transcript batcher — which logs
@@ -283,19 +298,17 @@ def register_transcript_routes(app: Any) -> None:
                 status_code=400, content=error_response("INVALID_REQUEST", str(exc))
             )
 
-    async def _do_load(
-        session_id: str, payload: dict[str, Any], *, tenant_fence: str | None
-    ) -> JSONResponse | dict[str, Any]:
+    async def _do_load(session_id: str, payload: dict[str, Any]) -> JSONResponse | dict[str, Any]:
         try:
             key = payload.get("key") or {}
             project_key, sdk_session_id, subpath = _scope_from_key(key)
             entries = await repo.load_entries(
                 project_key, sdk_session_id, subpath,
-                platform_session_id=tenant_fence,
+                platform_session_id=session_id,
             )
             store_sequence = await repo.current_sequence(
                 project_key, sdk_session_id, subpath,
-                platform_session_id=tenant_fence,
+                platform_session_id=session_id,
             )
             # ``entries`` is None for a never-written key — preserved verbatim so
             # the adapter can return None (SessionStore contract: load unknown -> None).
@@ -308,7 +321,7 @@ def register_transcript_routes(app: Any) -> None:
             )
 
     async def _do_list_sessions(
-        payload: dict[str, Any], *, tenant_fence: str | None
+        session_id: str, payload: dict[str, Any]
     ) -> JSONResponse | dict[str, Any]:
         project_key = str((payload or {}).get("project_key") or "").strip()
         if not project_key:
@@ -316,13 +329,11 @@ def register_transcript_routes(app: Any) -> None:
                 status_code=400,
                 content=error_response("INVALID_REQUEST", "project_key required"),
             )
-        sessions = await repo.list_sessions(
-            project_key, platform_session_id=tenant_fence
-        )
+        sessions = await repo.list_sessions(project_key, platform_session_id=session_id)
         return success_response({"sessions": sessions})
 
     async def _do_list_subkeys(
-        payload: dict[str, Any], *, tenant_fence: str | None
+        session_id: str, payload: dict[str, Any]
     ) -> JSONResponse | dict[str, Any]:
         try:
             key = payload.get("key") or {}
@@ -332,7 +343,7 @@ def register_transcript_routes(app: Any) -> None:
             subkeys = await repo.list_subkeys(
                 project_key,
                 sdk_session_id,
-                platform_session_id=tenant_fence,
+                platform_session_id=session_id,
             )
             return success_response({"subkeys": subkeys})
         except ValueError as exc:
@@ -364,10 +375,10 @@ def register_transcript_routes(app: Any) -> None:
         cap_token: str, session_id: str, payload: dict[str, Any] = Body(...)
     ):
         rejected = await _authorize(session_id, cap_token)
-        # tenant_fence = the token-authorized platform session: the body's
-        # sandbox-derived key is intersected with it, so a valid token cannot
-        # read another tenant's transcript via a foreign project_key.
-        return rejected or await _do_load(session_id, payload, tenant_fence=session_id)
+        # The body's key comes from the sandbox and is read only inside the
+        # token-authorized platform session, so a valid token cannot reach
+        # another tenant's transcript by naming its project_key.
+        return rejected or await _do_load(session_id, payload)
 
     @app.post(
         _cap + "/{cap_token}/api/v1/transcript/{session_id}/list-sessions",
@@ -378,7 +389,7 @@ def register_transcript_routes(app: Any) -> None:
         cap_token: str, session_id: str, payload: dict[str, Any] = Body(...)
     ):
         rejected = await _authorize(session_id, cap_token)
-        return rejected or await _do_list_sessions(payload, tenant_fence=session_id)
+        return rejected or await _do_list_sessions(session_id, payload)
 
     @app.post(
         _cap + "/{cap_token}/api/v1/transcript/{session_id}/list-subkeys",
@@ -389,7 +400,7 @@ def register_transcript_routes(app: Any) -> None:
         cap_token: str, session_id: str, payload: dict[str, Any] = Body(...)
     ):
         rejected = await _authorize(session_id, cap_token)
-        return rejected or await _do_list_subkeys(payload, tenant_fence=session_id)
+        return rejected or await _do_list_subkeys(session_id, payload)
 
     # ── Optional unscoped routes ─────────────────────────────────────────────
     # Fail-closed by default (401 — no capability token in the path). The
@@ -415,9 +426,7 @@ def register_transcript_routes(app: Any) -> None:
     async def transcript_load(session_id: str, payload: dict[str, Any] = Body(...)):
         if not legacy_open:
             return _fail_closed()
-        # Explicit single-tenant opt-out: no tenant fence is available without
-        # a scoped capability token.
-        return await _do_load(session_id, payload, tenant_fence=None)
+        return await _do_load(session_id, payload)
 
     @app.post(
         "/api/v1/transcript/{session_id}/list-sessions",
@@ -427,7 +436,7 @@ def register_transcript_routes(app: Any) -> None:
     async def transcript_list_sessions(session_id: str, payload: dict[str, Any] = Body(...)):
         if not legacy_open:
             return _fail_closed()
-        return await _do_list_sessions(payload, tenant_fence=None)
+        return await _do_list_sessions(session_id, payload)
 
     @app.post(
         "/api/v1/transcript/{session_id}/list-subkeys",
@@ -439,7 +448,7 @@ def register_transcript_routes(app: Any) -> None:
     ):
         if not legacy_open:
             return _fail_closed()
-        return await _do_list_subkeys(payload, tenant_fence=None)
+        return await _do_list_subkeys(session_id, payload)
 
 
 def _fail_closed() -> JSONResponse:

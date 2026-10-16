@@ -3,13 +3,16 @@ import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { expect, test } from '@playwright/test';
 
-import { AstraApi, messageText, visibleMessages, type MessageRecord } from '../fixtures/astraApi';
+import { AstraApi, messageText, messageToolCalls, visibleMessages, type MessageRecord } from '../fixtures/astraApi';
 import { revealAssistantProcess } from '../fixtures/assistantProcess';
 import { channelCallback } from '../fixtures/channelCallback';
-import { documentsByField, framesForTurn, replaceDocs, sessionEvents } from '../fixtures/dbOracle';
+import { sessionOutputRows, sessionResponseRows } from '../fixtures/dbOracle';
 import { events, textBlocks, textBlockValues, messageProseBlocks, type NativeEvent } from '../fixtures/dshOutput';
 import { engineProfileFor } from '../fixtures/engineProfile';
 import { absoluteBaseUrl, apiPath } from '../fixtures/env';
+import {
+  channelInboundRows, channelOutboxRows, channelOutputSubscriptions, rewindOutputSubscriptions,
+} from '../fixtures/ingressRecords';
 import { childPrompt, expectNativeMode, launchEvidence, nativeRows } from '../fixtures/nativeChildLifecycle';
 import { PlatformApi } from '../fixtures/platformApi';
 import { restartServerContainer } from '../fixtures/sandboxOps';
@@ -126,7 +129,8 @@ for (const scenario of cases) test(scenario.title, async ({ request, page }, inf
     rootScope = launches[0]!.subpath;
     await api.waitForChildRuns(sessionId, (rows) => rows.length === 1 && rows[0].active, 15_000);
     await expect.poll(() => readGate(gate.started)).toBe(gate.marker);
-    expect((await api.getSession(sessionId)).current_turn_id).toBeFalsy();
+    expect((await api.getSession(sessionId)).current_responses ?? [], 'the parent replied and is not working')
+      .toEqual([]);
     const initialHistory = await api.getMessages(sessionId, 50);
     evidence.initialHistory = initialHistory;
     evidence.launches = launches;
@@ -157,9 +161,11 @@ for (const scenario of cases) test(scenario.title, async ({ request, page }, inf
         .filter((message) => message.role === 'assistant' && messageText(message).includes(parent.prefix));
       await expect.poll(partial).toHaveLength(1);
       partialReply = (await partial())[0]!;
-      expect(partialReply.blocks).toContainEqual(expect.objectContaining({
-        type: 'tool_use', id: parentCall.data.callId, name: 'bash', input: JSON.parse(String(parentCall.data.arguments)),
+      // The reply shows the running native call as its tool part.
+      expect(messageToolCalls(partialReply)).toContainEqual(expect.objectContaining({
+        toolCallId: parentCall.data.callId, toolName: 'bash', input: JSON.parse(String(parentCall.data.arguments)),
       }));
+      expect(partialReply.metadata?.status, 'the reply is still running its tool').not.toBe('ended');
       expect(deliveries()).toEqual(initialDeliveries);
       evidence.partialReply = partialReply;
       evidence.parentCall = parentCall;
@@ -168,8 +174,8 @@ for (const scenario of cases) test(scenario.title, async ({ request, page }, inf
       await page.goto('about:blank');
       await restartServerContainer(absoluteBaseUrl(), 60_000);
       await expect.poll(async () => (await partial()).map((message) => ({
-        id: message.message_id, turn: message.turn_id, blocks: message.blocks,
-      }))).toEqual([{ id: partialReply.message_id, turn: partialReply.turn_id, blocks: partialReply.blocks }]);
+        id: message.id, parts: message.parts,
+      }))).toEqual([{ id: partialReply.id, parts: partialReply.parts }]);
       expect(native().some((event) => event.type === 'turn/end' && event.data.turn === parentCall!.data.turn)).toBe(false);
       await api.uploadFileText(sessionId, root, parent.release.split('/').at(-1)!, parentReceipt);
     }
@@ -203,14 +209,17 @@ for (const scenario of cases) test(scenario.title, async ({ request, page }, inf
       timeout: 30_000,
     }).toEqual(expectedBlocks);
     await expect.poll(deliveries, { timeout: 30_000 }).toEqual([...initialDeliveries, ...expectedReplies]);
+    // Each native turn the settlement started is a response no input asked for.
+    const responses = sessionResponseRows(sessionId);
     for (const completion of await completionReplies()) {
-      expect(sessionEvents(sessionId).find((event) => event.turn_id === completion.turn_id
-        && event.event_type === 'turn.completed')?.payload).toMatchObject({ source: 'resident_engine_output' });
+      expect(responses.find((row) => row.response_id === completion.id)).toMatchObject({
+        origin: 'engine', input_ids: [], status: 'ended', outcome: 'completed',
+      });
     }
     const final = await api.getMessages(sessionId, 50);
     if (partialReply && parentCall) {
-      const restored = final.messages.find((message) => message.message_id === partialReply!.message_id)!;
-      expect(restored.turn_id).toBe(partialReply.turn_id);
+      const restored = final.messages.find((message) => message.id === partialReply!.id)!;
+      expect(restored.metadata?.status).toBe('ended');
       expect(messageText(restored)).toContain(parentReceipt);
       const nativeResults = native().filter((event) => event.type === 'tool/result'
         && event.data.turn === parentCall!.data.turn)
@@ -219,34 +228,36 @@ for (const scenario of cases) test(scenario.title, async ({ request, page }, inf
       expect(nativeResults).toHaveLength(1);
       expect(nativeResults[0]!.isError ?? false).toBe(false);
       expect(textBlocks(nativeResults[0]!.content)).toContain(parentReceipt);
-      expect(restored.blocks?.filter((block) => block.type === 'tool_use')).toEqual([
-        expect.objectContaining({ id: parentCall.data.callId, name: 'bash', input: JSON.parse(String(parentCall.data.arguments)) }),
-      ]);
-      expect(restored.blocks?.filter((block) => block.type === 'tool_result')).toEqual([
-        expect.objectContaining({ tool_use_id: parentCall.data.callId, is_error: false,
-          content: expect.stringContaining(parentReceipt) }),
-      ]);
-      const outputs = framesForTurn(restored.turn_id).map((row) => row.payload as Record<string, unknown>)
-        .filter((frame) => frame.type === 'tool-output-available' && frame.toolCallId === parentCall!.data.callId);
+      // The settled tool part carries the native call and its native result.
+      expect(messageToolCalls(restored)).toEqual([expect.objectContaining({
+        toolCallId: parentCall.data.callId, toolName: 'bash', state: 'output-available',
+        input: JSON.parse(String(parentCall.data.arguments)),
+        output: { content: nativeResults[0]!.content, isError: false },
+      })]);
+      const outputs = sessionOutputRows(sessionId, restored.id).map((row) => row.part)
+        .filter((part) => part.type === 'tool-output-available' && part.toolCallId === parentCall!.data.callId);
       expect(outputs).toEqual([expect.objectContaining({
         output: { content: nativeResults[0]!.content, isError: false },
       })]);
       evidence.parentResult = nativeResults[0];
     }
     expect(final.messages.filter((message) => message.role === 'user').map(messageText)).toEqual([greeting, prompt]);
-    expect(documentsByField('channel_inbound', '$.deployment_id', deploymentId)).toHaveLength(2);
-    await expect.poll(() => documentsByField('channel_outbox', '$.session_id', sessionId)
+    expect(channelInboundRows(deploymentId)).toHaveLength(2);
+    await expect.poll(() => channelOutboxRows(sessionId)
       .filter((row) => row.state === 'DELIVERED').length).toBe(initialDeliveries.length + expectedReplies.length);
     await openSessionView(page, sessionId);
     // A settled reply folds its pre-tool text into the process alongside the
     // tool. Open that content before comparing the complete recovered reply.
     if (parentCall) {
       await expect(page.getByTestId('assistant-text').filter({ hasText: parentReceipt }).last()).toBeVisible();
-      await revealAssistantProcess(page);
+      await revealAssistantProcess(page, {
+        within: page.locator(`[data-message-id="${partialReply!.id}"]`),
+      });
     }
     await expect(page.getByTestId('assistant-text').filter({ hasText: receipt }).first()).toBeVisible();
     if (parentCall) {
-      await expect(page.getByTestId('assistant-text').filter({ hasText: parent.prefix })).toBeVisible();
+      await expect(page.getByTestId('assistant-turn-process')
+        .getByTestId('assistant-text').filter({ hasText: parent.prefix })).toBeVisible();
       const card = page.locator(`[data-tool-call-id="${String(parentCall.data.callId)}"]`);
       await expect(card).toHaveCount(1);
       const toggle = card.locator('button[aria-expanded]').first();
@@ -254,33 +265,30 @@ for (const scenario of cases) test(scenario.title, async ({ request, page }, inf
       await expect(card).toContainText(parentReceipt);
     }
     if (scenario.restart) {
-      const subscription = () => documentsByField('channel_output_subscriptions', '$.session_id', sessionId)[0];
+      const subscription = () => channelOutputSubscriptions(sessionId)[0];
       const completionCursor = Math.max(...(await completionReplies())
-        .flatMap((message) => framesForTurn(String(message.turn_id)))
-        .map((row) => Number(row.event_seq)));
+        .flatMap((message) => sessionOutputRows(sessionId, message.id))
+        .map((row) => row.seq));
       expect(Number.isFinite(completionCursor)).toBe(true);
       await expect.poll(() => Number(subscription()?.after_seq), { timeout: 30_000 })
         .toBeGreaterThanOrEqual(completionCursor);
-      const deliveredRows = documentsByField('channel_outbox', '$.session_id', sessionId);
+      const deliveredRows = channelOutboxRows(sessionId);
       const server = requireServiceContainer(SERVER_CONTAINER_HANDLE);
       await page.goto('about:blank');
       stoppedServer = server;
       execFileSync('docker', ['stop', '--time', '10', server], { timeout: 30_000 });
       const saved = subscription();
-      // Rewind the stopped reader so the second attachment must revisit the
-      // delivered replies without creating another history or outbox entry.
-      expect(replaceDocs('channel_output_subscriptions', { '$.session_id': sessionId }, { ...saved, after_seq: 0 }))
-        .toEqual([saved]);
+      // Rewind the stopped platform's projection so the next one must revisit
+      // the delivered replies without creating another history or outbox entry.
+      expect(rewindOutputSubscriptions(sessionId, 0)).toEqual([{ ...saved, after_seq: 0 }]);
       await restartServerContainer(absoluteBaseUrl(), 60_000, server);
       stoppedServer = '';
       await expect.poll(() => Number(subscription()?.after_seq), { timeout: 30_000 })
         .toBeGreaterThanOrEqual(Number(saved.after_seq));
       expect(deliveries()).toEqual([...initialDeliveries, ...expectedReplies]);
-      expect(documentsByField('channel_outbox', '$.session_id', sessionId)).toEqual(deliveredRows);
+      expect(channelOutboxRows(sessionId)).toEqual(deliveredRows);
       const reloaded = await api.getMessages(sessionId, 50);
-      const content = (message: MessageRecord) => ({
-        id: message.message_id, turn: message.turn_id, role: message.role, blocks: message.blocks,
-      });
+      const content = (message: MessageRecord) => ({ id: message.id, role: message.role, parts: message.parts });
       expect(reloaded.messages.map(content)).toEqual(final.messages.map(content));
       await openSessionView(page, sessionId);
       await expect(page.getByTestId('assistant-text').filter({ hasText: receipt }).first()).toBeVisible();
@@ -294,8 +302,8 @@ for (const scenario of cases) test(scenario.title, async ({ request, page }, inf
         body: JSON.stringify({ ...evidence, sessionId, agentId, deploymentId, deliveries: recipient.deliveries,
           recipientErrors: recipient.errors,
           native: sessionId ? nativeRows(sessionId) : [],
-          events: sessionId ? sessionEvents(sessionId) : [],
-          outbox: sessionId ? documentsByField('channel_outbox', '$.session_id', sessionId) : [],
+          responses: sessionId ? sessionResponseRows(sessionId) : [],
+          outbox: sessionId ? channelOutboxRows(sessionId) : [],
         }), contentType: 'application/json',
       });
     } finally {

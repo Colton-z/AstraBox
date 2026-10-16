@@ -330,16 +330,9 @@ class CodexChildResources:
         self._call = call
         self._children: dict[str, _ChildState] = {}
         self._lock = asyncio.Lock()
-        #: Native reads and turn/item notifications in observation order. The
-        #: idle relay journals them for the same lifecycle and message replay.
-        self.native_records: list[dict[str, Any]] = []
 
     def contains(self, thread_id: str) -> bool:
         return str(thread_id or "").strip() in self._children
-
-    def control_thread_id(self, thread_id: str) -> str | None:
-        state = self._children.get(str(thread_id or "").strip())
-        return state.thread_id if state is not None else None
 
     def observe_item(self, item: dict[str, Any]) -> bool:
         """Register the children one parent-stream item announces.
@@ -368,14 +361,6 @@ class CodexChildResources:
                 frames.extend(await self._refresh_child(thread_id))
             return frames
 
-    def known_thread_ids(self) -> set[str]:
-        """The child threads announced so far, closed ones included."""
-
-        return set(self._children)
-
-    def open_thread_ids(self) -> set[str]:
-        return {thread_id for thread_id, state in self._children.items() if not state.closed}
-
     async def refresh_thread(
         self, thread_id: str, *, notification: dict[str, Any]
     ) -> list[dict[str, Any]]:
@@ -388,7 +373,6 @@ class CodexChildResources:
                 frames = self.fold_thread(thread)
                 if thread_id not in self._children:
                     return []
-                self.native_records.append({"method": THREAD_READ_METHOD, "thread": dict(thread)})
             else:
                 state = self._children[thread_id]
                 frames = (
@@ -400,7 +384,6 @@ class CodexChildResources:
                     thread_id, notified=True, include_turns=True,
                 ))
             if method in {"turn/started", "turn/completed", "item/started", "item/completed"}:
-                self.native_records.append(notification)
                 frames.extend(self.fold_notification(notification))
             return frames
 
@@ -411,7 +394,6 @@ class CodexChildResources:
         if state.closed and not notified:
             return []
         thread = await self._read_thread(thread_id, include_turns=include_turns)
-        self.native_records.append({"method": THREAD_READ_METHOD, "thread": dict(thread)})
         return self.fold_thread(thread)
 
     async def _read_thread(self, thread_id: str, *, include_turns: bool) -> dict[str, Any]:
@@ -459,9 +441,8 @@ class CodexChildResources:
     def fold_thread(self, thread: dict[str, Any]) -> list[dict[str, Any]]:
         """Fold one thread document, as ``thread/read`` returns it, into facts.
 
-        Separated from the read so the same fold serves a document the
-        platform persisted: the relay journals the thread it read while no
-        run was open, and the adapter's durable fold replays it here.
+        A pure fold of the document: a thread this projector does not hold
+        yet is admitted only when its ``source`` names the root as parent.
         """
 
         thread_id = str(thread.get("id") or "").strip()

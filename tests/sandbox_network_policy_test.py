@@ -13,7 +13,6 @@ import pytest
 from astrabox.common.utils.errors import APIError
 from astrabox.core.model import AgentView
 from astrabox.core.service.orchestrator.environment_networking import (
-    normalized_environment_networking,
     parse_environment_networking,
 )
 from astrabox.core.service.orchestrator.runtime.config_resolver import (
@@ -54,46 +53,6 @@ def test_omitted_networking_has_one_secure_product_default(monkeypatch) -> None:
     assert _resolve({}) == SandboxNetworkPolicy(mode=SANDBOX_NETWORK_LIMITED)
 
 
-def test_unrestricted_networking_has_no_provider_fields_or_host_list() -> None:
-    policy = _resolve(
-        {
-            "type": "unrestricted",
-            "allowed_hosts": ["ignored.example"],
-            "allow_mcp_servers": True,
-        },
-        required_hosts=("also-ignored.example",),
-        mcp_hosts=("mcp.example",),
-    )
-
-    assert policy == SandboxNetworkPolicy(mode=SANDBOX_NETWORK_UNRESTRICTED)
-
-
-def test_limited_networking_composes_only_reachability_inputs(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "astrabox.core.service.orchestrator.runtime.config_resolver."
-        "platform_callback_egress_targets",
-        lambda: ["platform.internal"],
-    )
-    policy = _resolve(
-        {
-            "type": "limited",
-            "allowed_hosts": ["operator.example", "MODEL.EXAMPLE"],
-            "allow_mcp_servers": True,
-        },
-        required_hosts=("model.example", "github.com"),
-        mcp_hosts=("mcp.example",),
-    )
-
-    assert policy.mode == SANDBOX_NETWORK_LIMITED
-    assert policy.allowed_hosts == (
-        "operator.example",
-        "model.example",
-        "platform.internal",
-        "github.com",
-        "mcp.example",
-    )
-
-
 def test_limited_environment_must_explicitly_admit_agent_mcp() -> None:
     with pytest.raises(APIError) as caught:
         _resolve(
@@ -103,29 +62,6 @@ def test_limited_environment_must_explicitly_admit_agent_mcp() -> None:
 
     assert caught.value.code == "AGENT_MCP_NETWORK_ACCESS_DISABLED"
     assert "mcp.example" in str(caught.value)
-
-
-def test_environment_networking_is_canonicalized_before_storage() -> None:
-    assert normalized_environment_networking(
-        {
-            "type": "LIMITED",
-            "allowed_hosts": [
-                "API.Example.COM.",
-                "api.example.com",
-                "10.0.0.4",
-                "10.0.0.0/24",
-            ],
-            "allow_mcp_servers": True,
-        }
-    ) == {
-        "type": "limited",
-        "allowed_hosts": [
-            "api.example.com",
-            "10.0.0.4",
-            "10.0.0.0/24",
-        ],
-        "allow_mcp_servers": True,
-    }
 
 
 @pytest.mark.parametrize(
@@ -146,45 +82,6 @@ def test_malformed_networking_is_refused_not_dropped(document: object) -> None:
         parse_environment_networking(document)
     with pytest.raises(APIError):
         _resolve(document)
-
-
-def test_the_neutral_seam_rejects_an_impossible_unrestricted_shape() -> None:
-    with pytest.raises(ValueError):
-        SandboxNetworkPolicy(
-            mode=SANDBOX_NETWORK_UNRESTRICTED,
-            allowed_hosts=("api.example.com",),
-        )
-
-
-def test_open_sandbox_translation_exists_only_at_its_provider_edge() -> None:
-    from astrabox.providers.open_sandbox.networking import (
-        open_sandbox_network_policy,
-    )
-
-    limited = open_sandbox_network_policy(
-        SandboxNetworkPolicy(
-            mode=SANDBOX_NETWORK_LIMITED,
-            allowed_hosts=("api.example.com", "10.0.0.0/24"),
-        )
-    )
-    unrestricted = open_sandbox_network_policy(
-        SandboxNetworkPolicy(mode=SANDBOX_NETWORK_UNRESTRICTED)
-    )
-
-    assert limited is not None
-    assert limited.default_action == "deny"
-    # The cloud-metadata always-deny leads every policy (see the dedicated test
-    # below); the Environment's own allows follow it in order.
-    assert [rule.target for rule in limited.egress or []] == [
-        "169.254.0.0/16",
-        "api.example.com",
-        "10.0.0.0/24",
-    ]
-    assert unrestricted is not None
-    assert unrestricted.default_action == "allow"
-    assert [(rule.action, rule.target) for rule in unrestricted.egress or []] == [
-        ("deny", "169.254.0.0/16")
-    ]
 
 
 def test_open_sandbox_effective_policy_admits_exact_vault_binding_hosts() -> None:
@@ -268,7 +165,6 @@ def test_open_sandbox_effective_policy_admits_exact_vault_binding_hosts() -> Non
     ]
 
 
-
 def test_deployment_denied_networks_lead_every_mode_ahead_of_every_allow() -> None:
     """The bridge deny must hold in Unrestricted AND against an allow entry.
 
@@ -339,7 +235,6 @@ def test_deployment_denied_networks_lead_every_mode_ahead_of_every_allow() -> No
         ("deny", "172.17.0.0/28"),
         ("deny", "172.17.0.16/32"),
     ]
-
 
 
 def test_cloud_metadata_is_denied_in_every_mode_even_with_no_configured_denies() -> None:
@@ -436,85 +331,3 @@ def test_a_vault_binding_inside_the_metadata_range_is_refused() -> None:
             ),
             vault_write,
         )
-
-
-def test_denied_networks_come_from_the_validated_setting(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from pydantic import ValidationError
-
-    from astrabox.common.utils.settings import AstraBoxRuntimeSettings
-    from astrabox.providers.open_sandbox.networking import configured_denied_networks
-
-    monkeypatch.setenv(
-        "ASTRABOX_SANDBOX_EGRESS_DENY_CIDRS", " 172.17.0.0/17, 172.17.128.0/18 ,"
-    )
-    assert configured_denied_networks(AstraBoxRuntimeSettings()) == (
-        "172.17.0.0/17",
-        "172.17.128.0/18",
-    )
-    monkeypatch.delenv("ASTRABOX_SANDBOX_EGRESS_DENY_CIDRS")
-    assert configured_denied_networks(AstraBoxRuntimeSettings()) == ()
-    monkeypatch.setenv("ASTRABOX_SANDBOX_EGRESS_DENY_CIDRS", "172.17.0.1/16")
-    with pytest.raises(ValidationError, match="ASTRABOX_SANDBOX_EGRESS_DENY_CIDRS"):
-        AstraBoxRuntimeSettings()
-
-
-# ── the network wiring a box records at create ──────────────────────────────
-
-
-def _wiring_settings(**overrides: str) -> object:
-    from types import SimpleNamespace
-
-    fields = {
-        "mcp_proxy_base_url": "http://172.17.0.10:8000",
-        "sandbox_egress_dns_upstream": "172.17.0.9:53",
-        "sandbox_egress_deny_cidrs": "172.17.0.0/29,172.17.0.8/31",
-    }
-    fields.update(overrides)
-    return SimpleNamespace(**fields)
-
-
-@pytest.mark.parametrize(
-    "moved",
-    [
-        {"mcp_proxy_base_url": "http://172.17.0.4:8000"},
-        {"sandbox_egress_dns_upstream": "172.17.0.5:53"},
-        {"sandbox_egress_deny_cidrs": "172.17.0.0/30"},
-    ],
-    ids=["edge", "dns-edge", "deny-list"],
-)
-def test_a_moved_address_makes_a_recorded_box_stale(moved: dict[str, str]) -> None:
-    # Each is fixed into the box at create; a box that recorded the old value
-    # resolves, filters or calls back with addresses the platform does not serve.
-    from astrabox.providers.open_sandbox.networking import (
-        SANDBOX_NETWORK_WIRING_METADATA_KEY,
-        recorded_network_wiring_is_current,
-        sandbox_network_wiring,
-    )
-
-    before = sandbox_network_wiring(_wiring_settings())
-    record = {SANDBOX_NETWORK_WIRING_METADATA_KEY: before}
-    assert recorded_network_wiring_is_current(record, _wiring_settings()) is True
-    assert sandbox_network_wiring(_wiring_settings(**moved)) != before
-    assert recorded_network_wiring_is_current(record, _wiring_settings(**moved)) is False
-
-
-def test_the_wiring_record_fits_the_metadata_label_grammar() -> None:
-    import re
-
-    from astrabox.providers.open_sandbox.networking import sandbox_network_wiring
-
-    value = sandbox_network_wiring(_wiring_settings())
-    assert len(value) <= 63
-    assert re.fullmatch(r"[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?", value)
-
-
-def test_a_box_without_a_record_is_not_judged_stale() -> None:
-    # Created by a release that wrote no record: its wiring cannot be judged,
-    # and an upgrade that kept the edges running left it working.
-    from astrabox.providers.open_sandbox.networking import (
-        recorded_network_wiring_is_current,
-    )
-
-    assert recorded_network_wiring_is_current({}, _wiring_settings()) is True

@@ -21,17 +21,15 @@ import { useTranscriptAccess } from '../TranscriptAccess';
 import type { ProcessDetails, ProcessSummaryState } from '../../types';
 import { localizeDisplayText, toolPreview } from '../../utils/format';
 import { filterSupersededSingletonInteractionParts } from '../toolState';
-import { getSdkMessageTurnId } from '../utils/chatHelpers';
-import { isImportedWithoutEnding } from '../messageIdentity';
-import { LazyProcessBlock, ProcessSummaryCache } from './LazyProcessBlock';
+import { isOpenResponse, responseMetadata } from '../sessionMessages';
+import { LazyProcessBlock, ProcessSummaryCache, useProcessOpen } from './LazyProcessBlock';
 import { cardArtifacts } from '@/artifacts/marker';
 import { ConnectionRequestCard } from '@/connections/ConnectionRequestCard';
 import { ArtifactToolCard } from '@/artifacts/ArtifactToolCard';
 import { ToolPartCard } from './ToolParts';
-import { ApiRetryNote, ResultPartCard, TurnFailureCard } from './ResultCards';
+import { ApiRetryNote, ResponseFailureCard, ResultPartCard } from './ResultCards';
 import type { ApiRetryData } from './ResultCards';
-import { readUserAction } from '../userAction';
-import { UserActionNotice } from './SessionUserAction';
+import { UserMessageStatus } from './UserMessageStatus';
 
 type MessagePart = SDKUIMessage['parts'][number];
 
@@ -46,7 +44,6 @@ interface PartGroup {
 // process group, and when a whole turn folds they stay outside its header.
 const STANDALONE_DATA_PARTS = new Set([
   'data-result',
-  'data-turn-failure',
   'data-api-retry',
   'data-process-block',
   'data-interaction',
@@ -58,7 +55,6 @@ const STANDALONE_DATA_PARTS = new Set([
 // call it sits on. A folded header is not one of them: it is already a fold.
 const ALERT_DATA_PARTS = new Set([
   'data-result',
-  'data-turn-failure',
   'data-api-retry',
   'data-interaction',
 ]);
@@ -261,22 +257,20 @@ export function AssistantMessageParts({
 export function MessageBubble({
   message,
   pendingToolCallId,
-  activeTurnId,
   isStreaming,
   sessionId,
 }: {
   message: SDKUIMessage;
   pendingToolCallId?: string;
-  activeTurnId?: string | null;
   isStreaming?: boolean;
   sessionId?: string;
 }) {
   const { t } = useTranslation();
-  const isActiveTurn = message.role === 'assistant' && getSdkMessageTurnId(message) === String(activeTurnId ?? '').trim();
+  // A response that has not ended is still the runtime's: running, or paused
+  // at an interaction.
+  const isActiveTurn = isOpenResponse(message);
   const visibleParts = filterSupersededSingletonInteractionParts(message.parts, pendingToolCallId);
-  const partOwnerId = message.role === 'assistant'
-    ? getSdkMessageTurnId(message) || message.id
-    : message.id;
+  const partOwnerId = message.id;
 
   const isUser = message.role === 'user';
   const settled = !isUser && !isStreaming && !isActiveTurn;
@@ -287,15 +281,11 @@ export function MessageBubble({
     [isUser, visibleParts, pendingToolCallId, settled],
   );
 
-  // How the turn ended, from the platform's own settled facts. A turn stops
-  // short three ways: a `turn_failure` block, a `result` that reports an
-  // error, or a `result` whose `finish_reason` is `cancelled`, which is how a
-  // user stop completes. An idle turn carrying none of them ended normally.
-  const result = visibleParts.filter((part) => part.type === 'data-result').at(-1) as
-    { data: { is_error?: boolean; finish_reason?: string } } | undefined;
-  const interruptedEnd = visibleParts.some((part) => part.type === 'data-turn-failure')
-    || result?.data.is_error === true
-    || result?.data.finish_reason === 'cancelled';
+  // How the response ended is the runtime's recorded outcome: it stops short
+  // when it failed or was cancelled (how a stop completes).
+  const response = isUser ? null : responseMetadata(message);
+  const outcome = response?.outcome;
+  const interruptedEnd = outcome === 'failed' || outcome === 'cancelled';
   // A reloaded record arrives already folded: the server put a
   // `data-process-block` where the work was, and that part renders its own
   // header. Folding the record again would put one header inside another.
@@ -346,7 +336,7 @@ export function MessageBubble({
     && lastToolGroup >= 0
     && processGroups.length > 0
     && ((normalEnd && hasConclusion) || interruptedEnd);
-  const stoppedByUser = result?.data.finish_reason === 'cancelled';
+  const stoppedByUser = outcome === 'cancelled';
   const hasTools = visibleParts.some((part) => part.type === 'dynamic-tool');
 
   // A turn settles one part at a time, so the shape that decides the fold is
@@ -458,33 +448,34 @@ export function MessageBubble({
       <MessageContent className="clip-content w-full gap-2.5 overflow-clip group-[.is-user]:w-fit group-[.is-user]:max-w-[85%] group-[.is-user]:rounded-2xl group-[.is-user]:rounded-tr-md group-[.is-user]:border group-[.is-user]:border-border group-[.is-user]:px-3.5 group-[.is-user]:py-2.5">
         {canCollapseTurn && collapseReady ? (
           <>
-            <AssistantTurnProcess summary={summary}>
+            <AssistantTurnProcess responseId={message.id} summary={summary}>
               {processGroups.map(renderGroup)}
             </AssistantTurnProcess>
             {outsideGroups.map(renderGroup)}
           </>
         ) : groups.map(renderGroup)}
         {/*
-          A folded turn that stopped short says so beneath its work, whichever
-          side folded it: this page, or the server for a reloaded record. A
-          user stop says so even with nothing to fold: a turn stopped before
-          its first token, or one that only wrote text, has no header to carry
-          the line, and without it the reader cannot tell the stop took. A
-          failure is not included: its own card says so.
+          A cancelled response says so beneath its work, whichever side folded
+          it: this page, or the server for a reloaded record. It says so even
+          with nothing to fold: a response stopped before its first token, or
+          one that only wrote text, has no header to carry the line, and
+          without it the reader cannot tell the stop took.
         */}
-        {interruptedEnd
-          && (canCollapseTurn ? collapseReady : (serverFolded || (stoppedByUser && settled)))
+        {stoppedByUser
+          && (canCollapseTurn ? collapseReady : (serverFolded || settled))
           && (
           <div role="status" className="text-sm text-muted-foreground">
             {t('chat:process.stopped')}
           </div>
         )}
+        {/* A failed response carries the runtime's report of why. */}
+        {outcome === 'failed' && settled && <ResponseFailureCard error={response?.error?.message} />}
         {/*
           Imported history the source never recorded an ending for. It is
           neither a success nor a failure, so it gets neither a result nor a
           failure card: only this line, so a short reply is not read as whole.
         */}
-        {!isUser && isImportedWithoutEnding(message) && (
+        {response?.history_import?.completion === 'unknown' && (
           <div data-testid="history-no-recorded-ending" className="text-sm text-muted-foreground">
             {t('chat:message.imported_without_ending')}
           </div>
@@ -502,6 +493,7 @@ export function MessageBubble({
           </div>
         )}
       </MessageContent>
+      {isUser && <UserMessageStatus message={message} />}
     </Message>
   );
 }
@@ -523,17 +515,22 @@ function useProcessTitle(summary: ProcessSummaryState | null | undefined): strin
  * already opened whenever the header was shut.
  */
 function AssistantTurnProcess({
+  responseId,
   summary,
   children,
 }: {
+  responseId: string;
   summary: ProcessSummaryState | null;
   children: React.ReactNode;
 }) {
   const title = useProcessTitle(summary);
+  const [open, setOpen] = useProcessOpen(responseId);
   return (
     <Collapsible
       className="group w-full min-w-0 overflow-hidden rounded-[var(--radius)] border border-border bg-muted/30"
       data-testid="assistant-turn-process"
+      open={open}
+      onOpenChange={setOpen}
     >
       <CollapsibleTrigger
         data-testid="assistant-turn-process-trigger"
@@ -737,18 +734,11 @@ export function PartRenderer({
           <ArtifactToolCard
             key={`${marker.id}:${marker.version}`}
             marker={marker}
-            live={isActiveTurn}
-            toolCallId={String(card.toolCallId ?? '')}
           />
         ))}</>;
       }
       if (typeof anyPart.type === 'string' && anyPart.type === 'data-result' && anyPart.data) {
         return <ResultPartCard data={anyPart.data as Record<string, unknown>} />;
-      }
-      if (typeof anyPart.type === 'string' && anyPart.type === 'data-turn-failure' && anyPart.data) {
-        const failureData = anyPart.data as { error?: string; failure_phase?: string; user_action?: unknown };
-        const action = readUserAction(failureData.user_action);
-        return action ? <UserActionNotice action={action} /> : <TurnFailureCard error={failureData.error} />;
       }
       if (typeof anyPart.type === 'string' && anyPart.type === 'data-api-retry' && anyPart.data) {
         return <ApiRetryNote payload={anyPart.data as ApiRetryData} />;

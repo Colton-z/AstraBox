@@ -4,9 +4,10 @@ A scheduled Deployment has two halves with different owners.
 
 The platform owns the product: the Deployment record (its name, prompt, cron
 expression, IANA timezone and enabled flag) is the only desired state, the
-routes authorize who may change it or run it, a Run's Session is admitted with
-the Run's id as its idempotency key, and the public Run status is projected from
-the provider's dispatch state and the bound Session.
+routes authorize who may change it or run it, a Run's Session and its input are
+admitted with the Run's id as their idempotency key, and the public Run status
+is projected from the provider's dispatch state and the Session's response to
+the Run's input.
 
 A scheduler provider owns execution: it fires each due time, gives every
 invocation one durable id, calls the platform back at least once per invocation
@@ -28,9 +29,9 @@ What a provider must guarantee:
    constraint, not with a read before the write.
 3. **Dispatch.** For each invocation the provider calls
    :meth:`RunHandler.start_session`, records the returned Session id durably,
-   then calls :meth:`RunHandler.admit_turn` and records the turn. Either call
-   may happen more than once, always with the same :class:`RunInvocation`; the
-   handler is idempotent on ``run_id``. A failure other than
+   then calls :meth:`RunHandler.admit_input` and records the input. Either
+   call may happen more than once, always with the same :class:`RunInvocation`;
+   the handler is idempotent on ``run_id``. A failure other than
    :class:`RunPermanentError` is retried with bounded backoff; a permanent
    error, or retries running out, records the Run as ``FAILED``.
 4. **Recovery.** An invocation interrupted by the loss of a process continues
@@ -49,9 +50,9 @@ What a provider must guarantee:
    :class:`SchedulerUnavailable`; the provider's own vocabulary and error text
    never reach an API response.
 
-Together with the platform's idempotent admission (a deterministic Session id
-and command id derived from ``run_id``), at-least-once dispatch gives each
-invocation at most one admitted business turn, and exactly one once it succeeds.
+Together with the platform's idempotent admission (a Session and an input
+keyed by ``run_id``), at-least-once dispatch gives each invocation at most one
+admitted input, and exactly one once it succeeds.
 
 To add a provider: implement :class:`SchedulerProvider`, call
 :func:`register_scheduler` at import, and advertise the class under the
@@ -79,9 +80,9 @@ SCHEDULER_NONE = "none"
 RunTrigger = Literal["schedule", "manual", "replay"]
 
 #: Where an invocation is in the provider's dispatch. ``DISPATCHED`` means the
-#: Session and its turn were admitted; what the turn then does is the Session's
-#: state, not the provider's. ``UNKNOWN`` is a state the provider's engine
-#: reported and the provider cannot name.
+#: Session and its input were admitted; what the agent then does with the input
+#: is the Session's state, not the provider's. ``UNKNOWN`` is a state the
+#: provider's engine reported and the provider cannot name.
 RunDispatchState = Literal[
     "QUEUED", "DISPATCHING", "DISPATCHED", "FAILED", "CANCELLED", "UNKNOWN"
 ]
@@ -131,11 +132,10 @@ class RunInvocation:
 
 
 @dataclass(frozen=True, slots=True)
-class RunTurnBinding:
-    """The admitted turn a Run's invocation produced."""
+class RunInputBinding:
+    """The input a Run's invocation admitted into its Session."""
 
-    command_id: str
-    turn_id: str
+    input_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,7 +146,7 @@ class RunRecord:
     state: RunDispatchState
     created_at: datetime | None
     session_id: str | None = None
-    turn_id: str | None = None
+    input_id: str | None = None
     #: Whether the invocation ended in failure. The provider's error text is
     #: an operator diagnostic and is deliberately not carried.
     failed: bool = False
@@ -176,10 +176,10 @@ class RunHandler(Protocol):
         """Create (or find) the invocation's Session and return its id."""
         ...
 
-    async def admit_turn(
+    async def admit_input(
         self, invocation: RunInvocation, *, session_id: str
-    ) -> RunTurnBinding:
-        """Admit (or find) the invocation's turn in ``session_id``."""
+    ) -> RunInputBinding:
+        """Admit (or find) the invocation's input in ``session_id``."""
         ...
 
 
@@ -219,10 +219,11 @@ class SchedulerProvider(ABC):
     properties: SchedulerProperties
 
     @abstractmethod
-    def configure(self, *, repository_backend: Any) -> None:
+    def configure(self, *, database_url: str) -> None:
         """Validate and bind this deployment's configuration; called at startup.
 
-        ``repository_backend`` is the active repository backend object. Raise
+        ``database_url`` is the platform's PostgreSQL URL, which a provider may
+        use for its own durable state. Raise
         :class:`SchedulerConfigurationError` naming what is missing when the
         provider cannot run here, so the process refuses to start instead of
         failing the first schedule a user creates.
@@ -370,7 +371,7 @@ __all__ = [
     "RunPermanentError",
     "RunRecord",
     "RunTrigger",
-    "RunTurnBinding",
+    "RunInputBinding",
     "ScheduleCapacityExceeded",
     "ScheduleDefinition",
     "SchedulerConfigurationError",

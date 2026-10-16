@@ -9,10 +9,10 @@
 #   source .env (operator LLM creds)  ->  boot the source-mounted maintained
 #   Compose deployment  ->  clone the deployment's seeded coding Agent  ->
 #   POST /api/v1/sessions (cold-start an agent container)  ->  poll the
-#   session to READY  ->  POST
-#   /api/v1/sessions/{id}/ai-stream  ->  read the AI-SDK Data-Stream-Protocol SSE
-#   and assert one complete assistant text block, a normal stream finish, and a
-#   return to READY.
+#   session to READY  ->  POST /api/v1/sessions/{id}/inputs  ->  follow
+#   GET /api/v1/sessions/{id}/stream?after_seq=0 (AI SDK UI message stream,
+#   one response per HTTP response) and assert one complete assistant text
+#   block, a normal stream finish, and a return to READY.
 #
 # The load-bearing assertion is the SUCCESS-vs-fake-success distinction:
 # a turn that opens + finishes with ZERO text-delta frames
@@ -60,8 +60,8 @@ AUTH_TOKEN_FILE="${ASTRABOX_E2E_AUTH_TOKEN_FILE:-}"
 LOG_DIR="${ASTRABOX_E2E_LOG_DIR:-/tmp/astrabox-e2e}"
 mkdir -p "${LOG_DIR}"
 SERVER_LOG="${LOG_DIR}/server.log"
-SSE_OUT="${LOG_DIR}/ai-stream.sse"
-HEADERS_OUT="${LOG_DIR}/ai-stream.headers"
+SSE_OUT="${LOG_DIR}/stream.sse"
+HEADERS_OUT="${LOG_DIR}/stream.headers"
 SMOKE_RESULT_OUT="${LOG_DIR}/smoke-result.json"
 rm -f -- "${SMOKE_RESULT_OUT}"
 
@@ -776,29 +776,39 @@ if [[ -z "${EXTERNAL_BASE_URL}" ]]; then
   log "agent container is up"
 fi
 
-# ── 6) POST the prompt and stream the AI-SDK SSE ─────────────────────────────
-log "POST ai-stream prompt: ${PROMPT}"
+# ── 6) send the prompt and follow the session's stream ──────────────────────
+log "POST inputs prompt: ${PROMPT}"
 : > "${SSE_OUT}"
 : > "${HEADERS_OUT}"
 CLIENT_MESSAGE_ID="$("${VENV_PY}" -c 'import uuid; print(uuid.uuid4())')"
-# -N: unbuffered so frames arrive live; --max-time bounds a hang.
-api_curl -N --max-time "${STREAM_TIMEOUT}" \
-  -D "${HEADERS_OUT}" \
-  -X POST "${BASE_URL}/api/v1/sessions/${SID}/ai-stream" \
+RECEIPT="$(api_curl -fsS --max-time 30 -X POST "${BASE_URL}/api/v1/sessions/${SID}/inputs" \
   -H 'Content-Type: application/json' \
-  -H 'Accept: text/event-stream' \
   -d "$(printf '%s' "${PROMPT}" | "${VENV_PY}" -c \
         'import sys,json; print(json.dumps({"content": sys.stdin.read(), "client_message_id": sys.argv[1]}))' \
-        "${CLIENT_MESSAGE_ID}")" \
+        "${CLIENT_MESSAGE_ID}")" 2>/dev/null)" \
+  || fail "POST /api/v1/sessions/${SID}/inputs was refused"
+printf '%s' "${RECEIPT}" | "${VENV_PY}" -c '
+import json, sys
+data = json.load(sys.stdin).get("data") or {}
+if not data.get("input_id"):
+    raise SystemExit("input receipt names no input")
+' 2>/dev/null || fail "the input receipt is invalid: $(printf '%s' "${RECEIPT}" | head -c 400)"
+# A new session has no earlier output, so its first response is this input's.
+# -N: unbuffered so parts arrive live; the stream ends after that response's
+# finish, and --max-time bounds a hang.
+api_curl -N --max-time "${STREAM_TIMEOUT}" \
+  -D "${HEADERS_OUT}" \
+  -H 'Accept: text/event-stream' \
+  "${BASE_URL}/api/v1/sessions/${SID}/stream?after_seq=0" \
   > "${SSE_OUT}" 2>/dev/null \
   || true   # The stream-content checks below decide success; curl may time out after receiving data.
 
-# A JSON error envelope (not SSE) means a pre-stream failure.
+# A JSON error envelope (not SSE) means the stream was refused.
 if head -c 1 "${SSE_OUT}" 2>/dev/null | grep -q '{'; then
-  fail "ai-stream returned a JSON error envelope (not SSE): $(head -c 400 "${SSE_OUT}")"
+  fail "the session stream returned a JSON error envelope (not SSE): $(head -c 400 "${SSE_OUT}")"
 fi
 grep -Eiq '^x-vercel-ai-ui-message-stream:[[:space:]]*v1[[:space:]]*$' "${HEADERS_OUT}" \
-  || fail "ai-stream omitted x-vercel-ai-ui-message-stream: v1"
+  || fail "the session stream omitted x-vercel-ai-ui-message-stream: v1"
 
 # ── 7) judge the stream: one complete response is the proof ─────────────────
 # Require one text-start/text-end pair containing genuine text deltas, followed
@@ -917,6 +927,9 @@ with open(path, "r", errors="replace") as fh:
                 completed_text_blocks.add(block_id)
         elif t == "error":
             saw_error = ev.get("errorText") or "unknown error"
+        elif t == "data-input-failed":
+            data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            saw_error = saw_error or f"input refused: {data.get('code')}: {data.get('message')}"
         elif t == "data-result":
             # The turn's terminal verdict. A failure shows as is_error (when the
             # backend sets it) and/or an "API Error: ..." result string. The
@@ -962,10 +975,10 @@ PROTOCOL_ERR="$(printf '%s' "${PROOF}" | sed -n 's/^PROTOCOL_ERROR=//p')"
 STREAM_ERR="$(printf '%s' "${PROOF}" | sed -n 's/^ERROR=//p')"
 
 if [[ -n "${STREAM_ERR}" ]]; then
-  fail "ai-stream reported a FAILED turn (error frame or is_error result): ${STREAM_ERR}"
+  fail "the session stream reported a FAILED reply (error frame or is_error result): ${STREAM_ERR}"
 fi
 if [[ -n "${PROTOCOL_ERR}" ]]; then
-  fail "ai-stream violated the text-block protocol: ${PROTOCOL_ERR}"
+  fail "the session stream violated the text-block protocol: ${PROTOCOL_ERR}"
 fi
 # A stream that opens and finishes with zero text deltas is not a valid answer.
 if [[ "${N_TEXT_DELTA:-0}" -eq 0 ]]; then
@@ -981,7 +994,7 @@ if [[ "${TEXT_BLOCK_COUNT:-0}" -lt 1 ]]; then
   fail "expected at least one complete assistant text block, got ${TEXT_BLOCK_COUNT:-0}"
 fi
 if [[ "${FINISH_REASON}" != "stop" ]]; then
-  fail "ai-stream did not finish normally (finishReason=${FINISH_REASON:-missing})"
+  fail "the session stream did not finish normally (finishReason=${FINISH_REASON:-missing})"
 fi
 
 settled_state=""

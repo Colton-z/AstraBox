@@ -299,6 +299,12 @@ OpenSandbox Secure Access and configure matching signing keys for AstraBox and
 the ingress component. AstraBox checks Session access before issuing a
 short-lived signed URL.
 
+Issuing a browser endpoint exempts its bound Agent-conversation sandbox from
+conversation-idle parking for that sandbox's lifetime. Application traffic goes
+directly to the Gateway, so console silence cannot establish that the application
+is unused. Sandbox expiry and explicit termination still apply. A replacement
+sandbox needs its own endpoint before it receives this exemption.
+
 ### Configure a browser-facing Kubernetes Gateway
 
 Install the official OpenSandbox ingress Gateway in `opensandbox-system`, with

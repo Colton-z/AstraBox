@@ -1,111 +1,111 @@
-# 启动 Session
+# Session
 
 > 创建、运行、查看和归档 Agent Session。
 
-Session 是 Agent 的一次有状态运行。它使用一个 Agent 和 Environment，并保存
-消息、Event 与当前状态。你向 Session 发送消息，它处理后返回 Event 流。
+Session 是与 Agent 进行的一段对话。它使用一个 Agent 和 Environment，保存你发送的
+消息和 Agent 程序产生的回复，并报告 Agent 程序当前在做什么。你向 Session 发送消息，
+回复会出现在 Session 的事件流中。
+
+对话由 Agent 程序负责：程序是否正在工作、已经取走哪些消息、每条回复从哪里开始、
+在哪里结束，都以程序的报告为准。AstraBox 记录并展示这些报告，并在程序取走你的消息
+之前保存这些消息。
 
 ## Session 状态生命周期
 
-Session 是一个状态机，核心状态如下：
+Session 在 `state` 中报告以下状态之一：
 
 | 状态 | 说明 | 可流转到 |
 | --- | --- | --- |
 | `CREATING` | 正在准备或分配运行环境。 | `READY`, `TERMINATED` |
-| `READY` | 已准备好，等待用户消息。 | `BUSY`, `TERMINATED`, `RECOVERY_REQUIRED`, `DELETED` |
-| `BACKGROUND_RUNNING` | 可以接收前台输入，但仍有子任务在后台执行。 | `READY`, `BUSY`, `TERMINATED`, `RECOVERY_REQUIRED`, `DELETED` |
-| `BUSY` | Agent 正在处理当前前台任务。 | `INTERRUPTING`, `READY`, `RECOVERY_REQUIRED`, `TERMINATED` |
-| `INTERRUPTING` | 中断指令已发出，等待当前任务停止。 | `READY`, `RECOVERY_REQUIRED` |
-| `RECOVERY_REQUIRED` | 对话历史仍然保留，但运行环境需要恢复。 | `READY`, `CREATING`, `TERMINATED`, `DELETED` |
+| `READY` | 没有正在运行的工作，Session 可以接收消息。 | `PROCESSING`, `WAITING_INPUT`, `TERMINATED`, `DELETED` |
+| `PROCESSING` | Agent 程序正在工作、有一条回复尚未结束，或 AstraBox 仍保存着程序尚未取走的消息。 | `READY`, `WAITING_INPUT`, `TERMINATED`, `DELETED` |
+| `WAITING_INPUT` | 一条回复因审批或问题而暂停。 | `PROCESSING`, `READY`, `TERMINATED`, `DELETED` |
 | `TERMINATED` | 运行环境已离线。 | `CREATING`, `DELETED` |
 | `DELETED` | 已删除。 | —（终态） |
+
+`runtime_status` 是 Agent 程序自己的报告：`working`、`waiting` 或 `idle`。
+`PROCESSING` 和 `WAITING_INPUT` 由它以及 AstraBox 为这个 Session 记录的回复、问题
+和消息推导得出。
 
 还有两个生命周期标记与 `state` 一起公开：
 
 - **已归档（archived）**：与 `state` 分开记录。Session 仍可读取，但不会出现在
   活动对话列表中。
-- **已删除（deleted）**：由终态 `DELETED` 表示。已删除的 Session 无法恢复。
+- **运行环境不可用（runtime unavailable）**：Session 的沙箱已不存在或已释放时，
+  `runtime_unavailable` 为 `true`。处于 `READY` 的 Session 保留对话历史，下一条
+  消息会启动新的沙箱。
 
 1. <b>创建 → CREATING</b> 新 Session 进入 `CREATING`，AstraBox 正在准备
    或分配运行环境。
-2. <b>CREATING → READY</b> Session 已准备好，可以接收输入。
-3. <b>READY → BUSY</b> 发送消息后开始执行前台 turn。
-4. <b>BUSY → READY</b> 前台 turn 完成后，Session 可以继续下一轮；仍有子任务
-   执行时会显示 `BACKGROUND_RUNNING`。
-5. <b>BUSY → INTERRUPTING → READY</b> 中断前台 turn 后，Session 会经过
-   `INTERRUPTING`，之后仍可继续使用。
-6. <b>RECOVERY_REQUIRED 或 TERMINATED</b> 对话仍然保留，但需要恢复或重建
-   运行环境才能继续执行任务。
+2. <b>CREATING → READY</b> Session 已准备好，可以接收输入。Session 仍处于
+   `CREATING` 时发送的消息会被保存，并在运行环境就绪后交给 Agent 程序。
+3. <b>READY → PROCESSING</b> 发送消息后，消息会交给 Agent 程序，由程序开始
+   一条回复。
+4. <b>PROCESSING → WAITING_INPUT → PROCESSING</b> 需要审批或回答的回复会暂停，
+   直到有人回应，然后继续。
+5. <b>PROCESSING → READY</b> 回复结束，并且 Agent 程序报告自己已空闲。自行继续
+   工作的程序（例如正在执行后台任务）会保持 `PROCESSING`，直到它报告空闲。
+6. <b>TERMINATED</b> 对话仍然保留，但需要先恢复运行环境
+   （`POST /api/v1/sessions/{session_id}/recover`），才能继续执行任务。
 7. <b>DELETED（终态）</b> 删除 Session 后，它的生命周期结束。
 
 恢复对话不依赖持久工作区卷。AstraBox 将 Agent 程序的原生会话数据保存到平台数据库，
-更换计算资源时将这些数据恢复，交给程序自身的恢复操作使用。工作区文件单独保存：
-需要在沙箱丢失或释放后保留文件时，应配置可选的持久工作区存储。连接断开本身不代表
-沙箱已经失效；确认沙箱故障后，受影响的任务会结束，下一条消息可以触发恢复，不会
-自动重放已经失败的任务。
+更换计算资源时将这些数据恢复，交给程序自身的恢复操作使用。工作区文件的生命周期是
+独立的：要在沙箱丢失或释放后保留这些文件，需要配置可选的持久工作区存储。连接断开本身不代表
+沙箱已经失效；AstraBox 会重新连接程序，并从已记录的位置继续。确认沙箱丢失后，
+进行中的回复以失败结束。程序尚未取走的消息会自动交给新的沙箱，由它恢复对话；程序
+已经取走的消息不会再次发送。
 
 ## 模型请求自动重试
 
-所选 Agent 程序或模型网关执行的重试仍属于当前任务。AstraBox 会让 Session 保持
-`BUSY`，不会另外发布 `rescheduling` 状态。保持事件流连接，不要在任务执行期间重复
-发送同一条消息。
+所选 Agent 程序或模型网关执行的重试属于进行中的回复。Session 保持 `PROCESSING`，
+AstraBox 不会另外公开 `rescheduling` 状态。请继续接收事件流，不要在回复尚未结束时
+重复发送同一条消息。
 
-事件流报告错误时，应以已记录的 turn 故障和之后的 Session 状态为准。重试分类由
+事件流报告错误时，应以回复已记录的 `outcome` 和之后的 Session 状态为准。重试分类由
 所选 Agent 程序或模型网关负责；AstraBox 不会另行构造一套重试状态。
 
-## Interrupt 语义
-
-- **对 `READY` Session 调用 interrupt**：幂等的空操作，Session 保持可用。
-- **对有活动 turn 的 Session 调用 interrupt**：AstraBox 记录请求，让 Session
-  经过 `INTERRUPTING`，并返回 `status: "accepted"`。
-- **interrupt 后**：turn 结束后，Session 仍可复用。
+## 中断语义
 
 ```bash
-# 中断当前任务
+# 中断进行中的回复
 curl --silent --show-error --request POST \
   "$SERVICE_URL/api/v1/sessions/$SESSION_ID/interrupt" \
   --header "Authorization: Bearer $ACCESS_TOKEN"
 ```
 
-只有 `DELETED` 是终态。Interrupt 前台 turn 不会删除 Session 或已保存的对话历史。
+- **`status: "accepted"`**：AstraBox 把请求交给 Agent 程序，由程序停止进行中的
+  回复，并报告回复的结束方式，例如 `cancelled`。
+- **`status: "idle"`**：没有已连接的运行环境，因此没有可以中断的工作。
+- **中断后**：Session 仍可复用，照常发送下一条消息即可。
 
-## 向正在处理 turn 的 Session 发消息（409 错误）
+只有 `DELETED` 是终态。中断回复不会删除 Session 或已保存的对话历史。Session 的
+网页终端有自己的停止操作 `POST /api/v1/sessions/{session_id}/terminal/interrupt`；
+中断对话不会停止终端命令。
 
-Session 已有活动前台任务或仍在处理中断时，`POST
-/api/v1/sessions/{session_id}/ai-stream` 返回 `HTTP 409 SESSION_BUSY`。等待状态变为
-`READY` 或 `BACKGROUND_RUNNING`，或者先中断当前任务，再发送下一条前台消息。
+## Agent 工作时发送消息
 
-```json
-{
-  "code": "SESSION_BUSY",
-  "message": "session already has an active turn",
-  "data": null,
-  "error": {
-    "code": "SESSION_BUSY",
-    "status_code": 409,
-    "category": "state",
-    "retryable": true,
-    "owner": "session",
-    "user_message": "session already has an active turn"
-  }
-}
-```
+除 `TERMINATED` 和 `DELETED` 外，Session 在任何状态下都接收消息。AstraBox 按接收
+顺序把消息交给 Agent 程序。正在工作的程序会把消息放进自己的队列，准备好后再回答；
+逐条回答还是一起回答排队的消息，由程序决定。每条回复都会在 `input_ids` 中列出它
+回答的消息。
 
-发送下一条消息前，应等待当前 turn 的终止 frame。存在待处理交互时，应改用交互响应
-接口回答。
+向 `TERMINATED` 或已删除的 Session 发送消息会返回 `HTTP 409 AGENT_RUNTIME_ERROR`。
+请先恢复 `TERMINATED` 状态的 Session。待处理的审批或问题需要通过交互回答接口回答，
+不能通过发送消息回答。
 
 ## 创建 Session
 
 Session 从 Agent 启动，Environment 已经由这个 Agent 选定。在控制台中：
 
-1. 在 AstraBox 控制台中打开 **Agents**。
+1. 在 AstraBox 控制台中打开 **Agent**。
 2. 选择一个 Agent。
 3. 选择 **开始对话**。
 
-运行环境准备好后，新的 Session 会自动打开。Agent 开启预热时，Session 可以领取
-事先准备完成的运行实例，其中已包含 Agent 配置和所选扩展。配置持久工作区存储后，
-AstraBox 会在交付运行实例前选定新 Session 的工作区，或已有 Session 保存的工作区。
-运行实例使用期间，这个分配关系保持固定。
+运行环境准备好后，新的 Session 会自动打开。Agent 开启预热时，Session 可以领取在它
+创建之前就已准备好的运行环境，其中已包含 Agent 配置和已配置的扩展。配置持久工作区
+存储后，AstraBox 会在交付运行环境前选定新 Session 的工作区，或已有 Session 保存的
+工作区。运行环境使用期间，这个分配关系保持固定。
 
 外部系统可以在请求路径中传入 Agent ID：
 
@@ -147,23 +147,29 @@ AstraBox 会返回同一个 Session，不会重复创建。
 | `title` | string/null | Session 标题。 |
 | `model_name` | string/null | 当前运行环境报告的模型。 |
 | `permission_mode` | string/null | Agent 程序支持时，为它选择的权限模式。 |
-| `current_turn_id` | string/null | 当前 turn 的 ID。 |
-| `last_turn_status` | string/null | 最近一次 turn 的状态。 |
+| `runtime_status` | string/null | Agent 程序最近一次报告的状态：`idle`、`working` 或 `waiting`。 |
+| `current_responses` | array | Agent 程序正在产生的回复。 |
+| `last_response` | object/null | 最近一条已结束的回复，包含 `outcome`（`completed`、`failed` 或 `cancelled`）和程序自己给出的 `native_reason`。 |
+| `pending_interaction` | object/null | Session 正在等待的审批或问题。 |
+| `held_inputs` | array | 已接收、但 Agent 程序尚未取走的消息。 |
+| `output_seq` | integer | 跟随 Session 事件流时使用的起始输出位置。 |
+| `runtime_unavailable` | boolean | Session 的沙箱是否已不存在或已释放。 |
 | `created_at` | string/null | 创建时间。 |
 | `updated_at` | string/null | 最后更新时间。 |
 
-Session 列表只返回摘要；`GET /api/v1/sessions/{session_id}` 返回当前完整详情。
-Agent 程序在 turn 完成时报告 token 用量或模型费用后，控制台会把这些数据和结果
-一起显示。计费和限额由当前部署配置的模型服务管理。
+Session 列表响应包含每个 Session 的摘要，其中的 `state` 来自 Agent 程序最近一次
+报告的状态；`GET /api/v1/sessions/{session_id}` 返回当前完整详情。Agent 程序为某条
+回复报告 token 用量或模型费用后，控制台会把这些数据和该回复一起显示。计费和限额由
+当前部署配置的模型服务管理。
 
 AstraBox 创建 Session 时不接受 Agent 对象、Agent 版本或 Environment 请求字段。
 请求路径指定 Agent，而 Environment 已经由 Agent 选定。Session 记录 Agent 身份，
 不会快照或锁定某个 Agent 版本：
 
 - AstraBox 第一次为 Session 准备运行环境时，解析当前 Agent 和 Environment
-- 保存 Agent 或 Environment 后，不会原地修改正在执行的 turn 或已经运行的环境
-- AstraBox 后续重建运行环境时，同一个 Session 可能使用当前保存的 Agent 和 Environment
-  配置
+- 保存 Agent 或 Environment 后，正在运行的运行环境不会被原地重新配置
+- AstraBox 后续重建运行环境时，同一个 Session 可以使用当前保存的 Agent 和
+  Environment 配置
 - Agent 的 `version` 字段用于检测并发更新，不是 Session 可以选择的配置版本
 
 ## 创建后添加资源
@@ -178,19 +184,21 @@ AstraBox 创建 Session 的请求不接受 `resources` 数组。默认 GitHub �
 管理员配置转写模型后，可以点击控制台的麦克风按钮录音，将转写文字追加到可编辑草稿，
 检查后再发送。配置方式、录音限制和重试行为见[语音输入](voice-input.md)。
 
-`POST /sessions/{id}/ai-stream` 的请求体包含一条用户消息，并以 AI SDK UI
-Message Stream v1 事件流返回本轮结果。
+`POST /api/v1/sessions/{session_id}/inputs` 接收一条消息，并立即返回回执。对这条
+消息的回复会出现在 Session 的事件流中。
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `content` | string | 是 | 用户消息。 |
 | `client_message_id` | string | 否 | 调用方为这条消息生成的幂等 key。 |
-| `permission_mode` | string | 否 | 这个 Session 的 Agent 程序支持的权限模式。 |
+
+如需更改 Agent 程序使用的权限模式，请更新 Session 的权限模式（参见
+[读取和更新 Sessions](#read-and-update-sessions)）。
 
 ```bash
-# 发送消息并以事件流接收响应
-curl --no-buffer --silent --show-error --request POST \
-  "$SERVICE_URL/api/v1/sessions/$SESSION_ID/ai-stream" \
+# 发送一条消息
+curl --silent --show-error --request POST \
+  "$SERVICE_URL/api/v1/sessions/$SESSION_ID/inputs" \
   --header "Authorization: Bearer $ACCESS_TOKEN" \
   --header 'Content-Type: application/json' \
   --data '{
@@ -199,31 +207,72 @@ curl --no-buffer --silent --show-error --request POST \
   }'
 ```
 
-发送消息会让 `READY` 状态变为 `BUSY`；处于 `BACKGROUND_RUNNING` 的 Session
-也可以接收新的前台 turn。处理完成后，Session 回到 `READY`；仍有子任务执行时
-则显示 `BACKGROUND_RUNNING`。当前前台 turn 进入终态后，事件流以
-`data: [DONE]` 结束。
+回执会标明已接收的消息：
 
-## 读取事件
-
-`ai-stream` 响应使用 AI SDK UI Message Stream 协议。以下连接不发送输入，而是等待并
-接收一个完整任务：
-
-```text
-GET /api/v1/sessions/{session_id}/ai-stream?follow=session
+```json
+{
+  "code": "OK",
+  "message": "success",
+  "data": {
+    "session_id": "SESSION_ID",
+    "input_id": "INPUT_ID",
+    "client_message_id": "analysis-1",
+    "accepted_at": "2026-05-18T12:00:00Z",
+    "state": "pending",
+    "duplicate": false
+  }
+}
 ```
 
-`data-resume-cursor` frame 的 `data.frameSeq` 带有最新的安全整数游标。保存该值，
-断线后通过 `after_seq` 重连；AstraBox 不使用 SSE `Last-Event-ID` 请求头：
+再次发送相同的 `client_message_id` 会返回第一次接收的消息，并带有
+`duplicate: true`；Agent 程序只会收到一次。部署的准入策略可以用
+`HTTP 429 ADMISSION_DENIED` 拒绝消息。
+
+被 Agent 程序或部署的运行准备流程拒绝的消息不会开始回复：事件流会用带有原因的
+`data-input-failed` part 报告它，这条消息也会在 Session 历史中保留它的 `failure`。
+
+## 读取 Session 事件流
+
+事件流使用 AI SDK UI Message Stream 协议，从你在 `after_seq` 中传入的位置之后开始，
+把每条回复作为一条 UI 消息发送。要等待下一条回复，请从 Session 的 `output_seq`
+开始；`GET /api/v1/sessions/{session_id}` 和消息列表的第一页都会返回这个值。新
+Session 的输出从 `0` 开始：
 
 ```text
-GET /api/v1/sessions/{session_id}/ai-stream?follow=session&after_seq=42
+GET /api/v1/sessions/{session_id}/stream?after_seq=0
 ```
 
-通过 `GET /api/v1/sessions/{session_id}/messages` 读取持久保存的对话历史，并使用
-`before` 向前分页。Frame 格式和断线重连方式见 [SSE Event 流](events-stream.md)。
+`data-resume-cursor` part 的 `data.seq` 带有最新位置。保存该值，并通过 `after_seq`
+重新连接；AstraBox 不使用 SSE `Last-Event-ID` 请求头：
 
-## 读取和更新 Sessions
+```text
+GET /api/v1/sessions/{session_id}/stream?after_seq=42
+```
+
+一次事件流请求会在结束一条回复的 part 之后结束。使用保存的 `after_seq` 打开下一次
+请求，接收后续回复。持久保存的对话历史通过 `GET /api/v1/sessions/{session_id}/messages`
+读取，并使用 `before` 向更早的消息分页。Part 格式和断线重连方式见
+[SSE 事件流](events-stream.md)。
+
+## 回答审批和问题
+
+回复因审批或问题暂停时，事件流会发送 `data-interaction` part（工具审批还会发送
+`tool-approval-request`），Session 也会在 `pending_interaction` 中报告它。使用
+交互 ID 回答：
+
+```bash
+curl --silent --show-error --request POST \
+  "$SERVICE_URL/api/v1/sessions/$SESSION_ID/interactions/$INTERACTION_ID/answer" \
+  --header "Authorization: Bearer $ACCESS_TOKEN" \
+  --header 'Content-Type: application/json' \
+  --data '{"answer": {"decision": "approve"}}'
+```
+
+回答的格式取决于交互的 `presentation`，参见[权限模式](permission-modes.md)。已被
+回答、撤回或已过期的交互会返回 `HTTP 409 INTERACTION_NOT_OPEN`。回复会在 Session
+事件流中继续。
+
+## 读取和更新 Sessions {#read-and-update-sessions}
 
 ```bash
 # 获取一个 Session
@@ -244,7 +293,7 @@ curl --silent --show-error --request POST \
   --data "{\"permission_mode\":\"$PERMISSION_MODE\"}"
 ```
 
-分页响应：
+分页响应示例：
 
 ```json
 {
@@ -256,6 +305,7 @@ curl --silent --show-error --request POST \
         "session_id": "SESSION_ID",
         "agent_id": "AGENT_ID",
         "state": "READY",
+        "runtime_status": "idle",
         "title": "code-reviewer",
         "created_at": "2026-05-18T12:00:00Z",
         "updated_at": "2026-05-18T12:30:00Z"
@@ -268,14 +318,15 @@ curl --silent --show-error --request POST \
 ```
 
 分页响应使用 `has_more` 和 `next_cursor`。未传 `page=1` 时，同一个列表接口返回
-控制台使用的非分页数组。这个 Session 路由族只允许更新权限模式；具体可选值由
-所选 Agent 程序定义。
+控制台使用的非分页数组。这个 Session 路由族只能更新权限模式这一项 Session 配置；
+具体可选值由所选 Agent 程序定义。AstraBox 把权限模式保存在 Session 上，并应用到
+正在运行的 Agent 程序；没有运行中程序的 Session 会在运行环境启动时获得该模式。
 
 ### 未读回复
 
-Session 会记录最后一次得到回复的时间（`last_output_at`），无论回复来自某人发起的轮次，
-还是 Agent 程序自己发出的回复，例如 Assistant 的定时任务或心跳。属主的 `read_at` 记录
-其最后一次阅读的时间：
+Session 会记录最后一次产生输出的时间（`last_output_at`），无论输出由某人的消息引起，
+还是来自 Agent 程序自己发出的回复，例如 Assistant 的定时任务或心跳。属主的 `read_at`
+记录其最后一次阅读的时间：
 
 ```bash
 curl --silent --show-error --request POST \
@@ -284,9 +335,9 @@ curl --silent --show-error --request POST \
 ```
 
 `last_output_at` 晚于 `read_at` 的 Session 为未读。控制台在可见标签页中打开对话时
-将其标记为已读，并在列表里未读对话旁显示圆点。开启通知后（列表中 **Sessions** 旁的
+将其标记为已读，并在列表里未读对话旁显示圆点。开启通知后（列表中 **会话** 旁的
 铃铛），只要有控制台标签页打开（包括后台标签页），每条新的未读回复都会弹出浏览器通知。
-Agent 程序主动发出的回复还会把对话移到列表顶部。
+回复结束时（包括 Agent 程序自行开始的回复），它所在的对话会移到列表顶部。
 
 ## Child runs
 
@@ -299,12 +350,12 @@ GET /api/v1/sessions/{session_id}/child-runs/{child_run_id}/messages
 POST /api/v1/sessions/{session_id}/child-runs/{child_run_id}/stop
 ```
 
-控制台中的 **Agents** 标签展示同一个投影。委派方式、共享工作区和控制操作见
+**Agents** 标签展示同样的 child run 信息。委派方式、共享工作区和 child run 控制操作见
 [Multiagent 编排](multi-agents.md)。
 
 ## 生命周期
 
-Session 不再需要出现在活动对话列表中、但仍应保留读取能力时，使用归档：
+需要让 Session 离开活动对话列表、但仍可读取时，将其归档：
 
 ```text
 POST /api/v1/sessions/{session_id}/archive
@@ -316,85 +367,127 @@ POST /api/v1/sessions/{session_id}/archive
 DELETE /api/v1/sessions/{session_id}
 ```
 
-结束或删除 Session 与中断当前任务不同。应根据需要保留的数据选择对应操作。
+结束或删除 Session 与中断当前回复不同。应根据需要保留的数据选择对应的生命周期操作。
 
-## 多轮对话工作流
+Agent 程序报告自己正在工作时，归档、删除、结束对话和终止其沙箱都会返回
+`HTTP 409 SESSION_BUSY`。请先中断工作，或等待它完成。正在等待审批或问题回答的
+Session 不算在工作，可以归档或删除。
 
-Session 支持多轮对话。推荐流程如下：
+## 对话工作流
 
-1. 通过 `POST /sessions/{id}/ai-stream` 发送用户消息
-2. 接收 AI SDK UI Message Stream 响应
-3. 等待终止 frame，并确认 Session 进入 `READY` 或 `BACKGROUND_RUNNING`
-4. 向同一个 Session 发送下一条消息
+Session 支持包含多条消息的对话。推荐流程如下：
+
+1. 通过 `POST /sessions/{id}/inputs` 发送用户消息。
+2. 从最后保存的游标（或 Session 的 `output_seq`）开始跟随
+   `GET /sessions/{id}/stream`，读取回复直到它的 `finish` part。
+3. 回答回复暂停时提出的审批或问题。
+4. 向同一个 Session 发送下一条消息。Agent 程序仍在工作时发送的消息会在程序的队列
+   中等待。
 
 ```bash
 BASE_URL="$SERVICE_URL/api/v1"
 
-# 第一轮：提出需求
-curl --no-buffer --silent --show-error --request POST \
-  "$BASE_URL/sessions/$SESSION_ID/ai-stream" \
+# 第一条消息：提出需求
+curl --silent --show-error --request POST \
+  "$BASE_URL/sessions/$SESSION_ID/inputs" \
   --header "Authorization: Bearer $ACCESS_TOKEN" \
   --header 'Content-Type: application/json' \
-  --data '{"content":"创建一个 Python Flask 项目脚手架。","client_message_id":"turn-1"}'
+  --data '{"content":"创建一个 Python Flask 项目脚手架。","client_message_id":"message-1"}'
 
-# 第二轮：追加要求
-curl --no-buffer --silent --show-error --request POST \
-  "$BASE_URL/sessions/$SESSION_ID/ai-stream" \
+# 读取回复；新 Session 的输出从 0 开始
+curl --no-buffer --silent --show-error \
+  "$BASE_URL/sessions/$SESSION_ID/stream?after_seq=0" \
+  --header "Authorization: Bearer $ACCESS_TOKEN" \
+  --header 'Accept: text/event-stream'
+
+# 第二条消息：追加要求
+curl --silent --show-error --request POST \
+  "$BASE_URL/sessions/$SESSION_ID/inputs" \
   --header "Authorization: Bearer $ACCESS_TOKEN" \
   --header 'Content-Type: application/json' \
-  --data '{"content":"给项目添加单元测试和 CI 配置。","client_message_id":"turn-2"}'
+  --data '{"content":"给项目添加单元测试和 CI 配置。","client_message_id":"message-2"}'
 ```
-
-> 发送下一条消息前，应等待当前前台 turn 结束。Session 仍处于 `BUSY` 或
-> `INTERRUPTING` 时发送消息会返回 HTTP 409。
 
 ## 分享 Session
 
 打开 Session 并选择**分享**，即可生成只读链接。可以设置有效期，并决定查看者是否能够
-下载工作区文件。有效链接本身授予对会话的读取权限，因此只应发送给目标查看者，并在
-不再需要时撤销。查看者不能发送消息或修改 Session。
+下载工作区文件。链接本身授予读取权限，因此只应发送给目标查看者，并在不需要时撤销。
+查看者不能发送消息或修改 Session。
+
+## 导入早期历史
+
+把对话从其他系统迁移到 AstraBox 时，平台管理员可以导入每段对话的早期消息，让对应
+Session 显示这些消息。导入只用于阅读：它不会启动沙箱、不会执行任何操作，也不会改变
+Session 状态。Agent 程序不会读取这些消息；要从中断处继续对话，请另外恢复程序自身的
+会话历史。
+
+```bash
+curl -X POST "$ASTRABOX/api/v1/admin/sessions/$SESSION_ID/history-import" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" \
+  -d '{"messages": [
+    {"source_id": "m-1", "role": "user", "created_at": "2026-01-05T09:00:00Z",
+     "blocks": [{"type": "text", "text": "总结这次事故。"}]},
+    {"source_id": "m-2", "role": "assistant", "created_at": "2026-01-05T09:00:20Z",
+     "completion": "unknown", "parent_source_id": "m-1",
+     "blocks": [{"type": "text", "text": "这次故障开始于"}]}
+  ]}'
+```
+
+- 按对话顺序列出消息，每次调用最多 500 条。`source_id` 是消息在原系统中的标识；
+  `created_at` 需要带时区。
+- 用户消息包含 `text` 和 `image` 块。回复还可以包含 `thinking`、`tool_use`，以及
+  回答同一条回复中较早工具调用的 `tool_result`。
+- 回复必须包含 `completion`。原系统从未记录回复如何结束时，使用 `unknown`；控制台
+  会把它显示为已导入但未记录结束方式，而不是成功或失败。
+- `parent_source_id` 记录一条消息回复的是哪条消息。
+- 请在 Session 收到它自己的第一条消息之前导入。对话开始后，导入会被拒绝并返回
+  `HISTORY_IMPORT_AFTER_CONVERSATION`，因为历史不能放到已有消息之前。
+- 重复执行同一次导入不会产生任何变化。要继续一次导入，先发送已经导入的消息，再发送
+  新的消息。已使用的 `source_id` 下出现其他内容，或新消息被放在已导入消息之前时，
+  请求会被拒绝并返回 `HISTORY_IMPORT_CONFLICT`。
+
+导入的消息和其他消息一样可以读取、分页和分享，并带有 `history_import`，其中包含
+`source_id`、`completion` 和 `parent_source_id`。
 
 ## 最佳实践
 
 1. **把 Agent 配置视为实时配置** — Session 不锁定 Agent 版本。保存 Agent 不会
-   修改正在运行的 turn，但运行环境重建后会使用当前保存的 Agent 和 Environment
+   修改正在运行的运行环境，但重建后的运行环境会使用当前保存的 Agent 和 Environment
    配置。
 2. **使用稳定的请求标识** — 为每个 Session 创建请求设置稳定的
    `Idempotency-Key`，并为每条消息设置稳定的 `client_message_id`，以避免重复请求
    并便于追踪。
-3. **明确区分中断和归档** — 需要停止前台 turn 时使用 interrupt；只有在 Session
-   应离开活动列表并释放运行环境时才归档。
+3. **明确区分中断和归档** — 需要停止某条回复时使用中断；只有在 Session 应离开
+   活动列表并释放运行环境时才归档。
 
 ## 常见问题
 
-**Q：向 `BUSY` 状态的 Session 发消息会怎样？**
+**Q：在 Agent 工作时发送消息会怎样？**
 
-A：`POST /sessions/{id}/ai-stream` 会返回 `HTTP 409 SESSION_BUSY`。请等待
-当前前台任务结束，或先中断它。需要分别提交输入和接收输出的外部系统可以使用
-`POST /sessions/{id}/turn-inputs`；输入能否加入正在执行的任务，由所选 Agent
-程序决定。
+A：AstraBox 会接收这条消息并交给 Agent 程序，程序把它放进队列，在当前工作完成后
+回答，也可能与其他排队消息在同一条回复中一起回答。回复的 `input_ids` 会列出它回答
+的消息。
 
 **Q：消息被拒绝后，能用同一个 `client_message_id` 再发一次吗？**
 
-A：得不到不同的结果。一条消息只有一个结果，被拒绝的消息所在的 turn 已经结束，
-所以同一个 `client_message_id` 每次都会返回同一个拒绝：例如 Session 的沙箱已丢失
-时返回 `SANDBOX_GONE`，无法连接运行时时返回 `INPUT_NOT_DELIVERED`。两者的
-`error.retryable` 都是 `false`。请用新的 `client_message_id` 把这段文字作为新消息
-再发一次；如果原来的沙箱已不存在，这条新消息会让 Session 换到新沙箱。
+A：这样得不到不同的结果。同一个 `client_message_id` 始终指向同一条消息，因此再次
+发送会返回第一次的回执以及这条消息已记录的 `failure`。请使用新的
+`client_message_id`，把这段文字作为新消息再发一次。
 
-**Q：Interrupt 后还能继续使用 Session 吗？**
+**Q：中断后还能继续使用 Session 吗？**
 
-A：可以。活动 turn 结束后，发送下一条消息即可继续。Interrupt turn 不会删除
-Session 或它的历史记录。
+A：可以。发送下一条消息即可继续。中断回复不会删除 Session 或它的历史记录。
 
 **Q：如何获取 Session 的完整对话历史？**
 
-A：通过 `GET /sessions/{id}/messages` 获取，并使用 `before` 向前分页。当前
-任务仍在执行时，第一页还会包含尚未保存完成的任务内容。
+A：调用 `GET /sessions/{id}/messages`，并使用每页返回的 `before` 游标向更早的消息分页。
+消息是 AI SDK UI 消息：你发送的每条消息对应一条，每条回复也对应一条。回复进行中时，
+第一页会包含到目前为止生成的 part，以及 `output_seq`，即继续跟随 Session 事件流读取
+剩余内容的位置。
 
 **Q：SSE 断线后如何重连？**
 
-A：保存最新 `data-resume-cursor` frame 的 `data.frameSeq`，然后使用 `after_seq`
+A：保存最新 `data-resume-cursor` part 的 `data.seq`，然后使用 `after_seq`
 查询参数重连。AstraBox 不读取 `Last-Event-ID`。
 
 **Q：创建或编辑 Agent 时为什么找不到某个 Environment？**
@@ -403,9 +496,9 @@ A：Agent 表单只列出已启用、并且其 Agent 程序支持 Agent 的 Envi
 **运行环境**管理页也会显示已停用项；请在那里检查 Environment 的启用状态和
 所选 Agent 程序。
 
-## API Reference
+## API 参考
 
 - 当前部署实例的 `/docs` 与 `/openapi.json` 参考
-- [SSE Event 流](events-stream.md) — 接收输出并安全地断线重连
+- [SSE 事件流](events-stream.md) — 接收输出并安全地断线重连
 - [Multiagent 编排](multi-agents.md) — 查看和控制 child run
 - [上传与下载文件](files.md) — 使用 Session 工作区

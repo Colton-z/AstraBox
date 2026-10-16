@@ -27,12 +27,13 @@ import { shortId } from './sandboxConfig';
 import { keepsLastRead, useKeepCurrent, type ReloadContext } from '@/hooks/useKeepCurrent';
 
 /**
- * Errors — what has gone wrong, across sessions and turns.
+ * Errors — what has gone wrong, in sessions and in the server.
  *
  * The rows come from two places the server joins: sessions carrying a
- * `last_error`, and turn checkpoints that failed. `source` says which, and it is
- * a column rather than two tables because the operator's question ("what is
- * broken right now") does not care, while the follow-up ("broken where") does.
+ * `last_error`, and errors the server logged that no session records. `source`
+ * says which, and it is a column rather than two tables because the operator's
+ * question ("what is broken right now") does not care, while the follow-up
+ * ("broken where") does.
  *
  * A row is not the thing itself — it is a summary pointing at a session, so the
  * row click hands off to that session's own page rather than growing a second
@@ -63,7 +64,7 @@ function severityTone(severity: string | undefined): PillTone {
 }
 
 function errorTime(item: AdminErrorItem): string | undefined {
-  return item.updated_at || item.failed_at || item.blocked_at;
+  return item.updated_at || item.created_at;
 }
 
 export default function ErrorsListPage() {
@@ -106,17 +107,17 @@ export default function ErrorsListPage() {
   }, [rows]);
 
   // Keyed here rather than at render: an error row carries no id of its own, and
-  // two failed checkpoints for one session with no turn id would otherwise share
-  // a key. Position in the server's ordering is the only thing that separates
-  // them, so it goes into the key while that ordering is still in hand.
+  // two logged errors with no session would otherwise share a key. Position in
+  // the server's ordering is the only thing that separates them, so it goes
+  // into the key while that ordering is still in hand.
   const filtered = useMemo(() => {
     const needle = search.trim().toLowerCase();
     return rows
-      .map((r, i) => ({ ...r, rowKey: `${r.source ?? 'x'}-${r.session_id ?? 'none'}-${r.turn_id ?? ''}-${i}` }))
+      .map((r, i) => ({ ...r, rowKey: `${r.source ?? 'x'}-${r.session_id ?? 'none'}-${i}` }))
       .filter((r) => {
         if (source !== ALL && String(r.source || '') !== source) return false;
         if (!needle) return true;
-        return [r.session_id, r.sandbox_id, r.turn_id, r.message, r.last_error, r.display_name, r.user_id]
+        return [r.session_id, r.sandbox_id, r.message, r.last_error, r.error_type, r.location, r.display_name, r.user_id]
           .some((v) => String(v || '').toLowerCase().includes(needle));
       });
   }, [rows, search, source]);
@@ -183,12 +184,6 @@ export default function ErrorsListPage() {
         cell: (r) => <Ellipsis title={r.session_id ?? ''}>{r.session_id ? shortId(r.session_id) : '—'}</Ellipsis>,
       },
       {
-        key: 'turn',
-        intent: 'identifier',
-        header: t('manage:errors.col_turn'),
-        cell: (r) => <Ellipsis title={r.turn_id ?? ''}>{r.turn_id ? shortId(r.turn_id) : '—'}</Ellipsis>,
-      },
-      {
         key: 'when',
         intent: 'timestamp',
         header: t('manage:errors.col_when'),
@@ -212,7 +207,6 @@ export default function ErrorsListPage() {
             ? t('manage:errors.meta', {
                 total: counts.total ?? rows.length,
                 sessions: counts.session ?? 0,
-                turns: counts.turn_checkpoint ?? 0,
               })
             : undefined
         }
@@ -245,9 +239,10 @@ export default function ErrorsListPage() {
             columns={columns}
             rows={filtered}
             rowKey={(r) => r.rowKey}
-            // Only rows that name a session can hand off; a checkpoint error
-            // without one has nowhere to go, so its row stays inert rather than
-            // navigating to a session route with no id in it.
+            isRowClickable={(r) => Boolean(r.session_id)}
+            // Only rows that name a session can hand off; an error the server
+            // logged without one has nowhere to go, so its row stays inert
+            // rather than navigating to a session route with no id in it.
             onRowClick={(r) =>
               r.session_id ? navigate(`/manage/sessions/${encodeURIComponent(r.session_id)}`) : undefined
             }

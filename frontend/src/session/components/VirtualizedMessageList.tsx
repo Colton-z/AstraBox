@@ -7,11 +7,11 @@ import { Button } from '@/components/ui/button';
 import { MessageBubble } from './MessageParts';
 import {
   ProcessDetailsCache,
+  ProcessOpenCache,
   ProcessSummaryCache,
   type ProcessDetailsCacheValue,
   type ProcessSummaryCacheValue,
 } from './LazyProcessBlock';
-import { conversationMessageKeys } from '../messageIdentity';
 
 // How close to the top the scroller has to be for an upward gesture to ask
 // for the older page. Exactly zero is a transient position: prepending a page
@@ -23,8 +23,8 @@ interface VirtualizedMessageListProps {
   messages: SDKUIMessage[];
   sessionId?: string;
   pendingToolCallId?: string;
-  activeTurnId?: string | null;
-  isStreaming: boolean;
+  /** The response the session's stream is writing now. */
+  writingMessageId?: string | null;
   shouldAutoFollow: boolean;
   firstItemIndex: number;
   hasMore: boolean;
@@ -38,8 +38,7 @@ export function VirtualizedMessageList({
   messages,
   sessionId,
   pendingToolCallId,
-  activeTurnId,
-  isStreaming,
+  writingMessageId,
   shouldAutoFollow,
   firstItemIndex,
   hasMore,
@@ -49,7 +48,6 @@ export function VirtualizedMessageList({
   onLoadOlder,
 }: VirtualizedMessageListProps) {
   const { t } = useTranslation();
-  const messageKeys = conversationMessageKeys(messages);
   const virtuosoRef = useRef<VirtuosoHandle | null>(null);
   const scrollerRef = useRef<HTMLElement | null>(null);
   const scrollerCleanupRef = useRef<(() => void) | null>(null);
@@ -61,14 +59,13 @@ export function VirtualizedMessageList({
   // scrolls away and rebuilt when it comes back.
   const detailsCache = useRef<ProcessDetailsCacheValue>(new Map());
   const summaryCache = useRef<ProcessSummaryCacheValue>(new Map());
+  const processOpenCache = useRef(new Map<string, boolean>());
   const [totalHeight, setTotalHeight] = useState(0);
 
   const itemContext = useMemo(() => ({
     pendingToolCallId,
-    activeTurnId,
-    isStreaming,
-    lastMessage: messages[messages.length - 1],
-  }), [activeTurnId, isStreaming, messages, pendingToolCallId]);
+    writingMessageId,
+  }), [pendingToolCallId, writingMessageId]);
 
   loadOlderStateRef.current = { hasMore, loadingMore, onLoadOlder };
 
@@ -207,6 +204,7 @@ export function VirtualizedMessageList({
     >
       <ProcessDetailsCache.Provider value={detailsCache.current}>
       <ProcessSummaryCache.Provider value={summaryCache.current}>
+      <ProcessOpenCache.Provider value={processOpenCache.current}>
       <Virtuoso
         ref={virtuosoRef}
         data-testid="session-conversation"
@@ -224,7 +222,9 @@ export function VirtualizedMessageList({
         followOutput={(atBottom) => (shouldAutoFollow && atBottom ? 'auto' : false)}
         startReached={requestOlder}
         scrollerRef={bindScroller}
-        computeItemKey={(index) => messageKeys[index - firstItemIndex]}
+        // Ids are stable from the moment a message is shown: a user message
+        // is its client_message_id, a response its response id.
+        computeItemKey={(index) => messages[index - firstItemIndex]?.id ?? index}
         itemContent={(index, message, context) => (
           <div
             className="mx-auto w-full max-w-reading px-4 py-2"
@@ -235,16 +235,12 @@ export function VirtualizedMessageList({
               message={message}
               sessionId={sessionId}
               pendingToolCallId={context.pendingToolCallId}
-              activeTurnId={context.activeTurnId}
-              isStreaming={
-                context.isStreaming
-                && message === context.lastMessage
-                && message.role === 'assistant'
-              }
+              isStreaming={message.role === 'assistant' && message.id === context.writingMessageId}
             />
           </div>
         )}
       />
+      </ProcessOpenCache.Provider>
       </ProcessSummaryCache.Provider>
       </ProcessDetailsCache.Provider>
       {(loadingMore || loadMoreError) && (

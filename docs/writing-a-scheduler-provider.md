@@ -2,14 +2,12 @@
 
 A `SchedulerProvider` runs scheduled Deployments. It fires each due time, gives
 every invocation a durable Run ID, calls AstraBox back to start the Run's
-Session and turn, retries and recovers invocations, and keeps the Run history
+Session and admit its input, retries and recovers invocations, and keeps the Run history
 that the console lists and replays.
 
 AstraBox includes one provider, `dbos`. It embeds DBOS Transact in each server
-process and keeps its state in the PostgreSQL database or SQLite file AstraBox
-already uses. Write another provider when a deployment needs a different
-engine — for example, one that keeps its state in MongoDB, where `dbos` cannot
-run.
+process and keeps its state in the PostgreSQL database AstraBox already uses.
+Write another provider when a deployment needs a different engine.
 
 ## What AstraBox and the provider each own
 
@@ -17,8 +15,8 @@ run.
 | --- | --- |
 | The Deployment record: name, prompt, cron expression, IANA timezone, and enabled flag | Firing each due time in the schedule's timezone |
 | Who may create, change, run, or replay a Schedule | One durable Run ID per due time, across every replica |
-| Starting a Run's Session and turn, idempotently by the Run ID | Calling AstraBox back until the Run succeeds or fails permanently |
-| The public Run status: the provider's dispatch state, then the Session's | Retries, recovery of interrupted invocations, and the Run ledger |
+| Starting a Run's Session and admitting its input, idempotently by the Run ID | Calling AstraBox back until the Run succeeds or fails permanently |
+| The public Run status: the Session's response to the Run's input, else the provider's dispatch state | Retries, recovery of interrupted invocations, and the Run ledger |
 
 The Deployment record stays the desired state. When AstraBox starts, it passes
 the provider every stored Schedule (`reconcile`); after a change, it passes the
@@ -38,7 +36,8 @@ exists.
    one Run across every replica. Enforce this with a uniqueness constraint in
    the provider's store, not with a read before the write.
 3. **Dispatch.** For each Run, call `RunHandler.start_session`, store the
-   Session ID it returns, then call `RunHandler.admit_turn` and store the turn.
+   Session ID it returns, then call `RunHandler.admit_input` and store the
+   input ID of the `RunInputBinding` it returns as the Run's `input_id`.
    Either call may be repeated with the same `RunInvocation`; AstraBox makes
    both idempotent on the Run ID. Retry other failures with bounded backoff.
    Record the Run as `FAILED` on `RunPermanentError` or when retries run out.
@@ -71,12 +70,12 @@ Engines legitimately differ in three ways. Declare them in
 
 ## Check the deployment's configuration
 
-AstraBox calls `configure(repository_backend=...)` at startup with the active
-database backend. Raise `SchedulerConfigurationError`, naming what is missing,
-when the provider cannot run there: AstraBox then refuses to start and tells the
-operator to choose another provider or set `ASTRABOX_SCHEDULER_PROVIDER=none`.
-The `dbos` provider asks the backend for `sql_database_url()`, which the
-PostgreSQL and SQLite backends provide and MongoDB does not.
+AstraBox calls `configure(database_url=...)` at startup with the platform's
+PostgreSQL URL, which a provider may use for its own durable state. Raise
+`SchedulerConfigurationError`, naming what is missing, when the provider cannot
+run there: AstraBox then refuses to start and tells the operator to choose
+another provider or set `ASTRABOX_SCHEDULER_PROVIDER=none`. The `dbos` provider
+keeps its schedules and Run ledger in the `dbos` schema of that database.
 
 `start(handler)` begins dispatching and resumes the Runs a lost process left
 behind; `stop()` drains within a bounded time while AstraBox's services are
@@ -84,8 +83,8 @@ still running.
 
 ## Build the guarantees on a document store
 
-AstraBox does not ship a provider for MongoDB. A provider over a document store
-can implement the guarantees with its own collections:
+A provider over a document store can implement the guarantees with its own
+collections:
 
 - Store one document per invocation, keyed by a unique index on the
   Deployment ID and the due time in UTC. Every replica that reaches a due time
@@ -94,7 +93,7 @@ can implement the guarantees with its own collections:
   extend the lease while the handler runs. A process that finds an expired
   lease takes the invocation over with the same Run ID; this is
   `recovery_scope="cluster"`.
-- Store the Session ID before calling `admit_turn`, so a takeover reuses it.
+- Store the Session ID before calling `admit_input`, so a takeover reuses it.
   AstraBox's idempotency on the Run ID absorbs a call repeated after a lease
   expired while the first holder was still running.
 
@@ -126,7 +125,7 @@ from astrabox_scheduler_example import ExampleSchedulerProvider
 class TestExampleScheduler(SchedulerProviderContractSuite):
     def make_provider(self, store):
         provider = ExampleSchedulerProvider()
-        provider.configure(repository_backend=...)  # a fresh store at `store`
+        provider.configure(database_url=...)  # a fresh database for `store`
         return provider
 
     async def fire_due_times(self, provider, deployment_id, start, end):

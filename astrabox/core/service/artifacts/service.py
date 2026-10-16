@@ -10,14 +10,18 @@ import json
 import secrets
 import uuid
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Awaitable, Callable, TypeVar
+from datetime import timedelta
+from typing import Any, AsyncIterator
+
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.time_utils import parse_iso, plus_seconds_iso, utcnow, utcnow_iso
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.service.orchestrator.event_broker import SessionEventBroker
 from astrabox.core.service.orchestrator.transcript_capability import _signing_key
-from astrabox.persistence.repository.backend import DuplicateKeyError, document_transaction_runner
+from astrabox.persistence.repository.artifact_record_repository import empty_share
+from astrabox.persistence.sql import from_iso, transaction
 from astrabox.seams.sandbox import SandboxUnreachable
 from astrabox.seams.sandbox_data import SandboxFiles
 
@@ -26,7 +30,12 @@ from .edits import apply_edits
 from .manifest import path_segments, validate_manifest
 from .rules import can_access
 
-T = TypeVar("T")
+#: Journal events a live tail reads per query; a full batch is followed at once
+#: by the next.
+_LIVE_BATCH = 500
+
+#: Expired journal events and refilled room buckets one room write deletes.
+_EXPIRY_BATCH = 500
 
 
 def invalid(message: str) -> APIError:
@@ -40,7 +49,6 @@ def public(row: dict[str, Any]) -> dict[str, Any]:
         if not k.startswith("_")
         and k
         not in {
-            "doc_id",
             "revision",
             "event_seq",
             "document_count",
@@ -73,6 +81,13 @@ class ArtifactViewer:
 
 
 class ArtifactService:
+    """Artifact authoring, sharing and the viewer runtime.
+
+    A mutation of one artifact runs in one transaction that first locks the
+    artifact's record, so versions, journal sequences and document counts are
+    allocated by one writer at a time across replicas.
+    """
+
     def __init__(
         self,
         *,
@@ -81,33 +96,20 @@ class ArtifactService:
         data: Any,
         events: Any,
         viewers: Any,
+        budgets: Any,
         file_service: Any = None,
         sessions_repo: Any = None,
-        binding_repo: Any = None,
         runtime_manager: Any = None,
         public_base_url: str = "",
     ) -> None:
         self.records, self.versions, self.data = records, versions, data
-        self.events, self.viewers = events, viewers
-        self._repos = (records, versions, data, events, viewers)
+        self.events, self.viewers, self.budgets = events, viewers, budgets
         self._broker = SessionEventBroker()
         self._live_counts: dict[str, int] = {}
         self._file_service = file_service
-        self._sessions_repo, self._binding_repo = sessions_repo, binding_repo
+        self._sessions_repo = sessions_repo
         self._runtime_manager = runtime_manager
         self._public_base_url = public_base_url.rstrip("/")
-
-    async def transaction(self, operation: Callable[[Any], Awaitable[T]]) -> T:
-        for repo in self._repos:
-            await repo.ensure_indexes()
-        runner = await document_transaction_runner()
-        if runner is None:
-            raise APIError(
-                code="ARTIFACT_STORE_UNAVAILABLE",
-                message="artifact writes require database transactions",
-                status_code=503,
-            )
-        return await runner(operation)
 
     def marker(self, row: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -125,21 +127,38 @@ class ArtifactService:
         return APIError(code="ARTIFACT_NOT_FOUND", message="artifact not found", status_code=404)
 
     async def owned(
-        self, user: UserContext, artifact_id: str, *, transaction: Any = None, lock: bool = False
+        self,
+        user: UserContext,
+        artifact_id: str,
+        *,
+        conn: AsyncConnection | None = None,
+        lock: bool = False,
     ) -> dict[str, Any]:
-        row = (
-            await self.records.lock(artifact_id, transaction=transaction)
-            if lock
-            else await self.records.get(artifact_id, transaction=transaction)
-        )
+        row = await self._read_record(artifact_id, conn=conn, lock=lock)
         if not row or row["owner_id"] != user.user_id:
             raise self._not_found()
         return row
 
+    async def _read_record(
+        self, artifact_id: str, *, conn: AsyncConnection | None, lock: bool
+    ) -> dict[str, Any] | None:
+        """The record; with ``lock``, locked until ``conn``'s transaction ends."""
+        if not lock:
+            return await self.records.get(artifact_id, conn=conn)
+        if conn is None:
+            raise ValueError("locking an artifact requires the transaction's connection")
+        return await self.records.lock(artifact_id, conn=conn)
+
     async def version(
-        self, artifact_id: str, number: int, *, transaction: Any = None
+        self,
+        artifact_id: str,
+        number: int,
+        *,
+        conn: AsyncConnection | None = None,
+        content: bool = False,
     ) -> dict[str, Any]:
-        row = await self.versions.get(f"{artifact_id}:{number}", transaction=transaction)
+        """A version's metadata, with its ``content`` when ``content`` is true."""
+        row = await self.versions.get(artifact_id, number, content=content, conn=conn)
         if row is None:
             raise APIError(
                 code="ARTIFACT_VERSION_NOT_FOUND",
@@ -175,12 +194,11 @@ class ArtifactService:
 
     @staticmethod
     def _version_row(record: dict[str, Any], content: str, author_kind: str) -> dict[str, Any]:
+        """The metadata of ``record``'s current version, published with ``content``."""
         encoded = content.encode("utf-8")
         return {
-            "doc_id": f"{record['artifact_id']}:{record['current_version']}",
             "artifact_id": record["artifact_id"],
             "version": record["current_version"],
-            "content": content,
             "sha256": hashlib.sha256(encoded).hexdigest(),
             "byte_size": len(encoded),
             "kind": record["kind"],
@@ -192,36 +210,23 @@ class ArtifactService:
         }
 
     async def _event(
-        self, record: dict[str, Any], tx: Any, kind: str, payload: dict[str, Any]
+        self, record: dict[str, Any], conn: AsyncConnection, kind: str, payload: dict[str, Any]
     ) -> None:
+        """Journal an event at the next sequence of the locked ``record``."""
         record["event_seq"] += 1
-        seq = record["event_seq"]
-        await self.events.delete(
-            {
-                "artifact_id": record["artifact_id"],
-                "type": {"$in": ["room", "presence"]},
-                "created_at": {"$lt": plus_seconds_iso(-limits.ROOM_RETENTION_SECONDS)},
-            },
-            transaction=tx,
-        )
-        await self.events.insert(
-            {
-                "doc_id": f"{record['artifact_id']}:{seq:012d}",
-                "artifact_id": record["artifact_id"],
-                "seq": seq,
-                "type": kind,
-                "payload": payload,
-                "created_at": utcnow_iso(),
-            },
-            transaction=tx,
+        await self.events.append(
+            record["artifact_id"],
+            record["event_seq"],
+            kind,
+            payload,
+            created_at=utcnow(),
+            conn=conn,
         )
 
-    async def _save(self, record: dict[str, Any], tx: Any) -> None:
+    async def _save(self, record: dict[str, Any], conn: AsyncConnection) -> None:
         revision = record["revision"]
         record.update(revision=revision + 1, updated_at=utcnow_iso())
-        if not await self.records.cas(
-            record["doc_id"], "revision", revision, record, transaction=tx
-        ):
+        if not await self.records.save(record, expected_revision=revision, conn=conn):
             raise APIError(
                 code="ARTIFACT_VERSION_CONFLICT",
                 message="artifact changed concurrently",
@@ -260,7 +265,6 @@ class ArtifactService:
             raise invalid("description must be a string")
         aid, now = "art_" + secrets.token_hex(12), utcnow_iso()
         record = {
-            "doc_id": aid,
             "artifact_id": aid,
             "owner_id": user.user_id,
             "title": args["title"],
@@ -270,19 +274,23 @@ class ArtifactService:
             "current_version": 1,
             "manifest": manifest,
             "origin": origin,
-            "share": self.empty_share(),
+            "share": empty_share(),
             "revision": 0,
-            "event_seq": 0,
+            # The creation's version event below is the journal's first.
+            "event_seq": 1,
             "document_count": 0,
             "created_at": now,
             "updated_at": now,
         }
 
-        async def write(tx: Any) -> None:
-            await self.versions.insert(self._version_row(record, content, "agent"), transaction=tx)
-            await self._event(
-                record,
-                tx,
+        async def write(conn: AsyncConnection) -> None:
+            await self.records.insert(record, conn=conn)
+            await self.versions.insert(
+                self._version_row(record, content, "agent"), content, conn=conn
+            )
+            await self.events.append(
+                aid,
+                1,
                 "version",
                 {
                     "version": 1,
@@ -290,10 +298,11 @@ class ArtifactService:
                     "kind": record["kind"],
                     "author_kind": "agent",
                 },
+                created_at=utcnow(),
+                conn=conn,
             )
-            await self.records.insert(record, transaction=tx)
 
-        await self.transaction(write)
+        await transaction(write)
         await self._wake(aid)
         return {**public(record), **self.marker(record)}
 
@@ -315,10 +324,10 @@ class ArtifactService:
         ):
             raise invalid("base_version must be a positive integer")
 
-        async def write(tx: Any) -> dict[str, Any]:
-            record = await self.owned(user, artifact_id, transaction=tx, lock=True)
+        async def write(conn: AsyncConnection) -> dict[str, Any]:
+            record = await self.owned(user, artifact_id, conn=conn, lock=True)
             if viewer:
-                checked, served = await self._resolve_record(record, viewer, tx)
+                checked, served = await self._resolve_record(record, viewer, conn)
                 self.require(checked, served, "artifact")
                 if checked.pinned_version is not None:
                     raise APIError(
@@ -338,8 +347,13 @@ class ArtifactService:
                     message="artifact has 1000 versions",
                     status_code=409,
                 )
-            current = await self.version(artifact_id, record["current_version"], transaction=tx)
-            text = apply_edits(current["content"], args["edits"]) if "edits" in args else content
+            if "edits" in args:
+                current = await self.version(
+                    artifact_id, record["current_version"], conn=conn, content=True
+                )
+                text = apply_edits(current["content"], args["edits"])
+            else:
+                text = content
             for key in ("title", "description"):
                 if key in args:
                     if not isinstance(args[key], str):
@@ -349,10 +363,12 @@ class ArtifactService:
                 record["manifest"] = validate_manifest(args["capabilities"])
             self.validate_content(text, record["title"], record["kind"], record.get("language"))
             record["current_version"] += 1
-            await self.versions.insert(self._version_row(record, text, author_kind), transaction=tx)
+            await self.versions.insert(
+                self._version_row(record, text, author_kind), text, conn=conn
+            )
             await self._event(
                 record,
-                tx,
+                conn,
                 "version",
                 {
                     "version": record["current_version"],
@@ -361,10 +377,10 @@ class ArtifactService:
                     "author_kind": author_kind,
                 },
             )
-            await self._save(record, tx)
+            await self._save(record, conn)
             return {**public(record), **self.marker(record)}
 
-        result = await self.transaction(write)
+        result = await transaction(write)
         await self._wake(artifact_id)
         return result
 
@@ -373,7 +389,9 @@ class ArtifactService:
     ) -> dict[str, Any]:
         record = await self.owned(user, artifact_id)
         version = await self.version(
-            artifact_id, number if number is not None else record["current_version"]
+            artifact_id,
+            number if number is not None else record["current_version"],
+            content=True,
         )
         return {
             **public(record),
@@ -394,14 +412,7 @@ class ArtifactService:
         q: str | None = None,
     ) -> dict[str, Any]:
         limit = max(1, min(100, limit))
-        query: dict[str, Any] = {"owner_id": user.user_id}
-        if session_id:
-            query["origin.session_id"] = session_id
-        if assistant_id:
-            query["origin.assistant_id"] = assistant_id
-        if agent_id:
-            query["origin.agent_id"] = agent_id
-        position = None
+        after = None
         if cursor:
             try:
                 position = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
@@ -411,32 +422,21 @@ class ArtifactService:
                     or any(not isinstance(v, str) for v in position)
                 ):
                     raise ValueError()
+                stamp = from_iso(position[0])
+                if stamp is None:
+                    raise ValueError()
+                after = (stamp, position[1])
             except (ValueError, TypeError, UnicodeError) as exc:
                 raise invalid("invalid artifact cursor") from exc
-        rows: list[dict[str, Any]] = []
-        needle = q.casefold() if q else None
-        batch_size = max(limit + 1, 100) if needle else limit + 1
-        while len(rows) <= limit:
-            page_query = dict(query)
-            if position:
-                stamp, aid = position
-                page_query["$or"] = [
-                    {"updated_at": {"$lt": stamp}},
-                    {"updated_at": stamp, "artifact_id": {"$lt": aid}},
-                ]
-            batch = await self.records.list(
-                page_query, sort=[("updated_at", -1), ("artifact_id", -1)], limit=batch_size
-            )
-            rows.extend(
-                row
-                for row in batch
-                if not needle
-                or needle in row["title"].casefold()
-                or needle in row["description"].casefold()
-            )
-            if len(batch) < batch_size or len(rows) > limit:
-                break
-            position = [batch[-1]["updated_at"], batch[-1]["artifact_id"]]
+        rows = await self.records.list_owned(
+            user.user_id,
+            limit=limit + 1,
+            session_id=session_id,
+            assistant_id=assistant_id,
+            agent_id=agent_id,
+            search=q,
+            after=after,
+        )
         more, rows = len(rows) > limit, rows[:limit]
         next_cursor = (
             base64.urlsafe_b64encode(
@@ -461,25 +461,23 @@ class ArtifactService:
         ):
             raise invalid("metadata accepts title and description strings")
 
-        async def write(tx: Any) -> dict[str, Any]:
-            row = await self.owned(user, artifact_id, transaction=tx, lock=True)
+        async def write(conn: AsyncConnection) -> dict[str, Any]:
+            row = await self.owned(user, artifact_id, conn=conn, lock=True)
             row.update(patch)
             self.validate_content("", row["title"], row["kind"], row.get("language"))
-            await self._save(row, tx)
+            await self._save(row, conn)
             return {**public(row), **self.marker(row)}
 
-        return await self.transaction(write)
+        return await transaction(write)
 
     async def list_versions(self, user: UserContext, artifact_id: str) -> list[dict[str, Any]]:
         await self.owned(user, artifact_id)
-        rows = await self.versions.list(
-            {"artifact_id": artifact_id}, sort=[("version", -1)], limit=limits.VERSION_COUNT
-        )
-        return [{k: v for k, v in public(row).items() if k != "content"} for row in rows]
+        rows = await self.versions.list_for_artifact(artifact_id, limit=limits.VERSION_COUNT)
+        return [public(row) for row in rows]
 
     async def restore(self, user: UserContext, artifact_id: str, number: int) -> dict[str, Any]:
         record = await self.owned(user, artifact_id)
-        version = await self.version(artifact_id, number)
+        version = await self.version(artifact_id, number, content=True)
         return await self.update(
             user,
             artifact_id,
@@ -493,26 +491,11 @@ class ArtifactService:
         )
 
     async def delete(self, user: UserContext, artifact_id: str) -> dict[str, Any]:
-        async def write(tx: Any) -> None:
-            await self.owned(user, artifact_id, transaction=tx, lock=True)
-            for repo in self._repos:
-                await repo.delete({"artifact_id": artifact_id}, transaction=tx)
-
-        await self.transaction(write)
+        """Delete the artifact with its versions, share, documents, journal and viewers."""
+        if not await self.records.delete_owned(artifact_id, user.user_id):
+            raise self._not_found()
         await self._wake(artifact_id)
         return {"deleted": True}
-
-    @staticmethod
-    def empty_share() -> dict[str, Any]:
-        return {
-            "enabled": False,
-            "token": "",
-            "access": "view",
-            "audience": "anyone",
-            "version": None,
-            "created_at": None,
-            "expires_at": None,
-        }
 
     async def get_share(self, user: UserContext, artifact_id: str) -> dict[str, Any]:
         return (await self.owned(user, artifact_id))["share"]
@@ -536,8 +519,8 @@ class ArtifactService:
         ):
             raise invalid("expires_in_seconds must be positive")
 
-        async def write(tx: Any) -> dict[str, Any]:
-            row = await self.owned(user, artifact_id, transaction=tx, lock=True)
+        async def write(conn: AsyncConnection) -> dict[str, Any]:
+            row = await self.owned(user, artifact_id, conn=conn, lock=True)
             if audience == "anyone" and {"sample", "agent"} & row["manifest"].keys():
                 raise APIError(
                     code="ARTIFACT_SHARE_AUDIENCE_RESTRICTED",
@@ -545,7 +528,7 @@ class ArtifactService:
                     status_code=409,
                 )
             if version is not None:
-                await self.version(artifact_id, version, transaction=tx)
+                await self.version(artifact_id, version, conn=conn)
             existing = row["share"]
             row["share"] = {
                 "enabled": True,
@@ -558,19 +541,23 @@ class ArtifactService:
                 if expires_in_seconds is not None
                 else None,
             }
-            await self._save(row, tx)
+            await self.records.put_share(artifact_id, row["share"], conn=conn)
+            await self._save(row, conn)
             return row["share"]
 
-        return await self.transaction(write)
+        return await transaction(write)
 
     async def disable_share(self, user: UserContext, artifact_id: str) -> dict[str, Any]:
-        async def write(tx: Any) -> dict[str, Any]:
-            row = await self.owned(user, artifact_id, transaction=tx, lock=True)
+        async def write(conn: AsyncConnection) -> dict[str, Any]:
+            row = await self.owned(user, artifact_id, conn=conn, lock=True)
             row["share"] = {**row["share"], "enabled": False}
-            await self._save(row, tx)
+            # An artifact never shared has no link to disable.
+            if row["share"]["token"]:
+                await self.records.put_share(artifact_id, row["share"], conn=conn)
+            await self._save(row, conn)
             return row["share"]
 
-        result = await self.transaction(write)
+        result = await transaction(write)
         await self._wake(artifact_id)
         return result
 
@@ -582,10 +569,7 @@ class ArtifactService:
         valid = valid and (pin is None or (type(pin) is int and pin >= 1))
         expiry = share.get("expires_at")
         if expiry is not None:
-            try:
-                valid = valid and utcnow() < parse_iso(expiry)
-            except (ValueError, TypeError, OverflowError):
-                valid = False
+            valid = valid and utcnow() < parse_iso(expiry)
         if (
             not valid
             or share.get("access") not in {"view", "interact"}
@@ -612,7 +596,7 @@ class ArtifactService:
             elif grant.get("source") != "owner":
                 raise self._not_found()
         row = (
-            await self.records.find_one({"share.token": token})
+            await self.records.get_by_share_token(token)
             if token and grant is None
             else await self.records.get(artifact_id)
         )
@@ -642,29 +626,34 @@ class ArtifactService:
             or not all(c.isalnum() or c in "_-" for c in guest_id)
         ):
             raise invalid("invalid guest_id")
-        if user:
-
-            async def register(tx: Any) -> ArtifactViewer:
-                checked, _, _ = await self.refresh(viewer, tx=tx, lock=True)
-                await self.viewers.put(
-                    {
-                        "doc_id": f"{aid}:{vid}",
-                        "artifact_id": aid,
-                        "viewer_id": vid,
-                        "user_id": user.user_id,
-                        "display_name": user.display_name or "Viewer",
-                        "updated_at": utcnow_iso(),
-                    },
-                    transaction=tx,
+        # A signed-in viewer is registered for user.profiles. The artifact's
+        # foreign key, not its lock, keeps the row from outliving a concurrent
+        # delete, so registration never waits behind a write to the artifact.
+        if user and not await self.viewers.register(
+            aid, vid, user_id=user.user_id, display_name=user.display_name or "Viewer"
+        ):
+            if token:
+                raise APIError(
+                    code="ARTIFACT_SHARE_NOT_FOUND", message="share link not found", status_code=404
                 )
-                return checked
-
-            viewer = await self.transaction(register)
+            raise self._not_found()
         return viewer
 
     async def _resolve_record(
-        self, row: dict[str, Any], viewer: ArtifactViewer, tx: Any = None
+        self,
+        row: dict[str, Any],
+        viewer: ArtifactViewer,
+        conn: AsyncConnection | None = None,
+        *,
+        content: bool = False,
+        versions: dict[int, dict[str, Any]] | None = None,
     ) -> tuple[ArtifactViewer, dict[str, Any]]:
+        """Authorize ``viewer`` against ``row``'s current share and manifest; the served version.
+
+        The served version carries the current manifest, and its content only
+        when ``content`` is true. ``versions`` caches served versions by number
+        for a caller that resolves repeatedly: versions are immutable.
+        """
         level = "owner" if viewer.user and row["owner_id"] == viewer.user.user_id else "none"
         pin = None
         if viewer.token:
@@ -675,9 +664,12 @@ class ArtifactService:
                 level = share["access"] if viewer.user else "view"
         elif level != "owner":
             raise self._not_found()
-        served = await self.version(
-            row["artifact_id"], pin if pin is not None else row["current_version"], transaction=tx
-        )
+        number = pin if pin is not None else row["current_version"]
+        served = versions.get(number) if versions is not None else None
+        if served is None:
+            served = await self.version(row["artifact_id"], number, conn=conn, content=content)
+            if versions is not None:
+                versions[number] = served
         # The served page is pinned content; live authorization is the owner's current policy.
         served = {**served, "manifest": row["manifest"]}
         if (
@@ -704,20 +696,25 @@ class ArtifactService:
         ), served
 
     async def refresh(
-        self, viewer: ArtifactViewer, *, tx: Any = None, lock: bool = False
+        self,
+        viewer: ArtifactViewer,
+        *,
+        conn: AsyncConnection | None = None,
+        lock: bool = False,
+        content: bool = False,
     ) -> tuple[ArtifactViewer, dict[str, Any], dict[str, Any]]:
-        row = (
-            await self.records.lock(viewer.artifact_id, transaction=tx)
-            if lock
-            else await self.records.get(viewer.artifact_id, transaction=tx)
-        )
+        """Re-authorize ``viewer`` now: the checked viewer, the record and the served version.
+
+        The served version includes its content only when ``content`` is true.
+        """
+        row = await self._read_record(viewer.artifact_id, conn=conn, lock=lock)
         if row is None:
             if viewer.token:
                 raise APIError(
                     code="ARTIFACT_SHARE_NOT_FOUND", message="share link not found", status_code=404
                 )
             raise self._not_found()
-        checked, served = await self._resolve_record(row, viewer, tx)
+        checked, served = await self._resolve_record(row, viewer, conn, content=content)
         return checked, row, served
 
     @staticmethod
@@ -730,7 +727,7 @@ class ArtifactService:
             )
 
     async def runtime(self, viewer: ArtifactViewer) -> dict[str, Any]:
-        viewer, record, served = await self.refresh(viewer)
+        viewer, record, served = await self.refresh(viewer, content=True)
         artifact = {
             k: record[k] for k in ("artifact_id", "description", "created_at", "updated_at")
         }
@@ -810,7 +807,7 @@ class ArtifactService:
         viewer, _, version = await self.refresh(viewer)
         self.require(viewer, version, "db")
         self._data_access(viewer, version, path)
-        row = await self.data.get(f"{viewer.artifact_id}|{path}")
+        row = await self.data.get(viewer.artifact_id, path)
         return {"path": path, "exists": row is not None, "data": row["data"] if row else None}
 
     @staticmethod
@@ -829,12 +826,13 @@ class ArtifactService:
     ) -> dict[str, Any]:
         if not isinstance(writes, list) or not writes:
             raise invalid("writes must be a non-empty array")
+        requested: list[Any] = list(writes)
 
-        async def write(tx: Any) -> dict[str, Any]:
-            checked, record, version = await self.refresh(viewer, tx=tx, lock=True)
+        async def write(conn: AsyncConnection) -> dict[str, Any]:
+            checked, record, version = await self.refresh(viewer, conn=conn, lock=True)
             self.require(checked, version, "db")
             results = []
-            for item in writes:
+            for item in requested:
                 if not isinstance(item, dict) or item.get("action") not in {
                     "set",
                     "update",
@@ -844,16 +842,14 @@ class ArtifactService:
                 path, action = item.get("path"), item["action"]
                 self._data_path(path)
                 self._data_access(checked, version, path, write=True)
-                doc_id = f"{viewer.artifact_id}|{path}"
-                old = await self.data.get(doc_id, transaction=tx)
                 if action == "delete":
-                    if old:
-                        await self.data.delete({"doc_id": doc_id}, transaction=tx)
+                    if await self.data.delete(viewer.artifact_id, path, conn=conn):
                         record["document_count"] -= 1
                 else:
                     data = item.get("data")
                     if not isinstance(data, dict):
                         raise invalid("db documents must be JSON objects")
+                    old = await self.data.get(viewer.artifact_id, path, conn=conn)
                     if action == "update":
                         if not old:
                             raise APIError(
@@ -877,24 +873,20 @@ class ArtifactService:
                                 status_code=413,
                             )
                     await self.data.put(
-                        {
-                            "doc_id": doc_id,
-                            "artifact_id": viewer.artifact_id,
-                            "path": path,
-                            "collection": "/".join(path_segments(path)[:-1]),
-                            "data": data,
-                            "updated_by": checked.id,
-                            "created_at": old["created_at"] if old else utcnow_iso(),
-                            "updated_at": utcnow_iso(),
-                        },
-                        transaction=tx,
+                        viewer.artifact_id,
+                        path,
+                        collection="/".join(path_segments(path)[:-1]),
+                        data=data,
+                        updated_by=checked.id,
+                        now=utcnow(),
+                        conn=conn,
                     )
-                await self._event(record, tx, "data", {"path": path, "op": action})
+                await self._event(record, conn, "data", {"path": path, "op": action})
                 results.append({"path": path, "op": action})
-            await self._save(record, tx)
+            await self._save(record, conn)
             return {"writes": results}
 
-        result = await self.transaction(write)
+        result = await transaction(write)
         await self._wake(viewer.artifact_id)
         return result
 
@@ -920,10 +912,11 @@ class ArtifactService:
         validate_query(where, order_by, limit)
         viewer, _, version = await self.refresh(viewer)
         self.require(viewer, version, "db")
-        rows = await self.data.list(
-            {"artifact_id": viewer.artifact_id, "collection": collection},
-            limit=limits.DOCUMENT_COUNT,
-        )
+        # The collection arrives in path order. Access rules and predicates are
+        # applied here because they follow this module's JSON semantics (the
+        # number/boolean distinction, the type order of json_sort_key), which
+        # differ from PostgreSQL's jsonb comparison.
+        rows = await self.data.in_collection(viewer.artifact_id, collection)
         rows = [
             r
             for r in rows
@@ -936,7 +929,6 @@ class ArtifactService:
             )
             and matches_where(r["data"], where)
         ]
-        rows.sort(key=lambda r: r["path"])
         for order in reversed(order_by):
             rows = [r for r in rows if field_value(r["data"], order["field"]) is not _MISSING]
             rows.sort(
@@ -955,9 +947,7 @@ class ArtifactService:
         self.require(viewer, version, "user")
         if len(ids) > 100:
             raise invalid("at most 100 profile ids")
-        rows = await self.viewers.list(
-            {"artifact_id": viewer.artifact_id, "viewer_id": {"$in": ids}}, limit=100
-        )
+        rows = await self.viewers.profiles(viewer.artifact_id, ids)
         return {
             "profiles": [{"id": r["viewer_id"], "display_name": "" if viewer.guest else r["display_name"]} for r in rows]
         }
@@ -970,21 +960,34 @@ class ArtifactService:
     def _rate_limited() -> APIError:
         return APIError(code="ARTIFACT_LIVE_RATE_LIMITED", message="artifact live request limit reached", status_code=429)
 
-    async def _room_token(self, viewer: ArtifactViewer, tx: Any) -> None:
+    async def _room_token(self, viewer: ArtifactViewer, conn: AsyncConnection) -> None:
         key = "room_budget:" + opaque_viewer_id("room-budget", self._viewer_budget_id(viewer))
-        row = await self.viewers.lock(key, transaction=tx)
-        now = utcnow()
-        tokens = float(limits.ROOM_WRITE_BURST)
-        if row:
-            elapsed = max(0.0, (now - parse_iso(row["updated_at"])).total_seconds())
-            tokens = min(tokens, row["tokens"] + elapsed * limits.ROOM_WRITES_PER_SECOND)
-        if tokens < 1:
+        if not await self.budgets.take_room_token(
+            key,
+            now=utcnow(),
+            burst=limits.ROOM_WRITE_BURST,
+            per_second=limits.ROOM_WRITES_PER_SECOND,
+            conn=conn,
+        ):
             raise self._rate_limited()
-        budget = {"doc_id": key, "tokens": tokens - 1, "updated_at": now.isoformat()}
-        if row:
-            await self.viewers.put(budget, transaction=tx)
-        else:
-            await self.viewers.insert(budget, transaction=tx)
+
+    async def _expire_live_rows(self) -> None:
+        """Delete a batch of expired room and presence events and of refilled room buckets.
+
+        Every room or presence write runs this first, so expired rows of every
+        artifact and viewer are removed while room traffic continues anywhere,
+        not only when that artifact or viewer writes again.
+        """
+        now = utcnow()
+        await self.events.prune(
+            rooms_before=now - timedelta(seconds=limits.ROOM_RETENTION_SECONDS),
+            presence_before=now - timedelta(seconds=limits.PRESENCE_SECONDS),
+            limit=_EXPIRY_BATCH,
+        )
+        refill = limits.ROOM_WRITE_BURST / limits.ROOM_WRITES_PER_SECOND
+        await self.budgets.prune_room_tokens(
+            before=now - timedelta(seconds=refill), limit=_EXPIRY_BATCH
+        )
 
     async def room_write(
         self,
@@ -1002,8 +1005,8 @@ class ArtifactService:
                 code="ARTIFACT_ROOM_LIMIT", message="room payload exceeds 16 KiB", status_code=413
             )
 
-        async def write(tx: Any) -> dict[str, Any]:
-            checked, record, version = await self.refresh(viewer, tx=tx, lock=True)
+        async def write(conn: AsyncConnection) -> dict[str, Any]:
+            checked, record, version = await self.refresh(viewer, conn=conn, lock=True)
             self.require(checked, version, "room")
             if not presence:
                 if not isinstance(topic, str) or not topic or "/" in topic or "\x00" in topic:
@@ -1015,7 +1018,7 @@ class ArtifactService:
                         message="room topic access denied",
                         status_code=403,
                     )
-            await self._room_token(checked, tx)
+            await self._room_token(checked, conn)
             payload = (
                 {"room": room, "viewer_id": checked.id, "state": data, "guest": checked.guest}
                 if presence
@@ -1027,43 +1030,49 @@ class ArtifactService:
                     "from_kind": "guest" if checked.guest else "user",
                 }
             )
-            await self._event(record, tx, "presence" if presence else "room", payload)
-            await self._save(record, tx)
+            await self._event(record, conn, "presence" if presence else "room", payload)
+            await self._save(record, conn)
             return {"seq": record["event_seq"]}
 
-        try:
-            result = await self.transaction(write)
-        except DuplicateKeyError as exc:
-            raise self._rate_limited() from exc
+        await self._expire_live_rows()
+        result = await transaction(write)
         await self._wake(viewer.artifact_id)
         return result
 
     async def live(self, viewer: ArtifactViewer, after_seq: int = 0) -> AsyncIterator[str]:
+        """Tail the artifact's journal after ``after_seq`` as SSE, as ``viewer`` may see it.
+
+        Each poll reads the record, which re-authorizes the viewer against the
+        current share and manifest and reveals deletion. The journal is read
+        only once the record's sequence has passed what was already read, and
+        only after the position reached. The served version's metadata is read
+        again only when the served version changes; content is never read.
+        """
         if after_seq < 0:
             raise invalid("after_seq must be nonnegative")
-        key = self._viewer_budget_id(viewer)
-        if self._live_counts.get(key, 0) >= limits.LIVE_STREAMS_PER_VIEWER:
+        admission = self._viewer_budget_id(viewer)
+        if self._live_counts.get(admission, 0) >= limits.LIVE_STREAMS_PER_VIEWER:
             raise self._rate_limited()
-        self._live_counts[key] = self._live_counts.get(key, 0) + 1
+        self._live_counts[admission] = self._live_counts.get(admission, 0) + 1
         queue = None
         loop = asyncio.get_running_loop()
         heartbeat = loop.time()
         presence_seen: dict[tuple[str, str], tuple[dict[str, Any], float]] = {}
+        served: dict[int, dict[str, Any]] = {}
+        # Every event at or before this sequence has been read.
+        read_through = after_seq
         try:
             queue = await self._broker.subscribe(viewer.artifact_id)
-            if await self.records.get(viewer.artifact_id) is None:
+            record = await self.records.get(viewer.artifact_id)
+            if record is None:
                 yield sse("deleted", {}, after_seq + 1)
                 return
-            checked, _, version = await self.refresh(viewer)
+            checked, version = await self._resolve_record(record, viewer, versions=served)
             if "room" in version["manifest"] and after_seq:
-                existing = await self.events.list(
-                    {
-                        "artifact_id": viewer.artifact_id,
-                        "type": "presence",
-                        "seq": {"$lte": after_seq},
-                        "created_at": {"$gte": plus_seconds_iso(-limits.PRESENCE_SECONDS)},
-                    },
-                    sort=[("seq", 1)],
+                existing = await self.events.presence(
+                    viewer.artifact_id,
+                    through_seq=after_seq,
+                    since=utcnow() - timedelta(seconds=limits.PRESENCE_SECONDS),
                 )
                 for row in existing:
                     payload = row["payload"]
@@ -1078,19 +1087,20 @@ class ArtifactService:
                 for payload, _ in presence_seen.values():
                     yield sse("presence", payload, after_seq)
             while True:
-                if await self.records.get(viewer.artifact_id) is None:
+                record = await self.records.get(viewer.artifact_id)
+                if record is None:
                     # Absence is durable deletion evidence after the cascade removed the journal.
                     yield sse("deleted", {}, after_seq + 1)
                     return
-                checked, _, version = await self.refresh(viewer)
-                rows = await self.events.list(
-                    {"artifact_id": viewer.artifact_id, "seq": {"$gt": after_seq}},
-                    sort=[("seq", 1)],
-                    limit=500,
-                )
+                checked, version = await self._resolve_record(record, viewer, versions=served)
+                rows: list[dict[str, Any]] = []
+                if record["event_seq"] > read_through:
+                    rows = await self.events.after(
+                        viewer.artifact_id, after_seq, limit=_LIVE_BATCH
+                    )
                 for row in rows:
                     after_seq = row["seq"]
-                    kind, payload = row["type"], row["payload"]
+                    kind, payload = row["kind"], row["payload"]
                     visible = True
                     if kind == "version":
                         visible = checked.pinned_version is None
@@ -1116,13 +1126,17 @@ class ArtifactService:
                                 )
                     if visible:
                         yield sse(kind, payload, after_seq)
-                for key, (payload, expiry) in list(presence_seen.items()):
+                for peer, (payload, expiry) in list(presence_seen.items()):
                     if loop.time() >= expiry:
                         # Expiry changes presence state without allocating a journal sequence.
                         yield sse("presence", {**payload, "state": None}, after_seq)
-                        del presence_seen[key]
-                if len(rows) == 500:
+                        del presence_seen[peer]
+                if len(rows) == _LIVE_BATCH:
+                    read_through = after_seq
                     continue
+                # The record's sequence was read before the journal, so every
+                # event up to it was committed by then and the read included it.
+                read_through = max(read_through, after_seq, record["event_seq"])
                 if loop.time() - heartbeat >= limits.LIVE_HEARTBEAT_SECONDS:
                     yield ": heartbeat\n\n"
                     heartbeat = loop.time()
@@ -1131,9 +1145,9 @@ class ArtifactService:
                 except asyncio.TimeoutError:
                     pass
         finally:
-            self._live_counts[key] -= 1
-            if not self._live_counts[key]:
-                del self._live_counts[key]
+            self._live_counts[admission] -= 1
+            if not self._live_counts[admission]:
+                del self._live_counts[admission]
             if queue is not None:
                 await self._broker.unsubscribe(viewer.artifact_id, queue)
 

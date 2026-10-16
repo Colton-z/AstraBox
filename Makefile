@@ -3,13 +3,11 @@
 # These targets are the human-facing twins of what CI runs:
 #   * `make test`             == the .github/workflows/ci.yml unit/lint/typecheck job
 #                                (ruff + mypy + non-e2e pytest, + frontend
-#                                 tsc, build & vitest) — green with NO Docker and NO secret.
+#                                 tsc, build & vitest) — no Docker daemon and no secret;
+#                                the pytest half needs ASTRABOX_TEST_POSTGRES_URL.
 #   * `make e2e`              == the .github/workflows/e2e.yml job (build the agent
 #                                image, then the curl smoke + the Playwright happy
 #                                path) — needs Docker + the operator LLM key (.env).
-#   * `make test-postgresql`  — production PostgreSQL conformance suite.
-#   * `make test-mongo`       — opt-in mongo conformance suite (`-m mongo`, deselected
-#                                from `make test`) — needs a reachable mongod + `[mongo]`.
 #   * `make dev`             — boot the local backend+frontend stack (scripts/dev.sh).
 #   * `make build-agent-image`— build the in-sandbox astrabox/sandbox-claude-code:latest image.
 #   * `make k8s-testbed-up`   — throwaway k3s + the OpenSandbox controller, so the
@@ -37,6 +35,9 @@ ASSISTANT_IMAGE     ?= astrabox/sandbox-hermes:latest
 DSH_IMAGE           ?= astrabox/sandbox-deepseek-harness:latest
 CODEX_IMAGE         ?= astrabox/sandbox-codex:latest
 PI_IMAGE            ?= astrabox/sandbox-pi:latest
+# An explicit execd input belongs to the caller; build only the implicit default.
+_EXECD_PREREQUISITE := $(if $(filter undefined,$(origin EXECD_IMAGE)),build-execd-image)
+EXECD_IMAGE         ?= astrabox/execd:latest
 WORKSPACE_MOUNTER_IMAGE ?= astrabox/workspace-mounter:latest
 SERVER_IMAGE        ?= astrabox/server:latest
 # `--build-context <stage>=DIR` flags for images with checksum-pinned source
@@ -56,10 +57,11 @@ CLAUDE_CODE_VERSION ?= 2.1.287
 SANDBOX_BASE_IMAGE  ?= ghcr.io/agent-infra/sandbox:1.11.0
 NPM_REGISTRY        ?= https://registry.npmjs.org/
 
-.PHONY: help install install-py install-web install-channel-gateway dev test test-py test-postgresql test-mongo test-mongo-transactions lint typecheck fmt-check check-e2e-collection \
+.PHONY: help install install-py install-web install-channel-gateway dev test test-py lint typecheck fmt-check check-e2e-collection \
         check-comments check-comments-report check-i18n check-upstream check-api-client check-all-in-one check-dockerfile-modes check-sandbox-seam \
+        check-env-registry check-http-surface check-background-tasks check-release \
         test-web test-channel-gateway test-layout utilisation build-web build-dist e2e e2e-smoke e2e-browser e2e-live \
-        build-agent-image build-assistant-image build-dsh-image build-codex-image build-pi-image build-workspace-mounter-image build-all-in-one-image clean \
+        build-agent-image build-assistant-image build-dsh-image build-codex-image build-pi-image build-execd-image build-workspace-mounter-image build-all-in-one-image clean \
         k8s-testbed-up k8s-testbed-status k8s-testbed-down k8s-testbed-purge
 
 help: ## Show this help.
@@ -96,20 +98,11 @@ install-channel-gateway: ## npm ci for the bundled concrete channel adapters.
 dev: ## Boot the local dev stack: backend (:8000) + frontend (:5173). Ctrl-C stops.
 	./scripts/dev.sh
 
-# ── test (the CI unit/lint/typecheck job — no Docker, no secret) ─────────────
-test: check-comments check-i18n check-errors check-credential-seam check-sandbox-seam check-all-in-one check-dockerfile-modes check-api-client lint typecheck test-py test-web ## Full unit gate: static checks + ruff + mypy + pytest + web build/vitest.
+# ── test (the CI unit/lint/typecheck job — no Docker daemon, no secret) ──────
+test: check-comments check-i18n check-errors check-env-registry check-http-surface check-background-tasks check-release check-credential-seam check-sandbox-seam check-all-in-one check-dockerfile-modes check-api-client lint typecheck test-py test-web ## Full unit gate: static checks + ruff + mypy + pytest + web build/vitest.
 
-test-py: ## Fast unit suite (database-backed and live markers are deselected).
+test-py: ## Race and security unit tests (the live `e2e` mark is deselected). Needs ASTRABOX_TEST_POSTGRES_URL: a PostgreSQL role that may create databases.
 	$(NODE_TOOLCHAIN) $(PYTEST)
-
-test-postgresql: ## Production PostgreSQL contract (explicit URL or maintained local Compose credentials).
-	$(NODE_TOOLCHAIN) $(PYTEST) -m postgresql tests/postgresql_collection_conformance_test.py tests/postgresql_schema_migrations_test.py tests/postgresql_transcript_sequence_test.py tests/sql_document_transaction_test.py tests/environment_delete_test.py tests/environment_delete_lifecycle_test.py tests/turn_preparation_turn_authority_test.py tests/runtime_recovery_repository_test.py
-
-test-mongo: ## Opt-in: the mongo conformance suite. Needs a reachable mongod (ASTRABOX_DB_URL=mongodb://…) + `pip install -e '.[mongo]'`.
-	$(NODE_TOOLCHAIN) $(PYTEST) -m mongo
-
-test-mongo-transactions: ## Native Mongo transactions: requires a replica-set or sharded ASTRABOX_DB_URL and the [mongo] extra.
-	$(NODE_TOOLCHAIN) $(PYTEST) -m mongo_transaction
 
 lint: ## ruff check (E402/F401/F811/F821/F841 grandfathered tree-wide — see pyproject).
 	$(RUFF) check $(PKG) scripts tests
@@ -134,6 +127,18 @@ check-i18n: ## Check console locale JSON, EN/ZH key parity, plurals, and placeho
 
 check-errors: ## Every raised error code has a registry row, against the shrinking baseline.
 	$(PY) scripts/check_error_registry.py
+
+check-env-registry: ## Every env var read has a registry row and every row a read; docs/configuration.md is fresh.
+	$(PY) scripts/check_env_registry.py
+
+check-http-surface: ## Routes are unique and deterministic, the OpenAPI snapshot is current, every _svc() call resolves.
+	$(PY) scripts/check_http_surface.py
+
+check-background-tasks: ## Every created asyncio task is held or awaited.
+	$(PY) scripts/check_background_tasks.py
+
+check-release: ## Default images are published by release.yml, Compose names the same registry, storage providers are discoverable.
+	$(PY) scripts/check_release.py
 
 check-credential-seam: ## Credential machinery stays behind the egress seam, against the shrinking baseline.
 	$(PY) scripts/check_credential_seam.py
@@ -221,8 +226,14 @@ k8s-testbed-purge: ## k8s-testbed-down, then uninstall k3s itself.
 	./scripts/k8s-testbed.sh purge
 
 # ── images ───────────────────────────────────────────────────────────────────
+build-execd-image: ## Build the pinned native filesystem transport with streaming uploads.
+	docker build -t $(EXECD_IMAGE) $(DOCKER_BUILD_CONTEXTS) -f containers/execd/Dockerfile .
+
+build-agent-image build-dsh-image build-codex-image build-pi-image: $(_EXECD_PREREQUISITE)
+
 build-agent-image: ## Build the sandbox agent image; stop with an error if the pinned Claude CLI or runtime service is missing.
 	docker build -t $(AGENT_IMAGE) \
+	  --build-arg SANDBOX_EXECD_IMAGE=$(EXECD_IMAGE) \
 	  --build-arg CLAUDE_CODE_VERSION=$(CLAUDE_CODE_VERSION) \
 	  --build-arg SANDBOX_BASE_IMAGE=$(SANDBOX_BASE_IMAGE) \
 	  --build-arg NPM_REGISTRY=$(NPM_REGISTRY) \
@@ -241,18 +252,21 @@ build-assistant-image: ## Build the in-sandbox Hermes image the assistant engine
 
 build-dsh-image: ## Build the in-sandbox DeepSeek Harness runtime image.
 	docker build -t $(DSH_IMAGE) \
+	  --build-arg SANDBOX_EXECD_IMAGE=$(EXECD_IMAGE) \
 	  --build-arg SANDBOX_BASE_IMAGE=$(SANDBOX_BASE_IMAGE) \
 	  -f containers/sandbox-deepseek-harness/Dockerfile \
 	  .
 
 build-codex-image: ## Build the in-sandbox Codex app-server runtime image.
 	docker build -t $(CODEX_IMAGE) \
+	  --build-arg SANDBOX_EXECD_IMAGE=$(EXECD_IMAGE) \
 	  --build-arg SANDBOX_BASE_IMAGE=$(SANDBOX_BASE_IMAGE) \
 	  -f containers/sandbox-codex/Dockerfile \
 	  .
 
 build-pi-image: ## Build the in-sandbox pi RPC runtime image.
 	docker build -t $(PI_IMAGE) \
+	  --build-arg SANDBOX_EXECD_IMAGE=$(EXECD_IMAGE) \
 	  --build-arg SANDBOX_BASE_IMAGE=$(SANDBOX_BASE_IMAGE) \
 	  --build-arg NPM_REGISTRY=$(NPM_REGISTRY) \
 	  -f containers/sandbox-pi/Dockerfile \
@@ -272,6 +286,7 @@ build-all-in-one-image: build-server-image ## Build the single-container image F
 # cannot serve a stale image for the requested tag.
 push-images: ## Tag every cluster-pulled image $(IMAGE_TAG) and push to $$REGISTRY (e.g. REGISTRY=10.0.0.5:5000).
 	@test -n "$(REGISTRY)" || { echo "push-images: set REGISTRY=host:port"; exit 2; }
+	docker tag $(EXECD_IMAGE)     $(REGISTRY)/astrabox/execd:$(IMAGE_TAG)
 	docker tag $(AGENT_IMAGE)     $(REGISTRY)/astrabox/sandbox-claude-code:$(IMAGE_TAG)
 	docker tag $(ASSISTANT_IMAGE) $(REGISTRY)/astrabox/sandbox-hermes:$(IMAGE_TAG)
 	docker tag $(DSH_IMAGE)       $(REGISTRY)/astrabox/sandbox-deepseek-harness:$(IMAGE_TAG)
@@ -279,6 +294,7 @@ push-images: ## Tag every cluster-pulled image $(IMAGE_TAG) and push to $$REGIST
 	docker tag $(PI_IMAGE)        $(REGISTRY)/astrabox/sandbox-pi:$(IMAGE_TAG)
 	docker tag $(WORKSPACE_MOUNTER_IMAGE) $(REGISTRY)/astrabox/workspace-mounter:$(IMAGE_TAG)
 	docker tag $(SERVER_IMAGE)    $(REGISTRY)/astrabox/server:$(IMAGE_TAG)
+	docker push $(REGISTRY)/astrabox/execd:$(IMAGE_TAG)
 	docker push $(REGISTRY)/astrabox/sandbox-claude-code:$(IMAGE_TAG)
 	docker push $(REGISTRY)/astrabox/sandbox-hermes:$(IMAGE_TAG)
 	docker push $(REGISTRY)/astrabox/sandbox-deepseek-harness:$(IMAGE_TAG)

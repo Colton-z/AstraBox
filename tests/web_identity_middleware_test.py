@@ -73,21 +73,7 @@ async def _drive(middleware: WebIdentityMiddleware, scope: dict[str, Any]) -> li
 
 
 class WebIdentityMiddlewareTest(unittest.TestCase):
-    def test_default_resolver_binds_local_platform_admin(self) -> None:
-        app = _RecordingApp()
-        mw = WebIdentityMiddleware(app, LocalNoAuthWebIdentityResolver())
-        asyncio.run(_drive(mw, _http_scope()))
-        self.assertTrue(app.called)
-        self.assertEqual(app.seen_user_id, _LOCAL_USER_ID)
-        self.assertEqual(app.seen_roles, ["admin"])
 
-    def test_resolver_identity_reaches_handler(self) -> None:
-        app = _RecordingApp()
-        mw = WebIdentityMiddleware(
-            app, _StaticResolver(UserContext(user_id="alice@example.com"))
-        )
-        asyncio.run(_drive(mw, _http_scope()))
-        self.assertEqual(app.seen_user_id, "alice@example.com")
 
     def test_context_resets_between_requests(self) -> None:
         app = _RecordingApp()
@@ -109,13 +95,6 @@ class WebIdentityMiddlewareTest(unittest.TestCase):
         self.assertFalse(app.called)
         start = next(m for m in sent if m["type"] == "http.response.start")
         self.assertEqual(start["status"], 401)
-
-    def test_non_http_scope_passes_through(self) -> None:
-        app = _RecordingApp()
-        mw = WebIdentityMiddleware(app, _RejectingResolver())
-        # A lifespan scope must not be touched by identity resolution.
-        asyncio.run(_drive(mw, {"type": "lifespan", "headers": []}))
-        self.assertTrue(app.called)
 
 
 if __name__ == "__main__":

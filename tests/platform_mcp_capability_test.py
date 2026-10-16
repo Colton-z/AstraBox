@@ -7,9 +7,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from astrabox.api.access_log_privacy import mask_capability_tokens
 from astrabox.api.routes import platform_mcp
-from astrabox.core.service.orchestrator.runtime.mcp_servers import runtime_mcp_servers_for_binding
 from astrabox.core.service.orchestrator.transcript_capability import (
     mint_platform_mcp_capability,
     mint_transcript_capability_token,
@@ -31,20 +29,6 @@ def test_platform_capability_is_domain_deployment_and_server_scoped() -> None:
         "deployment", "artifacts", mint_transcript_capability_token("deployment")
     )
     assert not verify_platform_mcp_capability("deployment", "artifacts", "")
-
-
-def test_empty_template_receives_artifacts_and_urls_contain_capabilities() -> None:
-    servers = runtime_mcp_servers_for_binding(
-        {}, proxy_base_url="https://edge", deployment_id="deployment", artifacts_enabled=True,
-    )
-    token = mint_platform_mcp_capability("deployment", "artifacts")
-    assert servers == {
-        "artifacts": {
-            "type": "http",
-            "url": f"https://edge/api/v1/platform-mcp/deployment/artifacts/{token}/mcp",
-        }
-    }
-    assert token not in mask_capability_tokens(servers["artifacts"]["url"])
 
 
 @pytest.mark.asyncio

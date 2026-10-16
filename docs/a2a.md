@@ -30,10 +30,10 @@ select another employee or acquire the Agent owner's identity.
 
 The A2A context identifies a conversation within the caller, organization and
 target Agent. A new context creates a platform Session; later messages in that
-context continue it. A Task identifies a logical input, including when the
-existing input queue carries it into a later engine turn. The Session journal
-remains the execution authority. Task metadata includes the platform Session
-id, and text results include its console link.
+context continue it. A Task is one message in that Session, and its state is
+the state of the response that answers the message, as the Agent's runtime
+reports it. Task metadata includes the platform Session id and the message's
+input id, and text results include the Session's console link.
 
 Repeating an identical `messageId` reuses its input. Reusing it with different
 message content is refused. Hermes generates its own message ids, so asking
@@ -63,22 +63,21 @@ have the same public shape. No Hermes plugin replacement or separate Agent
 execution path is needed: the MCP bridge supplies the structured operation the
 pinned text-only tool cannot encode.
 
-Task-scoped cancellation is refused: the current
-platform interrupt targets a physical turn, which can carry multiple queued
-inputs, and cannot atomically fence cancellation to one A2A Task. A pending platform approval requires
+Task-scoped cancellation is refused: the platform interrupt stops the
+runtime's response in progress, which can answer several queued messages, and
+cannot fence cancellation to one A2A Task. A pending platform approval requires
 the explicit interaction id and answer; a new text message is not approval.
 
 The server accepts text tasks and exposes results and platform interaction data.
 It does not accept uploaded file parts or push-notification configurations.
 `SendMessage`, `SendStreamingMessage`, `GetTask`, `ListTasks` and
-`SubscribeToTask` use the same Session journal. A nonblocking new task is
-admitted before its runtime is ready; the existing Session worker owns delivery.
-An extra input sent while that Session is still being created is refused rather
-than creating a second delivery worker.
+`SubscribeToTask` read the same recorded responses. A new task's message is
+accepted while its Session is still starting; the platform hands it to the
+Agent once the Session's runtime is ready.
 
 Streaming clients may disconnect without cancelling accepted execution. A
-subscription starts with the current Task, then emits ordered journal updates;
-concurrent subscribers covering the same events receive the same order.
+subscription starts with the current Task, then emits an update each time the
+response's recorded state or result changes.
 Binary tool approvals use `AUTH_REQUIRED`; forms and decisions with
 adapter-declared options use `INPUT_REQUIRED`, including Codex's approval choices.
 Both keep the stream open. A structured answer resumes the original Task;
@@ -88,13 +87,12 @@ read its result.
 
 `historyLength` limits the returned Task history. `acceptedOutputModes` can
 select text, JSON, or both; a single format converts the other result parts into
-that format, retaining their content. Unrestricted Task reads retain the native
-text and public transcript blocks, in the same public shape as the Session
-API. Runtime locators and raw diagnostic envelopes remain server-side.
+that format, retaining their content. Unrestricted Task reads retain the reply's
+text and its message parts, the same parts the Session's history shows. Runtime locators and raw diagnostic envelopes remain server-side.
 The protocol definition is the
 [A2A 1.0 specification](https://a2a-protocol.org/v1.0.0/specification/);
-the SDK handles its transport, while AstraBox projects its task semantics from
-the platform journal.
+the SDK handles its transport, while AstraBox reads its task semantics from the
+responses the Agent's runtime reports.
 Hermes' native A2A conversation files and audit file are included in the profile
 state archive, outside the user's workspace.
 

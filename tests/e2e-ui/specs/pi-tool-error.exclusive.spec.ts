@@ -2,9 +2,9 @@
 import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 
-import { AstraApi } from '../fixtures/astraApi';
+import { AstraApi, messageToolCalls } from '../fixtures/astraApi';
 import { revealAssistantProcess } from '../fixtures/assistantProcess';
-import { framesForTurn, sessionEvents } from '../fixtures/dbOracle';
+import { sessionInputRows, sessionOutputRows, sessionResponseRows } from '../fixtures/dbOracle';
 import { engineProfileFor } from '../fixtures/engineProfile';
 import { browserStreamFrames } from '../fixtures/nativeMcpServer';
 import { nativeEntries, nativeText, object } from '../fixtures/piChildFailure';
@@ -35,9 +35,10 @@ test('Pi retains a native tool failure across reload and continues the conversat
     await openSessionView(page, sessionId);
     const marker = `NATIVE_FAILURE_${randomUUID()}`;
     const command = `printf '%s\\n' '${marker}'; exit 17`;
-    await sendPrompt(page, sessionId, `Use bash exactly once to run this command: ${command}\n`
+    const prompt = `Use bash exactly once to run this command: ${command}\n`
       + 'The nonzero exit is intentional. Do not retry or use another tool. '
-      + 'After it fails, report its actual stdout marker and exit code in one short sentence.');
+      + 'After it fails, report its actual stdout marker and exit code in one short sentence.';
+    await sendPrompt(page, sessionId, prompt);
     const native = () => nativeEntries(sessionId);
     const calls = () => native().flatMap(({ entry, subpath }) => {
       const message = object(entry.message);
@@ -57,28 +58,32 @@ test('Pi retains a native tool failure across reload and continues the conversat
     expect(nativeText(result.content)).toContain(marker);
     expect(nativeText(result.content)).toContain('17');
     evidence.nativeToolResult = result;
+    const inputs = sessionInputRows(sessionId).filter((row) => row.content === prompt);
+    expect(inputs, 'the prompt is one recorded input').toHaveLength(1);
+    const reply = await api.waitForReplyTo(sessionId, inputs[0]!.input_id);
+    expect(reply.metadata?.outcome, 'a failed tool does not fail the response that ran it').toBe('completed');
     const settled = await api.waitForSessionReady(sessionId);
-    expect(settled.last_turn_status).toBe('COMPLETED');
+    expect(settled.last_response).toMatchObject({ response_id: reply.id, outcome: 'completed' });
     const history = await api.getMessages(sessionId, 100);
-    const reply = history.messages.find((message) => message.blocks?.some((block) => block.type === 'tool_use' && block.id === call.id));
-    expect(reply).toBeTruthy();
-    const outputs = framesForTurn(reply!.turn_id).map((row) => object(row.payload))
+    expect(history.messages.filter((message) => messageToolCalls(message).some((part) => part.toolCallId === call.id))
+      .map((message) => message.id), 'the native call is shown once, in the reply to the prompt').toEqual([reply.id]);
+    const outputs = sessionOutputRows(sessionId, reply.id).map((row) => row.part)
       .filter((frame) => String(frame.type).startsWith('tool-output-') && frame.toolCallId === call.id);
     expect(outputs).toHaveLength(1);
     expect(outputs[0]!.type).toBe('tool-output-error');
     const output = JSON.parse(String(outputs[0]!.errorText));
     expect(output.content).toEqual(result.content);
     if (result.details !== undefined) expect(output.details).toEqual(result.details);
-    const retained = reply!.blocks!.filter((block) => block.type === 'tool_result' && block.tool_use_id === call.id);
+    const retained = messageToolCalls(reply).filter((part) => part.toolCallId === call.id);
     expect(retained).toEqual([expect.objectContaining({
-      tool_result_state: 'output-error', is_error: true, content: outputs[0]!.errorText,
+      toolName: 'bash', state: 'output-error', errorText: outputs[0]!.errorText,
     })]);
     await expect.poll(async () => (await browserStreamFrames(page))
       .filter((frame) => frame.type === 'tool-output-error' && frame.toolCallId === call.id))
       .toEqual([expect.objectContaining({ errorText: outputs[0]!.errorText })]);
     evidence.history = history;
     evidence.outputs = outputs;
-    const replyRow = page.locator(`[data-message-id="${reply!.message_id}"]`);
+    const replyRow = page.locator(`[data-message-id="${reply.id}"]`);
     const card = replyRow.locator(`[data-tool-call-id="${String(call.id)}"]`);
     async function expectFailedCard() {
       await expect(replyRow.getByTestId('assistant-turn-process')).toHaveCount(1);
@@ -99,9 +104,12 @@ test('Pi retains a native tool failure across reload and continues the conversat
     const next = await api.sendTurn(sessionId, `Reply exactly ${receipt}. Do not use tools.`, 45_000);
     expect(next.errorText).toBeNull();
     expect(next.text.trim()).toBe(receipt);
-    expect(sessionEvents(sessionId).filter((event) => event.event_type === 'turn.failed')).toEqual([]);
+    expect((await api.waitForReplyTo(sessionId, next.inputId)).metadata?.outcome).toBe('completed');
+    expect(sessionResponseRows(sessionId).filter((row) => row.outcome !== 'completed'),
+      'no response of the conversation fails or is cancelled').toEqual([]);
   } finally {
     await info.attach('pi-tool-error-scene', { body: JSON.stringify({ sessionId, agentId, ...evidence,
-      native: nativeEntries(sessionId), events: sessionEvents(sessionId) }), contentType: 'application/json' });
+      native: nativeEntries(sessionId), inputs: sessionInputRows(sessionId),
+      responses: sessionResponseRows(sessionId) }), contentType: 'application/json' });
   }
 });

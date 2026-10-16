@@ -1,25 +1,46 @@
-"""Bound materials precede the real Claude CLI across preparation and recovery."""
+"""Bound materials precede the real Claude CLI across preparation and recovery.
+
+An Assistant's prepared resources are synchronized in its own box before
+Hermes runs them, and its workspace is ready before its first conversation.
+A message reaches the runtime, and its reply the console, without waiting on
+the platform, and each message is prepared once.
+"""
 from __future__ import annotations
 
 import json
 import os
+import re
+import statistics
 import subprocess
+import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import pytest
 
 from tests.e2e._sandbox_helpers import (
+    Reply,
+    SessionStream,
     current_profile,
     data,
     environment_with_tenancy,
+    follow_stream,
     get_admin_session_detail,
     get_session,
+    history,
+    output_position,
     poll_until_ready,
+    psql,
     release_agent,
+    release_assistant,
     release_session,
-    stream_turn,
+    send_and_follow,
+    send_input,
+    sql_literal,
+    transcript_entries,
+    user_messages,
     wait_until_settled,
 )
 from tests.e2e._service_containers import SERVER_CONTAINER_HANDLE, require_service_container
@@ -28,8 +49,8 @@ from tests.e2e.test_prepared_runtime_activation import (
     _run_json,
     _sandbox_exec,
     _wait_prepared,
+    _wait_prepared_count,
 )
-from tests.e2e.test_transcript_mirror import _query_mirror_docs
 
 # Needs the fixture provider in the server image and the gate image; see
 # tests/e2e/fixtures/runtime_preparation. The live lanes exclude this shape.
@@ -37,6 +58,8 @@ pytestmark = [pytest.mark.e2e, pytest.mark.deployment_shape]
 
 # The image-baked CLI gate built from tests/e2e/fixtures/runtime_preparation.
 PREPARATION_IMAGE_ENV = "ASTRABOX_E2E_PREPARATION_IMAGE"
+# Skills at a fixed commit, so a change of the Assistant is a change of its Skills.
+_SKILLS = "https://github.com/anthropics/skills.git@34040c9c568585f6929bedeaad110ad08f079624"
 
 # Settings come from the running server process, not from `docker exec`'s
 # environment, which lacks what the launcher injects into `astrabox serve`.
@@ -121,19 +144,43 @@ def _hold(server: str, control: str, sid: str, enabled: bool) -> None:
     ], check=True, timeout=30, capture_output=True)
 
 
-def _synchronized(server: str, agent_id: str) -> list[dict]:
+def _synchronized(server: str, kind: str, subject_id: str) -> list[dict]:
     receipts = subprocess.run([
         "docker", "exec", server, "sh", "-c",
         "cat /data/runtime-preparation-synchronized.jsonl 2>/dev/null || true",
     ], check=True, timeout=30, capture_output=True, text=True).stdout
-    return [row for row in map(json.loads, receipts.splitlines()) if row["agent_id"] == agent_id]
+    subject = {"kind": kind, "id": subject_id}
+    # The file outlives deployments; rows another fixture version wrote name no subject.
+    return [row for row in map(json.loads, receipts.splitlines()) if row.get("subject") == subject]
 
 
-def _send(client: httpx.Client, sid: str, content: str) -> httpx.Response:
-    """A send refused before hand-off answers with an error, not an event stream."""
-    return client.post(f"/api/v1/sessions/{sid}/ai-stream", json={
-        "content": content, "client_message_id": str(uuid.uuid4()),
-    }, headers={"Accept": "text/event-stream"}, timeout=60)
+def _refused(
+    client: httpx.Client, sid: str, content: str, code: str, *, timeout: float | None = None
+) -> dict:
+    """Send a message the deployment's preparation must refuse; return the refusal.
+
+    The platform accepts the message, then its reader asks the deployment to
+    prepare it before the runtime sees it. A refusal reaches the console as
+    ``data-input-failed`` and stays on the message in history; no response
+    starts for it.
+    """
+    reply = send_and_follow(client, sid, content, until="end", allow_refusal=True, timeout=timeout)
+    failure = reply.input_failure
+    assert failure is not None, (
+        f"the message was answered instead of refused by preparation: {reply.response}"
+    )
+    assert failure.get("code") == code, f"expected {code}: {failure}"
+    assert reply.response is None, f"a refused message started a response: {reply.response}"
+    stored = [m for m in user_messages(history(client, sid)) if m["id"] == reply.client_message_id]
+    assert len(stored) == 1, f"history does not hold the refused message once: {stored}"
+    assert (stored[0]["metadata"].get("state"), (stored[0]["metadata"].get("failure") or {}).get("code")) == (
+        "failed", code,
+    ), stored[0]["metadata"]
+    return failure
+
+
+def _transcript_text(sid: str) -> str:
+    return json.dumps(transcript_entries(sid))
 
 
 def _gate_environment(client: httpx.Client, tenancy: str, image: str) -> str:
@@ -188,7 +235,7 @@ def test_session_materials_gate_native_startup_and_preserve_resume(
             "A native CLI started before its Session material existed"
         )
         receipt = native["receipts"][-1]
-        assert receipt["session_id"] == sid and receipt["agent_id"] == aid
+        assert receipt["session_id"] == sid and receipt["subject"] == {"kind": "agent", "id": aid}
         assert receipt["principal_id"] == principal
         assert receipt["sandbox_id"] == detail["sandbox_id"]
         assert receipt["mode"] == 0o600 and receipt["phase"] == "startup"
@@ -211,12 +258,14 @@ def test_session_materials_gate_native_startup_and_preserve_resume(
     assert not unclaimed["receipts"] and not unclaimed["processes"] and not unclaimed["files"], (
         "Unclaimed inventory initialized a CLI or contains personal Session material"
     )
-    assert _synchronized(server, aid), "Agent resources were not synchronized before inventory was published"
+    assert _synchronized(server, "agent", aid), "Agent resources were not synchronized before inventory was published"
     sid, original, execute = start(aid)
     assert original["sandbox_id"] == waiting["sandbox_id"], "Conversation cold-created instead of claiming"
     material(sid, aid, original, execute)
     marker = "PREPARED_" + uuid.uuid4().hex
-    first = stream_turn(e2e_client, sid, content=f"Remember {marker}. Reply with that exact marker only, without tools.")
+    first = send_and_follow(
+        e2e_client, sid, f"Remember {marker}. Reply with that exact marker only, without tools.", until="end"
+    )
     assert first.error is None and marker in first.text, first.error or first.text
     wait_until_settled(e2e_client, sid)
     native = material(sid, aid, original, execute)
@@ -227,10 +276,8 @@ def test_session_materials_gate_native_startup_and_preserve_resume(
     rejected = "REJECTED_" + uuid.uuid4().hex
     _hold(server, "refusals", sid, True)
     try:
-        failed = _send(e2e_client, sid, rejected)
-        assert failed.status_code == 502, failed.text
-        assert failed.json()["error"]["code"] == "TURN_PREPARATION_FAILED", failed.text
-        assert "SECRET_SENTINEL" not in failed.text
+        failure = _refused(e2e_client, sid, rejected, "TURN_PREPARATION_FAILED")
+        assert "SECRET_SENTINEL" not in json.dumps(failure), failure
         wait_until_settled(e2e_client, sid)
     finally:
         _hold(server, "refusals", sid, False)
@@ -242,9 +289,8 @@ def test_session_materials_gate_native_startup_and_preserve_resume(
         state = data(e2e_client.get(f"/api/v1/sessions/{sid}/user-action"))
         assert state["ready"] is False and state["user_action"]["url"] == "https://example.com/authorize", state
         assert [action["id"] for action in state["actions"]] == ["authorize"], state
-        held = _send(e2e_client, sid, blocked)
-        assert held.status_code == 409, held.text
-        assert held.json()["error"]["code"] == "TURN_PREPARATION_USER_ACTION_REQUIRED", held.text
+        failure = _refused(e2e_client, sid, blocked, "TURN_PREPARATION_USER_ACTION_REQUIRED")
+        assert (failure.get("user_action") or {}).get("url") == "https://example.com/authorize", failure
         wait_until_settled(e2e_client, sid)
         cleared = data(e2e_client.post(f"/api/v1/sessions/{sid}/user-action", json={"action_id": "authorize"}))
         assert cleared == {"ready": True, "user_action": None, "actions": []}, cleared
@@ -256,17 +302,19 @@ def test_session_materials_gate_native_startup_and_preserve_resume(
 
     data(e2e_client.post(f"/api/v1/admin/sessions/{sid}/evict-runtime"))
     recall = "What exact marker did I ask you to remember? Reply with only that marker, without tools."
-    second = stream_turn(e2e_client, sid, content=recall)
+    second = send_and_follow(e2e_client, sid, recall, until="end")
     assert second.error is None and marker in second.text, second.error or second.text
     wait_until_settled(e2e_client, sid)
     attached = get_admin_session_detail(e2e_client, sid)
     assert attached["sandbox_id"] == original["sandbox_id"]
     material(sid, aid, attached, execute)
     while time.monotonic() < live_test_deadline:
-        if marker in json.dumps(_query_mirror_docs(sid)):
+        if marker in _transcript_text(sid):
             break
         time.sleep(0.3)
-    assert marker in json.dumps(_query_mirror_docs(sid)), "Native history did not reach database custody"
+    custody = _transcript_text(sid)
+    assert marker in custody, "Native history did not reach database custody"
+    assert rejected not in custody and blocked not in custody, "Refused input reached database custody"
 
     replacement = _wait_prepared(e2e_client, aid, live_test_deadline)
     data(e2e_client.post(f"/api/v1/sessions/{sid}/sandbox/terminate", timeout=60))
@@ -279,7 +327,7 @@ def test_session_materials_gate_native_startup_and_preserve_resume(
     ), "Recovery reused the terminated runtime"
     assert restored["engine_session_key"] == attached["engine_session_key"]
     material(sid, aid, restored, _sandbox_exec(restored["sandbox_id"]))
-    third = stream_turn(e2e_client, sid, content=recall)
+    third = send_and_follow(e2e_client, sid, recall, until="end")
     assert third.error is None and marker in third.text, third.error or third.text
     wait_until_settled(e2e_client, sid)
     assert get_session(e2e_client, sid)["state"] == "READY"
@@ -290,8 +338,531 @@ def test_session_materials_gate_native_startup_and_preserve_resume(
         csid, detail, control_exec = start(control, profile["image"])
         assert detail["sandbox_id"] == ready["sandbox_id"]
         assert not _native(control_exec, detail["runtime_identity"])["files"]
-        response = stream_turn(e2e_client, csid, content="Reply with exactly VAULT_OK, without tools.")
+        response = send_and_follow(
+            e2e_client, csid, "Reply with exactly VAULT_OK, without tools.", until="end"
+        )
         assert response.error is None and "VAULT_OK" in response.text, response.error or response.text
         wait_until_settled(e2e_client, csid)
     print(json.dumps({"tenancy": tenancy, "vault": settings["vault"], "cold": cold["sandbox_id"],
                       "claimed": original["sandbox_id"], "restored": restored["sandbox_id"]}), flush=True)
+
+
+def test_a_shared_box_burst_starts_each_conversation_on_its_own_material(
+    e2e_client: httpx.Client, live_test_deadline: float,
+) -> None:
+    """Conversations claiming seats of one shared box at once each get their own material.
+
+    A session-bound Agent's seats wait in a shared box with nothing personal in
+    them. A burst claims them together: every seat's engine starts only after
+    its own Session's material is in its own runtime home, and each
+    conversation's turns refresh only its own material.
+    """
+    capacity = 3
+    profile = current_profile()
+    assert profile["engine_kind"] == "claude_code", "The gate wraps the Claude CLI"
+    image = os.environ[PREPARATION_IMAGE_ENV]
+    server = require_service_container(SERVER_CONTAINER_HANDLE)
+    settings = _run_json(["docker", "exec", server, "python", "-c", _SERVER_SETTINGS])
+    assert isinstance(settings, dict)
+    assert settings["provider"] == "native-startup-material-fixture"
+    principal = data(e2e_client.get("/api/v1/user/current"))["user_id"]
+    created = data(e2e_client.post("/api/v1/agents", json={
+        "name": f"Material burst {uuid.uuid4().hex[:8]}",
+        "environment_name": _gate_environment(e2e_client, "agent", image),
+        "model": profile["model"], "prepared_capacity": capacity,
+    }))
+    aid = created["agent_id"]
+    release_agent(aid)
+    prepared = _wait_prepared_count(e2e_client, aid, capacity, live_test_deadline)
+    assert prepared["placement"] == "shared_slot", prepared
+
+    def start(_: int) -> str:
+        sid = data(e2e_client.post(f"/api/v1/agents/{aid}/conversations", json={}))["session_id"]
+        release_session(sid)
+        poll_until_ready(e2e_client, sid, expected_image=image)
+        return sid
+
+    with ThreadPoolExecutor(max_workers=capacity) as executor:
+        sessions = list(executor.map(start, range(capacity)))
+    details = {sid: get_admin_session_detail(e2e_client, sid) for sid in sessions}
+    after = data(e2e_client.get(f"/api/v1/agents/{aid}/prepared-runtime"))
+    assert after["last_miss_at"] is None, f"a conversation of the burst started cold: {after}"
+    seats = {detail["runtime_identity"]["isolated_session_id"] for detail in details.values()}
+    assert all(seats) and len(seats) == capacity, seats
+
+    def own_material(sid: str, phase: str) -> None:
+        detail = details[sid]
+        execute = _sandbox_exec(detail["sandbox_id"])
+        native = _native(execute, detail["runtime_identity"])
+        while not (native["processes"] and native["receipts"]) and time.monotonic() < live_test_deadline:
+            time.sleep(0.5)
+            native = _native(execute, detail["runtime_identity"])
+        assert native["processes"] and native["receipts"], f"No real native CLI initialized for {sid}"
+        assert not any(item.get("denied") for item in native["receipts"]), (
+            f"A native CLI started before Session {sid}'s material existed"
+        )
+        for receipt in native["receipts"]:
+            assert (receipt["session_id"], receipt["principal_id"], receipt["sandbox_id"]) == (
+                sid, principal, detail["sandbox_id"],
+            ), receipt
+        assert [item["session_id"] for item in native["files"]] == [sid], native["files"]
+        assert native["files"][0]["phase"] == phase, native["files"]
+
+    for sid in sessions:
+        own_material(sid, "startup")
+
+    # Each conversation's messages refresh only its own material.
+    markers = {sid: "SEAT_" + uuid.uuid4().hex for sid in sessions}
+
+    def answer(sid: str) -> None:
+        reply = send_and_follow(
+            e2e_client, sid, f"Reply with exactly {markers[sid]}, without tools.", until="end"
+        )
+        assert reply.error is None and markers[sid] in reply.text, reply.error or reply.text
+        wait_until_settled(e2e_client, sid)
+
+    with ThreadPoolExecutor(max_workers=capacity) as executor:
+        list(executor.map(answer, sessions))
+    for sid in sessions:
+        own_material(sid, "turn")
+    print(json.dumps({
+        "burst": capacity, "vault": settings["vault"],
+        "sandboxes": sorted({detail["sandbox_id"] for detail in details.values()}),
+        "seats": sorted(seats),
+    }), flush=True)
+
+
+def test_a_startup_user_action_keeps_the_conversation_until_the_user_acts(
+    e2e_client: httpx.Client, live_test_deadline: float,
+) -> None:
+    """A prerequisite met only by the user leaves the conversation open, not ended.
+
+    Its first message is refused with the action at once, without waiting for
+    a runtime: the console receives ``data-input-failed`` carrying the action,
+    and the conversation stays READY. The message sent after the user acts
+    starts the runtime with its material and is answered.
+    """
+    profile = current_profile()
+    assert profile["engine_kind"] == "claude_code", "The gate wraps the Claude CLI"
+    image = os.environ[PREPARATION_IMAGE_ENV]
+    server = require_service_container(SERVER_CONTAINER_HANDLE)
+    settings = _run_json(["docker", "exec", server, "python", "-c", _SERVER_SETTINGS])
+    assert isinstance(settings, dict)
+    assert settings["provider"] == "native-startup-material-fixture"
+    created = data(e2e_client.post("/api/v1/agents", json={
+        "name": f"Material action {uuid.uuid4().hex[:8]}",
+        "environment_name": _gate_environment(e2e_client, "conversation", image),
+        "model": profile["model"], "prepared_capacity": 0,
+    }))
+    aid = created["agent_id"]
+    release_agent(aid)
+    _hold(server, "startup-user-actions", aid, True)
+    try:
+        sid = data(e2e_client.post(f"/api/v1/agents/{aid}/conversations", json={}))["session_id"]
+        release_session(sid)
+        session = get_session(e2e_client, sid)
+        while session.get("state") == "CREATING":
+            assert time.monotonic() < live_test_deadline, "the conversation never left CREATING"
+            time.sleep(0.5)
+            session = get_session(e2e_client, sid)
+        assert session.get("state") == "READY", f"a startup prerequisite ended the conversation: {session}"
+        state = data(e2e_client.get(f"/api/v1/sessions/{sid}/user-action"))
+        assert state["ready"] is False and state["user_action"]["url"] == "https://example.com/authorize", state
+
+        started = time.monotonic()
+        failure = _refused(
+            e2e_client, sid, "BLOCKED_" + uuid.uuid4().hex,
+            "TURN_PREPARATION_USER_ACTION_REQUIRED", timeout=45,
+        )
+        assert (failure.get("user_action") or {}).get("url") == "https://example.com/authorize", failure
+        assert time.monotonic() - started < 45, "the refused message waited for a runtime"
+        assert get_session(e2e_client, sid)["state"] == "READY"
+
+        cleared = data(e2e_client.post(f"/api/v1/sessions/{sid}/user-action", json={"action_id": "authorize"}))
+        assert cleared == {"ready": True, "user_action": None, "actions": []}, cleared
+    finally:
+        _hold(server, "startup-user-actions", aid, False)
+
+    marker = "AUTHORIZED_" + uuid.uuid4().hex
+    reply = send_and_follow(e2e_client, sid, f"Reply with exactly {marker}, without tools.", until="end")
+    assert reply.error is None and marker in reply.text, reply.error or reply.text
+    wait_until_settled(e2e_client, sid)
+    detail = get_admin_session_detail(e2e_client, sid)
+    native = _native(_sandbox_exec(detail["sandbox_id"]), detail["runtime_identity"])
+    assert native["receipts"] and not any(item.get("denied") for item in native["receipts"]), native
+    assert native["receipts"][-1]["session_id"] == sid and native["receipts"][-1]["phase"] == "startup"
+
+
+def _assistant_workspace(client: httpx.Client, assistant_id: str, deadline: float) -> dict:
+    """The Assistant as its owner reads it, once its workspace is READY."""
+    while True:
+        assistant = data(client.get(f"/api/v1/assistants/{assistant_id}"))
+        if assistant.get("workspace_state") == "READY" and assistant.get("current_sandbox_id"):
+            return assistant
+        assert assistant.get("workspace_state") in {"NOT_MATERIALIZED", "MATERIALIZING"}, assistant
+        assert time.monotonic() < deadline, f"the Assistant's workspace never became READY: {assistant}"
+        time.sleep(1.0)
+
+
+def _profile_revision(assistant_id: str, sandbox_id: str) -> str | None:
+    """The revision the profile running in ``sandbox_id`` was prepared from."""
+    rows = psql(
+        "SELECT configuration_revision FROM assistant_profiles "
+        f"WHERE assistant_id = {sql_literal(assistant_id)} "
+        f"AND sandbox_id = {sql_literal(sandbox_id)}"
+    )
+    return next((str(row).strip() for row in rows if str(row).strip()), None)
+
+
+def _cpu_request(sandbox_id: str) -> str:
+    execute = _sandbox_exec(sandbox_id)
+    pod = execute[execute.index("exec") + 1]
+    spec = _run_json([*execute[:execute.index("exec")], "get", "pod", pod, "-o", "json"])
+    assert isinstance(spec, dict)
+    container = next(item for item in spec["spec"]["containers"] if item["name"] == "sandbox")
+    return str(container["resources"]["requests"]["cpu"])
+
+
+def _timed_conversation(client: httpx.Client, assistant_id: str, sandbox_id: str) -> dict:
+    started = time.monotonic()
+    sid = data(client.post(f"/api/v1/assistants/{assistant_id}/conversations", json={}))["session_id"]
+    release_session(sid)
+    poll_until_ready(client, sid)
+    ready = time.monotonic() - started
+    assert get_session(client, sid).get("sandbox_id") == sandbox_id, "the conversation is not on the workspace box"
+    marker = "PREPARED_" + uuid.uuid4().hex[:12]
+    started = time.monotonic()
+    reply = send_and_follow(client, sid, f"Reply with exactly {marker}. Do not use tools.", until="end")
+    answered = time.monotonic() - started
+    assert reply.error is None and marker in reply.text, reply.error or reply.text
+    wait_until_settled(client, sid)
+    return {"session_id": sid, "ready_s": round(ready, 1), "answer_s": round(answered, 1)}
+
+
+def test_an_assistant_is_prepared_before_its_conversations(
+    e2e_client: httpx.Client, live_test_deadline: float,
+) -> None:
+    """Creating or changing an Assistant prepares its workspace without a conversation.
+
+    Its Skills are in the box when the deployment synchronizes them, and that
+    precedes the backend. A conversation opened afterwards attaches to the
+    ready workspace and is answered without waiting for the backend to load.
+    """
+    environment = os.getenv("ASTRABOX_E2E_ASSISTANT_ENVIRONMENT", "").strip()
+    model = os.getenv("ASTRABOX_E2E_ASSISTANT_MODEL", "").strip()
+    assert environment and model, "set ASTRABOX_E2E_ASSISTANT_ENVIRONMENT and ASTRABOX_E2E_ASSISTANT_MODEL"
+    server = require_service_container(SERVER_CONTAINER_HANDLE)
+    settings = _run_json(["docker", "exec", server, "python", "-c", _SERVER_SETTINGS])
+    assert isinstance(settings, dict)
+    assert settings["provider"] == "native-startup-material-fixture"
+    principal = data(e2e_client.get("/api/v1/user/current"))["user_id"]
+    skills = [f"{_SKILLS}#skills/skill-creator"]
+    created = data(e2e_client.post("/api/v1/assistants", json={
+        "display_name": f"prepared-{uuid.uuid4().hex[:6]}",
+        "environment_name": environment,
+        "model_config_override": {"model_name": model},
+        "skills": skills,
+    }))
+    aid = created["assistant_id"]
+    release_assistant(aid)
+
+    def synchronized(revision_other_than: str | None) -> dict:
+        while True:
+            for row in reversed(_synchronized(server, "assistant", aid)):
+                if row["revision"] != revision_other_than:
+                    return row
+            assert time.monotonic() < live_test_deadline, "the Assistant's resources were never synchronized"
+            time.sleep(1.0)
+
+    sandbox_id = _assistant_workspace(e2e_client, aid, live_test_deadline)["current_sandbox_id"]
+    assert _cpu_request(sandbox_id) in {"100m", "0.1"}, "the Assistant box does not use its own resource envelope"
+    first = synchronized(None)
+    assert first["owner_user_id"] == principal, first
+    assert first["prepared_paths"] and all(first["prepared_paths"].values()), (
+        f"the Assistant's Skills were synchronized before they were in its box: {first}"
+    )
+    assert _profile_revision(aid, sandbox_id) == first["revision"], "the workspace runs another revision"
+    opened = _timed_conversation(e2e_client, aid, sandbox_id)
+
+    data(e2e_client.patch(f"/api/v1/assistants/{aid}", json={"skills": [*skills, f"{_SKILLS}#skills/pdf"]}))
+    changed = synchronized(first["revision"])
+    assert changed["prepared_paths"] and all(changed["prepared_paths"].values()), changed
+    while _profile_revision(aid, sandbox_id) != changed["revision"]:
+        assert time.monotonic() < live_test_deadline, "the changed Assistant was not prepared in its workspace"
+        time.sleep(1.0)
+    reopened = _timed_conversation(e2e_client, aid, sandbox_id)
+    print(json.dumps({"assistant": aid, "sandbox": sandbox_id, "first": opened, "after_edit": reopened}), flush=True)
+    for timing in (opened, reopened):
+        assert timing["ready_s"] < 10, f"the conversation waited for its workspace to be prepared: {timing}"
+        assert timing["answer_s"] < 15, f"the first answer waited for the backend to load: {timing}"
+
+
+def _set_turn_delay(server: str, seconds: float | None) -> None:
+    subprocess.run([
+        "docker", "exec", server, "python", "-c",
+        "import sys; from pathlib import Path; p = Path('/data/runtime-preparation-turn-delay.json'); "
+        "p.write_text(sys.argv[1]) if sys.argv[1] != 'off' else p.unlink(missing_ok=True)",
+        "off" if seconds is None else str(seconds),
+    ], check=True, timeout=30, capture_output=True)
+
+
+def _turn_preparations(server: str, sid: str) -> list[dict]:
+    receipts = subprocess.run([
+        "docker", "exec", server, "sh", "-c",
+        "cat /data/runtime-preparation-turns.jsonl 2>/dev/null || true",
+    ], check=True, timeout=30, capture_output=True, text=True).stdout
+    return [row for row in map(json.loads, receipts.splitlines()) if row.get("session_id") == sid]
+
+
+def test_an_accepted_message_keeps_its_box_running_during_preparation(
+    e2e_client: httpx.Client,
+) -> None:
+    """An idle sweep cannot take compute from a message waiting for preparation."""
+    profile = current_profile()
+    server = require_service_container(SERVER_CONTAINER_HANDLE)
+    settings = _run_json(["docker", "exec", server, "python", "-c", _SERVER_SETTINGS])
+    assert isinstance(settings, dict)
+    assert settings["provider"] == "native-startup-material-fixture"
+    source = environment_with_tenancy(e2e_client, "conversation")
+    environment = next(row for row in data(e2e_client.get("/api/v1/admin/environments")) if row["name"] == source)
+    assert "••••••••" not in json.dumps(environment), "The test Environment must use deployment model access"
+    name = f"runtime-preparation-idle-{source}"
+    data(e2e_client.put(f"/api/v1/admin/environments/{name}", json={
+        **environment, "name": name, "idle_action": "pause", "enabled": True,
+    }))
+    agent = data(e2e_client.post("/api/v1/agents", json={
+        "name": f"Preparing input {uuid.uuid4().hex[:8]}", "environment_name": name,
+        "model": profile["model"], "prepared_capacity": 0, "idle_hibernate_seconds": 3600,
+    }))
+    aid = agent["agent_id"]
+    release_agent(aid)
+    sid = data(e2e_client.post(f"/api/v1/agents/{aid}/conversations", json={}))["session_id"]
+    release_session(sid)
+    poll_until_ready(e2e_client, sid)
+    warm = send_and_follow(e2e_client, sid, "Reply with exactly WARM. Do not use tools.", until="end")
+    assert warm.error is None and "WARM" in warm.text, warm.error or warm.text
+    wait_until_settled(e2e_client, sid)
+    box = get_admin_session_detail(e2e_client, sid)["sandbox_id"]
+    stream = SessionStream(sid, cursor=output_position(e2e_client, sid))
+    try:
+        _set_turn_delay(server, 20)
+        receipt = send_input(e2e_client, sid, "Reply with exactly PREPARED. Do not use tools.")
+        iid = sql_literal(receipt["input_id"])
+        current_agent = data(e2e_client.get(f"/api/v1/agents/{aid}"))
+        data(e2e_client.put(f"/api/v1/agents/{aid}", json={
+            "name": current_agent["name"],
+            "model": current_agent["model"],
+            "environment_name": current_agent["environment_name"],
+            "version": current_agent["version"],
+            "idle_hibernate_seconds": 1,
+        }))
+        time.sleep(2)  # The accepted input outlives the real configured idle window.
+        assert psql(f"SELECT state FROM session_inputs WHERE input_id={iid}") == ["pending"]
+        assert all(row.get("turn_id") != receipt["input_id"] for row in _turn_preparations(server, sid)), (
+            "Preparation must still be waiting when the sweep runs"
+        )
+        inspected = False
+        inspection_started = time.time()
+        inspection_deadline = time.monotonic() + 10
+        while not inspected and time.monotonic() < inspection_deadline:
+            data(e2e_client.post("/api/v1/admin/sandbox-idle-sweep", timeout=120))
+            inspected = (
+                f"inputs await admission session={sid} sandbox={box}"
+                in _server_log(server, inspection_started)
+            )
+        assert inspected, "The sweep never inspected this input while preparation was pending"
+        assert psql(f"SELECT sandbox_parked_at IS NULL FROM sessions WHERE session_id={sql_literal(sid)}") == ["t"]
+        _sandbox_exec(box)  # Independent supplier Pod observation requires Running.
+        assert psql(f"SELECT state FROM session_inputs WHERE input_id={iid}") == ["pending"]
+        def answered(current: SessionStream) -> bool:
+            response = current.answering(receipt["input_id"])
+            return response is not None and response.ended
+
+        follow_stream(e2e_client, stream, answered, describe="the message held through the idle sweep")
+        response = stream.answering(receipt["input_id"])
+        assert response is not None and response.error is None and response.finish_reason == "stop", response
+        assert "PREPARED" in response.text, response
+        assert get_admin_session_detail(e2e_client, sid)["sandbox_id"] == box
+    finally:
+        _set_turn_delay(server, None)
+
+
+#: What the platform may add on a local database, each way. A reply held back
+#: until it finished would exceed the outbound budget by the reply's length.
+_INBOUND_BUDGET_S = 0.5
+_OUTBOUND_BUDGET_S = 0.25
+
+#: The server's own stamps for the two delays (``api/routes/turns.py`` and
+#: ``session_runtime/reader.py``): an input accepted by the route, the same
+#: input handed to the runtime, and the first text of a response read from it.
+_RECEIVED = re.compile(r"input received session=(?P<sid>\S+) at=(?P<at>\d+(?:\.\d+)?)")
+_DELIVERED = re.compile(
+    r"input delivered session=(?P<sid>\S+) input=(?P<input>\S+) at=(?P<at>\d+(?:\.\d+)?)"
+)
+_FIRST_TEXT = re.compile(
+    r"first text read session=(?P<sid>\S+) response=(?P<response>\S+) at=(?P<at>\d+(?:\.\d+)?)"
+)
+
+
+def _server_log(server: str, since: float) -> str:
+    """The server's log lines since ``since`` (epoch seconds)."""
+    logs = subprocess.run(
+        ["docker", "logs", "--since", str(int(since) - 1), server],
+        check=True, timeout=60, capture_output=True, text=True,
+    )
+    return logs.stdout + logs.stderr
+
+
+def _console_reply(client: httpx.Client, sid: str, content: str) -> tuple[Reply, float]:
+    """Send one message the way the console does and read its reply.
+
+    The console follows the session's stream while it is idle and sends
+    through ``POST …/inputs``; the reply arrives on that open stream. Returns
+    the reply and the wall time the platform's receipt came back.
+    """
+    stream = SessionStream(sid, cursor=output_position(client, sid))
+    sent: dict = {}
+    failures: list[BaseException] = []
+
+    def answered(current: SessionStream) -> bool:
+        input_id = sent.get("input_id")
+        if input_id is None:
+            return False
+        if input_id in current.input_failures:
+            return True
+        response = current.answering(input_id)
+        return response is not None and response.ended
+
+    def follow() -> None:
+        try:
+            with httpx.Client(base_url=client.base_url, headers=client.headers) as reader:
+                follow_stream(reader, stream, answered, describe="the console's reply")
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the test's thread
+            failures.append(exc)
+
+    follower = threading.Thread(target=follow)
+    follower.start()
+    deadline = time.monotonic() + 30
+    while stream.connections == 0 and follower.is_alive():
+        assert time.monotonic() < deadline, "the console's stream did not open"
+        time.sleep(0.05)
+    time.sleep(1.0)  # the console's stream is open long before a message is typed
+    sent_wall = time.time()
+    receipt = send_input(client, sid, content)
+    receipt_wall = time.time()
+    sent["input_id"] = str(receipt["input_id"])
+    follower.join(170)
+    assert not follower.is_alive(), "the reply did not finish"
+    if failures:
+        raise failures[0]
+    reply = Reply(
+        session_id=sid,
+        input_id=sent["input_id"],
+        client_message_id=str(receipt["client_message_id"]),
+        stream=stream,
+        sent_wall=sent_wall,
+    )
+    assert reply.input_failure is None, f"the message was refused: {reply.input_failure}"
+    assert reply.error is None and reply.finish_reason == "stop", reply.response
+    assert reply.response is not None and reply.response.first_text_wall is not None, (
+        f"the reply carried no text: {reply.response}"
+    )
+    return reply, receipt_wall
+
+
+def test_a_delivered_message_is_prepared_once_and_streams_while_it_is_answered(
+    e2e_client: httpx.Client, live_test_deadline: float,
+) -> None:
+    """A message reaches the runtime, and its reply the console, without waiting on the platform.
+
+    Two delays are the platform's. Inbound: from the route accepting a console
+    message (``input received``) to the session's reader handing it to the
+    runtime (``input delivered``). Outbound: from the reader reading a
+    response's first text from the runtime (``first text read``) to that text
+    reaching the console's open stream. Each message is prepared once, before
+    the runtime receives it. The first text reaching the console within
+    moments of reaching the platform is also what shows the reply streams:
+    held back until the end, it would wait out the reply.
+    """
+    profile = current_profile()
+    server = require_service_container(SERVER_CONTAINER_HANDLE)
+    settings = _run_json(["docker", "exec", server, "python", "-c", _SERVER_SETTINGS])
+    assert isinstance(settings, dict)
+    assert settings["provider"] == "native-startup-material-fixture"
+    created = data(e2e_client.post("/api/v1/agents", json={
+        "name": f"Streaming {uuid.uuid4().hex[:8]}",
+        "environment_name": environment_with_tenancy(e2e_client, "conversation"),
+        "model": profile["model"], "prepared_capacity": 0,
+    }))
+    release_agent(created["agent_id"])
+    sid = data(e2e_client.post(f"/api/v1/agents/{created['agent_id']}/conversations", json={}))["session_id"]
+    release_session(sid)
+    poll_until_ready(e2e_client, sid)
+    warm = send_and_follow(e2e_client, sid, "Reply with exactly WARM. Do not use tools.", until="end")
+    assert warm.error is None and "WARM" in warm.text, warm.error or warm.text
+    wait_until_settled(e2e_client, sid)
+
+    _set_turn_delay(server, None)
+    measured_from = time.time()
+    replies: list[tuple[Reply, float]] = []
+    for topic in ("why the sky is blue", "how tides work", "why leaves change colour"):
+        replies.append(_console_reply(e2e_client, sid, (
+            f"Write about 150 words explaining {topic}. Plain prose, no lists, no tools."
+        )))
+        wait_until_settled(e2e_client, sid)
+    log = _server_log(server, measured_from)
+
+    received = [float(m["at"]) for m in _RECEIVED.finditer(log) if m["sid"] == sid]
+    inbound: list[float] = []
+    outbound: list[float] = []
+    for reply, receipt_wall in replies:
+        # The route's stamp carries no input id: it is the one stamp this
+        # session's route wrote while this message's request was open.
+        accepted = [at for at in received if reply.sent_wall - 0.05 <= at <= receipt_wall + 0.05]
+        assert len(accepted) == 1, (
+            f"expected one 'input received' stamp for input {reply.input_id}, found {accepted}"
+        )
+        delivered = [
+            float(m["at"]) for m in _DELIVERED.finditer(log)
+            if m["sid"] == sid and m["input"] == reply.input_id
+        ]
+        assert len(delivered) == 1, (
+            f"input {reply.input_id} was handed to the runtime {len(delivered)} times"
+        )
+        first_read = [
+            float(m["at"]) for m in _FIRST_TEXT.finditer(log)
+            if m["sid"] == sid and m["response"] == reply.response_id
+        ]
+        assert len(first_read) == 1, (
+            f"response {reply.response_id} has {len(first_read)} 'first text read' stamps"
+        )
+        inbound.append(round(delivered[0] - accepted[0], 3))
+        outbound.append(round(reply.response.first_text_wall - first_read[0], 3))
+
+    # The preparation seam names what it prepares ``turn_id``; the reader passes the input id.
+    preparations = _turn_preparations(server, sid)
+    prepared = {reply.input_id: [row for row in preparations if row.get("turn_id") == reply.input_id]
+                for reply, _ in replies}
+    timing = {
+        "messages": len(replies),
+        "preparations": {input_id: len(rows) for input_id, rows in prepared.items()},
+        "received_to_delivered_s": inbound,
+        "median_received_to_delivered_s": statistics.median(inbound),
+        "first_text_read_to_console_s": outbound,
+        "median_first_text_read_to_console_s": statistics.median(outbound),
+        "sent_to_receipt_s": [round(wall - reply.sent_wall, 3) for reply, wall in replies],
+        "streaming_s": [
+            round(reply.response.ended_wall - reply.response.first_text_wall, 2) for reply, _ in replies
+        ],
+        "session": sid,
+    }
+    print(json.dumps({"streaming": timing}), flush=True)
+    assert all(len(rows) == 1 for rows in prepared.values()), (
+        f"a message was not prepared exactly once: {timing}"
+    )
+    assert timing["median_received_to_delivered_s"] < _INBOUND_BUDGET_S, (
+        f"a message waited on the platform: {timing}"
+    )
+    assert timing["median_first_text_read_to_console_s"] < _OUTBOUND_BUDGET_S, (
+        f"a reply waited on the platform: {timing}"
+    )

@@ -1,5 +1,7 @@
 # Agent Skills
 
+> 为 Agent 附加领域专业知识。
+
 Skills 为 Agent 附加**领域专业知识**。一个 Skill 是一组结构化的提示词和流程，让 Agent 在特定任务上表现得更专业、更可靠。
 
 打开**管理台 → Agent**，创建或打开一个 Agent，然后在 **MCP、Skill 与 Plugin**区域选择 Skill。
@@ -10,23 +12,28 @@ Skills 为 Agent 附加**领域专业知识**。一个 Skill 是一组结构化�
 
 | 方式 | 位置 | 说明 |
 | --- | --- | --- |
-| 目录 Skill | 部署启用[扩展目录](adding-tools.md#extension-catalog)时，Agent 详情页的「Skill 配置」 | 从部署的目录中选择可复用的 Git Skill |
+| 目录 Skill | 部署启用[扩展目录](adding-tools.md#extension-catalog)时，Agent 详情页的「Skill 配置」 | 从部署的目录中选择可复用的 Skill |
 | 直接使用 Git 来源 | Agent 创建或编辑页的「MCP、Skill 与 Plugin」 | 添加仓库 URL，以及可选的版本和子目录 |
+| 结构化来源 | 同一个 Skill 字段 | 使用经过批准的 deploy key 配置 SSH Git，或使用部署安装的 provider 提供的内容 |
+
+直接配置的 Skill 字段是一个 JSON 数组，元素为 Git 字符串或来源对象。对象格式、SSH 凭证以及安装非 Git provider 的方法，见 [Skill 内容 provider](providers/skill-content.md)。
 
 ## 版本化模型
 
-Skill 使用 Git 来源和可选版本：
+Git Skill 使用代码仓库和可选版本：
 
 - **Skill 来源**：仓库 URL 加可选的 `@ref` 和 `#path`，例如 `https://github.com/example/skills.git@main#skills/code-review`。
 - **固定版本**：Skill 不应在修改 Agent 之前发生变化时，使用经过审核的 Commit SHA。
 - **未固定版本**：省略 ref 时跟随仓库默认分支；填写分支或 Tag 时，准备运行实例时跟随对应 ref。
-- **目录 Skill**：目录为每个条目提供 Git 来源，Agent 保存选择结果。
+- **目录 Skill**：目录为每个条目提供来源，Agent 保存选择结果。
+
+结构化来源会明确写出 provider 和版本。provider 先把该版本解析为不可变的内容，AstraBox 再检查缓存；每次准备都会检查访问权限，命中缓存时也不例外。
 
 AstraBox 不会创建另一套 Skill 内容格式，而是把 Skill 准备到所选 Agent 程序使用的原生 Skill 目录中。
 
 私有 HTTPS 来源需要平台管理员在下载前配置 **HTTP Basic（Git HTTPS）** 凭证，并将
 Vault 分配给 Agent。凭证的目标地址只填写仓库 URL，`@ref` 和 `#path` 保留在 Skill
-来源中。直接 Git 来源和目录 Skill 都适用，具体操作见
+来源中。直接来源和目录 Skill 都适用，具体操作见
 [私有 Git 仓库鉴权](credentials.md#private-git-repositories)。HTTP(S) URL 里带用户名或令牌的
 Skill 来源会被拒绝：来源会随 Agent 保存，并在下载错误里原样出现；Vault 凭证则在沙箱外注入，
 不会随 Agent 保存。
@@ -72,17 +79,17 @@ description: 执行结构化代码审查，输出改进建议
 
 ## 创建 Skill
 
-在 Git 仓库中创建 Skill 目录并提交完整内容，记录仓库 URL、版本和子目录。AstraBox 从 Git 加载 Skill，不接受单独的 zip 上传。
+在 Git 仓库中创建 Skill 目录并提交完整内容，记录仓库 URL、版本和子目录。部署安装的内容 provider 也可以从其他来源提供带版本的 Skill 目录。AstraBox 没有单独的 Skill zip 上传接口。
 
-目录的 provider 提供管理页面时，Agent 详情页的「在 … 中管理 Skill」会打开它，可以用它把 Git Skill 加入目录。
+目录的 provider 提供管理页面时，Agent 详情页的「在 … 中管理 Skill」会打开它，可以用它把 Skill 加入目录。
 
 ## 关联到 Agent
 
-在网页控制台中打开 Agent。要使用目录 Skill，在「Skill 配置」中选择并保存；要直接使用 Git 来源，在「MCP、Skill 与 Plugin」的 Skill 字段中添加来源描述符，然后保存该部分。不启用扩展目录的部署只提供直接 Git 来源。
+在网页控制台中打开 Agent。要使用目录 Skill，在「Skill 配置」中选择并保存；要使用直接来源，在「MCP、Skill 与 Plugin」的 Skill 字段中，把它的 Git 字符串或来源对象加入 JSON 数组，然后保存该部分。直接来源不需要扩展目录。
 
 ## 版本管理
 
-发布新 Skill 版本时，提交修改；需要使用该版本时，更新 Agent 的 Git ref 或目录条目。已经运行的 Agent 程序不会被原地改写；AstraBox 首次准备或重建 Session 运行实例时，会读取 Agent 当前配置的 Skill 来源。
+对于 Git Skill，提交修改；需要使用该版本时，更新 Agent 的 Git ref 或目录条目。对于其他来源 provider，通过该提供方发布，再更新来源对象中的版本。已经运行的 Agent 程序不会被原地改写；AstraBox 首次准备或重建 Session 运行实例时，会读取 Agent 当前配置的 Skill 来源。
 
 启用预热时，Skill 可能在 Session 启动前就已准备好。在 Agent 上使用「重新预热」，
 可按已保存的 Skill 来源重新拉取并替换待领取资源，不中断现有 Session；固定的
@@ -90,7 +97,7 @@ Commit 版本不会自动升级。
 
 ## 获取 Skill 详情
 
-打开 Agent 详情页。直接使用的 Git 来源显示在「MCP、Skill 与 Plugin」的 Skill 字段中；已经选择的目录 Skill 显示在旁边的目录选择框中。
+打开 Agent 详情页。直接来源显示在「MCP、Skill 与 Plugin」的 Skill 字段中；已经选择的目录 Skill 显示在旁边的目录选择框中。
 
 ## 列出所有 Skills
 
@@ -119,4 +126,11 @@ A：支持情况由所选 Agent 程序声明。如果程序不能使用 Skill，
 
 **Q：Skill zip 文件有大小限制吗？**
 
-A：AstraBox 不通过 zip 上传 Skill。运行实例中加载的 Git 内容受代码仓库和沙箱限制。
+A：AstraBox 不通过 zip 上传 Skill。运行实例中加载的内容受来源 provider 和沙箱限制。
+
+## 下一步
+
+- [Agent 工具与扩展](adding-tools.md) — 配置 MCP 服务器、Skill 和 Plugin。
+- [定义 Agent](authoring-agents.md) — 查看 Agent 配置。
+- [Session](sessions.md) — 使用 Agent 开始工作。
+- [快速入门](quickstart.md) — 通过五个步骤运行第一个 AstraBox Agent。

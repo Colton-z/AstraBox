@@ -4,10 +4,11 @@
  *
  * A default-mode Write request first pauses on the approval panel. The product's
  * sandbox-reclaim action then removes the compute which owned the in-memory
- * PreToolUse wait. That action must close the parked turn and interaction; it
- * must never leave an enabled card whose answer can only 409. A cold page shows
- * the ordinary composer, and its first message completes on a different sandbox
- * without a resend.
+ * PreToolUse wait. The paused response must then end failed with the box
+ * (`sandbox_lost`) and its interaction be withdrawn; nothing may leave an
+ * enabled card whose answer can only 409. A cold page shows the ordinary
+ * composer, and its first message completes on a different sandbox without a
+ * resend.
  *
  * Tool invocation is model-dependent, so a bounded probe skips only when no
  * permission interaction is raised.
@@ -15,13 +16,13 @@
 import { test, expect } from '@playwright/test';
 
 import { insist } from '../fixtures/insist';
-import { AstraApi, type PendingInteraction } from '../fixtures/astraApi';
+import { AstraApi, type InputReceipt, type PendingInteraction } from '../fixtures/astraApi';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { apiPath, appPath, parseTimeoutEnv } from '../fixtures/env';
 import {
   oracleDbPath,
-  snapshotDoc,
-  waitForTurnSnapshot,
+  sessionInteractionRows,
+  sessionResponseRows,
 } from '../fixtures/dbOracle';
 
 // Agent create + provision + a paused turn + the reclaim + oracle reads sit above
@@ -78,7 +79,7 @@ test('sandbox reclaim settles an orphaned interaction and the next browser messa
   const api = new AstraApi(request);
   const runId = Date.now();
 
-  // Fail fast (with the descriptive oracle error) if the document store is not
+  // Fail fast (with the descriptive oracle error) if the database is not
   // reachable — the durable half of this spec depends on it.
   test.info().annotations.push({ type: 'oracle-db', description: oracleDbPath() });
 
@@ -111,15 +112,13 @@ test('sandbox reclaim settles an orphaned interaction and the next browser messa
     const ready = await api.waitForSessionReady(sessionId);
     const oldSandbox = String(ready.sandbox_id || '').trim();
     expect(oldSandbox, 'fresh conversation should hold a sandbox').not.toEqual('');
-    // No pixel: the console renders no agent-runtime surface on the session screen.
-    expect(
-      String((ready.agent_runtime as { state?: string } | undefined)?.state || ''),
-      'agent is ACTIVE while its conversation is live',
-    ).toBe('ACTIVE');
+    // No pixel: the console renders no Agent runtime on the session screen.
+    const liveAgent = await api.getAgent(agentId);
+    expect(String(liveAgent.state || ''), 'agent is ACTIVE while its conversation is live').toBe('ACTIVE');
     // Conversation tenancy: an ACTIVE Agent owns no sandbox; the conversation
     // holds the physical box that the reclaim below must destroy.
     expect(
-      (ready.agent_runtime as { sandbox_id?: string | null } | undefined)?.sandbox_id ?? null,
+      liveAgent.sandbox_id ?? null,
       'per-session model: the ACTIVE agent holds no sandbox of its own',
     ).toBeFalsy();
 
@@ -165,11 +164,11 @@ test('sandbox reclaim settles an orphaned interaction and the next browser messa
       probeMs: PAGE_PROBE_BUDGET_MS,
     });
 
-    // ── The pending interaction (API projection): a tool permission bound to a
-    //    turn, exposing the real tool_call_id. ─────────────────────────────────────
+    // ── The pending interaction (API projection): a tool permission bound to the
+    //    response it pauses, exposing the real tool_call_id. ──────────────────────
     expect(interaction.presentation, 'pending interaction should be a tool approval').toBe('tool_approval');
-    const turnId = String(interaction.turn_id || '').trim();
-    expect(turnId, 'pending interaction should bind to a turn').not.toEqual('');
+    const responseId = String(interaction.response_id || '').trim();
+    expect(responseId, 'pending interaction should bind to the response it pauses').not.toEqual('');
     const toolCallId = String(interaction.tool_call_id || '').trim();
     expect(toolCallId, 'pending interaction should expose the real tool_call_id').not.toEqual('');
     const interactionId = String(interaction.interaction_id || '').trim();
@@ -194,23 +193,23 @@ test('sandbox reclaim settles an orphaned interaction and the next browser messa
       'the card should offer the affirmative button — the approval is answerable',
     ).toBeEnabled({ timeout: PANEL_RENDER_MS });
 
-    // ── Precondition: the turn's durable snapshot records WAITING_FOR_INTERACTION
-    //    pointing at THIS interaction — this is the durable "waiting for approval"
-    //    the reclaim must settle. Awaited, not sampled: the interaction
-    //    becomes readable over HTTP as soon as the kernel registers it, while the
-    //    snapshot naming the parked turn is a separate durable write — and because
-    //    the page owns the send, no completed POST absorbs that interval, so a
-    //    single sample would race the two writes rather than test anything this
-    //    spec is about. ─────────────────────────────────────────────────────────
-    const pausedBefore = await waitForTurnSnapshot(sessionId, turnId);
-    expect(
-      String(pausedBefore.conversation_state || ''),
-      'the paused turn records WAITING_FOR_INTERACTION',
-    ).toBe('WAITING_FOR_INTERACTION');
-    expect(
-      String(pausedBefore.active_interaction_id || ''),
-      'the paused turn points at the pending interaction',
-    ).toBe(interactionId);
+    // ── Precondition: the platform's records hold the response paused on THIS
+    //    interaction — the durable "waiting for approval" the reclaim must
+    //    settle. Awaited, not sampled: the interaction and the response's waiting
+    //    status are committed by the session's reader together, but the page owns
+    //    the send, so nothing has absorbed the moment between the API showing the
+    //    interaction and this read. ───────────────────────────────────────────────
+    await expect.poll(() => {
+      const response = sessionResponseRows(sessionId).find((row) => row.response_id === responseId);
+      const recorded = sessionInteractionRows(sessionId).find((row) => row.interaction_id === interactionId);
+      return {
+        response: response?.status ?? null,
+        interaction: recorded ? { status: recorded.status, response_id: recorded.response_id } : null,
+      };
+    }, {
+      timeout: PANEL_RENDER_MS,
+      message: 'the paused response must be recorded waiting on the pending interaction',
+    }).toEqual({ response: 'waiting', interaction: { status: 'open', response_id: responseId } });
 
     // ── Reclaim through the product lifecycle. This command owns settlement
     //    because the in-box approval slot disappears with the sandbox; retaining
@@ -226,12 +225,13 @@ test('sandbox reclaim settles an orphaned interaction and the next browser messa
     test.info().annotations.push({ type: 'e2e_reclaimed_sandbox_id', description: oldSandbox });
 
     // ── Durable close: READY without compute is the wakeable defer boundary;
-    //    the original turn is FAILED and no active interaction remains.
+    //    the paused response ended failed with its box and no interaction waits.
     const reclaimed = await api.waitForSession(sessionId, (session) => (
       session.state === 'READY'
       && !session.sandbox_id
       && !session.pending_interaction
-      && String(session.last_turn_status || '') === 'FAILED'
+      && session.last_response?.response_id === responseId
+      && session.last_response?.outcome === 'failed'
     ), 60_000);
     expect(
       reclaimed.runtime_unavailable,
@@ -239,31 +239,31 @@ test('sandbox reclaim settles an orphaned interaction and the next browser messa
     ).toBe(true);
 
     await expect.poll(() => {
-      const snapshot = snapshotDoc(sessionId);
+      const response = sessionResponseRows(sessionId).find((row) => row.response_id === responseId);
+      const recorded = sessionInteractionRows(sessionId).find((row) => row.interaction_id === interactionId);
       return {
-        lastTurnId: String(snapshot?.last_turn_id || ''),
-        lastTurnStatus: String(snapshot?.last_turn_status || ''),
-        activeInteractionId: String(snapshot?.active_interaction_id || ''),
+        response: response
+          ? { status: response.status, outcome: response.outcome, native_reason: response.native_reason }
+          : null,
+        interaction: recorded?.status ?? null,
       };
     }, {
       timeout: 30_000,
-      message: 'reclaim must durably settle the parked turn and deactivate its interaction',
+      message: 'reclaim must durably end the paused response with its box and withdraw its interaction',
     }).toEqual({
-      lastTurnId: turnId,
-      lastTurnStatus: 'FAILED',
-      activeInteractionId: '',
+      response: { status: 'ended', outcome: 'failed', native_reason: 'sandbox_lost' },
+      interaction: 'withdrawn',
     });
 
-    const orphaned = await request.fetch(apiPath(`/sessions/${sessionId}/interaction-respond`), {
-      method: 'POST',
-      data: { interaction_id: interactionId, answer: { decision: 'approve' } },
-      timeout: 30_000,
-    });
+    const orphaned = await request.fetch(
+      apiPath(`/sessions/${sessionId}/interactions/${encodeURIComponent(interactionId)}/answer`),
+      { method: 'POST', data: { answer: { decision: 'approve' } }, timeout: 30_000 },
+    );
     const orphanedBody = await orphaned.text();
     expect(
-      [400, 409],
+      { status: orphaned.status(), code: String((JSON.parse(orphanedBody) as { code?: unknown }).code || '') },
       `an orphaned interaction answer must be refused; body=${orphanedBody.slice(0, 300)}`,
-    ).toContain(orphaned.status());
+    ).toEqual({ status: 409, code: 'INTERACTION_NOT_OPEN' });
 
     await page.reload({ waitUntil: 'domcontentloaded' });
     await expect(page.getByTestId('run-view')).toBeVisible({ timeout: PANEL_RENDER_MS });
@@ -281,7 +281,14 @@ test('sandbox reclaim settles an orphaned interaction and the next browser messa
     const followupMarker = `E2E_POST_RECLAIM_${runId}`;
     const assistantsBefore = await page.getByTestId('assistant-message').count();
     await composer.fill(`${followupMarker}: do not use tools; reply briefly.`);
+    const inputPath = apiPath(`/sessions/${sessionId}/inputs`);
+    const accepted = page.waitForResponse((response) => (
+      response.request().method() === 'POST' && new URL(response.url()).pathname === inputPath
+    ), { timeout: 30_000 });
     await page.getByTestId('composer-submit').click();
+    const acceptedResponse = await accepted;
+    expect(acceptedResponse.status(), 'the post-reclaim input must be accepted').toBe(200);
+    const followup = ((await acceptedResponse.json()) as { data: InputReceipt }).data;
     await expect(
       page.getByTestId('user-message').filter({ hasText: followupMarker }),
       'the one post-reclaim input must reach the transcript',
@@ -298,9 +305,15 @@ test('sandbox reclaim settles an orphaned interaction and the next browser messa
       session.state === 'READY'
       && Boolean(String(session.sandbox_id || '').trim())
       && String(session.sandbox_id || '').trim() !== oldSandbox
-      && String(session.last_turn_status || '') === 'COMPLETED'
+      && session.last_response?.outcome === 'completed'
       && !session.pending_interaction
     ), TIME_TO_GATE_MS);
+    expect(
+      sessionResponseRows(sessionId)
+        .filter((row) => row.input_ids.includes(followup.input_id))
+        .map((row) => ({ status: row.status, outcome: row.outcome })),
+      'the post-reclaim input is answered by exactly one completed response',
+    ).toEqual([{ status: 'ended', outcome: 'completed' }]);
     expect(
       String(rebuilt.sandbox_id || ''),
       'the next input must borrow fresh compute',
@@ -313,7 +326,7 @@ test('sandbox reclaim settles an orphaned interaction and the next browser messa
     // The agent record stays active while only its conversation replaces compute.
     // A session-level reclaim never terminates the owning agent.
     expect(
-      String((rebuilt.agent_runtime as { state?: string } | undefined)?.state || ''),
+      String((await api.getAgent(agentId)).state || ''),
       'the agent remains ACTIVE while its conversation replaces compute',
     ).toBe('ACTIVE');
     test.info().annotations.push({

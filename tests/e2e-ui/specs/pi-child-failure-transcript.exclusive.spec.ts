@@ -2,7 +2,8 @@
 import { randomUUID } from 'node:crypto';
 import { expect, test, type Request } from '@playwright/test';
 
-import { AstraApi, messageText, type ChildRunMessagePage } from '../fixtures/astraApi';
+import { AstraApi, answersInput, messageText, type ChildRunMessagePage, type MessageRecord } from '../fixtures/astraApi';
+import { sessionInputRows } from '../fixtures/dbOracle';
 import { engineProfiles } from '../fixtures/engineProfile';
 import { apiPath } from '../fixtures/env';
 import { nativeRows, type ChildGate } from '../fixtures/nativeChildLifecycle';
@@ -15,7 +16,7 @@ import { PlatformApi } from '../fixtures/platformApi';
 import { requireSandboxHandle } from '../fixtures/sandboxOps';
 import { trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
-import { aiStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
+import { sessionStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
 
 const sessions = trackSessions();
 let sessionId = '';
@@ -25,7 +26,7 @@ test.afterEach(async ({ request, page }, info) => {
   if (!sessionId || !['failed', 'timedOut', 'interrupted'].includes(String(info.status))) return;
   const api = new AstraApi(request);
   const reads = await Promise.allSettled([
-    api.getSession(sessionId), api.getMessages(sessionId, 100), aiStreamBodies(page),
+    api.getSession(sessionId), api.getMessages(sessionId, 100), sessionStreamBodies(page),
     Promise.resolve().then(() => nativeRows(sessionId)),
   ]);
   await info.attach('pi-child-failure-scene', {
@@ -36,6 +37,22 @@ test.afterEach(async ({ request, page }, info) => {
 function childText(transcript: ChildRunMessagePage, role: string): string {
   return transcript.messages.filter((message) => message.role === role)
     .map((message) => nativeText(message.content)).join('\n');
+}
+
+/** The one recorded input that carried `content`. */
+function recordedInput(content: string): string {
+  const rows = sessionInputRows(sessionId).filter((row) => row.content === content);
+  expect(rows, 'the message is one recorded input').toHaveLength(1);
+  return rows[0]!.input_id;
+}
+
+/**
+ * The parent's reply to a child that settled after the launch reply ended: a
+ * response Pi started on its own, for no input.
+ */
+function expectAutomaticReply(message: MessageRecord): void {
+  expect(message.metadata?.origin, 'Pi started the reply to the child settlement on its own').toBe('engine');
+  expect(message.metadata?.input_ids ?? [], 'a reply Pi started on its own answers no input').toEqual([]);
 }
 
 test('Pi retains a failed direct child transcript and continues its parent after reload', async ({ page, request }) => {
@@ -154,11 +171,12 @@ test('Pi retains a failed direct child transcript and continues its parent after
   const parentMessage = (await api.getMessages(sessionId, 100)).messages
     .find((message) => message.role === 'assistant' && messageText(message).includes(parentFinal.text));
   expect(parentMessage).toBeDefined();
-  const parentRow = page.locator(`[data-message-id="${parentMessage!.message_id}"]`).getByTestId('assistant-text');
+  const parentRow = page.locator(`[data-message-id="${parentMessage!.id}"]`).getByTestId('assistant-text');
   await expect(parentRow, 'the actual automatically awakened parent reply is visible').toBeVisible();
   await expect(parentRow).not.toHaveText('');
   const parentVisible = await parentRow.innerText();
-  await api.waitForSession(sessionId, (session) => session.state === 'READY' && !session.current_turn_id, 20_000);
+  await api.waitForSession(sessionId, (session) => session.state === 'READY'
+    && !(session.current_responses ?? []).length, 20_000);
 
   const followup = `For project ${marker}, explain in one short sentence why a database helps retain conversation history. Do not use tools.`;
   await sendPrompt(page, sessionId, followup);
@@ -179,13 +197,16 @@ test('Pi retains a failed direct child transcript and continues its parent after
   const nextMessage = (await api.getMessages(sessionId, 100)).messages
     .find((message) => message.role === 'assistant' && messageText(message).includes(nextFinal.text));
   expect(nextMessage).toBeDefined();
-  const nextRow = page.locator(`[data-message-id="${nextMessage!.message_id}"]`).getByTestId('assistant-text');
+  expect(answersInput(nextMessage!, recordedInput(followup)), 'the next input is answered by its own response').toBe(true);
+  const nextRow = page.locator(`[data-message-id="${nextMessage!.id}"]`).getByTestId('assistant-text');
   await expect(nextRow).toBeVisible();
   await expect(nextRow).not.toHaveText('');
   const nextVisible = await nextRow.innerText();
   const settled = await api.waitForSession(sessionId, (session) => session.state === 'READY'
-    && session.last_turn_status === 'COMPLETED' && !session.current_turn_id, 20_000);
-  expect(settled.background_task_state).toBeFalsy();
+    && !(session.current_responses ?? []).length && session.last_response?.response_id === nextMessage!.id
+    && session.last_response.outcome === 'completed', 20_000);
+  expect((await api.listChildRuns(sessionId)).child_runs.filter((child) => child.active),
+    'no child still works once the conversation settles').toEqual([]);
   await rows.click();
   await expect(column).toContainText(receipt);
   const visible = await column.innerText();
@@ -339,7 +360,10 @@ test('Pi survives a real child inspection artifact error and retains subsequent 
   const parentFinal = finalReplies(nativeEntries(sessionId, launch.rootSubpath), notice.seq)[0]!;
   await expect.poll(async () => (await api.getMessages(sessionId, 100)).messages
     .filter((message) => message.role === 'assistant').map(messageText).join('\n')).toContain(parentFinal.text);
-  await api.waitForSession(sessionId, (session) => session.state === 'READY' && !session.current_turn_id, 20_000);
+  expectAutomaticReply((await api.getMessages(sessionId, 100)).messages
+    .find((message) => message.role === 'assistant' && messageText(message).includes(parentFinal.text))!);
+  await api.waitForSession(sessionId, (session) => session.state === 'READY'
+    && !(session.current_responses ?? []).length, 20_000);
   const followup = `For ${marker}, explain in one short sentence why keeping a conversation history is useful. Do not use tools.`;
   await sendPrompt(page, sessionId, followup);
   await expect.poll(() => nativeEntries(sessionId, launch.rootSubpath).find(({ entry }) => {
@@ -354,9 +378,14 @@ test('Pi survives a real child inspection artifact error and retains subsequent 
   const nextFinal = finalReplies(nativeEntries(sessionId, launch.rootSubpath), input.seq)[0]!;
   await expect.poll(async () => (await api.getMessages(sessionId, 100)).messages
     .filter((message) => message.role === 'assistant').map(messageText).join('\n')).toContain(nextFinal.text);
+  const nextMessage = (await api.getMessages(sessionId, 100)).messages
+    .find((message) => message.role === 'assistant' && messageText(message).includes(nextFinal.text))!;
+  expect(answersInput(nextMessage, recordedInput(followup)), 'the next input is answered by its own response').toBe(true);
   const settled = await api.waitForSession(sessionId, (session) => session.state === 'READY'
-    && session.last_turn_status === 'COMPLETED' && !session.current_turn_id, 20_000);
-  expect(settled.background_task_state).toBeFalsy();
+    && !(session.current_responses ?? []).length && session.last_response?.response_id === nextMessage.id
+    && session.last_response.outcome === 'completed', 20_000);
+  expect((await api.listChildRuns(sessionId)).child_runs.filter((child) => child.active),
+    'no child still works once the conversation settles').toEqual([]);
   observations.push({ transcript, children, parentFinal, nextFinal, finalStatus, settled });
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(page.getByTestId('run-view')).toBeVisible();

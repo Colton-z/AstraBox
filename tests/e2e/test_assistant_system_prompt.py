@@ -31,13 +31,17 @@ import httpx
 import pytest
 
 from tests.e2e._sandbox_helpers import (
-    StreamResult,
+    Reply,
+    SessionStream,
     data,
+    follow_reply,
     get_session,
+    output_position,
     poll_until_ready,
     release_assistant,
     release_session,
-    stream_turn,
+    send_and_follow,
+    send_input,
     wait_until_settled,
 )
 
@@ -99,9 +103,11 @@ def _ask_name(
     """Open a new conversation, ask the name, and return the answer."""
 
     session_id = _open_conversation(e2e_client, assistant_id, image)
-    answer = stream_turn(e2e_client, session_id, content=_NAME_QUESTION)
-    assert answer.error is None, f"the turn errored: {answer.error}"
-    assert answer.text.strip(), "the turn streamed no reply"
+    answer = send_and_follow(e2e_client, session_id, _NAME_QUESTION, until="end")
+    assert answer.error is None and answer.finish_reason == "stop", (
+        f"the answer did not end normally: {answer.response}"
+    )
+    assert answer.text.strip(), "the answer streamed no text"
     wait_until_settled(e2e_client, session_id)
     return answer.text
 
@@ -207,28 +213,40 @@ def test_editing_the_assistant_never_ends_a_reply_in_progress(
     _wake(e2e_client, assistant_id, deadline=live_test_deadline)
     conversation_a = _open_conversation(e2e_client, assistant_id, image)
 
-    reply: dict[str, StreamResult] = {}
+    reply: dict[str, Reply] = {}
+    failures: list[BaseException] = []
 
     def _write_long_reply() -> None:
         # Its own client: httpx does not share one connection pool across a
         # stream and the requests made beside it on another thread.
-        with httpx.Client(
-            base_url=e2e_client.base_url, headers=e2e_client.headers, timeout=30.0
-        ) as client:
-            reply["a"] = stream_turn(
-                client,
-                conversation_a,
-                content=(
+        try:
+            with httpx.Client(
+                base_url=e2e_client.base_url, headers=e2e_client.headers, timeout=30.0
+            ) as client:
+                stream = SessionStream(conversation_a, cursor=output_position(client, conversation_a))
+                receipt = send_input(
+                    client,
+                    conversation_a,
                     "Write an essay of about 2000 words on the history of "
-                    "lighthouses, in plain prose with no headings. Do not use any tool."
-                ),
-            )
+                    "lighthouses, in plain prose with no headings. Do not use any tool.",
+                )
+                reply["a"] = Reply(
+                    session_id=conversation_a,
+                    input_id=str(receipt["input_id"]),
+                    client_message_id=str(receipt["client_message_id"]),
+                    stream=stream,
+                )
+                follow_reply(client, reply["a"], until="end")
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the test's thread
+            failures.append(exc)
 
     writer = threading.Thread(target=_write_long_reply)
     writer.start()
-    while str(get_session(e2e_client, conversation_a).get("state") or "") != "PROCESSING":
-        assert writer.is_alive(), f"A's reply ended before it was seen running: {reply}"
-        assert time.monotonic() < live_test_deadline, "A's turn never started running"
+    # A's reply is in progress once the runtime has started the response that
+    # answers it; an accepted message the runtime has not taken yet is not one.
+    while not get_session(e2e_client, conversation_a).get("current_responses"):
+        assert writer.is_alive(), f"A's reply ended before it was seen running: {failures or reply}"
+        assert time.monotonic() < live_test_deadline, "A's reply never started"
         time.sleep(0.5)
 
     data(
@@ -237,21 +255,31 @@ def test_editing_the_assistant_never_ends_a_reply_in_progress(
         )
     )
     conversation_b = _open_conversation(e2e_client, assistant_id, image)
-    b_ready_while_a_replies = writer.is_alive()
+    a_running_when_b_ready = [
+        response["response_id"]
+        for response in get_session(e2e_client, conversation_a)["current_responses"]
+    ]
 
     writer.join(max(1.0, live_test_deadline - time.monotonic()))
     assert not writer.is_alive(), "A's reply did not finish within the test budget"
+    if failures:
+        raise failures[0]
     a = reply["a"]
     assert a.error is None and a.finish_reason == "stop", (
         f"A's reply did not run to its normal end after the edit: finish="
-        f"{a.finish_reason!r} error={a.error!r} after {len(a.text)} characters"
+        f"{a.finish_reason!r} error={a.error!r} outcome={a.outcome!r} after {len(a.text)} characters"
     )
-    assert b_ready_while_a_replies, (
+    assert a.response_id in a_running_when_b_ready, (
         "B only became ready after A's reply ended: the edit waited for, or "
-        "restarted, the program serving A"
+        f"restarted, the program serving A (A's responses then: {a_running_when_b_ready})"
     )
-    answer = stream_turn(e2e_client, conversation_b, content=_NAME_QUESTION)
-    assert answer.error is None, f"B's turn errored: {answer.error}"
+    settled_a = wait_until_settled(e2e_client, conversation_a)
+    assert settled_a["last_response"]["response_id"] == a.response_id, settled_a
+    assert settled_a["last_response"]["outcome"] == "completed", settled_a
+    answer = send_and_follow(e2e_client, conversation_b, _NAME_QUESTION, until="end")
+    assert answer.error is None and answer.finish_reason == "stop", (
+        f"B's answer did not end normally: {answer.response}"
+    )
     assert after.lower() in answer.text.lower(), (
         f"B did not answer as the edited identity ({after}): {answer.text[:200]!r}"
     )

@@ -4,8 +4,8 @@ import { expect, test, type APIRequestContext } from '@playwright/test';
 
 import { AstraApi, messageText } from '../fixtures/astraApi';
 import { channelCallback } from '../fixtures/channelCallback';
-import { documentsByField } from '../fixtures/dbOracle';
 import { apiPath, appPath } from '../fixtures/env';
+import { sessionRow } from '../fixtures/ingressRecords';
 import { deployedApiClient, issueToken, json, requiredEnvironment } from '../fixtures/oidcMachine';
 import { PlatformApi } from '../fixtures/platformApi';
 import { requireServiceContainer, SERVER_CONTAINER_HANDLE } from '../fixtures/serviceContainer';
@@ -102,7 +102,7 @@ test('changing a channel execution account isolates history and switching back r
     expect(first.status).toBe('accepted');
     sessions.push(first.session_id);
     await delivered(1, secret);
-    expect(documentsByField('sessions', '$.session_id', first.session_id)[0]?.user_id).toBe(executor.user_id);
+    expect(sessionRow(first.session_id)?.user_id).toBe(executor.user_id);
     expect((await machine.get(apiPath(`/sessions/${first.session_id}`))).status()).toBe(200);
 
     await platform.updateDeployment(agentId, deploymentId, { execution_mode: 'owner' });
@@ -116,7 +116,7 @@ test('changing a channel execution account isolates history and switching back r
     expect(original.session_id).not.toBe(first.session_id);
     sessions.push(original.session_id);
     await delivered(2, defaultMarker);
-    expect(documentsByField('sessions', '$.session_id', original.session_id)[0]?.user_id).toBe(admin.user_id);
+    expect(sessionRow(original.session_id)?.user_id).toBe(admin.user_id);
     expect([403, 404]).toContain((await machine.get(apiPath(`/sessions/${original.session_id}`))).status());
 
     await platform.updateDeployment(agentId, deploymentId, {

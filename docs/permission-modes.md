@@ -29,8 +29,8 @@ sandbox's isolation settings.
 ## Configure a mode for a Session
 
 Open the Agent, start or resume a conversation, and choose a permission mode
-below the message box. You can change it while the Agent is idle; the next
-turn uses the new mode without editing the Agent or creating another
+below the message box. You can change it while the Agent is idle; your next
+message runs under the new mode without editing the Agent or creating another
 conversation.
 
 If the selected Agent program exposes an additional approval setting, configure
@@ -42,10 +42,10 @@ that setting distinct from the conversation's permission mode.
 When the Agent needs approval before an action:
 
 1. The Agent emits an approval request.
-2. The current turn pauses and waits for human input.
+2. The Agent's response pauses and waits for human input.
 3. The web console shows the action, its arguments, and the available choices.
 4. The user approves or rejects the action.
-5. The Agent continues the same turn with that decision.
+5. The Agent continues the same response with that decision.
 
 Closing the browser does not approve or reject an action. Reopen the same
 conversation to continue while the request is still pending.
@@ -56,25 +56,40 @@ The web console handles approval requests directly. An API client can answer
 the same request with:
 
 ```text
-POST /api/v1/sessions/{session_id}/interaction-respond
+POST /api/v1/sessions/{session_id}/interactions/{interaction_id}/answer
 ```
 
-Request body to approve:
+Use the `interaction_id` of the pending request.
+`GET /api/v1/sessions/{session_id}` returns the request in
+`pending_interaction`, and the Session stream carries it in a
+`data-interaction` part.
+
+The request's `presentation` decides the shape of `answer`:
+
+| `presentation` | `answer` |
+|---|---|
+| `tool_approval` | `{"decision": "approve"}` or `{"decision": "reject"}` |
+| `decision` | `{"decision": "<id>"}`, where `<id>` is the `id` of one of the request's `options` |
+| `form` | `{"answers": [...]}` with one entry for each of the request's `questions`, or `{"decline": true}` |
+
+Each `answers` entry names its `question_id` and carries `option_label`,
+`option_labels` for a multi-select question, or `free_text` where the question
+allows it.
+
+Request body to approve a `tool_approval` request:
 
 ```json
 {
-  "interaction_id": "INTERACTION_ID",
   "answer": {
     "decision": "approve"
   }
 }
 ```
 
-Or to reject:
+Or to reject it:
 
 ```json
 {
-  "interaction_id": "INTERACTION_ID",
   "answer": {
     "decision": "reject",
     "comment": "This operation is outside the scope of the current task."
@@ -83,29 +98,28 @@ Or to reject:
 ```
 
 When you reject, include a `comment` when the Agent can use it to adjust its
-plan and try again. Always answer the exact `interaction_id` returned with the
-request.
+plan and try again.
 
 ## FAQ
 
-**Q: Can one turn require multiple responses?**
+**Q: Can one response require multiple answers?**
 
 A: Yes, but AstraBox exposes one active interaction at a time. After it is
-resolved, the Agent program can request another response in the same turn.
+resolved, the Agent program can request another answer in the same response.
 
 **Q: Do pending actions time out?**
 
 A: The browser does not set the timeout. The Agent program may end its own
-wait, and a lost runtime also ends the request. If that happens, the old
-approval can no longer be submitted; send the next message to continue the
-conversation.
+wait, and a lost runtime also ends the request. If that happens, answering the
+old request returns `409 INTERACTION_NOT_OPEN`; send the next message to
+continue the conversation.
 
 **Q: Can a client-side custom tool use a permission mode?**
 
 A: AstraBox does not define a platform client-side custom-tool interface. If the
 selected Agent program needs client input, AstraBox carries its engine-native
-interaction and returns the answer through `interaction-respond`; the program
-defines how that answer affects its tool execution.
+interaction and returns the answer through the interaction's `answer` endpoint;
+the program defines how that answer affects its tool execution.
 
 ## Next steps
 

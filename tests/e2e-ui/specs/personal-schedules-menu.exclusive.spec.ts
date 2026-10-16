@@ -3,9 +3,10 @@ import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { expect, test, type APIRequestContext, type BrowserContext, type Page, type Response } from '@playwright/test';
 
-import { AstraApi, messageText } from '../fixtures/astraApi';
-import { documentsByField } from '../fixtures/dbOracle';
+import { AstraApi, answersInput, messageText } from '../fixtures/astraApi';
+import { postgresRows, sqlLiteral } from '../fixtures/dbOracle';
 import { apiPath, appPath, appPrefix } from '../fixtures/env';
+import { deploymentRow, sessionRow } from '../fixtures/ingressRecords';
 import { deployedApiClient, issueToken, json, requiredEnvironment } from '../fixtures/oidcMachine';
 import type { DeploymentRunRecord } from '../fixtures/platformApi';
 import { assistantTranscript } from '../fixtures/renderedTranscript';
@@ -94,9 +95,11 @@ test('an owner edits, runs, replays and deletes a personal schedule from the acc
       display_name: 'Assistant', timezone: 'UTC',
     })).assistant_id;
     createdAssistant = !priorAssistants.some((row) => row.assistant_id === assistantId);
-    const assistant = documentsByField('assistant_catalog', '$.assistant_id', assistantId)[0];
-    expect(assistant.owner_id).toBe(ownerId);
-    ownerOrg = String(assistant.org_id || '');
+    const [assistant] = postgresRows<{ owner_id: string; org_id: string | null }>(
+      `SELECT owner_id, org_id FROM assistants WHERE assistant_id = ${sqlLiteral(assistantId)}`,
+    );
+    expect(assistant?.owner_id).toBe(ownerId);
+    ownerOrg = String(assistant?.org_id || '');
     expect(ownerOrg).not.toBe('');
   } finally {
     await issuer.dispose();
@@ -122,7 +125,7 @@ test('an owner edits, runs, replays and deletes a personal schedule from the acc
     schedule: { cron: '0 0 1 1 *', timezone: 'UTC' },
   });
   deploymentId = plan.deployment_id;
-  const stored = () => documentsByField('deployments', '$.deployment_id', deploymentId)[0];
+  const stored = () => deploymentRow(deploymentId);
   expect(stored()).toMatchObject({ owner_user_id: ownerId, owner_org_id: ownerOrg,
     source_assistant_id: assistantId, agent_id: agentId });
 
@@ -152,7 +155,7 @@ test('an owner edits, runs, replays and deletes a personal schedule from the acc
   await form.getByLabel('Timezone', { exact: true }).fill('Asia/Shanghai');
   await form.getByRole('button', { name: 'Save', exact: true }).click();
   await expect.poll(stored).toMatchObject({ name, prompt_prefix: prompt,
-    schedule: { cron: '0 0 2 1 *', timezone: 'Asia/Shanghai' } });
+    schedule_cron: '0 0 2 1 *', schedule_timezone: 'Asia/Shanghai' });
   await page.reload();
   await openSchedules(page);
   await page.getByTestId('personal-schedules').getByRole('button', { name, exact: true }).click();
@@ -180,11 +183,13 @@ test('an owner edits, runs, replays and deletes a personal schedule from the acc
         .find((run) => run.run_id === runId);
       expect(['FAILED', 'CANCELLED']).not.toContain(found?.status);
       if (found?.session_id && !sessions.includes(found.session_id)) sessions.push(found.session_id);
-      if (found?.status !== 'COMPLETED' || !found.session_id) return false;
-      const session = await api.getSession(found.session_id);
-      return session.last_turn_id === found.turn_id && session.last_turn_status === 'COMPLETED';
+      if (found?.status !== 'COMPLETED' || !found.session_id || !found.input_id) return false;
+      // The Run's status is read from the response to its input; the conversation shows that response ended.
+      const reply = (await api.getMessages(found.session_id, 20)).messages
+        .find((message) => answersInput(message, String(found!.input_id)));
+      return reply?.metadata?.status === 'ended' && reply.metadata.outcome === 'completed';
     }, { timeout: remaining(), intervals: [500, 1000] }).toBe(true);
-    const session = documentsByField('sessions', '$.session_id', String(found!.session_id))[0];
+    const session = sessionRow(String(found!.session_id));
     expect(session).toMatchObject({ user_id: ownerId, agent_id: agentId });
     const messages = await api.getMessages(String(found!.session_id), 20);
     expect(messages.messages.filter((row) => row.role === 'user').map(messageText)).toEqual([prompt]);

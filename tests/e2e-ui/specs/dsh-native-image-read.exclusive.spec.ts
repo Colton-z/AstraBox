@@ -3,9 +3,9 @@ import { execFileSync } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 
-import { AstraApi, messageText } from '../fixtures/astraApi';
+import { AstraApi, messageText, messageToolCalls, type MessageRecord } from '../fixtures/astraApi';
 import { revealAssistantProcess } from '../fixtures/assistantProcess';
-import { framesForTurn } from '../fixtures/dbOracle';
+import { sessionInputRows, sessionOutputRows, sessionResponseRows } from '../fixtures/dbOracle';
 import { events } from '../fixtures/dshOutput';
 import { engineProfileFor } from '../fixtures/engineProfile';
 import { apiPath } from '../fixtures/env';
@@ -60,6 +60,21 @@ function attachmentCustody(handle: SandboxHandle, home: string, attachment: Reco
     + '  snapshotId: snapshot.snapshot_id, sha256: snapshot.sha256, actualSha256: sha(payload),\n'
     + '  size: snapshot.size, actualSize: payload.length, records: records.length,\n'
     + "  image: image ? { ref: image.ref, sha256: sha(Buffer.from(image.data, 'base64')) } : null, foreign }));\nJS"));
+}
+
+/**
+ * The reply to the page's message once it ended, failing with the response's
+ * recorded error when it did not complete.
+ */
+async function completedReplyToPage(
+  api: AstraApi, sessionId: string, clientMessageId: string, label: string,
+): Promise<MessageRecord> {
+  const inputs = sessionInputRows(sessionId).filter((row) => row.client_message_id === clientMessageId);
+  expect(inputs, 'the page message is one accepted input').toHaveLength(1);
+  await api.waitForSessionReady(sessionId);
+  const reply = await api.waitForReplyTo(sessionId, inputs[0]!.input_id);
+  expect(reply.metadata?.outcome, `${label}: ${JSON.stringify(reply.metadata?.error ?? null)}`).toBe('completed');
+  return reply;
 }
 
 function noWorkspaceVolume(handle: SandboxHandle): void {
@@ -126,16 +141,15 @@ test(`DSH reads uploaded image pixels through ${route.title} and restores the im
   });
   expect(upload.ok(), `image upload: ${upload.status()} ${await upload.text()}`).toBe(true);
   await test.info().attach('source-image', { body: Buffer.from(png, 'base64'), contentType: 'image/png' });
-  await sendPrompt(page, sessionId,
+  const delivery = await sendPrompt(page, sessionId,
     `Use read_image exactly once with file_path=${JSON.stringify(filePath)}. `
     + 'Read the code shown in the image and answer with that code. Do not use any other tools or delegate.');
-  await api.waitForSession(sessionId, (session) => {
-    expect(session.last_turn_status, 'the image turn must not fail').not.toBe('FAILED');
-    return session.last_turn_status === 'COMPLETED' && session.state === 'READY' && !session.current_turn_id;
-  });
+  const clientMessageId = String(delivery.request().postDataJSON().client_message_id || '');
+  expect(clientMessageId).not.toBe('');
+  const answer = await completedReplyToPage(api, sessionId, clientMessageId, 'the image reply must not fail');
+  expect(messageText(answer), 'the real model must read the code that exists only in the PNG pixels')
+    .toContain(marker);
   const messages = (await api.getMessages(sessionId)).messages;
-  const answer = messages.find((message) => message.role === 'assistant' && messageText(message).includes(marker));
-  expect(answer, 'the real model must read the code that exists only in the PNG pixels').toBeTruthy();
 
   const native = () => nativeRows(sessionId).flatMap((row) => events(JSON.parse(String(row.entry_json))));
   await expect.poll(() => native().filter((event) => event.type === 'turn/end')).toHaveLength(1);
@@ -202,23 +216,27 @@ test(`DSH reads uploaded image pixels through ${route.title} and restores the im
     expect(Number(uploads[0]!.expiresAt)).toBeGreaterThan(Number(uploads[0]!.createdAt));
   }
 
-  const frames = framesForTurn(answer!.turn_id).map((row) => row.payload as Record<string, unknown>);
+  const frames = sessionOutputRows(sessionId, answer.id).map((row) => row.part);
   expect(frames.filter((frame) => frame.type === 'tool-output-available')).toEqual([
     expect.objectContaining({ toolCallId: call.data.callId, output: { content: result.content, isError: false } }),
   ]);
-  const retained = messages.find((message) => message.message_id === answer!.message_id)!;
-  const toolResult = (retained.blocks ?? []).find((block) => block.type === 'tool_result');
-  expect(toolResult).toMatchObject({ tool_use_id: call.data.callId, is_error: false, tool_result_state: 'output-available' });
-  expect(String(toolResult!.content)).toContain(String(attachment.attachmentId));
+  expect(frames.filter((frame) => frame.type === 'error')).toEqual([]);
+  const retained = messages.find((message) => message.id === answer.id)!;
+  // History holds the call with the supplier's own result, including the
+  // image block that names the stored attachment.
+  expect(messageToolCalls(retained)).toEqual([expect.objectContaining({
+    toolCallId: call.data.callId, toolName: 'read_image', input: { file_path: filePath },
+    state: 'output-available', output: { content: result.content, isError: false },
+  })]);
 
   for (const reload of [false, true]) {
     if (reload) await page.reload();
-    const reply = page.locator(`[data-message-id="${answer!.message_id}"]`);
+    const reply = page.locator(`[data-message-id="${answer.id}"]`);
     await expect(reply).toContainText(marker);
     await revealAssistantProcess(page, { within: reply });
     const card = reply.locator(`[data-tool-call-id="${String(call.data.callId)}"]`);
     await expect(card).toBeVisible();
-    expect((await api.getMessages(sessionId)).messages.find((message) => message.message_id === answer!.message_id))
+    expect((await api.getMessages(sessionId)).messages.find((message) => message.id === answer.id))
       .toEqual(retained);
   }
 
@@ -244,32 +262,33 @@ test(`DSH reads uploaded image pixels through ${route.title} and restores the im
   });
   expect(recoveredBytes, 'the exact normalized image must be readable through the supplier API before the next input')
     .toEqual({ ...originalBytes, sourceExists: false });
-  expect((await api.getMessages(sessionId)).messages.find((message) => message.message_id === answer!.message_id))
+  expect((await api.getMessages(sessionId)).messages.find((message) => message.id === answer.id))
     .toEqual(retained);
   expect(native().filter((event) => event.type === 'tool/result').map((event) => event.data.message))
     .toEqual(results);
   await openSessionView(page, sessionId);
-  await sendPrompt(page, sessionId,
+  const nextDelivery = await sendPrompt(page, sessionId,
     'Look at the image in the earlier read_image result again and repeat the code visible in its pixels. '
     + 'Use no tools, do not delegate, and do not create or upload any files.');
-  const next = await api.waitForSession(sessionId, (session) => {
-    expect(session.last_turn_status, 'the resumed image conversation must not fail').not.toBe('FAILED');
-    return session.last_turn_id !== answer!.turn_id && session.last_turn_status === 'COMPLETED'
-      && session.state === 'READY' && !session.current_turn_id;
-  });
-  const resumed = (await api.getMessages(sessionId)).messages
-    .find((message) => message.role === 'assistant' && message.turn_id === next.last_turn_id);
-  expect(resumed && messageText(resumed)).toContain(marker);
+  const nextClientMessageId = String(nextDelivery.request().postDataJSON().client_message_id || '');
+  expect(nextClientMessageId).not.toBe('');
+  const resumed = await completedReplyToPage(api, sessionId, nextClientMessageId,
+    'the resumed image conversation must not fail');
+  expect(resumed.id).not.toBe(answer.id);
+  expect(messageText(resumed)).toContain(marker);
+  // The replacement box answered on the native history it restored: no
+  // response of this conversation failed with the lost box.
+  expect(sessionResponseRows(sessionId).map((row) => row.outcome)).toEqual(['completed', 'completed']);
   await expect.poll(() => native().filter((event) => event.type === 'turn/end')).toHaveLength(2);
   expect(native().filter((event) => event.type === 'tool/call')).toEqual(calls);
   await page.reload();
-  const firstReply = page.locator(`[data-message-id="${answer!.message_id}"]`);
+  const firstReply = page.locator(`[data-message-id="${answer.id}"]`);
   await expect(firstReply).toContainText(marker);
   await revealAssistantProcess(page, { within: firstReply });
   await expect(firstReply.locator(`[data-tool-call-id="${String(call.data.callId)}"]`)).toBeVisible();
-  await expect(page.locator(`[data-message-id="${resumed!.message_id}"]`)).toContainText(marker);
+  await expect(page.locator(`[data-message-id="${resumed.id}"]`)).toContainText(marker);
   await test.info().attach('native-image-coverage', {
-    body: JSON.stringify({ sessionId, turnId: answer!.turn_id, attachment, uploads }), contentType: 'application/json',
+    body: JSON.stringify({ sessionId, responseId: answer.id, attachment, uploads }), contentType: 'application/json',
   });
 });
 }

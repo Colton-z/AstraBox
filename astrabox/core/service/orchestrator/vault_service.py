@@ -34,23 +34,38 @@ Mirrors the Claude Managed Agents vault semantics on the self-hosted runtime:
 Storage split: metadata in :class:`VaultRepository`; values in the
 :class:`astrabox.seams.secrets.SecretStore` (``local`` encrypted-at-rest by
 default; an enterprise store plugs in at the ``astrabox.providers.secrets``
-entry-point group).
+entry-point group). A change to both is one transaction when the store keeps
+its values in the platform database; see :meth:`VaultService._secret_change`
+for a store that does not.
 """
 
 from __future__ import annotations
 
+import asyncio
 import re
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
+from sqlalchemy.ext.asyncio import AsyncConnection
 
-from astrabox.persistence.repository.vault_repository import VaultRepository
+from astrabox.persistence.repository.vault_repository import (
+    CredentialKeyTaken,
+    CredentialLimitReached,
+    VaultArchived,
+    VaultInUse,
+    VaultNotFound,
+    VaultRepository,
+    new_credential_id,
+)
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
-from astrabox.common.utils.time_utils import parse_iso, utcnow, utcnow_iso
+from astrabox.common.utils.time_utils import parse_iso, utcnow
 from astrabox.common.utils.user_context import UserContext, default_org_id
+from astrabox.providers.secret_store import EncryptedCollectionSecretStore
 from astrabox.seams.egress_credentials import (
     EgressCredential,
     HTTPBasicEgressCredential,
@@ -58,7 +73,7 @@ from astrabox.seams.egress_credentials import (
     MCPOutboundCredential,
     mint_placeholder,
 )
-from astrabox.seams.secrets import secret_store_for_name
+from astrabox.seams.secrets import SecretStore, secret_store_for_name
 
 logger = get_logger(__name__)
 
@@ -83,6 +98,18 @@ _REFRESH_AUTH_METHODS = ("client_secret_basic", "client_secret_post", "none")
 
 #: Seconds of clock skew under which an access token counts as expired.
 _EXPIRY_SKEW_SECONDS = 60
+
+#: Bound on one token-endpoint exchange, connection included.
+_REFRESH_TIMEOUT_S = 30.0
+
+#: How long a refresh claim lasts. It exceeds :data:`_REFRESH_TIMEOUT_S` with
+#: room to record the result, so a claim held by a live refresh never lapses
+#: under it; one held by a crashed replica lapses after this.
+_REFRESH_CLAIM_S = 60.0
+
+#: How often a caller waiting on another replica's refresh re-reads the
+#: credential. The exchange it waits on usually takes well under a second.
+_REFRESH_POLL_S = 0.25
 
 _HTTP_METHOD = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 _HTTP_HEADER_NAME = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
@@ -131,6 +158,57 @@ def normalize_mcp_server_url(url: str) -> str:
     )
 
 
+def _expired(expires_at: str | None) -> bool:
+    """Whether an access token expiring at ``expires_at`` needs refreshing now.
+
+    An unknown expiry never does: the token is used until the upstream refuses it.
+    """
+    if not expires_at:
+        return False
+    return parse_iso(expires_at) <= utcnow() + timedelta(seconds=_EXPIRY_SKEW_SECONDS)
+
+
+@dataclass(frozen=True)
+class _SecretChange:
+    """The secret-store side of one metadata change; built by :meth:`VaultService._secret_change`.
+
+    :meth:`apply` runs inside the metadata change's transaction, after its
+    statements have succeeded. ``put`` holds sealed values when the store keeps
+    its values in the platform database and plain values otherwise.
+    """
+
+    store: SecretStore
+    scope: str
+    put: Mapping[str, str]
+    remove: tuple[str, ...]
+    purge: bool
+
+    async def apply(self, conn: AsyncConnection) -> None:
+        if isinstance(self.store, EncryptedCollectionSecretStore):
+            await self.store.apply(
+                conn, scope=self.scope, put=self.put, remove=self.remove, purge=self.purge
+            )
+            return
+        if self.purge:
+            await self.store.purge_scope(scope=self.scope)
+        for key in self.remove:
+            await self.store.delete(scope=self.scope, key=key)
+        for key, value in self.put.items():
+            await self.store.put(scope=self.scope, key=key, value=value)
+
+    async def discard(self) -> None:
+        """Remove what :meth:`apply` stored for a change whose transaction did not commit.
+
+        Only a store outside the database needs it: there the values were
+        written before the commit failed. Callers use it for new keys only,
+        which held nothing before the change.
+        """
+        if isinstance(self.store, EncryptedCollectionSecretStore):
+            return
+        for key in self.put:
+            await self.store.delete(scope=self.scope, key=key)
+
+
 class VaultService:
     """Vault + credential CRUD, and credential resolution for the proxies."""
 
@@ -145,12 +223,51 @@ class VaultService:
 
     # The store is resolved per use (not captured at construction) so a
     # provider registered after service construction still wins by name.
-    def _store(self):
+    def _store(self) -> SecretStore:
         return secret_store_for_name(self._secret_store_name)
 
     @staticmethod
     def _scope(vault_id: str) -> str:
         return f"vault/{vault_id}"
+
+    @staticmethod
+    def _org_id(user: UserContext) -> str:
+        return getattr(user, "org_id", None) or default_org_id()
+
+    async def _secret_change(
+        self,
+        vault_id: str,
+        *,
+        put: Mapping[str, str] | None = None,
+        remove: Sequence[str] = (),
+        purge: bool = False,
+    ) -> _SecretChange:
+        """The secret-store writes that go with one metadata change of ``vault_id``.
+
+        A store that keeps its values in the platform database writes them on
+        the metadata transaction's connection, so values and metadata commit
+        together or not at all. The values are sealed here, before that
+        transaction opens, because sealing may call a key service.
+
+        A store outside the database cannot join the transaction. Its writes run
+        inside it after the metadata statements have succeeded and before the
+        commit: a change the database refuses (a duplicate key, the credential
+        limit, a Vault still in use) never reaches the store, and a store write
+        that fails rolls the metadata back. Only a commit that fails after the
+        store writes leaves the two apart; a create then discards its values
+        (:meth:`_SecretChange.discard`), and an archive or delete can be repeated.
+        """
+        store = self._store()
+        scope = self._scope(vault_id)
+        values = dict(put or {})
+        if isinstance(store, EncryptedCollectionSecretStore):
+            values = {
+                key: await store.seal(scope=scope, key=key, value=value)
+                for key, value in values.items()
+            }
+        return _SecretChange(
+            store=store, scope=scope, put=values, remove=tuple(remove), purge=purge
+        )
 
     # ── vaults ──────────────────────────────────────────────────────────────
 
@@ -168,7 +285,7 @@ class VaultService:
             raise _invalid("metadata must be an object")
         doc = await self._repo.create_vault(
             {
-                "org_id": getattr(user, "org_id", None) or default_org_id(),
+                "org_id": self._org_id(user),
                 "created_by": user.user_id,
                 "display_name": name,
                 "metadata": dict(metadata or {}),
@@ -177,46 +294,81 @@ class VaultService:
         return self._vault_view(doc)
 
     async def list_vaults(self, user: UserContext) -> list[dict[str, Any]]:
-        docs = await self._repo.list_vaults(
-            org_id=getattr(user, "org_id", None) or default_org_id()
-        )
-        views: list[dict[str, Any]] = []
-        for doc in docs:
-            view = self._vault_view(doc)
-            credentials = await self._repo.list_credentials(
-                str(doc.get("vault_id") or "")
-            )
-            view["credentials"] = [
+        """The organization's newest Vaults, each with its active credentials."""
+        vaults = await self._repo.list_vaults(org_id=self._org_id(user))
+        credentials: dict[str, list[dict[str, Any]]] = {}
+        for credential in await self._repo.list_credentials(
+            [str(vault["vault_id"]) for vault in vaults], active_only=True
+        ):
+            credentials.setdefault(str(credential["vault_id"]), []).append(
                 self._credential_view(credential)
-                for credential in credentials
-                if not credential.get("archived_at")
-            ]
-            views.append(view)
-        return views
+            )
+        return [
+            {**self._vault_view(vault), "credentials": credentials.get(str(vault["vault_id"]), [])}
+            for vault in vaults
+        ]
 
     async def get_vault(self, user: UserContext, vault_id: str) -> dict[str, Any]:
         return self._vault_view(await self._must_access_vault(user, vault_id))
 
-    async def archive_vault(self, user: UserContext, vault_id: str) -> dict[str, Any]:
-        """Purge every secret payload; keep metadata (read-only) for audit."""
-        vault = await self._must_access_vault(user, vault_id)
-        await self._store().purge_scope(scope=self._scope(vault_id))
-        stamp = utcnow_iso()
-        for credential in await self._repo.list_credentials(vault_id):
-            if not credential.get("archived_at"):
-                await self._repo.update_credential(
-                    str(credential["credential_id"]), {"archived_at": stamp}
-                )
-        await self._repo.update_vault(vault_id, {"archived_at": stamp})
-        vault["archived_at"] = stamp
+    async def archive_vault(
+        self,
+        user: UserContext,
+        vault_id: str,
+        *,
+        ensure_unbound: Callable[[], Awaitable[None]],
+    ) -> dict[str, Any]:
+        """Purge every secret payload and archive the Vault and its credentials.
+
+        The metadata stays, read-only, for audit. ``ensure_unbound`` refuses the
+        archive by raising; it runs while the Vault's row is locked, inside the
+        archive's transaction.
+        """
+        target = str(vault_id or "").strip()
+        change = await self._secret_change(target, purge=True)
+        vault = await self._repo.archive_vault(
+            target,
+            org_id=self._org_id(user),
+            ensure_unbound=ensure_unbound,
+            secrets=change.apply,
+        )
+        if vault is None:
+            raise _not_found("vault", vault_id)
         return self._vault_view(vault)
 
-    async def delete_vault(self, user: UserContext, vault_id: str) -> None:
-        """Hard delete: secrets, credentials, and the vault row (no audit trail)."""
-        await self._must_access_vault(user, vault_id)
-        await self._store().purge_scope(scope=self._scope(vault_id))
-        await self._repo.delete_vault_credentials(vault_id)
-        await self._repo.delete_vault(vault_id)
+    async def delete_vault(
+        self,
+        user: UserContext,
+        vault_id: str,
+        *,
+        ensure_unbound: Callable[[], Awaitable[None]],
+    ) -> None:
+        """Hard delete: secrets, credentials, and the Vault row (no audit trail).
+
+        ``ensure_unbound`` runs as in :meth:`archive_vault`. A binding it could
+        not see still blocks the delete through its foreign key, which answers
+        ``VAULT_IN_USE`` without naming the holder.
+        """
+        target = str(vault_id or "").strip()
+        change = await self._secret_change(target, purge=True)
+        try:
+            deleted = await self._repo.delete_vault(
+                target,
+                org_id=self._org_id(user),
+                ensure_unbound=ensure_unbound,
+                secrets=change.apply,
+            )
+        except VaultInUse:
+            raise APIError(
+                code="VAULT_IN_USE",
+                message=(
+                    "Credential Vault is still assigned. Unbind it before deleting the Vault."
+                ),
+                status_code=409,
+                data={"action": "delete", "holders": []},
+            ) from None
+        if not deleted:
+            raise _not_found("vault", vault_id)
 
     # ── credentials ─────────────────────────────────────────────────────────
 
@@ -260,35 +412,46 @@ class VaultService:
                     status_code=400,
                 )
 
-        existing = [
-            c for c in await self._repo.list_credentials(vault_id) if not c.get("archived_at")
-        ]
-        if len(existing) >= MAX_CREDENTIALS_PER_VAULT:
+        meta_auth, secret_values = self._split_auth_payload(auth_type, auth)
+        credential_id = new_credential_id()
+        change = await self._secret_change(
+            vault_id,
+            put={f"{credential_id}/{field}": value for field, value in secret_values.items()},
+        )
+        try:
+            credential = await self._repo.create_credential(
+                {
+                    "credential_id": credential_id,
+                    "vault_id": vault_id,
+                    "display_name": str(display_name or "").strip() or None,
+                    "auth": meta_auth,
+                },
+                max_active=MAX_CREDENTIALS_PER_VAULT,
+                secrets=change.apply,
+            )
+        except VaultNotFound:
+            raise _not_found("vault", vault_id) from None
+        except VaultArchived:
+            raise _invalid(f"vault '{vault_id}' is archived (read-only)") from None
+        except CredentialLimitReached:
             raise _invalid(
                 f"vault '{vault_id}' already holds {MAX_CREDENTIALS_PER_VAULT} active "
                 "credentials (the per-vault maximum)"
-            )
-
-        meta_auth, secret_values = self._split_auth_payload(auth_type, auth)
-        self._require_unique_key(existing, auth_type, meta_auth)
-
-        credential = await self._repo.create_credential(
-            {
-                "vault_id": vault_id,
-                "display_name": str(display_name or "").strip() or None,
-                "auth": meta_auth,
-            }
-        )
-        credential_id = str(credential["credential_id"])
-        for field, value in secret_values.items():
-            await self._store().put(
-                scope=self._scope(vault_id), key=f"{credential_id}/{field}", value=value
-            )
+            ) from None
+        except CredentialKeyTaken:
+            raise self._key_taken(meta_auth) from None
+        except BaseException:
+            # The refusals above come before the secret values are written; any
+            # other failure may come after, when the commit did not happen.
+            await change.discard()
+            raise
         return self._credential_view(credential)
 
     async def list_credentials(self, user: UserContext, vault_id: str) -> list[dict[str, Any]]:
         await self._must_access_vault(user, vault_id)
-        return [self._credential_view(c) for c in await self._repo.list_credentials(vault_id)]
+        return [
+            self._credential_view(c) for c in await self._repo.list_credentials([vault_id])
+        ]
 
     async def update_credential(
         self,
@@ -307,6 +470,7 @@ class VaultService:
         meta_auth = dict(credential.get("auth") or {})
         auth_type = str(meta_auth.get("type") or "")
         updates: dict[str, Any] = {}
+        rotated: dict[str, str] = {}
         if display_name is not None:
             updates["display_name"] = str(display_name).strip() or None
 
@@ -342,42 +506,55 @@ class VaultService:
                 merged.update(dict(auth.get("injection_location") or {}))
                 new_meta["injection_location"] = self._validate_injection_location(merged)
             updates["auth"] = new_meta
-            for field, value in secret_values.items():
-                await self._store().put(
-                    scope=self._scope(vault_id), key=f"{credential_id}/{field}", value=value
-                )
+            rotated = {
+                f"{credential_id}/{field}": value for field, value in secret_values.items()
+            }
 
-        if updates:
-            await self._repo.update_credential(credential_id, updates)
-        refreshed = await self._must_get_credential(vault_id, credential_id)
-        return self._credential_view(refreshed)
+        if not updates:
+            return self._credential_view(credential)
+        change = await self._secret_change(vault_id, put=rotated)
+        updated = await self._repo.update_credential(
+            credential_id, vault_id=vault_id, updates=updates, secrets=change.apply
+        )
+        if updated is None:
+            # Archived or deleted since it was read: a deleted one answers 404 here.
+            await self._must_get_credential(vault_id, credential_id)
+            raise _invalid(f"credential '{credential_id}' is archived (read-only)")
+        return self._credential_view(updated)
 
     async def archive_credential(
         self, user: UserContext, vault_id: str, credential_id: str
     ) -> dict[str, Any]:
         await self._must_access_vault(user, vault_id)
         credential = await self._must_get_credential(vault_id, credential_id)
-        auth_type = str((credential.get("auth") or {}).get("type") or "")
-        for field in _SECRET_FIELDS.get(auth_type, ()):
-            await self._store().delete(
-                scope=self._scope(vault_id), key=f"{credential_id}/{field}"
-            )
-        stamp = utcnow_iso()
-        await self._repo.update_credential(credential_id, {"archived_at": stamp})
-        credential["archived_at"] = stamp
-        return self._credential_view(credential)
+        change = await self._secret_change(
+            vault_id, remove=self._secret_keys(credential)
+        )
+        archived = await self._repo.archive_credential(
+            credential_id, vault_id=vault_id, secrets=change.apply
+        )
+        if archived is None:
+            raise _not_found("vault_credential", credential_id)
+        return self._credential_view(archived)
 
     async def delete_credential(
         self, user: UserContext, vault_id: str, credential_id: str
     ) -> None:
         await self._must_access_vault(user, vault_id)
         credential = await self._must_get_credential(vault_id, credential_id)
+        change = await self._secret_change(
+            vault_id, remove=self._secret_keys(credential)
+        )
+        await self._repo.delete_credential(
+            credential_id, vault_id=vault_id, secrets=change.apply
+        )
+
+    @staticmethod
+    def _secret_keys(credential: dict[str, Any]) -> list[str]:
+        """The secret-store keys a credential's type keeps its write-only fields under."""
+        credential_id = str(credential["credential_id"])
         auth_type = str((credential.get("auth") or {}).get("type") or "")
-        for field in _SECRET_FIELDS.get(auth_type, ()):
-            await self._store().delete(
-                scope=self._scope(vault_id), key=f"{credential_id}/{field}"
-            )
-        await self._repo.delete_credential(credential_id)
+        return [f"{credential_id}/{field}" for field in _SECRET_FIELDS.get(auth_type, ())]
 
     # ── session attach validation ───────────────────────────────────────────
 
@@ -391,55 +568,52 @@ class VaultService:
         """Validate an administrator's ordered binding for one managed target."""
         if target_type not in {"agent", "assistant"}:
             raise _invalid("target_type must be 'agent' or 'assistant'")
-        cleaned: list[str] = []
-        seen: set[str] = set()
-        for raw in vault_ids:
-            vault_id = str(raw or "").strip()
-            if not vault_id or vault_id in seen:
-                continue
-            vault = await self._must_access_vault(user, vault_id)
-            if vault.get("archived_at"):
+        cleaned = self._distinct_ids(vault_ids)
+        vaults = {vault["vault_id"]: vault for vault in await self._repo.get_vaults(cleaned)}
+        outbound = (
+            await self._first_outbound_credentials(cleaned) if target_type == "assistant" else {}
+        )
+        org_id = self._org_id(user)
+        for vault_id in cleaned:
+            vault = vaults.get(vault_id)
+            if vault is None or vault["org_id"] != org_id:
+                raise _not_found("vault", vault_id)
+            if vault["archived_at"]:
                 raise _invalid(f"vault '{vault_id}' is archived and cannot be bound")
-            if target_type == "assistant":
-                for credential in await self._repo.list_credentials(vault_id):
-                    auth = credential.get("auth") or {}
-                    if (
-                        not credential.get("archived_at")
-                        and str(auth.get("type") or "")
-                        in _EGRESS_AUTH_TYPES
-                    ):
-                        raise APIError(
-                            code="ASSISTANT_VAULT_CREDENTIAL_UNSUPPORTED",
-                            message=(
-                                f"vault '{vault_id}' contains an outbound "
-                                f"credential of type '{auth.get('type')}'. Assistants "
-                                "reuse a long-running workspace, so only MCP credentials "
-                                "can be bound to an Assistant."
-                            ),
-                            status_code=400,
-                        )
-            cleaned.append(vault_id)
-            seen.add(vault_id)
+            credential = outbound.get(vault_id)
+            if credential is not None:
+                raise APIError(
+                    code="ASSISTANT_VAULT_CREDENTIAL_UNSUPPORTED",
+                    message=(
+                        f"vault '{vault_id}' contains an outbound "
+                        f"credential of type '{credential['auth']['type']}'. Assistants "
+                        "reuse a long-running workspace, so only MCP credentials "
+                        "can be bound to an Assistant."
+                    ),
+                    status_code=400,
+                )
         return cleaned
 
     async def describe_binding(
         self, user: UserContext, vault_ids: list[str]
     ) -> list[dict[str, Any]]:
         """Return ordered, secret-free Vault summaries for the admin console."""
-        result: list[dict[str, Any]] = []
-        for vault_id in vault_ids:
-            vault = await self._must_access_vault(
-                user, str(vault_id or "").strip()
+        ids = [str(vault_id or "").strip() for vault_id in vault_ids]
+        vaults = {vault["vault_id"]: vault for vault in await self._repo.get_vaults(ids)}
+        org_id = self._org_id(user)
+        for vault_id in ids:
+            vault = vaults.get(vault_id)
+            if vault is None or vault["org_id"] != org_id:
+                raise _not_found("vault", vault_id)
+        credentials: dict[str, list[dict[str, Any]]] = {}
+        for credential in await self._repo.list_credentials(ids):
+            credentials.setdefault(str(credential["vault_id"]), []).append(
+                self._credential_view(credential)
             )
-            view = self._vault_view(vault)
-            view["credentials"] = [
-                self._credential_view(item)
-                for item in await self._repo.list_credentials(
-                    str(vault["vault_id"])
-                )
-            ]
-            result.append(view)
-        return result
+        return [
+            {**self._vault_view(vaults[vault_id]), "credentials": credentials.get(vault_id, [])}
+            for vault_id in ids
+        ]
 
     async def validate_bound_vaults_for_session(
         self,
@@ -456,8 +630,6 @@ class VaultService:
         verifies that each Vault still exists, remains active, and can be safely
         delivered by the selected sandbox backend.
         """
-        cleaned: list[str] = []
-        seen: set[str] = set()
         from astrabox.common.utils.settings import load_astrabox_settings
 
         vault_enabled = bool(
@@ -467,69 +639,64 @@ class VaultService:
                 False,
             )
         )
-        for raw in vault_ids:
-            vault_id = str(raw or "").strip()
-            if not vault_id or vault_id in seen:
-                continue
-            vault = await self._repo.get_vault(vault_id)
-            if not vault or vault.get("archived_at"):
+        cleaned = self._distinct_ids(vault_ids)
+        vaults = {vault["vault_id"]: vault for vault in await self._repo.get_vaults(cleaned)}
+        outbound = await self._first_outbound_credentials(cleaned)
+        for vault_id in cleaned:
+            vault = vaults.get(vault_id)
+            if vault is None or vault["archived_at"]:
                 raise _invalid(
                     f"managed credential vault '{vault_id}' is missing or archived"
                 )
-            for credential in await self._repo.list_credentials(vault_id):
-                if credential.get("archived_at"):
-                    continue
-                auth = credential.get("auth") or {}
-                if str(auth.get("type") or "") not in _EGRESS_AUTH_TYPES:
-                    continue
-                if not vault_enabled:
-                    raise APIError(
-                        code="VAULT_ENV_CREDENTIAL_UNSUPPORTED",
-                        message=(
-                            f"managed credential vault '{vault_id}' contains an "
-                            "outbound credential, which requires protected "
-                            "delivery. Set ASTRABOX_SANDBOX_CREDENTIAL_VAULT=1 or "
-                            "remove that credential from the managed binding."
-                        ),
-                        status_code=400,
-                    )
-                if not backend_supports_egress_injection:
-                    raise APIError(
-                        code="VAULT_ENV_CREDENTIAL_UNSUPPORTED",
-                        message=(
-                            egress_injection_unsupported_reason
-                            or (
-                                f"managed credential vault '{vault_id}' contains "
-                                f"outbound credential of type '{auth.get('type')}', but "
-                                f"sandbox backend '{backend_name}' cannot keep its real "
-                                "value outside the sandbox."
-                            )
-                        ),
-                        status_code=400,
-                    )
-            cleaned.append(vault_id)
-            seen.add(vault_id)
+            credential = outbound.get(vault_id)
+            if credential is None:
+                continue
+            if not vault_enabled:
+                raise APIError(
+                    code="VAULT_ENV_CREDENTIAL_UNSUPPORTED",
+                    message=(
+                        f"managed credential vault '{vault_id}' contains an "
+                        "outbound credential, which requires protected "
+                        "delivery. Set ASTRABOX_SANDBOX_CREDENTIAL_VAULT=1 or "
+                        "remove that credential from the managed binding."
+                    ),
+                    status_code=400,
+                )
+            if not backend_supports_egress_injection:
+                raise APIError(
+                    code="VAULT_ENV_CREDENTIAL_UNSUPPORTED",
+                    message=(
+                        egress_injection_unsupported_reason
+                        or (
+                            f"managed credential vault '{vault_id}' contains "
+                            f"outbound credential of type '{credential['auth']['type']}', but "
+                            f"sandbox backend '{backend_name}' cannot keep its real "
+                            "value outside the sandbox."
+                        )
+                    ),
+                    status_code=400,
+                )
         return cleaned
+
+    @staticmethod
+    def _distinct_ids(vault_ids: Sequence[Any]) -> list[str]:
+        """``vault_ids`` stripped, without blanks or repeats, in first-seen order."""
+        stripped = (str(raw or "").strip() for raw in vault_ids)
+        return list(dict.fromkeys(vault_id for vault_id in stripped if vault_id))
+
+    async def _first_outbound_credentials(
+        self, vault_ids: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        """Each Vault's earliest active outbound (egress-delivered) credential, by Vault id."""
+        first: dict[str, dict[str, Any]] = {}
+        for credential in await self._repo.list_credentials(
+            vault_ids, active_only=True, auth_types=_EGRESS_AUTH_TYPES
+        ):
+            first.setdefault(str(credential["vault_id"]), credential)
+        return first
 
     # ── egress-side resolution ──────────────────────────────────────────────
 
-    async def resolve_mcp_headers(
-        self, vault_ids: list[str], server_url: str
-    ) -> dict[str, str]:
-        """Request headers for an upstream MCP server.
-
-        No matching credential returns an empty map, which means an
-        unauthenticated attempt.
-
-        First vault with a match wins (attach order). The runtime calls this
-        before each root input, so a rotated credential takes effect without a
-        sandbox restart. An expired ``mcp_oauth`` access token is refreshed here when
-        the credential carries refresh configuration; an expired token
-        without one raises here, since forwarding it would only 401
-        opaquely upstream.
-        """
-        resolved = await self.resolve_mcp_credentials(vault_ids, [server_url])
-        return dict(resolved[0].headers) if resolved else {}
 
     async def resolve_mcp_credentials(
         self,
@@ -555,37 +722,24 @@ class VaultService:
             if target not in targets:
                 targets.append(target)
 
+        matches = {
+            str(credential["auth"]["mcp_server_url"]): credential
+            for credential in await self._repo.find_mcp_credentials(
+                self._distinct_ids(vault_ids or []), targets
+            )
+        }
         resolved: list[MCPOutboundCredential] = []
         for target in targets:
-            match: MCPOutboundCredential | None = None
-            for raw in vault_ids or []:
-                vault_id = str(raw or "").strip()
-                if not vault_id:
-                    continue
-                for credential in await self._repo.list_credentials(vault_id):
-                    if credential.get("archived_at"):
-                        continue
-                    auth = credential.get("auth") or {}
-                    auth_type = str(auth.get("type") or "")
-                    if auth_type not in _MCP_AUTH_TYPES:
-                        continue
-                    if (
-                        normalize_mcp_server_url(
-                            str(auth.get("mcp_server_url") or "")
-                        )
-                        != target
-                    ):
-                        continue
-                    match = MCPOutboundCredential(
-                        credential_id=str(credential.get("credential_id") or ""),
-                        target_url=target,
-                        headers=await self._headers_for(vault_id, credential),
-                    )
-                    break
-                if match is not None:
-                    break
-            if match is not None:
-                resolved.append(match)
+            credential = matches.get(target)
+            if credential is None:
+                continue
+            resolved.append(
+                MCPOutboundCredential(
+                    credential_id=str(credential["credential_id"]),
+                    target_url=target,
+                    headers=await self._headers_for(str(credential["vault_id"]), credential),
+                )
+            )
         return resolved
 
     async def resolve_env_credentials(
@@ -610,55 +764,52 @@ class VaultService:
         """
         resolved: list[EgressCredential] = []
         claimed: dict[str, str] = {}
-        for raw in vault_ids or []:
-            vault_id = str(raw or "").strip()
-            if not vault_id:
-                continue
-            for credential in await self._repo.list_credentials(vault_id):
-                if credential.get("archived_at"):
-                    continue
-                auth = dict(credential.get("auth") or {})
-                if str(auth.get("type") or "") != AUTH_TYPE_ENVIRONMENT_VARIABLE:
-                    continue
-                credential_id = str(credential["credential_id"])
-                secret_name = str(auth.get("secret_name") or "").strip()
-                if secret_name in claimed:
-                    raise APIError(
-                        code="VAULT_CREDENTIAL_CONFLICT",
-                        message=(
-                            f"credentials {claimed[secret_name]!r} and {credential_id!r} "
-                            f"both claim environment variable {secret_name!r}; the sandbox "
-                            "has one environment, so detach one of the vaults"
-                        ),
-                        status_code=409,
-                    )
-                claimed[secret_name] = credential_id
-                secret_value = await self._store().get(
-                    scope=self._scope(vault_id), key=f"{credential_id}/secret_value"
+        for credential in await self._repo.list_credentials(
+            self._distinct_ids(vault_ids or []),
+            active_only=True,
+            auth_types=(AUTH_TYPE_ENVIRONMENT_VARIABLE,),
+        ):
+            vault_id = str(credential["vault_id"])
+            auth = dict(credential.get("auth") or {})
+            credential_id = str(credential["credential_id"])
+            secret_name = str(auth.get("secret_name") or "").strip()
+            if secret_name in claimed:
+                raise APIError(
+                    code="VAULT_CREDENTIAL_CONFLICT",
+                    message=(
+                        f"credentials {claimed[secret_name]!r} and {credential_id!r} "
+                        f"both claim environment variable {secret_name!r}; the sandbox "
+                        "has one environment, so detach one of the vaults"
+                    ),
+                    status_code=409,
                 )
-                if not secret_value:
-                    raise APIError(
-                        code="VAULT_CREDENTIAL_UNAVAILABLE",
-                        message=(
-                            f"vault credential {credential_id!r} has no secret_value payload"
-                        ),
-                        status_code=502,
-                    )
-                resolved.append(
-                    EgressCredential(
-                        credential_id=credential_id,
-                        secret_name=secret_name,
-                        secret_value=secret_value,
-                        placeholder=mint_placeholder(
-                            credential_id,
-                            context=placeholder_context,
-                        ),
-                        networking=dict(auth.get("networking") or {}),
-                        injection_location=dict(auth.get("injection_location") or {}),
-                        allow_insecure_http=bool(auth.get("allow_insecure_http", False)),
-                        allowed_requests=dict(auth.get("allowed_requests") or {}),
-                    )
+            claimed[secret_name] = credential_id
+            secret_value = await self._store().get(
+                scope=self._scope(vault_id), key=f"{credential_id}/secret_value"
+            )
+            if not secret_value:
+                raise APIError(
+                    code="VAULT_CREDENTIAL_UNAVAILABLE",
+                    message=(
+                        f"vault credential {credential_id!r} has no secret_value payload"
+                    ),
+                    status_code=502,
                 )
+            resolved.append(
+                EgressCredential(
+                    credential_id=credential_id,
+                    secret_name=secret_name,
+                    secret_value=secret_value,
+                    placeholder=mint_placeholder(
+                        credential_id,
+                        context=placeholder_context,
+                    ),
+                    networking=dict(auth.get("networking") or {}),
+                    injection_location=dict(auth.get("injection_location") or {}),
+                    allow_insecure_http=bool(auth.get("allow_insecure_http", False)),
+                    allowed_requests=dict(auth.get("allowed_requests") or {}),
+                )
+            )
         return resolved
 
     async def resolve_http_basic_credentials(
@@ -671,30 +822,29 @@ class VaultService:
         rules; the platform never guesses a credential from a repository URL.
         """
         resolved: dict[str, HTTPBasicEgressCredential] = {}
-        for vault_id in vault_ids:
-            for credential in await self._repo.list_credentials(vault_id):
-                auth = credential.get("auth") or {}
-                if credential.get("archived_at") or auth.get("type") != AUTH_TYPE_HTTP_BASIC:
-                    continue
-                url = str(auth["url"])
-                if url in resolved:
-                    continue
-                credential_id = str(credential["credential_id"])
-                password = await self._store().get(
-                    scope=self._scope(vault_id), key=f"{credential_id}/password"
+        for credential in await self._repo.list_credentials(
+            self._distinct_ids(vault_ids), active_only=True, auth_types=(AUTH_TYPE_HTTP_BASIC,)
+        ):
+            auth = credential.get("auth") or {}
+            url = str(auth["url"])
+            if url in resolved:
+                continue
+            credential_id = str(credential["credential_id"])
+            password = await self._store().get(
+                scope=self._scope(str(credential["vault_id"])), key=f"{credential_id}/password"
+            )
+            if not password:
+                raise APIError(
+                    code="VAULT_CREDENTIAL_UNAVAILABLE",
+                    message=f"vault credential {credential_id!r} has no password payload",
+                    status_code=502,
                 )
-                if not password:
-                    raise APIError(
-                        code="VAULT_CREDENTIAL_UNAVAILABLE",
-                        message=f"vault credential {credential_id!r} has no password payload",
-                        status_code=502,
-                    )
-                resolved[url] = HTTPBasicEgressCredential(
-                    credential_id=credential_id,
-                    url=url,
-                    username=str(auth["username"]),
-                    password=password,
-                )
+            resolved[url] = HTTPBasicEgressCredential(
+                credential_id=credential_id,
+                url=url,
+                username=str(auth["username"]),
+                password=password,
+            )
         return list(resolved.values())
 
     async def resolve_egress_credentials(
@@ -740,16 +890,9 @@ class VaultService:
                 )
             return {str(auth["header_name"]): value}
 
-        # mcp_oauth: refresh-on-use when expired.
-        expires_at = str(auth.get("expires_at") or "").strip()
-        expired = False
-        if expires_at:
-            try:
-                expired = parse_iso(expires_at) <= utcnow() + timedelta(seconds=_EXPIRY_SKEW_SECONDS)
-            except ValueError:
-                expired = True
-        if expired:
-            await self._refresh_oauth(vault_id, credential)
+        # mcp_oauth: an expired access token is refreshed before use.
+        if _expired(auth.get("expires_at")):
+            await self._refresh_once(vault_id, credential)
         token = await self._store().get(scope=scope, key=f"{credential_id}/access_token")
         if not token:
             raise APIError(
@@ -759,13 +902,24 @@ class VaultService:
             )
         return {"Authorization": f"Bearer {token}"}
 
-    async def _refresh_oauth(self, vault_id: str, credential: dict[str, Any]) -> None:
+    async def _refresh_once(self, vault_id: str, credential: dict[str, Any]) -> None:
+        """Refresh an expired ``mcp_oauth`` access token, once across every replica.
+
+        A provider may rotate the refresh token on each use and revoke the whole
+        grant when a used one comes back, so two replicas must never refresh the
+        same token. The refresh runs only under a claim taken by compare-and-set
+        on the credential row
+        (:meth:`~astrabox.persistence.repository.vault_repository.VaultRepository.claim_oauth_refresh`):
+        it succeeds only while the row still carries the expiry this caller
+        judged expired and no live claim exists. A caller that does not get the
+        claim waits for the holder's result, re-reading the row until its expiry
+        moves; if the holder gives the claim up without a result, the waiting
+        caller takes it and tries in turn. Waiting ends with an error after
+        :data:`_REFRESH_CLAIM_S`.
+        """
         credential_id = str(credential["credential_id"])
         auth = dict(credential.get("auth") or {})
-        refresh = dict(auth.get("refresh") or {})
-        token_endpoint = str(refresh.get("token_endpoint") or "").strip()
-        scope_key = self._scope(vault_id)
-        if not token_endpoint:
+        if not str((auth.get("refresh") or {}).get("token_endpoint") or "").strip():
             raise APIError(
                 code="VAULT_CREDENTIAL_EXPIRED",
                 message=(
@@ -774,6 +928,96 @@ class VaultService:
                 ),
                 status_code=502,
             )
+        observed = str(auth["expires_at"])
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _REFRESH_CLAIM_S
+        while True:
+            claimed = await self._repo.claim_oauth_refresh(
+                credential_id, expires_at=observed, lease_s=_REFRESH_CLAIM_S
+            )
+            if claimed is not None:
+                await self._refresh_claimed(vault_id, claimed)
+                return
+            current = await self._repo.get_credential(credential_id)
+            if current is None or current["archived_at"]:
+                raise APIError(
+                    code="VAULT_CREDENTIAL_UNAVAILABLE",
+                    message=(
+                        f"vault credential '{credential_id}' was archived or deleted while "
+                        "its access token was being refreshed"
+                    ),
+                    status_code=502,
+                )
+            if current["auth"].get("expires_at") != observed:
+                return
+            if loop.time() >= deadline:
+                raise APIError(
+                    code="VAULT_CREDENTIAL_REFRESH_FAILED",
+                    message=(
+                        f"vault credential '{credential_id}' is being refreshed by another "
+                        f"request that did not finish within {_REFRESH_CLAIM_S:.0f}s"
+                    ),
+                    status_code=502,
+                )
+            await asyncio.sleep(_REFRESH_POLL_S)
+
+    async def _refresh_claimed(self, vault_id: str, credential: dict[str, Any]) -> None:
+        """Refresh under the claim ``credential`` carries, and record the result.
+
+        The new tokens and the new expiry commit together, and committing
+        releases the claim. A failure gives the claim up so the next caller can
+        try at once instead of after the claim lapses.
+        """
+        credential_id = str(credential["credential_id"])
+        claim = str(credential["refresh_claimed_until"])
+        try:
+            access_token, rotated_refresh, expires_at = await self._exchange_refresh_token(
+                vault_id, credential
+            )
+            put = {f"{credential_id}/access_token": access_token}
+            if rotated_refresh:
+                put[f"{credential_id}/refresh_token"] = rotated_refresh
+            change = await self._secret_change(vault_id, put=put)
+            refreshed = await self._repo.complete_oauth_refresh(
+                credential_id, claim=claim, expires_at=expires_at, secrets=change.apply
+            )
+        except BaseException:
+            try:
+                await self._repo.release_oauth_refresh(credential_id, claim=claim)
+            except Exception:
+                logger.warning(
+                    "vault credential refresh claim not released; it lapses after %.0fs: "
+                    "credential=%s",
+                    _REFRESH_CLAIM_S,
+                    credential_id,
+                    exc_info=True,
+                )
+            raise
+        if refreshed is None:
+            raise APIError(
+                code="VAULT_CREDENTIAL_UNAVAILABLE",
+                message=(
+                    f"vault credential '{credential_id}' was archived or deleted while "
+                    "its access token was being refreshed"
+                ),
+                status_code=502,
+            )
+        logger.info(
+            "vault credential refreshed: credential=%s expires_at=%s", credential_id, expires_at
+        )
+
+    async def _exchange_refresh_token(
+        self, vault_id: str, credential: dict[str, Any]
+    ) -> tuple[str, str, str | None]:
+        """Exchange the stored refresh token at the token endpoint.
+
+        Returns the new access token, the rotated refresh token (empty when the
+        endpoint keeps the old one) and the new expiry, if the endpoint gave one.
+        """
+        credential_id = str(credential["credential_id"])
+        refresh = dict((credential.get("auth") or {}).get("refresh") or {})
+        token_endpoint = str(refresh.get("token_endpoint") or "").strip()
+        scope_key = self._scope(vault_id)
         refresh_token = await self._store().get(
             scope=scope_key, key=f"{credential_id}/refresh_token"
         )
@@ -805,8 +1049,11 @@ class VaultService:
             data["client_id"] = client_id
 
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
-                response = await client.post(token_endpoint, data=data, auth=request_auth)
+            async with asyncio.timeout(_REFRESH_TIMEOUT_S):
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(_REFRESH_TIMEOUT_S, connect=10.0)
+                ) as client:
+                    response = await client.post(token_endpoint, data=data, auth=request_auth)
         except Exception as exc:
             raise APIError(
                 code="VAULT_CREDENTIAL_REFRESH_FAILED",
@@ -830,23 +1077,11 @@ class VaultService:
                 message=f"vault credential '{credential_id}' refresh returned no access_token",
                 status_code=502,
             )
-        await self._store().put(
-            scope=scope_key, key=f"{credential_id}/access_token", value=access_token
-        )
-        rotated_refresh = str(payload.get("refresh_token") or "").strip()
-        if rotated_refresh:
-            await self._store().put(
-                scope=scope_key, key=f"{credential_id}/refresh_token", value=rotated_refresh
-            )
         expires_in = payload.get("expires_in")
-        new_expires_at = None
+        expires_at = None
         if isinstance(expires_in, (int, float)) and expires_in > 0:
-            new_expires_at = (utcnow() + timedelta(seconds=int(expires_in))).isoformat()
-        auth["expires_at"] = new_expires_at
-        await self._repo.update_credential(credential_id, {"auth": auth})
-        logger.info(
-            "vault credential refreshed: credential=%s expires_at=%s", credential_id, new_expires_at
-        )
+            expires_at = (utcnow() + timedelta(seconds=int(expires_in))).isoformat()
+        return access_token, str(payload.get("refresh_token") or "").strip(), expires_at
 
     # ── payload shaping / validation ────────────────────────────────────────
 
@@ -928,7 +1163,7 @@ class VaultService:
             meta = {
                 "type": auth_type,
                 "mcp_server_url": normalize_mcp_server_url(str(auth.get("mcp_server_url") or "")),
-                "expires_at": str(auth.get("expires_at") or "").strip() or None,
+                "expires_at": self._validate_expires_at(auth.get("expires_at")),
             }
             _take_secret("access_token", required=True)
             refresh_in = auth.get("refresh")
@@ -1091,35 +1326,41 @@ class VaultService:
         return result
 
     @staticmethod
-    def _require_unique_key(
-        existing: list[dict[str, Any]], auth_type: str, meta_auth: dict[str, Any]
-    ) -> None:
-        """Duplicate ``mcp_server_url`` / ``secret_name`` in one vault → 409."""
+    def _validate_expires_at(value: Any) -> str | None:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        try:
+            return parse_iso(raw).isoformat()
+        except ValueError as exc:
+            raise _invalid("auth.expires_at must be an ISO-8601 time") from exc
+
+    @staticmethod
+    def _key_taken(meta_auth: dict[str, Any]) -> APIError:
+        """The 409 for a second active credential with ``meta_auth``'s key in one Vault."""
+        auth_type = str(meta_auth.get("type") or "")
         if auth_type in _MCP_AUTH_TYPES:
-            key_field, new_key = "mcp_server_url", str(meta_auth.get("mcp_server_url") or "")
+            key_field = "mcp_server_url"
         elif auth_type == AUTH_TYPE_HTTP_BASIC:
-            key_field, new_key = "url", str(meta_auth.get("url") or "")
+            key_field = "url"
         else:
-            key_field, new_key = "secret_name", str(meta_auth.get("secret_name") or "")
-        for credential in existing:
-            auth = credential.get("auth") or {}
-            if str(auth.get(key_field) or "") == new_key:
-                raise APIError(
-                    code="VAULT_CREDENTIAL_CONFLICT",
-                    message=(
-                        f"vault already holds an active credential for {key_field}="
-                        f"{new_key!r}; {key_field} is unique per vault (archive the "
-                        "existing credential to replace it)"
-                    ),
-                    status_code=409,
-                )
+            key_field = "secret_name"
+        key = str(meta_auth.get(key_field) or "")
+        return APIError(
+            code="VAULT_CREDENTIAL_CONFLICT",
+            message=(
+                f"vault already holds an active credential for {key_field}="
+                f"{key!r}; {key_field} is unique per vault (archive the "
+                "existing credential to replace it)"
+            ),
+            status_code=409,
+        )
 
     # ── views / guards ──────────────────────────────────────────────────────
 
     async def _must_access_vault(self, user: UserContext, vault_id: str) -> dict[str, Any]:
         vault = await self._repo.get_vault(str(vault_id or "").strip())
-        org_id = getattr(user, "org_id", None) or default_org_id()
-        if not vault or str(vault.get("org_id") or "") != org_id:
+        if not vault or str(vault.get("org_id") or "") != self._org_id(user):
             raise _not_found("vault", vault_id)
         return vault
 

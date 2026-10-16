@@ -1,81 +1,39 @@
-"""Document operations shared by the five artifact collections."""
+"""Statement execution shared by the artifact repositories.
+
+An artifact write runs several statements in one transaction
+(:func:`astrabox.persistence.sql.transaction`) under the lock on the artifact's
+row. Repository methods that take part in such a write accept the
+transaction's connection as ``conn`` and run on it; without one, the statement
+runs on its own in autocommit.
+"""
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
-from typing import Any, TypeVar
+from typing import Any
 
-from astrabox.persistence.repository.backend import get_async_collection, run_mongo_with_retry
-from astrabox.persistence.repository.index_verification import ensure_unique_index
+from sqlalchemy.ext.asyncio import AsyncConnection
+from sqlalchemy.sql import Executable
 
-T = TypeVar("T")
+from astrabox.persistence.sql import execute, fetch_all, fetch_one
 
 
-class ArtifactDocumentRepository:
-    COLLECTION_NAME: str
+async def one(statement: Executable, conn: AsyncConnection | None) -> dict[str, Any] | None:
+    """The first row ``statement`` returns, or ``None``."""
+    if conn is None:
+        return await fetch_one(statement)
+    row = (await conn.execute(statement)).first()
+    return dict(row._mapping) if row is not None else None
 
-    def __init__(self) -> None:
-        self._index_ready = False
 
-    async def ensure_indexes(self) -> None:
-        if not self._index_ready:
-            collection = await get_async_collection(self.COLLECTION_NAME)
-            await ensure_unique_index(collection, "doc_id", collection_name=self.COLLECTION_NAME)
-            self._index_ready = True
+async def every(statement: Executable, conn: AsyncConnection | None) -> list[dict[str, Any]]:
+    """Every row ``statement`` returns."""
+    if conn is None:
+        return await fetch_all(statement)
+    return [dict(row._mapping) for row in (await conn.execute(statement)).all()]
 
-    async def _run(
-        self, operation: str, callback: Callable[[Any], Awaitable[T]], transaction: Any = None,
-    ) -> T:
-        if transaction is not None:
-            return await callback(transaction.collection(self.COLLECTION_NAME))
-        await self.ensure_indexes()
-        collection = await get_async_collection(self.COLLECTION_NAME)
-        return await run_mongo_with_retry(f"artifacts.{operation}", lambda: callback(collection))
 
-    async def get(self, doc_id: str, *, transaction: Any = None) -> dict[str, Any] | None:
-        return await self._run("get", lambda c: c.find_one({"doc_id": doc_id}), transaction)
-
-    async def lock(self, doc_id: str, *, transaction: Any) -> dict[str, Any] | None:
-        return await self._run("lock", lambda c: c.lock_one({"doc_id": doc_id}), transaction)
-
-    async def find_one(
-        self, query: dict[str, Any], *, transaction: Any = None,
-    ) -> dict[str, Any] | None:
-        return await self._run("find", lambda c: c.find_one(query), transaction)
-
-    async def list(
-        self, query: dict[str, Any], *, sort: list[tuple[str, int]] | None = None,
-        limit: int = 10000, transaction: Any = None,
-    ) -> list[dict[str, Any]]:
-        async def read(collection: Any) -> list[dict[str, Any]]:
-            cursor = collection.find(query)
-            if sort:
-                cursor = cursor.sort(sort)
-            return [row async for row in cursor.limit(limit)]
-        return await self._run("list", read, transaction)
-
-    async def insert(self, row: dict[str, Any], *, transaction: Any = None) -> None:
-        await self._run("insert", lambda c: c.insert_one(dict(row)), transaction)
-
-    async def put(self, row: dict[str, Any], *, transaction: Any = None) -> None:
-        payload = {key: value for key, value in row.items() if key != "_id"}
-        await self._run(
-            "put", lambda c: c.update_one(
-                {"doc_id": row["doc_id"]}, {"$set": payload}, upsert=True,
-            ), transaction,
-        )
-
-    async def cas(
-        self, doc_id: str, field: str, expected: int, updates: dict[str, Any],
-        *, transaction: Any = None,
-    ) -> bool:
-        payload = {key: value for key, value in updates.items() if key != "_id"}
-        result = await self._run(
-            "cas", lambda c: c.update_one(
-                {"doc_id": doc_id, field: expected}, {"$set": payload},
-            ), transaction,
-        )
-        return int(result.matched_count) == 1
-
-    async def delete(self, query: dict[str, Any], *, transaction: Any = None) -> None:
-        await self._run("delete", lambda c: c.delete_many(query), transaction)
+async def run(statement: Executable, conn: AsyncConnection | None) -> int:
+    """Run ``statement``; the number of rows it affected."""
+    if conn is None:
+        return await execute(statement)
+    return int((await conn.execute(statement)).rowcount)

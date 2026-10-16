@@ -13,17 +13,18 @@
  * from the client sandbox names the tool its case is about and nothing else.
  */
 import { readFileSync } from 'node:fs';
+import { isIP } from 'node:net';
 import { join } from 'node:path';
 
 import type { Page } from '@playwright/test';
 import { expect, test } from '@playwright/test';
 
 import { AstraApi, type AgentRecord } from './astraApi';
-import { documentsByField } from './dbOracle';
+import { nativeTranscriptRows } from './dbOracle';
 import { copyEnvironment } from './environmentCopy';
 import { onPassOnly, trackSessions } from './sessionCleanup';
 import { startNativeMcpRelay, type NativeMcpRelay } from './nativeMcpRelay';
-import { aiStreamBodies } from './sseBodies';
+import { sessionStreamBodies } from './sseBodies';
 
 /** The image's own interpreter; the MCP Python SDK is installed for it. */
 export const NATIVE_MCP_PYTHON = '/usr/local/bin/python3.12';
@@ -112,7 +113,7 @@ export async function observe(read: () => unknown | Promise<unknown>): Promise<u
 }
 
 /**
- * Parsed `data:` frames of every ai-stream body the browser has read so far.
+ * Parsed `data:` frames of every session stream body the browser has read so far.
  *
  * The mirror is a growing snapshot of each cloned body, so its last segment
  * may be a line still arriving: only complete lines are parsed. A complete
@@ -120,7 +121,7 @@ export async function observe(read: () => unknown | Promise<unknown>): Promise<u
  */
 export async function browserStreamFrames(page: Page): Promise<Record<string, unknown>[]> {
   const frames: Record<string, unknown>[] = [];
-  for (const body of await aiStreamBodies(page)) {
+  for (const body of await sessionStreamBodies(page)) {
     for (const line of body.text.split(/\r?\n/).slice(0, -1)) {
       if (!line.startsWith('data:')) continue;
       const raw = line.slice(5).trim();
@@ -134,8 +135,8 @@ export async function browserStreamFrames(page: Page): Promise<Record<string, un
 
 /** The root (non-subagent) native SessionStore entries of a session, in mirror order. */
 export function nativeRootEntries(sessionId: string): NativeRootEntry[] {
-  return documentsByField('transcript_entries', '$.platform_session_id', sessionId)
-    .filter((row) => row.subpath == null)
+  return nativeTranscriptRows(sessionId)
+    .filter((row) => row.subpath === null)
     .map((row) => ({ seq: Number(row.seq), entry: object(JSON.parse(String(row.entry_json))) }))
     .sort((a, b) => a.seq - b.seq);
 }
@@ -176,9 +177,9 @@ export function trackNativeMcpScene(evidenceName: string): NativeMcpScene {
         observe(() => api.getSession(scene.clientSession)),
         observe(() => api.listChildRuns(scene.clientSession)),
         observe(() => api.getMessages(scene.clientSession)),
-        observe(() => documentsByField('transcript_entries', '$.platform_session_id', scene.clientSession)),
+        observe(() => nativeTranscriptRows(scene.clientSession)),
         observe(() => serverLog(api, scene)),
-        observe(() => aiStreamBodies(page)),
+        observe(() => sessionStreamBodies(page)),
       ]);
       await info.attach(evidenceName, {
         body: JSON.stringify({ scene: identity, session: evidence[0], children: evidence[1], history: evidence[2],
@@ -244,9 +245,10 @@ export async function startNativeMcpServer(
   expect(endpoint.port).toBe(port);
   expect(endpoint.url).toMatch(/^https?:\/\//);
   expect(endpoint.url).not.toContain('/api/v1/exposed-ports/');
-  const endpointUrl = process.env.ASTRABOX_E2E_ENDPOINT_KIND === 'direct'
-    ? await relayDirectEndpoint(scene, new URL(endpoint.url), port, options.tool)
-    : new URL(endpoint.url);
+  const exposedUrl = new URL(endpoint.url);
+  const endpointUrl = exposedUrl.protocol === 'http:' && isIP(exposedUrl.hostname) === 4 && exposedUrl.pathname === '/'
+    ? await relayDirectEndpoint(scene, exposedUrl, port, options.tool)
+    : exposedUrl;
   endpointUrl.pathname = `${endpointUrl.pathname.replace(/\/$/, '')}/mcp`;
   scene.serverUrl = endpointUrl.toString();
   return started;

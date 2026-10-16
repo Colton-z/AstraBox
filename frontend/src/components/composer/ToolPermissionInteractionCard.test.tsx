@@ -24,7 +24,7 @@ afterEach(() => {
 // group the card renders.
 const PERMISSION: PendingToolPermissionInteraction = {
   interaction_id: 'interaction-1',
-  turn_id: 'turn-1',
+  response_id: 'turn-1',
   tool_call_id: 'tool-call-1',
   tool_name: 'Write',
   presentation: 'tool_approval',

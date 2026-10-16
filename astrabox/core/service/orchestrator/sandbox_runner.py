@@ -79,6 +79,10 @@ logger = logging.getLogger("astrabox.sandbox_runner")
 #: copies equal.
 RUNNER_PROTOCOL = "astrabox.runner-wire.v1"
 
+#: This runner process's identity. Journal sequences restart in a new process,
+#: so a host cursor names the boot it was read from and is refused by another.
+RUNNER_BOOT_ID = uuid_mod.uuid4().hex
+
 #: An optional script an external provider or deployment termination trigger
 #: may run when this box is torn down. The runner writes the content once it
 #: learns the box-scoped URL. Writing the file does not activate notification:
@@ -160,10 +164,6 @@ def _write_death_notice(notice: Any) -> None:
         path.chmod(0o700)
     except OSError as exc:
         logger.warning("death notice not written to %s: %s", DEATH_NOTICE_SCRIPT, exc)
-
-
-class RunnerObservationBusy(Exception):
-    """The runner has an output owner, including a handshake in progress."""
 
 
 class RunnerProtocolError(Exception):
@@ -687,28 +687,6 @@ class EnvelopeSender:
                 )
             self._persisted_event_sequences.add(sequence)
 
-    async def compact_after_result(
-        self,
-        result_sequence: int,
-        *,
-        store_fully_flushed: bool,
-    ) -> int:
-        """Drop only a complete, store-covered prefix before one Result."""
-
-        async with self._lock:
-            if (
-                self._history_checkpoint is None
-                or self._history_checkpoint.live.value != result_sequence
-            ):
-                raise RunnerProtocolError(
-                    "journal compaction must name the latest Result checkpoint"
-                )
-            if (
-                not store_fully_flushed
-                or len(self._journal) <= self._JOURNAL_COMPACTION_THRESHOLD
-            ):
-                return 0
-            return self._compact_result_prefix_locked()
 
     async def compact_after_store_flush(
         self,
@@ -1061,6 +1039,8 @@ class InteractionBroker:
         self._wait_budget_s = wait_budget_s
         self._hook_ceiling_s = max(hook_timeout_s - _INTERACTION_HOOK_MARGIN_S, 1.0)
         self._pending: dict[str, asyncio.Future[InteractionAnswer]] = {}
+        #: What each pending gate asked, as sent to the host, for ``state``.
+        self._requests: dict[str, dict[str, Any]] = {}
         self._permission_mode = str(permission_mode or "default")
 
     def set_permission_mode(self, mode: str) -> None:
@@ -1080,6 +1060,19 @@ class InteractionBroker:
     def pending_ids(self) -> list[str]:
         """Ids of gates still awaiting an answer (diagnostics only)."""
         return [k for k, f in self._pending.items() if not f.done()]
+
+    def pending_requests(self) -> list[dict[str, Any]]:
+        """Every gate still awaiting an answer, as its ``interaction`` frame described it."""
+        return [
+            {"interaction_id": key, **self._requests[key]}
+            for key, future in self._pending.items()
+            if not future.done() and key in self._requests
+        ]
+
+    async def _ask(self, interaction_id: str, *, tool_use_id: str, tool_name: str, tool_input: Any) -> None:
+        request = {"tool_use_id": tool_use_id, "tool_name": tool_name, "tool_input": tool_input}
+        self._requests[interaction_id] = request
+        await self._sender.send("interaction", interaction_id=interaction_id, **request)
 
     def cancel_all(self, *, message: str) -> int:
         """Resolve every pending gate as a deny (interrupt path).
@@ -1151,9 +1144,8 @@ class InteractionBroker:
         future: asyncio.Future[InteractionAnswer] = loop.create_future()
         self._pending[interaction_id] = future
         try:
-            await self._sender.send(
-                "interaction",
-                interaction_id=interaction_id,
+            await self._ask(
+                interaction_id,
                 # From the input payload, where the vendor declares it required:
                 # ``PreToolUseHookInput.tool_use_id: str``. The callback's
                 # positional ``tool_use_id`` is a different, optional thing —
@@ -1191,6 +1183,7 @@ class InteractionBroker:
             return self._decision("deny", reason=f"permission gate error: {exc}")
         finally:
             self._pending.pop(interaction_id, None)
+            self._requests.pop(interaction_id, None)
 
     async def can_use_tool(
         self,
@@ -1224,9 +1217,8 @@ class InteractionBroker:
         )
         self._pending[interaction_id] = future
         try:
-            await self._sender.send(
-                "interaction",
-                interaction_id=interaction_id,
+            await self._ask(
+                interaction_id,
                 tool_use_id=tool_use_id,
                 tool_name=self._ASK_USER_TOOL,
                 tool_input=input_payload,
@@ -1252,6 +1244,7 @@ class InteractionBroker:
             return PermissionResultDeny(message=f"user-input callback error: {exc}")
         finally:
             self._pending.pop(interaction_id, None)
+            self._requests.pop(interaction_id, None)
 
     async def _await_answer(
         self, future: "asyncio.Future[InteractionAnswer]"
@@ -1377,8 +1370,16 @@ class RunnerSession:
         # not an unknown command.
         self._engine_response_id: str | None = None
         self._engine_response_ids: set[str] = set()
+        #: Journal sequence of the frame that opened the response running now
+        #: (a consumed input or an engine boundary); ``None`` between responses.
+        self._run_start_seq: int | None = None
         self._last_delivery_sequence = 0
         self._busy = False
+        #: Background tasks the engine started and has not ended or paused; the
+        #: runtime is working while any is open, whatever the inputs are doing.
+        self._open_tasks: set[str] = set()
+        #: The status last sent to the host, so a change is reported once.
+        self._reported_status: str | None = None
         if self._store is not None:
             self._store.set_drain_handler(self._compact_after_store_drain)
 
@@ -1538,7 +1539,7 @@ class RunnerSession:
         self._active = True
         if self._store is not None and not self._store_bound:
             self._store.start_flusher()
-        await self.sender.send("status", state="idle")
+        await self._report_status()
         self._delivery_task = asyncio.create_task(
             self._pump_deliveries(),
             name=f"sdk-fifo-delivery:{target}",
@@ -1680,12 +1681,14 @@ class RunnerSession:
             uuid=pending.input_id,
             parent_tool_use_id=None,
         )
-        await self.sender.send(
+        consumed_seq = await self.sender.send(
             "event",
             message_type="UserMessage",
             message=_jsonable(message),
             requires_persistence=True,
         )
+        if self._run_start_seq is None:
+            self._run_start_seq = consumed_seq
         if command_id in self._interrupts_awaiting_prompt_boundary:
             # interrupt() only acknowledges the CLI control request. It does not
             # retract a prompt already queued on stdin, so the prompt hook is the
@@ -1719,11 +1722,11 @@ class RunnerSession:
         """Stop the response Claude started on its own, named by its address.
 
         No platform command owns it, so there is no FIFO row to settle and no
-        prompt boundary to wait for: the SDK interrupt is the whole stop. The
-        same race as a command interrupt applies afterwards — Claude Code does
-        not always follow the acknowledgement with a ResultMessage — so the
-        correlated control event closes the observed interval on the host,
-        and a Result that does arrive finds nothing open.
+        prompt boundary to wait for. A released interaction ends through its
+        native rejection and ResultMessage. Otherwise the same race as a
+        command interrupt applies: Claude Code can acknowledge the interrupt
+        without another ResultMessage, so the correlated control event closes
+        the observed interval on the host.
         """
 
         assert self._client is not None
@@ -1735,12 +1738,17 @@ class RunnerSession:
         await self._client.interrupt()
         if response_id != self._engine_response_id:
             return
+        if released:
+            # The denied callback still produces native tool results and a
+            # ResultMessage. Keep their response open until both are journaled.
+            return
         self._engine_response_id = None
         continues_fifo = bool(
             self._pending_prompt_consumptions
             or self._consumed_commands_since_result
             or self._buffered_deliveries
         )
+        self._run_start_seq = None
         await self.sender.send(
             "turn_interrupted",
             command_id=response_id,
@@ -1757,8 +1765,7 @@ class RunnerSession:
             or self._pending_prompt_consumptions
             or self._consumed_commands_since_result
         )
-        if not self._busy:
-            await self.sender.send("status", state="idle")
+        await self._report_status()
 
     async def _pump_deliveries(self) -> None:
         while True:
@@ -1800,9 +1807,8 @@ class RunnerSession:
                 if not queued.accepted.done():
                     queued.accepted.set_exception(_detached_exception(exc))
             else:
-                if not self._busy:
-                    self._busy = True
-                    await self.sender.send("status", state="busy")
+                self._busy = True
+                await self._report_status()
                 if not queued.accepted.done():
                     queued.accepted.set_result(None)
 
@@ -1847,12 +1853,60 @@ class RunnerSession:
 
     @staticmethod
     def _same_delivery(left: DeliveryCommand, right: DeliveryCommand) -> bool:
+        """Whether two commands are one input; a host resending it numbers it anew."""
         return (
             left.command_id == right.command_id
             and left.session_id == right.session_id
-            and left.sequence == right.sequence
             and left.sdk_input == right.sdk_input
         )
+
+    async def _report_status(self) -> None:
+        """Send ``busy`` while an input or a background task runs, else ``idle``, on change."""
+        status = "busy" if self._busy or self._open_tasks else "idle"
+        if status != self._reported_status:
+            self._reported_status = status
+            await self.sender.send("status", state=status)
+
+    def _track_task(self, message: Any, message_type: str) -> None:
+        """Keep the set of background tasks that are running, from the SDK's own task messages."""
+        task_id = str(getattr(message, "task_id", None) or "").strip()
+        if not task_id:
+            return
+        if message_type == "TaskStartedMessage":
+            self._open_tasks.add(task_id)
+        elif message_type == "TaskNotificationMessage":
+            self._open_tasks.discard(task_id)
+        elif message_type == "TaskUpdatedMessage":
+            from claude_agent_sdk.types import TERMINAL_TASK_STATUSES
+
+            status = str(getattr(message, "status", None) or "")
+            if status in TERMINAL_TASK_STATUSES or status == "paused":
+                self._open_tasks.discard(task_id)
+            elif status in ("pending", "running"):
+                self._open_tasks.add(task_id)
+
+    def state(self) -> dict[str, Any]:
+        """This session's own account of itself, consistent with the journal's last frame.
+
+        ``consumed`` are the inputs this process handed to Claude (their
+        response is running or done); ``queued`` are received and not yet
+        handed over. Both are platform input ids. ``run_start_seq`` is where
+        the running response begins in the journal.
+        """
+        queued = [item.command.command_id for item in self._buffered_deliveries]
+        queued.extend(item.input_id for item in self._pending_prompt_consumptions)
+        return {
+            "boot_id": RUNNER_BOOT_ID,
+            "last_seq": self.sender.last_seq,
+            "busy": self._busy or bool(self._open_tasks),
+            "last_delivery_sequence": self._last_delivery_sequence,
+            "run_start_seq": self._run_start_seq,
+            "engine_response_id": self._engine_response_id,
+            "running_input_ids": sorted(self._consumed_commands_since_result),
+            "consumed_input_ids": sorted(self._consumed_commands_since_result | self._produced_commands),
+            "queued_input_ids": queued,
+            "pending_interactions": self.broker.pending_requests(),
+        }
 
     async def submit(self, command: DeliveryCommand) -> str:
         if self._client is None or not self._active:
@@ -1942,6 +1996,11 @@ class RunnerSession:
             # resulting ResultMessage will close this command in FIFO order.
             return
 
+        if released:
+            # The denied callback still produces native tool results and a
+            # ResultMessage. Keep their response open until both are journaled.
+            return
+
         # SDK interrupt returning is the engine's acknowledgement. Claude Code
         # does not always follow it with a ResultMessage when the interrupt
         # races local transcript finalization, so publish one correlated
@@ -1953,6 +2012,7 @@ class RunnerSession:
             or self._consumed_commands_since_result
             or self._buffered_deliveries
         )
+        self._run_start_seq = None
         await self.sender.send(
             "turn_interrupted",
             command_id=command_id,
@@ -1969,8 +2029,7 @@ class RunnerSession:
             or self._pending_prompt_consumptions
             or self._consumed_commands_since_result
         )
-        if not self._busy:
-            await self.sender.send("status", state="idle")
+        await self._report_status()
 
     async def stop_task(self, task_id: str) -> None:
         if self._client is None:
@@ -2041,6 +2100,7 @@ class RunnerSession:
         async for message in self._client.receive_messages():
             platform_input_id: str | None = None
             message_type = type(message).__name__
+            self._track_task(message, message_type)
             if message_type == "UserMessage":
                 content = getattr(message, "content", None)
                 parent_tool_use_id = getattr(message, "parent_tool_use_id", None)
@@ -2114,13 +2174,15 @@ class RunnerSession:
                 )
             if message_type in _PERSISTENT_SDK_MESSAGE_TYPES:
                 extra["requires_persistence"] = True
-            await self.sender.send(
+            sent_seq = await self.sender.send(
                 "event",
                 result_store_sequence=store_sequence,
                 message_type=message_type,
                 message=payload,
                 **extra,
             )
+            if (engine_boundary or platform_input_id is not None) and self._run_start_seq is None:
+                self._run_start_seq = sent_seq
             if engine_boundary:
                 self._busy = True
                 response_id = str(getattr(message, "uuid", None) or "").strip()
@@ -2132,9 +2194,10 @@ class RunnerSession:
                 # aimed at it arrives as an interrupt naming it.
                 self._engine_response_id = response_id
                 self._engine_response_ids.add(response_id)
-                await self.sender.send("status", state="busy")
+                await self._report_status()
             if is_result:
                 self._engine_response_id = None
+                self._run_start_seq = None
                 self._interrupts_awaiting_prompt_boundary.difference_update(
                     self._consumed_commands_since_result
                 )
@@ -2168,8 +2231,7 @@ class RunnerSession:
                     or self._pending_prompt_consumptions
                     or self._consumed_commands_since_result
                 )
-                if not self._busy:
-                    await self.sender.send("status", state="idle")
+                await self._report_status()
 
 
 # ── websocket transport ─────────────────────────────────────────────────────
@@ -2313,10 +2375,6 @@ class RunnerWsServer:
             return
         try:
             await self._open_session(opening, link, ws)
-        except RunnerObservationBusy as exc:
-            await link.send({"op": "error", "code": "OUTPUT_ALREADY_OBSERVED", "detail": str(exc)})
-            await ws.close()
-            return
         except RunnerProtocolError as exc:
             await link.send({"op": "error", "detail": str(exc)})
             await ws.close(code=1002, reason=str(exc))
@@ -2426,7 +2484,7 @@ class RunnerWsServer:
                 with contextlib.suppress(BaseException):
                     await session.stop()
                 raise
-        elif op in {"attach", "observe"}:
+        elif op == "attach":
             if self.session is None or not self.session.is_active:
                 raise RunnerProtocolError("attach with no active session")
             # The credential, before anything the runner holds is compared or
@@ -2462,13 +2520,11 @@ class RunnerWsServer:
             self.session.sender.cursor_window(after_sequence)
             # No await between the ownership check and replacement. A link
             # still handshaking owns output too, before replay makes it ready.
-            if op == "observe" and self.session.sender.link.is_connected():
-                raise RunnerObservationBusy("runner output already has a connected host")
             self.session.attach_link(link)
             logger.info("attached to session %s", self.session.session_id)
         else:
             raise RunnerProtocolError(
-                f"first frame must be prepare|activate|attach|observe, got {op!r}"
+                f"first frame must be prepare|activate|attach, got {op!r}"
             )
         logger.info("runner serving session %s", self.session.session_id)
         _write_death_notice(opening.get("death_notice"))
@@ -2476,6 +2532,7 @@ class RunnerWsServer:
         await link.send({
             "op": "hello",
             "protocol": RUNNER_PROTOCOL,
+            "boot_id": RUNNER_BOOT_ID,
             "session_id": self.session.session_id,
             "engine_contract": engine_contract,
             "last_seq": self.session.sender.last_seq,
@@ -2587,6 +2644,12 @@ class RunnerWsServer:
                 "request_id": request_id,
                 "mode": mode,
             })
+        elif op == "state":
+            await link.send({
+                "op": "state",
+                "request_id": str(frame.get("request_id") or ""),
+                "state": session.state(),
+            })
         elif op == "get_init_info":
             info = await session.get_server_info()
             await link.send({
@@ -2632,9 +2695,9 @@ def transcript_payload_digest(
 
     Canonical (``sort_keys``) JSON, so the value depends on the key/entry
     content and not on the order a serializer happened to emit fields in. The
-    platform recomputes it from the received body and refuses a mismatch;
-    ``tests/transcript_store_sequence_test.py`` holds the two definitions to the
-    same output, since this file may not import the platform's copy.
+    platform recomputes it from the received body and refuses a mismatch, so
+    this copy — this file may not import the platform's — must produce the same
+    output or every append is refused.
     """
     return hashlib.sha256(
         json.dumps(

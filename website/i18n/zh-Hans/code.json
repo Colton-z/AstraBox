@@ -248,12 +248,6 @@
   "home.extend.secrets.builtIn": {
     "message": "内置：本地加密、AWS KMS"
   },
-  "home.extend.repository": {
-    "message": "数据存储"
-  },
-  "home.extend.repository.builtIn": {
-    "message": "内置：PostgreSQL、MongoDB、SQLite"
-  },
   "home.extend.storage": {
     "message": "工作区存储"
   },
@@ -267,7 +261,7 @@
     "message": "内置：管理员在 AstraBox 中保存的配置、LiteLLM MCP 网关"
   },
   "home.extend.conformance": {
-    "message": "{testing} 提供可复用的一致性测试套件，可以在你自己的测试中检查沙箱后端、工作区存储、消息平台、Agent 程序和数据存储的实现。"
+    "message": "{testing} 提供可复用的一致性测试套件，可以在你自己的测试中检查沙箱后端、工作区存储、消息平台和 Agent 程序的实现。"
   },
   "home.extend.link.engine": {
     "message": "接入新的 Agent 程序 →"

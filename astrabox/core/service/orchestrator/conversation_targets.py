@@ -93,7 +93,7 @@ class ConversationTargets:
             return ConversationTarget(
                 kind=kind,
                 target_id=target_id,
-                owner_user_id=str(agent.get("user_id") or "").strip(),
+                owner_user_id=str(agent.get("created_by") or "").strip(),
                 name=str(agent.get("name") or target_id),
             )
         assistant = await self._assistant_catalog_repo.get_assistant(target_id)

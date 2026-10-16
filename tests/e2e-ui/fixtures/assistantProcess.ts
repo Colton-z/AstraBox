@@ -33,13 +33,13 @@ async function expandTurnProcess(container: Locator): Promise<void> {
   // (LazyProcessBlock caches the promise per session, block and cursor), so a
   // header opened, closed and opened again — or remounted by the virtualized
   // list — legitimately makes no request. What this helper waits for is the
-  // content: the panel is visible from its loading line onwards, and what a
-  // header folds is thinking and completed tool calls, which render as at
-  // least one process group. That group is the evidence the blocks are on the
-  // page. How many reads a header costs, and what a failed read shows, are
-  // asserted by assistant-process.parallel.spec.ts, not here.
+  // content: thinking and successful calls render in process groups, while a
+  // failed tool renders its own card outside those groups. Either proves the
+  // folded work reached the page. How many reads a header costs, and what a
+  // failed read shows, are asserted by assistant-process.parallel.spec.ts.
   await expect(
-    container.getByTestId('process-block-details').getByTestId('assistant-process').first(),
+    container.getByTestId('process-block-details')
+      .locator('[data-testid="assistant-process"], [data-tool-call-id]').first(),
     `process block ${blockId} must render the work it stands for`,
   ).toBeAttached({ timeout: DETAIL_TIMEOUT_MS });
 }

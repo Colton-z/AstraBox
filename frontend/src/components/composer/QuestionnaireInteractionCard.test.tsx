@@ -24,7 +24,7 @@ function questionnaire(
 ): PendingQuestionnaireInteraction {
   return {
     interaction_id: 'interaction-1',
-    turn_id: 'turn-1',
+    response_id: 'turn-1',
     tool_name: 'AskUserQuestion',
     presentation: 'form',
     questions,

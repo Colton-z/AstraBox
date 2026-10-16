@@ -339,7 +339,9 @@ def register_artifact_routes(app: FastAPI) -> None:
     async def get_artifact_version(artifact_id: str, version: int, request: Request):
         service = get_platform_service().artifacts
         await service.owned(await get_current_user_context(request), artifact_id)
-        return success_response(public(await service.version(artifact_id, version)))
+        return success_response(
+            public(await service.version(artifact_id, version, content=True))
+        )
 
     @app.post(
         "/api/v1/artifacts/{artifact_id}/versions/{version}/restore",

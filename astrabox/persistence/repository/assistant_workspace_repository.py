@@ -1,204 +1,203 @@
-"""Repository for the assistant_workspace collection.
+"""Assistant workspaces: which box an Assistant runs in, and who may change that.
 
-Primary-key fence per assistant runtime: ``_id = sha1(assistant_id)`` because
-the long-running sandbox belongs to the assistant class, not to each user.
-User isolation is handled inside the shared sandbox by per-user assistant
-profiles and by session ownership.
+A workspace belongs to the Assistant, not to each user: one row per Assistant,
+keyed by its id. User isolation inside the shared box comes from per-user
+profiles (``assistant_profiles``) and from Session ownership.
+
+Every transition is one conditional ``UPDATE``. Its predicate names what the
+transition depends on — the state, the box the pointer names, the Session
+elected to build the next box and its startup generation — so a transition
+computed from a row that has since moved changes nothing and returns
+``False``. ``AssistantWorkspaceService`` documents what each one fences. The
+transitions that retire a box delete its profile rows in the same statement.
 """
 
 from __future__ import annotations
 
-import hashlib
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
-from astrabox.persistence.repository.backend import (
-    get_async_collection,
-    run_mongo_with_retry,
+from sqlalchemy import (
+    ColumnElement,
+    Select,
+    Text,
+    delete,
+    exists,
+    func,
+    literal,
+    literal_column,
+    or_,
+    select,
+    update,
 )
-from astrabox.persistence.repository.index_verification import ensure_unique_index
-from astrabox.persistence.repository.session_repository import _safe_create_index
-from astrabox.common.logger.logger_factory import get_logger
-from astrabox.common.utils.settings import load_astrabox_settings
-from astrabox.common.utils.time_utils import utcnow_iso
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-logger = get_logger(__name__)
+from astrabox.persistence.sql import fetch_all, fetch_one, fetch_value, from_iso, to_iso
+from astrabox.persistence.sql.models.assistants import (
+    WORKSPACE_STATES,
+    Assistant,
+    AssistantProfile,
+    AssistantWorkspace,
+)
+
+__all__ = ["WORKSPACE_STATES", "AssistantWorkspaceRepository", "MaterializerClaim"]
+
+_ASSISTANTS = Assistant.__table__
+_WORKSPACES = AssistantWorkspace.__table__
+_PROFILES = AssistantProfile.__table__
+_COLUMNS = _WORKSPACES.c
+
+_SWEEP_PAGE_MAX = 500
 
 
-def assistant_workspace_fence_id(user_id: str, assistant_id: str) -> str:
-    """Deterministic primary key for one shared assistant runtime sandbox.
+def _deadline(epoch_seconds: Any) -> datetime:
+    return datetime.fromtimestamp(float(epoch_seconds), tz=timezone.utc)
 
-    Keyed on ``assistant_id`` alone: the long-running sandbox belongs to the
-    assistant class, not to each user, so ``user_id`` is accepted for call-site
-    symmetry and deliberately ignored.
-    """
-    _ = user_id
-    raw = f"assistant|{assistant_id}".encode("utf-8")
-    return hashlib.sha1(raw).hexdigest()
+
+def _profiles_column() -> Any:
+    """The workspace's profile rows, keyed by marker key."""
+    return (
+        select(
+            func.jsonb_object_agg(
+                _PROFILES.c.marker_key,
+                func.jsonb_build_object(
+                    literal_column("'user_id'"),
+                    _PROFILES.c.user_id,
+                    literal_column("'sandbox_id'"),
+                    _PROFILES.c.sandbox_id,
+                    literal_column("'configuration_revision'"),
+                    _PROFILES.c.configuration_revision,
+                ),
+            )
+        )
+        .where(_PROFILES.c.assistant_id == _COLUMNS.assistant_id)
+        .scalar_subquery()
+        .label("assistant_profiles")
+    )
+
+
+def _view(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """A stored workspace as services read it."""
+    if row is None:
+        return None
+    workspace: dict[str, Any] = {
+        "assistant_id": row["assistant_id"],
+        "created_by_user_id": row["created_by_user_id"],
+        "engine_kind": row["engine_kind"],
+        "state": row["state"],
+        "current_sandbox_id": row["current_sandbox_id"],
+        "current_sandbox_expires_at": to_iso(row["current_sandbox_expires_at"]),
+        "runtime_identity": row["runtime_identity"],
+        "provisioning_session_id": row["provisioning_session_id"],
+        "provisioning_sandbox_generation": row["provisioning_sandbox_generation"],
+        "last_error": row["last_error"],
+        "hibernated_at": to_iso(row["hibernated_at"]),
+        "post_commit_cleanup_pending": row["post_commit_cleanup_pending"],
+        "profile_refresh": (
+            {
+                "revision": row["profile_refresh_revision"],
+                "session_id": row["profile_refresh_session_id"],
+                "started_at": to_iso(row["profile_refresh_started_at"]),
+            }
+            if row["profile_refresh_revision"] is not None
+            else None
+        ),
+        "prepared_operation": (
+            {
+                "provider": row["prepared_operation_provider"],
+                "operation_id": row["prepared_operation_id"],
+                "deadline": row["prepared_operation_deadline"].timestamp(),
+            }
+            if row["prepared_operation_id"] is not None
+            else None
+        ),
+        "created_at": to_iso(row["created_at"]),
+        "updated_at": to_iso(row["updated_at"]),
+    }
+    if "assistant_profiles" in row:
+        workspace["assistant_profiles"] = dict(row["assistant_profiles"] or {})
+    return workspace
+
+
+@dataclass(frozen=True)
+class MaterializerClaim:
+    """The materializer a transition expects the workspace still to be claimed by."""
+
+    state: str
+    provisioning_session_id: str
+    provisioning_sandbox_generation: str | None
+
+    def conditions(self) -> list[ColumnElement[bool]]:
+        return [
+            _COLUMNS.state == self.state,
+            _COLUMNS.provisioning_session_id == self.provisioning_session_id,
+            _COLUMNS.provisioning_sandbox_generation.is_not_distinct_from(
+                self.provisioning_sandbox_generation
+            ),
+        ]
+
+
+#: What clearing a retired box writes, besides the transition's own state.
+_BOX_RETIRED = {
+    "current_sandbox_id": None,
+    "current_sandbox_expires_at": None,
+    "runtime_identity": None,
+    "provisioning_session_id": None,
+    "provisioning_sandbox_generation": None,
+    "post_commit_cleanup_pending": False,
+}
 
 
 class AssistantWorkspaceRepository:
-    def __init__(self) -> None:
-        settings = load_astrabox_settings()
-        self._collection_name = settings.assistant_workspace_collection
-        self._index_ready = False
+    """One workspace row per Assistant, and the profiles prepared in its box."""
 
-    async def _ensure_indexes(self) -> None:
-        if self._index_ready:
-            return
-        collection = await get_async_collection(self._collection_name)
-        if collection is not None:
-            await ensure_unique_index(
-                collection,
-                "assistant_id",
-                collection_name=self._collection_name,
+    # ── reads ────────────────────────────────────────────────────────────
+
+    async def get_workspace(self, assistant_id: str) -> dict[str, Any] | None:
+        """The Assistant's workspace with its profiles, or ``None``."""
+        return _view(
+            await fetch_one(
+                select(_WORKSPACES, _profiles_column()).where(_COLUMNS.assistant_id == assistant_id)
             )
-            try:
-                await _safe_create_index(
-                    collection,
-                    [("state", 1), ("updated_at", 1)],
-                )
-                await _safe_create_index(collection, "current_sandbox_id")
-                await _safe_create_index(
-                    collection,
-                    [("current_sandbox_id", 1), ("current_sandbox_expires_at", 1)],
-                )
-            except Exception as exc:
-                logger.warning(
-                    "ensure assistant_workspace indexes failed: %s", exc
-                )
-        self._index_ready = True
-
-    async def materialize_workspace(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Insert workspace row keyed on sha1 ``_id`` fence.
-
-        Caller passes creator/bootstrap ``user_id`` + ``assistant_id``; only
-        ``assistant_id`` participates in the shared-runtime ``_id``.
-        Returns the stored doc or raises if the primary-key fence trips.
-        """
-        await self._ensure_indexes()
-        user_id = str(
-            payload.get("user_id")
-            or payload.get("created_by_user_id")
-            or payload.get("bootstrap_user_id")
-            or ""
-        ).strip()
-        assistant_id = str(payload.get("assistant_id") or "").strip()
-        if not user_id or not assistant_id:
-            raise ValueError(
-                "assistant_workspace.materialize requires user_id and assistant_id"
-            )
-        fence_id = assistant_workspace_fence_id(user_id, assistant_id)
-        now = utcnow_iso()
-        doc = {
-            **payload,
-            "_id": fence_id,
-            "created_at": now,
-            "updated_at": now,
-            "created_by_user_id": user_id,
-            "state": "MATERIALIZING",
-            "current_sandbox_id": None,
-            "current_sandbox_expires_at": None,
-        }
-        collection = await get_async_collection(self._collection_name)
-        await run_mongo_with_retry(
-            "assistant_workspace.materialize",
-            lambda: collection.insert_one(doc),
-        )
-        stored = await run_mongo_with_retry(
-            "assistant_workspace.read_after_materialize",
-            lambda: collection.find_one({"_id": fence_id}),
-        )
-        return stored or doc
-
-    async def get_workspace(
-        self, user_id: str, assistant_id: str
-    ) -> dict[str, Any] | None:
-        fence_id = assistant_workspace_fence_id(user_id, assistant_id)
-        collection = await get_async_collection(self._collection_name)
-        return await run_mongo_with_retry(
-            "assistant_workspace.get",
-            lambda: collection.find_one({"_id": fence_id}),
         )
 
-    async def list_runtime_references(
-        self, assistant_ids: list[str], *, transaction: Any,
-    ) -> list[dict[str, Any]]:
-        """Read resource ownership even after the catalog or workspace is deleted."""
-        if not assistant_ids:
-            return []
-        cursor = transaction.collection(self._collection_name).find(
-            {"assistant_id": {"$in": assistant_ids}},
-            projection={
-                "assistant_id": 1, "state": 1, "current_sandbox_id": 1,
-                "provisioning_session_id": 1,
-            },
+    async def has_workspace(self, assistant_id: str) -> bool:
+        return bool(
+            await fetch_value(select(exists().where(_COLUMNS.assistant_id == assistant_id)))
         )
-        return [doc async for doc in cursor]
 
-    async def has_assistant_workspace(self, assistant_id: str) -> bool:
-        collection = await get_async_collection(self._collection_name)
-        found = await run_mongo_with_retry(
-            "assistant_workspace.has_assistant",
-            lambda: collection.find_one({"assistant_id": assistant_id}, {"_id": 1}),
-        )
-        return found is not None
-
-    async def list_workspaces_by_sandbox_id(
-        self, sandbox_id: str
-    ) -> list[dict[str, Any]]:
-        """Return every live workspace whose authoritative pointer names a box."""
+    async def list_workspaces_by_sandbox_id(self, sandbox_id: str) -> list[dict[str, Any]]:
+        """Every workspace whose pointer names the box."""
         target = str(sandbox_id or "").strip()
         if not target:
             return []
-        await self._ensure_indexes()
-        collection = await get_async_collection(self._collection_name)
-
-        async def _list() -> list[dict[str, Any]]:
-            cursor = collection.find(
-                {"current_sandbox_id": target, "deleted": {"$ne": True}}
-            )
-            return [doc async for doc in cursor]
-
-        return await run_mongo_with_retry(
-            "assistant_workspace.list_by_sandbox_id",
-            _list,
-            fault_context={"sandbox_id": target},
+        rows = await fetch_all(
+            select(_WORKSPACES)
+            .where(_COLUMNS.current_sandbox_id == target)
+            .order_by(_COLUMNS.assistant_id)
         )
+        return [view for view in map(_view, rows) if view is not None]
 
     async def list_dead_binding_probe_candidates(
-        self,
-        *,
-        now_iso: str,
-        after_assistant_id: str | None = None,
-        limit: int = 50,
+        self, *, now_iso: str, after_assistant_id: str | None = None, limit: int = 50
     ) -> list[dict[str, Any]]:
-        """One page of the workspace sandboxes whose durable lease is absent or stale.
+        """One page of the workspaces naming a box whose lease is absent or past.
 
-        Rows come in ``assistant_id`` order after ``after_assistant_id``: a
-        probe that cannot settle a binding leaves its row in the set.
+        Rows come in ``assistant_id`` order after ``after_assistant_id``: a probe
+        that cannot settle a binding leaves its row in the set.
         """
-        page_limit = max(1, min(int(limit or 50), 500))
-        query: dict[str, Any] = {
-            "deleted": {"$ne": True},
-            "current_sandbox_id": {"$gt": ""},
-            "$or": [
-                {"current_sandbox_expires_at": {"$exists": False}},
-                {"current_sandbox_expires_at": None},
-                {"current_sandbox_expires_at": {"$lte": now_iso}},
+        now = from_iso(now_iso)
+        return await self._bound_page(
+            [
+                or_(
+                    _COLUMNS.current_sandbox_expires_at.is_(None),
+                    _COLUMNS.current_sandbox_expires_at <= now,
+                )
             ],
-        }
-        after = str(after_assistant_id or "").strip()
-        if after:
-            query["assistant_id"] = {"$gt": after}
-        collection = await get_async_collection(self._collection_name)
-
-        async def _list() -> list[dict[str, Any]]:
-            cursor = collection.find(query).sort("assistant_id", 1).limit(page_limit)
-            return [doc async for doc in cursor]
-
-        return await run_mongo_with_retry(
-            "assistant_workspace.list_dead_binding_probe_candidates",
-            _list,
+            after=after_assistant_id,
+            limit=limit,
         )
 
     async def list_ready_workspaces(
@@ -209,23 +208,11 @@ class AssistantWorkspaceRepository:
         These are exactly the bindings :meth:`list_dead_binding_probe_candidates`
         leaves out, so the two never probe the same box in one tick.
         """
-        page_limit = max(1, min(int(limit or 50), 500))
-        query: dict[str, Any] = {
-            "deleted": {"$ne": True},
-            "state": "READY",
-            "current_sandbox_id": {"$gt": ""},
-            "current_sandbox_expires_at": {"$gt": now_iso},
-        }
-        after = str(after_assistant_id or "").strip()
-        if after:
-            query["assistant_id"] = {"$gt": after}
-        collection = await get_async_collection(self._collection_name)
-
-        async def _list() -> list[dict[str, Any]]:
-            cursor = collection.find(query).sort("assistant_id", 1).limit(page_limit)
-            return [doc async for doc in cursor]
-
-        return await run_mongo_with_retry("assistant_workspace.list_ready_workspaces", _list)
+        return await self._bound_page(
+            [_COLUMNS.state == "READY", _COLUMNS.current_sandbox_expires_at > from_iso(now_iso)],
+            after=after_assistant_id,
+            limit=limit,
+        )
 
     async def list_lease_renewal_candidates(
         self,
@@ -235,284 +222,557 @@ class AssistantWorkspaceRepository:
         after_assistant_id: str | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
-        """One page of READY workspaces whose live lease ends before ``renew_before_iso``.
+        """One page of READY workspaces whose live lease ends by ``renew_before_iso``.
 
         A lease already past ``now_iso`` is the dead-binding sweep's, not a
         renewal's: the box may be gone.
         """
-        page_limit = max(1, min(int(limit or 50), 500))
-        query: dict[str, Any] = {
-            "deleted": {"$ne": True},
-            "state": "READY",
-            "current_sandbox_id": {"$gt": ""},
-            "current_sandbox_expires_at": {"$gt": now_iso, "$lte": renew_before_iso},
-        }
-        after = str(after_assistant_id or "").strip()
-        if after:
-            query["assistant_id"] = {"$gt": after}
-        collection = await get_async_collection(self._collection_name)
-
-        async def _list() -> list[dict[str, Any]]:
-            cursor = collection.find(query).sort("assistant_id", 1).limit(page_limit)
-            return [doc async for doc in cursor]
-
-        return await run_mongo_with_retry(
-            "assistant_workspace.list_lease_renewal_candidates",
-            _list,
+        return await self._bound_page(
+            [
+                _COLUMNS.state == "READY",
+                _COLUMNS.current_sandbox_expires_at > from_iso(now_iso),
+                _COLUMNS.current_sandbox_expires_at <= from_iso(renew_before_iso),
+            ],
+            after=after_assistant_id,
+            limit=limit,
         )
 
-    async def update_workspace(
-        self, user_id: str, assistant_id: str, updates: dict[str, Any]
-    ) -> bool:
-        fence_id = assistant_workspace_fence_id(user_id, assistant_id)
-        updates = {**updates, "updated_at": utcnow_iso()}
-        collection = await get_async_collection(self._collection_name)
-        result = await run_mongo_with_retry(
-            "assistant_workspace.update",
-            lambda: collection.update_one({"_id": fence_id}, {"$set": updates}),
+    async def _bound_page(
+        self, conditions: Sequence[ColumnElement[bool]], *, after: str | None, limit: int
+    ) -> list[dict[str, Any]]:
+        statement: Select[Any] = select(_WORKSPACES).where(
+            _COLUMNS.current_sandbox_id.is_not(None), *conditions
         )
-        return result.modified_count > 0
+        after_id = str(after or "").strip()
+        if after_id:
+            statement = statement.where(_COLUMNS.assistant_id > after_id)
+        rows = await fetch_all(
+            statement.order_by(_COLUMNS.assistant_id).limit(
+                max(1, min(int(limit or 50), _SWEEP_PAGE_MAX))
+            )
+        )
+        return [view for view in map(_view, rows) if view is not None]
 
-    async def compare_and_update_workspace(
+    # ── creation ─────────────────────────────────────────────────────────
+
+    async def create_workspace(
         self,
-        user_id: str,
+        *,
+        assistant_id: str,
+        created_by_user_id: str,
+        engine_kind: str,
+        provisioning_session_id: str,
+    ) -> dict[str, Any] | None:
+        """Insert the Assistant's workspace, MATERIALIZING under ``provisioning_session_id``.
+
+        ``None`` when the workspace already exists or the Assistant is not live.
+        The Assistant row is share-locked for the insert, so a concurrent
+        deletion either waits for it or makes it insert nothing.
+        """
+        live = (
+            select(_ASSISTANTS.c.assistant_id)
+            .where(_ASSISTANTS.c.assistant_id == assistant_id, _ASSISTANTS.c.deleted.is_(False))
+            .with_for_update(read=True)
+            .cte("live")
+        )
+        statement = (
+            pg_insert(_WORKSPACES)
+            .from_select(
+                [
+                    "assistant_id",
+                    "created_by_user_id",
+                    "engine_kind",
+                    "state",
+                    "provisioning_session_id",
+                ],
+                select(
+                    live.c.assistant_id,
+                    literal(created_by_user_id, Text),
+                    literal(engine_kind, Text),
+                    literal("MATERIALIZING", Text),
+                    literal(provisioning_session_id, Text),
+                ),
+            )
+            .on_conflict_do_nothing(index_elements=["assistant_id"])
+            .returning(_WORKSPACES)
+        )
+        row = await fetch_one(statement)
+        if row is None:
+            return None
+        return _view({**row, "assistant_profiles": None})
+
+    # ── transitions ──────────────────────────────────────────────────────
+
+    async def _transition(
+        self,
+        assistant_id: str,
+        conditions: Sequence[ColumnElement[bool]],
+        values: Mapping[str, Any],
+        *,
+        retire_profiles: bool = False,
+    ) -> bool:
+        """Apply ``values`` if the row still satisfies ``conditions``; whether it did."""
+        moved = (
+            update(_WORKSPACES)
+            .where(_COLUMNS.assistant_id == assistant_id, *conditions)
+            .values(**values, updated_at=func.now())
+            .returning(_COLUMNS.assistant_id)
+        )
+        if not retire_profiles:
+            return await fetch_one(moved) is not None
+        transitioned = moved.cte("transitioned")
+        retired = (
+            delete(_PROFILES)
+            .where(_PROFILES.c.assistant_id.in_(select(transitioned.c.assistant_id)))
+            .cte("retired")
+        )
+        count = await fetch_value(
+            select(func.count()).select_from(transitioned).add_cte(retired)
+        )
+        return bool(count)
+
+    async def record_lease(
+        self, assistant_id: str, *, sandbox_id: str, expires_at: str | None
+    ) -> bool:
+        """Store a renewed lease while the pointer still names ``sandbox_id``."""
+        return await self._transition(
+            assistant_id,
+            [_COLUMNS.current_sandbox_id == sandbox_id],
+            {"current_sandbox_expires_at": from_iso(expires_at)},
+        )
+
+    async def realign_lease(
+        self,
         assistant_id: str,
         *,
-        expected: dict[str, Any],
-        updates: dict[str, Any],
+        sandbox_id: str,
+        observed_expires_at: str | None,
+        expires_at: str | None,
     ) -> bool:
-        fence_id = assistant_workspace_fence_id(user_id, assistant_id)
-        updates = {**updates, "updated_at": utcnow_iso()}
-        query = {"_id": fence_id, **dict(expected)}
-        # Wake reserves a Session before it can supply that Session's generation.
-        if "provisioning_sandbox_generation" in expected and expected["provisioning_sandbox_generation"] is None:
-            query.pop("provisioning_sandbox_generation")
-            query["$and"] = [
-                *query.get("$and", []),
-                {"$or": [
-                    {"provisioning_sandbox_generation": None},
-                    {"provisioning_sandbox_generation": {"$exists": False}},
-                ]},
-            ]
-        collection = await get_async_collection(self._collection_name)
-        result = await run_mongo_with_retry(
-            "assistant_workspace.compare_and_update",
-            lambda: collection.update_one(
-                query,
-                {"$set": updates},
-            ),
-        )
-        return bool(
-            getattr(result, "modified_count", 0)
-            or getattr(result, "matched_count", 0)
+        """Store the provider's lease while neither the pointer nor the lease moved."""
+        return await self._transition(
+            assistant_id,
+            [
+                _COLUMNS.current_sandbox_id == sandbox_id,
+                _COLUMNS.current_sandbox_expires_at.is_not_distinct_from(
+                    from_iso(observed_expires_at)
+                ),
+            ],
+            {"current_sandbox_expires_at": from_iso(expires_at)},
         )
 
-    # ── Durable shared-workspace provisioning authority (no TTL) ──
+    async def converge_dead_sandbox(
+        self, assistant_id: str, *, observed_state: str, sandbox_id: str, last_error: str
+    ) -> bool:
+        """RECOVERY_REQUIRED with no box, while the row is still ``observed_state`` on the box."""
+        return await self._transition(
+            assistant_id,
+            [_COLUMNS.state == observed_state, _COLUMNS.current_sandbox_id == sandbox_id],
+            {
+                **_BOX_RETIRED,
+                "state": "RECOVERY_REQUIRED",
+                "hibernated_at": None,
+                "last_error": last_error,
+            },
+            retire_profiles=True,
+        )
 
-    async def mark_ready(
+    async def claim_materialization(
+        self, assistant_id: str, *, expected_state: str, provisioning_session_id: str
+    ) -> bool:
+        """MATERIALIZING under the Session, while the row is ``expected_state`` and unclaimed."""
+        return await self._transition(
+            assistant_id,
+            [_COLUMNS.state == expected_state, _COLUMNS.provisioning_session_id.is_(None)],
+            {
+                "state": "MATERIALIZING",
+                "provisioning_session_id": provisioning_session_id,
+                "provisioning_sandbox_generation": None,
+                "hibernated_at": None,
+                "last_error": None,
+            },
+        )
+
+    async def claim_materialization_generation(
         self,
-        user_id: str,
         assistant_id: str,
         *,
         provisioning_session_id: str,
-        provisioning_sandbox_generation: str | None,
+        observed_generation: str | None,
+        sandbox_generation: str,
+    ) -> bool:
+        """Qualify the claiming Session with its startup generation."""
+        return await self._transition(
+            assistant_id,
+            MaterializerClaim(
+                state="MATERIALIZING",
+                provisioning_session_id=provisioning_session_id,
+                provisioning_sandbox_generation=observed_generation,
+            ).conditions(),
+            {"provisioning_sandbox_generation": sandbox_generation},
+        )
+
+    async def reopen_materialization(self, assistant_id: str) -> bool:
+        """MATERIALIZING again, for a RECOVERY_REQUIRED row with no box and no claim."""
+        return await self._transition(
+            assistant_id,
+            [
+                _COLUMNS.state == "RECOVERY_REQUIRED",
+                _COLUMNS.current_sandbox_id.is_(None),
+                _COLUMNS.provisioning_session_id.is_(None),
+            ],
+            {"state": "MATERIALIZING"},
+        )
+
+    async def claim_profile_refresh(
+        self,
+        assistant_id: str,
+        *,
+        sandbox_id: str,
+        revision: str,
+        session_id: str,
+        started_at: datetime,
+        retry_before: datetime,
+    ) -> bool:
+        """Elect ``session_id`` to prepare ``revision`` on the READY box.
+
+        The same revision is claimed again only once the earlier claim started
+        before ``retry_before``.
+        """
+        return await self._transition(
+            assistant_id,
+            [
+                _COLUMNS.state == "READY",
+                _COLUMNS.current_sandbox_id == sandbox_id,
+                or_(
+                    _COLUMNS.profile_refresh_revision.is_distinct_from(revision),
+                    _COLUMNS.profile_refresh_started_at < retry_before,
+                ),
+            ],
+            {
+                "profile_refresh_revision": revision,
+                "profile_refresh_session_id": session_id,
+                "profile_refresh_started_at": started_at,
+            },
+        )
+
+    async def mark_ready(
+        self,
+        assistant_id: str,
+        *,
+        provisioning_session_id: str,
+        provisioning_sandbox_generation: str,
         sandbox_id: str,
         expires_at: str | None,
-        runtime_identity: dict[str, Any] | None,
-        profile_marker_key: str,
-        profile_marker: dict[str, Any],
+        runtime_identity: Mapping[str, Any] | None,
+        marker_key: str,
+        user_id: str,
+        configuration_revision: str,
     ) -> bool:
-        """Bind the started sandbox onto the workspace and publish READY.
+        """Bind the started box, publish READY and the materializer's profile, in one statement.
 
-        This is the single writer of ``current_sandbox_id``: the caller has
-        already created and started the sandbox, so this transition both
-        records that pointer and flips MATERIALIZING to READY under the
-        assistant fence.  An already-READY row holding the same sandbox is
-        treated as success so a retried startup is idempotent.
+        Only the claiming Session at its generation can publish. A retry after
+        a publication that already landed answers ``True`` without writing.
         """
-        _ = user_id
-        resolved_assistant_id = str(assistant_id or "").strip()
-        resolved_provisioning_session_id = str(provisioning_session_id or "").strip()
-        resolved_sandbox_id = str(sandbox_id or "").strip()
-        if not resolved_assistant_id:
-            raise ValueError("assistant_id is required")
-        if not resolved_sandbox_id:
-            raise ValueError("sandbox_id is required")
-        if not resolved_provisioning_session_id:
-            raise ValueError("provisioning_session_id is required")
-        if not provisioning_sandbox_generation:
-            raise ValueError("provisioning_sandbox_generation is required")
-        fence_id = assistant_workspace_fence_id("", resolved_assistant_id)
-        collection = await get_async_collection(self._collection_name)
-        now = utcnow_iso()
-        updates: dict[str, Any] = {
-            "state": "READY",
-            "current_sandbox_id": resolved_sandbox_id,
-            "current_sandbox_expires_at": expires_at,
-            "hibernated_at": None,
-            "last_error": None,
-            "runtime_identity": runtime_identity,
-            "provisioning_session_id": None,
-            "provisioning_sandbox_generation": None,
-            f"assistant_profiles.{profile_marker_key}": dict(profile_marker),
-            "updated_at": now,
-        }
-        query = {
-            "_id": fence_id,
-            "assistant_id": resolved_assistant_id,
-            "deleted": {"$ne": True},
-            "state": "MATERIALIZING",
-            "provisioning_session_id": resolved_provisioning_session_id,
-            "provisioning_sandbox_generation": provisioning_sandbox_generation,
-        }
-        result = await run_mongo_with_retry(
-            "assistant_workspace.mark_ready",
-            lambda: collection.update_one(query, {"$set": updates}),
+        ready = (
+            update(_WORKSPACES)
+            .where(
+                _COLUMNS.assistant_id == assistant_id,
+                _COLUMNS.state == "MATERIALIZING",
+                _COLUMNS.provisioning_session_id == provisioning_session_id,
+                _COLUMNS.provisioning_sandbox_generation == provisioning_sandbox_generation,
+            )
+            .values(
+                state="READY",
+                current_sandbox_id=sandbox_id,
+                current_sandbox_expires_at=from_iso(expires_at),
+                hibernated_at=None,
+                last_error=None,
+                runtime_identity=dict(runtime_identity) if runtime_identity is not None else None,
+                provisioning_session_id=None,
+                provisioning_sandbox_generation=None,
+                updated_at=func.now(),
+            )
+            .returning(_COLUMNS.assistant_id)
+            .cte("ready")
         )
-        if bool(getattr(result, "modified_count", 0)):
+        published = await fetch_one(
+            self._profile_upsert(
+                select(ready.c.assistant_id),
+                marker_key=marker_key,
+                user_id=user_id,
+                sandbox_id=sandbox_id,
+                configuration_revision=configuration_revision,
+            )
+        )
+        if published is not None:
             return True
-        current = await run_mongo_with_retry(
-            "assistant_workspace.mark_ready.read_after_retry",
-            lambda: collection.find_one(
-                {
-                    "_id": fence_id,
-                    "assistant_id": resolved_assistant_id,
-                    "deleted": {"$ne": True},
-                    "state": "READY",
-                    "current_sandbox_id": resolved_sandbox_id,
-                    "provisioning_session_id": None,
-                    "provisioning_sandbox_generation": None,
-                    f"assistant_profiles.{profile_marker_key}.status": "ready",
-                    f"assistant_profiles.{profile_marker_key}.sandbox_id": resolved_sandbox_id,
-                }
+        return bool(
+            await fetch_value(
+                select(
+                    exists().where(
+                        _COLUMNS.assistant_id == assistant_id,
+                        _COLUMNS.state == "READY",
+                        _COLUMNS.current_sandbox_id == sandbox_id,
+                        _COLUMNS.provisioning_session_id.is_(None),
+                        _COLUMNS.provisioning_sandbox_generation.is_(None),
+                        _PROFILES.c.assistant_id == _COLUMNS.assistant_id,
+                        _PROFILES.c.marker_key == marker_key,
+                        _PROFILES.c.sandbox_id == sandbox_id,
+                    )
+                )
+            )
+        )
+
+    async def mark_profile_ready(
+        self,
+        assistant_id: str,
+        *,
+        sandbox_id: str,
+        marker_key: str,
+        user_id: str,
+        configuration_revision: str,
+    ) -> bool:
+        """Record a user's profile prepared in the box while the workspace is READY on it."""
+        current = (
+            select(_COLUMNS.assistant_id)
+            .where(
+                _COLUMNS.assistant_id == assistant_id,
+                _COLUMNS.state == "READY",
+                _COLUMNS.current_sandbox_id == sandbox_id,
+            )
+            .with_for_update(read=True)
+            .cte("bound")
+        )
+        return (
+            await fetch_one(
+                self._profile_upsert(
+                    select(current.c.assistant_id),
+                    marker_key=marker_key,
+                    user_id=user_id,
+                    sandbox_id=sandbox_id,
+                    configuration_revision=configuration_revision,
+                )
+            )
+            is not None
+        )
+
+    @staticmethod
+    def _profile_upsert(
+        source: Select[Any],
+        *,
+        marker_key: str,
+        user_id: str,
+        sandbox_id: str,
+        configuration_revision: str,
+    ) -> Any:
+        """Insert or replace one profile row for each workspace id ``source`` selects."""
+        statement = pg_insert(_PROFILES).from_select(
+            ["assistant_id", "marker_key", "user_id", "sandbox_id", "configuration_revision"],
+            source.add_columns(
+                literal(marker_key, Text),
+                literal(user_id, Text),
+                literal(sandbox_id, Text),
+                literal(configuration_revision, Text),
             ),
         )
-        return isinstance(current, dict)
+        return statement.on_conflict_do_update(
+            index_elements=["assistant_id", "marker_key"],
+            set_={
+                "user_id": statement.excluded.user_id,
+                "sandbox_id": statement.excluded.sandbox_id,
+                "configuration_revision": statement.excluded.configuration_revision,
+                "ready_at": func.now(),
+            },
+        ).returning(_PROFILES.c.assistant_id)
 
     async def mark_post_commit_failure(
         self,
-        user_id: str,
         assistant_id: str,
         *,
         sandbox_id: str,
         cleanup_confirmed: bool,
         failure_phase: str,
     ) -> bool:
-        """Fence a failure that happened after the sandbox was bound.
+        """RECOVERY_REQUIRED for a failure after the box was bound.
 
-        Confirmed cleanup clears the live pointer.  Unconfirmed cleanup retains
-        it so wake can retry destroying that exact sandbox; neither branch
-        permits a new sandbox while cleanup is ambiguous.
-
-        ``cleanup_confirmed`` is a fact this layer cannot check and must be
-        handed: the service above evaluates it with
-        :func:`~astrabox.seams.sandbox_disposal.may_sever_last_name` against
-        the destruction verdict and this exact sandbox id, so what arrives here
-        is the result of the pairing rule rather than a caller's belief. This
-        method's own contribution is the compare-and-set on
-        ``current_sandbox_id``, which is what stops a true value computed
-        about sandbox A from clearing a pointer that has since moved to B.
+        A confirmed cleanup clears the pointer; an unconfirmed one keeps it so
+        a wake can retry destroying exactly that box. Either way the row must
+        still name ``sandbox_id``, which stops a verdict about box A from
+        clearing a pointer that has since moved to box B. A retry that finds
+        the row already converged answers ``True``.
         """
-        _ = user_id
-        resolved_assistant_id = str(assistant_id or "").strip()
-        resolved_sandbox_id = str(sandbox_id or "").strip()
-        resolved_phase = str(failure_phase or "").strip().lower()
-        if not resolved_assistant_id:
-            raise ValueError("assistant_id is required")
-        if not resolved_sandbox_id:
-            raise ValueError("sandbox_id is required")
-        if not resolved_phase:
-            raise ValueError("failure_phase is required")
-        if type(cleanup_confirmed) is not bool:
-            raise ValueError("cleanup_confirmed must be boolean")
-        fence_id = assistant_workspace_fence_id("", resolved_assistant_id)
-        collection = await get_async_collection(self._collection_name)
-        now = utcnow_iso()
-        updates: dict[str, Any] = {
+        last_error = f"post_commit_{failure_phase}"
+        values: dict[str, Any] = {
             "state": "RECOVERY_REQUIRED",
-            "last_error": f"post_commit_{resolved_phase}",
+            "last_error": last_error,
             "post_commit_cleanup_pending": not cleanup_confirmed,
-            "updated_at": now,
         }
         if cleanup_confirmed:
-            updates.update(
-                {
-                    "current_sandbox_id": None,
-                    "current_sandbox_expires_at": None,
-                }
-            )
-        query = {
-            "_id": fence_id,
-            "assistant_id": resolved_assistant_id,
-            "deleted": {"$ne": True},
-            "state": {"$in": ["MATERIALIZING", "READY", "RECOVERY_REQUIRED"]},
-            "current_sandbox_id": resolved_sandbox_id,
-        }
-        result = await run_mongo_with_retry(
-            "assistant_workspace.mark_post_commit_failure",
-            lambda: collection.update_one(query, {"$set": updates}),
-        )
-        # A match is not a convergence when this write is the one clearing the
-        # pointer. `matched_count` without `modified_count` means the row
-        # already looked like the target — which for the retaining branch is
-        # genuinely "already converged", but for the clearing branch would
-        # report a pointer as released on a write that changed nothing. Every
-        # `$set` here includes `updated_at`, so a matched row is modified in
-        # practice; the distinction is kept anyway, because the branch that
-        # severs a name should not be the one relying on that.
-        if bool(getattr(result, "modified_count", 0)):
+            values.update(current_sandbox_id=None, current_sandbox_expires_at=None)
+        if await self._transition(
+            assistant_id,
+            [
+                _COLUMNS.state.in_(("MATERIALIZING", "READY", "RECOVERY_REQUIRED")),
+                _COLUMNS.current_sandbox_id == sandbox_id,
+            ],
+            values,
+        ):
             return True
-        if not cleanup_confirmed and bool(getattr(result, "matched_count", 0)):
-            return True
-        convergence: dict[str, Any] = {
-            "_id": fence_id,
-            "assistant_id": resolved_assistant_id,
-            "state": "RECOVERY_REQUIRED",
-            "last_error": updates["last_error"],
-            "post_commit_cleanup_pending": updates["post_commit_cleanup_pending"],
-        }
-        current = await run_mongo_with_retry(
-            "assistant_workspace.mark_post_commit_failure.read_after_retry",
-            lambda: collection.find_one(convergence),
+        return bool(
+            await fetch_value(
+                select(
+                    exists().where(
+                        _COLUMNS.assistant_id == assistant_id,
+                        _COLUMNS.state == "RECOVERY_REQUIRED",
+                        _COLUMNS.last_error == last_error,
+                        _COLUMNS.post_commit_cleanup_pending.is_(not cleanup_confirmed),
+                    )
+                )
+            )
         )
-        return isinstance(current, dict)
 
+    async def begin_hibernation(
+        self, assistant_id: str, *, sandbox_id: str, hibernated_at: str
+    ) -> bool:
+        """HIBERNATING, while READY on ``sandbox_id``."""
+        return await self._transition(
+            assistant_id,
+            [_COLUMNS.state == "READY", _COLUMNS.current_sandbox_id == sandbox_id],
+            {"state": "HIBERNATING", "hibernated_at": from_iso(hibernated_at), "last_error": None},
+        )
 
-    async def list_all_workspaces(
-        self, limit: int = 500
-    ) -> list[dict[str, Any]]:
-        collection = await get_async_collection(self._collection_name)
+    async def mark_hibernation_release_required(self, assistant_id: str, *, sandbox_id: str) -> bool:
+        """RECOVERY_REQUIRED with the box's destruction pending, while HIBERNATING on it."""
+        return await self._transition(
+            assistant_id,
+            [_COLUMNS.state == "HIBERNATING", _COLUMNS.current_sandbox_id == sandbox_id],
+            {"state": "RECOVERY_REQUIRED", "post_commit_cleanup_pending": True, "last_error": None},
+        )
 
-        async def _list() -> list[dict[str, Any]]:
-            cursor = (
-                collection.find({})
-                .sort("updated_at", -1)
-                .limit(limit)
-            )
-            return [doc async for doc in cursor]
+    async def finish_hibernation(
+        self, assistant_id: str, *, expected_state: str, destroyed_sandbox_id: str | None
+    ) -> bool:
+        """HIBERNATING with no box, while ``expected_state`` on ``destroyed_sandbox_id``."""
+        return await self._transition(
+            assistant_id,
+            [
+                _COLUMNS.state == expected_state,
+                _COLUMNS.current_sandbox_id.is_not_distinct_from(destroyed_sandbox_id),
+            ],
+            {**_BOX_RETIRED, "state": "HIBERNATING", "last_error": None},
+            retire_profiles=True,
+        )
 
-        return await run_mongo_with_retry("assistant_workspace.list_all", _list)
+    async def adopt_undestroyed_sandbox(
+        self,
+        assistant_id: str,
+        *,
+        sandbox_id: str,
+        reason: str,
+        materializer: MaterializerClaim | None,
+    ) -> bool:
+        """Name an unconfirmed box on an empty pointer, RECOVERY_REQUIRED with cleanup pending."""
+        conditions: list[ColumnElement[bool]] = [_COLUMNS.current_sandbox_id.is_(None)]
+        if materializer is not None:
+            conditions.extend(materializer.conditions())
+        return await self._transition(
+            assistant_id,
+            conditions,
+            {
+                "state": "RECOVERY_REQUIRED",
+                "current_sandbox_id": sandbox_id,
+                "post_commit_cleanup_pending": True,
+                "last_error": reason,
+            },
+        )
 
-    async def list_user_workspaces(
-        self, user_id: str, assistant_ids: list[str]
-    ) -> list[dict[str, Any]]:
-        """``user_id``'s workspaces of the given Assistants, one read for a list page."""
+    async def release_recovered_sandbox(self, assistant_id: str, *, sandbox_id: str) -> bool:
+        """Drop the pointer of a RECOVERY_REQUIRED row that still names ``sandbox_id``."""
+        return await self._transition(
+            assistant_id,
+            [_COLUMNS.state == "RECOVERY_REQUIRED", _COLUMNS.current_sandbox_id == sandbox_id],
+            {
+                "current_sandbox_id": None,
+                "current_sandbox_expires_at": None,
+                "provisioning_session_id": None,
+                "provisioning_sandbox_generation": None,
+                "post_commit_cleanup_pending": False,
+            },
+        )
 
-        ids = sorted({str(item) for item in assistant_ids if str(item or "").strip()})
-        if not ids:
-            return []
-        collection = await get_async_collection(self._collection_name)
+    async def mark_materialization_failed(
+        self, assistant_id: str, *, materializer: MaterializerClaim, last_error: str
+    ) -> bool:
+        """HIBERNATING with no claim, while the materializer still holds an unbound row."""
+        return await self._transition(
+            assistant_id,
+            [*materializer.conditions(), _COLUMNS.current_sandbox_id.is_(None)],
+            {
+                "state": "HIBERNATING",
+                "current_sandbox_expires_at": None,
+                "provisioning_session_id": None,
+                "provisioning_sandbox_generation": None,
+                "last_error": last_error,
+            },
+        )
 
-        async def _list() -> list[dict[str, Any]]:
-            cursor = collection.find(
-                {
-                    "assistant_id": {"$in": ids},
-                    "$or": [
-                        {"created_by_user_id": user_id},
-                        {"user_id": user_id},
-                    ],
-                }
-            )
-            return [doc async for doc in cursor]
+    async def claim_stalled_materialization(
+        self, assistant_id: str, *, materializer: MaterializerClaim, last_error: str
+    ) -> bool:
+        """Release a dead materializer's claim on an unbound MATERIALIZING row."""
+        return await self._transition(
+            assistant_id,
+            [*materializer.conditions(), _COLUMNS.current_sandbox_id.is_(None)],
+            {
+                "provisioning_session_id": None,
+                "provisioning_sandbox_generation": None,
+                "last_error": last_error,
+            },
+        )
 
-        return await run_mongo_with_retry("assistant_workspace.list_user", _list)
+    async def force_recovery_required(self, assistant_id: str, *, reason: str) -> bool:
+        """RECOVERY_REQUIRED whatever the row holds; whether a workspace exists.
+
+        Unconditional by design, for an owner's explicit delete or destroy: the
+        box pointer and any claim are kept, so the destruction stays retryable
+        and an in-flight materializer's own fenced writes fail afterwards.
+        """
+        return await self._transition(
+            assistant_id, [], {"state": "RECOVERY_REQUIRED", "last_error": reason}
+        )
+
+    async def swap_prepared_operation(
+        self,
+        assistant_id: str,
+        *,
+        expected: Mapping[str, Any] | None,
+        replacement: Mapping[str, Any] | None,
+    ) -> bool:
+        """Replace the in-flight resource synchronization if it is still ``expected``.
+
+        An operation is ``{provider, operation_id, deadline}`` with ``deadline``
+        in epoch seconds; ``None`` is no operation.
+        """
+        if expected is None:
+            conditions: list[ColumnElement[bool]] = [_COLUMNS.prepared_operation_id.is_(None)]
+        else:
+            conditions = [
+                _COLUMNS.prepared_operation_provider == str(expected["provider"]),
+                _COLUMNS.prepared_operation_id == str(expected["operation_id"]),
+                _COLUMNS.prepared_operation_deadline == _deadline(expected["deadline"]),
+            ]
+        values = (
+            {
+                "prepared_operation_provider": str(replacement["provider"]),
+                "prepared_operation_id": str(replacement["operation_id"]),
+                "prepared_operation_deadline": _deadline(replacement["deadline"]),
+            }
+            if replacement is not None
+            else {
+                "prepared_operation_provider": None,
+                "prepared_operation_id": None,
+                "prepared_operation_deadline": None,
+            }
+        )
+        return await self._transition(assistant_id, conditions, values)

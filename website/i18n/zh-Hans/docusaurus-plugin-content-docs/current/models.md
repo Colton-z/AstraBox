@@ -46,10 +46,11 @@ LiteLLM 会把这个名称映射到实际模型服务。以后更换上游模型
 Agent 程序只会得到请求所需的模型名称和网关访问方式。上游模型服务密钥保存在 LiteLLM
 一侧。
 
-DeepSeek Harness 对其原生 DeepSeek 目录中的模型使用 Messages 协议；本版本内置目录
-包含 `deepseek-flash` 和 `deepseek-v4-pro`。这些模型的图片上传还使用 Files API。
-内置网关提供这两种协议；外部网关也必须支持原生 Messages 和 Files。
-只有 Chat Completions 接口的网关需要使用其他路由名称。
+DeepSeek Harness 对其原生 DeepSeek 目录中的模型名称（本版本内置目录中的
+`deepseek-flash` 和 `deepseek-v4-pro`）使用 Messages 协议，对其他网关路由名称使用
+Chat Completions。网关必须支持所选协议。原生 DeepSeek 图片上传还使用 Files API。
+内置网关同时提供这两种协议。对于这些目录模型，外部网关还必须支持原生 Messages 和
+Files；只提供 Chat Completions 的端点需要使用其他路由名称。
 
 其他路由名称使用所选网关的 Chat Completions 接口，包括图片输入，不会把图片上传到
 DeepSeek 的 Files API。对于 LiteLLM 无法识别的自定义视觉模型，在路由中声明
@@ -70,8 +71,8 @@ scripts/compose.sh up --build -d
 打开**管理台 → 集成服务 → LiteLLM 网关**，可以管理模型路由、服务商凭证、密钥、预算、
 费用和请求日志。内置网关直接使用 AstraBox 管理员会话，不需要再次登录 LiteLLM。
 
-需要把配置纳入版本控制时，可以编辑 `containers/litellm/config.yaml`，或把自己的配置文件
-挂载到 AstraBox 容器内的 `/opt/astrabox/litellm/config.yaml`：
+需要以代码管理配置时：内置路由定义在 `containers/litellm/config.yaml` 中。要提供自己的
+路由，把替换文件挂载到 AstraBox 容器内的 `/opt/astrabox/litellm/config.yaml`：
 
 ```yaml
 model_list:
@@ -171,9 +172,9 @@ Environment 决定运行哪个 Agent 程序，以及使用哪些沙箱设置、�
 
 | 内置网关上的标题路由 | LiteLLM 发往上游的内容 |
 |---|---|
-| `deepseek/<model>`（LiteLLM 原生 DeepSeek 适配器） | `thinking: {"type": "disabled"}` |
+| `deepseek/<model>`、`deepseek-flash` 和 `deepseek-v4-pro`（LiteLLM 原生 DeepSeek 适配器） | `thinking: {"type": "disabled"}` |
 | `claude-*` 和 `anthropic/<model>`（Anthropic Messages） | 不带 `thinking` 字段，即 Anthropic 默认不启用扩展思考。默认会思考的 Anthropic 兼容服务仍会思考。 |
-| `openai-compatible/<model>` 和走 OpenAI 协议的 DeepSeek 路由 | 不发送：对于它不认识的模型，LiteLLM 会丢弃这个选项，由服务自身的默认值决定 |
+| `openai-compatible/<model>` | 不发送：对于它不认识的模型，LiteLLM 会丢弃这个选项，由服务自身的默认值决定 |
 
 使用 DeepSeek 的端点时，AstraBox 会自动为标题选择 `deepseek/<model>`。其他服务的默认模型
 如果会思考，请把 `title_model.model_name`（`ASTRABOX_TITLE_MODEL_NAME`）设为不思考的路由。
@@ -206,7 +207,7 @@ services:
 server 容器。超时时间必须是有限的正数，无效值会导致设置校验失败。
 
 它使用 [HTTPX 的网络超时](https://www.python-httpx.org/advanced/timeouts/)，覆盖连接、
-读取、写入和连接池等待，并不是整个 Agent 轮次的截止时间，也不会增加重试。超时后会保留
+读取、写入和连接池等待，并不是整个请求的截止时间，也不会增加重试。超时后会保留
 默认的会话标题，并在管理员会话详情和服务端日志中记录超时类型和配置的时长。
 
 ## 验证连接

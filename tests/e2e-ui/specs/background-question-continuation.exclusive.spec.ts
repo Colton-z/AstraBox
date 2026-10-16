@@ -1,14 +1,20 @@
 /** Real background completion can ask a question which the user answers or stops. */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page, type Response } from '@playwright/test';
 
 import {
-  AstraApi, messageText, visibleMessages,
-  type ChildRunRecord, type PendingInteraction,
+  AstraApi, answersInput, messageText, messageToolCalls, toolCallSettled, visibleMessages,
+  type ChildRunRecord, type InputReceipt, type MessageRecord, type PendingInteraction,
 } from '../fixtures/astraApi';
-import { documentsByField, framesForTurn, sessionEvents } from '../fixtures/dbOracle';
+import {
+  nativeTranscriptRows,
+  sessionInputRows,
+  sessionInteractionRows,
+  sessionOutputRows,
+  sessionResponseRows,
+} from '../fixtures/dbOracle';
 import { trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView, startPromptDelivery, expectPromptDelivered } from '../fixtures/sessionPage';
-import { aiStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
+import { sessionStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
 
 const sessions = trackSessions();
 const PROOF = /BG_RUNTIME_PROOF_[a-f0-9]{32}/g;
@@ -18,8 +24,9 @@ function record(value: unknown): Record<string, unknown> {
     ? value as Record<string, unknown> : {};
 }
 
+/** Claude's transcripts, as the platform's SessionStore mirror holds them. */
 function nativeEntries(sessionId: string) {
-  return documentsByField('transcript_entries', '$.platform_session_id', sessionId)
+  return nativeTranscriptRows(sessionId)
     .map((row) => ({
       subpath: row.subpath,
       seq: Number(row.seq),
@@ -46,6 +53,22 @@ function toolUses(sessionId: string, name: string) {
       ? blocks(entry).filter((block) => block.type === 'tool_use' && block.name === name)
         .map((block) => ({ seq, entry, block })) : []
   ));
+}
+
+/** The receipt of a message the page sent, checked against the id the page minted for it. */
+async function receiptOf(response: Response): Promise<InputReceipt> {
+  const receipt = (await response.json() as { data: InputReceipt }).data;
+  const sent = response.request().postDataJSON() as { client_message_id?: string };
+  expect(receipt.client_message_id, 'the receipt names the message the page sent').toBe(sent.client_message_id);
+  return receipt;
+}
+
+/** What history records about a message's identity: its id, and the input or response it is. */
+function identity(message: MessageRecord): unknown[] {
+  return [
+    message.id, message.role,
+    message.metadata?.input_id ?? null, message.metadata?.response_id ?? null, message.metadata?.origin ?? null,
+  ];
 }
 
 async function fileExists(api: AstraApi, sessionId: string, path: string): Promise<boolean> {
@@ -111,8 +134,8 @@ async function runQuestionJourney(api: AstraApi, page: Page, action: 'answer' | 
   const sessionId = (await api.startConversation(agent.agent_id)).session_id;
   sessions.push(sessionId);
   test.info().annotations.push({ type: 'e2e_session_id', description: sessionId });
-  let launchTurn = '';
-  let continuationTurn = '';
+  let launchResponseId = '';
+  let continuationResponseId = '';
   let childId = '';
   await mirrorSseBodies(page);
   try {
@@ -120,18 +143,20 @@ async function runQuestionJourney(api: AstraApi, page: Page, action: 'answer' | 
     await api.setPermissionMode(sessionId, 'bypassPermissions');
     await openSessionView(page, sessionId);
     const delivery = await startPromptDelivery(page, sessionId, prompt);
-    await expectPromptDelivered(delivery);
+    const { input_id: inputId } = await receiptOf(await expectPromptDelivered(delivery));
 
     await expect.poll(async () => {
       const history = await api.getMessages(sessionId, 100);
       const parents = history.messages.filter((message) => (
         message.role === 'assistant' && messageText(message).includes(parentMarker)
       ));
-      if (parents.length !== 1) return false;
-      launchTurn = parents[0].turn_id;
+      if (parents.length !== 1 || !answersInput(parents[0]!, inputId)) return false;
+      launchResponseId = parents[0]!.id;
       const detail = await api.getSession(sessionId);
-      return !detail.current_turn_id && detail.last_turn_status === 'COMPLETED'
-        && framesForTurn(launchTurn).some((frame) => record(frame.payload).type === 'data-result');
+      return (detail.current_responses ?? []).length === 0
+        && detail.last_response?.response_id === launchResponseId
+        && detail.last_response.outcome === 'completed'
+        && sessionOutputRows(sessionId, launchResponseId).some(({ part }) => part.type === 'data-result');
     }, { timeout: 60_000, message: 'the launch Result must precede background completion' }).toBe(true);
     await expect.poll(() => fileExists(api, sessionId, started), {
       timeout: 30_000, message: 'the real child Bash must reach its workload gate',
@@ -156,11 +181,17 @@ async function runQuestionJourney(api: AstraApi, page: Page, action: 'answer' | 
       detail.pending_interaction?.tool_name === 'AskUserQuestion'
     ), 60_000);
     const pending = waiting.pending_interaction as PendingInteraction;
-    continuationTurn = String(pending.turn_id || '');
+    continuationResponseId = String(pending.response_id || '');
     const questionId = String(pending.tool_call_id || '');
-    expect(continuationTurn).not.toBe('');
+    expect(continuationResponseId).not.toBe('');
     expect(questionId).not.toBe('');
-    expect(waiting.current_turn_id, 'the question belongs to the active continuation').toBe(continuationTurn);
+    expect(continuationResponseId, 'the question belongs to a response after the launch').not.toBe(launchResponseId);
+    expect((waiting.current_responses ?? []).map((response) => [response.response_id, response.origin]),
+      'the question belongs to the active continuation, which Claude started on its own')
+      .toEqual([[continuationResponseId, 'engine']]);
+    expect(sessionResponseRows(sessionId).filter((row) => row.response_id === continuationResponseId),
+      'the continuation answers no input')
+      .toEqual([expect.objectContaining({ origin: 'engine', status: 'waiting', input_ids: [] })]);
 
     const completed = await api.waitForChildRuns(sessionId, (rows) => rows.some((row) => row.closed), 30_000);
     expect(completed).toEqual([expect.objectContaining({
@@ -203,19 +234,20 @@ async function runQuestionJourney(api: AstraApi, page: Page, action: 'answer' | 
       .toEqual({ asks: [questionId], notifications: 1, afterNotification: true, nativeSession: nativeSessionId });
     await expect.poll(async () => {
       const history = await api.getMessages(sessionId, 100);
-      const active = visibleMessages(history).filter((message) => message.turn_id === continuationTurn);
-      const uses = active.flatMap((message) => message.blocks || []).filter((block) => (
-        block.type === 'tool_use' && block.name === 'AskUserQuestion' && block.id === questionId
-        && JSON.stringify(block.input).includes(proof)
+      const active = visibleMessages(history).filter((message) => message.id === continuationResponseId);
+      const uses = active.flatMap((message) => messageToolCalls(message)).filter((call) => (
+        call.toolName === 'AskUserQuestion' && call.toolCallId === questionId
+        && JSON.stringify(call.input).includes(proof)
       ));
-      const interactions = framesForTurn(continuationTurn).filter((frame) => {
-        const payload = record(frame.payload);
-        return payload.type === 'data-interaction'
-          && record(payload.data).interaction_id === pending.interaction_id;
-      });
-      return { asks: uses.length, interaction: interactions.length > 0 };
+      const interactions = sessionOutputRows(sessionId, continuationResponseId).filter(({ part }) => (
+        part.type === 'data-interaction' && record(part.data).interaction_id === pending.interaction_id
+      ));
+      const recorded = sessionInteractionRows(sessionId).filter((row) => (
+        row.interaction_id === pending.interaction_id && row.response_id === continuationResponseId
+      ));
+      return { asks: uses.length, interaction: interactions.length > 0, recorded: recorded.length };
     }, { timeout: 20_000, message: 'pending authority and projected question must share their real owner and IDs' })
-      .toEqual({ asks: 1, interaction: true });
+      .toEqual({ asks: 1, interaction: true, recorded: 1 });
     const panel = page.getByTestId('pending-interaction-panel');
     await expect(panel).toContainText(proof);
     await assertChildPanel(page, completed[0]);
@@ -234,26 +266,43 @@ async function runQuestionJourney(api: AstraApi, page: Page, action: 'answer' | 
       await api.interruptSession(sessionId);
     }
     const ready = await api.waitForSession(sessionId, (detail) => (
-      detail.state === 'READY' && !detail.current_turn_id && !detail.pending_interaction
+      detail.state === 'READY' && (detail.current_responses ?? []).length === 0 && !detail.pending_interaction
     ), 60_000);
-    expect(ready.last_turn_status, 'answer and Stop must both complete normally').toBe('COMPLETED');
+    expect(ready.last_response?.response_id, 'the continuation is the last response').toBe(continuationResponseId);
+    expect(
+      ready.last_response?.outcome,
+      'an answer completes the continuation; a user stop ends it as cancelled, never failed',
+    ).toBe(action === 'answer' ? 'completed' : 'cancelled');
     expect(ready.last_error).toBeFalsy();
+    const question = sessionInteractionRows(sessionId).filter((row) => row.interaction_id === pending.interaction_id);
+    expect(question, 'the question the continuation waited on is recorded once').toHaveLength(1);
+    if (action === 'answer') {
+      expect(question[0]!.status).toBe('answered');
+      expect(JSON.stringify(question[0]!.answer), 'the recorded answer is the person\'s').toContain('YES');
+    } else {
+      expect(question[0]!.status, 'the stopped continuation leaves no question open').not.toBe('open');
+      expect(question[0]!.answer, 'a stop records no answer on the question').toBeNull();
+    }
     await expect(panel).toHaveCount(0);
 
     const final = await api.getMessages(sessionId, 100);
-    const launchMessages = final.messages.filter((message) => message.turn_id === launchTurn);
+    const launchMessages = final.messages.filter((message) => message.id === launchResponseId);
     expect(launchMessages.some((message) => messageText(message).includes(parentMarker))).toBe(true);
-    expect(launchMessages.flatMap((message) => message.blocks || [])
-      .filter((block) => block.type === 'tool_use' && block.name === 'Agent').map((block) => block.id))
+    expect(launchMessages.flatMap((message) => messageToolCalls(message))
+      .filter((call) => call.toolName === 'Agent').map((call) => call.toolCallId))
       .toEqual([launchToolId]);
     expect(final.messages.filter((message) => message.role === 'user').map(messageText)).toEqual([prompt]);
-    expect(final.messages.find((message) => message.role === 'user')?.client_message_id)
+    expect(final.messages.find((message) => message.role === 'user')?.id)
       .toBe(delivery.clientMessageId);
-    const continuation = final.messages.filter((message) => message.turn_id === continuationTurn);
-    const finalBlocks = continuation.flatMap((message) => message.blocks || []);
-    expect(finalBlocks.filter((block) => block.type === 'tool_use' && block.name === 'AskUserQuestion')
-      .map((block) => block.id)).toEqual([questionId]);
-    expect(finalBlocks.filter((block) => block.type === 'tool_result' && block.tool_use_id === questionId)).toHaveLength(1);
+    expect(sessionInputRows(sessionId).map((row) => row.input_id),
+      'the task notification is not a platform input').toEqual([inputId]);
+    const continuation = final.messages.filter((message) => message.id === continuationResponseId);
+    expect(continuation, 'the continuation is one assistant message').toHaveLength(1);
+    expect(continuation[0]!.metadata).toMatchObject({ origin: 'engine', input_ids: [] });
+    const finalQuestions = continuation.flatMap((message) => messageToolCalls(message))
+      .filter((call) => call.toolName === 'AskUserQuestion');
+    expect(finalQuestions.map((call) => call.toolCallId)).toEqual([questionId]);
+    expect(toolCallSettled(finalQuestions[0]!), 'the question carries its result').toBe(true);
     if (action === 'answer') {
       expect(continuation.filter((message) => message.role === 'assistant'
         && messageText(message).includes(`CONTINUATION_ANSWERED_${proof}`))).toHaveLength(1);
@@ -271,23 +320,24 @@ async function runQuestionJourney(api: AstraApi, page: Page, action: 'answer' | 
     await expect(page.getByTestId('user-message')).toHaveCount(1);
     await assertChildPanel(page, completed[0]);
     const cold = await api.getMessages(sessionId, 100);
-    expect(cold.messages.map((message) => [message.message_id, message.role, message.turn_id]))
-      .toEqual(final.messages.map((message) => [message.message_id, message.role, message.turn_id]));
+    expect(cold.messages.map(identity)).toEqual(final.messages.map(identity));
     test.info().annotations.push({ type: 'background_question_identity', description: JSON.stringify({
-      action, sessionId, nativeSessionId, launchTurn, launchToolId, continuationTurn,
+      action, sessionId, nativeSessionId, launchResponseId, launchToolId, continuationResponseId,
       childId, bashId, questionId, interactionId: pending.interaction_id, proof,
     }) });
   } catch (error) {
     const evidence = {
-      action, sessionId, launchTurn, continuationTurn, childId,
+      action, sessionId, launchResponseId, continuationResponseId, childId,
       session: await observe(() => api.getSession(sessionId)),
       messages: await observe(() => api.getMessages(sessionId, 100)),
       children: await observe(() => api.listChildRuns(sessionId)),
       childTranscript: await observe(() => childId ? api.getChildRunMessages(sessionId, childId) : null),
       native: await observe(() => nativeEntries(sessionId)),
-      events: await observe(() => sessionEvents(sessionId)),
-      frames: await observe(() => continuationTurn ? framesForTurn(continuationTurn) : []),
-      browser: await observe(() => aiStreamBodies(page)),
+      inputs: await observe(() => sessionInputRows(sessionId)),
+      responses: await observe(() => sessionResponseRows(sessionId)),
+      interactions: await observe(() => sessionInteractionRows(sessionId)),
+      output: await observe(() => continuationResponseId ? sessionOutputRows(sessionId, continuationResponseId) : []),
+      browser: await observe(() => sessionStreamBodies(page)),
     };
     await test.info().attach('background-question-failure', {
       body: Buffer.from(JSON.stringify(evidence)), contentType: 'application/json',

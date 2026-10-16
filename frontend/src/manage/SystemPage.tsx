@@ -14,7 +14,6 @@ import {
   ConsoleTableSkeleton,
   ConsoleErrorState,
   ConsoleEmptyState,
-  StatusPill,
   type ConsoleColumn,
 } from './console';
 import { formatDateTime } from './agentConfig';
@@ -172,21 +171,6 @@ export default function SystemPage() {
         cell: (r) => <Ellipsis title={r.sandbox_id ?? ''}>{r.sandbox_id ? shortId(r.sandbox_id) : '—'}</Ellipsis>,
       },
       {
-        key: 'turn',
-        intent: 'status',
-        header: t('manage:system.col_current_turn'),
-        cell: (r) =>
-          r.current_task_done === false ? (
-            <StatusPill tone="running" live>
-              {t('manage:system.turn_running')}
-            </StatusPill>
-          ) : r.current_task_done === true ? (
-            <StatusPill tone="idle">{t('manage:system.turn_idle')}</StatusPill>
-          ) : (
-            <span className="text-muted-foreground">—</span>
-          ),
-      },
-      {
         key: 'watchdog',
         intent: 'compact',
         header: t('manage:system.col_watchdog'),
@@ -289,7 +273,6 @@ export default function SystemPage() {
                 label={t('manage:system.stat_runtimes')}
                 value={health?.runtimes?.count ?? '—'}
                 sub={t('manage:system.stat_runtimes_sub', {
-                  turns: health?.runtimes?.current_task_count ?? 0,
                   locked: health?.runtimes?.locked_count ?? 0,
                 })}
               />

@@ -4,7 +4,7 @@ An MCP-native client (an assistant's desktop app, an agent framework) cannot
 run a shell command and read its exit code. This serves the client subcommands
 as MCP tools instead, calling the very same functions the argv façade calls —
 :func:`astrabox.cli.resources.plan_and_run`, :func:`astrabox.cli.scaffold.
-export_document`, :func:`astrabox.cli.run.stream_turn`. There is one
+export_document`, :func:`astrabox.cli.run.send_task`. There is one
 implementation of what these commands do; this module only changes who is
 asking.
 
@@ -21,6 +21,7 @@ else; every diagnostic goes to stderr.
 from __future__ import annotations
 
 import json
+import time
 import sys
 from typing import Any
 
@@ -28,7 +29,7 @@ from astrabox.cli.client import ApiClient, Endpoint, as_items, resolve_endpoint
 from astrabox.cli.document import parse_document
 from astrabox.cli.output import CliError
 from astrabox.cli.resources import GET_ROUTES, SCHEMA_ROUTES, plan_and_run
-from astrabox.cli.run import start_conversation, stream_turn
+from astrabox.cli.run import send_task, start_conversation
 from astrabox.cli.scaffold import export_document
 from astrabox.cli.stack import probe
 
@@ -195,11 +196,11 @@ def call_tool(endpoint: Endpoint, name: str, arguments: dict[str, Any]) -> dict[
             session_id = str(arguments.get("session_id") or "") or start_conversation(
                 client, str(arguments.get("agent") or "")
             )
-            result = stream_turn(
+            result = send_task(
                 client,
                 session_id,
                 str(arguments.get("task") or ""),
-                deadline_seconds=int(arguments.get("timeout_seconds") or 900),
+                deadline=time.monotonic() + int(arguments.get("timeout_seconds") or 900),
                 live=False,
             )
             result["session_id"] = session_id

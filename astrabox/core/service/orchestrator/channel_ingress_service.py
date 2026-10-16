@@ -8,22 +8,24 @@ provider-authenticated inbound message and the delivered reply:
   call it with a resolved binding + :class:`~astrabox.seams.channel.ChannelInbound`;
   nobody fabricates HTTP and no provider touches spine internals.
 * The durable inbound work item (invariant A): the full typed payload is
-  persisted before the caller may acknowledge the source. Driving the turn
+  persisted before the caller may acknowledge the source. Sending the message
   never depends on the platform redelivering.
 * Fenced ownership (invariant B): items, conversation locks, and delivery
   leases are held by ``owner_token`` + monotonic ``generation``; a stale
   worker's writes miss their CAS predicates and change nothing.
-* Attach-not-append dispatch: the kernel's command journal — keyed by a
-  per-drive-attempt ``client_message_id`` token — is the idempotency ledger.
-  A re-drive (crash recovery, steal) first looks for its token's command and
-  attaches to it instead of appending a second one: at-least-once ingress,
-  at-most-once turns.
-* Session output subscriptions create response-bound deliveries independently
-  of input dispatch. The deliverer reads each exact response, never the
-  session's latest message or an engine's task notifications.
+* One input per message: the item's id is the ``client_message_id`` of the
+  input it sends (:meth:`SessionRuntimeService.send_as
+  <astrabox.core.service.orchestrator.session_runtime.service.SessionRuntimeService.send_as>`),
+  so the Session accepts a redelivered or re-driven message once.
+* Replies: :meth:`ChannelIngressService.on_facts` reads each committed batch of
+  the Session's runtime facts and turns the replies it opens or completes into
+  deliveries for the Session's subscribed bindings
+  (:mod:`~astrabox.core.service.orchestrator.channel_replies`); the deliverer
+  reads each exact reply from the Session's output log.
 
 The channel reconciler (:mod:`channel_spine_reconciler`) re-drives expired
-items and re-delivers abandoned outbox rows through the same methods.
+items, projects output a consumer did not reach, and re-delivers abandoned
+outbox rows through the same methods.
 """
 
 from __future__ import annotations
@@ -54,10 +56,20 @@ from astrabox.core.service.orchestrator.channel_interactions import (
     question_count,
     read_reply,
 )
+from astrabox.core.service.orchestrator.channel_replies import (
+    REPLY_BOUNDARY_PARTS,
+    ChannelReply,
+    ReplyReader,
+    reply_segments,
+)
 from astrabox.core.service.orchestrator.conversation_targets import (
     ConversationTarget,
     ConversationTargets,
 )
+from astrabox.core.service.orchestrator.engine.interaction_contract import (
+    public_interaction_view,
+)
+from astrabox.core.service.orchestrator.session_runtime.service import SessionRuntimeService
 from astrabox.persistence.repository.channel_repository import (
     CLAIM_OUTCOME_AUTHORIZED,
     CLAIM_OUTCOME_CLAIMED,
@@ -66,7 +78,6 @@ from astrabox.persistence.repository.channel_repository import (
     CLAIM_OUTCOME_IN_PROGRESS,
     CLAIM_OUTCOME_OBSERVED,
     INBOUND_AUTHORIZED,
-    INBOUND_DEAD,
     INBOUND_IGNORED,
     INBOUND_OBSERVED,
     INBOUND_RECEIVED,
@@ -74,8 +85,15 @@ from astrabox.persistence.repository.channel_repository import (
     INTERACTION_ANSWERED,
     INTERACTION_CLOSED,
     INTERACTION_OPEN,
+    LEASE_RENEW_SECONDS,
+    OUTBOX_DEAD,
+    OUTBOX_PENDING,
     ChannelRepository,
     new_owner_token,
+)
+from astrabox.persistence.repository.session_runtime_repository import (
+    FactBatch,
+    SessionRuntimeRepository,
 )
 from astrabox.seams.channel import (
     EVENT_FAILED,
@@ -104,34 +122,37 @@ from astrabox.seams.channel_response import (
 
 logger = get_logger(__name__)
 
-# How long to wait for a freshly-created session's sandbox to become READY
-# before sending the message. Channel ingress is non-interactive: there is no
-# external client to retry, so the drive worker polls. For a continued
-# conversation the same poll doubles as the per-conversation serial queue.
-_SESSION_READY_TIMEOUT_SECONDS = 120
-_SESSION_READY_POLL_SECONDS = 2.0
+#: How long a drive waits for its conversation's lock, which another drive
+#: holds only while it answers, stops or sends into the same Session. A drive
+#: that cannot take it hands its item back and the reconciler drives it again.
+_CONVERSATION_LOCK_WAIT_SECONDS = 120
+_CONVERSATION_LOCK_POLL_SECONDS = 2.0
 
 #: Re-drive backoff per recorded failure; after the last entry the item is
 #: DEAD (durable evidence, revivable only by an explicit redelivery).
 _INBOUND_RETRY_BACKOFF_SECONDS = (10.0, 60.0, 300.0, 900.0)
 
-#: Capped inline retry schedule for reply delivery (seconds between attempts).
-#: After the last failure the outbox row is marked DEAD (visible to
-#: operators) rather than retried forever.
+#: The wait before each retry of a failed reply delivery. After the last
+#: failure the outbox row is DEAD (visible to operators) rather than retried
+#: forever. The row's stored failure count picks the wait, so the budget holds
+#: across deliverers and restarts.
 _OUTBOX_RETRY_BACKOFF_SECONDS = (5.0, 30.0, 120.0)
 
-#: Streaming delivery session pacing: how often the deliverer reads new
-#: durable frames / re-checks the work item, and its overall budget. A hung
-#: provider stalls only its own session (invariant D); the budget bounds a
-#: turn that never terminates before the outbox retry policy takes over.
+#: How many output subscriptions one reconciler tick projects.
+_OUTPUT_SUBSCRIPTION_PAGE = 50
+#: How many Session output rows one projection step reads.
+_OUTPUT_PAGE = 500
+
+#: Streaming delivery session pacing: how often the deliverer reads the
+#: reply's new parts from the Session's output log and renews its lease, and
+#: its overall budget. A hung provider stalls only its own session (invariant
+#: D); the budget bounds one delivery session of a reply that runs long.
 _STREAMING_POLL_SECONDS = 1.0
 _STREAMING_MAX_SECONDS = 1800.0
 
 #: An answer refused with one of these found no wait left to answer: the
-#: engine runtime is absent, its sandbox is gone, or the wait expired.
-_ANSWER_GONE_CODES = frozenset(
-    {"ENGINE_RUNTIME_UNAVAILABLE", "INTERACTION_EXPIRED", "SANDBOX_GONE"}
-)
+#: runtime closed the interaction, or it already holds someone's answer.
+_ANSWER_GONE_CODES = frozenset({"INTERACTION_NOT_FOUND", "INTERACTION_NOT_OPEN"})
 
 #: Reply-chain resolution window: an inbound referencing a platform alias that
 #: is still being delivered (alias write racing) gets this many short waits
@@ -247,14 +268,24 @@ class _Classification:
     judge_candidate: bool = False
 
 
-def _dispatch_token(item: dict[str, Any]) -> str:
-    """The turn-idempotency token for one drive attempt.
+@dataclass
+class _DriveLeases:
+    """The leases one drive holds: its item, and its conversation's lock once taken."""
 
-    Versioned by ``attempts``: a crash-recovered re-drive of the same attempt
-    finds the same command (attach, no double turn), while a retry after a
-    recorded failure uses a fresh token and legitimately starts a new turn.
-    """
-    return f"{item['_id']}::a{int(item.get('attempts') or 0)}"
+    item_id: str
+    owner: str
+    generation: int
+    deployment_id: str
+    conversation_key: str | None = None
+    execution_user_id: str = ""
+    lock_generation: int | None = None
+
+    def hold_conversation(
+        self, conversation_key: str, execution_user_id: str, lock_generation: int,
+    ) -> None:
+        self.conversation_key = conversation_key
+        self.execution_user_id = execution_user_id
+        self.lock_generation = lock_generation
 
 
 class ChannelIngressService:
@@ -266,21 +297,13 @@ class ChannelIngressService:
         deployment_repo: Any,
         agent_repo: Any,
         agent_service_getter: Any,
-        stream_message_events_ds: Any,
-        resume_command_stream: Any,
         sessions_repo: Any,
-        session_events_repo: Any,
-        message_view: Any,
-        session_detail_getter: Any,
-        answer_pending_interaction: Any,
-        supersede_pending_interaction: Any,
+        session_runtime: SessionRuntimeService,
+        session_facts: SessionRuntimeRepository,
         spawn_background_task: Any,
         channel_repo: ChannelRepository | None = None,
         channel_credentials: ChannelCredentialService | None = None,
-        read_session_output: Any,
-        session_output_cursor: Any,
         assistant_service_getter: Any = None,
-        observe_session_output: Any = None,
     ) -> None:
         self._deployment_repo = deployment_repo
         self._targets = ConversationTargets(
@@ -288,21 +311,14 @@ class ChannelIngressService:
             agent_service_getter=agent_service_getter,
             assistant_service_getter=assistant_service_getter,
         )
-        self._stream_message_events_ds = stream_message_events_ds
-        self._resume_command_stream = resume_command_stream
         self._sessions_repo = sessions_repo
-        self._session_events_repo = session_events_repo
-        self._message_view = message_view
-        self._session_detail_getter = session_detail_getter
-        self._answer_pending_interaction = answer_pending_interaction
-        self._supersede_pending_interaction = supersede_pending_interaction
+        self._session_runtime = session_runtime
+        self._facts = session_facts
         self._spawn_background_task = spawn_background_task
         self._channel_repo = channel_repo or ChannelRepository()
         self._channel_credentials = channel_credentials or ChannelCredentialService()
-        self._read_session_output = read_session_output
-        self._observe_session_output = observe_session_output
-        self._session_output_cursor = session_output_cursor
-        self._output_subscription_cursor = ""
+        #: Where the reconciler's pass over subscriptions resumes.
+        self._output_subscription_cursor: tuple[str, str] | None = None
         self._delivering: set[str] = set()
 
     # ── ingress (invariants A + E) ───────────────────────────────────────
@@ -312,7 +328,7 @@ class ChannelIngressService:
     ) -> ChannelIngressReceipt:
         """The single post-auth typed ingress for every channel source."""
         binding = await self._deployment_repo.get_by_id(deployment_id)
-        if not binding or binding.get("deleted") or binding.get("enabled") is False:
+        if not binding or binding.get("enabled") is False:
             raise APIError(
                 code="NOT_FOUND",
                 message="channel binding not found or disabled",
@@ -416,7 +432,6 @@ class ChannelIngressService:
             "action": inbound.action,
             "conversation_key": inbound.conversation_key,
             "reply_context": dict(inbound.reply_context or {}) or None,
-            "attention": inbound.attention.to_dict() if inbound.attention else None,
             "reference": inbound.reference,
             "participant": inbound.participant,
             "provider_ignore_reason": inbound.ignore_reason,
@@ -427,7 +442,6 @@ class ChannelIngressService:
             "message_timestamp": inbound.message_timestamp,
             "binding_revision": binding.get("updated_at"),
             "prompt_prefix": prompt_prefix,
-            "signal": inbound.signal,
         }
         decision = await self._classify(binding, inbound, deployment_id)
         if decision.state in (INBOUND_RECEIVED, INBOUND_AUTHORIZED) and (
@@ -470,7 +484,7 @@ class ChannelIngressService:
             # This copy addressed the agent while another copy of the same
             # message is under judgment, or is reclaiming it: the explicit
             # signal must win over any decision the judge makes.
-            await self._channel_repo.note_explicit_attention(item_id=str(item["_id"]))
+            await self._channel_repo.note_explicit_attention(item_id=str(item["item_id"]))
         if outcome == CLAIM_OUTCOME_CLAIMED:
             return await self._admit(item, target=target, ack_extra=ack_extra)
         # An ordinary copy of a recorded message is not a new reason to answer
@@ -509,7 +523,7 @@ class ChannelIngressService:
         )
         return ChannelIngressReceipt(
             status=status,
-            item_id=str(item["_id"]),
+            item_id=str(item["item_id"]),
             session_id=str(item.get("session_id") or "") or None,
             ack_extra=ack_extra,
         )
@@ -524,10 +538,10 @@ class ChannelIngressService:
             # conversation; its drive resolves one only after a yes.
             self._spawn_background_task(
                 self._drive_work_item(item),
-                name=f"channel-drive-{item['_id']}",
+                name=f"channel-drive-{item['item_id']}",
             )
             return ChannelIngressReceipt(
-                status="accepted", item_id=str(item["_id"]), ack_extra=ack_extra,
+                status="accepted", item_id=str(item["item_id"]), ack_extra=ack_extra,
             )
         # Resolve the target session inline so the ack carries it (and so
         # redeliveries get a session in their in_progress/duplicate acks).
@@ -538,21 +552,21 @@ class ChannelIngressService:
         except APIError as exc:
             if exc.code in _REFUSAL_NOTICES and await self._refuse_item(item, exc.code):
                 return ChannelIngressReceipt(
-                    status=CLAIM_OUTCOME_IGNORED, item_id=str(item["_id"]),
+                    status=CLAIM_OUTCOME_IGNORED, item_id=str(item["item_id"]),
                     ack_extra={**ack_extra, "reason": exc.code},
                 )
             raise
         self._spawn_background_task(
             self._drive_work_item(item),
-            name=f"channel-drive-{item['_id']}",
+            name=f"channel-drive-{item['item_id']}",
         )
         logger.warning(
             "channel inbound accepted: binding=%s %s=%s session=%s item=%s",
-            deployment_id, target.kind, target.target_id, session_id, item["_id"],
+            deployment_id, target.kind, target.target_id, session_id, item["item_id"],
         )
         return ChannelIngressReceipt(
             status="accepted",
-            item_id=str(item["_id"]),
+            item_id=str(item["item_id"]),
             session_id=session_id or None,
             ack_extra=ack_extra,
         )
@@ -577,7 +591,7 @@ class ChannelIngressService:
         message is never admitted. A record another signal or a recall changed
         between the read and the write is evaluated again as it is now.
         """
-        item_id = str(item["_id"])
+        item_id = str(item["item_id"])
         state = str(item["state"])
         generation = int(item.get("generation") or 0)
         recorded = dict(item.get("payload") or {})
@@ -676,7 +690,7 @@ class ChannelIngressService:
         leaves nothing behind but its retained context. A judge error raises
         and the drive fails with backoff; it is never read as a decision.
         """
-        item_id = str(item["_id"])
+        item_id = str(item["item_id"])
         judgment = item.get("judgment")
         if not isinstance(judgment, dict):
             current = await self._channel_repo.get_inbound(item_id) or item
@@ -993,7 +1007,7 @@ class ChannelIngressService:
                     status_code=409,
                 )
             await self._channel_repo.bind_inbound_dispatch(
-                item_id=str(item["_id"]),
+                item_id=str(item["item_id"]),
                 owner_token=str(item["owner_token"]),
                 generation=int(item["generation"]),
                 session_id=session_id,
@@ -1040,12 +1054,12 @@ class ChannelIngressService:
                 status_code=403,
             )
         captured = await self._channel_repo.capture_inbound_account(
-            item_id=str(item["_id"]), owner_token=str(item["owner_token"]),
+            item_id=str(item["item_id"]), owner_token=str(item["owner_token"]),
             generation=int(item["generation"]), user_id=account,
         )
         if captured is None:
             raise RuntimeError(
-                f"channel item {item['_id']} lost its dispatch ownership before "
+                f"channel item {item['item_id']} lost its dispatch ownership before "
                 "its account was kept"
             )
         item["payload"] = captured
@@ -1069,7 +1083,7 @@ class ChannelIngressService:
         twice. Returns whether this worker recorded it.
         """
         recorded = await self._channel_repo.mark_inbound_ignored(
-            item_id=str(item["_id"]), owner_token=str(item["owner_token"]),
+            item_id=str(item["item_id"]), owner_token=str(item["owner_token"]),
             generation=int(item["generation"]), reason=code, exclude_from_context=True,
         )
         if recorded:
@@ -1078,7 +1092,7 @@ class ChannelIngressService:
             except Exception:
                 # The refusal is durable; a notice the platform rejects must
                 # not turn it into a redelivered, re-refused message.
-                logger.exception("channel refusal notice failed: item=%s reason=%s", item["_id"], code)
+                logger.exception("channel refusal notice failed: item=%s reason=%s", item["item_id"], code)
         return recorded
 
     async def _resolve_reference(
@@ -1099,23 +1113,36 @@ class ChannelIngressService:
     async def _drive_work_item(self, item: dict[str, Any]) -> None:
         """Drive one owned work item; cancellation hands ownership back and raises.
 
-        The invariant-bearing order: begin dispatch (fence check) → conversation
-        lock → session ready → attach-or-dispatch the turn → settle (fence
-        check — a stolen item stops at that check and lets the successor
-        deliver) → turn-bound outbox → delivery.
+        The invariant-bearing order: begin dispatch (fence check) → resolve
+        the Session → conversation lock → subscribe the reply destination →
+        answer or stop the open question → send the message once → settle
+        (fence check — a stolen item stops at that check and lets the
+        successor settle it). The drive's item lease and conversation lock
+        are renewed on a timer for as long as it runs
+        (:meth:`_renew_drive_leases`).
+
+        Sending does not wait for the reply: the Session accepts the message
+        whatever its runtime is doing, its runtime answers it in order, and
+        the reply reaches the channel through the Session's output
+        subscription.
         """
-        item_id = str(item["_id"])
+        item_id = str(item["item_id"])
         owner = str(item["owner_token"])
         generation = int(item["generation"])
         payload = dict(item.get("payload") or {})
-        deployment_id = str(item.get("deployment_id") or "")
-        conversation_key: str | None = None
-        lock_generation: int | None = None
+        leases = _DriveLeases(
+            item_id=item_id, owner=owner, generation=generation,
+            deployment_id=str(item.get("deployment_id") or ""),
+        )
+        heartbeat: asyncio.Task[None] | None = None
         try:
             if not await self._channel_repo.begin_inbound_dispatch(
                 item_id=item_id, owner_token=owner, generation=generation
             ):
                 return  # lost ownership before starting — successor owns it
+            heartbeat = asyncio.create_task(
+                self._renew_drive_leases(leases), name=f"channel-drive-leases-{item_id}",
+            )
             if payload.get("selection") == "judge" and not await self._judged_to_respond(
                 item, owner=owner, generation=generation,
             ):
@@ -1137,48 +1164,46 @@ class ChannelIngressService:
             # the item, so it takes the same lock as the first drive.
             conversation_key = str(item.get("resolved_conversation_key") or "") or None
             if conversation_key is not None:
+                execution_user_id = str(payload.get("execution_user_id") or "")
                 lock_generation = await self._acquire_conversation_lock_blocking(
-                    deployment_id, conversation_key, owner,
-                    execution_user_id=str(payload.get("execution_user_id") or ""),
+                    leases.deployment_id, conversation_key, owner,
+                    execution_user_id=execution_user_id,
                 )
                 if lock_generation is None:
-                    await self._fail_item(item, "conversation lock unavailable")
+                    # Another message of the conversation is being answered,
+                    # stopped or sent. Waiting for it is not a failure: the item
+                    # hands its lease back with its retries intact, and the
+                    # reconciler drives it again.
+                    await self._channel_repo.release_inbound_lease(
+                        item_id=item_id, owner_token=owner, generation=generation,
+                    )
                     return
-            if not await self._wait_session_ready(session_id):
-                await self._fail_item(
-                    item,
-                    f"session {session_id} not ready in {_SESSION_READY_TIMEOUT_SECONDS}s",
-                )
-                return
+                leases.hold_conversation(conversation_key, execution_user_id, lock_generation)
 
             reply_context = payload.get("reply_context")
-            has_reply = isinstance(reply_context, dict) and bool(reply_context)
-            if has_reply:
-                boundary = await self._session_output_cursor(session_id)
+            if isinstance(reply_context, dict) and reply_context:
+                output_seq, _cursor = await self._facts.resume_point(session_id)
                 await self._channel_repo.subscribe_to_output(
-                    session_id=session_id, deployment_id=deployment_id,
+                    session_id=session_id, deployment_id=leases.deployment_id,
                     channel_name=str(item["channel_name"]),
-                    reply_context=dict(reply_context or {}), conversation_key=conversation_key,
-                    after_seq=boundary,
+                    reply_context=dict(reply_context), conversation_key=conversation_key,
+                    after_seq=output_seq,
                     streaming=self._provider_streams(str(item["channel_name"])),
                 )
-            token = _dispatch_token(item)
-            command = await self._session_events_repo.find_command_by_client_message_id(
-                session_id, client_message_id=token
-            )
-            drove = False
-            if command is None:
-                # Fence the interaction side effect too: a worker that lost
-                # ownership while waiting must not answer this session's UI.
+            user = UserContext(user_id=str(payload.get("creator_user_id") or ""))
+            sent = await self._facts.input_for_client_message(session_id, item_id)
+            if sent is None:
+                # Fence the question side effects too: a worker that lost
+                # ownership while waiting must not answer or stop this
+                # Session's question.
                 if not await self._channel_repo.renew_inbound_lease(
                     item_id=item_id, owner_token=owner, generation=generation
                 ):
                     return
-                user = UserContext(user_id=str(payload.get("creator_user_id") or ""))
                 if await self._settle_pending_interaction(
                     item, user=user, session_id=session_id,
                 ):
-                    # The message answered a question: no turn is started for it.
+                    # The message answered a question: it is not sent.
                     if payload.get("retain_context"):
                         await self._channel_repo.exclude_inbound_from_context(item)
                     await self._channel_repo.settle_inbound(
@@ -1188,12 +1213,10 @@ class ChannelIngressService:
                         session_id=session_id,
                     )
                     return
-                # The last fence before appending a command: a renew that
-                # misses means the claim was stolen mid-wait — the new owner
-                # drives this item, and appending here would run a second turn
-                # for one inbound. A successful renew holds the lease for a
-                # full TTL, so no steal can occur between this write and the
-                # append.
+                # The last fence before the message is sent: a renew that
+                # misses means the item was stolen mid-wait, and the new owner
+                # sends it. A successful renew holds the lease for a full TTL,
+                # so no steal can occur between this write and the send.
                 if not await self._channel_repo.renew_inbound_lease(
                     item_id=item_id, owner_token=owner, generation=generation
                 ):
@@ -1214,56 +1237,19 @@ class ChannelIngressService:
                         raise RuntimeError("retained channel input has no frozen content")
                     item["frozen_input"] = frozen
                     content = frozen["content"]
-                agen = self._stream_message_events_ds(
-                    user,
+                await self._session_runtime.send_as(
                     session_id,
                     content,
-                    client_message_id=token,
+                    author_user_id=user.user_id,
+                    source="channel",
+                    client_message_id=item_id,
                 )
-                drove = True
-                ok = await self._drain_with_lease_renewal(agen, item)
-                if not ok:
-                    await self._fail_item(item, "turn stream failed")
-                    return
-                if command is None:
-                    command = await self._session_events_repo.find_command_by_client_message_id(
-                        session_id, client_message_id=token
-                    )
-                if command is None:
-                    await self._fail_item(item, "turn drove but no command recorded")
-                    return
-            command_id = str(command.get("causation_id") or "")
-            turn_id = str(command.get("turn_id") or "")
-            await self._channel_repo.bind_inbound_dispatch(
-                item_id=item_id,
-                owner_token=owner,
-                generation=generation,
-                command_id=command_id,
-                turn_id=turn_id,
-            )
-            if not drove:
-                user = UserContext(user_id=str(payload.get("creator_user_id") or ""))
-                resumed = self._resume_command_stream(
-                    user, session_id, command_id=command_id,
-                )
-                if not await self._drain_with_lease_renewal(resumed, item):
-                    await self._fail_item(item, "attached turn stream failed")
-                    return
-
-            message = await self._message_view.get_assistant_message_for_turn(
-                session_id, turn_id=turn_id
-            )
-            if message is None and not drove:
-                await self._fail_item(item, "attached turn ended without output")
-                return
-
-            if payload.get("retain_context"):
-                await self._channel_repo.mark_context_submitted(item)
             if not await self._channel_repo.settle_inbound(
                 item_id=item_id,
                 owner_token=owner,
                 generation=generation,
                 session_id=session_id,
+                submit_context=bool(payload.get("retain_context")),
             ):
                 return  # The successor owns input settlement.
         except asyncio.CancelledError:
@@ -1277,15 +1263,59 @@ class ChannelIngressService:
             with contextlib.suppress(Exception):
                 await self._fail_item(item, f"{type(exc).__name__}: {exc}")
         finally:
-            if lock_generation is not None and conversation_key is not None:
+            # A renewal still in flight after the release changes nothing: it
+            # matches the owner and generation the release cleared.
+            if heartbeat is not None:
+                heartbeat.cancel()
+            if leases.lock_generation is not None and leases.conversation_key is not None:
                 with contextlib.suppress(Exception):
                     await self._channel_repo.release_conversation_lock(
-                        deployment_id=deployment_id,
-                        conversation_key=conversation_key,
+                        deployment_id=leases.deployment_id,
+                        conversation_key=leases.conversation_key,
                         owner=owner,
-                        generation=lock_generation,
-                        execution_user_id=str(payload.get("execution_user_id") or ""),
+                        generation=leases.lock_generation,
+                        execution_user_id=leases.execution_user_id,
                     )
+
+    async def _renew_drive_leases(self, leases: _DriveLeases) -> None:
+        """Renew a drive's item lease, and its conversation lock once held, until cancelled.
+
+        A drive can wait on a response judge, a conversation lock or a slow
+        provider notice, so renewal follows a clock rather than the drive's
+        progress. Once the item lease is another worker's, the drive holds
+        nothing and renewal stops; the drive's own fences stop it before it
+        changes anything that worker owns.
+        """
+        while True:
+            await asyncio.sleep(LEASE_RENEW_SECONDS)
+            try:
+                if not await self._channel_repo.renew_inbound_lease(
+                    item_id=leases.item_id, owner_token=leases.owner,
+                    generation=leases.generation,
+                ):
+                    logger.warning(
+                        "channel drive stopped renewing item=%s: it settled or another worker holds it",
+                        leases.item_id,
+                    )
+                    return
+                if leases.conversation_key is None or leases.lock_generation is None:
+                    continue
+                if not await self._channel_repo.renew_conversation_lock(
+                    deployment_id=leases.deployment_id,
+                    conversation_key=leases.conversation_key,
+                    owner=leases.owner,
+                    generation=leases.lock_generation,
+                    execution_user_id=leases.execution_user_id,
+                ):
+                    logger.error(
+                        "channel drive lost its conversation lock: item=%s conversation=%s",
+                        leases.item_id, leases.conversation_key,
+                    )
+            except Exception:
+                # The next beat renews again; both leases outlive several beats.
+                logger.warning(
+                    "channel drive lease renewal failed: item=%s", leases.item_id, exc_info=True,
+                )
 
     async def _settle_pending_interaction(
         self,
@@ -1294,21 +1324,19 @@ class ChannelIngressService:
         user: UserContext,
         session_id: str,
     ) -> bool:
-        """Answer the question this conversation shows, or stop the turn waiting on it.
+        """Answer the question this conversation shows, or stop the response waiting on it.
 
         Returns True when the message was an answer, or an attempt at one that
-        was refused with an explanation: it is settled here and never becomes
-        a turn. Otherwise a turn still parked on an interaction is stopped
-        (``supersede_pending_interaction``) and the message goes on as the
-        next input. Crash recovery checks the durable dispatch command before
-        this runs, so re-driving an older item cannot stop a turn a newer
-        message started.
+        was refused with an explanation: it is settled here and never sent.
+        Otherwise a response still waiting on a question is stopped
+        (:meth:`_supersede_question`) and the message goes on as the next
+        input. The drive runs this only while the Session holds no input of
+        this item, so re-driving a message already sent cannot stop the
+        response it started.
         """
         payload = dict(item.get("payload") or {})
         deployment_id = str(item.get("deployment_id") or "")
-        session = await self._session_detail_getter(user, session_id)
-        pending = session.get("pending_interaction")
-        pending = pending if isinstance(pending, dict) else None
+        pending = await self._pending_interaction(session_id)
         if item.get("answer_ref"):
             record = await self._channel_repo.get_channel_interaction(
                 deployment_id=deployment_id, ref=str(item["answer_ref"]),
@@ -1379,15 +1407,25 @@ class ChannelIngressService:
                     item, user=user, record=record, pending=pending,
                     outcome=outcome, confirm=False,
                 )
-        await self._supersede_parked_turn(
-            user=user, session_id=session_id, interaction_id=interaction_id,
-        )
+        await self._supersede_question(user, session_id, interaction_id)
         if record is not None:
             await self._channel_repo.settle_channel_interaction(
                 deployment_id=deployment_id, ref=ref, state=INTERACTION_CLOSED,
-                participant=payload.get("participant"),
             )
         return False
+
+    async def _pending_interaction(self, session_id: str) -> dict[str, Any] | None:
+        """The public view of the question the Session's runtime waits on, or ``None``.
+
+        The earliest open interaction nobody has answered yet: an interaction
+        that already holds an answer waits only for the Session's reader to
+        hand it over, and is no question to answer or stop.
+        """
+        activity = await self._facts.activity(session_id)
+        for interaction in activity["open_interactions"]:
+            if interaction.get("answer") is None:
+                return public_interaction_view(dict(interaction["contract"]))
+        return None
 
     async def _answers_a_closed_question(
         self, item: dict[str, Any], pending: dict[str, Any] | None,
@@ -1467,7 +1505,7 @@ class ChannelIngressService:
     ) -> bool:
         """Finish an answer a previous drive of this item began; False if it began nothing."""
         payload = dict(item.get("payload") or {})
-        if record.get("answering_item") == str(item["_id"]):
+        if record.get("answering_item") == str(item["item_id"]):
             return await self._finish_answer(
                 item, user=user, record=record, pending=pending,
                 confirm=bool(payload.get("action")), redrive=True,
@@ -1505,7 +1543,7 @@ class ChannelIngressService:
         participant = dict(item.get("payload") or {}).get("participant")
         question_index = int(record.get("question_index") or 0)
         if not await self._channel_repo.mark_inbound_answer(
-            item_id=str(item["_id"]),
+            item_id=str(item["item_id"]),
             owner_token=str(item["owner_token"]),
             generation=int(item["generation"]),
             interaction_ref=ref,
@@ -1516,14 +1554,14 @@ class ChannelIngressService:
         if question_index + 1 < question_count(pending):
             if not await self._channel_repo.record_channel_answer(
                 deployment_id=deployment_id, ref=ref, question_index=question_index,
-                answers=[*(record.get("answers") or []), kept],
+                answer=kept,
             ):
                 await self._notify(item, "That question was already answered.")
                 return True
             await self._show_question(item, record, pending, question_index + 1)
             return True
         if not await self._channel_repo.stage_channel_answer(
-            deployment_id=deployment_id, ref=ref, item_id=str(item["_id"]),
+            deployment_id=deployment_id, ref=ref, item_id=str(item["item_id"]),
             question_index=question_index, answer=kept,
         ):
             await self._notify(item, "That question was already answered.")
@@ -1547,47 +1585,39 @@ class ChannelIngressService:
         confirm: bool,
         redrive: bool,
     ) -> bool:
-        """Give the engine the staged answer, unless it already has it.
+        """Store the staged answer for the runtime, unless it already has one.
 
-        A re-drive may follow a worker that died after the engine accepted the
-        answer: the Session then has no pending interaction, or the engine
-        refuses a second copy, and both are read as that acceptance. A re-drive
-        cannot tell it apart from the question closing before the first
-        attempt reached the engine; that needs a second fault in the same
-        window, and the Session's own interaction record stays authoritative.
+        The answer goes through the Session's own answer path
+        (:meth:`SessionRuntimeService.answer
+        <astrabox.core.service.orchestrator.session_runtime.service.SessionRuntimeService.answer>`),
+        which checks it against the interaction's contract and stores it for
+        the Session's reader to hand over. A re-drive may follow a worker that
+        died after the answer was stored: the interaction then holds an answer
+        or is closed, and both are read as that acceptance. A re-drive cannot
+        tell it apart from the question closing before the first attempt
+        stored anything; that needs a second fault in the same window, and the
+        Session's own interaction record stays authoritative.
         """
         deployment_id = str(record["deployment_id"])
         ref = str(record["ref"])
-        participant = dict(item.get("payload") or {}).get("participant")
+        # Every question's answer, the staged last one included, in question order.
         answers = [
             QuestionAnswer(row=dict(kept.get("row") or {}), choice=kept.get("choice"))
-            for kept in [*(record.get("answers") or []), record.get("staged_answer") or {}]
+            for kept in record.get("answers") or []
         ]
         interaction_id = str(record.get("interaction_id") or "")
         if pending is not None and str(pending.get("interaction_id") or "") == interaction_id:
             try:
-                await self._answer_pending_interaction(
+                await self._session_runtime.answer(
                     user, str(record["session_id"]), interaction_id,
                     engine_answer(pending, answers),
                 )
             except APIError as exc:
-                gone = exc.code in _ANSWER_GONE_CODES
-                if not gone and exc.code == "INVALID_REQUEST":
-                    # The Session itself says whether the question is still
-                    # waiting; a refusal for any other reason is a defect.
-                    current = (
-                        await self._session_detail_getter(user, str(record["session_id"]))
-                    ).get("pending_interaction")
-                    gone = (
-                        not isinstance(current, dict)
-                        or str(current.get("interaction_id") or "") != interaction_id
-                    )
-                if not gone:
+                if exc.code not in _ANSWER_GONE_CODES:
                     raise
                 if not redrive:
                     await self._channel_repo.settle_channel_interaction(
                         deployment_id=deployment_id, ref=ref, state=INTERACTION_CLOSED,
-                        participant=participant,
                     )
                     await self._notify(
                         item, "This question is no longer open. Send a new message to continue.",
@@ -1595,7 +1625,6 @@ class ChannelIngressService:
                     return True
         await self._channel_repo.settle_channel_interaction(
             deployment_id=deployment_id, ref=ref, state=INTERACTION_ANSWERED,
-            participant=participant,
         )
         if confirm and pending is not None:
             await self._notify(item, answered_summary(pending, answers))
@@ -1638,7 +1667,7 @@ class ChannelIngressService:
         if not isinstance(reply_context, dict) or not reply_context:
             logger.info(
                 "channel answer notice has no destination: item=%s notice=%s",
-                item.get("_id"), text,
+                item.get("item_id"), text,
             )
             return
         await get_channel(str(item["channel_name"])).deliver_outbound(
@@ -1656,107 +1685,47 @@ class ChannelIngressService:
             return {}
         return {"interaction": shown}
 
-    async def _supersede_parked_turn(
-        self,
-        *,
-        user: UserContext,
-        session_id: str,
-        interaction_id: str,
+    async def _supersede_question(
+        self, user: UserContext, session_id: str, interaction_id: str,
     ) -> None:
-        """Stop the turn parked on an interaction and wait until it has settled.
+        """Stop the response waiting on a question a newer message replaces.
 
-        The platform interaction API owns both endings — stopped through a live
-        engine, or abandoned once that engine is gone — and this spine only
-        sequences one of them before dispatching the new command.
+        Someone who sends a new message instead of answering has moved on. An
+        answer the platform made up would let the runtime continue on a guess
+        before it reads the message, so the response is interrupted instead:
+        the runtime withdraws the question and ends the response. The
+        Session's reader hands the interrupt to the runtime before the input
+        sent next, so the runtime reads the message after the stopped
+        response. Raises when no reader is live to hand the interrupt over;
+        the drive then fails and is retried once the Session's reader runs
+        again.
         """
         if not interaction_id:
             raise RuntimeError("pending interaction has no interaction_id")
-        await self._supersede_pending_interaction(user, session_id, interaction_id)
-        deadline_polls = max(
-            1, int(_SESSION_READY_TIMEOUT_SECONDS / _SESSION_READY_POLL_SECONDS)
-        )
-        for _ in range(deadline_polls):
-            session = await self._session_detail_getter(user, session_id)
-            current_pending = session.get("pending_interaction")
-            if isinstance(current_pending, dict):
-                current_id = str(current_pending.get("interaction_id") or "").strip()
-                if current_id and current_id != interaction_id:
-                    raise RuntimeError(
-                        "a new interaction became pending while the superseded "
-                        "channel question was settling"
-                    )
-            state = str(session.get("state") or "")
-            current_turn_id = str(session.get("current_turn_id") or "").strip()
-            if (
-                current_pending is None
-                and not current_turn_id
-                and state in ("READY", "BACKGROUND_RUNNING")
-            ):
-                return
-            if state in ("TERMINATED", "DELETED", "RECOVERY_REQUIRED"):
-                raise RuntimeError(
-                    f"session {session_id} became {state} while stopping the turn "
-                    "its superseded channel question parked"
-                )
-            await asyncio.sleep(_SESSION_READY_POLL_SECONDS)
-        raise RuntimeError(
-            f"session {session_id} did not settle its superseded channel question "
-            f"in {_SESSION_READY_TIMEOUT_SECONDS}s"
-        )
+        stopped = await self._session_runtime.interrupt(user, session_id)
+        if stopped.get("status") != "accepted":
+            raise RuntimeError(
+                f"session {session_id} has no live reader to stop the response "
+                f"waiting on question {interaction_id}"
+            )
 
     @staticmethod
     def _provider_streams(channel_name: str) -> bool:
         return bool(get_channel(channel_name).supports_streaming_delivery)
 
     async def _fail_item(self, item: dict[str, Any], error: str) -> None:
-        """Record a failed drive: backoff → RECEIVED, exhausted → DEAD."""
-        attempts = int(item.get("attempts") or 0)
-        if attempts < len(_INBOUND_RETRY_BACKOFF_SECONDS):
-            retry_at: float | None = time.time() + _INBOUND_RETRY_BACKOFF_SECONDS[attempts]
-        else:
-            retry_at = None
-        recorded = await self._channel_repo.fail_inbound(
-            item_id=str(item["_id"]),
+        """Record a failed drive: RECEIVED after its backoff, or DEAD once retries are spent."""
+        state = await self._channel_repo.fail_inbound(
+            item_id=str(item["item_id"]),
             owner_token=str(item["owner_token"]),
             generation=int(item["generation"]),
             error=error,
-            retry_at_epoch=retry_at,
+            backoff=_INBOUND_RETRY_BACKOFF_SECONDS,
         )
         logger.error(
-            "channel drive failed: item=%s attempts=%d dead=%s recorded=%s error=%s",
-            item["_id"], attempts + 1, retry_at is None, recorded, error,
+            "channel drive failed: item=%s attempt=%d state=%s error=%s",
+            item["item_id"], int(item.get("attempts") or 0) + 1, state or "held by another worker", error,
         )
-
-    async def _drain_with_lease_renewal(
-        self, agen: Any, item: dict[str, Any]
-    ) -> bool:
-        """Drain the turn stream; return True only if it completed without error.
-
-        Renews the item lease periodically so a long turn is not judged
-        abandoned and stolen mid-flight. (If a steal happens anyway, the
-        settle fence stops this worker before delivery.)
-        """
-        ok = True
-        last_renew = time.monotonic()
-        renew_every = 60.0
-        try:
-            async for _ in agen:
-                now = time.monotonic()
-                if now - last_renew >= renew_every:
-                    last_renew = now
-                    with contextlib.suppress(Exception):
-                        await self._channel_repo.renew_inbound_lease(
-                            item_id=str(item["_id"]),
-                            owner_token=str(item["owner_token"]),
-                            generation=int(item["generation"]),
-                        )
-        except Exception as exc:
-            ok = False
-            logger.error("channel drain failed: item=%s error=%s", item["_id"], exc)
-        finally:
-            with contextlib.suppress(Exception):
-                await agen.aclose()
-        return ok
 
     async def _start_channel_conversation(
         self, target: ConversationTarget, user: UserContext, execution_user_id: str,
@@ -1771,9 +1740,9 @@ class ChannelIngressService:
         self, deployment_id: str, conversation_key: str, owner: str, *,
         execution_user_id: str = "",
     ) -> int | None:
-        """Acquire the conversation lock, waiting (bounded) for a prior turn."""
+        """Acquire the conversation lock, waiting (bounded) for another drive of it."""
         deadline_polls = max(
-            1, int(_SESSION_READY_TIMEOUT_SECONDS / _SESSION_READY_POLL_SECONDS)
+            1, int(_CONVERSATION_LOCK_WAIT_SECONDS / _CONVERSATION_LOCK_POLL_SECONDS)
         )
         for _ in range(deadline_polls):
             generation = await self._channel_repo.acquire_conversation_lock(
@@ -1782,7 +1751,7 @@ class ChannelIngressService:
             )
             if generation is not None:
                 return generation
-            await asyncio.sleep(_SESSION_READY_POLL_SECONDS)
+            await asyncio.sleep(_CONVERSATION_LOCK_POLL_SECONDS)
         # Last try after the budget (a crashed holder's TTL may have lapsed).
         return await self._channel_repo.acquire_conversation_lock(
             deployment_id=deployment_id, conversation_key=conversation_key, owner=owner,
@@ -1812,13 +1781,10 @@ class ChannelIngressService:
                 and str(session.get("user_id") or "") == user.user_id
                 and state not in ("TERMINATED", "DELETED", "RECOVERY_REQUIRED")
             ):
-                await self._channel_repo.touch_conversation(
-                    deployment_id=deployment_id, conversation_key=conversation_key,
-                    execution_user_id=execution_user_id,
-                )
                 return mapped_session_id
-            # Mapped session is gone: start a replacement and CAS-swap the
-            # mapping; a racing replacement's winner is read back and used.
+            # Mapped session is gone: start a replacement and swap the mapping
+            # if it still names the gone session; a racing replacement's winner
+            # is read back and used.
             started = await self._start_channel_conversation(
                 target, user, execution_user_id,
             )
@@ -1827,7 +1793,6 @@ class ChannelIngressService:
                 deployment_id=deployment_id,
                 conversation_key=conversation_key,
                 session_id=new_session_id,
-                **target.fields,
                 execution_user_id=execution_user_id,
                 replaces_session_id=mapped_session_id,
             )
@@ -1854,7 +1819,6 @@ class ChannelIngressService:
             deployment_id=deployment_id,
             conversation_key=conversation_key,
             session_id=new_session_id,
-            **target.fields,
             execution_user_id=execution_user_id,
         )
         winner = str((existing or {}).get("session_id") or new_session_id)
@@ -1866,48 +1830,192 @@ class ChannelIngressService:
             )
         return winner
 
-    async def _wait_session_ready(self, session_id: str) -> bool:
-        """Poll until the session's sandbox is READY (bounded). Returns readiness."""
-        deadline_polls = max(
-            1, int(_SESSION_READY_TIMEOUT_SECONDS / _SESSION_READY_POLL_SECONDS)
-        )
-        for _ in range(deadline_polls):
-            session = await self._sessions_repo.get_session(session_id)
-            state = str((session or {}).get("state") or "")
-            if state in ("READY", "WAITING_INPUT", "BACKGROUND_RUNNING"):
-                return True
-            if state in ("TERMINATED", "DELETED", "RECOVERY_REQUIRED"):
-                return False
-            await asyncio.sleep(_SESSION_READY_POLL_SECONDS)
-        return False
+    # ── replies (invariant C) ────────────────────────────────────────────
 
-    # ── delivery (invariant C) ───────────────────────────────────────────
+    async def on_facts(self, session_id: str, batch: FactBatch) -> None:
+        """Turn the replies a committed batch opens or completes into deliveries.
 
-    async def _deliver_outbox_row(self, entry: dict[str, Any]) -> None:
+        The Session's reader calls this after each committed batch of its
+        runtime's facts (``reader_hooks`` in
+        ``astrabox/core/service/orchestrator/session_runtime/platform.py``).
+        Only a batch whose output opens or closes a reply can change what a
+        channel delivers; for those, every enabled binding subscribed to the
+        Session projects the Session's output from its own position, and the
+        deliveries that became due start at once. A batch this misses (the
+        process died after the commit) is projected by the reconciler.
+        """
+        if not any(part.part.get("type") in REPLY_BOUNDARY_PARTS for part in batch.output):
+            return
+        for subscription in await self._channel_repo.session_output_subscriptions(session_id):
+            try:
+                due = await self._project_subscription(subscription)
+            except Exception:
+                # One binding's failure must not hold back another's replies;
+                # the reconciler projects this subscription again.
+                logger.exception(
+                    "channel Session output failed binding=%s session=%s",
+                    subscription["deployment_id"], session_id,
+                )
+                continue
+            self._start_deliveries(due)
+
+    async def _project_subscription(self, subscription: dict[str, Any]) -> list[dict[str, Any]]:
+        """Write deliveries for the replies the Session recorded past the subscription's position.
+
+        A reply's delivery row is written where its ``start`` part is
+        recorded, so only replies that began after the binding subscribed
+        reach it. A streaming destination's row is due at once and its
+        delivery follows the reply as it grows. A final-text destination's
+        row waits until the reply's ``finish`` is recorded; the reply is then
+        due, or its row settles without delivery when it has neither text nor
+        a question to send. The position moves after the rows exist, by
+        compare-and-set, so a crash replays into the same rows and two
+        projectors move it once.
+        Returns the rows that became due.
+        """
+        session_id = str(subscription["session_id"])
+        deployment_id = str(subscription["deployment_id"])
+        streaming = bool(subscription["streaming"])
+        cursor = int(subscription["after_seq"])
+        due: list[dict[str, Any]] = []
+        while True:
+            rows = await self._facts.read_output(session_id, after_seq=cursor, limit=_OUTPUT_PAGE)
+            if not rows:
+                return due
+            for row in rows:
+                response_id = str(row.get("response_id") or "")
+                kind = row["part"].get("type")
+                if not response_id or kind not in REPLY_BOUNDARY_PARTS:
+                    continue
+                seq = int(row["seq"])
+                reply = await self._reply_through(session_id, response_id, seq)
+                if reply is None:
+                    continue
+                if kind == "start" and reply.first_seq == seq:
+                    entry = await self._channel_repo.create_outbox_entry(
+                        deployment_id=deployment_id,
+                        channel_name=str(subscription["channel_name"]),
+                        session_id=session_id,
+                        response_id=reply.reply_id,
+                        response_seq=reply.first_seq,
+                        reply_context=dict(subscription["reply_context"]),
+                        conversation_key=subscription.get("conversation_key"),
+                        streaming=streaming,
+                        due=streaming,
+                    )
+                    if streaming and entry["state"] == OUTBOX_PENDING:
+                        due.append(entry)
+                elif kind == "finish" and not streaming and reply.complete and reply.last_seq == seq:
+                    if reply.text.strip() or reply.interaction_id is not None:
+                        completed = await self._channel_repo.complete_reply(
+                            deployment_id=deployment_id, session_id=session_id,
+                            response_id=reply.reply_id,
+                        )
+                        if completed is not None:
+                            due.append(completed)
+                    else:
+                        # Text-only destinations have nothing to send for a
+                        # reply of only tool work.
+                        await self._channel_repo.discard_reply(
+                            deployment_id=deployment_id, session_id=session_id,
+                            response_id=reply.reply_id,
+                        )
+            last = int(rows[-1]["seq"])
+            if not await self._channel_repo.advance_output_subscription(
+                deployment_id=deployment_id, session_id=session_id,
+                expected_seq=cursor, sequence=last,
+            ):
+                # Another projector moved the position; it projects what follows.
+                return due
+            cursor = last
+            if len(rows) < _OUTPUT_PAGE:
+                return due
+
+    async def _reply_through(
+        self, session_id: str, response_id: str, seq: int,
+    ) -> ChannelReply | None:
+        """The last reply of a response, as its parts through output ``seq`` form it."""
+        rows = await self._facts.output_for_responses(session_id, [response_id], through_seq=seq)
+        replies = reply_segments(response_id, rows)
+        return replies[-1] if replies else None
+
+    def _start_deliveries(self, entries: list[dict[str, Any]]) -> None:
+        """Deliver due rows in the background, each row once at a time in this process."""
+        for entry in entries:
+            identity = str(entry["outbox_id"])
+            if identity in self._delivering:
+                continue
+            self._delivering.add(identity)
+            self._spawn_background_task(
+                self._run_delivery(entry), name=f"channel-delivery-{identity}",
+            )
+
+    async def _run_delivery(self, entry: dict[str, Any]) -> None:
+        try:
+            attempted = await self._deliver_outbox_row(entry)
+        finally:
+            self._delivering.discard(str(entry["outbox_id"]))
+        if attempted:
+            # The Session's later replies to this binding waited behind this one.
+            self._start_deliveries(await self._channel_repo.list_pending_outbox(
+                deployment_id=str(entry["deployment_id"]), session_id=str(entry["session_id"]),
+            ))
+
+    async def _deliver_outbox_row(self, entry: dict[str, Any]) -> bool:
         """At-least-once, exactly-one-owner reply delivery for one outbox row.
 
-        CAS-leases the row (fenced) and routes: streaming rows run a delivery
-        session over the turn's durable frames; simple rows post the bound
-        turn's final text. Every settlement write carries the fenced lease,
-        so a deliverer that lost its lease mid-flight cannot complete or fail
-        the successor's row.
+        Leases the row (fenced) and routes: streaming rows run a delivery
+        session over the reply as the Session's output log grows; final-text
+        rows post the complete reply's text. Every settlement write carries
+        the fenced lease, so a deliverer that lost its lease mid-flight cannot
+        complete or fail the successor's row. A failed attempt counts against
+        the row's stored retry budget. Returns whether this call held the row.
         """
-        outbox_id = str(entry.get("_id") or "")
+        outbox_id = str(entry.get("outbox_id") or "")
         owner = new_owner_token()
-        generation = await self._channel_repo.claim_outbox_for_delivery(
-            outbox_id, owner=owner
-        )
-        if generation is None:
+        claimed = await self._channel_repo.claim_outbox_for_delivery(outbox_id, owner=owner)
+        if claimed is None:
             logger.info(
-                "channel reply already leased by another deliverer (outbox=%s); skipping",
+                "channel reply is not due or another deliverer holds it (outbox=%s); skipping",
                 outbox_id,
             )
-            return
-        current = await self._channel_repo.get_outbox_entry(outbox_id) or entry
-        if bool(current.get("streaming")):
-            await self._deliver_streaming(current, owner=owner, generation=generation)
+            return False
+        generation = int(claimed["lease_generation"])
+        if bool(claimed.get("streaming")):
+            await self._deliver_streaming(claimed, owner=owner, generation=generation)
         else:
-            await self._deliver_simple(current, owner=owner, generation=generation)
+            await self._deliver_simple(claimed, owner=owner, generation=generation)
+        return True
+
+    async def _record_delivery_failure(
+        self,
+        entry: dict[str, Any],
+        *,
+        owner: str,
+        generation: int,
+        error: str,
+        retry: bool = True,
+    ) -> None:
+        """Count a failed attempt: the row waits out its next backoff, or is DEAD."""
+        state = await self._channel_repo.record_outbox_failure(
+            str(entry["outbox_id"]),
+            owner=owner,
+            generation=generation,
+            error=error,
+            backoff=_OUTBOX_RETRY_BACKOFF_SECONDS,
+            retry=retry,
+        )
+        if state == OUTBOX_DEAD:
+            logger.error(
+                "channel %s reply delivery gave up; outbox %s is DEAD: %s",
+                entry.get("channel_name"), entry["outbox_id"], error,
+            )
+            return
+        logger.warning(
+            "channel %s reply delivery attempt %d failed (outbox=%s, now %s): %s",
+            entry.get("channel_name"), int(entry.get("attempts") or 0) + 1,
+            entry["outbox_id"], state or "held by another deliverer", error,
+        )
 
     async def _persist_receipt(
         self,
@@ -1917,244 +2025,222 @@ class ChannelIngressService:
         generation: int,
         known_aliases: list[str],
         receipt: ChannelDeliveryReceipt | None,
-        interaction: ChannelInteraction | None = None,
+        opening: dict[str, Any] | None = None,
     ) -> list[str]:
-        """Merge + persist receipt aliases ahead of any completion write."""
-        if receipt is None or not receipt.message_ids:
-            return known_aliases
-        merged = list(dict.fromkeys([*known_aliases, *[str(a) for a in receipt.message_ids]]))
+        """Persist what a delivery created ahead of any completion write; the aliases now known.
+
+        ``opening`` is the question the delivery showed (see
+        :meth:`_reply_with_question`): it is recorded only now, once the
+        platform accepted the message that shows it.
+        """
+        received = [str(alias) for alias in receipt.message_ids] if receipt is not None else []
+        merged = list(dict.fromkeys([*known_aliases, *received]))
         # A streamed reply's question arrives on an update of a message its
         # earlier progress already recorded; it still needs its reply target.
-        if merged != known_aliases or interaction is not None:
+        if merged != known_aliases or opening is not None:
             await self._channel_repo.record_delivery_aliases(
-                str(entry["_id"]),
+                str(entry["outbox_id"]),
                 owner=owner,
                 generation=generation,
                 aliases=merged,
-                deployment_id=str(entry.get("deployment_id") or "") or None,
-                conversation_key=str(entry.get("conversation_key") or "") or None,
-                session_id=str(entry.get("session_id") or "") or None,
-                interaction_ref=(
-                    interaction_ref(
-                        str(entry.get("deployment_id") or ""),
-                        str(entry.get("session_id") or ""),
-                        interaction.interaction_id,
-                    )
-                    if interaction is not None
-                    else None
-                ),
+                interaction=opening,
             )
         return merged
 
-    async def _reply_with_question(
-        self, entry: dict[str, Any], response: Any, provider: Any,
-    ) -> tuple[str, ChannelInteraction | None]:
-        """The reply's text and, when its turn is waiting on a question, that question.
+    def _reply_reader(self, entry: dict[str, Any]) -> ReplyReader:
+        return ReplyReader(
+            self._facts,
+            str(entry["session_id"]),
+            reply_id=str(entry["response_id"]),
+            first_seq=int(entry["response_seq"]),
+        )
 
-        The question is shown only while the turn still waits on it: one
-        already answered in the console, or stopped by a newer message before
-        this delivery ran, would only invite an answer nobody can use.
+    async def _reply_with_question(
+        self, entry: dict[str, Any], reply: ChannelReply, provider: Any,
+    ) -> tuple[str, ChannelInteraction | None, dict[str, Any] | None]:
+        """The reply's text and, when its response still waits on its question, that question.
+
+        The question is shown only while the Session's runtime still waits on
+        it and nobody answered it: one answered in the console, or stopped by
+        a newer message before this delivery ran, would only invite an answer
+        nobody can use. The third value is the question's record, written by
+        :meth:`_persist_receipt` once a delivery showed it; a delivery that
+        fails leaves no open question that nobody saw.
         """
-        view = response.interaction
-        if view is None:
-            return response.text, None
+        if reply.interaction_id is None:
+            return reply.text, None, None
         deployment_id = str(entry.get("deployment_id") or "")
         session_id = str(entry.get("session_id") or "")
-        interaction_id = str(view.get("interaction_id") or "")
-        session = await self._sessions_repo.get_session(session_id)
-        detail = await self._session_detail_getter(
-            UserContext(user_id=str((session or {}).get("user_id") or "")), session_id,
-        )
-        pending = detail.get("pending_interaction")
-        if not isinstance(pending, dict) or str(pending.get("interaction_id") or "") != interaction_id:
-            return response.text, None
-        ref = interaction_ref(deployment_id, session_id, interaction_id)
-        await self._channel_repo.open_channel_interaction(
-            deployment_id=deployment_id,
-            ref=ref,
-            session_id=session_id,
-            interaction_id=interaction_id,
-            conversation_key=str(entry.get("conversation_key") or "") or None,
-            channel_name=str(entry.get("channel_name") or ""),
-            reply_context=dict(entry.get("reply_context") or {}),
-            view=view,
-        )
+        interaction = await self._facts.get_interaction(session_id, reply.interaction_id)
+        if (
+            interaction is None
+            or interaction["status"] != "open"
+            or interaction.get("answer") is not None
+        ):
+            return reply.text, None, None
+        view = public_interaction_view(dict(interaction["contract"]))
+        assert view is not None
+        ref = interaction_ref(deployment_id, session_id, reply.interaction_id)
         shown = channel_interaction(
             view, question_index=0, ref=ref, actions=provider.supports_interaction_actions,
         )
-        text = response.text.strip()
-        return (f"{text}\n\n{shown.text}" if text else shown.text), shown
+        text = reply.text.strip()
+        opening = {"ref": ref, "interaction_id": reply.interaction_id, "view": view}
+        return (f"{text}\n\n{shown.text}" if text else shown.text), shown, opening
 
     async def _deliver_simple(
         self, entry: dict[str, Any], *, owner: str, generation: int
     ) -> None:
-        """Final-text delivery with capped inline retries, then DELIVERED/DEAD."""
-        outbox_id = str(entry.get("_id") or "")
+        """One final-text delivery attempt: DELIVERED, or a counted failure."""
+        outbox_id = str(entry["outbox_id"])
         channel_name = str(entry.get("channel_name") or "")
-        session_id = str(entry.get("session_id") or "")
-        turn_id = str(entry.get("turn_id") or "")
-
-        response = await self._read_outbox_response(entry)
-        if not response.complete:
-            raise RuntimeError("simple delivery requires a completed Session response")
-        provider = get_channel(channel_name)
-        text, shown = await self._reply_with_question(entry, response, provider)
-        text = text.strip()
-        if not text:
-            logger.warning(
-                "channel %s outbox %s: bound turn %s has no assistant text",
-                channel_name, outbox_id, turn_id,
-            )
-            await self._channel_repo.record_outbox_failure(
-                outbox_id,
-                owner=owner,
-                generation=generation,
-                error="no assistant text on the bound turn",
-                next_attempt_at=None,
-            )
-            return
-
-        known_aliases = [str(a) for a in (entry.get("delivery_aliases") or [])]
-        attempts = len(_OUTBOX_RETRY_BACKOFF_SECONDS) + 1
-        for attempt in range(1, attempts + 1):
-            try:
-                receipt = await provider.deliver_outbound(
-                    reply_context=dict(entry.get("reply_context") or {}),
-                    text=text,
-                    binding=await self._delivery_binding(entry),
-                    **self._interaction_argument(provider, shown),
-                )
-                known_aliases = await self._persist_receipt(
-                    entry,
-                    owner=owner,
-                    generation=generation,
-                    known_aliases=known_aliases,
-                    receipt=receipt if isinstance(receipt, ChannelDeliveryReceipt) else None,
-                    interaction=shown,
-                )
+        try:
+            reply = await self._reply_reader(entry).read()
+            if not reply.complete:
+                raise RuntimeError("final-text delivery requires a complete reply")
+            provider = get_channel(channel_name)
+            text, shown, opening = await self._reply_with_question(entry, reply, provider)
+            text = text.strip()
+            if not text:
+                # The reply's only content was its question, and the question
+                # closed before this delivery: nothing is left to send.
                 await self._channel_repo.mark_outbox_delivered(
                     outbox_id, owner=owner, generation=generation
                 )
                 return
-            except Exception as exc:
-                is_last = attempt >= attempts
-                logger.warning(
-                    "channel %s reply delivery attempt %d/%d failed (outbox=%s): %s",
-                    channel_name, attempt, attempts, outbox_id, exc,
-                )
-                recorded = await self._channel_repo.record_outbox_failure(
-                    outbox_id,
-                    owner=owner,
-                    generation=generation,
-                    error=f"{type(exc).__name__}: {exc}",
-                    next_attempt_at=None if is_last else utcnow_iso(),
-                )
-                if not recorded:
-                    return  # lease stolen — the successor owns the retries
-                if is_last:
-                    logger.error(
-                        "channel %s reply delivery exhausted; outbox %s marked DEAD",
-                        channel_name, outbox_id,
-                    )
-                    return
-                await asyncio.sleep(_OUTBOX_RETRY_BACKOFF_SECONDS[attempt - 1])
-
-    async def _read_outbox_response(self, entry: dict[str, Any]) -> Any:
-        batch = await self._read_session_output(
-            str(entry["session_id"]), after_seq=int(entry["start_after_seq"]),
-        )
-        for response in batch.responses:
-            if response.response_id == entry["response_id"]:
-                return response
-        raise RuntimeError("subscribed Session response is missing from its journal")
+            receipt = await provider.deliver_outbound(
+                reply_context=dict(entry.get("reply_context") or {}),
+                text=text,
+                binding=await self._delivery_binding(entry),
+                **self._interaction_argument(provider, shown),
+            )
+            await self._persist_receipt(
+                entry,
+                owner=owner,
+                generation=generation,
+                known_aliases=[str(alias) for alias in (entry.get("delivery_aliases") or [])],
+                receipt=receipt if isinstance(receipt, ChannelDeliveryReceipt) else None,
+                opening=opening,
+            )
+            await self._channel_repo.mark_outbox_delivered(
+                outbox_id, owner=owner, generation=generation
+            )
+        except Exception as exc:
+            await self._record_delivery_failure(
+                entry, owner=owner, generation=generation, error=f"{type(exc).__name__}: {exc}",
+            )
 
     async def _deliver_streaming(
         self, entry: dict[str, Any], *, owner: str, generation: int
     ) -> None:
-        """Render the platform subscription as provider progress and settlement.
+        """Render the reply as provider progress and settlement.
 
-        Reply identity, reconstruction and completion come from Session output;
-        the channel owns only its lease, transport receipt and delivery cursor.
+        Reply identity, text and completion come from the Session's output
+        log, read as the runtime's parts are recorded; the channel owns only
+        its lease, the transport receipts and whether the reply was opened on
+        the platform (``stream_started``), so a resumed delivery continues the
+        reply rather than opening a second one. The reply is opened once it
+        has text, a question or a failure to show: a reply of only tool work
+        shows nothing.
         """
-        outbox_id = str(entry.get("_id") or "")
+        outbox_id = str(entry["outbox_id"])
         channel_name = str(entry.get("channel_name") or "")
-        turn_id = str(entry.get("turn_id") or "")
-        reply_context = dict(entry.get("reply_context") or {})
-        known_aliases = [str(a) for a in (entry.get("delivery_aliases") or [])]
-        cursor = int(entry.get("frame_cursor") if entry.get("frame_cursor") is not None else -1)
-
-        async def _fail_delivery(error: str, *, dead: bool) -> None:
-            await self._channel_repo.record_outbox_failure(
-                outbox_id,
-                owner=owner,
-                generation=generation,
-                error=error,
-                next_attempt_at=None if dead else utcnow_iso(),
-            )
-
+        response_id = str(entry["response_id"])
+        known_aliases = [str(alias) for alias in (entry.get("delivery_aliases") or [])]
+        provider = get_channel(channel_name)
         try:
-            handle = await get_channel(channel_name).open_delivery(
-                reply_context=reply_context,
+            handle = await provider.open_delivery(
+                reply_context=dict(entry.get("reply_context") or {}),
                 prior_aliases=list(known_aliases),
                 binding=await self._delivery_binding(entry),
             )
         except Exception as exc:
-            await _fail_delivery(f"open_delivery: {type(exc).__name__}: {exc}", dead=False)
+            await self._record_delivery_failure(
+                entry, owner=owner, generation=generation,
+                error=f"open_delivery: {type(exc).__name__}: {exc}",
+            )
             return
 
+        reader = self._reply_reader(entry)
         seq = 0
         text_so_far = ""
+        opened = bool(entry.get("stream_started"))
         started = time.monotonic()
+
+        async def open_reply() -> None:
+            nonlocal known_aliases, opened
+            if opened:
+                return
+            receipt = await handle.emit(
+                ChannelEvent(type=EVENT_TURN_STARTED, seq=seq, response_id=response_id)
+            )
+            known_aliases = await self._persist_receipt(
+                entry, owner=owner, generation=generation,
+                known_aliases=known_aliases, receipt=receipt,
+            )
+            await self._channel_repo.mark_stream_started(
+                outbox_id, owner=owner, generation=generation,
+            )
+            opened = True
+
         try:
-            if cursor < 0:
-                receipt = await handle.emit(
-                    ChannelEvent(
-                        type=EVENT_TURN_STARTED, seq=seq, turn_id=turn_id,
-                        response_id=str(entry["response_id"]),
-                    )
-                )
-                known_aliases = await self._persist_receipt(
-                    entry, owner=owner, generation=generation,
-                    known_aliases=known_aliases, receipt=receipt,
-                )
             while True:
                 if time.monotonic() - started > _STREAMING_MAX_SECONDS:
-                    await _fail_delivery("streaming session budget exceeded", dead=False)
+                    # A reply still streaming after one session's budget goes
+                    # on in a fresh delivery session; that is not a failure.
+                    await self._channel_repo.release_outbox_lease(
+                        outbox_id, owner=owner, generation=generation,
+                    )
                     return
                 if not await self._channel_repo.renew_outbox_lease(
                     outbox_id, owner=owner, generation=generation
                 ):
-                    return  # lease stolen — the successor resumes from the cursor
-                response = await self._read_outbox_response(entry)
-                if response.text != text_so_far:
-                    text_so_far = response.text
+                    return  # lease stolen — the successor resumes the delivery
+                reply = await reader.read()
+                if reply.text and reply.text != text_so_far:
+                    await open_reply()
+                    text_so_far = reply.text
                     seq += 1
                     receipt = await handle.emit(
                         ChannelEvent(
                             type=EVENT_PROGRESS, seq=seq, text=text_so_far,
-                            turn_id=turn_id,
-                            response_id=str(entry["response_id"]),
+                            response_id=response_id,
                         )
                     )
                     known_aliases = await self._persist_receipt(
                         entry, owner=owner, generation=generation,
                         known_aliases=known_aliases, receipt=receipt,
                     )
-                    await self._channel_repo.advance_outbox_cursor(
-                        outbox_id, owner=owner, generation=generation,
-                        frame_seq=response.response_seq,
+                if reply.complete and reply.error is not None:
+                    await open_reply()
+                    seq += 1
+                    with contextlib.suppress(Exception):
+                        await handle.emit(
+                            ChannelEvent(
+                                type=EVENT_FAILED, seq=seq, error=reply.error,
+                                response_id=response_id,
+                            )
+                        )
+                    await self._record_delivery_failure(
+                        entry, owner=owner, generation=generation,
+                        error="bound response failed", retry=False,
                     )
-                if response.complete and response.error is None:
-                    provider = get_channel(channel_name)
-                    final_text, shown = await self._reply_with_question(
-                        entry, response, provider,
+                    return
+                if reply.complete:
+                    final_text, shown, opening = await self._reply_with_question(
+                        entry, reply, provider,
                     )
+                    if not opened and not final_text.strip():
+                        await self._channel_repo.mark_outbox_delivered(
+                            outbox_id, owner=owner, generation=generation
+                        )
+                        return
+                    await open_reply()
                     seq += 1
                     receipt = await handle.emit(
                         ChannelEvent(
                             type=EVENT_SETTLED, seq=seq, text=final_text,
-                            turn_id=turn_id,
-                            response_id=str(entry["response_id"]),
+                            response_id=response_id,
                             interaction=(
                                 shown if provider.supports_interaction_actions else None
                             ),
@@ -2162,32 +2248,17 @@ class ChannelIngressService:
                     )
                     known_aliases = await self._persist_receipt(
                         entry, owner=owner, generation=generation,
-                        known_aliases=known_aliases, receipt=receipt,
-                        interaction=shown,
+                        known_aliases=known_aliases, receipt=receipt, opening=opening,
                     )
                     await self._channel_repo.mark_outbox_delivered(
                         outbox_id, owner=owner, generation=generation
                     )
                     return
-                if response.error is not None:
-                    seq += 1
-                    with contextlib.suppress(Exception):
-                        await handle.emit(
-                            ChannelEvent(
-                                type=EVENT_FAILED, seq=seq,
-                                error=response.error, turn_id=turn_id,
-                                response_id=str(entry["response_id"]),
-                            )
-                        )
-                    await _fail_delivery("bound response failed", dead=True)
-                    return
                 await asyncio.sleep(_STREAMING_POLL_SECONDS)
         except Exception as exc:
-            logger.warning(
-                "channel %s streaming delivery failed (outbox=%s): %s",
-                channel_name, outbox_id, exc,
+            await self._record_delivery_failure(
+                entry, owner=owner, generation=generation, error=f"{type(exc).__name__}: {exc}",
             )
-            await _fail_delivery(f"{type(exc).__name__}: {exc}", dead=False)
         finally:
             with contextlib.suppress(Exception):
                 await handle.close()
@@ -2200,13 +2271,12 @@ class ChannelIngressService:
         actual_channel = channel_scene_name(str((binding or {}).get("scene") or ""))
         if (
             not binding
-            or binding.get("deleted") is True
             or binding.get("enabled") is False
             or actual_channel != expected_channel
         ):
             raise RuntimeError(
                 f"channel delivery binding {deployment_id!r} is missing, disabled, "
-                "or no longer matches its durable outbox row"
+                "or no longer matches its delivery row"
             )
         return await self._channel_credentials.hydrate(
             binding, get_channel(expected_channel)
@@ -2215,65 +2285,45 @@ class ChannelIngressService:
     # ── recovery (the reconciler's entry points) ─────────────────────────
 
     async def project_session_outputs(self) -> int:
-        """Project every main-conversation response through the channel seam."""
+        """Project the subscriptions with work, one page per call; how many deliveries became due.
+
+        Subscriptions are read in key order, a page per reconciler tick; a
+        short page ends the pass and the next call starts over. A subscription
+        has work when its Session recorded output past its position (a reply
+        boundary no consumer projected, or parts a consumer had no reason to
+        read), or when its binding is disabled or its Session deleted, which
+        ends it.
+        """
         subscriptions = await self._channel_repo.list_output_subscriptions(
-            after_id=self._output_subscription_cursor,
+            after=self._output_subscription_cursor, limit=_OUTPUT_SUBSCRIPTION_PAGE,
         )
-        self._output_subscription_cursor = str(subscriptions[-1]["_id"]) if len(subscriptions) == 50 else ""
+        self._output_subscription_cursor = (
+            (str(subscriptions[-1]["deployment_id"]), str(subscriptions[-1]["session_id"]))
+            if len(subscriptions) == _OUTPUT_SUBSCRIPTION_PAGE
+            else None
+        )
         count = 0
         for subscription in subscriptions:
             try:
-                count += await self._project_session_output(subscription)
+                if not subscription.get("binding_enabled") or subscription.get("session_deleted"):
+                    # A disabled binding delivers nothing. Re-enabled, it
+                    # follows a Session again from that Session's next channel
+                    # input, without replaying what the Session said meanwhile.
+                    await self._channel_repo.remove_output_subscription(
+                        deployment_id=str(subscription["deployment_id"]),
+                        session_id=str(subscription["session_id"]),
+                    )
+                    continue
+                due = await self._project_subscription(subscription)
             except Exception:
-                logger.exception("channel Session output failed subscription=%s", subscription["_id"])
-        return count
-
-    async def _project_session_output(self, subscription: dict[str, Any]) -> int:
-        session_id = str(subscription["session_id"])
-        session = await self._sessions_repo.get_session(session_id)
-        if session is None:
-            await self._channel_repo.remove_output_subscription(str(subscription["_id"]))
-            return 0
-        if self._observe_session_output is not None:
-            # A destination follows the Session continuously, so it keeps the
-            # engine's reader attached: a scheduled run or a background
-            # completion is delivered without a new message or a viewer.
-            await self._observe_session_output(session_id)
-        cursor = int(subscription["after_seq"])
-        batch = await self._read_session_output(session_id, after_seq=cursor)
-        count = 0
-        for response in batch.responses:
-            if not response.complete and not subscription["streaming"]:
+                logger.exception(
+                    "channel Session output failed binding=%s session=%s",
+                    subscription["deployment_id"], subscription["session_id"],
+                )
                 continue
-            # Text-only destinations have nothing to send for a tool-only reply,
-            # unless the reply stopped at a question.
-            if (
-                response.complete and not response.text.strip()
-                and response.interaction is None and not subscription["streaming"]
-            ):
-                continue
-            await self._channel_repo.create_outbox_entry(
-                deployment_id=str(subscription["deployment_id"]),
-                channel_name=str(subscription["channel_name"]), session_id=session_id,
-                turn_id=response.turn_id,
-                response_id=response.response_id, response_seq=response.response_seq,
-                start_after_seq=response.start_after_seq,
-                reply_context=dict(subscription["reply_context"]),
-                conversation_key=subscription.get("conversation_key"),
-                streaming=bool(subscription["streaming"]),
-            )
-            count += 1
-        if batch.after_seq > cursor:
-            await self._channel_repo.advance_output_subscription(
-                str(subscription["_id"]), expected_seq=cursor, sequence=batch.after_seq,
-            )
+            self._start_deliveries(due)
+            count += len(due)
         return count
-
-    async def _run_delivery(self, entry: dict[str, Any]) -> None:
-        try:
-            await self._deliver_outbox_row(entry)
-        finally:
-            self._delivering.discard(str(entry["_id"]))
 
     async def recover_inbound(self, *, limit: int = 50) -> int:
         """Re-drive expired live work items (crash recovery, invariant A).
@@ -2286,14 +2336,14 @@ class ChannelIngressService:
         recovered = 0
         for stale in items:
             claimed = await self._channel_repo.claim_inbound_for_recovery(
-                item_id=str(stale["_id"]),
+                item_id=str(stale["item_id"]),
                 expected_generation=int(stale.get("generation") or 0),
             )
             if claimed is None:
                 continue
             recovered += 1
             self._spawn_background_task(
-                self._drive_work_item(claimed), name=f"channel-recovery-{claimed['_id']}",
+                self._drive_work_item(claimed), name=f"channel-recovery-{claimed['item_id']}",
             )
         if recovered:
             logger.info("channel inbound recovery re-drove %d items", recovered)
@@ -2313,7 +2363,7 @@ class ChannelIngressService:
         for record in expired:
             logger.error(
                 "channel authorization expired without its observation: item=%s binding=%s",
-                record["_id"], record.get("deployment_id"),
+                record["item_id"], record.get("deployment_id"),
             )
             if record.get("recall") is not None:
                 # The participant withdrew the message; nothing is owed to them.
@@ -2322,21 +2372,14 @@ class ChannelIngressService:
                 await self._notify(record, _AUTHORIZATION_EXPIRED_NOTICE)
             except Exception:
                 logger.exception(
-                    "channel authorization expiry notice failed: item=%s", record["_id"],
+                    "channel authorization expiry notice failed: item=%s", record["item_id"],
                 )
         return len(expired)
 
     async def sweep_pending_outbox(self, *, limit: int = 50) -> int:
-        """Re-deliver abandoned outbox rows (boot + periodic recovery)."""
+        """Deliver due outbox rows nobody is delivering (boot + periodic recovery)."""
         entries = await self._channel_repo.list_pending_outbox(limit=limit)
-        for entry in entries:
-            identity = str(entry["_id"])
-            if identity in self._delivering:
-                continue
-            self._delivering.add(identity)
-            self._spawn_background_task(
-                self._run_delivery(entry), name=f"channel-delivery-{identity}",
-            )
+        self._start_deliveries(entries)
         if entries:
-            logger.info("channel outbox sweep processed %d abandoned entries", len(entries))
+            logger.info("channel outbox sweep processed %d due entries", len(entries))
         return len(entries)

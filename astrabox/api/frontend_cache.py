@@ -56,24 +56,3 @@ def console_shell_response(index_html: Path, base_path: str) -> HTMLResponse:
         html.replace(CONSOLE_BASE_PATH_TOKEN, base_path),
         headers=dict(_HTML_HEADERS),
     )
-
-
-class FrontendAssetStaticFiles(StaticFiles):
-    def file_response(
-        self,
-        full_path: str | Path,
-        stat_result: Any,
-        scope: Any,
-        status_code: int = 200,
-    ) -> FileResponse:
-        response = super().file_response(
-            full_path,
-            stat_result,
-            scope,
-            status_code=status_code,
-        )
-        response.headers.setdefault(
-            "Cache-Control",
-            asset_cache_control_for_name(Path(full_path).name),
-        )
-        return response

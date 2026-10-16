@@ -240,7 +240,6 @@ class AdminRuntimeRow(BaseModel):
 
     session_id: str
     sandbox_id: str | None
-    current_task_done: bool | None
     lock_locked: bool | None
     owner_loop_running: bool | None
 
@@ -249,7 +248,6 @@ class AdminRuntimes(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     count: int
-    current_task_count: int
     locked_count: int
     items: list[AdminRuntimeRow]
 
@@ -278,25 +276,26 @@ class AdminProcessHealth(BaseModel):
 
 
 class AdminSessionTrace(BaseModel):
-    """One turn of one session, message summaries beside AI-SDK frames.
+    """A session's latest messages beside one response's browser parts.
 
-    ``message_limit`` and ``frame_limit`` are the clamped limits that produced
-    this answer. ``truncated_frame_count`` is how many frames the limit left
-    out, which is what tells a reader the turn is longer than what is shown.
+    ``current_response_ids`` are the responses still running.
+    ``message_limit`` and ``part_limit`` are the clamped limits that produced
+    this answer; ``truncated_part_count`` is how many earlier parts of the
+    selected response the limit left out.
     """
 
     model_config = ConfigDict(extra="allow")
 
     session_id: str
     state: str
-    current_turn_id: str | None
-    selected_turn_id: str | None
+    current_response_ids: list[str]
+    selected_response_id: str | None
     message_limit: int
-    frame_limit: int
+    part_limit: int
     messages: list[dict[str, Any]]
-    turns: list[dict[str, Any]]
-    frames: list[dict[str, Any]]
-    truncated_frame_count: int
+    responses: list[dict[str, Any]]
+    parts: list[dict[str, Any]]
+    truncated_part_count: int
 
 
 class AdminKillResult(BaseModel):
@@ -613,22 +612,22 @@ async def admin_session_detail(session_id: str, request: Request):
 )
 async def admin_session_trace(session_id: str, request: Request):
     user = await _resolve_user(request)
-    turn_id = str(request.query_params.get("turn_id", "") or "").strip() or None
+    response_id = str(request.query_params.get("response_id", "") or "").strip() or None
     try:
         message_limit = int(request.query_params.get("message_limit", "100") or "100")
-        frame_limit = int(request.query_params.get("frame_limit", "500") or "500")
+        part_limit = int(request.query_params.get("part_limit", "500") or "500")
     except ValueError as exc:
         raise APIError(
             code="INVALID_REQUEST",
-            message="message_limit and frame_limit must be integers",
+            message="message_limit and part_limit must be integers",
             status_code=400,
         ) from exc
     trace = await _svc().admin_get_session_trace(
         user,
         session_id,
-        turn_id=turn_id,
+        response_id=response_id,
         message_limit=message_limit,
-        frame_limit=frame_limit,
+        part_limit=part_limit,
     )
     return success_response(trace)
 

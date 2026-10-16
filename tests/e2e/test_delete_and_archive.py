@@ -1,8 +1,8 @@
 """Session delete / archive lifecycle e2e — the read-back contract for the two
 terminal operations a client can perform on a session.
 
-The backend models a *session* as the unit of history (there is no separate
-long-lived agent record), so the two lifecycle operations have distinct,
+The backend models a *session* as the unit of history (no other record holds a
+conversation's messages), so the two lifecycle operations have distinct,
 observable contracts a client can rely on:
 
 * **archive** (``POST /sessions/{id}/archive``) reclaims the Session's sandbox,
@@ -28,23 +28,26 @@ Run it explicitly (deselected in the default unit run):
 
 from __future__ import annotations
 
-import time
 import uuid
 
 import httpx
 import pytest
 
 from tests.e2e._sandbox_helpers import (
+    Reply,
+    answer_in_history,
     assert_release_matches_the_box,
     environment_sandbox_tenancy,
     create_session,
     data,
     get_session,
+    history,
     permission_mode,
     poll_until_agent_ready,
     release_session,
-    stream_turn,
+    send_and_follow,
     tool_name,
+    user_messages,
     wait_until_settled,
     workspace_path,
 )
@@ -65,43 +68,37 @@ def _list_session_ids(client: httpx.Client) -> set[str]:
     return {str(r.get("session_id") or "") for r in rows}
 
 
-def _messages(client: httpx.Client, sid: str) -> list:
-    """Return the durable messages in the session's transcript (``GET /messages``)."""
-    resp = client.get(f"/api/v1/sessions/{sid}/messages")
-    assert resp.status_code == 200, (
-        f"GET /sessions/{sid}/messages -> {resp.status_code}: {resp.text[:300]}"
+def _answered_once(client: httpx.Client, sid: str, reply: Reply) -> list[dict]:
+    """The conversation's history after ``reply`` ended: its one message, its one completed answer."""
+    settled = wait_until_settled(client, sid)
+    assert settled["last_response"]["response_id"] == reply.response_id, settled
+    assert settled["last_response"]["outcome"] == "completed", settled
+    messages = history(client, sid)
+    assert [m["id"] for m in user_messages(messages)] == [reply.client_message_id], (
+        f"history does not hold the one message sent: {[m['id'] for m in user_messages(messages)]}"
     )
-    body = resp.json()
-    assert body.get("code") == "OK", f"non-OK envelope from GET messages: {body}"
-    msgs = (body.get("data") or {}).get("messages")
-    assert isinstance(msgs, list), f"messages payload is not a list: {body}"
-    return msgs
+    answer = answer_in_history(messages, reply.input_id)
+    assert answer["metadata"].get("outcome") == "completed", answer["metadata"]
+    return messages
 
 
-def _message_count(client: httpx.Client, sid: str) -> int:
-    """Return the number of durable messages in the session's history."""
-    return len(_messages(client, sid))
+def _write_one_file(client: httpx.Client, sid: str, path: str, line: str) -> Reply:
+    """Send one message that has the agent create an exact file, and follow it to its end.
 
-
-def _run_deterministic_turn(client: httpx.Client, sid: str, path: str, line: str) -> None:
-    """Drive one Write turn that creates an exact file, then settle it.
-
-    The session is created with ``bypassPermissions`` so the Write executes without
+    The session is created with ``bypassPermissions`` so the write executes without
     pausing on a permission gate; the prompt pins an exact path + content so the
-    turn is deterministic and produces concrete, tool-driven history. Returns after
-    the turn settles back to READY.
+    response is deterministic and produces concrete, tool-driven history.
     """
-    res = stream_turn(
+    reply = send_and_follow(
         client,
         sid,
-        content=(
-            f"Use the {tool_name('write')} tool exactly once to create a file at {path} whose only "
-            f"content is the line {line!r}. Do not run any other tool or command."
-        ),
+        f"Use the {tool_name('write')} tool exactly once to create a file at {path} whose only "
+        f"content is the line {line!r}. Do not run any other tool or command.",
+        until="end",
     )
-    assert res.saw_ui_header, "turn was not a valid AI-SDK message stream"
-    assert res.error is None, f"turn errored: {res.error}"
-    wait_until_settled(client, sid)
+    assert reply.saw_ui_header, "the session stream is not an AI SDK UI message stream"
+    assert reply.error is None, f"the response failed: {reply.error}"
+    return reply
 
 
 def test_archive_reclaims_sandbox_and_keeps_history_readable(
@@ -110,7 +107,7 @@ def test_archive_reclaims_sandbox_and_keeps_history_readable(
     """archive reclaims compute and removes a session from the default list.
 
     End-to-end contract:
-      * a session with a real completed turn in its transcript appears in ``GET /sessions``;
+      * a session with a real completed response in its history appears in ``GET /sessions``;
       * ``POST /sessions/{id}/archive`` confirms that it reclaimed the bound sandbox;
       * the archived session is EXCLUDED from the default ``GET /sessions`` list;
       * it is still individually readable via ``GET /sessions/{id}`` (200) and its
@@ -124,29 +121,13 @@ def test_archive_reclaims_sandbox_and_keeps_history_readable(
         sandbox_id = str(get_session(e2e_client, sid).get("sandbox_id") or "").strip()
         assert sandbox_id, "a READY conversation should hold a sandbox before archive"
 
-        # A no-tool text turn establishes concrete history. History lives in the
-        # transcript, not on disk — a Write landing a file is model-fragile, and the
-        # archive contract is about the message history surviving, not any file.
-        res = stream_turn(e2e_client, sid, content="Reply with just the number 2.")
-        assert res.saw_ui_header, "turn was not a valid AI-SDK message stream"
-        assert res.error is None, f"turn errored: {res.error}"
-        wait_until_settled(e2e_client, sid)
-
-        # The settled turn persists a user + assistant pair (eventually-consistent, it
-        # lands just after the finish frame) — the durable history archive must preserve.
-        messages: list = []
-        deadline = time.monotonic() + 30.0
-        while time.monotonic() < deadline:
-            messages = _messages(e2e_client, sid)
-            roles = {str(m.get("role")) for m in messages if isinstance(m, dict)}
-            if "user" in roles and "assistant" in roles:
-                break
-            time.sleep(1.0)
-        roles = {str(m.get("role")) for m in messages if isinstance(m, dict)}
-        assert "user" in roles and "assistant" in roles, (
-            f"session has no durable user+assistant history before archive: roles={roles}"
-        )
-        history_before = len(messages)
+        # A no-tool text reply establishes concrete history. History lives in the
+        # recorded conversation, not on disk — a write landing a file is
+        # model-fragile, and the archive contract is about the history surviving.
+        reply = send_and_follow(e2e_client, sid, "Reply with just the number 2.", until="end")
+        assert reply.saw_ui_header, "the session stream is not an AI SDK UI message stream"
+        assert reply.error is None, f"the response failed: {reply.error}"
+        history_before = _answered_once(e2e_client, sid, reply)
 
         # The live session is listed.
         assert sid in _list_session_ids(e2e_client), (
@@ -189,9 +170,8 @@ def test_archive_reclaims_sandbox_and_keeps_history_readable(
             f"archived session still exposes sandbox binding {detail.get('sandbox_id')!r}"
         )
         # ... with its history intact — archive must preserve history, not mutate it.
-        history_after = _message_count(e2e_client, sid)
-        assert history_after == history_before, (
-            f"archive changed the message history ({history_before} -> {history_after})"
+        assert history(e2e_client, sid) == history_before, (
+            "archive changed the conversation's history"
         )
     finally:
         release_session(sid)
@@ -217,10 +197,8 @@ def test_delete_makes_session_unreadable(e2e_client: httpx.Client) -> None:
     try:
         poll_until_agent_ready(e2e_client, sid)
 
-        _run_deterministic_turn(e2e_client, sid, file_path, f"soon-deleted-{marker}")
-        assert _message_count(e2e_client, sid) >= 1, (
-            "session has no durable message history before delete"
-        )
+        reply = _write_one_file(e2e_client, sid, file_path, f"soon-deleted-{marker}")
+        _answered_once(e2e_client, sid, reply)
         assert sid in _list_session_ids(e2e_client), (
             "fresh session is missing from the default GET /sessions list"
         )
@@ -245,6 +223,11 @@ def test_delete_makes_session_unreadable(e2e_client: httpx.Client) -> None:
         assert missing.json().get("code") == "SESSION_NOT_FOUND", (
             f"deleted-session read should carry code SESSION_NOT_FOUND: {missing.json()}"
         )
+        # Its history goes with it: the conversation's messages answer the same 404.
+        gone = e2e_client.get(f"/api/v1/sessions/{sid}/messages")
+        assert gone.status_code == 404, (
+            f"the history of a deleted session is still readable: {gone.status_code} {gone.text[:300]}"
+        )
     finally:
         release_session(sid)
 
@@ -256,11 +239,9 @@ def test_admin_kill_ends_input_but_keeps_completed_history(e2e_client: httpx.Cli
     try:
         poll_until_agent_ready(e2e_client, sid)
         before = get_session(e2e_client, sid)
-        reply = stream_turn(e2e_client, sid, content="Reply with just the number 2.")
+        reply = send_and_follow(e2e_client, sid, "Reply with just the number 2.", until="end")
         assert reply.error is None, reply.error
-        wait_until_settled(e2e_client, sid)
-        history = _messages(e2e_client, sid)
-        assert {row["role"] for row in history} >= {"user", "assistant"}
+        completed = _answered_once(e2e_client, sid, reply)
 
         killed = data(e2e_client.post(f"/api/v1/admin/sessions/{sid}/kill"))
         assert_release_matches_the_box(
@@ -268,7 +249,7 @@ def test_admin_kill_ends_input_but_keeps_completed_history(e2e_client: httpx.Cli
         )
         assert get_session(e2e_client, sid)["state"] == "TERMINATED"
         refused = e2e_client.post(
-            f"/api/v1/sessions/{sid}/turn-inputs",
+            f"/api/v1/sessions/{sid}/inputs",
             json={"content": "This message must not run", "client_message_id": str(uuid.uuid4())},
         )
         assert refused.status_code == 409, refused.text
@@ -276,6 +257,9 @@ def test_admin_kill_ends_input_but_keeps_completed_history(e2e_client: httpx.Cli
         after = get_session(e2e_client, sid)
         assert after["state"] == "TERMINATED"
         assert after.get("sandbox_id") == before.get("sandbox_id")
-        assert _messages(e2e_client, sid) == history
+        assert after.get("held_inputs") == [], (
+            f"a refused message was held for a conversation that ended: {after.get('held_inputs')}"
+        )
+        assert history(e2e_client, sid) == completed
     finally:
         release_session(sid)

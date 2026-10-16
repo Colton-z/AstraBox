@@ -92,10 +92,13 @@ export function ToolPartHeader({
   state,
   toolName,
   label,
+  unfinished = false,
 }: {
   state: DynamicToolUIPart['state'];
   toolName: string;
   label: string;
+  /** The call never returned and its response has ended: no state of its own is current. */
+  unfinished?: boolean;
 }) {
   return (
     <CollapsibleTrigger
@@ -106,7 +109,7 @@ export function ToolPartHeader({
         <WrenchIcon className="size-4 shrink-0 text-muted-foreground" />
         <span className="truncate font-medium text-sm">{toolName}</span>
         <span className="flex shrink-0 items-center gap-1.5">
-          {TOOL_STATE_ICON[state]}
+          {unfinished ? <CircleIcon className="size-4 text-muted-foreground" /> : TOOL_STATE_ICON[state]}
           <ToolStateBadge label={label} />
         </span>
       </div>
@@ -149,7 +152,8 @@ function GenericToolPartCard({
   isActiveTurn: boolean;
 }) {
   const { t } = useTranslation();
-  const label = t(getToolDisplayLabelKey(dp, isPending, isActiveTurn));
+  const labelKey = getToolDisplayLabelKey(dp, isPending, isActiveTurn);
+  const label = t(labelKey);
   const navigation = useSubagentNavigation();
   const childRuns = navigation.agents.filter((agent) => agent.toolCallIds.includes(dp.toolCallId));
   const toolBorder = isPending
@@ -164,7 +168,12 @@ function GenericToolPartCard({
   // (`docs/frontend-design.md` §0).
   return (
     <Tool data-tool-call-id={dp.toolCallId} className={cn('mb-0 bg-card/40 transition-colors', toolBorder)}>
-      <ToolPartHeader state={dp.state} toolName={dp.toolName} label={label} />
+      <ToolPartHeader
+        state={dp.state}
+        toolName={dp.toolName}
+        label={label}
+        unfinished={labelKey === 'chat:tool_state.unfinished'}
+      />
       <ToolContent>
         <ToolInput input={dp.input} />
         {(dp.state === 'output-available' || dp.state === 'output-error') && (
@@ -297,8 +306,8 @@ function TodoWritePartCard({
       {/* QueueList is the `<ul>` the QueueItem `<li>` rows require; without it
           the list items had no list to belong to. The inner row div stays:
           QueueItem is flex-col, and these three cells sit on one line. */}
-      {/* `my-0` for the reason ComposerQueue spells out: QueueList's `mt-2`
-          is the gap under a QueueSection header this card does not have. */}
+      {/* `my-0`: QueueList's `mt-2 -mb-1` is the gap under a QueueSection
+          header, and this card has no header for it to leave room below. */}
       <QueueList className="my-0">
         {todos.map((todo, index) => {
           const status = String(todo.status ?? 'pending');

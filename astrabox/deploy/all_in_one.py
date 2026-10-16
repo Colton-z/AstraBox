@@ -141,7 +141,6 @@ _DERIVED_FROM_EDGES = (
 # normalisation. scripts/check_all_in_one.py keeps this table in step with
 # containers/compose.yaml's server environment.
 REFUSED: tuple[tuple[str, tuple[str, ...], str, str], ...] = (
-    ("ASTRABOX_DB_BACKEND", ("postgresql",), "the database is the embedded PostgreSQL", COMPOSE_INSTEAD),
     ("ASTRABOX_DB_URL", (), "the database is the embedded PostgreSQL", COMPOSE_INSTEAD),
     ("ASTRABOX_DB_PASSWORD_FILE", (), "the database is the embedded PostgreSQL", COMPOSE_INSTEAD),
     ("ASTRABOX_DB_HOST", (), "the database is the embedded PostgreSQL", COMPOSE_INSTEAD),

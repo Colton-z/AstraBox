@@ -6,7 +6,6 @@ import {
   adminListSessions,
   adminReadSandboxDiagnostics,
   adminReadSandboxSecurity,
-  appendTurnInput,
   createAgent,
   deleteSessionFiles,
   getCurrentUser,
@@ -279,32 +278,6 @@ describe('request() transport failures', () => {
       expect(init.method).toBe('POST');
       expect(sentBody(init)).toBe(JSON.stringify({ paths: ['report'] }));
     }
-  });
-
-  it('replays a lost turn-input response with the same durable client message id', async () => {
-    const receipt = {
-      session_id: 'session-1',
-      command_id: 'session-1:client-1',
-      client_message_id: 'client-1',
-      input_id: 'input-1',
-      status: 'delivered',
-    };
-    const mockFetch = vi.fn()
-      .mockRejectedValueOnce(new TypeError('network changed'))
-      .mockResolvedValueOnce(jsonResponse({ code: 'OK', message: 'success', data: receipt }));
-    vi.stubGlobal('fetch', mockFetch);
-
-    await expect(appendTurnInput('session-1', {
-      content: 'hello',
-      client_message_id: 'client-1',
-    })).resolves.toEqual(receipt);
-
-    expect(mockFetch).toHaveBeenCalledTimes(2);
-    const bodies = mockFetch.mock.calls.map(([, init]) => JSON.parse(sentBody(init)));
-    expect(bodies).toEqual([
-      { content: 'hello', client_message_id: 'client-1' },
-      { content: 'hello', client_message_id: 'client-1' },
-    ]);
   });
 });
 

@@ -2856,33 +2856,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/sessions/{session_id}/ai-stream": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Resume Ai Stream
-         * @description Resume endpoint for AI SDK useChat({ resume: true }).
-         *
-         *     Durable frames are stored in AI SDK stream format by the session
-         *     kernel. This handler replays them directly as SSE.
-         */
-        get: operations["resume_ai_stream_api_v1_sessions__session_id__ai_stream_get"];
-        put?: never;
-        /**
-         * Send Message Ai Stream
-         * @description Data Stream Protocol endpoint for Vercel AI SDK useChat.
-         */
-        post: operations["send_message_ai_stream_api_v1_sessions__session_id__ai_stream_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/sessions/{session_id}/archive": {
         parameters: {
             query?: never;
@@ -3130,10 +3103,10 @@ export interface paths {
         };
         /**
          * Get Session History Blocks
-         * @description Read the transcript with each settled response's tool work folded away.
+         * @description Read the conversation with each ended response's work folded away.
          *
          *     ``before`` is a ``next_cursor`` from an earlier page; omitting it starts at
-         *     the newest records and pins the checkpoint every later page reuses.
+         *     the newest entries and pins the output position every later page reuses.
          */
         get: operations["get_session_history_blocks_api_v1_sessions__session_id__history_blocks_get"];
         put?: never;
@@ -3153,11 +3126,10 @@ export interface paths {
         };
         /**
          * Get Session History Block Details
-         * @description Reopen one folded ``process_block`` and return the blocks it replaced.
+         * @description Reopen one folded ``data-process-block`` and return the parts it replaced.
          *
-         *     ``cursor`` is the checkpoint the header carried, and is required: without
-         *     it the blocks would be read from the record as it stands now rather than as
-         *     the page that folded them saw it.
+         *     ``cursor`` is the one the header carried, and is required: it pins the read
+         *     to the output position of the page that folded the parts.
          */
         get: operations["get_session_history_block_details_api_v1_sessions__session_id__history_blocks__block_id__get"];
         put?: never;
@@ -3168,7 +3140,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/sessions/{session_id}/interaction-respond": {
+    "/api/v1/sessions/{session_id}/inputs": {
         parameters: {
             query?: never;
             header?: never;
@@ -3177,8 +3149,28 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Interaction Respond */
-        post: operations["interaction_respond_api_v1_sessions__session_id__interaction_respond_post"];
+        /**
+         * Send Input
+         * @description Accept a message for the conversation.
+         */
+        post: operations["send_input_api_v1_sessions__session_id__inputs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{session_id}/interactions/{interaction_id}/answer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Answer Interaction */
+        post: operations["answer_interaction_api_v1_sessions__session_id__interactions__interaction_id__answer_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3348,6 +3340,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{session_id}/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Follow Stream
+         * @description The session's output after ``after_seq``, then live, through the end of one response.
+         *
+         *     Each part is an AI SDK UI message chunk; ``data-resume-cursor`` parts carry
+         *     the position to reconnect from.
+         */
+        get: operations["follow_stream_api_v1_sessions__session_id__stream_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{session_id}/terminal/interrupt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Interrupt Terminal
+         * @description Stop the command the session's terminal runs; answers once the command has ended.
+         */
+        post: operations["interrupt_terminal_api_v1_sessions__session_id__terminal_interrupt_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{session_id}/terminal/stream": {
         parameters: {
             query?: never;
@@ -3355,40 +3390,26 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Follow Terminal Stream
+         * @description Follow a terminal command again: its recorded events after ``after_seq``, then live.
+         *
+         *     The stream ends with the command's ``exit``; each event carries its
+         *     ``seq``. Without ``command_id`` it follows the command the terminal runs
+         *     now and answers ``204`` when none runs.
+         */
+        get: operations["follow_terminal_stream_api_v1_sessions__session_id__terminal_stream_get"];
         put?: never;
         /**
          * Terminal Stream
-         * @description Run a single terminal command and stream output as SSE events.
+         * @description Run one command in the session's terminal and stream its events as SSE.
          *
-         *     WebSocket is intentionally avoided; Terminal uses HTTP SSE.
+         *     The events are ``ack`` (carrying the ``command_id``), ``stdout``,
+         *     ``stderr``, ``cwd`` and a final ``exit``. The command runs on when the
+         *     stream closes; ``GET`` on this path follows it again. WebSocket is
+         *     intentionally avoided; the terminal uses HTTP SSE.
          */
         post: operations["terminal_stream_api_v1_sessions__session_id__terminal_stream_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/sessions/{session_id}/turn-inputs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Append Turn Input
-         * @description Accept a turn. The receipt comes back here; the content does not.
-         *
-         *     Input and output are separate channels: this admits the message and
-         *     answers with the identifiers that let a caller recognise the turn on the
-         *     session's stream. Nothing is delivered on this response, so its lifetime
-         *     is not tied to how long the engine takes or where it pauses.
-         */
-        post: operations["append_turn_input_api_v1_sessions__session_id__turn_inputs_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4000,8 +4021,6 @@ export interface components {
          *     all, which is a different answer from False.
          */
         AdminRuntimeRow: {
-            /** Current Task Done */
-            current_task_done: boolean | null;
             /** Lock Locked */
             lock_locked: boolean | null;
             /** Owner Loop Running */
@@ -4017,8 +4036,6 @@ export interface components {
         AdminRuntimes: {
             /** Count */
             count: number;
-            /** Current Task Count */
-            current_task_count: number;
             /** Items */
             items: components["schemas"]["AdminRuntimeRow"][];
             /** Locked Count */
@@ -4316,39 +4333,40 @@ export interface components {
         };
         /**
          * AdminSessionTrace
-         * @description One turn of one session, message summaries beside AI-SDK frames.
+         * @description A session's latest messages beside one response's browser parts.
          *
-         *     ``message_limit`` and ``frame_limit`` are the clamped limits that produced
-         *     this answer. ``truncated_frame_count`` is how many frames the limit left
-         *     out, which is what tells a reader the turn is longer than what is shown.
+         *     ``current_response_ids`` are the responses still running.
+         *     ``message_limit`` and ``part_limit`` are the clamped limits that produced
+         *     this answer; ``truncated_part_count`` is how many earlier parts of the
+         *     selected response the limit left out.
          */
         AdminSessionTrace: {
-            /** Current Turn Id */
-            current_turn_id: string | null;
-            /** Frame Limit */
-            frame_limit: number;
-            /** Frames */
-            frames: {
-                [key: string]: unknown;
-            }[];
+            /** Current Response Ids */
+            current_response_ids: string[];
             /** Message Limit */
             message_limit: number;
             /** Messages */
             messages: {
                 [key: string]: unknown;
             }[];
-            /** Selected Turn Id */
-            selected_turn_id: string | null;
+            /** Part Limit */
+            part_limit: number;
+            /** Parts */
+            parts: {
+                [key: string]: unknown;
+            }[];
+            /** Responses */
+            responses: {
+                [key: string]: unknown;
+            }[];
+            /** Selected Response Id */
+            selected_response_id: string | null;
             /** Session Id */
             session_id: string;
             /** State */
             state: string;
-            /** Truncated Frame Count */
-            truncated_frame_count: number;
-            /** Turns */
-            turns: {
-                [key: string]: unknown;
-            }[];
+            /** Truncated Part Count */
+            truncated_part_count: number;
         } & {
             [key: string]: unknown;
         };
@@ -4785,30 +4803,6 @@ export interface components {
             visibility?: string | null;
         } & {
             [key: string]: unknown;
-        };
-        /**
-         * AgentRuntimeView
-         * @description The owning Agent's runtime posture, overlaid onto an ``agent_chat`` session.
-         *
-         *     Present only for ``session_kind="agent_chat"``. An Agent whose catalog row
-         *     is gone still gets a view, reporting ``state="DELETED"``, so the console can
-         *     distinguish a deleted Agent from one that never resolved.
-         */
-        AgentRuntimeView: {
-            /** Agent Id */
-            agent_id: string;
-            /** Expires At */
-            expires_at?: string | null;
-            /** Last Error */
-            last_error?: string | null;
-            /** Runtime Unavailable */
-            runtime_unavailable?: boolean | null;
-            /** Sandbox Id */
-            sandbox_id?: string | null;
-            /** Startup Progress */
-            startup_progress?: string | null;
-            /** State */
-            state?: string | null;
         };
         /** AgentTag */
         AgentTag: {
@@ -5345,11 +5339,27 @@ export interface components {
             /** Message */
             message: string;
         };
+        /** ApiEnvelope[InputReceipt] */
+        ApiEnvelope_InputReceipt_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["InputReceipt"];
+            /** Message */
+            message: string;
+        };
         /** ApiEnvelope[InteractionAnswerReceipt] */
         ApiEnvelope_InteractionAnswerReceipt_: {
             /** Code */
             code: string;
             data: components["schemas"]["InteractionAnswerReceipt"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[InterruptReceipt] */
+        ApiEnvelope_InterruptReceipt_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["InterruptReceipt"];
             /** Message */
             message: string;
         };
@@ -5649,6 +5659,14 @@ export interface components {
             /** Message */
             message: string;
         };
+        /** ApiEnvelope[TerminalInterruptResult] */
+        ApiEnvelope_TerminalInterruptResult_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["TerminalInterruptResult"];
+            /** Message */
+            message: string;
+        };
         /** ApiEnvelope[TranscriptAppendResult] */
         ApiEnvelope_TranscriptAppendResult_: {
             /** Code */
@@ -5678,22 +5696,6 @@ export interface components {
             /** Code */
             code: string;
             data: components["schemas"]["TranscriptSubkeyList"];
-            /** Message */
-            message: string;
-        };
-        /** ApiEnvelope[TurnControlResult] */
-        ApiEnvelope_TurnControlResult_: {
-            /** Code */
-            code: string;
-            data: components["schemas"]["TurnControlResult"];
-            /** Message */
-            message: string;
-        };
-        /** ApiEnvelope[TurnReceipt] */
-        ApiEnvelope_TurnReceipt_: {
-            /** Code */
-            code: string;
-            data: components["schemas"]["TurnReceipt"];
             /** Message */
             message: string;
         };
@@ -6498,25 +6500,6 @@ export interface components {
             /** Authorize Url */
             authorize_url: string;
         };
-        /**
-         * BackgroundTaskState
-         * @description Active native child tasks and their pending result-collection metadata.
-         *
-         *     Absent (``null``) when no child has engine-declared active work. Engines
-         *     without detached-result manifests report zero pending manifests.
-         */
-        BackgroundTaskState: {
-            /** Opened Event Seq */
-            opened_event_seq?: number | null;
-            /** Pending Manifest Count */
-            pending_manifest_count: number;
-            /** Pending Task Count */
-            pending_task_count: number;
-            /** Source Turn Id */
-            source_turn_id?: string | null;
-            /** State */
-            state: string;
-        };
         /** Body_transcribe_session_speech_api_v1_sessions__session_id__speech_input_post */
         Body_transcribe_session_speech_api_v1_sessions__session_id__speech_input_post: {
             /** File */
@@ -6886,7 +6869,7 @@ export interface components {
         };
         /**
          * DeletedDeployment
-         * @description The binding that is gone. ``deleted`` is the confirmed soft delete.
+         * @description The binding that is gone. ``deleted`` confirms it and its channel records were deleted.
          */
         DeletedDeployment: {
             /** Deleted */
@@ -6895,33 +6878,6 @@ export interface components {
             deployment_id: string;
         } & {
             [key: string]: unknown;
-        };
-        /**
-         * DeliveryFailure
-         * @description The last turn's input, when the sandbox never acknowledged receiving it.
-         *
-         *     Synthesized only while ``delivery_state`` is ``NOT_RECEIVED``; the text is
-         *     returned so the console can offer the message back for resending.
-         */
-        DeliveryFailure: {
-            /** Client Message Id */
-            client_message_id?: string | null;
-            /** Content Blocks */
-            content_blocks?: {
-                [key: string]: unknown;
-            }[];
-            /**
-             * Resend As New
-             * @default false
-             */
-            resend_as_new: boolean;
-            /** Summary */
-            summary?: string | null;
-            /** Text */
-            text?: string | null;
-            /** Turn Id */
-            turn_id?: string | null;
-            user_action?: components["schemas"]["UserActionView"] | null;
         };
         /**
          * DeploymentExtensionProvider
@@ -6935,8 +6891,9 @@ export interface components {
          * @description One trigger binding on an Agent or Assistant, as ``DeploymentService`` stores it.
          *
          *     ``secret`` is the credential the calling system signs with, returned so the
-         *     configurer can register it there. The document is open — the service strips
-         *     only the storage id — so ``extra="allow"`` carries anything a scene adds.
+         *     configurer can register it there. A record reports the settings its binding
+         *     has; ``extra="allow"`` carries the ones a scene adds (``channel_config``,
+         *     ``schedule``, ``callback_base_url``, ...).
          */
         DeploymentRecord: {
             /** Agent Id */
@@ -7078,6 +7035,22 @@ export interface components {
             detail?: components["schemas"]["ValidationError"][];
         };
         /**
+         * HeldInputView
+         * @description An input the platform still holds: accepted, not yet durably taken by the runtime.
+         */
+        HeldInputView: {
+            /** Client Message Id */
+            client_message_id?: string | null;
+            /** Content */
+            content?: string | null;
+            /** Created At */
+            created_at?: string | null;
+            /** Input Id */
+            input_id: string;
+            /** State */
+            state?: string | null;
+        };
+        /**
          * InheritedExtensions
          * @description What an Assistant inherits from the layers above it, by name and source.
          *
@@ -7107,21 +7080,52 @@ export interface components {
             })[];
         };
         /**
-         * InteractionAnswerReceipt
-         * @description Acknowledgement that an answer was matched to the pending interaction.
+         * InputReceipt
+         * @description An accepted input. Its response arrives on the session's stream.
          *
-         *     The turn continues on the session's stream; nothing of its continuation is
-         *     delivered on this response.
+         *     ``duplicate`` is true when the same ``client_message_id`` was accepted
+         *     before; the receipt then describes that earlier input, including its
+         *     recorded refusal in ``failure`` when it failed.
+         */
+        InputReceipt: {
+            /** Accepted At */
+            accepted_at: string;
+            /** Client Message Id */
+            client_message_id: string;
+            /** Duplicate */
+            duplicate: boolean;
+            /** Failure */
+            failure?: {
+                [key: string]: unknown;
+            } | null;
+            /** Input Id */
+            input_id: string;
+            /** Session Id */
+            session_id: string;
+            /** State */
+            state: string;
+        };
+        /**
+         * InteractionAnswerReceipt
+         * @description An answer stored for the runtime; the response continues on the stream.
          */
         InteractionAnswerReceipt: {
             /** Answered */
-            answered?: boolean | null;
+            answered: boolean;
             /** Interaction Id */
-            interaction_id?: string | null;
-            /** Turn Id */
-            turn_id?: string | null;
-        } & {
-            [key: string]: unknown;
+            interaction_id: string;
+            /** Session Id */
+            session_id: string;
+        };
+        /**
+         * InterruptReceipt
+         * @description ``accepted`` when a reader will pass the interrupt on; ``idle`` when nothing runs.
+         */
+        InterruptReceipt: {
+            /** Session Id */
+            session_id: string;
+            /** Status */
+            status: string;
         };
         /**
          * IssuedMCPClientToken
@@ -7309,32 +7313,47 @@ export interface components {
          *     once the label exists, and ``failed`` when the model call did not produce
          *     one — a failed label can be asked for again with ``retry=true``.
          *     ``disabled`` means label generation is switched off, not a failed request.
-         *     ``turn_completed`` distinguishes work that ran to an answer from work an
-         *     interruption cut short.
+         *     ``response_completed`` distinguishes work that ran to an answer from work
+         *     that stopped short.
          */
         ProcessSummaryState: {
             /** Error */
             error?: string | null;
+            /** Response Completed */
+            response_completed?: boolean | null;
             /** Status */
             status: string;
             /** Summary */
             summary?: string | null;
-            /** Turn Completed */
-            turn_completed?: boolean | null;
         };
         /**
-         * RuntimeBindingView
-         * @description Dispatch availability without its internal owner or sandbox locators.
+         * ResponseView
+         * @description A response the runtime produced, as its reader recorded it.
+         *
+         *     ``status`` is ``running``, ``waiting`` or ``ended``; ``outcome`` is
+         *     ``completed``, ``failed`` or ``cancelled`` once ended, and
+         *     ``native_reason`` is the engine's own word for the ending, carried
+         *     verbatim.
          */
-        RuntimeBindingView: {
-            /** Can Dispatch */
-            can_dispatch: boolean;
-            /** Reason Code */
-            reason_code?: string | null;
-            /** Reason Message */
-            reason_message?: string | null;
-            /** State */
-            state: string;
+        ResponseView: {
+            /** Ended At */
+            ended_at?: string | null;
+            /** Error */
+            error?: {
+                [key: string]: unknown;
+            } | null;
+            /** Native Reason */
+            native_reason?: string | null;
+            /** Origin */
+            origin?: string | null;
+            /** Outcome */
+            outcome?: string | null;
+            /** Response Id */
+            response_id: string;
+            /** Started At */
+            started_at?: string | null;
+            /** Status */
+            status?: string | null;
         };
         /** RuntimeStateLoadRequest */
         RuntimeStateLoadRequest: {
@@ -7526,28 +7545,30 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /** SessionFileChangeMessage */
-        SessionFileChangeMessage: {
-            /** Message Id */
-            message_id: string;
+        /**
+         * SessionFileChangeResponse
+         * @description One ended response and every file change it made; empty when it changed none.
+         */
+        SessionFileChangeResponse: {
             /** Parts */
             parts: {
                 [key: string]: unknown;
             }[];
+            /** Response Id */
+            response_id: string;
         };
-        /** SessionFileChangeTurn */
-        SessionFileChangeTurn: {
-            /** Messages */
-            messages: components["schemas"]["SessionFileChangeMessage"][];
-            /** Turn Id */
-            turn_id: string;
-        };
-        /** SessionFileChanges */
+        /**
+         * SessionFileChanges
+         * @description The responses that ended after ``after_seq``, through ``through_seq``.
+         *
+         *     ``through_seq`` is the next ``after_seq``. Each response replaces what a
+         *     reader held for it.
+         */
         SessionFileChanges: {
+            /** Responses */
+            responses: components["schemas"]["SessionFileChangeResponse"][];
             /** Through Seq */
             through_seq: number;
-            /** Turns */
-            turns: components["schemas"]["SessionFileChangeTurn"][];
         };
         /**
          * SessionFileEntry
@@ -7659,9 +7680,9 @@ export interface components {
         };
         /**
          * SessionHistoryBlockDetails
-         * @description The blocks one folded ``process_block`` header stands for.
+         * @description The parts one folded ``data-process-block`` header stands for.
          *
-         *     One message carrying the folded blocks in their original order.
+         *     One message carrying the folded parts in their original order.
          *     ``has_more`` is always ``false``: a header's contents are whole, and there
          *     is nothing further to page through.
          */
@@ -7675,19 +7696,15 @@ export interface components {
         };
         /**
          * SessionHistoryBlockPage
-         * @description One page of the transcript with each settled response's work folded.
+         * @description One page of the conversation with each ended response's work folded.
          *
-         *     Same records as :class:`SessionMessagePage`, paginated by record instead of
-         *     by timestamp: ``next_cursor`` is what to send back as ``before``, and it
-         *     pins every later page to the history this page saw. A response that ran
-         *     tools and then answered carries one ``process_block`` in place of that
-         *     work, which :class:`SessionHistoryBlockDetails` reopens.
+         *     The messages of :class:`SessionMessagePage`, where the work of a response
+         *     that had ended is replaced by ``data-process-block`` parts that
+         *     :class:`SessionHistoryBlockDetails` reopens. ``next_cursor`` is what to send
+         *     back as ``before``; it pins every older page to the output position the
+         *     first page was read at (``output_seq``).
          */
         SessionHistoryBlockPage: {
-            /** Active Turn Overlay */
-            active_turn_overlay?: {
-                [key: string]: unknown;
-            } | null;
             /** Block Count */
             block_count: number;
             /** Has More */
@@ -7698,6 +7715,8 @@ export interface components {
             }[];
             /** Next Cursor */
             next_cursor?: string | null;
+            /** Output Seq */
+            output_seq?: number | null;
             /**
              * Paging Mode
              * @constant
@@ -7707,8 +7726,6 @@ export interface components {
             pending_interaction?: {
                 [key: string]: unknown;
             } | null;
-            /** Session Frame Seq */
-            session_frame_seq?: number | null;
         };
         /**
          * SessionListPage
@@ -7727,30 +7744,31 @@ export interface components {
         };
         /**
          * SessionMessagePage
-         * @description One page of a session's durable messages, plus the live-turn overlay.
+         * @description One page of a session's conversation as AI SDK UI messages, oldest first.
          *
-         *     ``messages`` is durable-only. A turn still in flight is reported separately
-         *     through ``active_turn_overlay``, and both it and ``session_frame_seq``
-         *     accompany the first page alone — a caller paging backwards with ``before``
-         *     receives ``null`` for them.
+         *     A user message is an input the session accepted; an assistant message is
+         *     one response, its stored parts folded the way the AI SDK folds them live.
+         *     ``before`` is the cursor for the next older page. The first page also
+         *     carries ``output_seq``, the output position its parts were read through,
+         *     to follow the stream from, and the interaction waiting on the owner. A
+         *     share link's page carries neither ``output_seq`` nor the tool input of an
+         *     interaction.
          */
         SessionMessagePage: {
-            /** Active Turn Overlay */
-            active_turn_overlay?: {
-                [key: string]: unknown;
-            } | null;
+            /** Before */
+            before?: string | null;
             /** Has More */
             has_more: boolean;
             /** Messages */
             messages: {
                 [key: string]: unknown;
             }[];
+            /** Output Seq */
+            output_seq?: number | null;
             /** Pending Interaction */
             pending_interaction?: {
                 [key: string]: unknown;
             } | null;
-            /** Session Frame Seq */
-            session_frame_seq?: number | null;
         };
         /**
          * SessionRead
@@ -7766,33 +7784,25 @@ export interface components {
          * SessionRecord
          * @description One session, as the read paths project it.
          *
-         *     The stored session document is not an API DTO. The platform facade builds
-         *     this closed projection field by field; runtime identity, engine resume
-         *     handles, ownership wiring and share capabilities never cross this model.
-         *
-         *     Which members are populated depends on the read. The paged list summarizes
-         *     each row to the fields in ``_SESSION_LIST_SUMMARY_FIELDS``
-         *     (``astrabox/core/service/orchestrator/session_kernel/service_mixins/session_read.py``);
-         *     detail adds the per-session reads that are too expensive to run per row —
-         *     ``pending_interaction``, ``delivery_failure``, ``pending_inputs`` and
-         *     ``engine_capabilities``.
+         *     The list summarizes each row (``session_runtime/views.py``
+         *     ``session_summary``): its state there comes from the row's lifecycle and
+         *     the runtime status the reader last cached. The detail adds what the
+         *     runtime is doing from its recorded facts: the responses in progress, the
+         *     last one that ended, the interaction waiting on the owner, the inputs the
+         *     platform still holds, and ``output_seq``, the output position to follow the
+         *     session's stream from.
          */
         SessionRecord: {
             /** Agent Id */
             agent_id?: string | null;
-            agent_runtime?: components["schemas"]["AgentRuntimeView"] | null;
+            /** Agent State */
+            agent_state?: string | null;
             /** Assistant Id */
             assistant_id?: string | null;
-            background_task_state?: components["schemas"]["BackgroundTaskState"] | null;
             /** Created At */
             created_at?: string | null;
-            /** Current Turn Id */
-            current_turn_id?: string | null;
-            /** Deleted */
-            deleted?: boolean | null;
-            delivery_failure?: components["schemas"]["DeliveryFailure"] | null;
-            /** Delivery State */
-            delivery_state?: string | null;
+            /** Current Responses */
+            current_responses?: components["schemas"]["ResponseView"][] | null;
             /** Deployment Name */
             deployment_name?: string | null;
             /** Engine Available */
@@ -7805,28 +7815,17 @@ export interface components {
             engine_kind?: string | null;
             /** Expires At */
             expires_at?: string | null;
+            /** Held Inputs */
+            held_inputs?: components["schemas"]["HeldInputView"][] | null;
             /** Last Error */
             last_error?: string | null;
             /** Last Output At */
             last_output_at?: string | null;
-            /** Last Turn Command Id */
-            last_turn_command_id?: string | null;
-            /** Last Turn Error */
-            last_turn_error?: string | null;
-            /** Last Turn Failure Phase */
-            last_turn_failure_phase?: string | null;
-            /** Last Turn Id */
-            last_turn_id?: string | null;
-            /** Last Turn Status */
-            last_turn_status?: string | null;
-            /** Last Turn Terminal Reason */
-            last_turn_terminal_reason?: string | null;
+            last_response?: components["schemas"]["ResponseView"] | null;
             /** Model Name */
             model_name?: string | null;
-            /** Pending Inputs */
-            pending_inputs?: {
-                [key: string]: unknown;
-            }[] | null;
+            /** Output Seq */
+            output_seq?: number | null;
             /** Pending Interaction */
             pending_interaction?: {
                 [key: string]: unknown;
@@ -7835,15 +7834,12 @@ export interface components {
             permission_mode?: string | null;
             /** Read At */
             read_at?: string | null;
-            /** Recovery Policy */
-            recovery_policy?: string | null;
             /** Recovery Reason */
             recovery_reason?: string | null;
-            runtime_binding?: components["schemas"]["RuntimeBindingView"] | null;
+            /** Runtime Status */
+            runtime_status?: string | null;
             /** Runtime Unavailable */
             runtime_unavailable?: boolean | null;
-            /** Runtime Warning */
-            runtime_warning?: boolean | null;
             /** Sandbox Id */
             sandbox_id?: string | null;
             /** Session Id */
@@ -7862,8 +7858,6 @@ export interface components {
             startup_progress?: string | null;
             /** State */
             state?: string | null;
-            /** Template Name */
-            template_name?: string | null;
             /** Terminal Cwd */
             terminal_cwd?: string | null;
             /** Title */
@@ -7954,16 +7948,14 @@ export interface components {
         };
         /**
          * SharedMessagePage
-         * @description One page of a shared conversation, newest page first.
+         * @description One page of a shared conversation as UI messages, newest page first.
          *
-         *     ``has_more`` drives pagination. The active overlay and pending interaction
-         *     preserve a live read-only transcript without exposing internal cursors.
+         *     ``before`` is the cursor for the next older page. A share has no stream to
+         *     follow, so the page carries no output position.
          */
         SharedMessagePage: {
-            /** Active Turn Overlay */
-            active_turn_overlay?: {
-                [key: string]: unknown;
-            } | null;
+            /** Before */
+            before?: string | null;
             /** Has More */
             has_more: boolean;
             /** Messages */
@@ -7979,14 +7971,12 @@ export interface components {
          * SharedSession
          * @description A session as a link recipient sees it.
          *
-         *     A capability URL grants transcript reading, not access to the owner's
-         *     Session/runtime document. Only fields used by the read-only transcript UI
-         *     cross this boundary.
+         *     A capability URL grants reading the conversation, not access to the owner's
+         *     session or its runtime. Only what the read-only page shows crosses this
+         *     boundary: the title, the interaction the conversation waits on (without
+         *     the tool input it asks about), and whether files may be downloaded.
          */
         SharedSession: {
-            delivery_failure?: components["schemas"]["DeliveryFailure"] | null;
-            /** Delivery State */
-            delivery_state?: string | null;
             /** Pending Interaction */
             pending_interaction?: {
                 [key: string]: unknown;
@@ -8053,6 +8043,16 @@ export interface components {
             [key: string]: unknown;
         };
         /**
+         * TerminalInterruptResult
+         * @description ``completed`` once the terminal's running command has ended; ``idle`` when none ran.
+         */
+        TerminalInterruptResult: {
+            /** Session Id */
+            session_id: string;
+            /** Status */
+            status: string;
+        };
+        /**
          * TranscriptAppendResult
          * @description What the store holds after a batch.
          *
@@ -8117,43 +8117,6 @@ export interface components {
         TranscriptSubkeyList: {
             /** Subkeys */
             subkeys: string[];
-        } & {
-            [key: string]: unknown;
-        };
-        /**
-         * TurnControlResult
-         * @description The outcome of an interrupt.
-         *
-         *     ``status`` distinguishes the two things an interrupt can reach: a running
-         *     terminal command (``completed``) or the conversation's turn (``accepted``,
-         *     which the engine settles asynchronously).
-         */
-        TurnControlResult: {
-            /** Session Id */
-            session_id?: string | null;
-            /** Status */
-            status?: string | null;
-        } & {
-            [key: string]: unknown;
-        };
-        /**
-         * TurnReceipt
-         * @description Acknowledgement that a turn was accepted. It carries no turn content.
-         *
-         *     Sending and receiving are separate channels: these identifiers are what
-         *     lets a caller recognise the turn's frames when they arrive on the session's
-         *     stream. ``client_message_id`` echoes the caller's own key and is ``null``
-         *     when the request did not supply one.
-         */
-        TurnReceipt: {
-            /** Accepted */
-            accepted?: boolean | null;
-            /** Client Message Id */
-            client_message_id?: string | null;
-            /** Command Id */
-            command_id?: string | null;
-            /** Turn Id */
-            turn_id?: string | null;
         } & {
             [key: string]: unknown;
         };
@@ -14588,74 +14551,6 @@ export interface operations {
             };
         };
     };
-    resume_ai_stream_api_v1_sessions__session_id__ai_stream_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                session_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    send_message_ai_stream_api_v1_sessions__session_id__ai_stream_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                session_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     archive_session_api_v1_sessions__session_id__archive_post: {
         parameters: {
             query?: never;
@@ -15183,12 +15078,50 @@ export interface operations {
             };
         };
     };
-    interaction_respond_api_v1_sessions__session_id__interaction_respond_post: {
+    send_input_api_v1_sessions__session_id__inputs_post: {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_InputReceipt_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    answer_interaction_api_v1_sessions__session_id__interactions__interaction_id__answer_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                interaction_id: string;
             };
             cookie?: never;
         };
@@ -15237,7 +15170,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiEnvelope_TurnControlResult_"];
+                    "application/json": components["schemas"]["ApiEnvelope_InterruptReceipt_"];
                 };
             };
             /** @description Validation Error */
@@ -15603,6 +15536,99 @@ export interface operations {
             };
         };
     };
+    follow_stream_api_v1_sessions__session_id__stream_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    interrupt_terminal_api_v1_sessions__session_id__terminal_interrupt_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_TerminalInterruptResult_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    follow_terminal_stream_api_v1_sessions__session_id__terminal_stream_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     terminal_stream_api_v1_sessions__session_id__terminal_stream_post: {
         parameters: {
             query?: never;
@@ -15627,43 +15653,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    append_turn_input_api_v1_sessions__session_id__turn_inputs_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                session_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_TurnReceipt_"];
                 };
             };
             /** @description Validation Error */

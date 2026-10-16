@@ -81,7 +81,6 @@ provider 类上的能力标志说明后端支持什么。注册时，声明为 t
 | `supports_correlated_create` | `find_sandbox_by_assignment` |
 | `supports_egress_credential_injection` | `apply_credential_vault` |
 | `supports_inventory_listing` | `list_sandboxes` 和 `describe_sandbox` |
-| `supports_turn_preparation` | `prepare_turn` 和 `owns_sandbox` |
 | `supports_process_sessions` | 句柄的 `processes` |
 
 保存配置时，如果所选后端没有声明该配置需要的能力，AstraBox 会拒绝保存：后端没有

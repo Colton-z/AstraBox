@@ -128,6 +128,8 @@ class CodexAppServerLink:
         self._ids = itertools.count(1)
         self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
         self._inbound: asyncio.Queue[dict[str, Any] | BaseException] = asyncio.Queue()
+        #: Requests the server made and still waits on, by request id.
+        self._server_requests: dict[Any, dict[str, Any]] = {}
         self._send_lock = asyncio.Lock()
         self._detached: BaseException | None = None
         self._server_info: dict[str, Any] | None = None
@@ -268,14 +270,26 @@ class CodexAppServerLink:
         """Answer a request the SERVER made — an approval, a question."""
 
         await self._send({"id": request_id, "result": result})
+        self._server_requests.pop(request_id, None)
+
+    def pending_server_requests(self) -> list[dict[str, Any]]:
+        """The requests the server made on this connection and still waits on.
+
+        Kept as they arrive, before any reader takes them off the inbound
+        stream, so a request the server re-sends to a resuming connection can
+        be answered at once. A request leaves when it is answered here or when
+        the server announces ``serverRequest/resolved`` for it.
+        """
+
+        return [dict(request) for request in self._server_requests.values()]
 
     def iter_inbound(self) -> AsyncIterator[dict[str, Any]]:
         """Notifications and server requests, in the order they arrived.
 
         A response to a call made from here is routed to its waiter instead
         and never appears on this stream. The iterator raises
-        `EngineStreamDetached` when the socket ends, which is the signal the
-        turn stream is built on.
+        `EngineStreamDetached` when the socket ends, which is what ends the
+        runtime client's event stream.
         """
 
         async def _iter() -> AsyncIterator[dict[str, Any]]:
@@ -326,6 +340,12 @@ class CodexAppServerLink:
                 future.set_result(message)
             return
         if has_method:
+            if raw_id is not None:
+                self._server_requests[raw_id] = message
+            elif message.get("method") == "serverRequest/resolved":
+                params = message.get("params")
+                if isinstance(params, dict):
+                    self._server_requests.pop(params.get("requestId"), None)
             self._inbound.put_nowait(message)
 
     def _fail(self, exc: BaseException) -> None:

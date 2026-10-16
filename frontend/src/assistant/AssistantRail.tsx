@@ -46,7 +46,7 @@ function initial(assistant: AssistantRecord): string {
 }
 
 /** An untitled conversation is named by when it started, in the viewer's locale. */
-function startedLabel(iso: string | undefined): string {
+function startedLabel(iso: string | null | undefined): string {
   const started = iso ? new Date(iso) : null;
   if (!started || Number.isNaN(started.getTime())) return '';
   return started.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });

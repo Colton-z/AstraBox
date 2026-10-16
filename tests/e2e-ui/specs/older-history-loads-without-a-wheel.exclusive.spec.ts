@@ -64,7 +64,7 @@
  */
 import { expect, test } from '@playwright/test';
 
-import { AstraApi, type MessagePage, type MessageRecord } from '../fixtures/astraApi';
+import { AstraApi, messageText, type MessagePage } from '../fixtures/astraApi';
 import { apiPath, parseTimeoutEnv } from '../fixtures/env';
 import { trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView } from '../fixtures/sessionPage';
@@ -77,21 +77,6 @@ const TOP_REACH_BUDGET_MS = parseTimeoutEnv('ASTRABOX_E2E_HISTORY_TOP_REACH_TIME
 // to be non-vacuous: keep pressing against the top for this long and count.
 const EXHAUSTED_OBSERVE_MS = parseTimeoutEnv('ASTRABOX_E2E_HISTORY_EXHAUSTED_OBSERVE_MS', 2_000);
 
-/**
- * The `before` cursor the raw message read pages on, or a refusal.
- *
- * That read pages on the oldest `created_at` of the page it holds, which is
- * safe only while that timestamp identifies one row. A tie would make the page
- * it returns ambiguous and the precondition below meaningless, so it is
- * checked here rather than absorbed.
- */
-function olderCursor(records: MessageRecord[]): string {
-  const values = records.map((record) => String(record.created_at || '').trim()).sort();
-  expect(values.every(Boolean), 'every real history row needs its pagination timestamp').toBe(true);
-  expect(values[0], 'the oldest timestamp must identify one boundary row').not.toBe(values[1]);
-  return values[0];
-}
-
 test('a keyboard reader reaching the top of a reloaded long transcript loads its older history', async ({ page, request }) => {
   const api = new AstraApi(request);
   const agent = await api.defaultAgent();
@@ -100,9 +85,10 @@ test('a keyboard reader reaching the top of a reloaded long transcript loads its
   sessions.push(sessionId);
   await api.waitForSessionReady(sessionId);
 
-  // Real inputs and real replies, no imported rows. 26 completed turns leave 52
-  // durable rows, the arithmetic minimum above the console's 50-row page
-  // (`useFirstPageMessages.ts:25`) that makes `has_more` true.
+  // Real inputs and real replies, no imported rows. 26 completed responses
+  // leave 52 history entries, the arithmetic minimum above the console's
+  // 50-entry page (`HISTORY_PAGE_SIZE` in `historyPages.ts`) that makes
+  // `has_more` true.
   const runId = Date.now();
   const prompts = Array.from({ length: 26 }, (_, index) => (
     `History note ${runId}-${String(index + 1).padStart(3, '0')}. Acknowledge briefly in one word; do not use tools.`
@@ -115,7 +101,9 @@ test('a keyboard reader reaching the top of a reloaded long transcript loads its
     });
   }
   await api.waitForSession(sessionId, (session) => (
-    session.state === 'READY' && session.last_turn_status === 'COMPLETED'
+    session.state === 'READY'
+    && !session.current_responses?.length
+    && session.last_response?.status === 'ended'
   ));
 
   // The precondition is asserted over the API before the browser is involved:
@@ -126,14 +114,15 @@ test('a keyboard reader reaching the top of a reloaded long transcript loads its
     `${prompts.length} completed turns must fill the console's first history page; it carried ${newest.messages.length} rows`,
   ).toBe(50);
   expect(newest.has_more, 'an older page is the precondition of this journey').toBe(true);
-  const cursor = olderCursor(newest.messages);
+  const cursor = String(newest.before || '');
+  expect(cursor, 'a page with history behind it names the cursor for it').not.toEqual('');
   const older = await api.data<MessagePage>(
     'GET',
     `/sessions/${sessionId}/messages?limit=50&before=${encodeURIComponent(cursor)}`,
   );
   expect(older.has_more, 'one older page must carry the remainder of this transcript').toBe(false);
   const firstPromptIndex = older.messages.findIndex((message) => (
-    message.role === 'user' && String(message.content ?? '') === prompts[0]
+    message.role === 'user' && messageText(message) === prompts[0]
   ));
   expect(
     firstPromptIndex,
@@ -143,7 +132,7 @@ test('a keyboard reader reaching the top of a reloaded long transcript loads its
     .slice(firstPromptIndex + 1)
     .find((message) => message.role === 'assistant');
   expect(oldestReply, 'the first prompt must be followed by the reply that answered it').toBeTruthy();
-  const oldestReplyId = String(oldestReply?.message_id ?? '');
+  const oldestReplyId = String(oldestReply?.id ?? '');
 
   // The console asks for its older page with the token the page it holds
   // carried, not with a timestamp it derived, so the expected request can only
@@ -200,6 +189,9 @@ test('a keyboard reader reaching the top of a reloaded long transcript loads its
     message: 'reaching the top of the transcript with the keyboard must load the older page',
     timeout: OLDER_PAGE_BUDGET_MS,
   }).toEqual([blockCursor]);
+
+  await expect(page.getByTestId('user-message').filter({ hasText: prompts[0] }))
+    .toBeVisible({ timeout: OLDER_PAGE_BUDGET_MS });
 
   // The prepended page lands above the reading window, which is where the
   // reader was: reaching what arrived is another keyboard arrival.

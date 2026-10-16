@@ -1,16 +1,16 @@
 """Admission seam — the injection point for enterprise quota / rate policy.
 
 The community base ships NO quota, rate limit, or concurrency cap: a single
-tenant can cold-create sandboxes and dispatch turns without bound. An
+tenant can cold-create sandboxes and send inputs without bound. An
 enterprise deployment needs per-user / global limits, but the POLICY (what the
 limits are, how they are counted, where the counters live) is deployment
 business logic, not the base's. This seam is the official place to plug it, so
-a downstream never has to fork the turn/session hot path.
+a downstream never has to fork the send or session hot path.
 
 An :class:`AdmissionController` is consulted at two points:
 
-* **turn** — before a StartTurn is accepted (a per-user concurrent-turn or
-  rate cap);
+* **input** — before a conversation accepts an input (a per-user rate or
+  concurrency cap);
 * **sandbox** — before a user-facing session (and its sandbox) is created (a
   per-user or global sandbox cap).
 
@@ -21,8 +21,7 @@ advertise it at the ``astrabox.providers.admission`` entry-point group.
 
 FAIL-OPEN: admission is a POLICY layer, not a security gate (identity +
 ownership are the security gates). A controller that RAISES is logged and
-treated as "admit" — a bug in the quota policy must not take the platform's
-turns down. A controller that wants to deny must return
+treated as "admit" — a bug in the quota policy must not stop conversations. A controller that wants to deny must return
 ``AdmissionDecision(allowed=False, ...)``, not raise.
 """
 
@@ -38,7 +37,7 @@ logger = get_logger(__name__)
 
 ENTRY_POINT_GROUP = "astrabox.providers.admission"
 
-ADMISSION_KIND_TURN = "turn"
+ADMISSION_KIND_INPUT = "input"
 ADMISSION_KIND_SANDBOX = "sandbox"
 
 
@@ -46,11 +45,10 @@ ADMISSION_KIND_SANDBOX = "sandbox"
 class AdmissionRequest:
     """What the controller decides on."""
 
-    kind: str  # ADMISSION_KIND_TURN | ADMISSION_KIND_SANDBOX
+    kind: str  # ADMISSION_KIND_INPUT | ADMISSION_KIND_SANDBOX
     user_id: str
     session_id: str | None = None
     agent_id: str | None = None
-    template_name: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -127,16 +125,16 @@ async def enforce_admission(request: AdmissionRequest) -> None:
     decision = await check_admission(request)
     if decision.allowed:
         from astrabox.observability.metrics import (
-            METRIC_TURNS_ACCEPTED,
+            METRIC_INPUTS_ACCEPTED,
             increment,
         )
 
-        if request.kind == "turn":
-            increment(METRIC_TURNS_ACCEPTED)
+        if request.kind == ADMISSION_KIND_INPUT:
+            increment(METRIC_INPUTS_ACCEPTED)
         return
-    from astrabox.observability.metrics import METRIC_TURNS_DENIED, increment
+    from astrabox.observability.metrics import METRIC_ADMISSION_DENIED, increment
 
-    increment(METRIC_TURNS_DENIED, labels={"kind": request.kind})
+    increment(METRIC_ADMISSION_DENIED, labels={"kind": request.kind})
     from astrabox.common.utils.errors import APIError
 
     data: dict[str, Any] = {"admission_kind": request.kind}

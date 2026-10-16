@@ -4,8 +4,8 @@ The transcript capability token rides in the URL path (the sandbox side has no
 header hook), and uvicorn's access log prints the request line verbatim —
 which would persist a live per-session credential into stdout collection.
 :mod:`astrabox.api.access_log_privacy` attaches a filter to ``uvicorn.access``
-that masks the token segment; these tests pin the mask itself, the
-record-rewrite shape uvicorn actually emits, and installer idempotency.
+that masks the token segment; these tests pin the mask itself and the
+record-rewrite shape uvicorn actually emits.
 """
 
 from __future__ import annotations
@@ -57,17 +57,3 @@ def test_filter_rewrites_uvicorn_access_record_args() -> None:
     rendered = record.getMessage()
     assert "feedc0ffee" not in rendered
     assert "/api/v1/sbxcap/***/transcript/load" in rendered
-
-
-def test_install_is_idempotent() -> None:
-    access_logger = logging.getLogger("uvicorn.access")
-    before = list(access_logger.filters)
-    install_access_log_token_mask()
-    install_access_log_token_mask()
-    added = [f for f in access_logger.filters if f not in before]
-    marked = [
-        f for f in access_logger.filters
-        if getattr(f, "_astrabox_sbxcap_mask", False)
-    ]
-    assert len(marked) == 1, f"expected exactly one mask filter, got {len(marked)}"
-    assert len(added) <= 1

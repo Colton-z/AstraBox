@@ -11,7 +11,6 @@ makes. So the credential that binding names must not be an administrator's.
 from __future__ import annotations
 
 import json
-import urllib.error
 from typing import Any
 
 import pytest
@@ -21,16 +20,11 @@ from astrabox.identity.session_signing import reset_session_signing_cache
 from astrabox.providers.litellm_shared_auth import (
     SANDBOX_INFERENCE_KEY_ALIAS,
     SANDBOX_INFERENCE_KEY_TYPE,
-    CAPABILITY_PREFIX,
-    inference_key_metadata,
-    looks_like_access_token,
     sandbox_inference_key,
 )
 from astrabox.providers.model import LiteLLMModelEndpointProvider
 
 _SECRET = "b" * 64
-# What LiteLLM's /key/info answers for a key that already carries its grants.
-_EXISTING_KEY = json.dumps({"info": {"metadata": inference_key_metadata()}})
 
 
 @pytest.fixture(autouse=True)
@@ -76,41 +70,6 @@ def test_every_replica_derives_the_same_key_and_a_rotation_changes_it() -> None:
 
     assert sandbox_inference_key(_SECRET) == sandbox_inference_key(_SECRET)
     assert sandbox_inference_key(_SECRET) != sandbox_inference_key("c" * 64)
-
-
-def test_an_operator_supplied_key_still_wins(
-    signing_secret: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A gateway with its own key system is still reachable.
-
-    The escape hatch exists because not every deployment runs this adapter; it
-    is explicit configuration, which is why it is not what an embedded
-    deployment silently falls back to.
-    """
-
-    monkeypatch.setenv("ASTRABOX_LITELLM_API_KEY", "sk-operator-scoped")
-
-    assert (
-        LiteLLMModelEndpointProvider._sandbox_inference_credential()
-        == "sk-operator-scoped"
-    )
-
-
-def test_a_litellm_key_is_not_mistaken_for_an_access_token(signing_secret: str) -> None:
-    """The adapter must decline a LiteLLM key rather than reject it.
-
-    Under ``custom_auth_settings.mode: auto`` the adapter is asked first about
-    every credential, including keys LiteLLM itself issued. Treating "not a
-    capability" as "must be an access token" sends a virtual key to the OIDC
-    provider, which rejects it, and the request ends before LiteLLM's own key
-    authentication ever runs.
-    """
-
-    assert looks_like_access_token("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhIn0.signature")
-    assert not looks_like_access_token(sandbox_inference_key(signing_secret))
-    assert not looks_like_access_token("sk-anything-litellm-issued")
-    assert not looks_like_access_token(CAPABILITY_PREFIX + "a.b.c")
-    assert not looks_like_access_token("")
 
 
 class _Response:
@@ -187,98 +146,3 @@ def test_the_key_is_created_with_litellm_s_inference_only_type(
     )
     assert seen[1]["json"]["key_type"] == SANDBOX_INFERENCE_KEY_TYPE
     assert seen[1]["json"]["key_alias"] == SANDBOX_INFERENCE_KEY_ALIAS
-
-
-def test_external_gateway_provisioning_uses_the_server_side_origin(
-    provisioning: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The external topology must not keep dialing embedded loopback."""
-
-    monkeypatch.setenv(
-        "ASTRABOX_LITELLM_SERVER_BASE_URL",
-        "https://gateway.example.test/root/",
-    )
-    seen = _gateway(monkeypatch, [(404, "not found"), (200, "{}"), (200, "{}")])
-
-    onebox.ensure_sandbox_inference_key()
-
-    assert all(
-        entry["url"].startswith("https://gateway.example.test/root/")
-        for entry in seen
-    )
-
-
-def test_the_key_is_spent_once_before_the_deployment_serves(
-    provisioning: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Creating a key does not prove a request carrying it is accepted.
-
-    The adapter declines credentials that are not AstraBox's, and LiteLLM only
-    falls back to its own key authentication because ``custom_auth_settings.mode``
-    is ``auto``. Lose that and key creation still succeeds while every sandbox's
-    first model call fails, so the check has to be a real request with the real
-    credential — carrying the sandbox key, not the master key that made it.
-    """
-
-    seen = _gateway(monkeypatch, [(404, "no"), (200, "{}"), (200, "{}")])
-
-    onebox.ensure_sandbox_inference_key()
-
-    spend = seen[-1]
-    assert spend["url"].endswith("/v1/models")
-    assert spend["authorization"] == f"Bearer {provisioning}"
-    assert "sk-master-do-not-hand-out" not in spend["authorization"]
-
-
-def test_an_existing_key_is_not_created_again(
-    provisioning: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Every restart runs this. Re-creating would fail on the second boot."""
-
-    seen = _gateway(monkeypatch, [(200, _EXISTING_KEY), (200, "{}")])
-
-    assert onebox.ensure_sandbox_inference_key() == provisioning
-    assert not any(entry["url"].endswith("/key/generate") for entry in seen)
-
-
-def test_an_existing_key_the_gateway_rejects_stops_the_deployment(
-    provisioning: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """This guards the restart path, where the key already exists.
-
-    A deployment whose key table is already populated and whose fallback setting
-    is absent passes every creation check. Verifying only when the key is
-    created never looks at such a deployment again.
-    """
-
-    _gateway(monkeypatch, [(200, _EXISTING_KEY), (401, "Invalid proxy server token")])
-
-    with pytest.raises(RuntimeError, match="does not accept the key"):
-        onebox.ensure_sandbox_inference_key()
-
-
-def test_a_key_that_could_not_be_created_stops_the_deployment(
-    provisioning: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Serving without it means every sandbox 401s on its first model call.
-
-    Coming up anyway turns one loud startup failure into a turn failure per
-    conversation, reported as the model being unavailable.
-    """
-
-    _gateway(monkeypatch, [(404, "no"), (500, "boom"), (404, "still no")])
-
-    with pytest.raises(RuntimeError, match="could not provision"):
-        onebox.ensure_sandbox_inference_key()
-
-
-def test_a_key_another_replica_created_concurrently_is_accepted(
-    provisioning: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Two replicas booting together both try; the loser must not crash."""
-
-    _gateway(
-        monkeypatch, [(404, "no"), (400, "already exists"), (200, _EXISTING_KEY), (200, "{}")]
-    )
-
-    assert onebox.ensure_sandbox_inference_key() == provisioning

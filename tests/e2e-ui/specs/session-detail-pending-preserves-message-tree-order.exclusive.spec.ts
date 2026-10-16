@@ -22,9 +22,8 @@ import { appPath, parseTimeoutEnv } from '../fixtures/env';
 // One sandbox provision + two paused tools + the approve-resume continuation +
 // the UI settle sit well above the 240s suite default; keep it generous/tunable.
 // Bounded probe: how long to wait for the FIRST pending interaction before
-// the test skips. The POST stream closes at the interaction's segment
-// `finish`, so a real pending is visible promptly; this budget only covers
-// projection lag.
+// the test skips. The session detail names an interaction as soon as the
+// runtime opens it, so this budget covers the model reaching for the tool.
 /** What a user says when a model answers instead of acting. */
 const INSIST_NUDGE =
   "You answered without using the tool. Do the tool call now, exactly as asked above, before replying again. \u8bf7\u73b0\u5728\u5c31\u6309\u4e0a\u9762\u7684\u8981\u6c42\u8c03\u7528\u5de5\u5177\uff0c\u4e0d\u8981\u53ea\u7528\u6587\u5b57\u56de\u7b54\u3002";
@@ -180,7 +179,9 @@ test('session-detail pending does not reorder the browser message tree before li
     test.skip(
       secondPending === null,
       'deepseek-chat did not chain to a distinct Bash tool permission after approving Write ' +
-        `(last detail: state=${lastDetail?.state} last_turn_status=${lastDetail?.last_turn_status} ` +
+        `(last detail: state=${lastDetail?.state} ` +
+        `current_responses=${JSON.stringify(lastDetail?.current_responses ?? null)} ` +
+        `last_response=${JSON.stringify(lastDetail?.last_response ?? null)} ` +
         `pending=${JSON.stringify(lastDetail?.pending_interaction ?? null)}) — the second-tool ` +
         'precondition for the tree-order assertion was not met',
     );
@@ -302,8 +303,8 @@ test('session-detail pending does not reorder the browser message tree before li
     await closePageAfterAssertions(page);
   } catch (error) {
     // On failure the session IS the evidence: the inline-card miss can only be
-    // discriminated (projection dropped the tool blocks vs the client rendered
-    // from the wrong source) by reading the durable event-derived blocks and resume
+    // discriminated (history dropped the tool parts vs the client rendered
+    // from the wrong source) by reading the durable history and the session's
     // stream AFTER the red — and teardown purges exactly that unless this catch
     // keeps it. test.info().status is not final inside the test body's own
     // finally, so keying teardown-skip logic on it deletes the evidence anyway;

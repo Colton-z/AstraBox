@@ -7,6 +7,290 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-10-15
+
+**Upgrading:**
+
+- AstraBox stores its records only in PostgreSQL. The server brings the
+  database schema to its release's version with Alembic when it starts;
+  replicas that start together take turns on a PostgreSQL advisory lock.
+  `ASTRABOX_DB_URL` must be a `postgresql://` URL: the server does not start
+  with a SQLite or MongoDB database. Connect it to PostgreSQL directly or through a pooler in session
+  mode, because it listens for PostgreSQL notifications. See
+  [The AstraBox database](docs/deploy.md#the-astrabox-database).
+- There is no data migration from 0.1.8. An upgraded installation starts with
+  an empty AstraBox database: Agents, Environments, Assistants, Sessions and
+  their history, Deployments, Vaults and the other records of 0.1.8 are not
+  carried over. Remove the sandboxes the 0.1.8 installation created before
+  starting 0.1.9: a new database gets a new installation id, and an
+  installation never removes or counts sandboxes that carry another
+  installation's id. See
+  [Upgrade from AstraBox 0.1.8](docs/deploy.md#upgrade-from-0-1-8).
+- Clients send a message with `POST /api/v1/sessions/{id}/inputs`
+  (`{content, client_message_id?}`), which returns a receipt
+  (`{session_id, input_id, client_message_id, accepted_at, state, duplicate}`)
+  and accepts a message while the Agent is working. Output arrives only on
+  `GET /api/v1/sessions/{id}/stream?after_seq=N`: the recorded parts after
+  `after_seq`, then live, one response per connection. An interaction is
+  answered with `POST /api/v1/sessions/{id}/interactions/{interaction_id}/answer`
+  (`{answer}`). `POST .../turn-inputs`, `POST` and `GET .../ai-stream`, and
+  `POST .../interaction-respond` are removed. `POST .../interrupt` returns
+  `{session_id, status}` with `accepted`, or `idle` when no response is
+  running, and refuses with `INTERRUPT_UNAVAILABLE` while a running response's
+  runtime is out of reach; the web terminal has its own
+  `POST .../terminal/interrupt`. See [Sessions](docs/sessions.md) and
+  [SSE Event Stream](docs/events-stream.md).
+- Stream parts: `data-resume-cursor` carries `data.seq` in place of `frameSeq`
+  and `turnId`; a response's `start` part carries `messageMetadata`
+  `{response_id, input_ids, origin}`; a message the Agent program or the
+  deployment refused is a `data-input-failed` part; `data-turn-accepted`,
+  `data-turn-failure`, `data-input-consumed` and `data-child-runs-changed` are
+  removed. A transient `data-session-changed` part tells a page to read the
+  Session again (its generated title arrived), and a `data-tool-card` part
+  carries a card a platform tool recorded. A `data-subagent` part no longer
+  carries the engine's `engineRef`, `parentEngineRef` or `controlRef`; address
+  a sub-agent by its id from `GET .../child-runs`. An interaction part names
+  its `response_id` in place of `turn_id`. An image a person sent appears in
+  history as an AI SDK `file` part with a data URL.
+- A message that can no longer be answered fails with a `data-input-failed`
+  part naming `CONVERSATION_ENDED` (the conversation ended while it waited) or
+  `RUNTIME_START_FAILED` (the replacement for a lost sandbox did not start;
+  send it again to retry). `POST .../inputs` refuses a conversation whose Agent
+  was deleted with `AGENT_DELETED`.
+- Session records: `state` is `CREATING`, `READY`, `PROCESSING`,
+  `WAITING_INPUT`, `TERMINATED` or `DELETED`. `runtime_status` and the referenced
+  Agent's `agent_state` are added, and
+  the detail adds `current_responses`, `last_response`, `held_inputs` and
+  `output_seq`. `current_turn_id`, every `last_turn_*` field, `delivery_state`,
+  `delivery_failure`, `pending_inputs`, `background_task_state`,
+  `recovery_policy`, `runtime_binding`, `runtime_warning`, `agent_runtime`,
+  `template_name` and `deleted` are removed. `GET .../messages` returns AI SDK
+  UI messages with an opaque `before` cursor and, on the first page,
+  `output_seq` and `pending_interaction`; `GET .../file-changes` returns
+  `{through_seq, responses}`.
+- `SEAMS_API_VERSION` is 7. A provider that pins `seams_api_version = 6` is
+  refused at startup; update the pin after making the changes below.
+- The record store is not a plugin: `astrabox.seams.AsyncDocumentCollection`,
+  the `astrabox.providers.repository` entry-point group, the `mongo` extra and
+  `astrabox.testing.collection_conformance` are removed.
+- `SchedulerProvider.configure` takes `database_url`, the platform's PostgreSQL
+  URL, in place of `repository_backend`.
+- Inline Environment credentials require a Secret Store derived from
+  `EncryptedCollectionSecretStore`, so credentials and their references commit
+  together. Both built-in stores support this; other stores refuse inline
+  credentials with `ENVIRONMENT_SECRET_STORE_NOT_TRANSACTIONAL`.
+- Engine adapters serve the runtime contract in
+  `astrabox/core/service/orchestrator/engine/runtime.py`: declare a
+  `RuntimeClient` class as `EngineAdapter.engine_client_type`, and return from
+  `activate_runtime()` a `SessionRuntime` whose `engine_client` is that client,
+  checked with `initialize_runtime_client`. `EngineClient` and its delivery and
+  stream methods are removed. Bind `RuntimeClientContractSuite` from
+  `astrabox.testing.engine_conformance`. See
+  [Add an Agent program](docs/writing-an-engine-adapter.md).
+- `RuntimePreparationProvider.prepare_turn` is called by the Session's reader
+  before each input is written to the engine; `TurnPreparationContext.turn_id`
+  and `dispatch_attempt_id` carry the input's id. There is no durable
+  per-Session preparation guard, and the platform does not call `prepare_turn`
+  again while the engine works on an input, so `turn_validity_seconds` is
+  removed.
+- The settings `ASTRABOX_DB_BACKEND`, `ASTRABOX_DB_NAME`,
+  `ASTRABOX_MONGODB_URI`, `MONGODB_URI`, `ASTRABOX_MONGO_RETRY_ATTEMPTS`,
+  `ASTRABOX_MONGO_RETRY_BASE_DELAY_SECONDS`,
+  `ASTRABOX_RUNTIME_INDEX_CREATION_ENABLED`, `ASTRABOX_PERSISTENCE_SLOW_OP_S`,
+  `ASTRABOX_RECONCILE_SCAN_INTERVAL_S`, `ASTRABOX_RECONCILE_HEARTBEAT_STALE_S`,
+  `ASTRABOX_LOOP_STALL_DUMP_S`, `ASTRABOX_STREAM_START_TIMEOUT_SECONDS` and
+  `ASTRABOX_STARTUP_SETTLE_RETRY_WINDOW_SECONDS` are removed; nothing reads
+  them.
+- `RuntimePreparationProvider.synchronize` and `recover` are called for
+  Assistants as well as Agents. `AgentPreparationOperation` and
+  `AgentPreparationContext` are now `ResourcePreparationOperation` and
+  `ResourcePreparationContext`: `operation.agent_id` is
+  `operation.subject` (`PreparationSubject(kind, id)`), `creator_user_id` is
+  `owner_user_id`, and `config_version` is the string `revision`.
+  `SessionPreparationContext` and `SessionUserActionContext` carry `subject` and
+  `revision` in place of `agent_id` and `config_version`. The error codes
+  `AGENT_RESOURCE_SYNC_BUSY`, `AGENT_RESOURCE_SYNC_UNRESOLVED` and
+  `AGENT_RESOURCE_SYNC_FAILED` are now `RESOURCE_SYNC_BUSY`,
+  `RESOURCE_SYNC_UNRESOLVED` and `RESOURCE_SYNC_FAILED`.
+- An Assistant's workspace box uses its own resource envelope,
+  `ASTRABOX_ASSISTANT_SANDBOX_*`, instead of the conversation box's. Its CPU
+  request defaults to `100m`; set the limits for your Assistants' workload.
+- `ChannelEvent.turn_id` is removed and `CHANNEL_EVENT_VERSION` is 3. A
+  streaming channel provider identifies the reply by `response_id`.
+- Scheduler providers admit a Run's input instead of a turn:
+  `RunHandler.admit_turn` is `admit_input` and returns
+  `RunInputBinding(input_id)`, and `RunRecord.turn_id` is `input_id`. Store the
+  input ID where the turn was stored. A `deployment_service` replacement
+  implements `admit_run_input` (returning `{"input_id": ...}`) in place of
+  `drive_run_turn`.
+- An A2A task is the response to its message. Task metadata carries
+  `response_id` in place of `turn_id` and `command_id`, and a task artifact's
+  data part is `{"parts": [...]}`, the message parts the Session's history
+  carries, in place of `{"blocks": [...]}`.
+- The Agent MCP facade's `get_status` adds `runtime_status` (`idle`, `working`
+  or `waiting`) and `last_response`. Its `recent_messages` include the reply
+  still being written and name each reply's `response_id` in place of
+  `turn_id`, and `current_turn_id` is removed. `send_message` returns
+  `SUBMITTED` with the `input_id` while the Session is still starting.
+- `astrabox run` sends its task as one Session input and prints only the reply
+  to it. Its JSON result counts `parts` in place of `frames` and carries
+  `pending_interaction` when the Agent asks a question.
+- The admin session trace takes `response_id` and `part_limit` in place of
+  `turn_id` and `frame_limit`, and returns `current_response_ids`,
+  `selected_response_id`, `responses`, `parts` and `truncated_part_count` in
+  place of its turn and frame fields. Session rows in the admin errors list
+  carry no `turn_id`.
+
+### Added
+- Assistants are prepared ahead of their conversations. Creating an Assistant,
+  including a user's primary one, prepares its workspace at once, and a running
+  workspace whose Assistant changed (an edit, a connector, its Environment or
+  the inherited defaults) is prepared again in place. A new conversation
+  attaches to a ready workspace instead of waiting for it.
+- An Assistant's Skills and packages are in its box before the deployment's
+  runtime-preparation integration synchronizes them, and synchronization runs
+  before Hermes starts from them. See
+  [Runtime preparation](docs/providers/runtime-preparation.md#synchronize-prepared-resources).
+
+### Fixed
+- Fresh Docker installations initialize the database schema before the bundled
+  sandbox service reads the installation identity.
+- Local sandbox-image builds build the default execd image first. An explicitly
+  selected `EXECD_IMAGE` remains supplied by the caller.
+- Reader reconnects dispatch accepted Stop requests, retain saved Claude
+  permission and question answers, and resolve Claude interrupt targets from
+  native runner state before event replay catches up.
+- Platform tool cards survive a reader disconnect while their lookup is pending,
+  and connection failures no longer strand delivered messages outside recovery.
+- PostgreSQL notification listening reconnects after its setup connection is lost.
+  Concurrent Environment reads, saves and deletion keep inline credentials
+  consistent with their stored references.
+- The idle sweep leaves a sandbox running while an accepted message waits for
+  preparation or delivery.
+- Terminal commands reuse a shell only after a recorded command exit, rather
+  than after a runner lease expires. Replaying an ended command closes the
+  stream even when the caller's cursor already includes its exit.
+- Delayed history reads retain newer live replies and newly discovered inputs.
+  Reconnecting mid-reply continues the same Markdown document instead of
+  splitting it. The chat composer remains usable in development StrictMode.
+- Sending a refused message again retains its images and offers the required
+  authorization action. Repeating an input receipt does not erase its recorded
+  refusal from the open conversation.
+- Inputs with images are refused before acceptance when the selected engine
+  does not support them. Codex forwards images when its model declares support.
+- Codex conversations with a JSON output schema refuse additional input while
+  a response is running, instead of accepting it without preserving the schema.
+- Pi refuses an expired live output position instead of resending inputs whose
+  native status is unknown. A prompt rejected after its preflight wait is
+  recorded as a failed input instead of remaining unsettled.
+- Scheduled Runs retry temporary input-admission throttling instead of failing
+  permanently. Concurrent channel reply projection does not let an empty reply
+  block later replies.
+- Assistant conversation deletion uses its saved Hermes identity when the local
+  runtime client has been evicted. Reconnecting before a new Hermes draft's
+  native identity was saved finds and resumes that draft instead of creating
+  another conversation with the same title.
+- Concurrent backend startup and workspace storage operations publish complete
+  derived Kubernetes configuration files, so readers do not encounter an empty
+  file while another process updates it.
+- A stopped Pi response is shown as cancelled when the native runtime reports
+  the acknowledged cancellation as an error.
+- Hermes no longer reaches external package catalogs while constructing a
+  Session, or restarts in an Assistant workspace that is being paused.
+- Configured Hermes plugins can install their declared Python dependencies
+  through Hermes' installer into the profile's private package directory.
+- Detaching a Hermes backend connection settles its pending requests, so a
+  profile change does not leave conversation deletion waiting on an abandoned request.
+- New Assistant conversations persist their native Hermes session and confirm
+  its database snapshot before publishing a resume key, including before the
+  first user message.
+- Concurrent reader starts claim the Session's reader lease once, and a
+  permanently stopped reader releases its runtime. An Assistant workspace's
+  own records do not create conversation readers.
+- A reader that cannot connect during startup leaves the new runtime intact,
+  so the first input can create the engine's native conversation.
+- Reader attachment and archive cleanup take the same PostgreSQL lock, keeping
+  a reconnect from recreating a shared placement during a successful archive.
+- Shared Agent preparation warms only the requested capacity in each pool
+  box instead of serially preparing every available seat.
+- A lost runtime connection on a bound sandbox reaches the existing liveness
+  check instead of immediately treating that sandbox as lost.
+- Stopping a pending Claude permission or question keeps the native tool
+  rejection inside its response until the runtime supplies the final result.
+- Pi reports foreground workflow children while they run and reads child text
+  and tools from their native session files in the stored Session history.
+  Materialized workers retain their workflow child identity, and inventory
+  updates and completed results have distinct immutable event identities.
+- Open child transcripts refresh when native history is committed, including
+  a final answer that arrives after the child's completion event.
+- Reading a nested Claude Agent's history preserves its native parent and
+  depth instead of rejecting it as an invalid first-level transcript.
+- Error records without a Session remain readable without advertising an
+  unavailable record link.
+- A2A task results retain the same saved tool-approval decisions as conversation
+  history.
+- New artifact cards open the artifact panel when they arrive, including when
+  the response finishes before React renders the card.
+- Sandbox uploads stream through execd's existing file writer without first
+  spooling the entire multipart body. File and directory sync and native
+  permission handling remain in place; failed uploads can leave partial files.
+- Open process details stay open when a live reply becomes saved history.
+  An idle network disconnect does not show an active-response failure banner.
+  Deleted-Agent conversations retain readable history and disable new input.
+- An Assistant no longer fails to start when its sandbox provider accepts a
+  connection to the Hermes backend before the backend serves it. The platform
+  now waits inside the box until the backend answers before attaching, and
+  reports `HERMES_BACKEND_NOT_READY` when it does not answer in time, instead
+  of inferring readiness from how a refused connection fails.
+- A new box no longer fails to start when the sandbox ingress drops the
+  connection to its execd while the box's in-box service is being probed. The
+  probe only reads, so it runs again within the same deadline; other in-box
+  commands still report a dropped connection at once.
+
+### Changed
+- Issuing a browser endpoint keeps its bound Agent-conversation sandbox exempt
+  from conversation-idle parking for that sandbox's lifetime. Application
+  traffic goes directly to OpenSandbox and cannot be measured from conversation
+  activity. Absolute expiry and explicit termination still apply.
+- Each conversation's state is the Agent program's own. AstraBox records what
+  the Agent program reports, relays its output to the console as it arrives,
+  and keeps the history it showed, so a server restart or another replica
+  continues a response from the recorded position. A supported message sent
+  while the Agent is working is accepted and waits in the Agent program's queue.
+  Codex refuses such input when a JSON output schema is configured. When a
+  sandbox is lost, the response it was producing ends as failed, and messages
+  the Agent program had not taken yet are delivered to a new sandbox.
+- A scheduled Run reports `input_id` instead of `turn_id`, and its status is the
+  Session's response to that input: `RUNNING`, `WAITING_INPUT`, then
+  `COMPLETED`, `FAILED` or `CANCELLED`. A Run whose Session was deleted reports
+  `UNKNOWN` instead of `COMPLETED`.
+- A channel message for a conversation the agent is still answering is
+  accepted at once and answered after the current reply, instead of waiting
+  for that reply to finish before it is sent. Replies reach a channel as soon
+  as the agent ends them or stops at a question, instead of on the channel
+  reconciler's next pass.
+- A streaming channel delivery opens its reply once the reply has text, a
+  question or a failure to show; a reply of only tool work is not delivered.
+- A webhook trigger answers with an error when its message cannot be sent to
+  the new conversation, instead of accepting it and dropping it in the
+  background.
+- A message sent to a running conversation is delivered and prepared once, and
+  its reply is read as soon as the engine has it. Before, the input was
+  delivered three times, the deployment's turn preparation ran twice, and the
+  platform re-read its own records several more times before reading the
+  engine's output; with a slow database or preparation service, a short reply
+  waited seconds behind those checks.
+- A conversation whose runtime startup waits on a user action stays open
+  instead of ending. Its next message starts the runtime again once the user
+  has acted, and is refused with the same action until then.
+- A lost sandbox never ends a conversation: when its replacement fails to
+  start, the conversation stays open and a later message tries again.
+- A Claude conversation counts as working while a background task it started
+  runs, so the idle sweep no longer parks its sandbox under the task.
+- An Assistant's reply shows Hermes' token usage, and a Claude plugin's
+  SessionStart message appears in the conversation again.
+- Stopping a Pi command that is showing a dialog ends its reply as cancelled.
+
 ## [0.1.8] - 2026-10-13
 
 **Upgrading:**

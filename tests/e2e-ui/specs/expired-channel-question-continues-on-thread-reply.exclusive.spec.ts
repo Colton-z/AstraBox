@@ -4,12 +4,14 @@
  * The built-in generic channel identifies the external thread through
  * conversation_id: every message carrying that identity resolves to one Agent
  * conversation.
- * After the question's sandbox is reclaimed, the old in-box interaction is
- * honestly settled; the user's next thread message must still enter that SAME
- * session, borrow fresh compute, and complete exactly once.
+ * After the question's sandbox is reclaimed, the response that waited on it
+ * ends with its box and the question closes unanswered; the user's next thread
+ * message must still enter that SAME session, borrow fresh compute, and
+ * complete exactly once.
  *
- * A separate same-box runner-restart case proves that an expired callback
- * cannot accept the old form or write an answer to the native store.
+ * A separate same-box runner-restart case proves that an answer to a question
+ * whose callback process exited is refused, and is neither stored nor written
+ * to the native store.
  */
 import { expect, test, type APIRequestContext } from '@playwright/test';
 
@@ -19,8 +21,14 @@ import {
   type PendingInteraction,
 } from '../fixtures/astraApi';
 import { insist } from '../fixtures/insist';
-import { documentsByField, sessionDoc, sessionEvents } from '../fixtures/dbOracle';
+import {
+  nativeTranscriptRows,
+  sessionInputRows,
+  sessionInteractionRows,
+  sessionResponseRows,
+} from '../fixtures/dbOracle';
 import { apiPath, appPath, parseTimeoutEnv } from '../fixtures/env';
+import { sessionRow } from '../fixtures/ingressRecords';
 import { PlatformApi } from '../fixtures/platformApi';
 import { IMAGE_RUNNER_LAUNCHER, imageRunnerPidLookup, imageRunnerRestartScript } from '../fixtures/runnerRestart';
 import { requireSandboxHandle, sandboxExec, sandboxRunning } from '../fixtures/sandboxOps';
@@ -113,10 +121,27 @@ function storedObject(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+/**
+ * Claude's main transcript entries as the platform holds them, in the
+ * runtime's own order: the vendor's record, independent of the platform's
+ * projection.
+ */
+function nativeEntries(sessionId: string): Record<string, unknown>[] {
+  return nativeTranscriptRows(sessionId)
+    .filter((row) => row.subpath === null)
+    .map((row) => storedObject(JSON.parse(row.entry_json)));
+}
+
+/** The answer route, as a person's page sends it. */
+function answerInteraction(request: APIRequestContext, sessionId: string, interactionId: string, answer: unknown) {
+  return request.fetch(
+    apiPath(`/sessions/${sessionId}/interactions/${encodeURIComponent(interactionId)}/answer`),
+    { method: 'POST', data: { answer }, timeout: 30_000 },
+  );
+}
+
 function nativeQuestionEvidence(sessionId: string, toolId: string) {
-  const records = documentsByField('transcript_entries', '$.platform_session_id', sessionId)
-    .filter((row) => row.subpath == null)
-    .map((row) => storedObject(JSON.parse(String(row.entry_json))))
+  const records = nativeEntries(sessionId)
     .filter((entry) => entry.type === 'user' || entry.type === 'assistant');
   // Native resume may reappend a UUID with new metadata, not a new input.
   const byUuid = new Map<string, Record<string, unknown>>();
@@ -229,6 +254,8 @@ test('expired channel question continues in the same thread on fresh compute', a
     expect(questions, 'the channel question must expose both requested fields').toHaveLength(2);
     const interactionId = String(interaction.interaction_id || '').trim();
     expect(interactionId).not.toEqual('');
+    const parkedResponseId = String(interaction.response_id || '').trim();
+    expect(parkedResponseId, 'the channel question must name the response it pauses').not.toEqual('');
 
     const waiting = await api.getSession(sessionId);
     const oldSandbox = String(waiting.sandbox_id || '').trim();
@@ -245,12 +272,16 @@ test('expired channel question continues in the same thread on fresh compute', a
     const reclaim = await api.terminateSandbox(sessionId);
     expect(reclaim.status).toBe('sandbox-reclaimed');
     expect(String(reclaim.sandbox_id || '')).toBe(oldSandbox);
+    // The response waiting on the question ends with its box, and the
+    // question closes with it: the conversation is at rest, not waiting.
     const reclaimed = await api.waitForSession(sessionId, (session) => (
       session.state === 'READY'
       && !session.pending_interaction
       && !session.sandbox_id
-      && String(session.last_turn_status || '') === 'FAILED'
+      && session.last_response?.response_id === parkedResponseId
     ), 60_000);
+    expect(reclaimed.last_response, 'the reclaimed box takes the waiting response with it')
+      .toMatchObject({ status: 'ended', outcome: 'failed', native_reason: 'sandbox_lost' });
     expect(
       reclaimed.runtime_unavailable,
       'the formally reclaimed conversation must expose recoverable compute loss',
@@ -277,22 +308,17 @@ test('expired channel question continues in the same thread on fresh compute', a
           : { free_text: `expired form answer ${index + 1}` }),
       };
     });
-    const expiredForm = await request.fetch(
-      apiPath(`/sessions/${sessionId}/interaction-respond`),
-      {
-        method: 'POST',
-        data: {
-          interaction_id: interactionId,
-          answer: { answers: staleFormAnswers },
-        },
-        timeout: 30_000,
-      },
-    );
+    const expiredForm = await answerInteraction(request, sessionId, interactionId, { answers: staleFormAnswers });
     const expiredFormBody = await expiredForm.text();
     expect(
-      [400, 409],
+      expiredForm.status(),
       `the expired structured form must be refused; body=${expiredFormBody.slice(0, 300)}`,
-    ).toContain(expiredForm.status());
+    ).toBe(409);
+    expect(JSON.parse(expiredFormBody)).toMatchObject({ code: 'INTERACTION_NOT_OPEN' });
+    const closedQuestion = sessionInteractionRows(sessionId).filter((row) => row.interaction_id === interactionId);
+    expect(closedQuestion, 'the refused form must leave the question without an answer')
+      .toEqual([expect.objectContaining({ answer: null, answered_by: null })]);
+    expect(['withdrawn', 'expired'], 'the question closed with its box').toContain(closedQuestion[0].status);
 
     const answerText = [
       `E2E_CHANNEL_THREAD_ANSWER_${runId}.`,
@@ -321,14 +347,20 @@ test('expired channel question continues in the same thread on fresh compute', a
         message: 'the thread answer must enter the original transcript exactly once',
       },
     ).toBe(1);
-    await api.waitForAssistantMessageCount(sessionId, assistantsBefore, TURN_TIMEOUT_MS);
-    const rebuilt = await api.waitForSession(sessionId, (session) => (
-      session.state === 'READY'
-      && String(session.last_turn_status || '') === 'COMPLETED'
-      && Boolean(String(session.sandbox_id || '').trim())
-      && String(session.sandbox_id || '').trim() !== oldSandbox
-      && !session.pending_interaction
-    ), TURN_TIMEOUT_MS);
+    const answerInput = sessionInputRows(sessionId).find((row) => row.content === answerText);
+    expect(answerInput, 'the thread answer must be one input of the conversation').toBeDefined();
+    expect(answerInput!.source).toBe('channel');
+    const answerReply = await api.waitForReplyTo(sessionId, answerInput!.input_id, { timeoutMs: TURN_TIMEOUT_MS });
+    expect(answerReply.metadata?.outcome, 'the thread answer must be answered to completion').toBe('completed');
+    expect(await assistantCount(api, sessionId), 'the thread answer is answered exactly once')
+      .toBe(assistantsBefore + 1);
+    const rebuilt = await api.waitForSessionReady(sessionId, TURN_TIMEOUT_MS);
+    expect(rebuilt.last_response?.response_id, 'nothing ran after the thread answer').toBe(answerReply.id);
+    expect(
+      String(rebuilt.sandbox_id || '').trim(),
+      'the thread answer must run on fresh compute, not the reclaimed box',
+    ).not.toBe(oldSandbox);
+    expect(rebuilt.pending_interaction ?? null).toBeNull();
     expect(rebuilt.last_error ?? null).toBeNull();
 
     await page.reload({ waitUntil: 'domcontentloaded' });
@@ -413,6 +445,8 @@ test('expired channel answer is rejected after its callback exits on the same sa
 
   const toolId = String(interaction.tool_call_id || '').trim();
   expect(toolId).not.toBe('');
+  const parkedResponseId = String(interaction.response_id || '').trim();
+  expect(parkedResponseId, 'the question must name the response it pauses').not.toBe('');
   expect(questions.filter((question) => question.multi_select === true)).toHaveLength(1);
   const staleFormAnswers = questions.map((question, index) => {
     const questionId = String(question.id || '').trim();
@@ -426,19 +460,21 @@ test('expired channel answer is rejected after its callback exits on the same sa
       ? { option_labels: labels } : { option_label: labels[0] }) };
   });
   const questionRecord = () => {
-    const rows = documentsByField('interaction_snapshots', '$.session_id', sessionId)
-      .filter((row) => row.interaction_id === interactionId);
+    const rows = sessionInteractionRows(sessionId).filter((row) => row.interaction_id === interactionId);
     expect(rows).toHaveLength(1);
     return rows[0];
   };
-  expect(questionRecord()).toMatchObject({ interaction_state: 'OPEN', active: true });
+  expect(questionRecord()).toMatchObject({
+    status: 'open', response_id: parkedResponseId, answer: null,
+    contract: expect.objectContaining({ tool_call_id: toolId }),
+  });
   await expect.poll(() => nativeQuestionEvidence(sessionId, toolId).calls.length, {
     message: 'the original native question must reach database custody before its callback exits',
   }).toBe(1);
   const nativeBefore = nativeQuestionEvidence(sessionId, toolId);
   expect(nativeBefore.results).toHaveLength(0);
-  const commands = () => sessionEvents(sessionId).filter((event) => event.event_type === 'command.accepted');
-  const commandsBefore = commands();
+  const inputs = () => sessionInputRows(sessionId);
+  const inputsBefore = inputs();
   const detail = await api.adminSessionDetail(sessionId);
   expect(detail.runtime_identity?.sandbox_id).toBe(oldSandbox);
   expect(String(detail.runtime_identity?.isolated_session_id || '')).toBe('');
@@ -459,14 +495,25 @@ test('expired channel answer is rejected after its callback exits on the same sa
   expect(newPid).toMatch(/^[1-9][0-9]+$/);
   expect(newPid).not.toBe(oldPid);
   await api.adminEvictRuntime(sessionId);
-  expect(sessionDoc(sessionId)?.sandbox_id).toBe(oldSandbox);
+  expect(sessionRow(sessionId)?.sandbox_id).toBe(oldSandbox);
   expect(sandboxRunning(sandbox), 'callback loss must not mean box loss').toBe(true);
-  expect(questionRecord()).toMatchObject({ interaction_state: 'OPEN', active: true });
+  // The answer route stores an answer on any interaction the platform still
+  // holds open, and the Session's reader learns of the replaced runner on its
+  // own: it reconnects, finds a runtime that does not wait on this question,
+  // and closes it. Answering before then would race that detection rather
+  // than test the refusal, so the stale answer is sent once the platform has
+  // closed the question.
+  await expect.poll(() => questionRecord().status, {
+    timeout: 60_000,
+    message: 'the platform must close a question whose callback process exited',
+  }).not.toBe('open');
+  expect((await api.getSession(sessionId)).pending_interaction ?? null,
+    'a closed question is no longer shown as waiting').toBeNull();
+  expect(sessionResponseRows(sessionId).find((row) => row.response_id === parkedResponseId),
+    'the response that waited on the question ended with its runner')
+    .toMatchObject({ status: 'ended', outcome: 'failed', native_reason: 'runtime_lost' });
 
-  const exitedAnswer = await request.post(apiPath(`/sessions/${sessionId}/interaction-respond`), {
-    data: { interaction_id: interactionId, answer: { answers: staleFormAnswers } },
-    timeout: 30_000,
-  });
+  const exitedAnswer = await answerInteraction(request, sessionId, interactionId, { answers: staleFormAnswers });
   const exitedBody = await exitedAnswer.text();
   await test.info().attach('same-box-expired-answer', {
     body: JSON.stringify({ sessionId, sandbox_id: oldSandbox, interactionId, toolId,
@@ -474,15 +521,15 @@ test('expired channel answer is rejected after its callback exits on the same sa
     contentType: 'application/json',
   });
   expect(exitedAnswer.status(), exitedBody).toBe(409);
-  expect(JSON.parse(exitedBody)).toMatchObject({ code: 'INTERACTION_EXPIRED' });
-  expect(questionRecord()).toMatchObject({ interaction_state: 'OPEN', active: true });
-  expect(questionRecord().answer_command_id || null).toBeNull();
-  expect(commands(), 'rejecting the old form must not accept another command').toEqual(commandsBefore);
-  expect(sessionEvents(sessionId).filter((event) => event.event_type === 'interaction.answer_persisted'))
-    .toHaveLength(0);
+  expect(JSON.parse(exitedBody)).toMatchObject({ code: 'INTERACTION_NOT_OPEN' });
+  expect(questionRecord(), 'the refused form must not be stored as the answer')
+    .toMatchObject({ answer: null, answered_by: null, answered_at: null });
+  expect(['withdrawn', 'expired'], 'the question closed with its runner, unanswered')
+    .toContain(questionRecord().status);
+  expect(inputs(), 'rejecting the old form must not accept another input').toEqual(inputsBefore);
   expect(nativeQuestionEvidence(sessionId, toolId), 'an expired form must not become native input or a tool result')
     .toEqual(nativeBefore);
-  expect(sessionDoc(sessionId)?.sandbox_id).toBe(oldSandbox);
+  expect(sessionRow(sessionId)?.sandbox_id).toBe(oldSandbox);
   expect(sandboxRunning(sandbox)).toBe(true);
-  expect(readPid(), 'the rejection must use the replacement process, not restart the box').toBe(newPid);
+  expect(readPid(), 'refusing the stale answer must not restart the runner or the box').toBe(newPid);
 });

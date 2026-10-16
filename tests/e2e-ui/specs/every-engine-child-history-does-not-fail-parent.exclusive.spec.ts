@@ -1,17 +1,17 @@
 /** Native child history reads must not turn successful delegation into a failed parent turn. */
 import { randomUUID } from 'node:crypto';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page, type Response } from '@playwright/test';
 
-import { AstraApi, messageText } from '../fixtures/astraApi';
+import { AstraApi, answersInput, messageText, type MessageRecord, type SessionRecord } from '../fixtures/astraApi';
 import { expectChildToolCard, expectToolBlocks } from '../fixtures/childToolAssertions';
-import { documentsByField, framesForTurn, sessionEvents, waitForTurnTerminalProof } from '../fixtures/dbOracle';
+import { sessionInputRows, sessionOutputRows, sessionResponseRows } from '../fixtures/dbOracle';
 import { engineCases, engineProfileFor } from '../fixtures/engineProfile';
 import {
   childPrompt, childToolEvidence, expectNativeMode, launchEvidence, nativeRows, type ChildGate,
 } from '../fixtures/nativeChildLifecycle';
 import { trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
-import { aiStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
+import { sessionStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
 
 const sessions = trackSessions();
 let sessionId = '';
@@ -21,17 +21,25 @@ test.afterEach(async ({ request, page }, info) => {
   if (!sessionId || !['failed', 'timedOut', 'interrupted'].includes(String(info.status))) return;
   const api = new AstraApi(request);
   const reads = await Promise.allSettled([
-    api.getSession(sessionId), api.getMessages(sessionId, 50), aiStreamBodies(page),
+    api.getSession(sessionId), api.getMessages(sessionId, 50), sessionStreamBodies(page),
     Promise.resolve().then(() => nativeRows(sessionId)),
-    Promise.resolve().then(() => documentsByField('session_events', '$.session_id', sessionId)),
+    Promise.resolve().then(() => sessionInputRows(sessionId)),
+    Promise.resolve().then(() => sessionResponseRows(sessionId)),
   ]);
   await info.attach('child-history-parent-failure-scene', {
     body: JSON.stringify({ sessionId, observations, reads }), contentType: 'application/json',
   });
 });
 
-async function expectNoFailure(page: Page, turnIds: string[], requireLiveFrames = true): Promise<void> {
-  const bodies = await aiStreamBodies(page);
+/** A part that reports a failure: a relayed error, a refused input, or a response finishing failed. */
+function failurePart(part: Record<string, unknown>): boolean {
+  const metadata = part.messageMetadata as Record<string, unknown> | undefined;
+  return ['error', 'data-input-failed'].includes(String(part.type))
+    || (part.type === 'finish' && metadata?.outcome === 'failed');
+}
+
+async function expectNoFailure(page: Page, responseIds: string[], requireLiveFrames = true): Promise<void> {
+  const bodies = await sessionStreamBodies(page);
   const browserFrames = bodies.flatMap((body) => body.text.slice(0, body.text.lastIndexOf('\n') + 1).split('\n').flatMap((line) => {
     if (!line.startsWith('data:')) return [];
     const payload = line.slice(5).trim();
@@ -44,19 +52,46 @@ async function expectNoFailure(page: Page, turnIds: string[], requireLiveFrames 
   if (requireLiveFrames) {
     expect(browserFrames.length, 'the browser must actually consume the live channel').toBeGreaterThan(0);
   }
-  expect(browserFrames.filter((frame) => ['error', 'data-turn-failure'].includes(String(frame.type))),
+  expect(browserFrames.filter(failurePart),
     'child history must not send even a transient parent failure to the browser').toEqual([]);
-  expect(sessionEvents(sessionId).filter((event) => event.event_type === 'turn.failed'),
-    'READY cannot hide a durably failed turn').toEqual([]);
-  for (const turnId of turnIds) {
-    expect(framesForTurn(turnId).filter((event) => {
-      const frame = event.payload as Record<string, unknown>;
-      return ['error', 'data-turn-failure'].includes(String(frame.type));
-    }), `turn ${turnId} must never journal a failure frame`).toEqual([]);
+  expect(sessionResponseRows(sessionId).filter((row) => row.outcome === 'failed'),
+    'READY cannot hide a durably failed response').toEqual([]);
+  expect(sessionInputRows(sessionId).filter((row) => row.state === 'failed'),
+    'no message may be refused').toEqual([]);
+  for (const responseId of responseIds) {
+    expect(sessionOutputRows(sessionId, responseId).filter((row) => failurePart(row.part)),
+      `response ${responseId} must never record a failure part`).toEqual([]);
   }
   await expect(page.getByTestId('run-view').getByText(
-    /本轮执行失败|上一条消息已送达沙箱，但这一轮执行失败了|This turn failed|list_turns is not supported yet/i,
+    /本轮执行失败|This turn failed|The agent runtime stopped before this response finished/i,
   )).toHaveCount(0);
+}
+
+/** The input id `POST /inputs` answered the page with. */
+async function inputIdOf(response: Response): Promise<string> {
+  const body = await response.json() as { data?: { input_id?: string } };
+  const inputId = String(body.data?.input_id || '');
+  expect(inputId, 'the page receives a receipt for its message').not.toEqual('');
+  return inputId;
+}
+
+/**
+ * The response to `inputId` once it has ended, and the session once it rests.
+ * A failed response ends too, so a failure is reported as soon as it happens
+ * rather than at the deadline.
+ */
+async function settledReply(
+  api: AstraApi, inputId: string, timeoutMs: number,
+): Promise<{ reply: MessageRecord; session: SessionRecord }> {
+  const reply = await api.waitForReplyTo(sessionId, inputId, { timeoutMs });
+  expect(reply.metadata?.outcome, `Child history failed the parent: ${JSON.stringify(reply.metadata)}`).toBe('completed');
+  expect(sessionResponseRows(sessionId).filter((row) => row.response_id === reply.id),
+    'the platform recorded the parent response as answering the message and completing')
+    .toEqual([expect.objectContaining({ status: 'ended', outcome: 'completed', input_ids: [inputId] })]);
+  const session = await api.waitForSession(sessionId, (current) => (
+    current.state === 'READY' && (current.current_responses ?? []).length === 0
+  ), 30_000);
+  return { reply, session };
 }
 
 for (const declared of engineCases().filter((profile) => profile.contracts.background_subagent === true)) {
@@ -106,17 +141,10 @@ for (const declared of engineCases().filter((profile) => profile.contracts.backg
         : '',
     ].filter(Boolean).join('\n');
     observations.push({ permissionMode: detail.permission_mode, gate, prompt });
-    await sendPrompt(page, sessionId, prompt);
-    const first = await api.waitForSession(sessionId, (session) => {
-      if (session.last_turn_status === 'FAILED') {
-        throw new Error(`Child history failed the parent: ${JSON.stringify(session)}`);
-      }
-      return Boolean(session.last_turn_id) && !session.current_turn_id
-        && session.state === 'READY' && session.last_turn_status === 'COMPLETED';
-    }, 90_000);
-    const firstTurn = String(first.last_turn_id);
-    await waitForTurnTerminalProof(sessionId, firstTurn, 'COMPLETED', 10_000);
-    await expectNoFailure(page, [firstTurn]);
+    const firstInput = await inputIdOf(await sendPrompt(page, sessionId, prompt));
+    const { reply: firstReply, session: first } = await settledReply(api, firstInput, 90_000);
+    const firstResponse = firstReply.id;
+    await expectNoFailure(page, [firstResponse]);
     await expect(panel.getByTestId('subagent-agent-row'),
       'the already-open catalog must discover the real child without a test-side read').not.toHaveCount(0);
     const launched = launchEvidence(sessionId, profile, gate);
@@ -149,32 +177,29 @@ for (const declared of engineCases().filter((profile) => profile.contracts.backg
     await row.click();
     await expectChildToolCard(page, native, gate, receipt);
     const firstHistory = await api.getMessages(sessionId, 50);
-    const reply = firstHistory.messages.filter((message) => message.turn_id === firstTurn && message.role === 'assistant')
+    const reply = firstHistory.messages.filter((message) => answersInput(message, firstInput))
       .map(messageText).join('\n');
     expect(reply.trim(), 'the parent must finish its own answer after delegation').not.toBe('');
     observations.push({ first, launched, native, child, transcript, firstHistory });
     await page.getByTestId('subagent-close-button').click();
     const followup = `For completed work item ${marker}, briefly explain what the child accomplished from the result already available. No additional tools are needed.`;
-    await sendPrompt(page, sessionId, followup);
-    const second = await api.waitForSession(sessionId, (session) => {
-      if (session.last_turn_status === 'FAILED') throw new Error(`Parent continuation failed: ${JSON.stringify(session)}`);
-      return Boolean(session.last_turn_id) && session.last_turn_id !== firstTurn
-        && !session.current_turn_id && session.state === 'READY' && session.last_turn_status === 'COMPLETED';
-    }, 40_000);
-    const secondTurn = String(second.last_turn_id);
-    await waitForTurnTerminalProof(sessionId, secondTurn, 'COMPLETED', 10_000);
-    const continued = await api.getMessages(sessionId, 50);
-    expect(continued.messages.some((message) => message.turn_id === secondTurn
-      && message.role === 'assistant' && messageText(message).trim()), 'the later user turn must receive a real answer').toBe(true);
-    await expectNoFailure(page, [firstTurn, secondTurn]);
-    // A browser reload alone retains the server's live adapter/cache. Evict
-    // this completed session's runtime so native Store reconciliation meets
-    // the already persisted live facts through a newly attached adapter.
+    const secondInput = await inputIdOf(await sendPrompt(page, sessionId, followup));
+    const { reply: secondReply, session: second } = await settledReply(api, secondInput, 40_000);
+    observations.push({ second });
+    const secondResponse = secondReply.id;
+    expect(secondResponse, 'the follow-up is answered by a response of its own').not.toBe(firstResponse);
+    expect(messageText(secondReply).trim(), 'the later user turn must receive a real answer').not.toBe('');
+    await expectNoFailure(page, [firstResponse, secondResponse]);
+    // A browser reload alone keeps the server's runtime connection. Evict this
+    // completed session's runtime so the session's reader connects again
+    // through a newly attached adapter and reads on from its cursor; the
+    // child facts it already recorded must come through that unchanged.
     expect(await api.adminEvictRuntime(sessionId)).toEqual({ evicted: sessionId });
+    await api.waitForAdminSession(sessionId, (session) => session.has_local_runtime === true, 30_000);
     const reattachedChildren = (await api.listChildRuns(sessionId)).child_runs;
     expect(reattachedChildren.map((entry) => entry.child_run_id)).toEqual(children.map((entry) => entry.child_run_id));
     expect((await api.getChildRunMessages(sessionId, child.child_run_id)).messages).toEqual(transcript.messages);
-    expect((await api.getSession(sessionId)).last_turn_status).toBe('COMPLETED');
+    expect((await api.getSession(sessionId)).last_response).toMatchObject({ response_id: secondResponse, outcome: 'completed' });
     await page.reload({ waitUntil: 'domcontentloaded' });
     await expect(page.getByTestId('run-view')).toBeVisible();
     await page.getByRole('tab', { name: /^Agents/ }).click();
@@ -183,7 +208,7 @@ for (const declared of engineCases().filter((profile) => profile.contracts.backg
     const coldTranscript = await api.getChildRunMessages(sessionId, child.child_run_id);
     expectToolBlocks(coldTranscript, native, receipt);
     expect(coldTranscript.messages).toEqual(transcript.messages);
-    expect((await api.getSession(sessionId)).last_turn_status).toBe('COMPLETED');
-    await expectNoFailure(page, [firstTurn, secondTurn], false);
+    expect((await api.getSession(sessionId)).last_response).toMatchObject({ response_id: secondResponse, outcome: 'completed' });
+    await expectNoFailure(page, [firstResponse, secondResponse], false);
   });
 }

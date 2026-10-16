@@ -1,130 +1,53 @@
-type PollingSessionLike = {
-  state?: string | null;
-  sandbox_id?: string | null;
-  current_turn_id?: string | null;
-  pending_interaction?: unknown | null;
-  session_kind?: string | null;
-  source_type?: string | null;
-  agent_id?: string | null;
-  agent_runtime?: {
-    state?: string | null;
-    sandbox_id?: string | null;
-    runtime_unavailable?: boolean | null;
-  } | null;
-};
+import type { SessionRecord } from '../types';
 
-type PollingOverlayLike = {
-  turn_id?: string | null;
-} | null | undefined;
+type PollingSession = Pick<SessionRecord, 'state' | 'current_responses' | 'pending_interaction' | 'held_inputs'>;
 
-function normalizeState(state: string | null | undefined): string {
-  return String(state ?? '').trim().toUpperCase();
-}
+const CREATING_POLL_INTERVAL_MS = 500;
+const WORKING_POLL_INTERVAL_MS = 3000;
+const SETTLING_POLL_INTERVAL_MS = 1500;
 
-function hasActiveTurn(session: PollingSessionLike | null | undefined): boolean {
-  return !!String(session?.current_turn_id ?? '').trim();
-}
-
-function hasPendingInteraction(session: PollingSessionLike | null | undefined): boolean {
-  return !!session?.pending_interaction;
-}
-
-function isAgentChatSession(session: PollingSessionLike | null | undefined): boolean {
-  if (!session) {
-    return false;
-  }
-  return session.session_kind === 'agent_chat' || session.source_type === 'agent' || !!String(session.agent_id ?? '').trim();
-}
-
-function hasReadyAgentRuntime(session: PollingSessionLike | null | undefined): boolean {
-  if (!isAgentChatSession(session)) {
-    return true;
-  }
-  const runtime = session?.agent_runtime;
-  if (!runtime || runtime.runtime_unavailable) {
-    return false;
-  }
-  const state = normalizeState(runtime.state);
-  if (state === 'DELETED') {
-    return true;
-  }
-  // The box a conversation runs in is recorded on the session under
-  // conversation tenancy (the default) and on the Agent under agent tenancy;
-  // either is the runtime being attached.
-  const boxAttached = !!String(runtime.sandbox_id ?? '').trim()
-    || !!String(session?.sandbox_id ?? '').trim();
-  return state === 'ACTIVE' && boxAttached;
-}
-
-export function isSessionSteadyState(session: PollingSessionLike | null | undefined): boolean {
-  const state = normalizeState(session?.state);
-  if (!state) {
-    return false;
-  }
-  if (state === 'TERMINATED' || state === 'DELETED') {
-    return true;
-  }
-  if (state === 'BACKGROUND_RUNNING') {
-    return false;
-  }
+/**
+ * Whether the session is at rest: ready, with no response running, no input
+ * the platform still holds, and no interaction waiting on its owner. A
+ * terminated or deleted session is at rest too; nothing will change it.
+ */
+export function isSessionAtRest(session: PollingSession | null | undefined): boolean {
+  const state = String(session?.state ?? '');
+  if (state === 'TERMINATED' || state === 'DELETED') return true;
   return state === 'READY'
-    && !hasActiveTurn(session)
-    && !hasPendingInteraction(session)
-    && hasReadyAgentRuntime(session);
+    && !session?.current_responses?.length
+    && !session?.held_inputs?.length
+    && !session?.pending_interaction;
 }
 
-export function shouldPollSessionDetail(
+/**
+ * How long until the session's detail is read again, or `null` while nothing
+ * about it is expected to change. The conversation's stream asks for a read
+ * itself when a response starts or ends; the timer covers what the stream does
+ * not carry (startup progress, inputs held, the state the header shows).
+ */
+export function sessionDetailPollInterval(
   lifecycleState: string,
-  session: PollingSessionLike | null | undefined,
-  detailStale = false,
-): boolean {
-  if (detailStale) {
-    return true;
-  }
-  if (
-    lifecycleState === 'creating'
-    || lifecycleState === 'recovery'
-    || lifecycleState === 'busy'
-    || lifecycleState === 'background'
-  ) {
-    return true;
-  }
-  if (lifecycleState !== 'ready') {
-    return false;
-  }
-  return !isSessionSteadyState(session);
+  session: PollingSession | null | undefined,
+  detailStale: boolean,
+): number | null {
+  if (detailStale) return SETTLING_POLL_INTERVAL_MS;
+  if (lifecycleState === 'creating') return CREATING_POLL_INTERVAL_MS;
+  if (lifecycleState === 'busy') return WORKING_POLL_INTERVAL_MS;
+  if (lifecycleState !== 'ready') return null;
+  if (isSessionAtRest(session)) return null;
+  return session?.pending_interaction ? WORKING_POLL_INTERVAL_MS : SETTLING_POLL_INTERVAL_MS;
 }
 
-export function shouldPollBackgroundSubagentHistory(options: {
-  lifecycleState: string;
+/**
+ * Whether the child-run list is read on a timer: a sub-agent is still working
+ * while no response of the conversation's own is, so nothing on the stream
+ * marks its progress.
+ */
+export function shouldPollChildRuns(options: {
   liveSubagentCount: number;
-  isSubmitted: boolean;
-  isStreaming: boolean;
+  working: boolean;
   hasPendingInteraction: boolean;
 }): boolean {
-  if (
-    options.isSubmitted
-    || options.isStreaming
-    || options.hasPendingInteraction
-  ) {
-    return false;
-  }
-  if (options.lifecycleState === 'background') {
-    return true;
-  }
-  return options.lifecycleState === 'ready' && options.liveSubagentCount > 0;
-}
-
-export function shouldPollOverlayTruthGap(
-  lifecycleState: string,
-  session: PollingSessionLike | null | undefined,
-  overlay: PollingOverlayLike,
-): boolean {
-  if (lifecycleState !== 'ready') {
-    return false;
-  }
-  if (!String(overlay?.turn_id ?? '').trim()) {
-    return false;
-  }
-  return !hasActiveTurn(session) && !hasPendingInteraction(session);
+  return options.liveSubagentCount > 0 && !options.working && !options.hasPendingInteraction;
 }

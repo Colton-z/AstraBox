@@ -16,36 +16,43 @@
  * completed child, and the parent's Bash `tool_use` at a later native position
  * with no result yet, while that command is observably running in the sandbox.
  *
- * What must hold in that window: the durable history carries exactly the one
- * external prompt, byte-for-byte and under its own client_message_id; the
- * active-turn overlay carries the assistant continuation and no user message;
- * the header reads the run as active rather than settled; and the cold stream
- * publishes no `data-input-consumed` boundary, because a notification is not a
- * platform input and never consumes one. Releasing the gate finishes the
- * continuation — the held tool_use gets its real native result and the reply
- * lands after it — and a full reload still shows the same single user message.
+ * What must hold in that window: the platform holds exactly the one external
+ * prompt as an input, and the durable history carries it byte-for-byte under
+ * its own client_message_id; the continuation is the session's running
+ * response, which Claude started on its own and which answers no input; and
+ * the header reads the run as active rather than settled. A notification is
+ * not a platform input and never consumes one, so no response the session
+ * publishes, and nothing the cold browser reads, names an input other than the
+ * prompt. Releasing the gate finishes the continuation — the held tool_use gets
+ * its real native result and the reply lands after it — and a full reload
+ * still shows the same single user message.
  *
  * The two Bash calls rendezvous through sandbox-local sentinel files rather
  * than sleeps, so the window is opened and closed by this spec and not by a
  * number chosen to be long enough.
  */
 import { expect, test } from '@playwright/test';
-import type { Page } from '@playwright/test';
+import type { Page, Response } from '@playwright/test';
 
 import {
   AstraApi,
   messageText,
   visibleMessages,
   type ChildRunRecord,
-  type MessagePage,
+  type InputReceipt,
   type MessageRecord,
   type SessionRecord,
 } from '../fixtures/astraApi';
-import { documentsByField } from '../fixtures/dbOracle';
+import {
+  nativeTranscriptRows,
+  sessionInputRows,
+  sessionOutputRows,
+  sessionResponseRows,
+} from '../fixtures/dbOracle';
 import { appPath, parseTimeoutEnv } from '../fixtures/env';
 import { trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView, startPromptDelivery, expectPromptDelivered } from '../fixtures/sessionPage';
-import { aiStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
+import { sessionStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
 
 // The launch turn's own reply, and the continuation reply after the gate opens.
 const TURN_TIMEOUT_MS = parseTimeoutEnv('ASTRABOX_E2E_TURN_TIMEOUT_MS', 180_000);
@@ -60,11 +67,10 @@ const CHILD_GATE_CEILING_SECONDS = 120;
 const PARENT_GATE_CEILING_SECONDS = 100;
 
 // The vendor's own marker for a task notification, in its SessionStore and in
-// the browser alike. The donor case counts records by exactly this text.
+// the browser alike. Records are counted by exactly this text.
 const TASK_NOTIFICATION_MARKER = '<task-notification>';
 
-const FOREGROUND_IDLE_STATES = ['READY', 'BACKGROUND_RUNNING'];
-const TERMINAL_STATES = new Set(['RECOVERY_REQUIRED', 'TERMINATED', 'DELETED', 'FAILED']);
+const TERMINAL_STATES = new Set(['TERMINATED', 'DELETED']);
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -123,6 +129,10 @@ async function gateIsRunning(
   return output.includes(sentinelMarker);
 }
 
+/**
+ * The held background Agent keeps the runtime PROCESSING after the foreground
+ * reply ends. Its open task is work even when no response or interaction is open.
+ */
 async function waitForForegroundIdle(
   api: AstraApi,
   sessionId: string,
@@ -134,8 +144,8 @@ async function waitForForegroundIdle(
     last = await api.getSession(sessionId);
     const state = String(last.state || '');
     if (
-      FOREGROUND_IDLE_STATES.includes(state)
-      && !last.current_turn_id
+      state === 'PROCESSING'
+      && (last.current_responses ?? []).length === 0
       && !last.pending_interaction
     ) return last;
     if (TERMINAL_STATES.has(state)) {
@@ -178,6 +188,20 @@ async function waitForAssistantTextMatching(
   );
 }
 
+/** The receipt of a message the page sent, checked against the id the page minted for it. */
+async function receiptOf(response: Response): Promise<InputReceipt> {
+  const receipt = (await response.json() as { data: InputReceipt }).data;
+  const sent = response.request().postDataJSON() as { client_message_id?: string };
+  expect(receipt.client_message_id, 'the receipt names the message the page sent').toBe(sent.client_message_id);
+  return receipt;
+}
+
+/** The input ids a `start` part names; a part that reopens a paused message names none. */
+function startedInputIds(part: Record<string, unknown>): unknown {
+  const metadata = part.messageMetadata;
+  return metadata && typeof metadata === 'object' ? (metadata as Record<string, unknown>).input_ids : undefined;
+}
+
 /**
  * Every COMPLETE SSE frame the cold-joined browser read on its session channel.
  *
@@ -188,7 +212,7 @@ async function waitForAssistantTextMatching(
  * would make the absence assertion below pass on a broken stream.
  */
 async function coldStreamFrames(page: Page): Promise<Record<string, unknown>[]> {
-  const bodies = await aiStreamBodies(page);
+  const bodies = await sessionStreamBodies(page);
   return bodies
     .flatMap((body) => body.text.split('\n').slice(0, -1))
     .filter((line) => line.startsWith('data: ') && line.trim() !== 'data: [DONE]')
@@ -207,11 +231,11 @@ async function coldStreamFrames(page: Page): Promise<Record<string, unknown>[]> 
 // ── The native SessionStore mirror ─────────────────────────────────────────
 //
 // The vendor's own transcript, as the platform durably holds it: one row per
-// SDK JSONL line in `transcript_entries`, keyed by `platform_session_id`, with
-// the raw line in `entry_json` (`persistence/repository/transcript_entry_repository.py`).
-// The admin export route is not usable here — a session with a subagent answers
-// with a gzip tar, and this spec always has one — so the rows are read through
-// the same document oracle `admin-native-transcript-batch-export` uses.
+// SDK JSONL line in `transcript_entries`, under the file it belongs to in
+// `transcript_scopes`, with the raw line in `entry_json`. The admin export route
+// is not usable here — a session with a subagent answers with a gzip tar, and
+// this spec always has one — so the rows are read through the database oracle
+// (`nativeTranscriptRows`).
 //
 // Only the main scope (`subpath === null`) is the parent's conversation; the
 // child Agent has its own `subagents/agent-*` file.
@@ -222,8 +246,8 @@ interface NativeEntry {
 }
 
 function mainScopeEntries(sessionId: string): NativeEntry[] {
-  return documentsByField('transcript_entries', '$.platform_session_id', sessionId)
-    .filter((row) => row.subpath == null)
+  return nativeTranscriptRows(sessionId)
+    .filter((row) => row.subpath === null)
     .map((row) => ({
       seq: Number(row.seq),
       entry: JSON.parse(String(row.entry_json)) as Record<string, unknown>,
@@ -234,11 +258,9 @@ function mainScopeEntries(sessionId: string): NativeEntry[] {
 /**
  * Whether an entry belongs to the parent's own lane.
  *
- * A subagent's lines can land in the frame window of whatever is open, which is
- * why the adapter carries the same guard
- * (`engine/claude_code_background.py::_is_subagent_context`). Both spellings are
- * excluded: the CLI JSONL marks it `isSidechain`, the runner-serialized
- * envelope `parent_tool_use_id`.
+ * A subagent's lines can appear among the parent's. Both of Claude's spellings
+ * of that are excluded: the CLI JSONL marks it `isSidechain`, the
+ * runner-serialized envelope `parent_tool_use_id`.
  */
 function isParentLane(entry: Record<string, unknown>): boolean {
   if (entry.isSidechain === true) return false;
@@ -257,9 +279,9 @@ function messageContentBlocks(entry: Record<string, unknown>): Record<string, un
 }
 
 /**
- * The visible text of a native line, block by block, the way the donor's
- * `session_store_text_evidence` reads it: a string `message.content` counts as
- * one text block, a list contributes its string and `text`-typed entries.
+ * The visible text of a native line, block by block: a string
+ * `message.content` counts as one text block, a list contributes its string
+ * and `text`-typed entries.
  */
 function messageTextBlocks(entry: Record<string, unknown>): string[] {
   const message = entry.message;
@@ -291,15 +313,14 @@ function entryRole(entry: Record<string, unknown>): string {
 }
 
 /**
- * Consumed root USER records carrying `marker` — the donor's `user_match_count`.
+ * Consumed root USER records carrying `marker`.
  *
- * This is the fact the donor case counts, and it counts one: the CLI wrote a
- * root user record into its own SessionStore for the completed task. It is
- * deliberately NOT the union of every native line the adapter can recognise as
- * a notification. The adapter also accepts the CLI's `queue-operation` note
- * (`engine/claude_code_background.py::_task_notification_content`), and merging
- * the two would count queue records as consumed user records. Keep that
- * distinction without deduplicating either class.
+ * This is the fact counted, and it counts one: the CLI wrote a root user record
+ * into its own SessionStore for the completed task. It is deliberately NOT the
+ * union of every native line that mentions a notification. The CLI also
+ * records a `queue-operation` note for the same delivery, and merging the two
+ * would count queue records as consumed user records. Keep that distinction
+ * without deduplicating either class.
  */
 function consumedRootNotificationRecords(
   entries: NativeEntry[],
@@ -384,26 +405,6 @@ function parentAssistantText(
   return undefined;
 }
 
-/**
- * The Agent children of this session.
- *
- * A Bash call the CLI moves into the background of its own accord projects a
- * child run too, and Claude Code names that one `local_bash`
- * (`engine/claude_child_runs.py:179`). Excluding it by that exact vendor name
- * keeps "exactly one child Agent" a statement about the launched Agent rather
- * than about how long a held command happened to run.
- */
-function agentChildRuns(childRuns: ChildRunRecord[]): ChildRunRecord[] {
-  return childRuns.filter((childRun) => String(childRun.task_type || '') !== 'local_bash');
-}
-
-/** The overlay's messages, exactly as `visibleMessages` folds them for the console. */
-function overlayMessages(messagePage: MessagePage): MessageRecord[] {
-  const overlay = messagePage.active_turn_overlay;
-  if (!overlay) return [];
-  return overlay.messages?.length ? overlay.messages : [overlay.message];
-}
-
 const sessions = trackSessions();
 
 test('cold join during a task-notification continuation keeps one external user message', async ({
@@ -422,8 +423,8 @@ test('cold join during a task-notification continuation keeps one external user 
   const childDoneMarker = `TASK_NOTIFICATION_CHILD_${runId}_DONE`;
   const parentLaunchedMarker = `TASK_NOTIFICATION_PARENT_LAUNCHED_${runId}`;
   // What the held continuation command prints, and what the reply after it must
-  // carry. Two markers, as in the donor case: the command's own output is not
-  // the reply, and the reply is the only thing the prompt asks the model for.
+  // carry. Two markers: the command's own output is not the reply, and the
+  // reply is the only thing the prompt asks the model for.
   const continuationDoneMarker = `TASK_NOTIFICATION_DELAY_${runId}_DONE`;
   const notificationHandledMarker = `TASK_NOTIFICATION_HANDLED_${runId}`;
 
@@ -479,15 +480,15 @@ test('cold join during a task-notification continuation keeps one external user 
     // ── The single external prompt, sent through the real composer. ──────────
     await openSessionView(page, sessionId);
     const delivery = await startPromptDelivery(page, sessionId, prompt);
-    await expectPromptDelivered(delivery);
+    const { input_id: inputId } = await receiptOf(await expectPromptDelivered(delivery));
 
     // ── The launch turn returns immediately, leaving the child running. ──────
     await waitForAssistantTextMatching(api, sessionId, new RegExp(parentLaunchedMarker), TURN_TIMEOUT_MS);
     const idle = await waitForForegroundIdle(api, sessionId, TURN_TIMEOUT_MS);
     expect(
-      String(idle.state || ''),
+      idle.last_response?.outcome,
       `the launch turn must settle before the notification arrives; detail=${JSON.stringify(idle)}`,
-    ).toMatch(/^(READY|BACKGROUND_RUNNING)$/);
+    ).toBe('completed');
 
     // ── Leave the session page here, before anything in the background window
     //    happens. Every step that follows — the child finishing, the vendor
@@ -510,13 +511,10 @@ test('cold join during a task-notification continuation keeps one external user 
     await api.runTerminalCommand(sessionId, `touch ${childRelease}`, '/workspace', 30_000);
     const rows: ChildRunRecord[] = await api.waitForChildRuns(
       sessionId,
-      (candidates) => {
-        const agents = agentChildRuns(candidates);
-        return agents.length === 1 && agents[0]!.closed;
-      },
+      (candidates) => candidates.length === 1 && candidates[0]!.closed,
       SETTLED_TIMEOUT_MS,
     );
-    const completedChild = agentChildRuns(rows)[0]!;
+    const completedChild = rows[0]!;
     expect(
       completedChild,
       "exactly one background Agent must close with the engine's own completed status",
@@ -590,42 +588,50 @@ test('cold join during a task-notification continuation keeps one external user 
     await mirrorSseBodies(page);
     await openSessionView(page, sessionId);
 
+    const coldDetail = await api.getSession(sessionId);
     const cold = await api.getMessages(sessionId, 50);
     test.info().annotations.push({
-      type: 'e2e_active_task_notification_overlay',
-      description: JSON.stringify(cold.active_turn_overlay ?? null),
+      type: 'e2e_active_task_notification_responses',
+      description: JSON.stringify(coldDetail.current_responses ?? null),
     });
 
-    // (1) The durable history holds the one external prompt and nothing else,
-    //     under the identity the composer minted for it.
-    const durableUsers = (cold.messages || []).filter((message) => message.role === 'user');
+    // (1) The platform holds the one external prompt as its only input, under
+    //     the identity the composer minted for it, and the durable history
+    //     shows it and nothing else.
+    expect(
+      sessionInputRows(sessionId).map((row) => [row.input_id, row.client_message_id, row.content]),
+      'a task notification is engine-owned; the platform holds only the submitted prompt as an input',
+    ).toEqual([[inputId, delivery.clientMessageId, prompt]]);
+    const durableUsers = visibleMessages(cold).filter((message) => message.role === 'user');
     expect(
       durableUsers.map(messageText),
       'a task notification is engine-owned; only the submitted prompt belongs to user history',
     ).toEqual([prompt]);
     expect(
-      String(durableUsers[0]!.client_message_id || '').trim(),
+      durableUsers[0]!.id,
       'the surviving user message must still be the composer submission, not a re-minted one',
     ).toEqual(delivery.clientMessageId);
 
-    // (2) The continuation is an ACTIVE boundary, and it is assistant-only.
+    // (2) The continuation is the session's RUNNING response, and it is
+    //     assistant-only: Claude started it on its own and it answers no input.
+    const continuations = coldDetail.current_responses ?? [];
     expect(
-      cold.active_turn_overlay,
-      'an assistant-only task-notification continuation must be published as an active turn, '
+      continuations.map((response) => [response.origin, response.status]),
+      'an assistant-only task-notification continuation must be published as a running response, '
       + 'otherwise a cold join reads a working conversation as settled',
-    ).toBeTruthy();
+    ).toEqual([['engine', 'running']]);
+    const continuationId = continuations[0]!.response_id;
     expect(
-      overlayMessages(cold).filter((message) => message.role === 'user'),
-      'the active overlay must not project the engine-owned notification as a user input',
-    ).toEqual([]);
-
-    // (3) The console's own fold of durable + overlay still shows one user.
+      sessionResponseRows(sessionId).filter((row) => row.response_id === continuationId),
+      'the continuation must not be recorded as the answer to any input',
+    ).toEqual([expect.objectContaining({ origin: 'engine', status: 'running', input_ids: [] })]);
     expect(
-      visibleMessages(cold).filter((message) => message.role === 'user').map(messageText),
-      'the console projection must not gain a user message while the continuation runs',
-    ).toEqual([prompt]);
+      cold.messages.filter((message) => message.id === continuationId)
+        .map((message) => [message.role, message.metadata?.origin, message.metadata?.input_ids]),
+      'history shows the running continuation as an assistant message answering no input',
+    ).toEqual([['assistant', 'engine', []]]);
 
-    // (4) The browser agrees: one bubble, and no notification rendered as one.
+    // (3) The browser agrees: one bubble, and no notification rendered as one.
     await expect(
       page.getByTestId('user-message'),
       'cold join must render only the durable external prompt while the continuation is active',
@@ -635,7 +641,7 @@ test('cold join during a task-notification continuation keeps one external user 
       'cold bootstrap must not render the engine-owned task notification as a user bubble',
     ).toHaveCount(0);
 
-    // (5) The header reads the run as active. Asserted on the machine-readable
+    // (4) The header reads the run as active. Asserted on the machine-readable
     //     state, not the label: the label is translated.
     const statusPill = page.getByTestId('run-view').locator('header').getByTestId('status-pill');
     await expect(
@@ -643,25 +649,6 @@ test('cold join during a task-notification continuation keeps one external user 
       'cold join must not label an active task-notification continuation as ready',
     ).toHaveAttribute('data-state', 'PROCESSING', { timeout: 30_000 });
     await expect(statusPill).toHaveAttribute('data-pulse', 'true');
-
-    // (6) No consumption boundary was published to this browser. The mirror is
-    //     first shown to have read COMPLETE frames off the session channel, so
-    //     "saw none" cannot mean "was not listening"; the absence is then over
-    //     the frames this cold join actually received, not over every instant
-    //     of the window.
-    await expect
-      .poll(async () => (await coldStreamFrames(page)).length, {
-        timeout: 30_000,
-        intervals: [500, 1_000],
-        message: 'the cold join must read complete frames off the session stream '
-          + 'before their content can be asserted',
-      })
-      .toBeGreaterThan(0);
-    const coldFrames = await coldStreamFrames(page);
-    expect(
-      coldFrames.filter((frame) => frame.type === 'data-input-consumed'),
-      'a task notification is not a platform input and must publish no consumption boundary',
-    ).toEqual([]);
 
     // ── Release the continuation and let it finish for real. ─────────────────
     await api.runTerminalCommand(sessionId, `touch ${parentRelease}`, '/workspace', 30_000);
@@ -702,14 +689,12 @@ test('cold join during a task-notification continuation keeps one external user 
 
     const settled = await api.waitForSession(
       sessionId,
-      (row) => String(row.state || '') === 'READY'
-        && !row.current_turn_id
-        && !row.background_task_state,
+      (row) => String(row.state || '') === 'READY' && (row.current_responses ?? []).length === 0,
       SETTLED_TIMEOUT_MS,
     );
     expect(settled.pending_interaction ?? null, 'a finished continuation leaves nothing pending').toBeNull();
     expect(
-      agentChildRuns((await api.listChildRuns(sessionId)).child_runs),
+      (await api.listChildRuns(sessionId)).child_runs,
       'the finished scenario still holds exactly the one completed background Agent',
     ).toEqual([
       expect.objectContaining({ child_run_id: childRunId, closed: true, engine_status: 'completed' }),
@@ -718,13 +703,43 @@ test('cold join during a task-notification continuation keeps one external user 
     const completedHistory = await api.getMessages(sessionId, 50);
     expect(
       completedHistory.messages.filter((message) => message.role === 'assistant'
-        && messageText(message).includes(notificationHandledMarker)),
-      'the parent continuation must become one durable assistant answer',
-    ).toHaveLength(1);
+        && messageText(message).includes(notificationHandledMarker))
+        .map((message) => [message.id, message.metadata?.origin, message.metadata?.outcome]),
+      'the parent continuation must become one durable assistant answer, the response Claude started',
+    ).toEqual([[continuationId, 'engine', 'completed']]);
     await expect(
       page.getByTestId('assistant-message').filter({ hasText: notificationHandledMarker }),
       'the already-open page must receive the continuation exactly once without a reload',
     ).toHaveCount(1);
+
+    // (5) No consumption boundary was published, to this browser or to anyone.
+    //     A response's `start` names the inputs it answers; across the session
+    //     only the launch names one, the prompt. The cold page follows the
+    //     stream from where its history left off, so it reads the rest of the
+    //     running continuation: it is first shown to have read through that
+    //     response's end, so "saw none" cannot mean "was not listening", and
+    //     the absence is then over the frames it actually received.
+    expect(
+      sessionOutputRows(sessionId).map(({ part }) => part)
+        .filter((part) => part.type === 'start' && part.messageMetadata)
+        .map(startedInputIds)
+        .filter((ids) => !Array.isArray(ids) || ids.length > 0),
+      'a task notification is not a platform input: only the launch response consumed one',
+    ).toEqual([[inputId]]);
+    await expect
+      .poll(async () => (await coldStreamFrames(page)).filter((frame) => frame.type === 'finish').length, {
+        timeout: 30_000,
+        intervals: [500, 1_000],
+        message: 'the cold join must read the continuation off the session stream through its end '
+          + 'before what it read can be asserted',
+      })
+      .toBeGreaterThan(0);
+    expect(
+      (await coldStreamFrames(page)).filter((frame) => frame.type === 'start' && frame.messageMetadata)
+        .map(startedInputIds)
+        .filter((ids) => !Array.isArray(ids) || ids.length > 0),
+      'a task notification is not a platform input and must publish no consumption boundary',
+    ).toEqual([]);
 
     // ── A full reload still shows the same single external user message. ─────
     await page.reload({ waitUntil: 'domcontentloaded' });
@@ -741,15 +756,25 @@ test('cold join during a task-notification continuation keeps one external user 
       visibleMessages(reloaded).filter((message) => message.role === 'user').map(messageText),
       'the settled history must still carry the one external prompt, unchanged',
     ).toEqual([prompt]);
-    expect(reloaded.active_turn_overlay ?? null, 'a settled conversation publishes no active overlay').toBeNull();
+    expect(
+      (await api.getSession(sessionId)).current_responses ?? [],
+      'a settled conversation has no running response',
+    ).toEqual([]);
+    expect(
+      reloaded.messages.filter((message: MessageRecord) => message.role === 'assistant'
+        && message.metadata?.status !== 'ended'),
+      'every reply in the settled history has ended',
+    ).toEqual([]);
   } finally {
     // Preserve the actual state before afterEach can clean up a passing run.
     // Each failed read is evidence of unavailability, not an empty transcript.
     const probes = {
       session: () => api.getSession(sessionId),
       messages: () => api.getMessages(sessionId, 50),
+      inputs: () => sessionInputRows(sessionId),
+      responses: () => sessionResponseRows(sessionId),
       native_store: () => mainScopeEntries(sessionId),
-      stream_bodies: () => aiStreamBodies(page),
+      stream_bodies: () => sessionStreamBodies(page),
     };
     const evidence = await Promise.all(Object.entries(probes).map(async ([name, read]) => {
       try {

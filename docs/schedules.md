@@ -22,10 +22,9 @@ Assistant triggers.
 - Sign in as the Agent's owner or an AstraBox administrator. Only an
   Assistant's owner can schedule it.
 - The AstraBox installation must run a scheduler provider. The built-in one
-  keeps Schedules and their Run history in the PostgreSQL or SQLite database
-  AstraBox already uses. An installation that sets
-  `ASTRABOX_SCHEDULER_PROVIDER=none` cannot create, enable, or run Schedules; a
-  MongoDB installation without another scheduler provider must set it.
+  keeps Schedules and their Run history in the PostgreSQL database AstraBox
+  already uses. An installation that sets `ASTRABOX_SCHEDULER_PROVIDER=none`
+  cannot create, enable, or run Schedules.
 
 Open **Console → Triggers → New trigger**, then choose **Schedule**. The form
 contains the complete Schedule definition:

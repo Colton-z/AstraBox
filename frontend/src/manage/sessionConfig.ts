@@ -45,12 +45,8 @@ export function sessionStateLabel(state?: string): string {
       return i18n.t('manage:session_state.pending');
     case 'READY':
       return i18n.t('manage:session_state.ready');
-    case 'BACKGROUND_RUNNING':
-      return i18n.t('manage:session_state.background_running');
     case 'PROCESSING':
       return i18n.t('manage:session_state.processing');
-    case 'BUSY':
-      return i18n.t('manage:session_state.busy');
     case 'SENDING':
       return i18n.t('manage:session_state.sending');
     case 'ACTIVE':
@@ -58,8 +54,6 @@ export function sessionStateLabel(state?: string): string {
       return i18n.t('manage:session_state.running');
     case 'WAITING_INPUT':
       return i18n.t('manage:session_state.waiting_input');
-    case 'INTERRUPTING':
-      return i18n.t('manage:session_state.interrupting');
     case 'TERMINATING':
       return i18n.t('manage:session_state.terminating');
     case 'HIBERNATING':
@@ -97,7 +91,7 @@ export function sessionStateTone(state?: string): SessionPillTone {
 
 /** States that should breathe (actively serving). */
 export function sessionStateIsLive(state?: string): boolean {
-  return ['BACKGROUND_RUNNING', 'PROCESSING', 'BUSY', 'SENDING', 'ACTIVE', 'RUNNING'].includes(
+  return ['PROCESSING', 'SENDING', 'ACTIVE', 'RUNNING'].includes(
     String(state || '').toUpperCase(),
   );
 }

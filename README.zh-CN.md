@@ -141,13 +141,12 @@ AstraBox 中每个可替换的部分都是一个 Python 接口，并有对应的
 | 消息平台 | `astrabox.providers.channel` | 消息平台网关、通用 JSON Webhook |
 | 身份提供方 | `astrabox.web.identity` | 本地模式、OIDC、已验证 JWT、可信身份请求头 |
 | Secret Store | `astrabox.providers.secrets` | 本地加密、AWS KMS |
-| 数据存储 | `astrabox.providers.repository` | PostgreSQL、MongoDB、SQLite |
 | 工作区存储 | `astrabox.providers.storage` | 挂载卷、Amazon EFS |
 | 远程 MCP 服务来源 | `astrabox.providers.extensions` | 管理员在 AstraBox 中保存的配置、LiteLLM MCP 网关 |
 
 - **接口版本**——`astrabox.providers.*` 下的插件可以用 `seams_api_version` 声明构建时依据的接口
   版本；与当前 AstraBox 不一致时，AstraBox 会拒绝加载。
-- **一致性测试套件**——`astrabox.testing` 为沙箱后端、工作区存储、消息平台、Agent 程序和数据存储
+- **一致性测试套件**——`astrabox.testing` 为沙箱后端、工作区存储、消息平台、Agent 程序和定时调度器
   提供可复用的测试套件，在插件自己的测试中引用即可。
 - **应用扩展**——通过 API 路由、中间件、生命周期钩子和服务实现的插件组扩展应用本身。
 

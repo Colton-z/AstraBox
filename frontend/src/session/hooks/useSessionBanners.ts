@@ -3,12 +3,12 @@ import { localizeDisplayText } from '../../utils/format';
 import {
   shouldShowRuntimeUnavailableBanner,
   shouldShowSessionLastError,
-  shouldShowRecoverButton,
   shouldShowSessionErrorBanner,
 } from '../sessionAuthority';
 
-// Derives header and banner visibility from session, lifecycle, and history
-// state, and selects the error text displayed by the retry banner.
+// Derives header and banner visibility from session and lifecycle state, and
+// selects the error text the banner under the header shows. What went wrong
+// with one message or one response is shown on that message, not here.
 export function useSessionBanners({
   session,
   hasPendingInteraction,
@@ -16,13 +16,10 @@ export function useSessionBanners({
   isTerminated,
   transparentlyRecoverable,
   isAssistantConversation,
-  isAgentRuntimeDeleted,
-  lifecycleState,
-  showRetryBanner,
   lifecycleError,
-  historyError,
-  chatErrorMessage,
-  transientBannerVisible,
+  streamTrouble,
+  isWorking,
+  isSending,
 }: {
   session: SessionRecord;
   hasPendingInteraction: boolean;
@@ -30,34 +27,32 @@ export function useSessionBanners({
   isTerminated: boolean;
   transparentlyRecoverable: boolean;
   isAssistantConversation: boolean;
-  isAgentRuntimeDeleted: boolean;
-  lifecycleState: string;
-  showRetryBanner: boolean;
   lifecycleError: string | null;
-  historyError: string | null;
-  chatErrorMessage: string | undefined;
-  transientBannerVisible: boolean;
+  /** The session's stream has failed to connect for longer than a blip. */
+  streamTrouble: boolean;
+  isWorking: boolean;
+  isSending: boolean;
 }) {
   const showRuntimeUnavailableBanner = shouldShowRuntimeUnavailableBanner(session, hasPendingInteraction, lifecycleDetailStale, isTerminated, transparentlyRecoverable);
   const showSessionLastError = shouldShowSessionLastError(session, isTerminated, lifecycleDetailStale, transparentlyRecoverable);
-  const showRecoverButton = !isAssistantConversation && !isAgentRuntimeDeleted && !transparentlyRecoverable && shouldShowRecoverButton(lifecycleState, session, isTerminated);
-  const combinedShowRetryBanner = shouldShowSessionErrorBanner({
-    showRetryBanner,
+  // A terminated Agent conversation can be brought back; an Assistant's is ended for good.
+  const showRecoverButton = isTerminated && !isAssistantConversation;
+  // An idle subscription follows future activity; losing it did not fail a user operation.
+  const showTransientBackendMessage = streamTrouble && (isWorking || isSending) && !isTerminated && !lifecycleError;
+  const showBanner = shouldShowSessionErrorBanner({
+    showRetryBanner: showTransientBackendMessage,
     isTerminated,
     lifecycleError,
-    historyError,
+    historyError: null,
     hasPendingInteraction,
   });
-  const bannerErrorMessage = localizeDisplayText(
-    String(chatErrorMessage || lifecycleError || historyError || '').trim(),
-  );
-  const showTransientBackendMessage = transientBannerVisible && !lifecycleError && !historyError;
+  const bannerErrorMessage = localizeDisplayText(String(lifecycleError || '').trim());
 
   return {
     showRuntimeUnavailableBanner,
     showSessionLastError,
     showRecoverButton,
-    combinedShowRetryBanner,
+    showBanner,
     bannerErrorMessage,
     showTransientBackendMessage,
   };

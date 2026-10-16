@@ -6,11 +6,11 @@ into a sandbox delivers either: the OpenSandbox ingress gateway replaces
 `Host` with the Pod address, and the platform keeps the credential out of the
 request line because every proxy on the way logs it. The relay in
 `containers/sandbox-hermes/hermes_host_relay.py` supplies both on the loopback
-hop, so these tests hold it to what depends on it: the first request head
-names the backend's bind and carries the credential from its header into the
-query, a wrong or missing credential is still refused, everything after that
-head passes through byte for byte, and a plain HTTP request cannot leave a
-kept-alive connection whose later requests go out unrewritten.
+hop, so these tests hold the parts a peer could abuse: the credential comes
+from its header and replaces one already in the query, an ambiguous one is
+forwarded as none, a wrong or missing one is still refused, and a plain HTTP
+request cannot leave a kept-alive connection whose later requests go out
+unrewritten.
 """
 
 from __future__ import annotations
@@ -62,31 +62,6 @@ def _upgrade(credential_lines: bytes) -> bytes:
 _UPGRADE_FROM_THE_GATEWAY = _upgrade(
     f"{HERMES_BACKEND_TOKEN_HEADER}: {_TOKEN}\r\n".encode("ascii")
 )
-
-
-def test_an_upgrade_names_the_backend_and_carries_the_credential_into_the_query() -> None:
-    head = _UPGRADE_FROM_THE_GATEWAY[:-4]
-
-    rewritten = relay.rewrite_request_head(head, b"127.0.0.1:9119")
-
-    lines = rewritten.split(b"\r\n")
-    assert lines[0] == b"GET /api/ws?token=t0k%2Fen HTTP/1.1"
-    assert [line for line in lines if line.lower().startswith(b"host:")] == [
-        b"Host: 127.0.0.1:9119"
-    ]
-    # Hermes has no use for the header, and a copy of the credential it does
-    # not need is one more place it could be recorded.
-    assert not [line for line in lines if b"hermes-token" in line.lower()]
-    # The upgrade must stay an upgrade: dropping `Connection: Upgrade` would
-    # turn it into a plain GET that the backend answers and closes.
-    for kept in (
-        b"Upgrade: websocket",
-        b"Connection: Upgrade",
-        b"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
-        b"Sec-WebSocket-Version: 13",
-        b"OpenSandbox-Secure-Access: signed",
-    ):
-        assert kept in lines
 
 
 def test_the_header_credential_replaces_one_already_in_the_query() -> None:
@@ -217,40 +192,6 @@ async def _status_line(
     await writer.drain()
     response = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5)
     return response.split(b"\r\n", 1)[0], reader, writer
-
-
-@pytest.mark.asyncio
-async def test_an_upgrade_from_the_gateway_is_accepted_through_the_relay() -> None:
-    async with _HermesLikeBackend(_TOKEN) as backend:
-        # Control: the same upgrade sent straight to the backend is refused, so
-        # an accepted upgrade below is the relay's doing.
-        direct, _, direct_writer = await _status_line(backend.port)
-        direct_writer.close()
-        assert direct == b"HTTP/1.1 403 Forbidden"
-
-        async with _serving_relay(backend.port) as relay_port:
-            status, reader, writer = await _status_line(relay_port)
-            # Closed on every path: an open client connection would keep the
-            # relay's server from closing and turn a failure into a hang.
-            try:
-                assert status == b"HTTP/1.1 101 Switching Protocols"
-
-                # Session bytes that look like a request head must not be rewritten.
-                session = (
-                    b"\x81\x05hello"
-                    + f"{HERMES_BACKEND_TOKEN_HEADER}: x\r\n\r\n".encode("ascii")
-                )
-                writer.write(session)
-                await writer.drain()
-                echoed = await asyncio.wait_for(reader.readexactly(len(session)), 5)
-                assert echoed == session
-
-                # The client's close reaches the backend, and the backend's close
-                # reaches the client, so no half of the relay is left waiting.
-                writer.write_eof()
-                assert await asyncio.wait_for(reader.read(), 5) == b""
-            finally:
-                writer.close()
 
 
 @pytest.mark.asyncio

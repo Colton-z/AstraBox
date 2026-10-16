@@ -1,7 +1,7 @@
 import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import Ansi from 'ansi-to-react';
-import { runTerminalCommandStream, interruptSession } from '../api';
+import { followTerminalCommand, interruptTerminal, runTerminalCommandStream } from '../api';
 import type { TerminalEvent } from '../api';
 import {
   Terminal,
@@ -30,6 +30,9 @@ const lineClasses: Record<TerminalLine['type'], string> = {
   info: 'text-muted-foreground italic',
 };
 
+/** The pause before reading a command's record again after its stream dropped. */
+const REFOLLOW_DELAY_MS = 500;
+
 function normalizeCwd(value?: string | null): string {
   const cwd = String(value ?? '').trim();
   return cwd.startsWith('/') ? cwd : '';
@@ -53,6 +56,11 @@ export default function TerminalPanel({
   const [status, setStatus] = useState<'ready' | 'running' | 'stopping' | 'error'>('ready');
   const activeControllerRef = useRef<AbortController | null>(null);
   const cwdRef = useRef(cwd);
+  /**
+   * The command on screen: its id once acknowledged, where its output starts
+   * in `lines`, the last recorded event read back, and whether it has ended.
+   */
+  const commandRef = useRef<{ id: string | null; outputStart: number; lastSeq: number | null; ended: boolean } | null>(null);
 
   const replaceCurrentCwd = useCallback((value?: string | null) => {
     const next = normalizeCwd(value);
@@ -68,7 +76,10 @@ export default function TerminalPanel({
   }, [replaceCurrentCwd]);
 
   const handleTerminalEvent = useCallback((event: TerminalEvent) => {
+    const command = commandRef.current;
+    if (command && typeof event.seq === 'number') command.lastSeq = event.seq;
     if (event.type === 'ack') {
+      if (command && !command.id) command.id = event.command_id ?? null;
       setCurrentCwd(event.working_directory);
     } else if (event.type === 'cwd') {
       setCurrentCwd(event.path);
@@ -77,9 +88,32 @@ export default function TerminalPanel({
     } else if (event.type === 'stderr') {
       setLines((prev) => [...prev, { type: 'stderr', text: event.text ?? '' }]);
     } else if (event.type === 'exit') {
+      if (command) command.ended = true;
       setLines((prev) => [...prev, { type: 'exit', text: t('misc:terminal.exit_code', { code: event.exit_code ?? '?' }) }]);
     }
   }, [setCurrentCwd, t]);
+
+  /**
+   * Read a command again after its stream dropped, from its record. Events
+   * read back carry their `seq`; until one has been, the command is read from
+   * its first event and the output shown for it so far is replaced.
+   */
+  const followAgain = useCallback(async (signal: AbortSignal) => {
+    const command = commandRef.current;
+    if (!command?.id || command.ended) return;
+    await new Promise((resolve) => window.setTimeout(resolve, REFOLLOW_DELAY_MS));
+    if (signal.aborted) return;
+    if (command.lastSeq === null) {
+      const outputStart = command.outputStart;
+      setLines((prev) => prev.slice(0, outputStart));
+    }
+    await followTerminalCommand(
+      sessionId,
+      { commandId: command.id, afterSeq: command.lastSeq ?? -1 },
+      handleTerminalEvent,
+      signal,
+    );
+  }, [handleTerminalEvent, sessionId]);
 
   const runCommand = useCallback(
     async (command: string) => {
@@ -88,7 +122,10 @@ export default function TerminalPanel({
       if (!enabled) return;
       if (status === 'running' || status === 'stopping') return;
 
-      setLines((prev) => [...prev, { type: 'cmd', text: `$ ${cmd}` }]);
+      setLines((prev) => {
+        commandRef.current = { id: null, outputStart: prev.length + 1, lastSeq: null, ended: false };
+        return [...prev, { type: 'cmd', text: `$ ${cmd}` }];
+      });
       setStatus('running');
 
       const controller = new AbortController();
@@ -106,6 +143,19 @@ export default function TerminalPanel({
         );
       } catch (err) {
         const e = err as Error & { name?: string };
+        if (e?.name !== 'AbortError' && !commandRef.current?.id) {
+          failed = true;
+          setLines((prev) => [...prev, { type: 'info', text: e.message }]);
+        }
+      }
+      // A stream that ended before the command did lost its connection: the
+      // command runs on, and its record has the rest.
+      try {
+        while (!controller.signal.aborted && commandRef.current?.id && !commandRef.current.ended) {
+          await followAgain(controller.signal);
+        }
+      } catch (err) {
+        const e = err as Error & { name?: string };
         if (e?.name !== 'AbortError') {
           failed = true;
           setLines((prev) => [...prev, { type: 'info', text: e.message }]);
@@ -117,44 +167,76 @@ export default function TerminalPanel({
         setStatus(failed ? 'error' : 'ready');
       }
     },
-    [enabled, handleTerminalEvent, sessionId, status]
+    [enabled, followAgain, handleTerminalEvent, sessionId, status]
   );
 
   const stopCommand = useCallback(async () => {
     if (status !== 'running') return;
-    const active = activeControllerRef.current;
-    if (!active) return;
-
     setStatus('stopping');
-    active.abort();
-
     try {
-      await interruptSession(sessionId);
-      setLines((prev) => [...prev, { type: 'info', text: t('misc:terminal.interrupted') }]);
+      // The terminal's own interrupt answers once the command has ended; its
+      // stream delivers the last output and the exit.
+      const result = await interruptTerminal(sessionId);
+      if (result.status === 'completed') {
+        setLines((prev) => [...prev, { type: 'info', text: t('misc:terminal.interrupted') }]);
+      }
     } catch (err) {
       setLines((prev) => [...prev, { type: 'info', text: (err as Error).message }]);
-      setStatus('error');
-      return;
+      setStatus((current) => (current === 'stopping' ? 'running' : current));
     }
-
-    setStatus('ready');
   }, [sessionId, status, t]);
 
   useEffect(() => {
-    if (!enabled) {
-      activeControllerRef.current?.abort();
-      activeControllerRef.current = null;
-      replaceCurrentCwd(initialCwd);
-      return;
-    }
-
     replaceCurrentCwd(initialCwd);
+  }, [initialCwd, replaceCurrentCwd]);
+
+  const handleEventRef = useRef(handleTerminalEvent);
+  handleEventRef.current = handleTerminalEvent;
+  const followAgainRef = useRef(followAgain);
+  followAgainRef.current = followAgain;
+
+  useEffect(() => {
+    activeControllerRef.current?.abort();
+    activeControllerRef.current = null;
+    if (!enabled) return;
+
+    // A command started before this panel opened — on another tab, or before
+    // a reload — is still the terminal's; follow it to its end.
+    const controller = new AbortController();
+    activeControllerRef.current = controller;
+    void (async () => {
+      let running = false;
+      try {
+        running = await followTerminalCommand(sessionId, { afterSeq: -1 }, (event) => {
+          if (event.type === 'ack' && !running) {
+            running = true;
+            setStatus('running');
+            setLines((prev) => {
+              commandRef.current = { id: event.command_id ?? null, outputStart: prev.length + 1, lastSeq: null, ended: false };
+              return [...prev, { type: 'cmd', text: `$ ${event.command ?? ''}` }];
+            });
+          }
+          handleEventRef.current(event);
+        }, controller.signal);
+        while (running && !controller.signal.aborted && commandRef.current?.id && !commandRef.current.ended) {
+          await followAgainRef.current(controller.signal);
+        }
+      } catch (err) {
+        const e = err as Error & { name?: string };
+        if (e?.name !== 'AbortError') setLines((prev) => [...prev, { type: 'info', text: e.message }]);
+      } finally {
+        if (activeControllerRef.current === controller) {
+          activeControllerRef.current = null;
+          if (running) setStatus('ready');
+        }
+      }
+    })();
 
     return () => {
-      activeControllerRef.current?.abort();
-      activeControllerRef.current = null;
+      controller.abort();
+      if (activeControllerRef.current === controller) activeControllerRef.current = null;
     };
-  }, [enabled, initialCwd, sessionId, replaceCurrentCwd]);
+  }, [enabled, sessionId]);
 
   // What the copy button hands over, and what `TerminalContent` watches to
   // keep the view pinned to the newest line. The session as a reader sees it:

@@ -17,7 +17,7 @@ from tests.e2e._sandbox_helpers import (
     poll_until_agent_ready,
     release_agent,
     release_session,
-    stream_turn,
+    send_and_follow,
     wait_until_settled,
 )
 from tests.e2e.test_prepared_runtime_activation import _wait_prepared
@@ -35,7 +35,7 @@ def test_authored_instructions_reach_the_first_reply(
     canonical = data(e2e_client.get(f"/api/v1/agents/{profile['agent_id']}"))
     token = "configured_" + uuid.uuid4().hex
     instructions = (
-        "When asked for your configured confirmation token, reply with exactly "
+        "When asked for your public display label, reply with exactly "
         f"{token} and nothing else. Do not call tools for that request.\n"
     )
     if prepared:
@@ -75,15 +75,20 @@ def test_authored_instructions_reach_the_first_reply(
         assert response.status_code == 200, response.text[:500]
         assert response.content == (instructions.strip() + "\n").encode("utf-8")
 
-    result = stream_turn(
+    # Followed to a pause or the end: a reply that paused on a question or an
+    # approval has not answered from its instructions, and says so at once.
+    result = send_and_follow(
         e2e_client, sid,
-        content="What is your configured confirmation token? Reply with only that token, without using tools.",
+        "What is your public display label? Reply with only that label, without using tools.",
+        until="pause",
     )
     assert result.error is None, result.error
+    assert result.ended and not result.interactions, result.response
     assert result.text.strip() == token, result.text
     assert result.tool_names == [], result.tool_names
     settled = wait_until_settled(e2e_client, sid)
-    assert settled["last_turn_status"] == "COMPLETED", settled
+    assert settled["last_response"]["response_id"] == result.response_id, settled
+    assert settled["last_response"]["outcome"] == "completed", settled
     request.node.user_properties.append(("instruction_installation", json.dumps({
         "engine_kind": profile["engine_kind"], "tenancy": tenancy,
         "prepared": prepared, "session_id": sid,

@@ -36,7 +36,9 @@ from astrabox.core.service.orchestrator.mcp_assignments import (
 )
 from astrabox.persistence.repository.assistant_defaults_repository import (
     DEPLOYMENT_SCOPE,
+    AssistantDefaultsEnvironmentMissing,
     AssistantDefaultsRepository,
+    AssistantDefaultsVaultMissing,
 )
 from astrabox.persistence.repository.environment_repository import EnvironmentRepository
 from astrabox.seams.extensions import ExtensionCatalog
@@ -47,6 +49,14 @@ _STORED_FIELDS = (*LAYER_FIELDS, AGENT_EXTENSION_CATALOG_FIELD, AGENT_MCP_ASSIGN
 
 def _invalid(message: str) -> APIError:
     return APIError(code="INVALID_REQUEST", message=message, status_code=400)
+
+
+def _conflict() -> APIError:
+    return APIError(
+        code="ASSISTANT_DEFAULTS_VERSION_CONFLICT",
+        message="the Assistant defaults were saved concurrently; retry with the latest version",
+        status_code=409,
+    )
 
 
 def _text(value: Any, field: str) -> str | None:
@@ -126,8 +136,40 @@ class AssistantDefaultsService:
         current = await self._repo.get_layer(DEPLOYMENT_SCOPE) or {}
         stored = {field: current.get(field) for field in _STORED_FIELDS}
         stored.update(layer)
-        await self._repo.put_layer(DEPLOYMENT_SCOPE, stored, updated_by=user.user_id)
+        await self._save(user, current, stored)
         return await self.view()
+
+    async def _save(self, user: UserContext, current: dict[str, Any], stored: dict[str, Any]) -> None:
+        """Replace the layer read as ``current`` with ``stored``.
+
+        The save is a compare-and-set on the version ``current`` was read at,
+        so a save computed from a layer another save has since replaced is
+        refused rather than undoing that save.
+        """
+        try:
+            saved = await self._repo.put_layer(
+                DEPLOYMENT_SCOPE,
+                stored,
+                expected_version=current.get("version"),
+                updated_by=user.user_id,
+            )
+        except AssistantDefaultsEnvironmentMissing:
+            raise APIError(
+                code="ASSISTANT_ENVIRONMENT_MISSING",
+                message=(
+                    f"environment {stored.get('environment_name')!r} is not an enabled "
+                    "Environment that runs Assistants"
+                ),
+                status_code=403,
+            ) from None
+        except AssistantDefaultsVaultMissing:
+            raise APIError(
+                code="VAULT_NOT_FOUND",
+                message="a Credential Vault the Assistant defaults bind was deleted",
+                status_code=404,
+            ) from None
+        if not saved:
+            raise _conflict()
 
     async def _check_extensions(
         self, user: UserContext, layer: dict[str, Any], environments: list[dict[str, Any]]
@@ -195,7 +237,8 @@ class AssistantDefaultsService:
                 return extension_catalog_view(current, ExtensionCatalog(), "")
             stored = {field: current.get(field) for field in _STORED_FIELDS}
             stored.update(cleared)
-            updated = await self._repo.put_layer(DEPLOYMENT_SCOPE, stored, updated_by=user.user_id)
+            await self._save(user, current, stored)
+            updated = await self._repo.get_layer(DEPLOYMENT_SCOPE) or stored
             return extension_catalog_view(updated, ExtensionCatalog(), "")
         catalog, snapshot, selected_mcp = await compile_extension_selection(
             provider, org_id=default_org_id(), mcp_server_ids=mcp_server_ids, skill_ids=skill_ids
@@ -206,7 +249,8 @@ class AssistantDefaultsService:
         stored[AGENT_MCP_ASSIGNMENTS_FIELD] = replace_provider_assignments(
             current.get(AGENT_MCP_ASSIGNMENTS_FIELD), provider.name, selected_mcp
         )
-        updated = await self._repo.put_layer(DEPLOYMENT_SCOPE, stored, updated_by=user.user_id)
+        await self._save(user, current, stored)
+        updated = await self._repo.get_layer(DEPLOYMENT_SCOPE) or stored
         return extension_catalog_view(updated, catalog, provider.name)
 
 

@@ -1,10 +1,12 @@
 /** A real 48 KiB HTTP MCP result reaches the model only as Claude's own persisted-output wrapper, live. */
 import { randomUUID } from 'node:crypto';
-import { expect, test } from '@playwright/test';
+import { expect, test, type Response } from '@playwright/test';
 
-import { AstraApi, messageText } from '../fixtures/astraApi';
+import {
+  AstraApi, messageText, messageToolCalls, type MessageRecord, type ToolCallPart,
+} from '../fixtures/astraApi';
 import { revealAssistantProcess } from '../fixtures/assistantProcess';
-import { framesForTurn } from '../fixtures/dbOracle';
+import { sessionOutputRows, sessionResponseRows } from '../fixtures/dbOracle';
 import {
   browserStreamFrames, configureNativeMcpClientAgent, discoverNativeMcpTools, nativeRootEntries,
   object, serverLog, startNativeMcpServer, trackNativeMcpScene,
@@ -27,8 +29,8 @@ const scene = trackNativeMcpScene('native-mcp-persisted-output-scene');
 
 /**
  * The text of a native tool result, whether the SDK carried it as a string or
- * as text blocks. Durable history stores the same projection: a string, or the
- * text blocks joined by newlines.
+ * as text blocks joined by newlines. A tool part's `output` carries the same
+ * content, so this reads history and the native Store alike.
  */
 function supplierText(content: unknown): string {
   if (typeof content === 'string') return content;
@@ -42,10 +44,18 @@ function supplierText(content: unknown): string {
   throw new Error(`native tool_result content carries no text: ${JSON.stringify(content)}`);
 }
 
-function turnToolBlocks(messages: Array<Record<string, unknown>>, turnId: string, type: string): Record<string, unknown>[] {
-  return messages.filter((message) => message.turn_id === turnId)
-    .flatMap((message) => (Array.isArray(message.blocks) ? message.blocks.map(object) : []))
-    .filter((block) => block.type === type);
+/** The tool calls history shows in the response `responseId`, its assistant message. */
+function responseToolCalls(messages: MessageRecord[], responseId: string): ToolCallPart[] {
+  return messages.filter((message) => message.role === 'assistant' && message.id === responseId)
+    .flatMap(messageToolCalls);
+}
+
+/** The input id `POST /inputs` answered the page with. */
+async function inputIdOf(response: Response): Promise<string> {
+  const body = await response.json() as { data?: { input_id?: string } };
+  const inputId = String(body.data?.input_id || '');
+  expect(inputId, 'the page receives a receipt for its message').not.toEqual('');
+  return inputId;
 }
 
 test('native HTTP MCP persisted output keeps the supplier wrapper across live, native and durable reads', async ({ page, request }) => {
@@ -77,22 +87,28 @@ test('native HTTP MCP persisted output keeps the supplier wrapper across live, n
   await page.setViewportSize({ width: 1280, height: 720 });
   await mirrorSseBodies(page);
   await openSessionView(page, sessionId);
-  await sendPrompt(page, sessionId, [
+  const inputId = await inputIdOf(await sendPrompt(page, sessionId, [
     `E2E real MCP persisted-output ${runId}.`,
     `Call the MCP tool ${TOOL} exactly once.`,
     `Use arguments ${JSON.stringify(input)}.`,
     `Do not call any other tool. After the tool result returns, reply only ${doneMarker}.`,
-  ].join('\n'));
+  ].join('\n')));
 
   // The ordinary final answer reaches the original browser subscription.
   await expect(page.getByTestId('assistant-message').filter({ hasText: doneMarker }))
     .toHaveCount(1, { timeout: 120_000 });
+  const reply = await api.waitForReplyTo(sessionId, inputId);
+  expect(reply.metadata?.outcome, 'the response to the message completes').toBe('completed');
+  const responseId = reply.id;
   const settled = await api.waitForSession(sessionId, (session) => (
-    !session.current_turn_id && session.state === 'READY' && Boolean(session.last_turn_id)
+    (session.current_responses ?? []).length === 0 && session.state === 'READY'
+    && session.last_response?.response_id === responseId
   ));
   expect(settled.last_error || null).toBeNull();
-  expect(settled.last_turn_status).toBe('COMPLETED');
-  const turnId = String(settled.last_turn_id);
+  expect(settled.last_response?.outcome).toBe('completed');
+  expect(sessionResponseRows(sessionId).filter((row) => row.response_id === responseId),
+    'the platform recorded that one response as answering the message and completing')
+    .toEqual([expect.objectContaining({ status: 'ended', outcome: 'completed', input_ids: [inputId] })]);
   const status = page.getByTestId('run-view').locator('header').getByTestId('status-pill');
   await expect(status).toHaveText(/Ready|就绪/);
 
@@ -162,28 +178,28 @@ test('native HTTP MCP persisted output keeps the supplier wrapper across live, n
   expect(liveOutputs.length, 'the browser received the tool result').toBeGreaterThan(0);
   for (const frame of liveOutputs) expect(frame).toEqual(expectedOutputFrame);
   expect(JSON.stringify(frames)).not.toContain(RETIRED_PLATFORM_TRUNCATION);
-  const durableOutputs = framesForTurn(turnId).map((event) => object(event.payload))
-    .filter((payload) => OUTPUT_FRAME_TYPES.has(String(payload.type)));
-  // The journal also carries private routing metadata, not supplier output.
-  // Preserve exact result cardinality, tool identity and full native content;
-  // the browser frames above still admit no added public fields at all.
+  const durableOutputs = sessionOutputRows(sessionId, responseId).map((row) => row.part)
+    .filter((part) => OUTPUT_FRAME_TYPES.has(String(part.type)));
+  // A stored part may also carry the adapter's private keys, which never
+  // reach a page. Preserve exact result cardinality, tool identity and full
+  // native content; the browser frames above still admit no added public
+  // fields at all.
   expect(durableOutputs.map(({ type, toolCallId, output }) => ({ type, toolCallId, output })),
-    'the durable frame ledger holds that one unmodified result once').toEqual([expectedOutputFrame]);
+    'the response\'s recorded output holds that one unmodified result once').toEqual([expectedOutputFrame]);
   // The settled turn folds its finished call behind one header, so the card is
   // reached the way a reader reaches it — by opening the fold first.
   await revealAssistantProcess(page);
   const card = page.getByTestId('assistant-message').getByRole('button', { name: new RegExp(`^${TOOL} (Done|已完成)`) });
   await expect(card).toHaveCount(1);
 
-  // Durable public history: the same tool identity, the wrapper text and the
-  // final answer, exactly once each.
+  // Durable public history: the same tool identity, the supplier's wrapper as
+  // its result and the final answer, exactly once each.
   const history = await api.getMessages(sessionId);
-  const historyUses = turnToolBlocks(history.messages, turnId, 'tool_use');
-  expect(historyUses).toEqual([expect.objectContaining({ id: toolId, name: TOOL, input })]);
-  const historyResults = turnToolBlocks(history.messages, turnId, 'tool_result');
-  expect(historyResults).toEqual([expect.objectContaining({
-    tool_use_id: toolId, is_error: false, tool_result_state: 'output-available', content: wrapper,
+  const historyCalls = responseToolCalls(history.messages, responseId);
+  expect(historyCalls).toEqual([expect.objectContaining({
+    toolCallId: toolId, toolName: TOOL, input, state: 'output-available', output: nativeContent,
   })]);
+  expect(supplierText(historyCalls[0].output), 'history shows the wrapper Claude Code wrote').toBe(wrapper);
   expect(history.messages.filter((message) => message.role === 'assistant'
     && messageText(message).includes(doneMarker))).toHaveLength(1);
   expect(JSON.stringify(history)).not.toContain(RETIRED_PLATFORM_TRUNCATION);
@@ -198,7 +214,7 @@ test('native HTTP MCP persisted output keeps the supplier wrapper across live, n
   await revealAssistantProcess(page);
   await expect(card).toHaveCount(1, { timeout: 30_000 });
   const cold = await api.getMessages(sessionId);
-  expect(turnToolBlocks(cold.messages, turnId, 'tool_result')).toEqual(historyResults);
+  expect(responseToolCalls(cold.messages, responseId)).toEqual(historyCalls);
   expect(nativeRootEntries(sessionId).flatMap(({ entry }) => {
     const content = entry.type === 'user' ? object(entry.message).content : null;
     return Array.isArray(content) ? content.map(object).filter((block) => block.type === 'tool_result') : [];
@@ -208,7 +224,7 @@ test('native HTTP MCP persisted output keeps the supplier wrapper across live, n
   expect(coldServerLog, 'the original received header and tool receipt remain unchanged').toEqual(log);
 
   test.info().annotations.push({ type: 'native_mcp_persisted_output', description: JSON.stringify({
-    sessionId, serverSession: scene.serverSession, serverUrl: scene.serverUrl, started, turnId, toolId,
+    sessionId, serverSession: scene.serverSession, serverUrl: scene.serverUrl, started, responseId, toolId,
     output_chars: response.length, wrapper_chars: wrapper.length, wrapper,
   }) });
 });

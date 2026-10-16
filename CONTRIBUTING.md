@@ -6,11 +6,11 @@ live output, and approval controls for teams. Thanks for helping improve it.
 
 ## Development setup
 
-You need **Python 3.12+** and a working **Docker** daemon (only required to run a
-real agent turn or the end-to-end suite; the unit gate needs neither). The
-repository manages its exact Node.js version from `.nvmrc`; an existing matching
-NVM install is reused, otherwise `make` downloads the checksum-pinned official
-archive into `.astrabox/toolchains/node`.
+You need **Python 3.12+**, a working **Docker** daemon (required for the dev stack
+and the end-to-end suite), and a PostgreSQL server for the unit tests that use the
+store. The repository manages its exact Node.js version from `.nvmrc`; an existing
+matching NVM install is reused, otherwise `make` downloads the checksum-pinned
+official archive into `.astrabox/toolchains/node`.
 
 Create a virtualenv and install the package editable with the dev tools:
 
@@ -36,11 +36,14 @@ make install
 
 ### Run the local dev stack
 
-`scripts/dev.sh` (also `make dev`) boots the two processes you iterate against:
+`scripts/dev.sh` (also `make dev`) boots the two processes you iterate against. It
+needs the server image (`make build-server-image` once):
 
-- **Backend** — uvicorn (`astrabox.api.app:create_app`) on the host at **:8000** with
-  `--reload`, started behind `astrabox.deploy.onebox` so the bundled OpenSandbox
-  lifecycle server comes up beside it with access to `/var/run/docker.sock`.
+- **Backend** — uvicorn (`astrabox.api.app:create_app`) with `--reload` in the server
+  container of the maintained Compose stack, published at **:8000**.
+  `containers/compose.source.yaml` mounts this checkout over the installed package,
+  and `astrabox.deploy.onebox` starts the bundled OpenSandbox lifecycle server beside
+  it with access to `/var/run/docker.sock`.
 - **Frontend** — the Vite dev server (`frontend/`) at **:5173**, whose `/api` proxies
   to the backend on `:8000`.
 
@@ -49,7 +52,7 @@ make dev                # == scripts/dev.sh  (Ctrl-C stops both)
 ```
 
 Then open <http://localhost:5173>. The backend boots without credentials — the UI and
-session list work — but a real agent turn additionally needs the agent image
+session list work — but a real Agent response additionally needs the agent image
 (`make build-agent-image`) and your LLM key. The dev stack and the e2e gate both read
 your Anthropic-compatible endpoint and token from a gitignored repo-root `.env`
 (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` **or** `ANTHROPIC_API_KEY`, optional
@@ -76,32 +79,32 @@ Dependency or bundled frontend changes also require a new server image
 (`make build-server-image`), because `make run-mounted` swaps code, not the
 environment: it mounts this tree over the package the image installed.
 
-Two things that are deliberate, and cost an afternoon when they surprise you:
-
-- `make run-mounted` does not use `--reload`. A reloader restarting mid-turn
-  drops the host end of a live sandbox connection, which surfaces as
-  `runtime reconnect failed` and sends you hunting a sandbox bug that is your
-  own dev server.
-- Never push a changed `:latest` to a shared cluster. A Kubernetes node pulls
-  `IfNotPresent`, so a new `:latest` leaves it serving the OLD image while your
-  source says otherwise. `make push-images REGISTRY=<host:port>` tags by tree
-  state precisely so a node cannot do that, and prints the
-  `ASTRABOX_AGENT_IMAGE` line that points a deployment at what you pushed.
+One thing is deliberate, and costs an afternoon when it surprises you: never push a
+changed `:latest` to a shared cluster. A Kubernetes node pulls `IfNotPresent`, so a
+new `:latest` leaves it serving the OLD image while your source says otherwise.
+`make push-images REGISTRY=<host:port>` tags by tree state precisely so a node
+cannot do that, and prints the `ASTRABOX_AGENT_IMAGE` line that points a deployment
+at what you pushed.
 
 ## Running tests
 
-### Unit gate (no Docker, no secret)
+### Unit gate (PostgreSQL, no secret)
 
-Use a Git checkout at the candidate commit, including its Git metadata. Release
-archive tests run `git archive HEAD` and inspect committed files; an extracted
-deployment tarball alone is not sufficient for the complete Python suite.
+Use a Git checkout at the candidate commit, including its Git metadata:
+`make check-comments` reads its file list from `git ls-files`, so an extracted
+deployment tarball alone cannot run the complete gate.
 
-This is what CI runs on every push and PR. A plain `pytest` run deselects the live-turn
+This is what CI runs on every push and PR. A plain `pytest` run deselects the live
 suite by default (`pyproject.toml` sets `addopts = -m 'not e2e'`), so it never touches
-Docker or an LLM key:
+Docker or an LLM key. The unit tests are the database races and security boundaries an
+end-to-end run cannot show. Tests that use the store need a PostgreSQL server: set
+`ASTRABOX_TEST_POSTGRES_URL` to a `postgresql://` URL for a role that may create
+databases. Each pytest process creates its own database with every table and drops it
+at the end (`tests/_database.py`):
 
 ```bash
-make test-py            # unit suite only (the `e2e` mark is deselected)
+ASTRABOX_TEST_POSTGRES_URL=postgresql://user:password@127.0.0.1:5432/postgres \
+  make test-py          # unit suite only (the `e2e` mark is deselected)
 ```
 
 The repository gate combines the local targets below. CI runs the corresponding
@@ -122,7 +125,7 @@ weaken an assertion to make a failing change pass.
 
 ### End-to-end gate (needs Docker + an LLM key)
 
-The live-turn suite is marked `e2e` and deselected by default. It needs a running
+The live suite is marked `e2e` and deselected by default. It needs a running
 deployment and the appropriate model and credential fixtures. Run only the
 selected cases for the behavior being changed; a model reply alone does not
 prove file persistence, native resume, child tasks, or approvals.
@@ -164,19 +167,19 @@ Where to look when you want to change something:
 
 | Path | What lives there |
 |---|---|
-| `astrabox/seams/` | Versioned plugin interfaces for sandbox, storage, model endpoint, secret store, repository, and identity providers. Third-party plugins implement these interfaces and register through the `astrabox.providers.*` Python entry-point groups. Preserve backward compatibility when extending them. |
+| `astrabox/seams/` | Versioned plugin interfaces for sandbox, storage, model endpoint, secret store, scheduler, runtime-preparation, messaging, and identity providers. Third-party plugins implement these interfaces and register through the `astrabox.providers.*` Python entry-point groups. Preserve backward compatibility when extending them. |
 | `astrabox/providers/` | The built-in providers: `open_sandbox/` (the sandbox backend — creates containers through the OpenSandbox lifecycle API; conversation tenancy isolates each Session, while agent tenancy can share one sandbox), `model.py` (the `litellm` model endpoint provider; no bundled direct passthrough), `secret_store.py` (AES-GCM local vault store), `identity.py` (no-auth defaults) + `identity_sso.py` (`trusted_header`/`jwt` resolvers). |
 | `astrabox/deploy/` | Deployment startup: `onebox.py` starts AstraBox and supervises the bundled services selected by configuration; `sandbox_server.py` renders the bundled lifecycle server's config from `ASTRABOX_*`. |
-| `astrabox/api/` | The HTTP API: `routes/` contains resource routers for Sessions, turns, Agents, Assistants, vaults, admin operations, MCP, and related resources; `app.py` contains the FastAPI factory, lifespan, and SPA serving. Routes stay thin — logic belongs in services. |
+| `astrabox/api/` | The HTTP API: `routes/` contains resource routers for Sessions (with their inputs, answers and output stream), Agents, Assistants, vaults, admin operations, MCP, and related resources; `app.py` contains the FastAPI factory, lifespan, and SPA serving. Routes stay thin — logic belongs in services. |
 | `astrabox/web/` | ASGI middleware for browser/API authentication and trusted-host validation. |
-| `astrabox/core/service/orchestrator/` | The platform core: `session_kernel/` (command, journal, projection, and turn/lifecycle workers), `runtime_manager.py` + `runtime/` (sandbox lifecycle and common workspace routing), `engine/` (native Agent-program adapters), `turn_service.py`, and deployment/assistant services. |
-| `astrabox/persistence/` | Data access code: `repository/` provides the shared collection API with PostgreSQL, SQLite, and Mongo implementations; `migrations/` upgrades stored data at startup; `models/` defines persisted records. |
-| `astrabox/config/` | Typed settings + the env-var registry (`env_registry.py`) — every env var the code reads must be registered; a census test enforces it. |
-| `astrabox/testing/` | Reusable compatibility tests for collection, engine, sandbox, storage, and channel plugins, plus E2E fault-injection helpers. Plugin authors run these tests against their implementations. Production modules do not import this package. |
+| `astrabox/core/service/orchestrator/` | The platform core: `session_runtime/` (the one reader per Session that records what the Agent runtime reports, the output feed, and sending, answering and interrupting), `session_lifecycle/` (Session creation, startup and recovery), `runtime_manager.py` + `runtime/` (sandbox lifecycle and common workspace routing), `engine/` (native Agent-program adapters and their runtime clients), and deployment/assistant services. |
+| `astrabox/persistence/` | Data access code: `sql/` holds the PostgreSQL engine, the table declarations (`sql/models/`) and the Alembic schema upgrade that runs at startup (`sql/migrate.py`); `repository/` holds one repository class per domain, each reading and writing its own tables. |
+| `astrabox/config/` | Typed settings + the env-var registry (`env_registry.py`) — every env var the code reads must be registered; `scripts/check_env_registry.py` enforces it. |
+| `astrabox/testing/` | Reusable compatibility tests for engine, runtime-client, sandbox, storage, channel, and scheduler plugins, plus E2E fault-injection helpers. Plugin authors run these tests against their implementations. Production modules do not import this package. |
 | `astrabox/common/` | Logger + small shared utils. |
 | `frontend/` | The React console SPA (Vite; `npm run build` runs `tsc --noEmit` first). |
 | `containers/` | The server, sandbox and LiteLLM images + compose. |
-| `tests/` | Unit + conformance suites (file naming: `*_test.py`). `tests/e2e/` is the live-turn lane (`-m e2e`). |
+| `tests/` | Unit tests for database races and security boundaries (file naming: `*_test.py`). `tests/e2e/` is the live lane (`-m e2e`). |
 | `e2e/` | The Playwright browser suite against the real console. |
 | `tests/e2e-contract/` | What every live suite shares: the frozen lane inventory, the per-engine profiles the specs parametrize on, and the one 180-second test budget each Playwright config reads. |
 
@@ -203,7 +206,10 @@ Where to look when you want to change something:
   the complete web gate; both use the Node.js version pinned by the repository.
 - **Tests**: name Python test files `*_test.py`. Test observable product behavior
   through real E2E, including native supplier evidence and user-visible results.
-  Keep unit tests for small deterministic logic they uniquely prove. When moving
+  Keep a unit test only where an end-to-end run cannot show the property: a
+  database race (uniqueness, a compare-and-set, a lease or fence under
+  concurrency) or a security or authorization boundary. Repository consistency
+  rules belong in the `scripts/check_*.py` gates, not in tests. When moving
   an implementation-shaped contract to E2E, preserve its intent, obtain passing
   evidence, then remove the replaced contract. Reusable provider checks belong
   in `astrabox/testing/`, not copies per backend.

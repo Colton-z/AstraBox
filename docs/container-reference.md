@@ -83,7 +83,7 @@ bundled image for the selected Agent program, at the tag of the AstraBox
 release you run:
 
 ```dockerfile
-FROM ghcr.io/colton-z/astrabox-sandbox-claude-code:0.1.3
+FROM ghcr.io/colton-z/astrabox-sandbox-claude-code:0.1.9
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends postgresql-client redis-tools \
@@ -148,13 +148,13 @@ and long tasks must account for the deployment's execution deadlines.
 
 ## File persistence
 
-- Files remain between turns while the same sandbox is retained.
+- Files remain between messages while the same sandbox is retained.
 - Without persistent workspace storage, `Terminate` deletes an idle sandbox
   and its local workspace when the configured idle period ends.
 - With persistent workspace storage configured, the same conversation's
   working files survive sandbox replacement. See [deployment](deploy.md).
 - `Pause` preserves the sandbox filesystem only when the selected sandbox
-  service supports and verifies snapshots. The next turn restores those files
+  service supports and verifies snapshots. The next message restores those files
   before the Agent program continues. This restores files, not process memory;
   mounted persistent workspace storage has its own lifecycle.
 - When a sandbox is recreated without a snapshot or persistent workspace,

@@ -1,5 +1,7 @@
 # 通用数据结构
 
+> 复用 AstraBox API 各接口共用的响应格式和标识符。
+
 AstraBox API 会复用以下跨资源数据结构。每个 AstraBox 实例都会在 `/docs` 和
 `/openapi.json` 发布各资源自己的请求和响应结构。
 

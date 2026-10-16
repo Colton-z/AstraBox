@@ -1,47 +1,67 @@
-"""Page-triggered conversations use platform Session creation and turn dispatch."""
+"""Page-triggered conversations: a new conversation of the origin, and one message in it.
+
+A run is that message. Its state is the response that answers it, as the
+conversation's runtime recorded it, so whatever else happens later in the same
+conversation leaves the run's state alone.
+"""
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncConnection
+
 from astrabox.common.utils.errors import APIError
-from astrabox.common.utils.time_utils import parse_iso, utcnow, utcnow_iso
-from astrabox.core.service.orchestrator.agent.agent_service import _AGENT_STARTUP_TIMEOUT_SECONDS
+from astrabox.common.utils.time_utils import parse_iso, utcnow
+from astrabox.persistence.repository.session_runtime_repository import SessionRuntimeRepository
+from astrabox.persistence.sql import transaction
 
 from . import limits
 from .origin import OriginAccess
 from .service import ArtifactService, ArtifactViewer, invalid, opaque_viewer_id
 
+#: Where a run's message came from, on the input the platform records.
+_SOURCE = "artifact"
 
-def run_state(session: dict[str, Any], snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
-    snapshot = snapshot or {}
-    run = session.get("artifact_run", {})
-    error = (
-        run.get("error")
-        or snapshot.get("last_turn_error")
-        or snapshot.get("last_error")
-        or session.get("last_error")
-    )
-    state = snapshot.get("conversation_state") or session.get("state")
-    lifecycle = snapshot.get("session_lifecycle_state") or session.get("state")
-    turn_status = snapshot.get("last_turn_status") or session.get("last_turn_status")
-    if error or turn_status == "FAILED" or lifecycle in {"FAILED", "DELETED"}:
-        result = {"state": "failed", "session_id": session["session_id"]}
-        if error:
-            result["error"] = str(error)
-        return result
-    if lifecycle == "TERMINATED":
-        completed = turn_status == "COMPLETED" or run.get("finished")
-        return {
-            "state": "completed" if completed else "failed",
-            "session_id": session["session_id"],
-        }
-    if state in {"WAITING_FOR_INTERACTION", "WAITING_INPUT"}:
-        return {"state": "waiting_input", "session_id": session["session_id"]}
-    completed = state in {"READY", "IDLE"} and (turn_status == "COMPLETED" or run.get("finished"))
-    return {"state": "completed" if completed else "running", "session_id": session["session_id"]}
+
+def run_message_id(session_id: str) -> str:
+    """The id a run's message is sent under; a run is its conversation's one message."""
+    return f"artifact-run:{session_id}"
+
+
+def run_state(
+    session: dict[str, Any], sent: dict[str, Any] | None, response: dict[str, Any] | None
+) -> dict[str, Any]:
+    """The run's public state from its message and the response to it.
+
+    ``running`` until the response ends, ``waiting_input`` while it waits on
+    a person, then ``completed`` or ``failed`` as the runtime ended it. A
+    stopped response counts as completed: the run is over and did not fail.
+    A run whose conversation was terminated before its response ended has
+    failed, since nothing can answer it any more.
+    """
+    result: dict[str, Any] = {"session_id": session["session_id"]}
+    if sent is None:
+        # The message was never accepted: the run's start failed after its
+        # conversation was created.
+        return {**result, "state": "failed", "error": "the run's message was not accepted"}
+    if sent["state"] == "failed":
+        failure = sent.get("failure") or {}
+        return {**result, "state": "failed", "error": str(failure.get("message") or failure.get("code") or "")}
+    if session.get("state") == "TERMINATED" and (response is None or response["status"] != "ended"):
+        return {**result, "state": "failed", "error": "the run's conversation ended before it answered"}
+    if response is None or response["status"] == "running":
+        return {**result, "state": "running"}
+    if response["status"] == "waiting":
+        return {**result, "state": "waiting_input"}
+    if response.get("outcome") == "failed":
+        error = response.get("error") or {}
+        failed = {**result, "state": "failed"}
+        if error.get("message"):
+            failed["error"] = str(error["message"])
+        return failed
+    return {**result, "state": "completed"}
 
 
 class ArtifactAgentRuns:
@@ -56,6 +76,7 @@ class ArtifactAgentRuns:
     ) -> None:
         self._artifacts, self._origin_access, self._platform = artifacts, origin_access, platform
         self._agent_getter, self._assistant_getter = agent_service_getter, assistant_service_getter
+        self._facts = SessionRuntimeRepository()
 
     @staticmethod
     def _limited() -> APIError:
@@ -65,74 +86,69 @@ class ArtifactAgentRuns:
             status_code=429,
         )
 
-    async def _reserve(self, viewer: ArtifactViewer, reservation: str) -> str:
-        key = "agent_budget:" + opaque_viewer_id("agent-budget", viewer.user.user_id)
+    async def _state(self, session: dict[str, Any]) -> dict[str, Any]:
+        session_id = str(session["session_id"])
+        sent = await self._facts.input_by_client_message_id(session_id, run_message_id(session_id))
+        response_id = str((sent or {}).get("response_id") or "")
+        response = await self._facts.get_response(session_id, response_id) if response_id else None
+        return run_state(session, sent, response)
 
-        async def write(tx: Any) -> None:
-            budget = await self._artifacts.viewers.lock(key, transaction=tx)
+    async def _running(self, session_id: str) -> bool:
+        """Whether the run in ``session_id`` is still running or waiting for input."""
+        session = await self._platform._sessions_repo.get_session(session_id)
+        if not session:
+            return False
+        return (await self._state(session))["state"] in {"running", "waiting_input"}
+
+    async def _reserve(self, viewer: ArtifactViewer, reservation: str) -> None:
+        """Admit one run: one active run per viewer and artifact, ten per viewer an hour.
+
+        A reservation counts as active until its conversation is seen to have
+        finished. Run states come from the Sessions, which the budget
+        transaction cannot read, so they are read before it.
+        """
+        key = "agent_budget:" + opaque_viewer_id("agent-budget", viewer.user.user_id)
+        budgets = self._artifacts.budgets
+        running = {
+            session_id: await self._running(session_id)
+            for session_id in await budgets.run_session_ids(key)
+        }
+
+        async def write(conn: AsyncConnection) -> None:
+            await budgets.lock(key, "agent", conn=conn)
             now = utcnow()
-            entries = []
-            for entry in (budget or {}).get("runs", []):
-                age = (now - parse_iso(entry["created_at"])).total_seconds()
-                sid = entry.get("session_id")
-                active = False
-                if sid:
-                    session = await tx.collection("sessions").find_one({"session_id": sid})
-                    snapshot = await tx.collection("session_snapshots").find_one(
-                        {"session_id": sid}
-                    )
-                    active = bool(
-                        session
-                        and run_state(session, snapshot)["state"] in {"running", "waiting_input"}
-                    )
+            recent, expired = 0, []
+            for run in await budgets.runs(key, conn=conn):
+                age = (now - parse_iso(run["created_at"])).total_seconds()
+                session_id = run["session_id"]
+                if session_id:
+                    # A run whose conversation started after the reads above
+                    # has only just begun.
+                    active = running.get(session_id, True)
                 else:
                     active = age < limits.AGENT_WINDOW_SECONDS
-                if active and entry["artifact_id"] == viewer.artifact_id:
+                if active and run["artifact_id"] == viewer.artifact_id:
                     raise self._limited()
-                if age < limits.AGENT_WINDOW_SECONDS or active:
-                    entries.append(entry)
-            recent = sum(
-                (now - parse_iso(e["created_at"])).total_seconds() < limits.AGENT_WINDOW_SECONDS
-                for e in entries
-            )
+                if age < limits.AGENT_WINDOW_SECONDS:
+                    recent += 1
+                elif not active:
+                    expired.append(run["reservation_id"])
             if recent >= limits.AGENT_PER_HOUR:
                 raise self._limited()
-            entries.append(
-                {
-                    "reservation": reservation,
-                    "artifact_id": viewer.artifact_id,
-                    "created_at": utcnow_iso(),
-                }
+            await budgets.drop_runs(expired, conn=conn)
+            await budgets.add_run(
+                key, reservation, artifact_id=viewer.artifact_id, created_at=now, conn=conn
             )
-            row = {"doc_id": key, "runs": entries}
-            if budget:
-                await self._artifacts.viewers.put(row, transaction=tx)
-            else:
-                await self._artifacts.viewers.insert(row, transaction=tx)
 
-        try:
-            await self._artifacts.transaction(write)
-        except Exception as exc:
-            from astrabox.persistence.repository.backend import DuplicateKeyError
+        await transaction(write)
 
-            if isinstance(exc, DuplicateKeyError):
-                raise self._limited() from exc
-            raise
-        return key
-
-    async def _settle_reservation(self, key: str, reservation: str, session_id: str | None) -> None:
-        async def write(tx: Any) -> None:
-            budget = await self._artifacts.viewers.lock(key, transaction=tx)
-            entries = budget["runs"]
-            if session_id is None:
-                entries = [e for e in entries if e["reservation"] != reservation]
-            else:
-                for entry in entries:
-                    if entry["reservation"] == reservation:
-                        entry["session_id"] = session_id
-            await self._artifacts.viewers.put({"doc_id": key, "runs": entries}, transaction=tx)
-
-        await self._artifacts.transaction(write)
+    async def _settle_reservation(self, reservation: str, session_id: str | None) -> None:
+        """Attach the run's conversation, or drop the reservation when none started."""
+        budgets = self._artifacts.budgets
+        if session_id is None:
+            await budgets.drop_runs([reservation])
+        else:
+            await budgets.settle_run(reservation, session_id)
 
     async def start(self, viewer: ArtifactViewer, prompt: str) -> dict[str, Any]:
         if not isinstance(prompt, str) or not prompt.strip():
@@ -152,7 +168,7 @@ class ArtifactAgentRuns:
                 status_code=503,
             )
         reservation = uuid.uuid4().hex
-        budget_key = await self._reserve(viewer, reservation)
+        await self._reserve(viewer, reservation)
         origin = record["origin"]
         try:
             if origin.get("assistant_id"):
@@ -164,7 +180,7 @@ class ArtifactAgentRuns:
                     viewer.user, origin["agent_id"]
                 )
         except BaseException:
-            await self._settle_reservation(budget_key, reservation, None)
+            await self._settle_reservation(reservation, None)
             raise
         sid = result["session_id"]
         grant = {"artifact_id": viewer.artifact_id, "source": "owner"}
@@ -173,8 +189,7 @@ class ArtifactAgentRuns:
         await self._platform._sessions_repo.update_session(
             sid, {"artifact_grant": grant, "artifact_run": {"artifact_id": viewer.artifact_id}}
         )
-        await self._platform._platform_mcp_binding_repo.attach_session_grant(sid, grant)
-        await self._settle_reservation(budget_key, reservation, sid)
+        await self._settle_reservation(reservation, sid)
         preamble = (
             f"This run was requested by an interactive AstraBox artifact.\n"
             f"Artifact id: {viewer.artifact_id}\nTitle: {record['title']}\nCurrent version: {record['current_version']}\nViewer opaque id: {viewer.id}\n"
@@ -187,45 +202,20 @@ class ArtifactAgentRuns:
             )
             + "Use artifact_guide for the API. Fulfil the page's request below, writing results to its db when appropriate.\n\n"
         )
-        self._platform._spawn_background_task(
-            self._drive(viewer, sid, preamble + prompt), name=f"artifact-agent-{sid}"
+        # The platform holds the message until the conversation's runtime has
+        # started and takes it.
+        await self._platform.session_runtime.send_as(
+            sid,
+            preamble + prompt,
+            author_user_id=viewer.user.user_id,
+            source=_SOURCE,
+            client_message_id=run_message_id(sid),
         )
         return {
             "run_id": sid,
             "session_id": sid,
             "url": f"{self._artifacts._public_base_url}/sessions/{sid}",
         }
-
-    async def _drive(self, viewer: ArtifactViewer, session_id: str, prompt: str) -> None:
-        try:
-            deadline = asyncio.get_running_loop().time() + _AGENT_STARTUP_TIMEOUT_SECONDS
-            while True:
-                session = await self._platform.get_session(viewer.user, session_id)
-                if session.get("state") != "CREATING":
-                    break
-                if asyncio.get_running_loop().time() >= deadline:
-                    raise APIError(
-                        code="ARTIFACT_AGENT_UNAVAILABLE",
-                        message="origin conversation startup timed out",
-                        status_code=503,
-                    )
-                await asyncio.sleep(0.25)
-            # The Agent MCP facade sends through this same Session kernel stream path.
-            async for _ in self._platform.stream_message_events_ds(
-                viewer.user, session_id, prompt, client_message_id=str(uuid.uuid4())
-            ):
-                pass
-            row = await self._platform._sessions_repo.get_session(session_id)
-            await self._platform._sessions_repo.update_session(
-                session_id, {"artifact_run": {**row["artifact_run"], "finished": True}}
-            )
-        except Exception as exc:
-            row = await self._platform._sessions_repo.get_session(session_id)
-            if row:
-                await self._platform._sessions_repo.update_session(
-                    session_id, {"artifact_run": {**row["artifact_run"], "error": str(exc)}}
-                )
-            raise
 
     async def status(self, viewer: ArtifactViewer, run_id: str) -> dict[str, Any]:
         viewer, record, version = await self._artifacts.refresh(viewer)
@@ -236,12 +226,11 @@ class ArtifactAgentRuns:
             not session
             or viewer.user is None
             or session.get("user_id") != viewer.user.user_id
-            or session.get("artifact_run", {}).get("artifact_id") != viewer.artifact_id
+            or (session.get("artifact_run") or {}).get("artifact_id") != viewer.artifact_id
         ):
             raise APIError(
                 code="ARTIFACT_AGENT_RUN_NOT_FOUND",
                 message="artifact run not found",
                 status_code=404,
             )
-        snapshot = await self._platform._session_snapshots_repo.get_snapshot(run_id)
-        return run_state(session, snapshot)
+        return await self._state(session)

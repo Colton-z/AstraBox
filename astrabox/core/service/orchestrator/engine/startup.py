@@ -38,10 +38,6 @@ from astrabox.core.service.orchestrator.engine.provisioning import (
     resolve_session_environment_credentials,
     write_engine_env_file,
 )
-from astrabox.core.service.orchestrator.engine.platform_events import (
-    PlatformEngineEventSink,
-    PlatformResidentOutputSink,
-)
 from astrabox.core.service.orchestrator.runtime.mcp_credentials import (
     mcp_credential_refresher,
     resolve_mcp_credential_plan,
@@ -304,7 +300,6 @@ async def _publish_platform_mcp_binding(
             "root_path": str(
                 identity.get("file_root_source_dir") or identity.get("workspace_source_dir") or ""
             ).strip(),
-            "config_dir": str(identity.get("config_dir") or "").strip(),
             "source": "platform_runtime",
         }
     )
@@ -427,11 +422,6 @@ async def start_platform_runtime(
                 workspace_plan,
                 user_id,
             ),
-            event_sink=PlatformEngineEventSink(session_id),
-            resident_output_sink=PlatformResidentOutputSink(
-                session_id,
-                broker=getattr(platform, "event_broker", None),
-            ),
             transcript_store=transcript_store,
             runtime_state_store=_runtime_state_target(
                 material_request,
@@ -496,14 +486,12 @@ async def attach_platform_runtime(
     vendor reconnect handshake.
     """
 
-    if attach_mode not in {"full", "lightweight", "observe"}:
+    if attach_mode not in {"full", "lightweight"}:
         raise APIError(
             code="ENGINE_ATTACH_MODE_INVALID",
             message=f"unsupported runtime attach_mode: {attach_mode!r}",
             status_code=500,
         )
-    if attach_mode == "observe" and not adapter.supports_unowned_output_attach():
-        raise ValueError(f"engine {adapter.engine_kind!r} cannot attach unowned output")
     target_sandbox = str(sandbox_id or "").strip()
     if not target_sandbox:
         raise APIError(
@@ -798,11 +786,6 @@ async def attach_platform_runtime(
             capability_scope=_workspace_capability_scope(
                 workspace_plan,
                 user_id,
-            ),
-            event_sink=PlatformEngineEventSink(session_id),
-            resident_output_sink=PlatformResidentOutputSink(
-                session_id,
-                broker=getattr(platform, "event_broker", None),
             ),
             transcript_store=transcript_store,
             runtime_state_store=_runtime_state_target(

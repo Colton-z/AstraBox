@@ -14,8 +14,8 @@
  * (Hermes) each select both entries, are bound to that Vault, and then prepare
  * the box their conversation claims. In it the program lists the catalog
  * Skill without using a tool, then calls the managed search tool; the
- * evidence is the stored conversation's own tool blocks — a call that names
- * the tool, by name or inside a Pi codemode script, and a result that is the
+ * evidence is the stored conversation's own tool calls — a call that names
+ * the tool, by name or inside a Pi codemode script, and whose result is the
  * search provider's own answer (its `organic` result set, which may be empty
  * for a live query) rather than an authorization, rate-limit or quota error,
  * which is what the gateway and the Vault credential decide. A gate an
@@ -25,7 +25,7 @@ import { randomUUID } from 'node:crypto';
 import { expect, test, type APIRequestContext } from '@playwright/test';
 
 import { approveGates } from '../fixtures/approveGates';
-import { AstraApi, type MessageRecord } from '../fixtures/astraApi';
+import { AstraApi, messageToolCalls, type MessageRecord, type ToolCallPart } from '../fixtures/astraApi';
 import { engineProfileFor } from '../fixtures/engineProfile';
 import { appPath } from '../fixtures/env';
 import { PlatformApi } from '../fixtures/platformApi';
@@ -109,17 +109,19 @@ function selection(catalog: ExtensionCatalog): { mcp_server_ids: string[]; skill
   return { mcp_server_ids: [String(mcp!.id)], skill_ids: [String(skill!.id)] };
 }
 
-function blocks(messages: MessageRecord[]): Array<Record<string, unknown>> {
-  return messages.flatMap((message) => (Array.isArray(message.blocks) ? message.blocks : []) as Array<Record<string, unknown>>);
+/** The tool calls the messages carry that name the managed search tool, in their input or as the tool. */
+function searchCalls(messages: MessageRecord[]): ToolCallPart[] {
+  return messages.flatMap(messageToolCalls)
+    .filter((call) => JSON.stringify({ toolName: call.toolName, input: call.input }).includes('search_engine'));
 }
 
-function resultText(block: Record<string, unknown>): string {
-  const content = block.content;
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content.map((item) => (typeof item === 'string' ? item : String((item as Record<string, unknown>)?.text ?? JSON.stringify(item)))).join('\n');
-  }
-  return JSON.stringify(content ?? '');
+/**
+ * A tool call's result as text. Engines shape a result differently (a string,
+ * content blocks, or an object around them); whatever the shape, the
+ * provider's answer is inside its JSON.
+ */
+function resultText(output: unknown): string {
+  return typeof output === 'string' ? output : JSON.stringify(output ?? '');
 }
 
 /** List the catalog Skill, then call the managed search tool, in one conversation. */
@@ -132,10 +134,9 @@ async function useTheCatalog(api: AstraApi, sessionId: string): Promise<void> {
   const before = (await api.getMessages(sessionId, 100)).messages.length;
   await api.postTurnInput(sessionId, search());
   await approveGates(api, sessionId);
-  const turn = blocks((await api.getMessages(sessionId, 100)).messages.slice(before));
-  const calls = turn.filter((block) => block.type === 'tool_use' && JSON.stringify(block).includes('search_engine'));
+  const calls = searchCalls((await api.getMessages(sessionId, 100)).messages.slice(before));
   expect(calls.length, 'the program called the managed search_engine tool').toBeGreaterThan(0);
-  const results = turn.filter((block) => block.type === 'tool_result').map(resultText);
+  const results = calls.map((call) => resultText(call.output));
   const answered = results.filter((text) => /"organic"/.test(text.replace(/\\"/g, '"')));
   expect(answered.length, `the search provider answered through the gateway: ${results.join(' | ').slice(0, 600)}`)
     .toBeGreaterThan(0);

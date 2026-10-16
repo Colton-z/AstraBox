@@ -436,16 +436,15 @@ test("Hermes automatically uses the protected gateway credential for a real mode
       `[data-testid="${LIVE_TESTIDS.assistantRow}"][data-assistant-id="${assistantId}"]`,
     );
     await expect(assistantRow).toBeVisible();
-    // The browser output channel is a session-level resource: the client opens
-    // one standing `follow=session` stream when the conversation mounts, and
-    // every turn's frames return on it — there is no send-time GET to await.
-    // Collect the stream responses from before navigation and judge them once
-    // delivery is proven.
+    // The browser follows the session's one stream from the moment the
+    // conversation mounts, and every response arrives on it — there is no
+    // send-time GET to await. Collect the stream responses from before
+    // navigation and judge them once delivery is proven.
     const sessionStreamResponses: PageResponse[] = [];
     page.on("response", (candidate) => {
       if (candidate.request().method() !== "GET") return;
       const url = new URL(candidate.url());
-      if (url.pathname.endsWith("/ai-stream") && url.searchParams.get("follow") === "session") {
+      if (/\/api\/v1\/sessions\/[^/]+\/stream$/.test(url.pathname)) {
         sessionStreamResponses.push(candidate);
       }
     });
@@ -531,11 +530,11 @@ test("Hermes automatically uses the protected gateway credential for a real mode
       timeout: 240_000,
     });
     const sessionStreams = sessionStreamResponses.filter((candidate) =>
-      new URL(candidate.url()).pathname.endsWith(`/api/v1/sessions/${sessionId}/ai-stream`),
+      new URL(candidate.url()).pathname.endsWith(`/api/v1/sessions/${sessionId}/stream`),
     );
     expect(
       sessionStreams.length,
-      "the delivered turn must have a browser output stream for this conversation",
+      "the delivered reply must have a browser output stream for this conversation",
     ).toBeGreaterThan(0);
     for (const stream of sessionStreams) {
       expect(stream.status(), "the browser output stream must be open").toBe(200);

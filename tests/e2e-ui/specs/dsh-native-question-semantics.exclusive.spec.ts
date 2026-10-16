@@ -2,12 +2,15 @@
 import { randomUUID } from 'node:crypto';
 import { expect, test, type Page } from '@playwright/test';
 
-import { AstraApi, messageText, type PendingInteraction } from '../fixtures/astraApi';
+import {
+  AstraApi, answersInput, messageText, messageToolCalls, type MessageRecord, type PendingInteraction,
+} from '../fixtures/astraApi';
 import { revealAssistantProcess } from '../fixtures/assistantProcess';
-import { framesForTurn, sessionEvents } from '../fixtures/dbOracle';
+import {
+  sessionInputRows, sessionInteractionRows, sessionOutputRows, sessionResponseRows,
+} from '../fixtures/dbOracle';
 import { events, messageProseBlocks, textBlockValues, textBlocks } from '../fixtures/dshOutput';
 import type { NativeEvent } from '../fixtures/dshOutput';
-import { savedOutput } from '../fixtures/dshNativeApproval';
 import { enterDshNativePlanMode } from '../fixtures/dshNativePlan';
 import { engineProfileFor } from '../fixtures/engineProfile';
 import { apiPath } from '../fixtures/env';
@@ -50,32 +53,63 @@ async function showQuestion(page: Page, question: Question): Promise<void> {
   }
 }
 
-function expectConsumption(
-  sessionId: string, turnId: string, clientMessageId: string, prompt: string,
-): { inputId: string; messageId: string } {
-  const journal = sessionEvents(sessionId);
-  const accepted = journal.filter((row) => row.event_type === 'command.accepted'
-    && (row.payload as Record<string, unknown>).client_message_id === clientMessageId);
-  expect(accepted).toEqual([expect.objectContaining({ turn_id: turnId,
-    payload: expect.objectContaining({ content: prompt, client_message_id: clientMessageId }),
-  })]);
-  const inputId = String((accepted[0]!.payload as Record<string, unknown>).input_id || '');
-  expect(inputId).not.toBe('');
-  const consumed = journal.filter((row) => row.event_type === 'input.consumed'
-    && (row.payload as Record<string, unknown>).input_id === inputId);
-  expect(consumed).toHaveLength(1);
-  expect(consumed[0]).toMatchObject({ turn_id: turnId,
-    payload: { client_message_id: clientMessageId, content: prompt },
-  });
-  const messageId = String((consumed[0]!.payload as Record<string, unknown>).response_message_id || '');
-  expect(messageId).not.toBe('');
-  expect(framesForTurn(turnId).map((row) => row.payload as Record<string, unknown>)
-    .filter((frame) => frame.type === 'data-input-consumed')).toEqual([
-    expect.objectContaining({ data: expect.objectContaining({
-      inputId, responseMessageId: messageId, content: prompt,
-    }) }),
+/**
+ * The platform's record that the runtime took the page's one message into
+ * `responseId`: the accepted input, admitted into that response, which names
+ * it from its first part. Returns the input's id.
+ */
+function expectAdmission(
+  sessionId: string, responseId: string, clientMessageId: string, prompt: string,
+): string {
+  const accepted = sessionInputRows(sessionId).filter((row) => row.client_message_id === clientMessageId);
+  expect(accepted).toEqual([expect.objectContaining({ content: prompt, state: 'admitted', response_id: responseId })]);
+  const inputId = accepted[0]!.input_id;
+  expect(sessionResponseRows(sessionId).filter((row) => row.response_id === responseId)).toEqual([
+    expect.objectContaining({ origin: 'input', input_ids: [inputId] }),
   ]);
-  return { inputId, messageId };
+  expect(sessionOutputRows(sessionId, responseId).map((row) => row.part)[0]).toMatchObject({
+    type: 'start', messageId: responseId,
+    messageMetadata: { response_id: responseId, input_ids: [inputId], origin: 'input' },
+  });
+  return inputId;
+}
+
+/** The usage the harness last reported for one turn, from its attempts' settlements. */
+function nativeTurnUsage(source: NativeEvent[], nativeTurn: unknown): unknown {
+  const settled = source.filter((event) => (event.type === 'assistant/message' || event.type === 'assistant/attempt')
+    && event.data.turn === nativeTurn && event.data.usage && typeof event.data.usage === 'object');
+  return settled.at(-1)?.data.usage;
+}
+
+/** The input the page sent with `clientMessageId`, as the platform recorded it. */
+function pageInputId(sessionId: string, clientMessageId: string): string {
+  const rows = sessionInputRows(sessionId).filter((row) => row.client_message_id === clientMessageId);
+  expect(rows, 'the page message is one accepted input').toHaveLength(1);
+  return rows[0]!.input_id;
+}
+
+/** Whether a request is the console's answer to one interaction, read from its decoded path. */
+function answersInteraction(url: string, sessionId: string, interactionId: string): boolean {
+  return decodeURIComponent(new URL(url).pathname)
+    === apiPath(`/sessions/${sessionId}/interactions/${interactionId}/answer`);
+}
+
+/**
+ * One response's stored parts close its message at the interaction and reopen
+ * the same message when the answer lets the response continue.
+ */
+function expectPausedAndResumed(frames: Record<string, unknown>[], responseId: string, interactionId: string): void {
+  expect(frames.filter((frame) => frame.type === 'finish').map((frame) => frame.finishReason)).toEqual([
+    'tool-calls', 'stop',
+  ]);
+  expect(frames.filter((frame) => frame.type === 'start').map((frame) => frame.messageId))
+    .toEqual([responseId, responseId]);
+  const interactions = frames.filter((frame) => frame.type === 'data-interaction');
+  expect(interactions.map((frame) => (frame.data as Record<string, unknown>).interaction_id)).toEqual([interactionId]);
+  const paused = frames.findIndex((frame) => frame.type === 'finish');
+  expect(frames.indexOf(interactions[0]!)).toBe(paused - 1);
+  expect(frames[paused + 1]).toMatchObject({ type: 'start', messageId: responseId });
+  expect(frames.at(-1)).toMatchObject({ type: 'finish', finishReason: 'stop' });
 }
 
 const cases = [
@@ -120,8 +154,8 @@ for (const scenario of cases) test(scenario.title, async ({ page, request }, inf
     pending = await api.waitForPendingInteractionOrSettledTurn(sessionId, 60_000);
     expect(pending, 'the real tool must park on its question batch').not.toBeNull();
     const interaction = pending!;
-    const turnId = String(interaction.turn_id || '');
-    expect(turnId).not.toBe('');
+    const responseId = String(interaction.response_id || '');
+    expect(responseId, 'the interaction names the response it pauses').not.toBe('');
     expect(interaction).toMatchObject({ presentation: 'form', tool_name: 'ask_user_question',
       prompt: questions[0]!.header, questions: questions.map((question) => ({ ...question,
         allow_free_text: true, allow_empty_text: false,
@@ -146,14 +180,19 @@ for (const scenario of cases) test(scenario.title, async ({ page, request }, inf
       expect.objectContaining({ data: expect.objectContaining({ turn: call.data.turn }) }),
     ]);
     expect(parked.filter((event) => event.type === 'turn/end')).toEqual([]);
-    const originalConsumption = expectConsumption(sessionId, turnId, clientMessageId, prompt);
-    evidence.parked = { pending: interaction, native: parked, consumption: originalConsumption };
+    const inputId = expectAdmission(sessionId, responseId, clientMessageId, prompt);
+    expect(sessionResponseRows(sessionId).find((row) => row.response_id === responseId))
+      .toMatchObject({ status: 'waiting', outcome: null });
+    expect(sessionInteractionRows(sessionId)).toEqual([expect.objectContaining({
+      interaction_id: interaction.interaction_id, response_id: responseId, status: 'open', answer: null,
+    })]);
+    evidence.parked = { pending: interaction, native: parked, inputId };
 
     for (const reload of [false, true]) {
       if (reload) await page.reload();
       await expect(page.getByTestId('pending-interaction-panel')).toBeVisible();
       const restored = await api.getPendingInteraction(sessionId);
-      expect(restored).toMatchObject({ interaction_id: interaction.interaction_id, turn_id: turnId,
+      expect(restored).toMatchObject({ interaction_id: interaction.interaction_id, response_id: responseId,
         questions: interaction.questions, raw_input: raw,
       });
       for (const question of questions) await showQuestion(page, question);
@@ -183,21 +222,30 @@ for (const scenario of cases) test(scenario.title, async ({ page, request }, inf
       }
     }
     const response = page.waitForResponse((value) => value.request().method() === 'POST'
-      && new URL(value.url()).pathname === apiPath(`/sessions/${sessionId}/interaction-respond`));
+      && answersInteraction(value.url(), sessionId, interaction.interaction_id));
     await panel.getByRole('button', { name: scenario.kind === 'decline'
       ? /Decline to answer|拒绝回答/ : /Submit answer|提交回答/ }).click();
     const answered = await response;
     expect(answered.status()).toBe(200);
     const body = answered.request().postDataJSON() as Record<string, unknown>;
-    expect(body).toEqual({ interaction_id: interaction.interaction_id,
-      answer: { interaction_id: interaction.interaction_id,
-        ...(scenario.kind === 'decline' ? { decline: true } : { answers: expectedAnswers }) },
-    });
+    const answer = { interaction_id: interaction.interaction_id,
+      ...(scenario.kind === 'decline' ? { decline: true } : { answers: expectedAnswers }) };
+    expect(body).toEqual({ answer });
     expect((await answered.json()).data).toMatchObject({ interaction_id: interaction.interaction_id, answered: true });
     evidence.browserAnswer = body;
-    await api.waitForAssistantMessageMatching(sessionId, 0, (message) => messageText(message).includes(receipt));
+    let continued = await api.waitForReplyTo(sessionId, inputId);
+    await expect.poll(async () => {
+      continued = await api.waitForReplyTo(sessionId, inputId);
+      return messageText(continued);
+    }).toContain(receipt);
     await api.waitForSessionReady(sessionId);
     await expect(panel).toHaveCount(0);
+    // The answer continued the response it paused; it is not another message.
+    expect(continued.id).toBe(responseId);
+    expect(sessionInputRows(sessionId).map((row) => row.content)).toEqual([prompt]);
+    expect(sessionInteractionRows(sessionId)).toEqual([expect.objectContaining({
+      interaction_id: interaction.interaction_id, response_id: responseId, status: 'answered', answer,
+    })]);
     await expect.poll(() => nativeSource(sessionId).filter((event) => event.type === 'turn/end')).toHaveLength(1);
     const source = nativeSource(sessionId);
     const results = source.filter((event) => event.type === 'tool/result');
@@ -228,8 +276,8 @@ for (const scenario of cases) test(scenario.title, async ({ page, request }, inf
       && (event.data.source as Record<string, unknown> | undefined)?.kind === 'user');
     expect(nativeInput).toHaveLength(1);
     expect(textBlocks(nativeInput[0]!.data.content)).toBe(prompt);
-    expect(expectConsumption(sessionId, turnId, clientMessageId, prompt)).toEqual(originalConsumption);
-    const frames = framesForTurn(turnId).map((row) => row.payload as Record<string, unknown>);
+    expect(expectAdmission(sessionId, responseId, clientMessageId, prompt)).toBe(inputId);
+    const frames = sessionOutputRows(sessionId, responseId).map((row) => row.part);
     expect(frames.filter((frame) => frame.type === 'tool-input-available')).toEqual([
       expect.objectContaining({ toolCallId: call.data.callId, toolName: 'ask_user_question', input: { questions } }),
     ]);
@@ -238,35 +286,31 @@ for (const scenario of cases) test(scenario.title, async ({ page, request }, inf
         output: { content: tool.content, isError: scenario.kind === 'decline' } }),
     ]);
     expect(frames.filter((frame) => frame.type === 'error')).toEqual([]);
-    expect(framesForTurn(turnId).filter((row) => (row.payload as Record<string, unknown>).type === 'data-result')).toEqual([
-      expect.objectContaining({
-        engine_kind: 'deepseek_harness',
-        engine_turn_id: (nativeInput[0]!.data.source as Record<string, unknown>).rpcId,
-        payload: expect.objectContaining({ data: expect.objectContaining({ finish_reason: 'stop' }) }),
-      }),
-    ]);
-    expect(frames.filter((frame) => frame.type === 'finish').at(-1)).toMatchObject({ finishReason: 'stop' });
+    expectPausedAndResumed(frames, responseId, interaction.interaction_id);
+    const usage = nativeTurnUsage(source, call.data.turn);
+    expect(usage).toEqual(expect.any(Object));
+    expect(sessionResponseRows(sessionId)).toEqual([expect.objectContaining({ response_id: responseId,
+      origin: 'input', status: 'ended', outcome: 'completed', native_reason: 'completed', input_ids: [inputId], usage,
+    })]);
     const history = (await api.getMessages(sessionId)).messages;
-    const retained = history.filter((message) => message.role === 'assistant' && message.turn_id === turnId);
-    expect(retained).toHaveLength(1);
-    expect(retained[0]!.message_id).toBe(originalConsumption.messageId);
+    const retained = history.filter((message) => message.role === 'assistant');
+    expect(retained.map((message) => message.id)).toEqual([responseId]);
+    expect(answersInput(retained[0]!, inputId)).toBe(true);
     const nativeMessages = source.filter((event) => event.type === 'assistant/message');
     expect(messageProseBlocks(retained[0]!)).toEqual(nativeMessages.flatMap((event) =>
       textBlockValues((event.data.message as Record<string, unknown>).content)));
     expect(textBlocks((nativeMessages.at(-1)!.data.message as Record<string, unknown>).content)).toBe(receipt);
-    expect((retained[0]!.blocks ?? []).filter((block) => block.type === 'tool_use')).toEqual([
-      expect.objectContaining({ id: call.data.callId, name: 'ask_user_question',
-        input: JSON.parse(String(call.data.arguments)) }),
-    ]);
     expect(tool.content).toEqual([{ type: 'text', text: textBlocks(tool.content) }]);
-    expect((retained[0]!.blocks ?? []).filter((block) => block.type === 'tool_result')).toEqual([
-      expect.objectContaining({ tool_use_id: call.data.callId,
-        content: expect.stringContaining(textBlocks(tool.content)) }),
-    ]);
-    const storedBlocks = JSON.stringify(retained[0]!.blocks);
+    // History holds the call once, with the supplier's arguments and the exact
+    // result it recorded.
+    expect(messageToolCalls(retained[0]!)).toEqual([expect.objectContaining({
+      toolCallId: call.data.callId, toolName: 'ask_user_question', input: JSON.parse(String(call.data.arguments)),
+      state: 'output-available', output: { content: tool.content, isError: scenario.kind === 'decline' },
+    })]);
+    const storedParts = JSON.stringify(retained[0]!.parts);
     for (const reload of [false, true]) {
       if (reload) await page.reload();
-      const reply = page.locator(`[data-message-id="${originalConsumption.messageId}"]`);
+      const reply = page.locator(`[data-message-id="${responseId}"]`);
       await expect(reply).toContainText(receipt);
       await expect(reply.getByTestId('assistant-turn-process')).toHaveCount(1);
       await revealAssistantProcess(page, { within: reply });
@@ -280,9 +324,8 @@ for (const scenario of cases) test(scenario.title, async ({ page, request }, inf
         await expect(card).toContainText('pgvector');
         await expect(card).toContainText('PostGIS');
       }
-      const reread = (await api.getMessages(sessionId)).messages
-        .find((message) => message.message_id === originalConsumption.messageId);
-      expect(JSON.stringify(reread!.blocks)).toBe(storedBlocks);
+      const reread = (await api.getMessages(sessionId)).messages.find((message) => message.id === responseId);
+      expect(JSON.stringify(reread!.parts)).toBe(storedParts);
     }
     evidence.completed = { native: source, frames, history };
     if (scenario.kind === 'decline') {
@@ -290,12 +333,14 @@ for (const scenario of cases) test(scenario.title, async ({ page, request }, inf
       const nextPrompt = `Reply exactly ${nextReceipt}. Do not use tools or delegate.`;
       const nextDelivery = await sendPrompt(page, sessionId, nextPrompt);
       const nextClientMessageId = String(nextDelivery.request().postDataJSON().client_message_id || '');
-      const next = await api.waitForAssistantMessageMatching(sessionId, 0,
-        (message) => messageText(message) === nextReceipt);
+      expect(nextClientMessageId).not.toBe('');
+      const next: MessageRecord = await api.waitForReplyTo(sessionId, pageInputId(sessionId, nextClientMessageId));
+      expect(messageText(next)).toBe(nextReceipt);
+      expect(next.metadata?.outcome).toBe('completed');
       await api.waitForSessionReady(sessionId);
-      expect(next.turn_id).not.toBe(turnId);
-      expect(next.message_id).not.toBe(originalConsumption.messageId);
-      expectConsumption(sessionId, next.turn_id, nextClientMessageId, nextPrompt);
+      expect(next.id).not.toBe(responseId);
+      expectAdmission(sessionId, next.id, nextClientMessageId, nextPrompt);
+      expect(sessionInputRows(sessionId).map((row) => row.content)).toEqual([prompt, nextPrompt]);
       await expect.poll(() => nativeSource(sessionId).filter((event) => event.type === 'turn/end')).toHaveLength(2);
       const terminal = source.find((event) => event.type === 'turn/end')!;
       const later = nativeSource(sessionId).filter((event) => event.seq > terminal.seq);
@@ -312,27 +357,29 @@ for (const scenario of cases) test(scenario.title, async ({ page, request }, inf
         .toEqual([nextPrompt]);
       expect(later.filter((event) => event.type === 'assistant/message').flatMap((event) =>
         textBlockValues((event.data.message as Record<string, unknown>).content))).toEqual([nextReceipt]);
-      const nextFrames = framesForTurn(next.turn_id).map((row) => row.payload as Record<string, unknown>);
+      const nextFrames = sessionOutputRows(sessionId, next.id).map((row) => row.part);
       expect(nextFrames.filter((frame) => frame.type === 'error')).toEqual([]);
       expect(nextFrames.filter((frame) => frame.type === 'finish')).toEqual([
         expect.objectContaining({ finishReason: 'stop' }),
       ]);
+      expect(sessionResponseRows(sessionId).find((row) => row.response_id === next.id))
+        .toMatchObject({ status: 'ended', outcome: 'completed', native_reason: 'completed' });
       const laterHistory = (await api.getMessages(sessionId)).messages;
-      expect(messageProseBlocks(laterHistory.find((message) => message.message_id === next.message_id)!))
+      expect(messageProseBlocks(laterHistory.find((message) => message.id === next.id)!))
         .toEqual([nextReceipt]);
-      expect(JSON.stringify(laterHistory.find((message) => message.message_id === originalConsumption.messageId)!.blocks))
-        .toBe(storedBlocks);
-      const priorProcess = page.locator(`[data-message-id="${originalConsumption.messageId}"]`)
+      expect(JSON.stringify(laterHistory.find((message) => message.id === responseId)!.parts))
+        .toBe(storedParts);
+      const priorProcess = page.locator(`[data-message-id="${responseId}"]`)
         .getByTestId('assistant-turn-process-trigger');
       await priorProcess.click();
       await expect(priorProcess).toHaveAttribute('aria-expanded', 'false');
       for (const reload of [false, true]) {
         if (reload) await page.reload();
-        await expect(page.locator(`[data-message-id="${next.message_id}"]`)).toContainText(nextReceipt);
-        await expect(page.locator(`[data-message-id="${originalConsumption.messageId}"]`)).toContainText(receipt);
+        await expect(page.locator(`[data-message-id="${next.id}"]`)).toContainText(nextReceipt);
+        await expect(page.locator(`[data-message-id="${responseId}"]`)).toContainText(receipt);
         await expect(page.getByTestId('composer-prompt')).toBeEnabled();
       }
-      evidence.next = { turnId: next.turn_id, native: later, frames: nextFrames, history: laterHistory };
+      evidence.next = { responseId: next.id, native: later, frames: nextFrames, history: laterHistory };
     }
   } finally {
     if (sessionId) {
@@ -341,7 +388,9 @@ for (const scenario of cases) test(scenario.title, async ({ page, request }, inf
       evidence.pending = pending;
       for (const [key, read] of [
         ['nativeAtExit', () => nativeRows(sessionId)],
-        ['journalAtExit', () => sessionEvents(sessionId)],
+        ['inputsAtExit', () => sessionInputRows(sessionId)],
+        ['responsesAtExit', () => sessionResponseRows(sessionId)],
+        ['interactionsAtExit', () => sessionInteractionRows(sessionId)],
       ] as const) {
         try { evidence[key] = read(); }
         catch (error) { evidence[key] = { observationError: String(error) }; }
@@ -392,8 +441,8 @@ test('DSH preserves complete native plan details and resumes the reviewed turn',
     const pending = await api.waitForPendingInteractionOrSettledTurn(sessionId, 60_000);
     expect(pending, 'the native review must wait for its human answer').not.toBeNull();
     const interaction = pending!;
-    const turnId = String(interaction.turn_id || '');
-    expect(turnId).not.toBe('');
+    const responseId = String(interaction.response_id || '');
+    expect(responseId, 'the interaction names the response it pauses').not.toBe('');
     await expect.poll(() => nativeSource(sessionId).filter((event) => event.type === 'tool/call')).toHaveLength(1);
     const call = nativeSource(sessionId).find((event) => event.type === 'tool/call')!;
     expect(call.data).toMatchObject({ name: 'exit_plan_mode', callId: expect.any(String), turn: expect.any(Number) });
@@ -414,14 +463,19 @@ test('DSH preserves complete native plan details and resumes the reviewed turn',
     ]);
     expect(held.filter((event) => event.type === 'turn/end')).toEqual([]);
     expect(held.filter((event) => event.type === 'tool/result')).toEqual([]);
-    const consumed = expectConsumption(sessionId, turnId, clientMessageId, prompt);
-    evidence.held = { pending: interaction, native: held, consumption: consumed };
+    const inputId = expectAdmission(sessionId, responseId, clientMessageId, prompt);
+    expect(sessionResponseRows(sessionId).find((row) => row.response_id === responseId))
+      .toMatchObject({ status: 'waiting', outcome: null });
+    expect(sessionInteractionRows(sessionId)).toEqual([expect.objectContaining({
+      interaction_id: interaction.interaction_id, response_id: responseId, status: 'open', answer: null,
+    })]);
+    evidence.held = { pending: interaction, native: held, inputId };
     const panel = page.getByTestId('pending-interaction-panel');
     for (const reload of [false, true]) {
       if (reload) await page.reload();
       await expect(panel).toBeVisible();
       const restored = await api.getPendingInteraction(sessionId);
-      expect(restored).toMatchObject({ interaction_id: interaction.interaction_id, turn_id: turnId,
+      expect(restored).toMatchObject({ interaction_id: interaction.interaction_id, response_id: responseId,
         tool_name: call.data.name, tool_call_id: call.data.callId, questions: interaction.questions, raw_input: raw,
       });
       const group = panel.getByRole('group', { name: question.header, exact: true });
@@ -434,18 +488,24 @@ test('DSH preserves complete native plan details and resumes the reviewed turn',
     }
     await panel.getByRole('radio', { name: /Approve/ }).click();
     const response = page.waitForResponse((value) => value.request().method() === 'POST'
-      && new URL(value.url()).pathname === apiPath(`/sessions/${sessionId}/interaction-respond`));
+      && answersInteraction(value.url(), sessionId, interaction.interaction_id));
     await panel.getByRole('button', { name: /Submit answer|提交回答/ }).click();
     const answered = await response;
     expect(answered.status()).toBe(200);
-    expect(answered.request().postDataJSON()).toEqual({ interaction_id: interaction.interaction_id,
-      answer: { interaction_id: interaction.interaction_id,
-        answers: [{ question_id: question.id, option_label: 'Approve' }] },
-    });
+    const answer = { interaction_id: interaction.interaction_id,
+      answers: [{ question_id: question.id, option_label: 'Approve' }] };
+    expect(answered.request().postDataJSON()).toEqual({ answer });
     expect((await answered.json()).data).toMatchObject({ interaction_id: interaction.interaction_id, answered: true });
-    await api.waitForAssistantMessageMatching(sessionId, 0, (message) => messageText(message) === receipt);
+    const replied = await api.waitForReplyTo(sessionId, inputId);
+    expect(messageText(replied)).toBe(receipt);
     await api.waitForSessionReady(sessionId);
     await expect(panel).toHaveCount(0);
+    // The approval continued the reviewed response; it is not another message.
+    expect(replied.id).toBe(responseId);
+    expect(sessionInputRows(sessionId).map((row) => row.content)).toEqual([prompt]);
+    expect(sessionInteractionRows(sessionId)).toEqual([expect.objectContaining({
+      interaction_id: interaction.interaction_id, response_id: responseId, status: 'answered', answer,
+    })]);
     await expect.poll(() => nativeSource(sessionId).filter((event) => event.type === 'turn/end')).toHaveLength(1);
     const source = nativeSource(sessionId);
     expect(source.filter((event) => event.type === 'tool/call')).toEqual([call]);
@@ -461,16 +521,16 @@ test('DSH preserves complete native plan details and resumes the reviewed turn',
     expect(tool).toMatchObject({ role: 'tool', toolCallId: call.data.callId, isError: false });
     expect(results[0]!.seq).toBeGreaterThan(call.seq);
     expect(terminal.seq).toBeGreaterThan(results[0]!.seq);
-    expect(expectConsumption(sessionId, turnId, clientMessageId, prompt)).toEqual(consumed);
+    expect(expectAdmission(sessionId, responseId, clientMessageId, prompt)).toBe(inputId);
     const inputs = source.filter((event) => event.type === 'user/message'
       && (event.data.source as Record<string, unknown> | undefined)?.kind === 'user');
     expect(inputs).toHaveLength(1);
     expect(textBlocks(inputs[0]!.data.content)).toBe(prompt);
     const messages = source.filter((event) => event.type === 'assistant/message');
     expect(textBlocks((messages.at(-1)!.data.message as Record<string, unknown>).content)).toBe(receipt);
-    const usage = messages.at(-1)!.data.usage;
+    const usage = nativeTurnUsage(source, call.data.turn);
     expect(usage).toEqual(expect.any(Object));
-    const frames = framesForTurn(turnId).map((row) => row.payload as Record<string, unknown>);
+    const frames = sessionOutputRows(sessionId, responseId).map((row) => row.part);
     expect(frames.filter((frame) => frame.type === 'tool-input-available')).toEqual([
       expect.objectContaining({ toolCallId: call.data.callId, toolName: 'exit_plan_mode', input: { plan } }),
     ]);
@@ -478,40 +538,28 @@ test('DSH preserves complete native plan details and resumes the reviewed turn',
       expect.objectContaining({ toolCallId: call.data.callId, output: { content: tool.content, isError: false } }),
     ]);
     expect(frames.filter((frame) => frame.type === 'error')).toEqual([]);
-    expect(framesForTurn(turnId).filter((row) => (row.payload as Record<string, unknown>).type === 'data-result')).toEqual([
-      expect.objectContaining({
-        engine_kind: 'deepseek_harness',
-        engine_turn_id: (inputs[0]!.data.source as Record<string, unknown>).rpcId,
-        engine_output_cursor: expect.objectContaining({ sessionId: nativeSessionId, seq: terminal.seq }),
-        payload: expect.objectContaining({ data: expect.objectContaining({ finish_reason: 'stop', usage }) }),
-      }),
-    ]);
-    expect(frames.filter((frame) => frame.type === 'finish')).toEqual([
-      // Parking ends the first UI stream segment; approval resumes this same turn.
-      expect.objectContaining({ finishReason: 'tool-calls' }),
-      expect.objectContaining({ finishReason: 'stop' }),
-    ]);
+    // Parking ends the first message segment; approval resumes this same response.
+    expectPausedAndResumed(frames, responseId, interaction.interaction_id);
+    // The platform's record of the ending carries the supplier's own last usage.
+    expect(sessionResponseRows(sessionId)).toEqual([expect.objectContaining({ response_id: responseId,
+      origin: 'input', status: 'ended', outcome: 'completed', native_reason: 'completed', input_ids: [inputId], usage,
+    })]);
     const history = (await api.getMessages(sessionId)).messages;
     const replies = history.filter((message) => message.role === 'assistant');
     expect(replies).toHaveLength(1);
     const reply = replies[0]!;
-    expect(reply).toMatchObject({ turn_id: turnId, message_id: consumed.messageId });
+    expect(reply.id).toBe(responseId);
+    expect(answersInput(reply, inputId)).toBe(true);
     expect(messageProseBlocks(reply)).toEqual(messages.flatMap((event) =>
       textBlockValues((event.data.message as Record<string, unknown>).content)));
-    expect((reply.blocks ?? []).filter((block) => block.type === 'tool_use')).toEqual([
-      expect.objectContaining({ id: call.data.callId, name: 'exit_plan_mode', input: { plan } }),
-    ]);
-    const savedResults = (reply.blocks ?? []).filter((block) => block.type === 'tool_result');
-    expect(savedResults).toHaveLength(1);
-    expect(savedResults[0]!.tool_use_id).toBe(call.data.callId);
-    expect(savedOutput(savedResults[0]!.content)).toEqual({ content: tool.content, isError: false });
-    expect((reply.blocks ?? []).filter((block) => block.type === 'result')).toEqual([
-      expect.objectContaining({ usage }),
-    ]);
-    const savedBlocks = JSON.stringify(reply.blocks);
+    expect(messageToolCalls(reply)).toEqual([expect.objectContaining({
+      toolCallId: call.data.callId, toolName: 'exit_plan_mode', input: { plan },
+      state: 'output-available', output: { content: tool.content, isError: false },
+    })]);
+    const savedParts = JSON.stringify(reply.parts);
     for (const reload of [false, true]) {
       if (reload) await page.reload();
-      const rendered = page.locator(`[data-message-id="${consumed.messageId}"]`);
+      const rendered = page.locator(`[data-message-id="${responseId}"]`);
       await expect(rendered).toContainText(receipt);
       await revealAssistantProcess(page, { within: rendered });
       const card = rendered.locator(`[data-tool-call-id="${String(call.data.callId)}"]`);
@@ -523,7 +571,7 @@ test('DSH preserves complete native plan details and resumes the reviewed turn',
         await expect(card).toContainText(line.replace(/^(?:#|-)+\s+/, ''));
       }
       expect(JSON.stringify((await api.getMessages(sessionId)).messages
-        .find((message) => message.message_id === consumed.messageId)!.blocks)).toBe(savedBlocks);
+        .find((message) => message.id === responseId)!.parts)).toBe(savedParts);
       await expect(page.getByTestId('composer-prompt')).toBeEnabled();
     }
     evidence.completed = { native: source, frames, history };
@@ -531,7 +579,9 @@ test('DSH preserves complete native plan details and resumes the reviewed turn',
     evidence.sessionId = sessionId;
     evidence.agentId = agentId;
     if (sessionId) for (const [key, read] of [
-      ['nativeAtExit', () => nativeRows(sessionId)], ['journalAtExit', () => sessionEvents(sessionId)],
+      ['nativeAtExit', () => nativeRows(sessionId)], ['inputsAtExit', () => sessionInputRows(sessionId)],
+      ['responsesAtExit', () => sessionResponseRows(sessionId)],
+      ['interactionsAtExit', () => sessionInteractionRows(sessionId)],
     ] as const) {
       try { evidence[key] = read(); }
       catch (error) { evidence[key] = { observationError: String(error) }; }

@@ -1,5 +1,7 @@
 # 容器参考
 
+> 了解 Agent 沙箱提供的工作区、软件、资源和持久化能力。
+
 AstraBox 的 Environment 会让每个 Agent 在容器中运行。AstraBox 是自托管软件，
 因此操作系统、命令和资源由沙箱镜像与部署配置决定。
 
@@ -56,13 +58,22 @@ AstraBox 自带的 Agent 镜像将 `WORKSPACE` 设置为 `/workspace`，未指�
 Session 的文件面板和 API 直接操作这个工作区；AstraBox 不会另外创建 File
 资源，也不使用 `mount_path`。参见[文件](files.md)。
 
+平台的运行日志和传输缓冲区应放在这个目录之外。隔离运行的引擎服务把它们保存在自己的
+私有 Home 中，启动失败时的诊断也读取这些位置。内置的 AIO 浏览器保持停用，它启动时的
+下载目录配置为 `/tmp/astrabox-browser-downloads`，而不是用户工作区中的文件夹。自定义
+镜像同样要把服务日志和缓存放在工作区之外。
+
+引擎的指令文件属于任务上下文，不是运行产物。Pi 和 DeepSeek Harness 会把配置的 Agent
+指令写入工作区的 `AGENTS.md`，替换该文件。不设置 Agent 指令即可保留代码仓库自己的
+指令文件。
+
 ## 安装额外软件
 
 每个 Session 都需要的软件应添加到沙箱镜像中。请从所选 Agent 程序对应的
 AstraBox 镜像开始构建，标签与你运行的 AstraBox 版本相同：
 
 ```dockerfile
-FROM ghcr.io/colton-z/astrabox-sandbox-claude-code:0.1.3
+FROM ghcr.io/colton-z/astrabox-sandbox-claude-code:0.1.9
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends postgresql-client redis-tools \
@@ -84,12 +95,27 @@ Session 启动时，AstraBox 不会安装通用依赖列表，也不会执行通
 沙箱需要的系统账号、Agent 程序和后台服务也必须预先构建到镜像中，确保按需创建
 和预热的沙箱行为一致。
 
+### 自定义基础镜像与启动
+
+在对应的内置镜像基础上扩展是受支持的接入方式。这样会保留所选引擎、OpenSandbox 执行
+服务、AstraBox 运行时辅助程序、工作负载账号和启动配置。安装额外软件时，不要移除这些
+组件，也不要替换它们的启动服务。
+
+使用无关的基础镜像时，需要复现该引擎镜像的 Dockerfile 约定；AstraBox 目前不提供适用于
+任意基础镜像的独立运行时安装程序。只复制 runner 脚本不会安装它的依赖、执行服务或账号
+设置。
+
+平台会显式提供引擎的沙箱启动命令：Claude Code 和 Pi 使用 `/opt/astrabox/boot.sh`，它
+启动各自的服务并调用 AIO 的 `/opt/gem/run.sh`；Codex 和 DeepSeek Harness 使用
+`/opt/gem/run.sh`，配合镜像中安装的 Supervisor 服务。只修改派生镜像的 Docker
+`ENTRYPOINT` 不会改变这条由平台提供的命令。
+
 每个内置镜像还带有 OpenSandbox 的执行服务 execd `v1.1.0`，位于
 `/opt/astrabox/opensandbox/execd`，旁边是 OpenSandbox 的 `bootstrap.sh` 启动脚本和
 镜像自带的隔离策略 `isolation.toml`。AstraBox 通过端口 `44772` 上的 execd 访问沙箱内的
 文件、命令和长驻进程（例如终端的 shell 和 Pi 程序）：OpenSandbox 会在它创建的每个沙箱中
-启动一个 execd；一个 Pi Agent 的多段对话共享同一沙箱时，每段对话自己的 execd 由镜像中的
-这一份运行。自定义镜像需要保留这些文件。
+启动一个 execd；一个 Pi Agent 的多段对话共享同一沙箱时，镜像中的这份 execd 会为
+每段对话各运行一个实例。自定义镜像需要保留这些文件。
 
 ## 资源与超时
 
@@ -103,15 +129,15 @@ AstraBox 当前的 OpenSandbox 创建配方为每个沙箱设置 `4` CPU 和 `4G
 
 ## 文件持久化
 
-- 同一个沙箱存续期间，文件会在 Turn 之间保留；
+- 同一个沙箱存续期间，文件会在消息之间保留；
 - 未配置持久工作区存储时，“终止”会在闲置期限结束后删除沙箱及其本地工作区；
 - 配置持久工作区存储后，同一段对话的工作文件可在沙箱替换后保留，配置见[部署](deploy.md)；
-- “暂停”只在所选沙箱服务支持并验证快照时保存沙箱文件系统；下一个 Turn 会
+- “暂停”只在所选沙箱服务支持并验证快照时保存沙箱文件系统；下一条消息会
   先恢复这些文件，再继续运行 Agent 程序。恢复的是文件，不是进程内存；挂载的持久工作区
   存储有独立的生命周期；
 - 没有快照或持久工作区时，重新创建沙箱不会保留先前的本地工作文件。
 
-原生对话状态单独保存在 AstraBox 数据库中。恢复这些状态不依赖持久工作区存储卷。
+原生对话状态单独保存在 AstraBox 数据库中。恢复这些状态不依赖持久工作区卷。
 
 > 容器文件系统是工作目录。重要文件应通过 Session 文件面板或 API 下载，代码
 > 修改应 commit 并 push，需要长期保留的结果应写入其他外部存储。
@@ -131,8 +157,8 @@ printf 'HOME=%s\nUSER=%s\nSHELL=%s\nLANG=%s\nWORKSPACE=%s\n' \
   "$HOME" "${USER:-}" "${SHELL:-}" "${LANG:-}" "${WORKSPACE:-}"
 ```
 
-模型凭证和关联 Credential Vault 中的凭证会根据 Environment 与 Credential
-Vault 配置提供给 Agent 程序。不要在日志或任务输出中打印密钥。
+模型凭证和关联 Credential Vault 中的凭证按 Environment 与 Credential
+Vault 的配置提供。不要在日志或任务输出中打印密钥。
 
 ## 相关文档
 

@@ -1,13 +1,13 @@
 /** An already-open Agents panel follows real native children, not only final results. */
 import { randomUUID } from 'node:crypto';
-import { expect, test, type Page, type Request } from '@playwright/test';
+import { expect, test, type Page, type Request, type Response } from '@playwright/test';
 
 import { revealAssistantProcess } from '../fixtures/assistantProcess';
-import { AstraApi, type ChildRunMessagePage } from '../fixtures/astraApi';
+import { AstraApi, type ChildRunMessagePage, type ChildRunRecord, type SessionRecord } from '../fixtures/astraApi';
 import { expectChildToolCard, expectToolBlocks } from '../fixtures/childToolAssertions';
 import { engineCases, engineProfileFor } from '../fixtures/engineProfile';
 import { apiPath } from '../fixtures/env';
-import { sessionEvents } from '../fixtures/dbOracle';
+import { sessionInputRows, sessionResponseRows } from '../fixtures/dbOracle';
 import { PlatformApi } from '../fixtures/platformApi';
 import {
   childPrompt, childToolEvidence, codexWaits, expectNativeMode, launchEvidence, nativeRows,
@@ -15,7 +15,7 @@ import {
 } from '../fixtures/nativeChildLifecycle';
 import { trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
-import { aiStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
+import { sessionStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
 
 const sessions = trackSessions();
 let sessionId = '';
@@ -25,9 +25,10 @@ test.afterEach(async ({ request, page }, info) => {
   if (!sessionId || !['failed', 'timedOut', 'interrupted'].includes(String(info.status))) return;
   const api = new AstraApi(request);
   const reads = await Promise.allSettled([
-    api.getSession(sessionId), api.getMessages(sessionId, 50), aiStreamBodies(page),
+    api.getSession(sessionId), api.getMessages(sessionId, 50), sessionStreamBodies(page),
     Promise.resolve().then(() => nativeRows(sessionId)),
-    Promise.resolve().then(() => sessionEvents(sessionId)),
+    Promise.resolve().then(() => sessionInputRows(sessionId)),
+    Promise.resolve().then(() => sessionResponseRows(sessionId)),
   ]);
   await info.attach('native-child-lifecycle-scene', {
     body: JSON.stringify({ sessionId, observations, reads }), contentType: 'application/json',
@@ -44,6 +45,14 @@ function childText(transcript: ChildRunMessagePage, role: string): string {
 async function openAgents(page: Page): Promise<void> {
   await page.getByRole('tab', { name: /^Agents/ }).click();
   await expect(page.getByTestId('subagent-agents-panel')).toBeVisible();
+}
+
+/** The input id `POST /inputs` answered the page with. */
+async function inputIdOf(response: Response): Promise<string> {
+  const body = await response.json() as { data?: { input_id?: string } };
+  const inputId = String(body.data?.input_id || '');
+  expect(inputId, 'the page receives a receipt for its message').not.toEqual('');
+  return inputId;
 }
 
 const profiles = engineCases().filter((profile) => profile.contracts.background_subagent === true);
@@ -113,7 +122,7 @@ for (const declared of profiles) {
       const panel = page.getByTestId('subagent-agents-panel');
       const rows = panel.getByTestId('subagent-agent-row');
       await expect(rows).toHaveCount(0);
-      await sendPrompt(page, sessionId, childPrompt(profile, mode, gate));
+      const launchInput = await inputIdOf(await sendPrompt(page, sessionId, childPrompt(profile, mode, gate)));
 
       // File/DB observers do not call child-runs: a test-side catalog read must
       // not repair a missing production discovery notification before the UI.
@@ -171,11 +180,13 @@ for (const declared of profiles) {
       await expect(row.locator('svg.animate-spin'), 'the child must still be running before release').toHaveCount(1);
       const status = page.getByTestId('run-view').locator('header').getByTestId('status-pill');
       if (mode === 'background') {
-        await expect(status).toHaveText(/Running in background|后台任务运行中/, { timeout: 20_000 });
+        // The launch reply has ended while its child is still held: the parent
+        // answered, and the person can write again while the child works.
+        const launchReply = await api.waitForReplyTo(sessionId, launchInput, { timeoutMs: 20_000 });
+        expect(launchReply.metadata?.outcome, 'the launch reply completes without waiting for its child').toBe('completed');
         await expect(page.getByTestId('composer-prompt')).toBeEnabled();
         const background = await api.getSession(sessionId);
-        expect(background.state).toBe('BACKGROUND_RUNNING');
-        expect(background.current_turn_id).toBeFalsy();
+        expect(background.current_responses ?? [], 'no response runs while only the child works').toEqual([]);
       } else {
         await expect(status).toHaveAttribute('data-state', 'PROCESSING');
       }
@@ -218,29 +229,35 @@ for (const declared of profiles) {
       observations.push({ liveTool });
       const liveTranscript = await api.getChildRunMessages(sessionId, childId!);
       expect(childText(liveTranscript, 'user'), 'the child transcript must retain its real delegated task').toContain(marker);
-      observations.push({ running, liveTranscript, liveStream: await aiStreamBodies(page) });
+      observations.push({ running, liveTranscript, liveStream: await sessionStreamBodies(page) });
       expectToolBlocks(liveTranscript, liveTool);
       await expectChildToolCard(page, liveTool, gate);
 
       if (mode === 'background') {
-        // A cold page must recover background activity from the Session read,
-        // not from the previous tab's streamed child registry or chat state.
+        // A cold page must recover background activity from the server's
+        // reads — the Session and its child runs — not from the previous
+        // tab's streamed child registry or chat state.
         const coldSessionRead = page.waitForRequest((request) => request.method() === 'GET'
           && !request.isNavigationRequest()
           && new URL(request.url()).pathname === apiPath(`/sessions/${sessionId}`));
+        const coldCatalogRead = page.waitForResponse((response) => isCatalogRead(response.request()));
         await page.reload({ waitUntil: 'domcontentloaded' });
         const coldResponse = await (await coldSessionRead).response();
         expect(coldResponse, 'the cold page must receive its newly requested Session authority').not.toBeNull();
         expect(coldResponse!.status()).toBe(200);
         expect(await coldResponse!.finished()).toBeNull();
-        const coldSession = (await coldResponse!.json()).data;
-        expect(coldSession.state).toBe('BACKGROUND_RUNNING');
-        expect(coldSession.current_turn_id).toBeFalsy();
-        expect(coldSession.last_turn_status).toBe('COMPLETED');
+        const coldSession = (await coldResponse!.json()).data as SessionRecord;
+        expect(coldSession.current_responses ?? [], 'no response runs while only the child works').toEqual([]);
+        expect(coldSession.last_response).toMatchObject({ status: 'ended', outcome: 'completed' });
         await expect(page.getByTestId('run-view')).toBeVisible();
-        await expect(status).toHaveText(/Running in background|后台任务运行中/);
         await expect(page.getByTestId('composer-prompt')).toBeEnabled();
         await openAgents(page);
+        const coldCatalog = await coldCatalogRead;
+        expect(coldCatalog.status(), 'the cold page must read the child runs from the server').toBe(200);
+        expect(await coldCatalog.finished()).toBeNull();
+        expect(((await coldCatalog.json()).data.child_runs as ChildRunRecord[])
+          .filter((child) => child.child_run_id === childId), 'the cold read reports the held child as working')
+          .toEqual([expect.objectContaining({ closed: false, active: true })]);
         await expect(row, 'cold entry must retain the same active child identity').toBeVisible();
         await expect(row.locator('svg.animate-spin')).toHaveCount(1);
         await row.click();
@@ -249,7 +266,7 @@ for (const declared of profiles) {
         await expectChildToolCard(page, liveTool, gate);
         expect(await readGate(), 'the child must remain held throughout cold background entry')
           .toEqual([marker, null, null]);
-        observations.push({ coldBackgroundSession: coldSession, coldBackgroundStream: await aiStreamBodies(page) });
+        observations.push({ coldBackgroundSession: coldSession, coldBackgroundStream: await sessionStreamBodies(page) });
       }
 
       // The receipt is unknown to the model until its actual command reads it.
@@ -287,7 +304,7 @@ for (const declared of profiles) {
         expect(finalChild!.closed).toBe(finalChild!.task_type === 'one-shot');
       } else {
         expect(finalChild!.closed).toBe(true);
-        expect(finalChild!.engine_status).toBe(profile.engine_kind === 'pi' ? 'complete' : 'completed');
+        expect(finalChild!.engine_status).toBe(profile.engine_kind === 'pi' && mode === 'background' ? 'complete' : 'completed');
       }
       const finalTranscript = await api.getChildRunMessages(sessionId, childId!);
       expect(childText(finalTranscript, 'assistant'), 'the receipt belongs to the child answer, not just its input').toContain(receipt);
@@ -304,18 +321,17 @@ for (const declared of profiles) {
       expectToolBlocks(finalTranscript, finalTool, receipt);
       await expectChildToolCard(page, finalTool, gate, receipt);
       const settled = await api.waitForSession(sessionId, (session) => session.state === 'READY'
-        && session.last_turn_status === 'COMPLETED' && !session.current_turn_id, 30_000);
-      expect(settled.background_task_state, 'settled native work must clear the Session background summary').toBeFalsy();
+        && session.last_response?.outcome === 'completed' && (session.current_responses ?? []).length === 0, 30_000);
+      expect((await api.listChildRuns(sessionId)).child_runs.filter((child) => child.active),
+        'settled native work must leave no child reported as working').toEqual([]);
       await expect(status, 'the live header must stop reporting work after native activity settles')
         .toHaveAttribute('data-state', 'READY');
-      await expect(status).not.toHaveText(/Running in background|后台任务运行中/);
       await expect(page.getByTestId('composer-prompt')).toBeEnabled();
       const visible = await drawer.getByTestId('subagent-transcript-column').innerText();
-      observations.push({ completed, finalTranscript, settled, visible, stream: await aiStreamBodies(page) });
+      observations.push({ completed, finalTranscript, settled, visible, stream: await sessionStreamBodies(page) });
       await page.reload({ waitUntil: 'domcontentloaded' });
       await expect(page.getByTestId('run-view')).toBeVisible();
       await expect(status).toHaveAttribute('data-state', 'READY');
-      await expect(status).not.toHaveText(/Running in background|后台任务运行中/);
       await expect(page.getByTestId('composer-prompt')).toBeEnabled();
       await openAgents(page);
       await expect(row).toBeVisible();
@@ -339,8 +355,8 @@ for (const declared of profiles) {
       expect(coldChildren).toEqual(retainedChildren);
       const coldSettled = await api.getSession(sessionId);
       expect(coldSettled.state).toBe('READY');
-      expect(coldSettled.current_turn_id).toBeFalsy();
-      expect(coldSettled.background_task_state).toBeFalsy();
+      expect(coldSettled.current_responses ?? []).toEqual([]);
+      expect(coldChildren.filter((child) => child.active), 'no child is reported as working after reload').toEqual([]);
     });
   }
 }

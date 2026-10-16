@@ -16,23 +16,8 @@ from astrabox.common.logger.logger_factory import get_logger
 
 logger = get_logger(__name__)
 
-#: Agent-row field holding when a new conversation last found no prepared unit.
+#: Where an Agent read carries when a new conversation last found no prepared unit.
 LAST_MISS_FIELD = "_prepared_capacity_last_miss_at"
-
-
-def engine_prepares_runtime(engine_kind: str) -> bool:
-    """Whether the engine can start its runtime before any conversation exists.
-
-    An adapter that inherits the refusing ``prepare_runtime`` default has no
-    input-free preparation in its vendor lifecycle, so no prepared unit of
-    either tenancy can be built for it.
-    """
-
-    from astrabox.core.service.orchestrator.engine.base import EngineAdapter
-    from astrabox.core.service.orchestrator.engine.registry import get_engine_adapter
-
-    adapter = get_engine_adapter(engine_kind)
-    return getattr(type(adapter), "prepare_runtime", None) is not EngineAdapter.prepare_runtime
 
 
 async def record_prepared_capacity_miss(agent_id: str, *, tenancy: str, session_id: str) -> None:
@@ -48,9 +33,7 @@ async def record_prepared_capacity_miss(agent_id: str, *, tenancy: str, session_
         session_id,
     )
     increment(METRIC_PREPARED_CAPACITY_MISSES, labels={"tenancy": tenancy})
-    await AgentRepository().update_agent(
-        agent_id, {LAST_MISS_FIELD: datetime.now(timezone.utc).isoformat()}
-    )
+    await AgentRepository().record_capacity_miss(agent_id)
 
 
 #: How long past the pool's idle lease an unclaimed unit's binding is kept: a

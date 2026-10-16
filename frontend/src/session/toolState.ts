@@ -5,6 +5,7 @@
 export function getToolStateLabelKey({
   state,
   isPending,
+  isActiveTurn,
   approvalApproved,
 }: {
   state: string;
@@ -13,6 +14,12 @@ export function getToolStateLabelKey({
   isActiveTurn: boolean;
   approvalApproved?: boolean | null;
 }): string {
+  // A call that never returned in a response that has ended — stopped, or lost
+  // with its box while it waited for an approval — is neither working nor
+  // waiting for anyone: nothing will answer it now.
+  if (!isActiveTurn && !isPending && toolCallNeverReturned(state, approvalApproved)) {
+    return 'chat:tool_state.unfinished';
+  }
   if (state === 'input-streaming') return isPending ? 'chat:tool_state.awaiting_confirmation' : 'chat:tool_state.processing';
   if (state === 'input-available') {
     if (isPending) {
@@ -38,6 +45,14 @@ export function getToolStateLabelKey({
   if (state === 'output-error') return 'chat:tool_state.failed';
   if (state === 'output-denied') return 'chat:tool_state.denied';
   return String(state);
+}
+
+/** A call still on its way to a result: not started, waiting on a person, or approved and running. */
+function toolCallNeverReturned(state: string, approvalApproved?: boolean | null): boolean {
+  return state === 'input-streaming'
+    || state === 'input-available'
+    || state === 'approval-requested'
+    || (state === 'approval-responded' && approvalApproved !== false);
 }
 
 type ToolPartLike = {

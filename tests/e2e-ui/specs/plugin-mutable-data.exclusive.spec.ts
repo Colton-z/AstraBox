@@ -17,17 +17,19 @@
  * tool-free prompt, so startup and the vendor's own initialization are what
  * produce the evidence. The spec then reads
  *
- *   · that the turn settled COMPLETED with its own durable terminal proof and a
- *     non-empty reply, so the probe below runs against a finished turn rather
- *     than a stream still in flight;
+ *   · that the response to the message ended `completed` in the platform's own
+ *     record (`session_responses`) with a non-empty reply, so the probe below
+ *     runs against a finished response rather than a stream still in flight;
  *   · `<config>/plugins/data` — owner, mode, and a real create/write/read/unlink
  *     performed by the workload account itself (its euid is asserted, because a
  *     probe that ran as root would prove nothing about that account);
  *   · `<config>/plugins` — root-owned 0755, so preparing the state directory
  *     does not hand the plugin code over with it;
  *   · the plugin-owned `.mcp.json` under exactly the configured plugin path;
- *   · the durable `SystemMessage(init)` raw event, whose `mcp_servers` must be
- *     exactly the declared servers under their full plugin-qualified names.
+ *   · Claude's own `SystemMessage(init)`, whose `mcp_servers` must be exactly
+ *     the declared servers under their full plugin-qualified names. The
+ *     platform keeps no record of that event (see `engineRegisteredMcpServers`),
+ *     so this step fails, naming the record it needs, until one exists.
  *
  * A second pinned public plugin records the SDK's own SessionStart/Stop hooks
  * in CLAUDE_PLUGIN_DATA. The probe only reads that log and matches its Session
@@ -39,21 +41,24 @@
  * CLI does when it cannot create the data directory; the bootstrap does not
  * depend on that.
  */
+import { spawnSync } from 'node:child_process';
+
 import { test, expect } from '@playwright/test';
 
 import {
   AstraApi,
   messageText,
-  visibleMessages,
   type AdminSessionRecord,
 } from '../fixtures/astraApi';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import {
-  documentsByField,
-  oracleDbPath,
-  waitForTurnTerminalProof,
+  nativeTranscriptRows,
+  sessionOutputRows,
+  sessionResponseRows,
 } from '../fixtures/dbOracle';
 import { appPath, parseTimeoutEnv } from '../fixtures/env';
+import { sendPrompt } from '../fixtures/sessionPage';
+import { requireServiceContainer, SERVER_CONTAINER_HANDLE } from '../fixtures/serviceContainer';
 import {
   requireSandboxHandle,
   sandboxExec,
@@ -72,7 +77,6 @@ const STATS_REPOSITORY = 'https://github.com/reidsolon/claude-session-stats-plug
 const STATS_REVISION = '84433f7d3740b3b1c4a238a705f3cfb17d8bd3d8';
 
 const REPLY_BUDGET_MS = parseTimeoutEnv('ASTRABOX_E2E_TURN_TIMEOUT_MS', 90_000);
-const INIT_EVENT_BUDGET_MS = parseTimeoutEnv('ASTRABOX_E2E_INIT_EVENT_TIMEOUT_MS', 30_000);
 
 const PROBE_MARKER = 'ASTRABOX_PLUGIN_DATA_PROBE:';
 // Written into the plugin data directory by the workload account and read back
@@ -317,56 +321,55 @@ function probePluginData(
   return JSON.parse(stdout.slice(at + PROBE_MARKER.length).split('\n')[0]) as PluginDataProbe;
 }
 
-/** The engine frame a durable `session_events` row stores under `payload`. */
-function framePayload(event: Record<string, unknown>): Record<string, unknown> {
-  const payload = event.payload;
-  return payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {};
-}
-
 /**
- * The vendor's `SystemMessage(init)` payloads, newest last.
+ * The MCP servers Claude registered for this conversation, as its own
+ * `SystemMessage(init)` lists them (`data.mcp_servers[].name`).
  *
- * The runner stamps each SDK dataclass with its class name and keeps the
- * vendor's field names, so an init message arrives as
- * `{__sdk_type: "SystemMessage", subtype: "init", data: {...}}`. The bridge
- * stores that private emission as `engine.diagnostic` with the original SDK
- * message at `payload.raw`, outside the browser-frame journal.
+ * The engine adapter reports that event as a runtime diagnostic, which the
+ * session's reader writes to the server log with its raw evidence
+ * (`runtime diagnostic session=<id> type=<type> raw=<json>`). The newest init
+ * line for the session is read back from the server container's log.
  */
-function initPayloads(sessionId: string): Array<Record<string, unknown>> {
-  const found: Array<Record<string, unknown>> = [];
-  for (const event of documentsByField('session_events', '$.session_id', sessionId)) {
-    if (event.event_type !== 'engine.diagnostic') continue;
-    const payload = framePayload(event);
-    if (payload.engine_kind !== 'claude_code' || payload.subtype !== 'init') continue;
-    const raw = (payload.raw || {}) as Record<string, unknown>;
-    expect(raw.__sdk_type, 'the init diagnostic must retain the native SystemMessage').toBe('SystemMessage');
-    expect(raw.data, 'the native init diagnostic must carry its data object').toBeTruthy();
-    expect(typeof raw.data).toBe('object');
-    found.push(raw.data as Record<string, unknown>);
+function engineRegisteredMcpServers(sessionId: string): string[] {
+  const container = requireServiceContainer(SERVER_CONTAINER_HANDLE);
+  // The server logs to stderr; `docker logs` replays each stream on its own.
+  const read = spawnSync('docker', ['logs', container], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+  if (read.status !== 0) throw new Error(`docker logs ${container} failed: ${read.stderr}`);
+  const logs = `${read.stdout}\n${read.stderr}`;
+  const prefix = `runtime diagnostic session=${sessionId} type=`;
+  const inits = logs
+    .split('\n')
+    .map((line) => line.slice(line.indexOf(prefix)))
+    .filter((line) => line.startsWith(prefix) && /^[^ ]*\.init raw=/.test(line.slice(prefix.length)));
+  const last = inits.at(-1);
+  if (!last) {
+    throw new Error(`the server log has no SystemMessage(init) diagnostic for session ${sessionId}`);
   }
-  return found;
+  const raw = JSON.parse(last.slice(last.indexOf(' raw=') + ' raw='.length)) as {
+    data?: { mcp_servers?: { name?: unknown }[] };
+    mcp_servers?: { name?: unknown }[];
+  };
+  const servers = raw.data?.mcp_servers ?? raw.mcp_servers ?? [];
+  return servers.map((server) => String(server.name ?? ''));
 }
 
 /**
- * Durable events that report a permission failure against the plugin data path.
+ * Durable records that report a permission failure against the plugin data path.
  *
  * The vendor would report an unwritable `CLAUDE_PLUGIN_DATA` from whichever
- * subprocess touched it first. `translate_claude_sdk_message` publishes both
- * `SystemMessage` and `HookEventMessage` as private diagnostics carrying the
- * vendor's message verbatim, so a hook's report and a system message land in
- * the same journal under different subtypes. Reading every durable event of the
- * session covers whichever one carries it, without this spec having to predict
- * which subprocess that is.
+ * subprocess touched it first. The records the platform keeps for a session
+ * are the parts its responses relayed (`session_output`) and the runtime's own
+ * transcript (`transcript_entries`); reading every one of them covers
+ * whichever carries such a report, without this spec having to predict which
+ * subprocess that is.
  */
 function pluginDataPermissionFailures(sessionId: string): string[] {
-  const failures: string[] = [];
-  for (const event of documentsByField('session_events', '$.session_id', sessionId)) {
-    const text = JSON.stringify(event);
-    if (!text.includes('plugins/data')) continue;
-    if (!/EACCES|permission denied/i.test(text)) continue;
-    failures.push(text.slice(0, 600));
-  }
-  return failures;
+  const records = [
+    ...sessionOutputRows(sessionId).map((row) => JSON.stringify(row.part)),
+    ...nativeTranscriptRows(sessionId).map((row) => row.entry_json),
+  ];
+  return records.filter((text) => text.includes('plugins/data') && /EACCES|permission denied/i.test(text))
+    .map((text) => text.slice(0, 600));
 }
 
 const sessionIds = trackSessions();
@@ -444,31 +447,27 @@ test('a plugin conversation owns its mutable plugin data and registers every dec
 
   // The first real turn, deliberately tool-free: what it must produce is the
   // vendor's own startup and initialization, not a tool call.
-  const before = await api.assistantCount(sessionId);
   const prompt = `E2E plugin data ${RUN_ID}: reply with one short sentence and do not use tools.`;
-  await page.getByTestId('composer-prompt').fill(prompt);
-  await page.getByTestId('composer-submit').click();
+  const sent = await sendPrompt(page, sessionId, prompt);
+  const inputId = String(((await sent.json()) as { data?: { input_id?: string } }).data?.input_id || '');
+  expect(inputId, 'the page receives a receipt for its message').not.toEqual('');
   await expect(page.getByTestId('user-message').last()).toContainText(prompt.slice(0, 16), {
     timeout: 30_000,
   });
 
-  // The messages page merges the active-turn overlay, so a new assistant
-  // message can be a stream still in flight. The turn's own durable terminal
-  // proof is what says it finished, and says COMPLETED rather than any other
-  // outcome — a failed turn also renders an assistant message.
-  const streaming = await api.waitForAssistantMessageCount(sessionId, before, REPLY_BUDGET_MS);
-  const turnId = String(streaming.turn_id || '').trim();
-  expect(turnId, 'the reply must belong to a concrete turn').not.toEqual('');
-  await waitForTurnTerminalProof(sessionId, turnId, 'COMPLETED', REPLY_BUDGET_MS);
-
-  const settled = visibleMessages(await api.getMessages(sessionId, 50))
-    .filter((message) => message.role === 'assistant' && message.turn_id === turnId);
-  expect(settled.length, `the settled turn ${turnId} must carry its assistant reply`).toBeGreaterThan(0);
-  const replyText = settled.map(messageText).join('\n').trim();
-  expect(replyText, `the settled reply must carry text: ${JSON.stringify(settled)}`).not.toEqual('');
+  // History shows a response while it still streams. Its recorded ending is
+  // what says it finished, and says completed rather than any other outcome —
+  // a failed response also renders an assistant message.
+  const reply = await api.waitForReplyTo(sessionId, inputId, { timeoutMs: REPLY_BUDGET_MS });
+  expect(reply.metadata?.outcome, 'the response to the message must complete').toBe('completed');
+  expect(sessionResponseRows(sessionId).filter((row) => row.response_id === reply.id),
+    'the platform recorded the response as answering the message and completing')
+    .toEqual([expect.objectContaining({ status: 'ended', outcome: 'completed', input_ids: [inputId] })]);
+  const replyText = messageText(reply).trim();
+  expect(replyText, `the settled reply must carry text: ${JSON.stringify(reply)}`).not.toEqual('');
   expect(
     replyText,
-    'a turn that reports COMPLETED must not have answered with a runtime failure',
+    'a completed response must not have answered with a runtime failure',
   ).not.toMatch(/API Error|AGENT_RUNTIME_ERROR|SANDBOX_GONE|Traceback/i);
 
   const sandbox = await requireSandboxHandle(api, sandboxId);
@@ -479,9 +478,8 @@ test('a plugin conversation owns its mutable plugin data and registers every dec
   const log = hookLog.logs[0];
   expect(log.uid, 'plugin hook output must belong to the workload account').toBe(identity.uid);
   expect(log.path.startsWith(`${identity.configDir}/plugins/data/`)).toBe(true);
-  const nativeRows = documentsByField('transcript_entries', '$.platform_session_id', sessionId)
-    .filter((row) => row.subpath == null);
-  const nativeSessionIds = [...new Set(nativeRows.map((row) => String(row.session_id || '')))];
+  const nativeRows = nativeTranscriptRows(sessionId).filter((row) => row.subpath === null);
+  const nativeSessionIds = [...new Set(nativeRows.map((row) => String(row.native_session_id || '')))];
   expect(nativeSessionIds).toHaveLength(1);
   expect(nativeSessionIds[0]).not.toEqual('');
   expect(log.entries.length).toBeGreaterThan(0);
@@ -554,26 +552,12 @@ test('a plugin conversation owns its mutable plugin data and registers every dec
     `the selected plugin must declare at least one MCP server: ${probeText}`,
   ).toBeGreaterThan(0);
 
-  // The vendor publishes its initialization once the turn has actually started
-  // the runner; the bridge persists its private diagnostic independently of
-  // browser delivery, so the rendered reply is not its durability receipt.
-  let payloads: Array<Record<string, unknown>> = [];
-  await expect
-    .poll(() => {
-      payloads = initPayloads(sessionId);
-      return payloads.length;
-    }, { timeout: INIT_EVENT_BUDGET_MS })
-    .toBeGreaterThan(0);
-  const latest = payloads[payloads.length - 1];
-  const servers = latest.mcp_servers;
   expect(
-    Array.isArray(servers),
-    `Claude's init must report an mcp_servers inventory; read ${oracleDbPath()}: ${JSON.stringify(latest).slice(0, 800)}`,
-  ).toBe(true);
-  const initNames = (servers as Array<Record<string, unknown>>)
-    .map((server) => String(server.name || ''))
-    .filter(Boolean)
-    .sort();
+    pluginDataPermissionFailures(sessionId),
+    'no durable record may report a permission failure against the plugin data path',
+  ).toEqual([]);
+
+  const initNames = engineRegisteredMcpServers(sessionId).filter(Boolean).sort();
   test.info().annotations.push({
     type: 'e2e_plugin_mcp_init',
     description: JSON.stringify({ initNames, declaredServers }),
@@ -591,10 +575,5 @@ test('a plugin conversation owns its mutable plugin data and registers every dec
   expect(
     initNames.filter((name) => pluginServerNames.has(name)),
     'no plugin server may also be registered under its bare name',
-  ).toEqual([]);
-
-  expect(
-    pluginDataPermissionFailures(sessionId),
-    'no durable event may report a permission failure against the plugin data path',
   ).toEqual([]);
 });

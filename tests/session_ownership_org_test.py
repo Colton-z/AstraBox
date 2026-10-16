@@ -15,10 +15,10 @@ regress them:
   so a Session that lost the org would run later commands under the default
   organization.
 
-Real SQLite (a per-test tmp file via the autouse fixture) backs the ownership +
-vault-storage assertions; the session/agent stamp sites are exercised
-through their real service methods with a payload-capturing repo, so the
-assertion is on the exact document the create path assembles.
+The PostgreSQL test database backs the ownership and vault-storage
+assertions; the session stamp site is exercised through its real service method
+with a payload-capturing repo, so the assertion is on the exact document the
+create path assembles.
 """
 
 from __future__ import annotations
@@ -34,9 +34,6 @@ from astrabox.persistence.repository.vault_repository import VaultRepository
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext, default_org_id
 from astrabox.config.settings import get_settings
-from astrabox.core.service.orchestrator.agent.agent_service import (
-    AgentService,
-)
 from astrabox.core.service.orchestrator.session_service import SessionService
 from astrabox.core.service.orchestrator.vault_service import VaultService
 
@@ -44,20 +41,19 @@ from astrabox.core.service.orchestrator.vault_service import VaultService
 # no key file when a VaultService is constructed.
 _MASTER_KEY = base64.urlsafe_b64encode(b"k" * 32).decode()
 
+#: One of alice's sessions, as the session table requires it.
+_SESSION = {"session_id": "s1", "user_id": "alice", "session_kind": "agent_chat", "state": "READY"}
+
 
 @pytest.fixture(autouse=True)
-def _isolated_sqlite_state(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
-    """Point the whole DAL at a per-test tmp SQLite file with a clean org baseline.
+def _clean_org_baseline(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """A clean org baseline and a master key for the local secret store.
 
-    Each test gets its own ``ASTRABOX_STATE_DIR`` → a unique sqlite URL → a fresh
-    engine/file, so tests never share rows. ``ASTRABOX_DEFAULT_ORG`` is cleared so
-    the default-org assertions are not perturbed by the ambient environment.
-    ``monkeypatch`` restores the prior env after the test; the trailing
-    ``cache_clear`` forces the next module's ``get_settings`` to re-read it.
+    ``ASTRABOX_DEFAULT_ORG`` is cleared so the default-org assertions are not
+    perturbed by the ambient environment. ``monkeypatch`` restores the prior env
+    after the test; the trailing ``cache_clear`` forces the next module's
+    ``get_settings`` to re-read it.
     """
-    monkeypatch.setenv("ASTRABOX_STATE_DIR", str(tmp_path))
-    monkeypatch.setenv("ASTRABOX_DB_BACKEND", "sqlite")
-    monkeypatch.delenv("ASTRABOX_DB_URL", raising=False)
     monkeypatch.delenv("ASTRABOX_DEFAULT_ORG", raising=False)
     monkeypatch.setenv("ASTRABOX_VAULT_MASTER_KEY", _MASTER_KEY)
     get_settings.cache_clear()
@@ -77,17 +73,6 @@ class _CapturingSessionsRepo:
         self.payload: dict[str, Any] | None = None
 
     async def create_session(self, payload: dict[str, Any]) -> dict[str, Any]:
-        self.payload = dict(payload)
-        return dict(payload)
-
-
-class _CapturingAgentRepo:
-    """Captures the payload ``create_agent`` assembles (the stamp site)."""
-
-    def __init__(self) -> None:
-        self.payload: dict[str, Any] | None = None
-
-    async def create_agent(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.payload = dict(payload)
         return dict(payload)
 
@@ -120,20 +105,18 @@ def _session_service(sessions_repo: Any, template: Any | None = None) -> Session
     """
     return SessionService(
         sessions_repo=sessions_repo,
-        messages_repo=None,  # type: ignore[arg-type]
         agent_config=_FakeTemplateService(template),  # type: ignore[arg-type]
         runtime_manager=_FakeRuntimeManager(),  # type: ignore[arg-type]
-        # type: ignore[arg-type]
-        broker=None,  # type: ignore[arg-type]
         ttl_seconds=3600,
         spawn_background_task=lambda *a, **k: None,
     )
 
 
 # ── (a) repository ownership scoping ────────────────────────────────────────
+@pytest.mark.usefixtures("database")
 async def test_get_owned_session_is_owner_scoped_and_hides_deleted() -> None:
     repo = SessionRepository()
-    await repo.create_session({"session_id": "s1", "user_id": "alice"})
+    await repo.create_session(_SESSION)
 
     owned = await repo.get_owned_session("s1", "alice")
     assert owned is not None
@@ -148,9 +131,10 @@ async def test_get_owned_session_is_owner_scoped_and_hides_deleted() -> None:
 
 
 # ── (b) service maps wrong owner → 404 ──────────────────────────────────────
+@pytest.mark.usefixtures("database")
 async def test_must_get_owned_session_maps_wrong_owner_to_not_found_404() -> None:
     repo = SessionRepository()
-    await repo.create_session({"session_id": "s1", "user_id": "alice"})
+    await repo.create_session(_SESSION)
     service = _session_service(repo)
 
     got = await service.must_get_owned_session(UserContext(user_id="alice"), "s1")
@@ -163,6 +147,7 @@ async def test_must_get_owned_session_maps_wrong_owner_to_not_found_404() -> Non
 
 
 # ── (c) org stamping at resource create ─────────────────────────────────────
+@pytest.mark.usefixtures("database")
 async def test_vault_create_stamps_org_id_from_owner() -> None:
     repo = VaultRepository()
     service = VaultService(vault_repo=repo)
@@ -182,33 +167,16 @@ async def test_vault_create_stamps_org_id_from_owner() -> None:
 
 
 async def test_session_create_payload_stamps_the_callers_org_id() -> None:
-    # The turn and lifecycle workers rebuild the caller from the Session row,
-    # so the row carries the caller's organization.
+    # A startup acts for the caller it reads off the Session row, so the row
+    # carries the caller's organization.
     template = types.SimpleNamespace(name="tmpl", sandbox_backend="open_sandbox")
     repo = _CapturingSessionsRepo()
     service = _session_service(repo, template=template)
     await service.create_session_record(
         UserContext(user_id="alice", org_id="acme"),
-        "tmpl",
         workspace_ref={"kind": "agent", "agent_id": "a1"},
         agent_id="a1",
     )
     assert repo.payload is not None
     assert repo.payload["user_id"] == "alice"
     assert repo.payload["org_id"] == "acme"
-
-
-# ── (d) UserContext org/roles defaults ──────────────────────────────────────
-def test_user_context_org_and_roles_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
-    # org_id defaults to the deployment org ("default"); roles default empty.
-    assert UserContext(user_id="u").org_id == "default"
-    assert UserContext(user_id="u").roles == []
-
-    # ASTRABOX_DEFAULT_ORG overrides the deployment org (read at call time).
-    monkeypatch.setenv("ASTRABOX_DEFAULT_ORG", "acme-inc")
-    assert default_org_id() == "acme-inc"
-    assert UserContext(user_id="u").org_id == "acme-inc"
-
-    # An explicit org_id always wins; roles are stripped of blanks.
-    assert UserContext(user_id="u", org_id="beta").org_id == "beta"
-    assert UserContext(user_id="u", roles=["admin", "  ", "ops"]).roles == ["admin", "ops"]

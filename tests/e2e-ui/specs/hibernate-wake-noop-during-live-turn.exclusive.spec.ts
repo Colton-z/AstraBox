@@ -1,42 +1,43 @@
 /**
- * E2E: Agent hibernate and wake calls do not disturb an active conversation
- * turn or its per-session sandbox.
+ * E2E: Agent hibernate and wake calls do not disturb a running response or its
+ * per-session sandbox.
  *
- * A Bash turn starts from the composer and waits on a workspace release file.
- * Before the lifecycle calls, the started marker and durable snapshot must
- * identify an executing, non-terminal turn. After both calls, the same turn id
- * and sandbox id must remain active. Releasing the command must then deliver its
- * real result to the page without a failure card. The API retains turn and
+ * A message sent from the composer starts a Bash command that waits on a
+ * workspace release file. Before the lifecycle calls, the started marker and
+ * the platform's records (`session_responses`, the parts relayed for the
+ * response in `session_output`) must identify a running response that has
+ * announced its Bash call. After both calls, the same response must still be
+ * running on the same sandbox. Releasing the command must then deliver its real
+ * result to the page without a failure card. The records carry response and
  * sandbox identity because the page does not render those identifiers.
  *
  * A bounded probe must observe the requested Bash command starting; otherwise
- * the test fails because the active-turn scenario was not exercised.
+ * the test fails because the running-response scenario was not exercised.
  */
 import { test, expect } from '@playwright/test';
 
-import { AstraApi } from '../fixtures/astraApi';
+import { AstraApi, type InputReceipt } from '../fixtures/astraApi';
 import { openLiveProcessGroup, revealAssistantProcess } from '../fixtures/assistantProcess';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { appPath, parseTimeoutEnv } from '../fixtures/env';
-import { framesForTurn, oracleDbPath, snapshotDoc } from '../fixtures/dbOracle';
+import { oracleDbPath, sessionOutputRows, sessionResponseRows } from '../fixtures/dbOracle';
+import { expectPromptDelivered, startPromptDelivery } from '../fixtures/sessionPage';
 
-// Bounded probe: how long to wait for the turn to reach STREAMING/PROCESSING with
-// a durable Bash frame and its workspace started marker before failing. The
-// session is already READY, so this only covers the model entering the command.
+// Bounded probe: how long to wait for the response to be running with a relayed
+// Bash call and its workspace started marker before failing. The session is
+// already READY, so this only covers the model entering the command.
 const PROBE_TIMEOUT_MS = parseTimeoutEnv('ASTRABOX_E2E_HIBERNATE_LIVE_PROBE_TIMEOUT_MS', 60_000);
-// After the pokes, let the interrupted turn settle to READY so the session deletes
-// cleanly.
+// After the pokes, let the released response settle to READY so the session
+// deletes cleanly.
 const SETTLE_BUDGET_MS = parseTimeoutEnv('ASTRABOX_E2E_HIBERNATE_LIVE_SETTLE_TIMEOUT_MS', 180_000);
 // Fail loud if a retained command is never released. The normal path releases it
 // immediately after the lifecycle assertions, so this is not test latency.
 const GATE_TIMEOUT_SECONDS = parseTimeoutEnv('ASTRABOX_E2E_HIBERNATE_LIVE_GATE_TIMEOUT_S', 120);
-// How long the screen gets to keep up with the kernel before "the run still reads
-// live / the command result arrived" counts as a lie. The console polls the
-// session projection on a 1.5–3s cadence, so this is generous on purpose: it is
-// only ever spent in full when the screen is genuinely dead.
+// How long the screen gets to keep up with the platform before "the run still
+// reads live / the command result arrived" counts as a lie. Generous on purpose:
+// it is only ever spent in full when the screen is genuinely dead.
 const PAGE_RENDER_MS = parseTimeoutEnv('ASTRABOX_E2E_HIBERNATE_LIVE_PAGE_RENDER_MS', 60_000);
 
-const ACTIVE_CONVERSATION_STATES = new Set(['STREAMING', 'PROCESSING']);
 const FILE_NOT_FOUND = /404|FILE_NOT_FOUND|path not found/i;
 const BASH_CARD = /^Bash\b/;
 
@@ -50,78 +51,67 @@ const BASH_CARD = /^Bash\b/;
 const TURN_FAILED_ON_SCREEN =
   /this turn failed|本轮执行失败|这一轮执行失败|API Error|AGENT_RUNTIME_ERROR|SANDBOX_GONE|Traceback/i;
 
-interface LiveTurnState {
-  turnId: string;
-  conversationState: string;
-  lastTurnStatus: string;
-  frameCount: number;
-  hasTerminal: boolean;
+/** The response answering one input, as the platform recorded it. */
+interface LiveResponseState {
+  responseId: string;
+  /** `running`, `waiting` or `ended` (`session_responses.status`). */
+  status: string;
+  outcome: string | null;
+  /** How many parts the reader relayed for the response. */
+  partCount: number;
+  /** Whether one of those parts announced a Bash call. */
+  bashAnnounced: boolean;
 }
 
-/** Read the current live-turn shape from the read-only document store: the
- *  snapshot's active turn, its durable frame count, and whether that turn has
- *  written a terminal `data-result` frame yet. `null` when there is no current
- *  turn on the snapshot at all. */
-function readLiveTurnState(sessionId: string): LiveTurnState | null {
-  const snapshot = snapshotDoc(sessionId);
-  const turnId = String(snapshot?.current_turn_id || '').trim();
-  if (!turnId) return null;
-  const frames = framesForTurn(turnId);
-  const hasTerminal = frames.some(
-    (frame) => String((frame.payload as { type?: unknown } | undefined)?.type ?? '').trim() === 'data-result',
-  );
+/**
+ * Read the response answering `inputId` from the platform's own records: its
+ * row in `session_responses` and the parts relayed for it in `session_output`.
+ * `null` until the runtime has started a response for the input.
+ */
+function readLiveResponse(sessionId: string, inputId: string): LiveResponseState | null {
+  const response = sessionResponseRows(sessionId).find((row) => row.input_ids.includes(inputId));
+  if (!response) return null;
+  const parts = sessionOutputRows(sessionId, response.response_id).map((row) => row.part);
   return {
-    turnId,
-    conversationState: String(snapshot?.conversation_state || ''),
-    lastTurnStatus: String(snapshot?.last_turn_status || ''),
-    frameCount: frames.length,
-    hasTerminal,
+    responseId: response.response_id,
+    status: response.status,
+    outcome: response.outcome,
+    partCount: parts.length,
+    bashAnnounced: parts.some((part) => (
+      String(part.type ?? '') === 'tool-input-available'
+      && String(part.toolName ?? '') === 'Bash'
+    )),
   };
 }
 
-/** Poll until the requested Bash command has entered its held workspace gate. */
-async function waitForHeldBashTurn(
+/**
+ * Poll until the requested Bash command has entered its held workspace gate;
+ * the running response's id, or null when the response ended without it.
+ */
+async function waitForHeldBashResponse(
   api: AstraApi,
   sessionId: string,
+  inputId: string,
   startedPath: string,
   timeoutMs: number,
 ): Promise<string | null> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const state = readLiveTurnState(sessionId);
-    if (
-      state
-      && ACTIVE_CONVERSATION_STATES.has(state.conversationState)
-      && state.frameCount > 0
-      && !state.hasTerminal
-    ) {
-      const bashAnnounced = framesForTurn(state.turnId).some((frame) => {
-        const payload = (frame.payload ?? {}) as Record<string, unknown>;
-        return (
-          String(payload.type ?? '') === 'tool-input-available'
-          && String(payload.toolName ?? '') === 'Bash'
-        );
-      });
-      if (bashAnnounced) {
-        try {
-          const marker = await api.downloadFileText(sessionId, startedPath, 15_000);
-          if (marker.trim() === 'started') {
-            const confirmed = readLiveTurnState(sessionId);
-            if (
-              confirmed?.turnId === state.turnId
-              && ACTIVE_CONVERSATION_STATES.has(confirmed.conversationState)
-              && !confirmed.hasTerminal
-            ) {
-              return state.turnId;
-            }
+    const state = readLiveResponse(sessionId, inputId);
+    if (state?.status === 'ended') return null;
+    if (state && state.status === 'running' && state.bashAnnounced) {
+      try {
+        const marker = await api.downloadFileText(sessionId, startedPath, 15_000);
+        if (marker.trim() === 'started') {
+          const confirmed = readLiveResponse(sessionId, inputId);
+          if (confirmed?.responseId === state.responseId && confirmed.status === 'running') {
+            return state.responseId;
           }
-        } catch (error) {
-          if (!FILE_NOT_FOUND.test(String((error as Error)?.message ?? error))) throw error;
         }
+      } catch (error) {
+        if (!FILE_NOT_FOUND.test(String((error as Error)?.message ?? error))) throw error;
       }
     }
-    const session = await api.getSession(sessionId);
-    if (!String(session.current_turn_id || '').trim() && String(session.state || '') === 'READY') return null;
     await new Promise((resolve) => setTimeout(resolve, 700));
   }
   return null;
@@ -166,14 +156,14 @@ function heldBashPrompt(
 
 // Teardown that changes state runs on the passing path only, in three hooks
 // whose registration order IS the old `finally` order: afterEach hooks run in
-// the order they are registered. Settle first — a DELETE against a still
-// STREAMING session answers SESSION_BUSY — then the session, then the agent it
-// ran on.
+// the order they are registered. Settle first — a DELETE while the runtime
+// reports it is working answers SESSION_BUSY — then the session, then the agent
+// it ran on.
 //
-// Settle the still-running turn so the session deletes cleanly. Interrupt is
-// the graceful signal; a turn interrupted mid-stream behind a live worker can
-// stay STREAMING, so evict the in-memory runtime to force a cold reload that
-// settles it to READY (harmless no-op if it already settled). Ordered
+// Settle a still-running response so the session deletes cleanly. Interrupt is
+// the graceful signal; evicting the in-memory runtime makes the session's reader
+// reconnect and read the runtime's own state again (harmless no-op if the
+// response already settled). Ordered
 // interrupt → evict → wait-READY → delete session → delete agent. Stays on the
 // API: no user has an evict-runtime button, and the page's own stream dies with
 // the browser context, so there is nothing left to drain.
@@ -200,8 +190,8 @@ test('agent hibernate/wake are no-ops that do not disturb a live durable turn', 
   const releasePath = `/workspace/${releaseName}`;
   const resultMarker = `HIBERNATE_LIVE_CONTINUED_${runId}`;
 
-  // Fail fast (with the descriptive oracle error) if the document store is not
-  // reachable — the live-turn observation depends on it.
+  // Fail fast (with the descriptive oracle error) if the database is not
+  // reachable — the running-response observation depends on it.
   test.info().annotations.push({ type: 'oracle-db', description: oracleDbPath() });
 
   // Scoped to run-view on purpose. Every session row in the sidebar renders a
@@ -213,41 +203,37 @@ test('agent hibernate/wake are no-ops that do not disturb a live durable turn', 
   const failureOnScreen = page.getByTestId('run-view').getByText(TURN_FAILED_ON_SCREEN);
   const bashCard = page.getByTestId('assistant-message').getByRole('button', { name: BASH_CARD }).first();
 
-  /** Is the turn this spec is about still genuinely running, per the durable
-   *  snapshot? Keeps the page assertions race-free: a turn that finishes on
-   *  its own mid-check has nothing left to render as live. */
-  const turnStillActive = (turnId: string): boolean => {
-    const snapshot = snapshotDoc(sessionId);
-    return (
-      ACTIVE_CONVERSATION_STATES.has(String(snapshot?.conversation_state || ''))
-      && String(snapshot?.current_turn_id || '').trim() === turnId
-    );
-  };
+  /** Is the response this spec is about still genuinely running, per the
+   *  platform's records? Keeps the page assertions race-free: a response that
+   *  finishes on its own mid-check has nothing left to render as live. */
+  const responseStillRunning = (responseId: string): boolean => (
+    sessionResponseRows(sessionId).find((row) => row.response_id === responseId)?.status === 'running'
+  );
 
   /**
    * The run must keep READING live for as long as it genuinely is one — the
    * dead-screen half of the guarantee, which no API assertion can see. Both
-   * controls are read: the header pill (the session projection reaching the
-   * screen) and the composer's stop button (the client still holding a turn).
+   * controls are read: the header pill (the session detail reaching the screen)
+   * and the composer's stop button (the client still holding a response).
    *
-   * Tolerant by construction: the durable state is re-read AFTER the page reads,
-   * so a turn that settles between the two resolves the predicate instead of
-   * failing it. That tolerance costs nothing — a turn wrongly torn down by the
-   * pokes is caught by the durable checks and by the failure-surface check, not by
-   * this one.
+   * Tolerant by construction: the recorded state is re-read AFTER the page reads,
+   * so a response that settles between the two resolves the predicate instead of
+   * failing it. That tolerance costs nothing — a response wrongly torn down by
+   * the pokes is caught by the recorded checks and by the failure-surface check,
+   * not by this one.
    */
-  const expectRunReadsLiveWhileActive = async (turnId: string): Promise<void> => {
+  const expectRunReadsLiveWhileActive = async (responseId: string): Promise<void> => {
     await expect
       .poll(
         async () => {
           const pulsing = (await headerPill.getAttribute('data-pulse')) === 'true';
           const stoppable = await stopControl.isVisible();
-          return (pulsing && stoppable) || !turnStillActive(turnId);
+          return (pulsing && stoppable) || !responseStillRunning(responseId);
         },
         {
           timeout: PAGE_RENDER_MS,
           message: 'the header must keep reading live and the composer must keep offering stop '
-            + 'while the turn is genuinely active',
+            + 'while the response is genuinely running',
         },
       )
       .toBe(true);
@@ -280,18 +266,13 @@ test('agent hibernate/wake are no-ops that do not disturb a live durable turn', 
 
     // ── ACT: the user starts a Bash command held on a workspace file and sends it from the
     //    composer. Nothing is awaited beyond the send — the composer hands the
-    //    input over (POST turn-inputs answers with a receipt) and the turn's frames
-    //    arrive on the session channel the page already holds open, so the turn
+    //    input over (POST inputs answers with a receipt) and the response's parts
+    //    arrive on the session stream the page already follows, so the response
     //    keeps advancing while the pokes land. `.fill()` sets the value without key
     //    events, so the multi-line prompt is not submitted early by an Enter
     //    newline. bypassPermissions means no permission interaction can park it. ──
     const prompt = heldBashPrompt(runId, startedPath, releasePath, resultMarker);
-    const composer = page.getByTestId('composer-prompt');
-    await expect(composer, 'the composer must be enabled before sending').toBeEnabled({
-      timeout: PAGE_RENDER_MS,
-    });
-    await composer.fill(prompt);
-    await page.getByTestId('composer-submit').click();
+    const delivery = await startPromptDelivery(page, sessionId, prompt);
     const userMessage = page.getByTestId('user-message').filter({ hasText: runId });
     await expect(
       userMessage.last(),
@@ -307,15 +288,20 @@ test('agent hibernate/wake are no-ops that do not disturb a live durable turn', 
       stopControl,
       'the user must be able to see their run is going (the composer offers stop)',
     ).toBeVisible({ timeout: 30_000 });
+    const receipt = ((await (await expectPromptDelivered(delivery)).json()) as { data: InputReceipt }).data;
+    const inputId = String(receipt.input_id || '').trim();
+    expect(inputId, 'the platform must accept the message with an input id').not.toEqual('');
 
-    // ── PROBE: a durable Bash frame plus the command's own started marker. ────
-    const activeTurnId = await waitForHeldBashTurn(api, sessionId, startedPath, PROBE_TIMEOUT_MS);
+    // ── PROBE: a relayed Bash call plus the command's own started marker. ─────
+    const heldResponseId = await waitForHeldBashResponse(
+      api, sessionId, inputId, startedPath, PROBE_TIMEOUT_MS,
+    );
     expect(
-      activeTurnId,
+      heldResponseId,
       `the configured model did not enter the requested held Bash command within ${PROBE_TIMEOUT_MS}ms ` +
-        '— there is no live durable turn to poke hibernate/wake against',
+        '— there is no running response to poke hibernate/wake against',
     ).not.toBeNull();
-    const turnId = activeTurnId as string;
+    const responseId = heldResponseId as string;
 
     // A running turn keeps its tool cards inside a process group that starts
     // closed, so the card reaches the user through the reader's own press.
@@ -329,13 +315,10 @@ test('agent hibernate/wake are no-ops that do not disturb a live durable turn', 
       'the command-side gate must still read as running before hibernate/wake',
     ).toHaveText(/Working|处理中/, { timeout: 30_000 });
 
-    // The lifecycle calls must land on the active turn identified by the probe.
-    const before = readLiveTurnState(sessionId);
-    expect(before?.turnId, 'snapshot current_turn_id should be the observed live turn').toBe(turnId);
-    expect(
-      ACTIVE_CONVERSATION_STATES.has(before?.conversationState || ''),
-      `pre-poke conversation_state should be active; got ${before?.conversationState}`,
-    ).toBe(true);
+    // The lifecycle calls must land on the running response identified by the probe.
+    const before = readLiveResponse(sessionId, inputId);
+    expect(before?.responseId, 'the recorded response must be the one the probe observed').toBe(responseId);
+    expect(before?.status, 'the response must be running before the pokes').toBe('running');
 
     // ── hibernate is a no-op even with a live turn: agent stays ACTIVE, never
     //    acquires a sandbox. The shared hibernateAgent helper wraps the public POST
@@ -363,32 +346,28 @@ test('agent hibernate/wake are no-ops that do not disturb a live durable turn', 
       'per-session agent must never hold a sandbox_id (wake)',
     ).toEqual('');
 
-    // ── THE titular property, durable half first because it is the tightest race:
-    //    the pokes did not disturb the live turn. The workspace gate cannot finish
-    //    naturally before this read, so a terminal here is attributable to the
-    //    lifecycle path rather than model timing. The snapshot supplies turn
-    //    identity because the page does not render a turn id.
-    const after = readLiveTurnState(sessionId);
-    expect(after, 'the live turn should still be present on the snapshot after hibernate/wake').not.toBeNull();
-    // The same turn remains active and no lifecycle call writes a terminal frame.
+    // ── THE titular property, recorded half first because it is the tightest race:
+    //    the pokes did not disturb the running response. The workspace gate cannot
+    //    finish naturally before this read, so an ending here is attributable to
+    //    the lifecycle path rather than model timing. The platform's records
+    //    supply response identity because the page does not render a response id.
+    const after = readLiveResponse(sessionId, inputId);
+    expect(after, 'the response should still be recorded after hibernate/wake').not.toBeNull();
+    // The same response is still running and no lifecycle call ended it.
     expect(
-      after?.turnId,
-      'the SAME live turn should still be current after hibernate/wake',
-    ).toBe(turnId);
+      after?.responseId,
+      'the SAME response should still answer the message after hibernate/wake',
+    ).toBe(responseId);
     expect(
-      ACTIVE_CONVERSATION_STATES.has(after?.conversationState || ''),
-      `live turn should still be active after no-op hibernate/wake; conversation_state=${after?.conversationState}`,
-    ).toBe(true);
-    expect(
-      after?.hasTerminal,
-      'no-op hibernate/wake must not have driven the turn to a terminal data-result',
-    ).toBe(false);
+      after?.status,
+      'the response should still be running after no-op hibernate/wake',
+    ).toBe('running');
     // Non-flaky backbone: agent-level hibernate did NOT tear down the conversation's
-    // own sandbox, and did NOT reconcile the turn to FAILED.
+    // own sandbox, and did NOT end the response as failed.
     expect(
-      after?.lastTurnStatus,
-      'the live turn must not have been reconciled to FAILED by the pokes',
-    ).not.toEqual('FAILED');
+      after?.outcome ?? null,
+      'no-op hibernate/wake must not have ended the response',
+    ).toBeNull();
     const sessionAfter = await api.getSession(sessionId);
     expect(
       String(sessionAfter.sandbox_id || '').trim(),
@@ -397,19 +376,23 @@ test('agent hibernate/wake are no-ops that do not disturb a live durable turn', 
 
     // The run still READS live while it genuinely is one (header pill + stop
     // button). The held command makes this a non-vacuous post-poke assertion.
-    await expectRunReadsLiveWhileActive(turnId);
+    await expectRunReadsLiveWhileActive(responseId);
 
     // Release the exact command observed above. A completed Bash card carrying
-    // its stdout proves both halves that a snapshot read alone cannot: the runner
+    // its stdout proves both halves that a recorded state alone cannot: the runner
     // kept executing after the lifecycle pokes, and the page kept consuming its
     // frames. Uploading a marker is deterministic platform I/O, not another model
     // decision.
     await api.uploadFileText(sessionId, '/workspace', releaseName, 'release', 30_000);
     const settled = await api.waitForSessionReady(sessionId, SETTLE_BUDGET_MS);
     expect(
-      String(settled.last_turn_status || ''),
-      'the held turn should complete normally after its release',
-    ).toEqual('COMPLETED');
+      settled.last_response?.response_id,
+      'the last response must be the one the pokes landed on',
+    ).toBe(responseId);
+    expect(
+      settled.last_response?.outcome,
+      'the held response should complete normally after its release',
+    ).toBe('completed');
     // The settled turn folds its finished work behind one header, and folding
     // rebuilds the group opened above as closed. This prompt runs one tool and
     // then replies, which is the shape that folds, so the header is waited for

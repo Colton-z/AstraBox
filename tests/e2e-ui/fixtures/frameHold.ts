@@ -1,11 +1,14 @@
 /**
- * Arm and release the backend's `turn_frame_processed` barrier from a spec.
+ * Arm and release the backend's `response_part_read` barrier from a spec.
  *
  * The barrier (`astrabox/testing/e2e_faults.py`, registered only when
- * `ASTRABOX_E2E_FAULTS` is armed) pauses a real turn worker immediately after
- * it has processed one matching translated frame, and holds it until this
- * declaration says `release`. That is what lets a spec keep "the reply is still
- * owed" true for a bounded, deterministic window instead of racing the model.
+ * `ASTRABOX_E2E_FAULTS` is armed) holds the session's reader right after it
+ * reads one part of the matching type, once that part is committed — so a page
+ * already has the part when the hold begins — and keeps holding until this
+ * declaration says `release`. Nothing the runtime writes after that part
+ * reaches the session meanwhile. That is what lets a spec keep "the reply is
+ * still owed" true for a bounded, deterministic window instead of racing the
+ * model.
  *
  * The declaration channel is a file the backend watches: the base path plus its
  * `.d/*.json` siblings, one file per worker so parallel specs never share a
@@ -13,7 +16,7 @@
  * reads it on its own schedule and must never see half a JSON document.
  *
  * `_HOLD_RELEASE_TIMEOUT_SECONDS` is 120 on the backend side: a hold that
- * is never released raises there and fails the turn for a reason that has
+ * is never released raises there and stops the reader for a reason that has
  * nothing to do with the spec. Every caller must fit its whole outage inside
  * that window and release in a `finally`.
  */
@@ -22,10 +25,10 @@ import path from 'node:path';
 
 import { test } from '@playwright/test';
 
-/** The deployment's declaration channel; `compose.e2e.yaml` shares it host↔container. */
+/** The deployment's fault file (`--fault-file` in the lane tooling); `compose.e2e.yaml` shares it host↔container. */
 export const FRAME_HOLD_FAULT_BASE = (
-  process.env.ASTRABOX_E2E_TURN_TERMINAL_DROP_FAULT_FILE
-  || '/tmp/astrabox-e2e-turn-terminal-drop-faults.json'
+  process.env.ASTRABOX_E2E_FAULT_FILE
+  || '/tmp/astrabox-e2e-faults.json'
 ).trim();
 
 export const FRAME_HOLD_FAULT_DIR = `${FRAME_HOLD_FAULT_BASE}.d`;
@@ -59,7 +62,7 @@ function writeFrameHoldFault(faultPath: string, payload: FrameHoldFault): void {
 }
 
 /**
- * Declare: hold this session's turn after its first *frameType* frame.
+ * Declare: hold this session's reader after its first *frameType* part.
  *
  * The directory is made world-writable because the backend container runs as a
  * different uid than the runner and writes `consumed` back into this same file;
@@ -111,14 +114,14 @@ export function frameHoldConsumed(
   });
 }
 
-/** Let the held worker go. Idempotent; a missing declaration is not an error. */
+/** Let the held reader go. Idempotent; a missing declaration is not an error. */
 export function releaseFrameHoldFault(faultPath: string): void {
   const payload = readFrameHoldFault(faultPath);
   if (!payload || payload.release) return;
   writeFrameHoldFault(faultPath, { ...payload, release: true });
 }
 
-/** Remove the declaration so no later turn in this deployment inherits it. */
+/** Remove the declaration so no later response in this deployment inherits it. */
 export function clearFrameHoldFault(faultPath: string): void {
   if (faultPath && fs.existsSync(faultPath)) fs.rmSync(faultPath, { force: true });
 }

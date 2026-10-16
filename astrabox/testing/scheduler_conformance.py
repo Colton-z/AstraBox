@@ -11,9 +11,6 @@ A downstream binds it to its own provider and store::
         async def fire_due_times(self, provider, deployment_id, start, end) -> None:
             ...  # fire every due time in (start, end) the way the engine does
 
-The in-tree binding (``tests/dbos_scheduler_conformance_test.py``) runs it
-over DBOS on SQLite.
-
 SCOPE — one process. These cases drive the provider through the seam only:
 dispatch to the handler, permanent and transient handler failures, the Run
 ledger, the payload a Run captures and keeps through later edits, replay
@@ -41,7 +38,7 @@ from astrabox.seams.scheduler import (
     RunInvocation,
     RunPermanentError,
     RunRecord,
-    RunTurnBinding,
+    RunInputBinding,
     ScheduleDefinition,
     SchedulerProvider,
 )
@@ -55,7 +52,7 @@ class RecordingHandler:
 
     def __init__(self) -> None:
         self.session_calls: list[RunInvocation] = []
-        self.turn_calls: list[tuple[RunInvocation, str]] = []
+        self.input_calls: list[tuple[RunInvocation, str]] = []
         self.permanent_failure = False
         self.transient_failures = 0
 
@@ -68,11 +65,11 @@ class RecordingHandler:
             raise RuntimeError("the session store blinked")
         return f"session-{invocation.run_id}"
 
-    async def admit_turn(
+    async def admit_input(
         self, invocation: RunInvocation, *, session_id: str
-    ) -> RunTurnBinding:
-        self.turn_calls.append((invocation, session_id))
-        return RunTurnBinding(command_id=f"command-{invocation.run_id}", turn_id="turn-1")
+    ) -> RunInputBinding:
+        self.input_calls.append((invocation, session_id))
+        return RunInputBinding(input_id=f"input-{invocation.run_id}")
 
 
 class SchedulerProviderContractSuite:
@@ -157,15 +154,15 @@ class SchedulerProviderContractSuite:
         settled = await self._settled(provider, run_id, states=("DISPATCHED",))
 
         assert settled.session_id == f"session-{run_id}"
-        assert settled.turn_id == "turn-1"
+        assert settled.input_id == f"input-{run_id}"
         assert settled.invocation.trigger == "manual"
         assert settled.invocation.deployment_id == "deployment-1"
         assert settled.invocation.scheduled_for is None
         assert settled.invocation.payload["input_text"] == "prepare the report"
-        # The turn is admitted in the Session the first call returned, for the
+        # The input is admitted in the Session the first call returned, for the
         # same invocation.
         assert [call.run_id for call in handler.session_calls] == [run_id]
-        assert handler.turn_calls == [(handler.session_calls[0], f"session-{run_id}")]
+        assert handler.input_calls == [(handler.session_calls[0], f"session-{run_id}")]
 
     async def test_a_permanent_failure_is_recorded_without_a_retry(
         self, provider: SchedulerProvider, handler: RecordingHandler
@@ -179,7 +176,7 @@ class SchedulerProviderContractSuite:
 
         assert settled.failed is True
         assert len(handler.session_calls) == 1
-        assert handler.turn_calls == []
+        assert handler.input_calls == []
 
     async def test_a_transient_failure_is_retried_with_the_same_invocation(
         self, provider: SchedulerProvider, handler: RecordingHandler

@@ -42,7 +42,7 @@
  */
 import { test, expect, type Locator } from '@playwright/test';
 
-import { AstraApi, visibleMessages } from '../fixtures/astraApi';
+import { AstraApi, messageToolCalls, visibleMessages } from '../fixtures/astraApi';
 import { openLiveProcessGroup, revealAssistantProcess } from '../fixtures/assistantProcess';
 import { trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
@@ -80,28 +80,26 @@ const DIFF_HEADER_LINE = /^(1 file changed|1 个文件已变更) \+\d+$/;
 const TOOL_STATE_BADGE = '[data-slot="collapsible-trigger"] [data-slot="badge"]';
 
 /**
- * The tools the engine actually drove, off the durable message blocks.
+ * The tools the engine actually drove, off the history's tool parts.
  *
- * `tool_use.name` is the field `blocksToSDKParts` turns into the transcript's
- * tool cards, so this is the same choice the page is rendering. Diagnostic
- * only: what the model reached for is the model's business, what the CARD says
- * about it is this spec's. It never throws — a broken read here must not
- * replace the failure it is describing.
+ * A tool part is what the transcript renders as a tool card, so this is the
+ * same choice the page is rendering. Diagnostic only: what the model reached
+ * for is the model's business, what the CARD says about it is this spec's. It
+ * never throws — a broken read here must not replace the failure it is
+ * describing.
  */
 async function toolsTheModelDrove(api: AstraApi, sessionId: string): Promise<string> {
   const names = new Set<string>();
   try {
     for (const message of visibleMessages(await api.getMessages(sessionId))) {
-      for (const block of message.blocks ?? []) {
-        if (String(block.type ?? '') !== 'tool_use') continue;
-        const name = String(block.name ?? '').trim();
-        if (name) names.add(name);
+      for (const call of messageToolCalls(message)) {
+        if (call.toolName) names.add(call.toolName);
       }
     }
   } catch (error) {
     return `<messages unreadable: ${String(error)}>`;
   }
-  return [...names].sort().join(', ') || '(no tool_use block at all)';
+  return [...names].sort().join(', ') || '(no tool call at all)';
 }
 
 const sessions = trackSessions();

@@ -15,13 +15,13 @@ export function useSessionRightPanelState({
   session,
   messages,
   lifecycleState,
-  isAgentRuntimeDeleted,
+  working,
   t,
 }: {
   session: SessionRecord;
   messages: SDKUIMessage[];
   lifecycleState: string;
-  isAgentRuntimeDeleted: boolean;
+  working: boolean;
   t: TranslateFn;
 }) {
   // ── Right-panel capabilities (single source of truth for tab visibility) ─
@@ -33,8 +33,8 @@ export function useSessionRightPanelState({
   const [rightTab, setRightTab] = useState<SessionRightPanelTab>(rightPanelCaps.defaultTab);
 
   const durableChanges = useSessionFileChanges({
-    sessionId: session.session_id, enabled: diffEnabled, lifecycleState,
-    lastTurnId: session.last_turn_id, messages,
+    sessionId: session.session_id, enabled: diffEnabled, working,
+    lastResponseId: session.last_response?.response_id, messages,
   });
 
   // ── File changes for diff panel ──────────────────────────────
@@ -60,16 +60,12 @@ export function useSessionRightPanelState({
   }, [session.session_id, session.terminal_cwd]);
 
   // File/terminal access depends on the sandbox being LIVE, not on the session being
-  // idle (READY). During a streaming reply the state is BUSY/WAITING_INPUT but the
-  // sandbox + its workspace files are fully available; gating on READY made the files
-  // panel show "waiting for runtime ready" mid-reply. Liveness allows ready/busy/background here.
+  // idle (READY). During a reply the state is PROCESSING/WAITING_INPUT but the
+  // sandbox and its workspace files are fully available; gating on READY made the files
+  // panel show "waiting for runtime ready" mid-reply.
   const runtimeAccessReady = isSandboxLiveForSession(session);
-  const filesPanelEnabled = runtimeAccessReady && (lifecycleState === 'ready' || lifecycleState === 'busy' || lifecycleState === 'background');
-  const runtimeUnavailableMessage = runtimeAccessReady
-    ? undefined
-    : isAgentRuntimeDeleted
-      ? t('chat:files.unavailable_agent_terminated')
-      : t('chat:files.unavailable');
+  const filesPanelEnabled = runtimeAccessReady && (lifecycleState === 'ready' || lifecycleState === 'busy');
+  const runtimeUnavailableMessage = runtimeAccessReady ? undefined : t('chat:files.unavailable');
 
   return {
     rightPanelCaps,

@@ -2,17 +2,34 @@ import { expect, test } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
 
 import { AstraApi } from '../fixtures/astraApi';
-import { appendChildFrames } from '../fixtures/childMessageReplay';
+import { sessionOutputRows } from '../fixtures/dbOracle';
+import { engineProfileFor } from '../fixtures/engineProfile';
 import { apiPath, appPath } from '../fixtures/env';
+import { childPrompt, type ChildGate } from '../fixtures/nativeChildLifecycle';
+import { PlatformApi } from '../fixtures/platformApi';
 import { trackSessions } from '../fixtures/sessionCleanup';
-import { expectComposerEnabled, openSessionView } from '../fixtures/sessionPage';
+import { expectComposerEnabled, openSessionView, sendPrompt } from '../fixtures/sessionPage';
+import { mirrorSseBodies, sessionStreamBodies } from '../fixtures/sseBodies';
+
+test.afterEach(async ({ page }, info) => {
+  const sessionIds = info.annotations.filter((item) => item.type === 'e2e_session_id')
+    .map((item) => item.description!).filter(Boolean);
+  if (sessionIds.length === 0) return;
+  const reads = await Promise.allSettled([
+    sessionStreamBodies(page),
+    Promise.resolve().then(() => sessionIds.map((sessionId) => ({ sessionId, output: sessionOutputRows(sessionId) }))),
+  ]);
+  await info.attach('background-child-stream-scene', {
+    body: JSON.stringify({ sessionIds, reads }), contentType: 'application/json',
+  });
+});
 
 const sessions = trackSessions();
 test.describe.configure({ mode: 'parallel' });
 
   test('idle network loss preserves the page and reconnects without a reload', async ({ page, context }) => {
     let sessionId = '';
-    const isStreamPath = (path: string) => path.startsWith(apiPath('/sessions/')) && path.endsWith('/ai-stream');
+    const isStreamPath = (path: string) => path.startsWith(apiPath('/sessions/')) && /\/sessions\/[^/]+\/stream$/.test(path);
     const railPath = apiPath('/sessions');
     let disconnected = true;
     let railLoaded = false;
@@ -111,34 +128,43 @@ test.describe.configure({ mode: 'parallel' });
   });
 
 test('background child reads retain their transcript and catch up after reconnect', async ({ page, context, request }) => {
+  await mirrorSseBodies(page);
   const api = new AstraApi(request);
-  const agent = await api.defaultAgent('Claude Code');
-  const sessionId = (await api.startConversation(agent.agent_id)).session_id;
+  const platform = new PlatformApi(request);
+  // A real background child, held on a file only this test writes: what the
+  // page reads is what the runtime reported, not a seeded record.
+  const profile = engineProfileFor('claude_code');
+  const sessionId = (await api.startConversation(profile.agent_id)).session_id;
+  test.info().annotations.push({ type: 'e2e_session_id', description: sessionId });
   sessions.push(sessionId);
   await api.waitForSessionReady(sessionId);
-  const engineRef = `network-${randomUUID()}`;
-  const before = `BEFORE_DISCONNECT_${randomUUID()}`;
+  if (profile.modes.unattended) await api.setPermissionMode(sessionId, profile.modes.unattended);
+  const root = String((await api.adminSessionDetail(sessionId)).runtime_identity?.workspace_dir ?? '').replace(/\/+$/, '');
+  expect(root, 'the gate files live in this Session\'s own workspace').toMatch(/^\//);
+  const marker = `NETWORK_CHILD_${randomUUID().replaceAll('-', '')}`;
   const after = `AFTER_RECONNECT_${randomUUID()}`;
-  const frame = (data: Record<string, unknown>) => ({
-    type: 'data-subagent', id: `subagent:${randomUUID()}`, transient: true,
-    data: { engineKind: 'claude_code', engineRef, ...data },
-  });
-  // Seed the existing durable journal, not a mocked HTTP response. This case
-  // tests the platform's reader; it does not ask an engine to generate work.
-  appendChildFrames(sessionId, [
-    frame({ kind: 'lifecycle', event: 'opened', engineEvent: 'task_started', operations: [] }),
-    frame({ kind: 'message', role: 'assistant', content: [{ type: 'text', text: before }] }),
-  ]);
-  const children = (await api.listChildRuns(sessionId)).child_runs;
-  expect(children).toHaveLength(1);
-  expect(children[0]!.active).toBe(true);
-  const childId = children[0]!.child_run_id;
+  const gate: ChildGate = {
+    marker, started: `${root}/.${marker}.started`, release: `${root}/.${marker}.release`,
+    completed: `${root}/.${marker}.completed`,
+  };
+  const started = async () => (await platform.listFiles(sessionId, root, 10_000)).entries
+    ?.some((entry) => entry.name === gate.started.split('/').at(-1) && entry.kind === 'file') ?? false;
+
   await openSessionView(page, sessionId);
+  await sendPrompt(page, sessionId, childPrompt(profile, 'background', gate));
+  await expect.poll(started, {
+    timeout: 90_000, intervals: [500, 1000],
+    message: 'the background child must reach its held command',
+  }).toBe(true);
+  const children = await api.waitForChildRuns(sessionId, (runs) => runs.some((run) => run.active), 30_000);
+  expect(children, 'one background child is running').toHaveLength(1);
+  const childId = children[0]!.child_run_id;
   await page.getByRole('tab', { name: /^Agents/ }).click();
   const row = page.locator(`[data-child-run-id="${childId}"]`);
   await row.click();
   const column = page.getByTestId('subagent-transcript-column');
-  await expect(column).toContainText(before);
+  // The child's own command names the work item before it is released.
+  await expect(column).toContainText(marker, { timeout: 30_000 });
   let blocked = true;
   let failedCatalog = 0;
   let failedTranscript = 0;
@@ -149,21 +175,28 @@ test('background child reads retain their transcript and catch up after reconnec
     await route.abort('connectionreset');
   });
   try {
+    // Reconnect with faults armed to exercise both existing background readers.
+    await context.setOffline(true);
+    await context.setOffline(false);
     await expect.poll(() => failedCatalog, { timeout: 15_000 }).toBeGreaterThan(0);
     await expect.poll(() => failedTranscript, { timeout: 15_000 }).toBeGreaterThan(0);
     await page.waitForTimeout(1500);
     await expect(row).toBeVisible();
-    await expect(column).toContainText(before);
+    await expect(column).toContainText(marker);
     await expect(page.getByText(/NETWORK_ERROR/)).toHaveCount(0);
     await context.setOffline(true);
-    appendChildFrames(sessionId, [
-      frame({ kind: 'message', role: 'assistant', content: [{ type: 'text', text: after }] }),
-      frame({ kind: 'lifecycle', event: 'closed', engineEvent: 'task_notification', engineStatus: 'completed', operations: [] }),
-    ]);
+    // The child finishes while the page is offline: the release text is what
+    // its command prints, and its final answer includes that receipt.
+    await api.uploadFileText(sessionId, root, gate.release.split('/').at(-1)!, after, 10_000);
+    await api.waitForChildRuns(
+      sessionId,
+      (runs) => runs.some((run) => run.child_run_id === childId && run.closed && !run.active),
+      90_000,
+    );
     blocked = false;
     await context.setOffline(false);
-    await expect(column).toContainText(after);
-    await expect(column).toContainText(before);
+    await expect(column).toContainText(after, { timeout: 30_000 });
+    await expect(column).toContainText(marker);
     await expect(row).toContainText('completed');
   } finally {
     blocked = false;

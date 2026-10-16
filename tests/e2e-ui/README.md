@@ -152,9 +152,10 @@ AstraBox 和浏览器都能路由到 Pod CIDR 的可信部署。Secure Access �
 
 ## 恢复系列 fixtures
 
-- `dbOracle.ts` 通过部署服务句柄查询 PostgreSQL 的
-  `astrabox_documents` 表，并提供
-  `patchSessionDoc`/`patchSnapshotDoc`/`replaceDocs`/`restoreDoc` 等故障模拟工具。
+- `dbOracle.ts` 通过部署服务句柄查询 PostgreSQL 的类型化表：会话的输入、回复、
+  转发的片段、交互与运行时转录（`sessionInputRows`/`sessionResponseRows`/
+  `sessionOutputRows`/`sessionInteractionRows`/`nativeTranscriptRows`），
+  其他查询用 `postgresRows`。
   非 Compose 部署必须设置 `ASTRABOX_E2E_POSTGRES_CONTAINER`；Compose 部署未设置时
   会按 service label 发现唯一的运行中 `postgres`。发现不到唯一服务时规格会带配置
   方法显式 skip；维护的 campaign 会把这个 skip 视为失败。显式配置的容器不存在或未运行

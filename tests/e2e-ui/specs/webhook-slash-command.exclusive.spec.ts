@@ -112,11 +112,11 @@ for (const scene of ['scheduler', 'hmac'] as const) {
       sessionId = await triggerText(request, scene, secret, SLASH_COMMAND);
 
       await waitForExactUserInput(api, sessionId);
+      // READY: the runtime took the input, nothing runs and nothing waits.
       const ready = await api.waitForSession(sessionId, (session) => (
-        session.state === 'READY'
-        && !session.current_turn_id
-        && String(session.last_turn_status || '') === 'COMPLETED'
+        session.state === 'READY' && Boolean(session.last_response)
       ), INPUT_TIMEOUT_MS);
+      expect(ready.last_response?.outcome, 'the slash command must run to completion').toBe('completed');
       const commandNames = (Array.isArray(ready.slash_commands) ? ready.slash_commands : [])
         .map((item) => {
           if (typeof item === 'string') return item;
@@ -173,16 +173,11 @@ for (const prefix of ['', 'Reply in one short sentence. Do not use tools.']) {
     const content = `用一句话解释什么是会话。不要使用工具。\nReference: ${Date.now()}`;
     const expected = prefix ? `${prefix}\n\n${content}` : content;
     const sessionId = await triggerText(request, 'scheduler', secret, content);
-    await waitForExactUserInput(api, sessionId, expected);
-    const answer = await api.waitForAssistantMessageMatching(
-      sessionId, 0, (message) => messageText(message).trim().length > 0, 60_000,
-    );
+    const input = await waitForExactUserInput(api, sessionId, expected);
+    const answer = await api.waitForReplyTo(sessionId, String(input.metadata?.input_id || ''), { timeoutMs: 60_000 });
+    expect(answer.metadata?.outcome, 'the forwarded text must be answered to completion').toBe('completed');
     expect(messageText(answer).trim()).not.toEqual('');
-    await api.waitForSession(sessionId, (session) => (
-      session.state === 'READY'
-      && !session.current_turn_id
-      && session.last_turn_status === 'COMPLETED'
-    ), 60_000);
+    await api.waitForSessionReady(sessionId, 60_000);
     const history = await api.getMessages(sessionId, 50);
     expect(history.messages.filter((message) => message.role === 'user').map(messageText))
       .toEqual([expected]);

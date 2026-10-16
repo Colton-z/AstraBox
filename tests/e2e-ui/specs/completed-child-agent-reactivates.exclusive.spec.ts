@@ -1,7 +1,14 @@
 /** The same completed Claude Agent runs again through SendMessage and survives reload. */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page, type Response } from '@playwright/test';
 
-import { AstraApi, type ChildRunMessagePage } from '../fixtures/astraApi';
+import {
+  AstraApi,
+  answersInput,
+  messageToolCalls,
+  type ChildRunMessagePage,
+  type InputReceipt,
+} from '../fixtures/astraApi';
+import { nativeRootEntries, object } from '../fixtures/nativeMcpServer';
 import { PlatformApi } from '../fixtures/platformApi';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
@@ -16,6 +23,23 @@ onPassOnly(async ({ request }) => {
 async function openAgents(page: Page): Promise<void> {
   await page.getByRole('tab', { name: /^Agents/ }).click();
   await expect(page.getByTestId('subagent-agents-panel')).toBeVisible();
+}
+
+/** The receipt of a message the page sent, checked against the id the page minted for it. */
+async function receiptOf(response: Response): Promise<InputReceipt> {
+  const receipt = (await response.json() as { data: InputReceipt }).data;
+  const sent = response.request().postDataJSON() as { client_message_id?: string };
+  expect(receipt.client_message_id, 'the receipt names the message the page sent').toBe(sent.client_message_id);
+  return receipt;
+}
+
+/** Claude's own content blocks of the root conversation, in transcript order. */
+function nativeRootBlocks(sessionId: string): Record<string, unknown>[] {
+  return nativeRootEntries(sessionId).flatMap(({ entry }) => {
+    if (entry.isSidechain === true || !entry.message) return [];
+    const content = object(entry.message).content;
+    return Array.isArray(content) ? content.map(object) : [];
+  });
 }
 
 function hasSuccessfulToolOutput(transcript: ChildRunMessagePage, marker: string): boolean {
@@ -89,7 +113,7 @@ test('SendMessage reopens the same completed child Agent until its new task fini
     `print(${JSON.stringify(secondMarker)})`,
     'PY',
   ].join('\n');
-  await sendPrompt(page, sessionId, [
+  const resumeReceipt = await receiptOf(await sendPrompt(page, sessionId, [
     'Resume the one general-purpose Agent that just completed. Do not create another Agent.',
     'Use SendMessage exactly once with the previous Agent ID in its to field.',
     'Send it this complete task verbatim:',
@@ -99,7 +123,7 @@ test('SendMessage reopens the same completed child Agent until its new task fini
     '---',
     'After SendMessage succeeds, give a brief acknowledgement and end your turn.',
     'Do not use Bash, TaskOutput, or any other tool yourself.',
-  ].join('\n'));
+  ].join('\n')));
 
   // The supplier executes the gate. The file API only observes it until the
   // API and visible row have both proved reactivation of the original child.
@@ -115,35 +139,47 @@ test('SendMessage reopens the same completed child Agent until its new task fini
   await expect(rows).toHaveCount(1);
   await expect(sameChildRow.locator('svg.animate-spin')).toHaveCount(1);
   await expect(sameChildRow.getByText('completed', { exact: true }), 'the old completed badge must not survive reactivation').toHaveCount(0);
+  // The held native child keeps the runtime PROCESSING after the foreground response ends.
   await expect.poll(async () => {
     const detail = await api.getSession(sessionId);
-    return !detail.current_turn_id && !detail.pending_interaction
-      && ['READY', 'BACKGROUND_RUNNING'].includes(String(detail.state));
+    return detail.state === 'PROCESSING' && (detail.current_responses ?? []).length === 0
+      && !detail.pending_interaction;
   }, { timeout: 15_000, message: 'the foreground ends while the resumed child remains live' }).toBe(true);
+  expect((await api.listChildRuns(sessionId)).child_runs.map((child) => ({
+    id: child.child_run_id, closed: child.closed, active: child.active,
+  })), 'the resumed child is still working after the foreground ends').toEqual([{ id: childId, closed: false, active: true }]);
   await expect(
-    page.locator('header').getByText('Running in background', { exact: true }),
-    'the header must show the resumed child after the foreground finishes',
-  ).toBeVisible();
+    sameChildRow.locator('svg.animate-spin'),
+    'the Agents panel must show the resumed child working after the foreground finishes',
+  ).toHaveCount(1);
   await expect(page.getByTestId('composer-prompt')).toBeEnabled();
   const rootHistory = await api.getMessages(sessionId);
-  const rootBlocks = rootHistory.messages.flatMap((message) => message.blocks || []);
-  const sendCalls = rootBlocks.filter((block) => block.type === 'tool_use' && block.name === 'SendMessage');
+  const sendCalls = rootHistory.messages.flatMap((message) => messageToolCalls(message)
+    .filter((call) => call.toolName === 'SendMessage')
+    .map((call) => ({ message, call })));
   expect(sendCalls, 'reactivation must use the native SendMessage tool exactly once').toHaveLength(1);
-  expect(rootBlocks.filter((block) => (
-    block.type === 'tool_result' && block.tool_use_id === sendCalls[0]!.id && block.is_error !== true
-  )), 'the actual SendMessage call must have a successful matching result').toHaveLength(1);
-  const parentReply = rootHistory.messages.find((message) => (
-    message.role === 'assistant'
-    && (message.blocks || []).some((block) => block.type === 'tool_use' && block.id === sendCalls[0]!.id)
-  ));
-  expect(parentReply, 'the resumed task must retain its parent response').toBeDefined();
-  const parentBlocks = parentReply!.blocks || [];
-  const sendResultIndex = parentBlocks.findIndex((block) => (
-    block.type === 'tool_result' && block.tool_use_id === sendCalls[0]!.id
-  ));
-  expect(sendResultIndex, 'the parent response must contain its SendMessage result').toBeGreaterThanOrEqual(0);
-  expect(parentBlocks.slice(sendResultIndex + 1).some((block) => (
-    block.type === 'text' && String(block.text || '').trim()
+  const { message: parentReply, call: sendCall } = sendCalls[0]!;
+  expect(sendCall.state, 'the actual SendMessage call must have a successful matching result').toBe('output-available');
+  // Claude's own transcript is the independent record of the same call.
+  await expect.poll(() => {
+    const nativeBlocks = nativeRootBlocks(sessionId);
+    return {
+      calls: nativeBlocks.filter((block) => block.type === 'tool_use' && block.name === 'SendMessage')
+        .map((block) => block.id),
+      failed: nativeBlocks.filter((block) => block.type === 'tool_result' && block.tool_use_id === sendCall.toolCallId)
+        .map((block) => block.is_error === true),
+    };
+  }, {
+    timeout: 30_000,
+    message: 'history shows the one SendMessage call Claude made, and Claude recorded its successful result',
+  }).toEqual({ calls: [sendCall.toolCallId], failed: [false] });
+  expect(
+    answersInput(parentReply, resumeReceipt.input_id),
+    'the resumed task must retain its parent response: the reply to the resume message',
+  ).toBe(true);
+  const sendCallIndex = parentReply.parts.findIndex((part) => part.toolCallId === sendCall.toolCallId);
+  expect(parentReply.parts.slice(sendCallIndex + 1).some((part) => (
+    part.type === 'text' && String(part.text || '').trim()
   )), 'the parent must answer after SendMessage, not just expose tool output').toBe(true);
 
   await page.reload({ waitUntil: 'domcontentloaded' });
@@ -181,7 +217,6 @@ test('SendMessage reopens the same completed child Agent until its new task fini
   await expect(rows).toHaveCount(1);
   await expect(sameChildRow.locator('svg.animate-spin')).toHaveCount(0);
   await expect(sameChildRow.getByText('completed', { exact: true })).toBeVisible();
-  await expect(page.locator('header').getByText('Running in background', { exact: true })).toHaveCount(0);
   await sameChildRow.click();
   await expect(page.getByTestId('subagent-transcript-drawer')).toBeVisible();
   const finalTranscript = await api.getChildRunMessages(sessionId, childId);

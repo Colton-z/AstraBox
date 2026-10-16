@@ -1,13 +1,21 @@
-"""A2A tasks projected from durable Agent input receipts and native response frames."""
+"""A2A tasks over Agent conversations, read from the runtime's recorded facts.
+
+A task is one input sent to an Agent conversation under the task's id. Its
+state is that input's: submitted until the runtime starts the response that
+answers it, then the response's own state (working, waiting on a person,
+ended with the runtime's outcome), or failed when the input was refused. The
+task's result is the response's browser parts, folded into the message the
+conversation's page shows. A stream re-reads the task each time the session's
+reader commits output, which is when a response's state changes are recorded.
+"""
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from a2a.server.events.event_queue import Event
@@ -39,39 +47,22 @@ from starlette.exceptions import HTTPException
 from astrabox import __version__
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
-from astrabox.common.utils.time_utils import utcnow_iso
+from astrabox.common.utils.time_utils import parse_iso
 from astrabox.common.utils.user_context import API_READ_SCOPE, API_WRITE_SCOPE, UserContext
 from astrabox.core.service.orchestrator.agent_access import can_view_agent
-from astrabox.core.service.orchestrator.engine.input_delivery import (
-    input_response_message_id,
-    settled_input_failure,
-    settled_input_outcome,
-)
 from astrabox.core.service.orchestrator.engine.interaction_contract import (
     PRESENTATION_TOOL_APPROVAL,
+    public_interaction_view,
 )
-from astrabox.core.service.orchestrator.session_kernel.active_turn_projection import (
-    build_active_engine_fifo_messages,
-)
-from astrabox.core.service.orchestrator.session_kernel.conversation_recovery import (
-    SDK_RESPONSE_RESULT_BOUNDARY,
-)
-from astrabox.core.service.orchestrator.session_kernel.service_mixins._helpers import (
-    _payload_is_turn_terminal,
-)
-from astrabox.core.service.orchestrator.session_message_view import project_session_messages
-from astrabox.core.service.orchestrator.session_public_projection import (
-    project_public_message,
-    project_public_pending_interaction,
-)
+from astrabox.core.service.orchestrator.session_runtime.feed import Notice, Resync, Subscription
+from astrabox.core.service.orchestrator.session_runtime.ui_message import _apply_approval_decisions, fold_message
+from astrabox.core.service.orchestrator.session_runtime.views import public_message
 from astrabox.deploy.public_path import public_path
 from astrabox.persistence.repository.agent_task_reference_repository import (
     AgentTaskReferenceRepository,
 )
-from astrabox.persistence.repository.interaction_snapshot_repository import (
-    InteractionSnapshotRepository,
-)
-from astrabox.persistence.repository.session_event_repository import SessionEventRepository
+from astrabox.persistence.repository.session_repository import SessionRepository
+from astrabox.persistence.repository.session_runtime_repository import SessionRuntimeRepository
 
 logger = get_logger(__name__)
 _TERMINAL = frozenset(
@@ -83,71 +74,31 @@ _TERMINAL = frozenset(
     }
 )
 _RETURNABLE = _TERMINAL | {a2a.TASK_STATE_INPUT_REQUIRED, a2a.TASK_STATE_AUTH_REQUIRED}
+#: A response's ``outcome`` (``engine/runtime.py``) as the task state it ends in.
+_ENDED = {
+    "completed": a2a.TASK_STATE_COMPLETED,
+    "failed": a2a.TASK_STATE_FAILED,
+    "cancelled": a2a.TASK_STATE_CANCELED,
+}
+#: Where the task's input came from, on the input the platform records.
+_SOURCE = "a2a"
 
 
-@dataclass
-class _TaskJournal:
-    """A connection's read cache of the canonical immutable Session journal."""
-
-    events: list[dict[str, Any]] = field(default_factory=list)
-    frames: list[dict[str, Any]] = field(default_factory=list)
-
-    @property
-    def through_seq(self) -> int:
-        return max(
-            [int(row["event_seq"]) for row in self.events]
-            + [int(row["frame_seq"]) for row in self.frames],
-            default=0,
-        )
-
-    def before(self, through_seq: int) -> _TaskJournal:
-        return _TaskJournal(
-            events=[row for row in self.events if int(row["event_seq"]) <= through_seq],
-            frames=[row for row in self.frames if int(row["frame_seq"]) <= through_seq],
-        )
+def _response_text(parts: list[dict[str, Any]]) -> str:
+    return "\n\n".join(
+        str(part.get("text") or "") for part in parts if part.get("type") == "text" and part.get("text")
+    )
 
 
-def _pending_interaction(journal: _TaskJournal, turn_id: str) -> dict[str, Any] | None:
-    pending: dict[str, Any] | None = None
-    closed: set[str] = set()
-    answers = {
-        str(row.get("causation_id") or ""): str(
-            (row.get("payload") or {}).get("interaction_id") or ""
-        )
-        for row in journal.events
-        if row.get("event_type") == "command.accepted"
-        and (row.get("payload") or {}).get("command_type") == "AnswerInteraction"
-    }
-    facts = [(int(row["event_seq"]), row) for row in journal.events]
-    facts.extend((int(row["frame_seq"]), row) for row in journal.frames)
-    for _, row in sorted(facts, key=lambda fact: fact[0]):
-        if str(row.get("turn_id") or "") != turn_id:
-            continue
-        payload = row.get("payload") or {}
-        kind = row.get("event_type")
-        interaction_id = ""
-        if kind == "interaction.answer_persisted":
-            interaction_id = str(payload.get("interaction_id") or "")
-        elif kind == "dispatch.confirmed":
-            interaction_id = answers.get(str(row.get("causation_id") or ""), "")
-        elif payload.get("type") == "start":
-            interaction_id = str(
-                (payload.get("messageMetadata") or {}).get("continues_interaction") or ""
-            )
-        if interaction_id:
-            closed.add(interaction_id)
-            if pending and pending.get("interaction_id") == interaction_id:
-                pending = None
-        if kind in {"turn.completed", "turn.failed", "turn.recovered"}:
-            pending = None
-        candidate = None
-        if kind == "turn.awaiting_interaction":
-            candidate = payload
-        elif payload.get("type") == "data-interaction":
-            candidate = payload.get("data")
-        if isinstance(candidate, dict) and candidate.get("interaction_id") not in closed:
-            pending = candidate
-    return pending
+def _failure_text(response: dict[str, Any], chunks: list[dict[str, Any]]) -> str:
+    """Why a response failed: the runtime's error, else the error its parts showed."""
+    error = response.get("error")
+    if isinstance(error, dict) and str(error.get("message") or "").strip():
+        return str(error["message"])
+    for chunk in reversed(chunks):
+        if chunk.get("type") == "error" and str(chunk.get("errorText") or "").strip():
+            return str(chunk["errorText"])
+    return ""
 
 
 def _output_view(task: a2a.Task, modes: list[str]) -> a2a.Task:
@@ -219,6 +170,20 @@ def _timestamp(value: str) -> Timestamp:
     return stamp
 
 
+#: A ListTasks page token names its last task's creation time in nanoseconds;
+#: the store keeps microseconds, so both conversions are exact.
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def _cursor_ns(created_at: str) -> int:
+    return (parse_iso(created_at) - _EPOCH) // timedelta(microseconds=1) * 1000
+
+
+def _cursor_time(timestamp_ns: int) -> datetime:
+    """Raises ``OverflowError`` for a time no datetime can hold."""
+    return _EPOCH + timedelta(microseconds=timestamp_ns // 1000)
+
+
 @asynccontextmanager
 async def _protocol_errors() -> AsyncIterator[None]:
     try:
@@ -242,12 +207,18 @@ async def _protocol_errors() -> AsyncIterator[None]:
 
 
 class AgentA2AService:
+    """A2A over the platform's Agent conversations.
+
+    The conversation's runtime service is the platform's ``session_runtime``
+    and its process-wide session feed ``_session_feed``.
+    """
+
     def __init__(self, *, agent_service: Any) -> None:
         self._agents = agent_service
         self._platform = agent_service._platform
         self._references = AgentTaskReferenceRepository()
-        self._events = SessionEventRepository()
-        self._interactions = InteractionSnapshotRepository()
+        self._sessions = SessionRepository()
+        self._facts = SessionRuntimeRepository()
 
     async def _authorize(
         self, user: UserContext, agent_id: str, *, write: bool = False
@@ -261,8 +232,12 @@ class AgentA2AService:
         return agent
 
     async def _session(self, user: UserContext, agent_id: str, session_id: str) -> dict[str, Any]:
-        session = await self._platform.get_session(user, session_id)
-        if session.get("agent_id") != agent_id or session.get("session_kind") != "agent_chat":
+        session = await self._sessions.get_owned_session(session_id, user.user_id)
+        if (
+            session is None
+            or session.get("agent_id") != agent_id
+            or session.get("session_kind") != "agent_chat"
+        ):
             raise TaskNotFoundError
         return session
 
@@ -327,29 +302,20 @@ class AgentA2AService:
                     raise InvalidParamsError(message="Task text must not be blank")
                 row = await self._reserve(user, agent_id, message, kind="task")
                 session_id = await self._context_session(user, agent_id, str(row["context_id"]))
-                await self._references.bind_session(str(row["_id"]), session_id)
+                await self._references.bind_session(str(row["reference_id"]), session_id)
                 row["session_id"] = session_id
                 await self._session(user, agent_id, session_id)
-                command = await self._command(row)
-                if command is None:
-                    try:
-                        await self._platform.dispatch_turn_input(
-                            user,
-                            session_id,
-                            content,
-                            client_message_id=str(row["_id"]),
-                            admission_only=True,
-                        )
-                    except APIError:
-                        if await self._command(row) is None:
-                            raise
-                        if (
-                            await settled_input_outcome(
-                                self._events, session_id, f"{session_id}:{row['_id']}"
-                            )
-                            is None
-                        ):
-                            raise
+                # The task's id is its input's id in the conversation. A resent
+                # message is the same task, read back as it stands even when
+                # its conversation has ended.
+                if await self._facts.input_by_client_message_id(session_id, str(row["reference_id"])) is None:
+                    await self._platform.session_runtime.send_as(
+                        session_id,
+                        content,
+                        author_user_id=user.user_id,
+                        source=_SOURCE,
+                        client_message_id=str(row["reference_id"]),
+                    )
                 task = await self._project(user, agent_id, row)
             if not config.return_immediately and task.status.state not in _RETURNABLE:
                 task = await self._wait(user, agent_id, task.id, write=True)
@@ -362,7 +328,7 @@ class AgentA2AService:
         reference_id = "a2a-context-" + hashlib.sha256(identity.encode()).hexdigest()
         row = await self._references.reserve(
             {
-                "_id": reference_id,
+                "reference_id": reference_id,
                 "kind": "context",
                 "context_id": context_id,
                 "user_id": user.user_id,
@@ -396,7 +362,7 @@ class AgentA2AService:
         fingerprint = hashlib.sha256(message.SerializeToString(deterministic=True)).hexdigest()
         row = await self._references.reserve(
             {
-                "_id": reference_id,
+                "reference_id": reference_id,
                 "kind": kind,
                 "fingerprint": fingerprint,
                 "user_id": user.user_id,
@@ -405,7 +371,6 @@ class AgentA2AService:
                 "message_id": message.message_id,
                 "context_id": message.context_id or "context-" + reference_id,
                 "task_id": message.task_id,
-                "created_at": utcnow_iso(),
             }
         )
         if row.get("fingerprint") != fingerprint or row.get("kind") != kind:
@@ -443,302 +408,121 @@ class AgentA2AService:
         interaction_id = data["interaction_id"]
         if not isinstance(interaction_id, str) or not interaction_id.strip():
             raise InvalidParamsError(message="interaction_id is required")
-        interaction = await self._interactions.get_interaction(session_id, interaction_id)
-        if not interaction or str(interaction.get("turn_id") or "") != str(
-            task.metadata["turn_id"]
-        ):
+        interaction = await self._facts.get_interaction(session_id, interaction_id)
+        if not interaction or interaction["response_id"] != task.metadata["response_id"]:
             raise InvalidParamsError(message="Interaction does not belong to this task")
-        if interaction.get("interaction_state") == "ANSWERED":
-            if interaction.get("response") != data["answer"]:
+        if interaction.get("answer") is not None:
+            if interaction["answer"] != data["answer"]:
                 raise InvalidParamsError(message="Interaction already has a different answer")
-            await self._references.bind_session(str(reservation["_id"]), session_id)
+            await self._references.bind_session(str(reservation["reference_id"]), session_id)
             return task
         if task.status.state not in {
             a2a.TASK_STATE_INPUT_REQUIRED,
             a2a.TASK_STATE_AUTH_REQUIRED,
         }:
             raise InvalidParamsError(message="Task has no pending interaction")
-        await self._platform.answer_pending_interaction(
-            user, session_id, interaction_id, data["answer"]
-        )
-        await self._references.bind_session(str(reservation["_id"]), session_id)
+        await self._platform.session_runtime.answer(user, session_id, interaction_id, data["answer"])
+        await self._references.bind_session(str(reservation["reference_id"]), session_id)
         return await self._project(user, agent_id, row)
 
-    async def _command(self, row: dict[str, Any]) -> dict[str, Any] | None:
-        return await self._events.find_command_by_client_message_id(
-            str(row["session_id"]),
-            client_message_id=str(row["_id"]),
-        )
-
-    async def _read_journal(self, session_id: str, *, after_seq: int = 0) -> _TaskJournal:
-        latest_events, latest_frames = await asyncio.gather(
-            self._events.list_events(session_id, newest_first=True, limit=1),
-            self._events.list_frames(session_id, scope="turn", newest_first=True, limit=1),
-        )
-        through_seq = max(
-            [int(row["event_seq"]) for row in latest_events]
-            + [int(row["frame_seq"]) for row in latest_frames],
-            default=0,
-        )
-        journal = _TaskJournal()
-        for frames in (False, True):
-            cursor = after_seq
-            while cursor < through_seq:
-                page = await (
-                    self._events.list_frames(
-                        session_id, scope="turn", after_seq=cursor, before_seq=through_seq + 1, limit=500
-                    )
-                    if frames
-                    else self._events.list_events(
-                        session_id, after_seq=cursor, before_seq=through_seq + 1, limit=500
-                    )
-                )
-                if not page:
-                    break
-                if frames:
-                    journal.frames.extend(page)
-                else:
-                    journal.events.extend(page)
-                cursor = int(page[-1]["frame_seq" if frames else "event_seq"])
-        return journal
-
     async def _project(self, user: UserContext, agent_id: str, row: dict[str, Any]) -> a2a.Task:
+        """The task as the runtime's recorded facts describe it now."""
         session_id = str(row.get("session_id") or "")
         session = await self._session(user, agent_id, session_id)
-        journal = await self._read_journal(session_id)
-        return self._project_journal(user, agent_id, row, session, journal)
+        sent = await self._facts.input_by_client_message_id(session_id, str(row["reference_id"]))
+        response_id = str((sent or {}).get("response_id") or "")
+        response = await self._facts.get_response(session_id, response_id) if response_id else None
+        interactions: list[dict[str, Any]] = []
+        chunks: list[dict[str, Any]] = []
+        answers: list[dict[str, Any]] = []
+        if response is not None:
+            if response["status"] == "waiting":
+                interactions = await self._facts.open_interactions_for_response(session_id, response_id)
+            chunks = [
+                output["part"]
+                for output in await self._facts.output_for_responses(session_id, [response_id])
+            ]
+            answers = await self._facts.approval_answers(session_id, [response_id])
+        return self._task(agent_id, row, session, sent, response, interactions, chunks, answers)
 
-    def _project_journal(
+    def _task(
         self,
-        user: UserContext,
         agent_id: str,
         row: dict[str, Any],
         session: dict[str, Any],
-        journal: _TaskJournal,
+        sent: dict[str, Any] | None,
+        response: dict[str, Any] | None,
+        interactions: list[dict[str, Any]],
+        chunks: list[dict[str, Any]],
+        answers: list[dict[str, Any]],
     ) -> a2a.Task:
-        session_id = str(row.get("session_id") or "")
+        session_id = str(session["session_id"])
         context_id = str(row["context_id"])
-        command = next(
-            (
-                event
-                for event in journal.events
-                if event.get("event_type") == "command.accepted"
-                and (event.get("payload") or {}).get("client_message_id") == row["_id"]
-            ),
-            None,
-        )
+        task_id = str(row["reference_id"])
         state = a2a.TASK_STATE_SUBMITTED
         history: list[a2a.Message] = []
         artifacts: list[a2a.Artifact] = []
-        status_message = None
+        status_message: a2a.Message | None = None
         timestamp = str(row["created_at"])
-        turn_id = ""
-        command_id = ""
-        input_id = ""
-        if command:
-            payload = command["payload"]
-            command_id = str(command["causation_id"])
-            turn_id = str(command.get("turn_id") or "")
-            input_id = str(payload["input_id"])
-            timestamp = str(command.get("occurred_at") or timestamp)
+        if sent is not None:
+            timestamp = str(sent["created_at"])
             history.append(
                 a2a.Message(
                     message_id=str(row["message_id"]),
                     context_id=context_id,
-                    task_id=str(row["_id"]),
+                    task_id=task_id,
                     role=a2a.ROLE_USER,
-                    parts=[a2a.Part(text=str(payload["content"]))],
+                    parts=[a2a.Part(text=str(sent["content"]))],
                 )
             )
-            frames = [
-                frame
-                for frame in journal.frames
-                if int(frame["frame_seq"]) > int(command["event_seq"])
-            ]
-            selected: list[dict[str, Any]] = []
-            consuming = False
-            for frame in frames:
-                part = frame.get("payload") or {}
-                if part.get("type") == "data-input-consumed":
-                    consuming = (part.get("data") or {}).get("inputId") == input_id
-                    if consuming:
-                        selected = [frame]
-                        turn_id = str(frame.get("turn_id") or turn_id)
-                    continue
-                if consuming:
-                    selected.append(frame)
-            response = None
-            terminal_seq = 0
-            if selected:
-                state = a2a.TASK_STATE_WORKING
-                timestamp = str(selected[-1].get("created_at") or timestamp)
-                messages = build_active_engine_fifo_messages(
-                    session_id=session_id,
-                    turn_id=turn_id,
-                    frames=selected,
-                    default_message_seq=int(command["event_seq"]),
-                    user_id=user.user_id,
+            if sent["state"] == "failed":
+                state = a2a.TASK_STATE_FAILED
+                failure = sent.get("failure") or {}
+                status_message = a2a.Message(
+                    message_id=f"{task_id}:failure",
+                    role=a2a.ROLE_AGENT,
+                    parts=[a2a.Part(text=str(failure.get("message") or failure.get("code") or ""))],
                 )
-                response = next(
-                    (
-                        item
-                        for item in messages
-                        if item.get("message_id") == input_response_message_id(input_id)
-                    ),
-                    None,
+        if response is not None:
+            response_id = str(response["response_id"])
+            timestamp = str(response.get("ended_at") or response["started_at"])
+            # The caller sees the response as its owner's page does: the
+            # public projection of each part, never an interaction's private half.
+            message = fold_message(response_id, chunks)
+            _apply_approval_decisions(message, {str(answer["interaction_id"]): answer["answer"] for answer in answers})
+            message = public_message(message, shared=False)
+            parts: list[a2a.Part] = []
+            text = _response_text(message["parts"])
+            if text:
+                parts.append(a2a.Part(text=text))
+            if message["parts"]:
+                # The parts the conversation's page shows for this response.
+                parts.append(_data({"parts": message["parts"]}))
+            if parts:
+                artifacts.append(
+                    a2a.Artifact(artifact_id=f"{task_id}:result", name="Agent result", parts=parts)
                 )
-                terminals = [
-                    f
-                    for f in selected
-                    if (
-                        _payload_is_turn_terminal(f.get("payload") or {})
-                        or (f.get("payload") or {}).get(SDK_RESPONSE_RESULT_BOUNDARY) is True
+                history.append(
+                    a2a.Message(
+                        message_id=response_id,
+                        context_id=context_id,
+                        task_id=task_id,
+                        role=a2a.ROLE_AGENT,
+                        parts=parts,
                     )
-                ]
-                if terminals:
-                    terminal_seq = int(terminals[-1]["frame_seq"])
-                    last_payload = terminals[-1]["payload"]
-                    failed = (
-                        last_payload.get("type") == "error"
-                        or (last_payload.get("data") or {}).get("is_error") is True
-                        or last_payload.get("finishReason") == "error"
-                    )
-                    # FIFO result boundaries settle one logical input. A whole
-                    # turn's finish waits for its canonical terminal payload.
-                    if last_payload.get(SDK_RESPONSE_RESULT_BOUNDARY) is True:
-                        state = a2a.TASK_STATE_FAILED if failed else a2a.TASK_STATE_COMPLETED
-            terminal_events = [
-                event
-                for event in reversed(journal.events)
-                if event.get("turn_id") == turn_id
-                and event.get("event_type") in {"turn.completed", "turn.failed", "turn.recovered"}
-            ][:1]
-            if state not in _TERMINAL and terminal_events:
-                terminal = terminal_events[0]
-                terminal_payload = terminal.get("payload") or {}
-                if selected or terminal.get("causation_id") == command_id:
-                    state = (
-                        a2a.TASK_STATE_FAILED
-                        if terminal["event_type"] == "turn.failed"
-                        else a2a.TASK_STATE_COMPLETED
-                    )
-                    timestamp = str(terminal.get("occurred_at") or timestamp)
-                    terminal_seq = int(terminal["event_seq"])
-                    if terminal_payload.get("error_text"):
-                        status_message = a2a.Message(
-                            message_id=f"{row['_id']}:failure",
-                            role=a2a.ROLE_AGENT,
-                            parts=[a2a.Part(text=str(terminal_payload["error_text"]))],
-                        )
-            if state in _TERMINAL and any(
-                (frame.get("payload") or {}).get("type") == "abort" for frame in selected
-            ):
-                state = a2a.TASK_STATE_CANCELED
-            if state == a2a.TASK_STATE_FAILED and status_message is None:
-                failure_text = ""
-                if terminal_events and (
-                    selected or terminal_events[0].get("causation_id") == command_id
-                ):
-                    failure_text = str(
-                        (terminal_events[0].get("payload") or {}).get("error_text") or ""
-                    )
-                if not failure_text:
-                    for frame in reversed(selected):
-                        error_payload = frame.get("payload") or {}
-                        if error_payload.get("type") == "error":
-                            failure_text = str(error_payload.get("errorText") or "")
-                            if failure_text:
-                                break
-                        error_data = error_payload.get("data") or {}
-                        if (
-                            error_payload.get("type") == "data-result"
-                            and error_data.get("is_error") is True
-                        ):
-                            failure_text = str(error_data.get("result") or "")
-                            if failure_text:
-                                break
+                )
+            if response["status"] == "ended":
+                state = _ENDED.get(str(response.get("outcome") or ""), a2a.TASK_STATE_FAILED)
+                failure_text = _failure_text(response, chunks) if state == a2a.TASK_STATE_FAILED else ""
                 if failure_text:
                     status_message = a2a.Message(
-                        message_id=f"{row['_id']}:failure",
+                        message_id=f"{task_id}:failure",
                         role=a2a.ROLE_AGENT,
                         parts=[a2a.Part(text=failure_text)],
                     )
-            if terminal_seq and state == a2a.TASK_STATE_COMPLETED:
-                interruptions = [
-                    event
-                    for event in journal.events
-                    if event.get("turn_id") == turn_id
-                    and event.get("event_type") == "turn.interrupt_requested"
-                ][:1]
-                if interruptions:
-                    interrupt_seq = int(interruptions[0]["event_seq"])
-                    start_seq = (
-                        int(selected[0]["frame_seq"]) if selected else int(command["event_seq"])
-                    )
-                    if start_seq < interrupt_seq <= terminal_seq:
-                        state = a2a.TASK_STATE_CANCELED
-            if terminal_events and selected:
-                messages = project_session_messages(
-                    events=journal.events, frames=journal.frames, user_id=user.user_id
-                )
-                response = next(
-                    (
-                        item
-                        for item in messages
-                        if item.get("message_id") == input_response_message_id(input_id)
-                    ),
-                    response,
-                )
-            if response:
-                response = project_public_message(response)
-                parts = []
-                if response.get("content"):
-                    parts.append(a2a.Part(text=str(response["content"])))
-                if response.get("blocks"):
-                    parts.append(_data({"blocks": response["blocks"]}))
-                if parts:
-                    artifacts.append(
-                        a2a.Artifact(
-                            artifact_id=f"{row['_id']}:result", name="Agent result", parts=parts
-                        )
-                    )
-                    history.append(
-                        a2a.Message(
-                            message_id=str(response["message_id"]),
-                            context_id=context_id,
-                            task_id=str(row["_id"]),
-                            role=a2a.ROLE_AGENT,
-                            parts=parts,
-                        )
-                    )
-            failure = settled_input_failure(
-                next(
-                    (
-                        event
-                        for event in journal.events
-                        if event.get("event_type") == "turn.failed"
-                        and event.get("causation_id") == command_id
-                    ),
-                    None,
-                )
-            )
-            if failure is not None:
-                state = a2a.TASK_STATE_FAILED
-                status_message = a2a.Message(
-                    message_id=f"{row['_id']}:failure",
-                    role=a2a.ROLE_AGENT,
-                    parts=[a2a.Part(text=failure.message)],
-                )
-            pending = _pending_interaction(journal, turn_id)
-            if (
-                state not in _TERMINAL
-                and isinstance(pending, dict)
-                and str(pending.get("turn_id") or "") == turn_id
-                and selected
-                and consuming
-            ):
-                public_pending = project_public_pending_interaction(pending)
-                assert public_pending is not None
+            elif response["status"] == "waiting" and interactions:
+                pending = public_interaction_view(interactions[0]["contract"])
+                assert pending is not None
                 state = (
                     a2a.TASK_STATE_AUTH_REQUIRED
                     if pending.get("presentation") == PRESENTATION_TOOL_APPROVAL
@@ -747,17 +531,15 @@ class AgentA2AService:
                 status_message = a2a.Message(
                     message_id=str(pending.get("interaction_id") or ""),
                     role=a2a.ROLE_AGENT,
-                    task_id=str(row["_id"]),
+                    task_id=task_id,
                     context_id=context_id,
                     parts=[
-                        a2a.Part(
-                            text=_interaction_text(
-                                public_pending, agent_id=agent_id, task_id=str(row["_id"])
-                            )
-                        ),
-                        _data(public_pending),
+                        a2a.Part(text=_interaction_text(pending, agent_id=agent_id, task_id=task_id)),
+                        _data(pending),
                     ],
                 )
+            else:
+                state = a2a.TASK_STATE_WORKING
         if state in _RETURNABLE:
             notices = (
                 [part.text for part in status_message.parts if part.HasField("text")]
@@ -772,9 +554,9 @@ class AgentA2AService:
             notice = "\n\n".join(notices)
             if status_message is None:
                 status_message = a2a.Message(
-                    message_id=f"{row['_id']}:status",
+                    message_id=f"{task_id}:status",
                     role=a2a.ROLE_AGENT,
-                    task_id=str(row["_id"]),
+                    task_id=task_id,
                     context_id=context_id,
                 )
             data_parts = [part for part in status_message.parts if not part.HasField("text")]
@@ -798,20 +580,18 @@ class AgentA2AService:
                     first_artifact.parts.insert(0, a2a.Part(text=notice))
         if status_message is not None:
             status_message.context_id = context_id
-            status_message.task_id = str(row["_id"])
+            status_message.task_id = task_id
         metadata = {
             "agent_id": agent_id,
             "session_id": session_id,
-            "turn_id": turn_id,
-            "command_id": command_id,
-            "input_id": input_id,
+            "input_id": str((sent or {}).get("input_id") or ""),
+            "response_id": str((response or {}).get("response_id") or ""),
             "session_url_path": public_path(f"/sessions/{session_id}"),
         }
-        for key in ("deployment_id", "run_id", "source_type"):
-            if session.get(key) is not None:
-                metadata[key] = str(session[key])
+        if session.get("source_type") is not None:
+            metadata["source_type"] = str(session["source_type"])
         return a2a.Task(
-            id=str(row["_id"]),
+            id=task_id,
             context_id=context_id,
             status=a2a.TaskStatus(
                 state=state, timestamp=_timestamp(timestamp), message=status_message
@@ -831,28 +611,45 @@ class AgentA2AService:
     async def list(
         self, user: UserContext, agent_id: str, params: a2a.ListTasksRequest
     ) -> a2a.ListTasksResponse:
+        """One page of the caller's tasks for this Agent, newest created first.
+
+        Tasks are paged in the store by creation time, so a page reads only
+        its own tasks. The status filters are applied to the page's tasks
+        after projection: a filtered page can hold fewer than ``page_size``
+        tasks while ``next_page_token`` still leads to more, and
+        ``total_size`` counts the tasks before those filters.
+        """
         async with _protocol_errors():
             await self._authorize(user, agent_id)
             validate_history_length(params)
             size = params.page_size or 50
             validate_page_size(size)
-            cursor = decode_list_tasks_cursor(params.page_token) if params.page_token else None
-            if params.page_token and cursor is None:
-                raise InvalidParamsError(message="Invalid page token")
+            after: tuple[datetime, str] | None = None
+            if params.page_token:
+                cursor = decode_list_tasks_cursor(params.page_token)
+                if cursor is None or cursor.timestamp_ns is None:
+                    raise InvalidParamsError(message="Invalid page token")
+                try:
+                    after = (_cursor_time(cursor.timestamp_ns), cursor.task_id)
+                except OverflowError:
+                    raise InvalidParamsError(message="Invalid page token") from None
+            # One row past the page says whether another page follows.
             rows = await self._references.list_tasks(
                 user_id=user.user_id,
                 org_id=user.org_id,
                 agent_id=agent_id,
                 context_id=params.context_id,
+                after=after,
+                limit=size + 1,
             )
+            page = rows[:size]
             tasks = []
-            for row in rows:
+            for row in page:
                 try:
                     task = await self._project(user, agent_id, row)
-                except APIError as exc:
-                    if exc.status_code == 404:
-                        continue
-                    raise
+                except TaskNotFoundError:
+                    # The task's conversation was deleted.
+                    continue
                 if params.status and task.status.state != params.status:
                     continue
                 if (
@@ -861,33 +658,27 @@ class AgentA2AService:
                     < params.status_timestamp_after.ToNanoseconds()
                 ):
                     continue
-                tasks.append(task)
-
-            def position(task: a2a.Task) -> tuple[int, str]:
-                return task.status.timestamp.ToNanoseconds(), task.id
-
-            tasks.sort(key=position, reverse=True)
-            remaining = [
-                task
-                for task in tasks
-                if cursor is None or position(task) < (cursor.timestamp_ns or 0, cursor.task_id)
-            ]
-            page = remaining[:size]
-            for task in page:
                 if not params.include_artifacts:
                     task.ClearField("artifacts")
-            return a2a.ListTasksResponse(
-                tasks=[apply_history_length(task, params) for task in page],
-                page_size=size,
-                total_size=len(tasks),
-                next_page_token=encode_list_tasks_cursor(
+                tasks.append(apply_history_length(task, params))
+            next_page_token = ""
+            if len(rows) > size:
+                next_page_token = encode_list_tasks_cursor(
                     ListTasksCursor(
-                        timestamp_ns=page[-1].status.timestamp.ToNanoseconds(),
-                        task_id=page[-1].id,
+                        timestamp_ns=_cursor_ns(str(page[-1]["created_at"])),
+                        task_id=str(page[-1]["reference_id"]),
                     )
                 )
-                if len(remaining) > size
-                else "",
+            return a2a.ListTasksResponse(
+                tasks=tasks,
+                page_size=size,
+                total_size=await self._references.count_tasks(
+                    user_id=user.user_id,
+                    org_id=user.org_id,
+                    agent_id=agent_id,
+                    context_id=params.context_id,
+                ),
+                next_page_token=next_page_token,
             )
 
     async def cancel(
@@ -899,6 +690,10 @@ class AgentA2AService:
             await self._session(user, agent_id, str(row["session_id"]))
             raise TaskNotCancelableError(message="Task-scoped cancellation is unavailable")
 
+    def _changes(self, session_id: str) -> Subscription:
+        """The session's notices; a task is read again after each one that commits output."""
+        return self._platform._session_feed.subscribe(session_id)
+
     async def _wait(
         self,
         user: UserContext,
@@ -907,13 +702,14 @@ class AgentA2AService:
         *,
         write: bool = False,
     ) -> a2a.Task:
-        while True:
-            await self._authorize(user, agent_id, write=write)
-            row = await self._reference(user, agent_id, task_id)
-            task = await self._project(user, agent_id, row)
-            if task.status.state in _RETURNABLE:
-                return task
-            await asyncio.sleep(0.5)
+        row = await self._reference(user, agent_id, task_id)
+        with self._changes(str(row["session_id"])) as changes:
+            while True:
+                await self._authorize(user, agent_id, write=write)
+                task = await self._project(user, agent_id, row)
+                if task.status.state in _RETURNABLE:
+                    return task
+                await _committed(changes)
 
     async def stream(
         self, user: UserContext, agent_id: str, params: a2a.SendMessageRequest
@@ -946,58 +742,41 @@ class AgentA2AService:
         async with _protocol_errors():
             await self._authorize(user, agent_id)
             row = await self._reference(user, agent_id, task_id)
-            session_id = str(row["session_id"])
-            session = await self._session(user, agent_id, session_id)
-            journal = await self._read_journal(session_id)
-            previous = self._project_journal(user, agent_id, row, session, journal)
-            if reject_terminal and previous.status.state in _TERMINAL:
-                raise UnsupportedOperationError(message="A terminal task cannot be subscribed to")
-            initial = previous
-            modes: list[str] = []
-            if configuration is not None:
-                initial = apply_history_length(initial, configuration)
-                modes = list(configuration.accepted_output_modes)
-            yield _output_view(initial, modes)
-            while previous.status.state not in _TERMINAL:
-                cursor = journal.through_seq
-                await asyncio.sleep(0.5)
-                await self._authorize(user, agent_id)
-                session = await self._session(user, agent_id, session_id)
-                updates = await self._read_journal(session_id, after_seq=cursor)
-                journal.events.extend(updates.events)
-                journal.frames.extend(updates.frames)
-                # Every reader projects each immutable fact in the same sequence,
-                # irrespective of how many facts arrived between its polls.
-                boundaries = sorted(
-                    {int(event["event_seq"]) for event in updates.events}
-                    | {int(frame["frame_seq"]) for frame in updates.frames}
-                )
-                for boundary in boundaries:
-                    canonical = self._project_journal(
-                        user, agent_id, row, session, journal.before(boundary)
-                    )
-                    task = _output_view(canonical, modes)
-                    old = _output_view(previous, modes)
+            # Subscribed before the first read, so nothing committed after it
+            # goes unseen.
+            with self._changes(str(row["session_id"])) as changes:
+                previous = await self._project(user, agent_id, row)
+                if reject_terminal and previous.status.state in _TERMINAL:
+                    raise UnsupportedOperationError(message="A terminal task cannot be subscribed to")
+                modes: list[str] = []
+                initial = previous
+                if configuration is not None:
+                    initial = apply_history_length(initial, configuration)
+                    modes = list(configuration.accepted_output_modes)
+                yield _output_view(initial, modes)
+                while previous.status.state not in _TERMINAL:
+                    await _committed(changes)
+                    await self._authorize(user, agent_id)
+                    task = await self._project(user, agent_id, row)
+                    current, old = _output_view(task, modes), _output_view(previous, modes)
                     old_artifacts = {item.artifact_id: item for item in old.artifacts}
-                    for artifact in task.artifacts:
+                    for artifact in current.artifacts:
                         if old_artifacts.get(artifact.artifact_id) != artifact:
                             yield a2a.TaskArtifactUpdateEvent(
-                                task_id=task.id,
-                                context_id=task.context_id,
+                                task_id=current.id,
+                                context_id=current.context_id,
                                 artifact=artifact,
                                 append=False,
-                                last_chunk=task.status.state in _TERMINAL,
+                                last_chunk=current.status.state in _TERMINAL,
                             )
-                    if task.status != old.status:
+                    if current.status != old.status:
                         yield a2a.TaskStatusUpdateEvent(
-                            task_id=task.id,
-                            context_id=task.context_id,
-                            status=task.status,
-                            metadata=task.metadata,
+                            task_id=current.id,
+                            context_id=current.context_id,
+                            status=current.status,
+                            metadata=current.metadata,
                         )
-                    previous = canonical
-                    if previous.status.state in _TERMINAL:
-                        return
+                    previous = task
 
     async def card(self, user: UserContext, agent_id: str, rpc_url: str) -> a2a.AgentCard:
         async with _protocol_errors():
@@ -1025,3 +804,11 @@ class AgentA2AService:
                     )
                 ],
             )
+
+
+async def _committed(changes: Subscription) -> None:
+    """Wait until the session's reader commits output, or the feed may have missed some."""
+    while True:
+        item = await changes.get()
+        if isinstance(item, Resync) or (isinstance(item, Notice) and item.kind == "output"):
+            return

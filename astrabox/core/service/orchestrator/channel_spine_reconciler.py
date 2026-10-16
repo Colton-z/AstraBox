@@ -3,18 +3,22 @@
 Boot-time sweep plus a periodic scan over durable channel work:
 
 * expired inbound work items (a worker died between ack and settle) are
-  CAS-reclaimed and re-driven through the attach-not-append path, so a turn
-  survives the loss of a worker process and is lost only with the database;
-* abandoned outbox rows (PENDING, or SENDING with an expired lease) are
-  re-leased and re-delivered against the exact bound turn;
+  CAS-reclaimed and re-driven; the Session accepts a message's input once, so
+  a message survives the loss of a worker process and is lost only with the
+  database;
+* due outbox rows (PENDING past their retry backoff, or SENDING with a lapsed
+  lease) are leased and delivered against the exact bound reply, each
+  Session's replies in order;
 * authorizations whose observation never arrived die with evidence, and the
   participant who invoked the agent is told;
-* Session output subscriptions create delivery records for new main-agent
-  responses, independently of input dispatch.
+* Session output subscriptions whose Session recorded output past their
+  position are projected into delivery records, covering any batch the
+  reader's fact consumer did not reach; a subscription whose binding is
+  disabled, or whose Session is gone, is removed.
 
 Same host shape as :class:`~astrabox.core.service.orchestrator.expiration_watcher.ExpirationWatcher`:
 owned by the platform service, started after bootstrap, cancelled on quiesce.
-Every mutation goes through the fenced CAS methods on
+Every mutation goes through the fenced compare-and-set methods on
 :class:`~astrabox.persistence.repository.channel_repository.ChannelRepository`,
 so any number of replicas can run the loop concurrently.
 """

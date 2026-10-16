@@ -4,24 +4,24 @@ Proves that dropping a session's cached in-memory runtime is transparent to the
 conversation. The runtime held in the control-plane process is only a cache over
 durable state: the sandbox container, its workspace, and the engine's native
 conversation transcript persist independently. So after the cache is dropped the
-next turn transparently rebuilds the runtime and *resumes the same conversation*
-rather than starting a fresh one.
+session's reader connects to the same box again and the next message *resumes
+the same conversation* rather than starting a fresh one.
 
 Flow:
 
-* create a session and drive one turn that plants a unique, memorable token
-  (``ZEBRA-<hex>``); assert that turn settles back to READY.
+* create a session and send one message that plants a unique, memorable token
+  (``ZEBRA-<hex>``); its response ends and the session settles back to READY.
 * call the operator ``evict-runtime`` endpoint, which drops the runtime held in
   process memory without touching the sandbox container, its workspace, or the
-  persisted transcript. The session projection must stay READY (eviction is an
-  in-process cache drop, not a state transition).
-* drive a second turn that asks the agent to recall the token. With the cached
-  runtime gone, the turn must rebuild it from the durable sandbox and resume the
-  prior conversation, so the streamed reply contains the *same* token.
+  persisted transcript. The session stays READY (eviction is an in-process cache
+  drop, not a state transition).
+* send a second message that asks the agent to recall the token. With the
+  cached runtime gone, the reader reconnects to the still-running box and the
+  engine answers from the prior conversation, in the same box, with the *same*
+  token.
 
-The load-bearing assertion is that the token survives the eviction. The
-``open_sandbox`` path re-dials the resident in-box server, then the second turn
-must resume the engine's native conversation rather than silently starting over.
+The load-bearing assertion is that the token survives the eviction: a reconnect
+that silently starts a fresh engine conversation answers without it.
 
 Run it explicitly (deselected in the default unit run):
 
@@ -41,7 +41,7 @@ from tests.e2e._sandbox_helpers import (
     data,
     get_session,
     poll_until_agent_ready,
-    stream_turn,
+    send_and_follow,
     wait_until_settled,
 )
 
@@ -53,18 +53,18 @@ def _evict_runtime(client: httpx.Client, sid: str) -> dict:
 
     Returns the unwrapped envelope ``data`` (``{"evicted": <session_id>}``). This
     clears only the process-memory runtime handle; the sandbox container and its
-    durable workspace/transcript are left intact, so the next turn must rebuild
-    the runtime and resume the persisted conversation.
+    durable workspace/transcript are left intact, so the next message must reach
+    the runtime again and resume the persisted conversation.
     """
     return data(client.post(f"/api/v1/admin/sessions/{sid}/evict-runtime"))
 
 
 def test_evict_runtime_preserves_context(e2e_client: httpx.Client) -> None:
-    """plant a token -> evict the in-memory runtime -> the post-evict recall turn.
+    """plant a token -> evict the in-memory runtime -> the recall after eviction.
 
-    The planting turn, eviction confirmation, transparent READY projection, and
-    post-eviction recall are all asserted. A reconnect that wedges or silently
-    starts a fresh conversation is a product failure.
+    The planting response, eviction confirmation, transparent READY state and
+    the recall after eviction are all asserted. A reconnect that wedges or
+    silently starts a fresh conversation is a product failure.
     """
     token = f"ZEBRA-{uuid.uuid4().hex[:8]}"
     created = create_session(e2e_client)
@@ -73,24 +73,25 @@ def test_evict_runtime_preserves_context(e2e_client: httpx.Client) -> None:
     try:
         poll_until_agent_ready(e2e_client, sid)
 
-        # Turn 1 — plant the memorable token. Deterministic prompt: the exact
-        # token goes in, a fixed one-word acknowledgement comes out.
-        res1 = stream_turn(
+        # Plant the memorable token. Deterministic prompt: the exact token goes
+        # in, a fixed one-word acknowledgement comes out.
+        planted = send_and_follow(
             e2e_client,
             sid,
-            content=(
-                f"Remember this exact token for later: {token}. "
-                f"Reply with only the word OK and nothing else."
-            ),
+            f"Remember this exact token for later: {token}. "
+            f"Reply with only the word OK and nothing else.",
+            until="end",
         )
-        assert res1.error is None, f"planting turn errored before settling: {res1.error}"
-        settled1 = wait_until_settled(e2e_client, sid)
-        assert str(settled1.get("state")) == "READY", (
-            f"session not READY after the planting turn: {settled1.get('state')!r}"
+        assert planted.error is None, f"the planting response failed: {planted.error}"
+        assert planted.finish_reason == "stop", (
+            f"the planting response did not end normally: {planted.finish_reason!r}"
         )
+        settled = wait_until_settled(e2e_client, sid)
+        box = str(settled.get("sandbox_id") or "")
+        assert box, f"the settled conversation holds no sandbox: {settled}"
 
         # Evict the cached runtime. This is an in-process cache drop only, so the
-        # session projection must stay READY — eviction is not a state transition.
+        # session must stay READY — eviction is not a state transition.
         evicted = _evict_runtime(e2e_client, sid)
         assert evicted.get("evicted") == sid, (
             f"evict-runtime did not confirm the evicted session: {evicted}"
@@ -101,24 +102,26 @@ def test_evict_runtime_preserves_context(e2e_client: httpx.Client) -> None:
             f"{after_evict.get('state')!r}"
         )
 
-        # The next turn rebuilds the evicted runtime from the still-running box
-        # and resumes the same native conversation.
-        res2 = stream_turn(
+        # The next message reaches the evicted runtime's still-running box and
+        # resumes the same native conversation.
+        recalled = send_and_follow(
             e2e_client,
             sid,
-            content=(
-                "What exact token did I ask you to remember? Reply with only that "
-                "token and nothing else."
-            ),
+            "What exact token did I ask you to remember? Reply with only that "
+            "token and nothing else.",
+            until="end",
         )
-        assert res2.error is None, f"post-eviction recall turn errored: {res2.error}"
-        assert res2.n_text_delta > 0, "post-eviction recall turn streamed no text"
-        assert token in res2.text, (
-            f"runtime eviction lost the conversation token {token!r}: {res2.text!r}"
+        assert recalled.error is None, f"the recall after eviction failed: {recalled.error}"
+        assert recalled.n_text_delta > 0, "the recall after eviction streamed no text"
+        assert token in recalled.text, (
+            f"runtime eviction lost the conversation token {token!r}: {recalled.text!r}"
         )
-        settled2 = wait_until_settled(e2e_client, sid)
-        assert str(settled2.get("state")) == "READY", (
-            f"session not READY after post-eviction recall: {settled2.get('state')!r}"
+        settled = wait_until_settled(e2e_client, sid)
+        assert settled["last_response"]["response_id"] == recalled.response_id, settled
+        assert settled["last_response"]["outcome"] == "completed", settled
+        assert settled.get("sandbox_id") == box, (
+            f"eviction moved the conversation off its live box: {box!r} -> "
+            f"{settled.get('sandbox_id')!r}"
         )
     finally:
         release_session(sid)

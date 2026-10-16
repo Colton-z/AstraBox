@@ -2,14 +2,14 @@
 import { execFileSync } from 'node:child_process';
 import { expect, test, type Page } from '@playwright/test';
 
-import { AstraApi, type MessagePage } from '../fixtures/astraApi';
-import { documentsByField, framesForTurn } from '../fixtures/dbOracle';
+import { AstraApi, messageParts, type MessagePage } from '../fixtures/astraApi';
+import { postgresRows, sessionOutputRows, sqlLiteral } from '../fixtures/dbOracle';
 import { engineCases, engineProfileFor, type EngineProfile } from '../fixtures/engineProfile';
 import { browserStreamFrames, object } from '../fixtures/nativeMcpServer';
 import { killSandbox, requireSandboxHandle, sandboxRunning, waitForSandboxStopped } from '../fixtures/sandboxOps';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
-import { aiStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
+import { sessionStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
 
 const sessions = trackSessions();
 let ownedAgent = '';
@@ -22,22 +22,31 @@ test.afterEach(async ({ request, page }, info) => {
   if (!['failed', 'timedOut', 'interrupted'].includes(String(info.status))) return;
   const api = new AstraApi(request);
   const reads = await Promise.allSettled([
-    api.getSession(sessionId), api.getMessages(sessionId, 50), aiStreamBodies(page),
+    api.getSession(sessionId), api.getMessages(sessionId, 50), sessionStreamBodies(page),
   ]);
   await info.attach('native-diff-scene', {
     body: JSON.stringify({ sessionId, ownedAgent, reads }), contentType: 'application/json',
   });
 });
 
+/** The `data-file-changes` parts history holds: the native results the Diff panel shows. */
 function changes(history: MessagePage): Record<string, unknown>[] {
-  return history.messages.flatMap((message) => (message.blocks || [])
-    .filter((block) => block.type === 'ui_data' && object(block.part).type === 'data-file-changes')
-    .map((block) => object(block.part)));
+  return history.messages.flatMap((message) => messageParts(message, 'data-file-changes'));
 }
 
-/** Codex rejects invalid patch context before emitting a fileChange item. */
+/**
+ * Codex rejects invalid patch context before emitting a fileChange item.
+ *
+ * Read from the native SessionStore the platform keeps for the session (its
+ * mirrored Codex rollout, `transcript_scopes` / `transcript_entries`), not
+ * from anything the platform derived from it.
+ */
 function codexRejectedPatch(path: string, absent: string): Record<string, unknown>[] {
-  const payloads = documentsByField('transcript_entries', '$.platform_session_id', sessionId)
+  const payloads = postgresRows<{ subpath: string; entry_json: string }>(
+    `SELECT s.subpath, e.entry_json FROM transcript_entries e `
+      + `JOIN transcript_scopes s ON s.scope_id = e.scope_id `
+      + `WHERE s.platform_session_id = ${sqlLiteral(sessionId)} ORDER BY s.scope_id, e.seq`,
+  )
     .filter((row) => String(row.subpath).startsWith('codex/'))
     .map((row) => object(JSON.parse(String(row.entry_json))))
     .filter((entry) => entry.type === 'response_item')
@@ -63,29 +72,39 @@ function edit(engine: string, path: string, before: string, after: string): stri
   return `Use ${engine === 'claude_code' ? 'Edit' : 'edit'} with ${JSON.stringify({ file_path: path, old_string: before, new_string: after })}.`;
 }
 
-interface TurnMetrics { turnId: string; usage: unknown }
+/** One ended response and the result data its stream published. */
+interface ResponseMetrics { responseId: string; results: unknown[] }
 
-function retainedMetrics(history: MessagePage, turns: TurnMetrics[]): void {
-  for (const turn of turns) {
-    const results = history.messages.filter((message) => message.turn_id === turn.turnId)
-      .flatMap((message) => message.blocks ?? []).filter((block) => block.type === 'result');
-    expect(results, 'each settled reply retains its result').toHaveLength(1);
-    expect(results[0]!.usage, 'history retains every metric published in the reply stream').toEqual(turn.usage);
+function retainedMetrics(history: MessagePage, responses: ResponseMetrics[]): void {
+  for (const response of responses) {
+    const message = history.messages.find((item) => item.id === response.responseId);
+    expect(message, `history must hold response ${response.responseId}`).toBeTruthy();
+    expect(
+      messageParts(message!, 'data-result').map((part) => part.data),
+      'history retains every result, with every metric, the reply stream published — and invents none',
+    ).toEqual(response.results);
   }
 }
 
-async function settledTurn(api: AstraApi, page: Page, prompt: string): Promise<TurnMetrics> {
-  const previous = (await api.getSession(sessionId)).last_turn_id;
+async function settledTurn(api: AstraApi, page: Page, prompt: string): Promise<ResponseMetrics> {
+  const previous = (await api.getSession(sessionId)).last_response?.response_id;
   await sendPrompt(page, sessionId, prompt);
-  const session = await api.waitForSession(sessionId, (session) => session.last_turn_id !== previous
-    && session.last_turn_status === 'COMPLETED' && session.state === 'READY', 90_000);
-  const turnId = String(session.last_turn_id);
-  const results = framesForTurn(turnId).map((row) => object(row.payload))
-    .filter((frame) => frame.type === 'data-result');
-  expect(results).toHaveLength(1);
-  // Read the published result, independently of the history projection under
-  // test. Engines that do not publish usage must not gain invented counters.
-  const metrics = { turnId, usage: object(results[0]!.data).usage };
+  const session = await api.waitForSession(sessionId, (session) => (
+    Boolean(session.last_response?.response_id)
+    && session.last_response?.response_id !== previous
+    && session.last_response?.outcome === 'completed'
+    && session.state === 'READY'
+  ), 90_000);
+  const responseId = String(session.last_response?.response_id);
+  // Read the published result from the session's output log, independently of
+  // the history read under test. An engine that publishes no result card must
+  // not gain an invented one.
+  const results = sessionOutputRows(sessionId, responseId)
+    .map((row) => row.part)
+    .filter((part) => part.type === 'data-result')
+    .map((part) => part.data);
+  expect(results.length, 'a response publishes at most one result').toBeLessThanOrEqual(1);
+  const metrics = { responseId, results };
   retainedMetrics(await api.getMessages(sessionId, 50), [metrics]);
   return metrics;
 }

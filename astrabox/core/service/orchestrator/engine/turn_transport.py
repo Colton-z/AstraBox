@@ -11,13 +11,15 @@ class EngineProcessDisposalCapability(Protocol):
     Normal runtime eviction only disconnects a client so another platform
     process can resume it. Delete/archive/end may happen after that platform
     process restarted, so an engine that owns a resident process can also
-    dispose it from the opaque turn id saved in the journal.
+    dispose it from the native conversation identity and recorded reader cursor.
     """
 
     async def dispose_process(
         self,
         *,
         sandbox_id: str,
-        engine_turn_id: str,
+        engine_session_key: str,
+        runtime_cursor: dict | None,
+        workspace_ref: dict,
     ) -> None:
         ...

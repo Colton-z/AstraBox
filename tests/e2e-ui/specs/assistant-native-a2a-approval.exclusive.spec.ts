@@ -3,11 +3,12 @@ import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { expect, test, type APIRequestContext } from '@playwright/test';
 
-import { AstraApi, messageText, type MessagePage } from '../fixtures/astraApi';
+import { AstraApi, messageText, messageToolCalls, type MessagePage, type ToolCallPart } from '../fixtures/astraApi';
 import { revealAssistantProcess } from '../fixtures/assistantProcess';
-import { documentsByField, sessionDoc, sessionEvents, snapshotDoc } from '../fixtures/dbOracle';
+import { postgresRows, sessionInputRows, sessionInteractionRows, sqlLiteral } from '../fixtures/dbOracle';
 import { engineProfileFor } from '../fixtures/engineProfile';
 import { absoluteApiUrl, apiPath, appPath } from '../fixtures/env';
+import { agentTaskReferences, sessionRow } from '../fixtures/ingressRecords';
 import { nativeCalls, nativeRows } from '../fixtures/nativeChildLifecycle';
 import { requireServiceContainer, SERVER_CONTAINER_HANDLE } from '../fixtures/serviceContainer';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
@@ -15,7 +16,7 @@ import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 type Obj = Record<string, unknown>;
 type Part = { text?: string; data?: Obj };
 type Task = { id: string; contextId: string; status: { state: string; message?: { parts: Part[] } };
-  metadata: { session_id: string; turn_id: string; command_id: string; input_id: string };
+  metadata: { session_id: string; input_id: string; response_id: string };
   artifacts?: Array<{ parts: Part[] }> };
 
 test.describe.configure({ retries: 0, timeout: 180_000 });
@@ -39,8 +40,9 @@ function object(value: unknown): Obj {
   return value as Obj;
 }
 
-function blocks(messages: MessagePage): Obj[] {
-  return messages.messages.flatMap((message) => (message.blocks || []).map(object));
+/** The tool calls a page of history shows, each as the tool part its call settles in. */
+function toolCalls(messages: MessagePage): ToolCallPart[] {
+  return messages.messages.flatMap((message) => messageToolCalls(message));
 }
 
 async function rpc(request: APIRequestContext, method: string, params: Obj, timeout: number) {
@@ -141,10 +143,10 @@ test('Hermes answers one Codex authorization through the signed A2A interaction 
   expect(first.toolNames.some((name) => /(?:^|_)answer_agent_task$/.test(name))).toBe(false);
   expect(first.toolNames.some((name) => /terminal|exec_command/.test(name))).toBe(false);
 
-  const references = () => documentsByField('agent_task_references', '$.agent_id', agentId);
+  const references = () => agentTaskReferences(agentId);
   const tasks = references().filter((row) => row.kind === 'task');
   expect(tasks, JSON.stringify(references())).toHaveLength(1);
-  const taskId = String(tasks[0]._id);
+  const taskId = tasks[0].reference_id;
   const targetId = String(tasks[0].session_id);
   sessions.push(targetId);
   const before = await getTask(request, taskId, remaining());
@@ -159,8 +161,8 @@ test('Hermes answers one Codex authorization through the signed A2A interaction 
   expect(first.text).toContain(interactionId);
   expect(first.text).toContain(before.contextId);
   for (const decision of decisions) expect(first.text).toContain(decision);
-  const owner = sessionDoc(sourceId)!;
-  expect(sessionDoc(targetId)).toMatchObject({ user_id: owner.user_id, org_id: owner.org_id,
+  const owner = sessionRow(sourceId)!;
+  expect(sessionRow(targetId)).toMatchObject({ user_id: owner.user_id, org_id: owner.org_id,
     agent_id: agentId, source_type: 'a2a' });
   expect(tasks[0]).toMatchObject({ user_id: owner.user_id, org_id: owner.org_id });
 
@@ -181,19 +183,21 @@ test('Hermes answers one Codex authorization through the signed A2A interaction 
     const absent = await request.get(apiPath(`/sessions/${targetId}/files/download?path=${encodeURIComponent(path)}`),
       { timeout: Math.min(10_000, remaining()) });
     expect(absent.status(), 'the requested file must not exist until the native authorization is answered').toBe(404);
-    expect(documentsByField('interaction_snapshots', '$.session_id', targetId)
-      .find((row) => row.interaction_id === interactionId)?.interaction_state).toBe('OPEN');
+    expect(sessionInteractionRows(targetId).find((row) => row.interaction_id === interactionId),
+      'the interaction stays open and holds no answer').toMatchObject({ status: 'open', answer: null });
   };
   await assertStillPending();
   const ordinary = await rpc(request, 'SendMessage', {
-    message: { messageId: randomUUID(), contextId: before.contextId, role: 'ROLE_USER', parts: [{ text: 'Approved' }] },
+    message: { messageId: randomUUID(), contextId: before.contextId, taskId, role: 'ROLE_USER', parts: [{ text: 'Approved' }] },
     configuration: { returnImmediately: true },
   }, remaining());
   expect(ordinary.error, 'ordinary approval text must not bypass the existing interaction').toBeDefined();
   await assertStillPending();
 
-  const bindings = documentsByField('platform_mcp_bindings', '$.assistant_id', assistantId)
-    .filter((row) => row.scope_kind === 'assistant_workspace');
+  const bindings = postgresRows<{ deployment_id: string; scope_kind: string; user_id: string | null }>(
+    `SELECT deployment_id, scope_kind, user_id FROM platform_mcp_bindings `
+      + `WHERE assistant_id = ${sqlLiteral(assistantId)} AND scope_kind = 'assistant_workspace'`,
+  );
   expect(bindings).toHaveLength(1);
   expect(bindings[0].user_id).toBe(owner.user_id);
   const bindingId = String(bindings[0].deployment_id);
@@ -240,38 +244,35 @@ test('Hermes answers one Codex authorization through the signed A2A interaction 
   expect(after.contextId).toBe(before.contextId);
   expect(after.metadata).toMatchObject(before.metadata);
   expect(await api.downloadFileText(targetId, path, Math.min(10_000, remaining()))).toBe(marker);
-  const answered = documentsByField('interaction_snapshots', '$.session_id', targetId)
-    .find((row) => row.interaction_id === interactionId)!;
-  expect(answered).toMatchObject({ interaction_state: 'ANSWERED', response: { decision: 'accept' },
-    turn_id: before.metadata.turn_id });
+  const answered = sessionInteractionRows(targetId).find((row) => row.interaction_id === interactionId)!;
+  expect(answered, 'the one-time authorization answered the response that asked')
+    .toMatchObject({ status: 'answered', answer: { decision: 'accept' }, response_id: before.metadata.response_id });
   evidence.answered = answered;
   // Refused ordinary text can reserve a protocol id, but cannot create another execution.
-  const admitted = sessionEvents(targetId).filter((row) => row.event_type === 'command.accepted'
-    && object(row.payload).command_type === 'StartTurn');
-  expect(admitted).toHaveLength(1);
-  expect(object(admitted[0].payload).client_message_id).toBe(taskId);
-  expect(sessionDoc(targetId)).toMatchObject({ user_id: owner.user_id, org_id: owner.org_id });
-  expect(snapshotDoc(targetId)).toMatchObject({ last_turn_id: before.metadata.turn_id });
+  const admitted = sessionInputRows(targetId);
+  expect(admitted.map((row) => row.client_message_id), 'the target conversation holds only the task input')
+    .toEqual([taskId]);
+  expect(sessionRow(targetId)).toMatchObject({ user_id: owner.user_id, org_id: owner.org_id });
+  expect((await api.getSession(targetId)).last_response).toMatchObject({
+    response_id: before.metadata.response_id, outcome: 'completed',
+  });
 
   const sourceMessages = await api.getMessages(sourceId, 50);
-  const sourceBlocks = blocks(sourceMessages);
-  const taskReads = sourceBlocks.filter((block) => block.type === 'tool_use'
-    && /(?:^|_)get_agent_task$/.test(String(block.name)));
+  const sourceCalls = toolCalls(sourceMessages);
+  const taskReads = sourceCalls.filter((call) => /(?:^|_)get_agent_task$/.test(call.toolName));
   expect(taskReads).toHaveLength([...first.toolNames, ...second.toolNames]
     .filter((name) => /(?:^|_)get_agent_task$/.test(name)).length);
   for (const read of taskReads) expect(read.input).toEqual({ agent_id: agentId, task_id: taskId });
-  const answerCall = sourceBlocks.filter((block) => block.type === 'tool_use'
-    && /(?:^|_)answer_agent_task$/.test(String(block.name)));
+  const answerCall = sourceCalls.filter((call) => /(?:^|_)answer_agent_task$/.test(call.toolName));
   expect(answerCall).toHaveLength(1);
   const answerArgs = object(answerCall[0].input);
   expect(answerArgs).toEqual({ agent_id: agentId, task_id: taskId,
     interaction_id: interactionId, answer: { decision: 'accept' }, message_id: answerMessageId });
   const answerReference = references().find((row) => row.kind === 'answer' && row.message_id === answerArgs.message_id);
   expect(answerReference).toMatchObject({ user_id: owner.user_id, org_id: owner.org_id, session_id: targetId });
-  const answerResult = sourceBlocks.find((block) => block.type === 'tool_result' && block.tool_use_id === answerCall[0].id);
-  expect(answerResult).toBeDefined();
-  expect(answerResult?.is_error).not.toBe(true);
-  expect(JSON.stringify(answerResult)).toContain(taskId);
+  // The answer call's own result is its settled tool part: the receipt Hermes read back.
+  expect(answerCall[0].state, 'the answer tool must return a receipt, not an error').toBe('output-available');
+  expect(JSON.stringify(answerCall[0].output)).toContain(taskId);
 
   const nativeOutput = () => nativeRows(targetId).map((row) => JSON.parse(String(row.entry_json)) as Obj)
     .filter((entry) => entry.type === 'response_item').map((entry) => object(entry.payload))
@@ -279,18 +280,21 @@ test('Hermes answers one Codex authorization through the signed A2A interaction 
   await expect.poll(() => Boolean(nativeOutput()), { timeout: remaining(), intervals: [300] }).toBe(true);
   expect(String(nativeOutput()!.output)).toContain(marker);
   const targetMessages = await api.getMessages(targetId, 50);
-  const targetBlocks = blocks(targetMessages);
-  const shownCall = targetBlocks.find((block) => block.type === 'tool_use' && block.id === nativeCall.id);
-  expect(shownCall).toBeDefined();
-  expect(shownCall?.name).toBe('commandExecution');
+  const targetCalls = toolCalls(targetMessages);
+  // Codex's command item as its tool part carries it: the item Codex started
+  // as the input, and the item it completed as the output.
+  const shownCalls = targetCalls.filter((call) => call.toolCallId === nativeCall.id);
+  expect(shownCalls, 'the native command is one tool call in the conversation').toHaveLength(1);
+  const shownCall = shownCalls[0];
+  expect(shownCall.toolName).toBe('commandExecution');
   const argv = JSON.parse(execFileSync('python3', ['-c',
     'import json,shlex,sys; print(json.dumps(shlex.split(sys.stdin.read())))'], {
-    input: String(object(shownCall!.input).command), encoding: 'utf8', timeout: 5000,
+    input: String(object(shownCall.input).command), encoding: 'utf8', timeout: 5000,
   })) as string[];
   expect(argv.at(-1)).toBe(nativeCall.input.cmd);
-  const shownResult = targetBlocks.find((block) => block.type === 'tool_result' && block.tool_use_id === nativeCall.id);
-  expect(shownResult).toBeDefined();
-  expect(shownResult?.is_error).not.toBe(true);
+  expect(shownCall.state, 'the authorized command must report its completed item').toBe('output-available');
+  const shownResult = object(shownCall.output);
+  expect(shownResult.status, 'Codex must report the command completed').toBe('completed');
   expect(JSON.stringify(shownResult)).toContain(marker);
   expect(targetMessages.messages.filter((message) => message.role === 'assistant').map(messageText).join('\n')).toContain(marker);
   expect(after.artifacts?.flatMap((artifact) => artifact.parts).map((part) => part.text || '').join('\n')).toContain(marker);
@@ -309,6 +313,7 @@ test('Hermes answers one Codex authorization through the signed A2A interaction 
   await expect(card.getByRole('heading', { name: 'Result', exact: true }).locator('..'))
     .toContainText(marker, { timeout: remaining() });
   await expect(page.getByTestId('assistant-message').filter({ hasText: marker }).last()).toBeVisible({ timeout: remaining() });
-  expect(blocks(await api.getMessages(targetId, 50))).toEqual(targetBlocks);
+  expect((await api.getMessages(targetId, 50)).messages.map((message) => message.parts))
+    .toEqual(targetMessages.messages.map((message) => message.parts));
   remaining();
 });

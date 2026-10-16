@@ -1,22 +1,19 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import type { PendingInteraction, SessionRecord, SessionState } from '../../types';
+import type { SessionRecord, SessionState } from '../../types';
 import {
   getSession,
   endConversation as endConversationApi,
-  interruptSession as interruptSessionApi,
   recoverSession as recoverSessionApi,
   terminateSandbox as terminateSandboxApi,
   deleteSession as deleteSessionApi,
 } from '../../api';
-import { shouldPollSessionDetail } from '../sessionPolling';
+import { sessionDetailPollInterval } from '../sessionPolling';
 
 export type LifecycleState =
   | 'loading'
   | 'creating'
   | 'ready'
-  | 'background'
   | 'busy'
-  | 'recovery'
   | 'terminated'
   | 'deleted'
   | 'error';
@@ -27,32 +24,31 @@ export type LifecycleRefreshResult = {
   detailStale: boolean;
 };
 
-// Must exceed backend Mongo socketTimeoutMS (30s), otherwise the browser will
-// reliably abort detail reads before the server-side request has a chance to
-// either succeed or fail definitively under expected Mongo jitter.
+// Must exceed the backend's database statement timeout, otherwise the browser
+// aborts detail reads before the server has a chance to either succeed or fail
+// definitively.
 const SESSION_DETAIL_TIMEOUT_MS = 40000;
-const CREATING_POLL_INTERVAL_MS = 500;
-const BUSY_POLL_INTERVAL_MS = 3000;
-const DEFAULT_POLL_INTERVAL_MS = 1500;
 
-function mapState(s: SessionState): LifecycleState {
-  switch (s) {
+function mapState(state: SessionState): LifecycleState {
+  switch (state) {
     case 'CREATING': return 'creating';
-    case 'BACKGROUND_RUNNING': return 'background';
-    case 'READY':
-    case 'WAITING_INPUT': return 'ready';
-    case 'BUSY':
-    case 'PROCESSING':
-    case 'SENDING':
-    case 'INTERRUPTING':
-    case 'TERMINATING': return 'busy';
-    case 'RECOVERY_REQUIRED': return 'recovery';
+    case 'PROCESSING': return 'busy';
     case 'TERMINATED': return 'terminated';
     case 'DELETED': return 'deleted';
-    default: return 'ready';
+    case 'READY':
+    case 'WAITING_INPUT':
+    default:
+      return 'ready';
   }
 }
 
+/**
+ * One session's detail (`GET /sessions/{id}`) and the actions on its lifecycle.
+ *
+ * The detail is read on mount, again whenever a caller asks (the
+ * conversation's stream asks when a response starts or ends), and on a timer
+ * while the session is not at rest (`sessionPolling.ts`).
+ */
 export function useSessionLifecycle(sessionId: string) {
   const [session, setSession] = useState<SessionRecord | null>(null);
   const [lifecycleState, setLifecycleState] = useState<LifecycleState>('loading');
@@ -65,8 +61,6 @@ export function useSessionLifecycle(sessionId: string) {
   const detailStaleRef = useRef(false);
   const refreshControllerRef = useRef<AbortController | null>(null);
   const refreshInFlightRef = useRef<Promise<LifecycleRefreshResult> | null>(null);
-  const pendingInteractionObservationRef = useRef(0);
-  const latestObservedPendingInteractionRef = useRef<PendingInteraction | null>(null);
 
   useEffect(() => {
     lifecycleStateRef.current = lifecycleState;
@@ -88,7 +82,6 @@ export function useSessionLifecycle(sessionId: string) {
     sessionRef.current = null;
     setError(null);
     setDetailStale(false);
-    latestObservedPendingInteractionRef.current = null;
     // Invalidate in-flight detail reads from the previous route. This must stay
     // monotonic; resetting to 0 lets an old aborted request reuse the new seq.
     refreshRequestSeqRef.current += 1;
@@ -101,8 +94,17 @@ export function useSessionLifecycle(sessionId: string) {
 
   const stopPolling = useCallback(() => {
     if (pollRef.current) {
-      clearInterval(pollRef.current);
+      clearTimeout(pollRef.current);
       pollRef.current = null;
+    }
+  }, []);
+
+  const cancelRefresh = useCallback(() => {
+    if (refreshControllerRef.current) {
+      refreshRequestSeqRef.current += 1;
+      refreshControllerRef.current.abort();
+      refreshControllerRef.current = null;
+      refreshInFlightRef.current = null;
     }
   }, []);
 
@@ -110,11 +112,8 @@ export function useSessionLifecycle(sessionId: string) {
   // depending on `session` would restart the polling effect after each read.
   const refresh = useCallback(async (options?: { force?: boolean }) => {
     const force = options?.force === true;
-    if (force && refreshControllerRef.current) {
-      refreshRequestSeqRef.current += 1;
-      refreshControllerRef.current.abort();
-      refreshControllerRef.current = null;
-      refreshInFlightRef.current = null;
+    if (force) {
+      cancelRefresh();
     } else if (refreshInFlightRef.current) {
       return refreshInFlightRef.current;
     }
@@ -122,7 +121,6 @@ export function useSessionLifecycle(sessionId: string) {
     const requestSeq = refreshRequestSeqRef.current + 1;
     refreshRequestSeqRef.current = requestSeq;
     const previousState = lifecycleStateRef.current;
-    const pendingObservation = pendingInteractionObservationRef.current;
     const controller = new AbortController();
     refreshControllerRef.current = controller;
 
@@ -136,26 +134,13 @@ export function useSessionLifecycle(sessionId: string) {
         if (requestSeq !== refreshRequestSeqRef.current) {
           return { state: lifecycleStateRef.current, detail: sessionRef.current, detailStale: detailStaleRef.current };
         }
-        const pendingInteractionChanged = (
-          pendingInteractionObservationRef.current !== pendingObservation
-        );
-        const resolvedDetail = pendingInteractionChanged ? {
-          ...detail,
-          pending_interaction: latestObservedPendingInteractionRef.current,
-        } : detail;
-        setSession(resolvedDetail);
-        sessionRef.current = resolvedDetail;
-        latestObservedPendingInteractionRef.current = (
-          resolvedDetail.pending_interaction ?? null
-        );
+        setSession(detail);
+        sessionRef.current = detail;
         setError(null);
         setDetailStale(false);
-        const newState = mapState(resolvedDetail.state);
+        const newState = mapState(detail.state);
         setLifecycleState(newState);
-        if (!shouldPollSessionDetail(newState, resolvedDetail, false)) {
-          stopPolling();
-        }
-        return { state: newState, detail: resolvedDetail, detailStale: false };
+        return { state: newState, detail, detailStale: false };
       } catch (err) {
         const normalizedError =
           err instanceof DOMException && err.name === 'AbortError'
@@ -186,68 +171,11 @@ export function useSessionLifecycle(sessionId: string) {
 
     refreshInFlightRef.current = pendingRefresh;
     return pendingRefresh;
-  }, [sessionId, stopPolling]);
-
-  const observePendingInteraction = useCallback((
-    pendingInteraction: PendingInteraction | null,
-  ) => {
-    const current = sessionRef.current;
-    if (!current || current.session_id !== sessionId) return;
-    pendingInteractionObservationRef.current += 1;
-    latestObservedPendingInteractionRef.current = pendingInteraction;
-    const next = {
-      ...current,
-      pending_interaction: pendingInteraction,
-    };
-    sessionRef.current = next;
-    setSession(next);
-  }, [sessionId]);
-
-  const bootstrapPendingInteraction = useCallback((
-    pendingInteraction: PendingInteraction | null,
-  ) => {
-    const current = sessionRef.current;
-    if (current?.session_id === sessionId) {
-      observePendingInteraction(pendingInteraction);
-      return;
-    }
-    pendingInteractionObservationRef.current += 1;
-    latestObservedPendingInteractionRef.current = pendingInteraction;
-  }, [observePendingInteraction, sessionId]);
-
-  const clearPendingInteraction = useCallback((interactionId: string) => {
-    const expectedInteractionId = String(interactionId ?? '').trim();
-    if (!expectedInteractionId) return false;
-    const current = sessionRef.current;
-    if (
-      !current
-      || current.session_id !== sessionId
-      || String(current.pending_interaction?.interaction_id ?? '').trim()
-        !== expectedInteractionId
-    ) {
-      return false;
-    }
-    pendingInteractionObservationRef.current += 1;
-    latestObservedPendingInteractionRef.current = null;
-    const next = {
-      ...current,
-      pending_interaction: null,
-    };
-    sessionRef.current = next;
-    setSession(next);
-    return true;
-  }, [sessionId]);
+  }, [cancelRefresh, sessionId]);
 
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      await refresh();
-      if (cancelled) return;
-    })();
-    return () => {
-      cancelled = true;
-      stopPolling();
-    };
+    void refresh();
+    return () => stopPolling();
   }, [sessionId, refresh, stopPolling]);
 
   useEffect(() => {
@@ -256,62 +184,28 @@ export function useSessionLifecycle(sessionId: string) {
     return () => window.removeEventListener('online', reconnect);
   }, [refresh]);
 
+  const pollInterval = sessionDetailPollInterval(lifecycleState, session, detailStale);
   useEffect(() => {
-    if (!shouldPollSessionDetail(lifecycleState, session, detailStale)) {
-      stopPolling();
-      return;
-    }
-    if (pollRef.current) {
-      return;
-    }
+    stopPolling();
+    if (pollInterval === null) return;
     let cancelled = false;
     const pollOnce = async () => {
-      const next = await refresh();
-      if (cancelled || !shouldPollSessionDetail(next.state, next.detail, next.detailStale)) {
-        stopPolling();
-        return;
-      }
-      const interval =
-        next.state === 'creating'
-          ? CREATING_POLL_INTERVAL_MS
-          : next.state === 'background'
-            ? BUSY_POLL_INTERVAL_MS
-          : next.state === 'busy'
-            ? BUSY_POLL_INTERVAL_MS
-            : DEFAULT_POLL_INTERVAL_MS;
-      pollRef.current = window.setTimeout(() => {
-        void pollOnce();
-      }, interval);
+      await refresh();
+      if (!cancelled) pollRef.current = setTimeout(() => { void pollOnce(); }, pollInterval);
     };
-    void pollOnce();
+    pollRef.current = setTimeout(() => { void pollOnce(); }, pollInterval);
     return () => {
       cancelled = true;
-      if (pollRef.current) {
-        clearTimeout(pollRef.current);
-        pollRef.current = null;
-      }
+      stopPolling();
     };
-  }, [
-    detailStale,
-    lifecycleState,
-    refresh,
-    session?.state,
-    session?.current_turn_id,
-    session?.pending_interaction?.interaction_id,
-    stopPolling,
-  ]);
+  }, [pollInterval, refresh, stopPolling]);
 
   const terminate = useCallback(async () => {
     let terminateError: Error | null = null;
     try {
       setError(null);
       stopPolling();
-      if (refreshControllerRef.current) {
-        refreshRequestSeqRef.current += 1;
-        refreshControllerRef.current.abort();
-        refreshControllerRef.current = null;
-        refreshInFlightRef.current = null;
-      }
+      cancelRefresh();
       await terminateSandboxApi(sessionId);
     } catch (err) {
       terminateError = err as Error;
@@ -328,19 +222,14 @@ export function useSessionLifecycle(sessionId: string) {
     if (terminateError) {
       setError(terminateError.message);
     }
-  }, [sessionId, refresh, stopPolling]);
+  }, [cancelRefresh, sessionId, refresh, stopPolling]);
 
   const endConversation = useCallback(async () => {
     let endError: Error | null = null;
     try {
       setError(null);
       stopPolling();
-      if (refreshControllerRef.current) {
-        refreshRequestSeqRef.current += 1;
-        refreshControllerRef.current.abort();
-        refreshControllerRef.current = null;
-        refreshInFlightRef.current = null;
-      }
+      cancelRefresh();
       await endConversationApi(sessionId);
     } catch (err) {
       endError = err as Error;
@@ -357,35 +246,20 @@ export function useSessionLifecycle(sessionId: string) {
     if (endError) {
       setError(endError.message);
     }
-  }, [sessionId, refresh, stopPolling]);
-
-  const interrupt = useCallback(async () => {
-    try {
-      setError(null);
-      await interruptSessionApi(sessionId);
-    } catch (err) {
-      setError((err as Error).message);
-      throw err;
-    }
-  }, [sessionId]);
+  }, [cancelRefresh, sessionId, refresh, stopPolling]);
 
   const recover = useCallback(async () => {
     try {
       stopPolling();
       setLifecycleState('creating');
-      if (refreshControllerRef.current) {
-        refreshRequestSeqRef.current += 1;
-        refreshControllerRef.current.abort();
-        refreshControllerRef.current = null;
-        refreshInFlightRef.current = null;
-      }
+      cancelRefresh();
       await recoverSessionApi(sessionId);
       await refresh({ force: true });
     } catch (err) {
       setError((err as Error).message);
       setLifecycleState('error');
     }
-  }, [sessionId, refresh, stopPolling]);
+  }, [cancelRefresh, sessionId, refresh, stopPolling]);
 
   const deleteSession = useCallback(async () => {
     try {
@@ -397,20 +271,12 @@ export function useSessionLifecycle(sessionId: string) {
     }
   }, [sessionId, stopPolling]);
 
-  // History bootstrap and detail reads update this session-owned field.
-  const pendingInteraction = session?.pending_interaction ?? null;
-
   return {
     session,
     lifecycleState,
-    pendingInteraction,
     error,
     detailStale,
     refresh,
-    bootstrapPendingInteraction,
-    observePendingInteraction,
-    clearPendingInteraction,
-    interrupt,
     terminate,
     endConversation,
     recover,

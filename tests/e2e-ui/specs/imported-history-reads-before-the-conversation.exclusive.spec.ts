@@ -5,12 +5,22 @@
  * conversation's own messages. Re-running the import changes nothing; other
  * content under a used source id, or history after the conversation began,
  * is refused.
+ *
+ * An imported user message is an input no runtime is handed (`source`
+ * `import`, state `imported`); an imported reply is a response that ended
+ * before anything ran (`origin` `import`). History names where each came
+ * from in `metadata.history_import`.
  */
 import { randomUUID } from 'node:crypto';
 import { expect, test, type APIRequestContext } from '@playwright/test';
 
-import { AstraApi, messageText } from '../fixtures/astraApi';
-import { documentsByField } from '../fixtures/dbOracle';
+import { AstraApi, messageParts, messageText, messageToolCalls } from '../fixtures/astraApi';
+import {
+  postgresRows,
+  sessionInputRows,
+  sessionResponseRows,
+  sqlLiteral,
+} from '../fixtures/dbOracle';
 import { apiPath } from '../fixtures/env';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
@@ -75,28 +85,46 @@ test('imported history reads before the conversation and runs nothing', async ({
   expect(changed.status).toBe(409);
   expect(changed.body.code).toBe('HISTORY_IMPORT_CONFLICT');
 
-  // Importing ran nothing: the same box, state and session set.
+  // Importing ran nothing: the same box, state and session set, and no input
+  // or response a runtime took part in.
   const after = await api.waitForSessionReady(sessionId);
   expect(after.sandbox_id).toBe(before.sandbox_id);
   expect(after.state).toBe(before.state);
-  expect(documentsByField('sessions', '$.agent_id', agentId).map((row) => row.session_id)).toEqual([sessionId]);
+  expect(postgresRows<{ session_id: string }>(
+    `SELECT session_id FROM sessions WHERE agent_id = ${sqlLiteral(agentId)}`,
+  ).map((row) => row.session_id)).toEqual([sessionId]);
+  expect(
+    sessionInputRows(sessionId).map((row) => [row.source, row.state]),
+    'an imported user message is never handed to a runtime',
+  ).toEqual([['import', 'imported'], ['import', 'imported']]);
+  expect(
+    sessionResponseRows(sessionId).map((row) => [row.origin, row.status, row.outcome]),
+    'an imported reply ended before anything ran; an unrecorded ending stays unrecorded',
+  ).toEqual([['import', 'ended', 'completed'], ['import', 'ended', null]]);
 
   // The read model carries each message with its source identity and completion.
   const page1 = await api.getMessages(sessionId, 50);
-  const imported = page1.messages.filter((message) => message.history_import);
-  expect(imported.map((message) => [message.role, message.history_import])).toEqual([
+  const imported = page1.messages.filter((message) => message.metadata?.history_import);
+  expect(imported.map((message) => [message.role, message.metadata?.history_import])).toEqual([
     ['user', { source_id: `${id}-u1` }],
     ['assistant', { source_id: `${id}-a1`, completion: 'complete' }],
     ['user', { source_id: `${id}-u2` }],
     ['assistant', { source_id: `${id}-a2`, completion: 'unknown', parent_source_id: `${id}-u2` }],
   ]);
-  expect(imported.map((message) => message.created_at)).toEqual([
-    '2026-01-05T09:00:00+00:00', '2026-01-05T09:00:20+00:00',
-    '2026-01-05T09:01:00+00:00', '2026-01-05T09:01:30+00:00',
+  // A user message keeps the source's time as its `created_at`, a reply as
+  // its `started_at`.
+  expect(imported.map((message) => Date.parse(String(
+    message.role === 'user' ? message.metadata?.created_at : message.metadata?.started_at,
+  )))).toEqual(history.map((message) => Date.parse(message.created_at)));
+  expect(
+    messageToolCalls(imported[1]).map((call) => [call.toolName, call.state, call.input, call.output]),
+    'the imported reply keeps its tool call and what it returned',
+  ).toEqual([['Bash', 'output-available', { command: 'ls' }, 'README.md']]);
+  expect(messageText(imported[1])).toBe(`IMPORTED_ANSWER_${id}`);
+  expect(messageText(imported[2])).toBe('');
+  expect(messageParts(imported[2], 'file'), 'the captionless message is its picture').toEqual([
+    expect.objectContaining({ mediaType: 'image/png', url: `data:image/png;base64,${PIXEL_PNG}` }),
   ]);
-  expect(imported[1].blocks?.map((block) => block.type)).toEqual(['tool_use', 'tool_result', 'text']);
-  expect(imported[2].content).toBe('');
-  expect(imported[2].blocks?.map((block) => block.type)).toEqual(['image']);
 
   // The browser shows it as history: the picture, the answer, and the reply
   // whose ending was never recorded, marked as such and nothing more.
@@ -116,11 +144,11 @@ test('imported history reads before the conversation and runs nothing', async ({
   const reply = await api.waitForAssistantMessageMatching(
     sessionId, assistantsBefore, (message) => messageText(message).includes(`LIVE_${id}`), 120_000,
   );
-  expect(reply.history_import).toBeUndefined();
+  expect(reply.metadata?.history_import).toBeUndefined();
   await expect(assistants.last()).toContainText(`LIVE_${id}`);
   await expect(assistants).toHaveCount(3);
   const ordered = (await api.getMessages(sessionId, 50)).messages.map((message) => (
-    (message.history_import as { source_id?: string } | undefined)?.source_id ?? 'live'
+    (message.metadata?.history_import as { source_id?: string } | undefined)?.source_id ?? 'live'
   ));
   expect(ordered.slice(0, 4)).toEqual([`${id}-u1`, `${id}-a1`, `${id}-u2`, `${id}-a2`]);
   expect(ordered.slice(4).every((source) => source === 'live')).toBe(true);

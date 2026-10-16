@@ -2,7 +2,7 @@
 
 An Environment is an admin-authored runtime configuration referenced by Agents
 and Assistants. This module is the single authoritative source for the editable
-shape persisted in the environment collection. It drives the schema-based form
+shape stored in the ``environments`` table. It drives the schema-based form
 and the write-path validation in ``platform_service.upsert_environment_config``.
 
 An environment carries the sandbox runtime fields plus ``provider_access``
@@ -15,8 +15,9 @@ Schema properties:
 - Validation is intentionally thin: types / required / enum plus the
   product-owned parsers for structured fields. Normalization is a separate
   write-time step that canonicalizes those fields and settles defaults once.
-- There is no backing dataclass or import-time drift assertion; the open shape
-  is validated by ``validate_environment_payload`` alone.
+- The shape is closed: a field, or a sub-field of ``provider_access`` or
+  ``tracing``, that the schema does not declare is refused, because the stored
+  Environment has a column for each declared field and nowhere for any other.
 """
 
 from __future__ import annotations
@@ -100,9 +101,10 @@ def _field_enum(field: dict[str, Any]) -> list[str] | None:
 # an agent field: an api_key is not part of a harness's identity, so agents that
 # differ only in system prompt share one key and a rotation touches one place
 # (in Managed Agents this is invisible/platform-hosted; self-hosted BYO-key makes
-# it an Environment property — see ``docs/domain-model.md``). ``api_key`` is a
-# plaintext key (masked in read views); ``api_key_secret_name`` references a
-# SecretProvider name instead. ``base_url`` points at the model endpoint / gateway.
+# it an Environment property — see ``docs/domain-model.md``). ``api_key`` is an
+# inline key, sealed in the secret store and masked in read views;
+# ``api_key_secret_name`` references a SecretProvider name instead. ``base_url``
+# points at the model endpoint / gateway.
 _PROVIDER_ACCESS_ITEM_SCHEMA: list[dict[str, Any]] = [
     {"key": "base_url", "type": "string"},
     {"key": "api_key", "type": "string", "advanced": True},
@@ -113,7 +115,8 @@ _PROVIDER_ACCESS_ITEM_SCHEMA: list[dict[str, Any]] = [
 # Not the same subject as the deployment's ``OTEL_EXPORTER_OTLP_ENDPOINT``,
 # which traces the AstraBox process; this one is the engine inside the box. The
 # credential is the same either/or as ``provider_access``: an inline value
-# (masked in read views) or a SecretProvider name — and it is here rather than in an
+# (sealed in the secret store, masked in read views) or a SecretProvider name —
+# and it is here rather than in an
 # engine bag because ``engine_options`` deliberately has no secret type.
 # Cross-field rules (an endpoint is required once anything else is set; the two
 # credential forms are exclusive) live in ``parse_tracing_config``, the same
@@ -264,15 +267,36 @@ def get_environment_schema() -> dict[str, Any]:
 # ── Normalization ─────────────────────────────────────────────────────────
 
 
+#: Fields an Environment read carries beyond the authored ones: bookkeeping and
+#: the installed engine's capabilities (``AgentConfigService``'s admin listing).
+#: The console saves the record it loaded with its edits applied, so a write
+#: drops these instead of refusing them; every other undeclared field is refused.
+ENVIRONMENT_READ_ONLY_FIELDS = frozenset(
+    {
+        "created_at",
+        "updated_at",
+        "updated_by",
+        "engine_available",
+        "supported_session_kinds",
+        "permission_modes",
+        "engine_options_schema",
+        "extensions",
+    }
+)
+
+
 def normalize_environment_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Return a storable Environment with concrete runtime defaults.
 
-    Call this before :func:`validate_environment_payload`. When the form omits
-    ``idle_action``, the installation's ``ASTRABOX_SANDBOX_IDLE_ACTION`` supplies
-    it. Cleanup can then decide what happens to an idle sandbox from the stored
-    Environment alone.
+    Call this before :func:`validate_environment_payload`. The read-only fields
+    a loaded record carries (:data:`ENVIRONMENT_READ_ONLY_FIELDS`) are dropped.
+    When the form omits ``idle_action``, the installation's
+    ``ASTRABOX_SANDBOX_IDLE_ACTION`` supplies it. Cleanup can then decide what
+    happens to an idle sandbox from the stored Environment alone.
     """
-    normalized = dict(payload)
+    normalized = {
+        key: value for key, value in payload.items() if key not in ENVIRONMENT_READ_ONLY_FIELDS
+    }
     action = str(normalized.get("idle_action") or "").strip().lower()
     if not action:
         from astrabox.common.utils.settings import load_astrabox_settings
@@ -302,9 +326,10 @@ def validate_environment_payload(payload: dict[str, Any]) -> None:
     (engine_kind / sandbox_backend / sandbox_permission_level /
     endpoint_provider). Declared
     ``item_schema`` sub-fields such as ``provider_access`` are validated without
-    mutating the payload.
-
+    mutating the payload. A field or sub-field the schema does not declare is
+    refused.
     """
+    _reject_undeclared_fields(payload)
     validate_payload(
         payload, ENV_FIELD_SCHEMA, resolve_enum=_field_enum, payload_label="environment payload"
     )
@@ -325,6 +350,28 @@ def validate_environment_payload(payload: dict[str, Any]) -> None:
     _assert_tenancy_has_permission_level(payload)
     _assert_backend_capabilities(payload)
     _assert_provider_configuration_is_reachable(payload)
+
+
+def _reject_undeclared_fields(payload: dict[str, Any]) -> None:
+    """Refuse a top-level field, or a declared object's sub-field, the schema does not name.
+
+    ``networking`` is checked by its own parser, which already refuses
+    unsupported fields.
+    """
+    if not isinstance(payload, dict):
+        return
+    unknown = sorted(set(payload) - {str(field["key"]) for field in ENV_FIELD_SCHEMA})
+    for field in ENV_FIELD_SCHEMA:
+        key = str(field["key"])
+        block = payload.get(key)
+        if key == "networking" or not field.get("item_schema") or not isinstance(block, dict):
+            continue
+        declared = {str(sub["key"]) for sub in field["item_schema"]}
+        unknown.extend(f"{key}.{sub}" for sub in sorted(set(block) - declared))
+    if unknown:
+        raise invalid_request(
+            f"environment payload contains unsupported fields: {', '.join(unknown)}"
+        )
 
 
 def _assert_tracing_reaches_the_engine(payload: dict[str, Any]) -> None:

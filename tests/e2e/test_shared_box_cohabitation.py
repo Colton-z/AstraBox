@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
-import os
 import shlex
 import subprocess
 import time
@@ -33,21 +32,25 @@ from astrabox.core.service.orchestrator.runtime.shared_sandbox_lease import (
 )
 from tests.e2e._sandbox_helpers import (
     READY_TIMEOUT_S,
+    Reply,
     assert_release_matches_the_box,
     current_profile,
     data,
+    deadline_after,
     environment_with_tenancy,
     get_admin_session_detail,
     get_session,
+    kube_access,
     poll_until_agent_ready,
+    psql,
     release_agent,
     release_session,
     run_terminal,
-    stream_turn,
+    send_and_follow,
+    sql_literal,
     wait_until_settled,
 )
 from tests.e2e._service_containers import SERVER_CONTAINER_HANDLE, require_service_container
-from tests.e2e.test_transcript_mirror import _psql, _sql_literal
 
 pytestmark = pytest.mark.e2e
 
@@ -60,14 +63,15 @@ def _start_conversation(client: httpx.Client, agent_id: str) -> str:
     return sid
 
 
-def _answered(result, marker: str, sid: str) -> str:
-    assert result.error is None, (
-        f"conversation {sid} could not take its turn: {result.error}"
+def _answered(reply: Reply, marker: str, sid: str) -> str:
+    assert reply.error is None and reply.finish_reason == "stop", (
+        f"conversation {sid} could not answer: finish={reply.finish_reason!r} "
+        f"error={reply.error!r} outcome={reply.outcome!r}"
     )
-    assert marker in result.text, (
-        f"conversation {sid} never said its marker: {result.text!r}"
+    assert marker in reply.text, (
+        f"conversation {sid} never said its marker: {reply.text!r}"
     )
-    return result.text
+    return reply.text
 
 
 def _create_shared_agent(e2e_client: httpx.Client, *, prewarm: bool = False) -> str:
@@ -101,7 +105,7 @@ def _create_shared_agent(e2e_client: httpx.Client, *, prewarm: bool = False) -> 
 
 
 def _wait_prepared(client: httpx.Client, agent_id: str, *, enabled: bool) -> dict:
-    deadline = time.monotonic() + READY_TIMEOUT_S
+    deadline = deadline_after(READY_TIMEOUT_S)
     last: dict = {}
     while time.monotonic() < deadline:
         last = data(client.get(f"/api/v1/agents/{agent_id}/prepared-runtime"))
@@ -135,7 +139,7 @@ async def main():
     if needs_sandbox_server():
         _export_backend_wiring()
     register_builtin_providers()
-    row = await AgentRepository().get_agent(sys.argv[1]) or {}
+    row = await AgentRepository().read_ledger(sys.argv[1]) or {}
     seats = [s for s in row.get('_prepared_slots') or [] if s.get('state') == 'prepared']
     if not seats:
         handle = await sandbox_for_name(row['_client_pool_backend']).connect(sys.argv[2])
@@ -180,26 +184,28 @@ def test_two_conversations_share_the_box_and_nothing_else(
     started = time.monotonic()
     first_sid = _start_conversation(e2e_client, agent_id)
     second_sid = _start_conversation(e2e_client, agent_id)
-    # Both placements must complete before either turn: starting a
-    # conversation returns while provisioning is in flight, and a send
-    # into CREATING answers SESSION_BUSY rather than queueing.
+    # Both placements complete before either message is sent, so the two
+    # responses run in the box at the same time instead of one being held
+    # behind the other's startup.
     poll_until_agent_ready(e2e_client, first_sid)
     poll_until_agent_ready(e2e_client, second_sid)
 
-    # Both turns in flight AT ONCE: concurrency is part of the claim.
+    # Both responses in flight AT ONCE: concurrency is part of the claim.
     marker_a, marker_b = uuid.uuid4().hex[:10], uuid.uuid4().hex[:10]
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         future_a = pool.submit(
-            stream_turn,
+            send_and_follow,
             e2e_client,
             first_sid,
-            content=f"Reply with just COHAB-{marker_a}",
+            f"Reply with just COHAB-{marker_a}",
+            until="end",
         )
         future_b = pool.submit(
-            stream_turn,
+            send_and_follow,
             e2e_client,
             second_sid,
-            content=f"Reply with just COHAB-{marker_b}",
+            f"Reply with just COHAB-{marker_b}",
+            until="end",
         )
         settled_a = future_a.result()
         settled_b = future_b.result()
@@ -279,17 +285,17 @@ def test_evicted_last_shared_conversation_reclaims_box(
 ) -> None:
     """A claimed prewarm slot leaves no stale owner after cache eviction."""
 
-    started = time.monotonic()
     agent_id = _create_shared_agent(e2e_client, prewarm=True)
     prepared = _wait_prepared(e2e_client, agent_id, enabled=True)
     isolated_id = _prepared_isolation(agent_id, prepared["sandbox_id"])
+    started = time.monotonic()
     sid = _start_conversation(e2e_client, agent_id)
     poll_until_agent_ready(e2e_client, sid)
     session = get_admin_session_detail(e2e_client, sid)
     assert session.get("sandbox_id") == prepared["sandbox_id"]
     assert (session.get("runtime_identity") or {}).get("isolated_session_id") == isolated_id
     marker = uuid.uuid4().hex[:10]
-    result = stream_turn(e2e_client, sid, content=f"Reply with just RELEASE-{marker}")
+    result = send_and_follow(e2e_client, sid, f"Reply with just RELEASE-{marker}", until="end")
     _answered(result, marker, sid)
     wait_until_settled(e2e_client, sid)
     _assert_private_runtime_files(e2e_client, sid)
@@ -337,35 +343,26 @@ def test_new_conversation_replaces_a_dead_shared_box(
     dead_box = str(original.get("sandbox_id") or "")
     assert dead_box, "the original shared conversation has no sandbox"
     first_marker = uuid.uuid4().hex
-    _answered(stream_turn(
-        e2e_client, first_sid, content=f"Reply with just ORIGINAL-{first_marker}",
+    _answered(send_and_follow(
+        e2e_client, first_sid, f"Reply with just ORIGINAL-{first_marker}", until="end",
     ), first_marker, first_sid)
     wait_until_settled(e2e_client, first_sid)
 
     # Only this test's conversation may occupy the box removed below.
-    occupants = _psql(
-        "SELECT doc ->> 'session_id' FROM astrabox_documents "
-        "WHERE collection='sessions' "
-        f"AND doc ->> 'sandbox_id' = {_sql_literal(dead_box)}"
-    )
+    occupants = psql(f"SELECT session_id FROM sessions WHERE sandbox_id = {sql_literal(dead_box)}")
     assert occupants == [first_sid], occupants
-    resident_sql = (
-        "SELECT doc ->> 'sandbox_id' FROM astrabox_documents "
-        "WHERE collection='agents' "
-        f"AND doc ->> 'agent_id' = {_sql_literal(agent_id)}"
-    )
-    assert _psql(resident_sql) == [dead_box]
-    kubectl = [
-        "kubectl", "--kubeconfig", os.environ["ASTRABOX_E2E_KUBECONFIG"],
-        "--namespace", os.environ["ASTRABOX_E2E_KUBE_NAMESPACE"],
-    ]
+    # The Agent's resident shared box: where its next conversation is placed.
+    resident_sql = f"SELECT sandbox_id FROM agent_runtimes WHERE agent_id = {sql_literal(agent_id)}"
+    assert psql(resident_sql) == [dead_box]
+    kubeconfig, namespace = kube_access()
     subprocess.run(
-        [*kubectl, "delete", "batchsandbox", dead_box],
+        ["kubectl", "--kubeconfig", kubeconfig, "--namespace", namespace,
+         "delete", "batchsandbox", dead_box],
         capture_output=True, text=True, check=True, timeout=30,
     )
     # A sweep-cleared binding would exercise the ordinary cold path instead.
     # Do not silently accept that different scene as stale-lease evidence.
-    assert _psql(resident_sql) == [dead_box], (
+    assert psql(resident_sql) == [dead_box], (
         "the resident binding was cleared before the new-conversation scene"
     )
     next_sid = _start_conversation(e2e_client, agent_id)
@@ -375,8 +372,8 @@ def test_new_conversation_replaces_a_dead_shared_box(
     live_box = str(replacement.get("sandbox_id") or "")
     assert live_box and live_box != dead_box, (dead_box, live_box)
     next_marker = uuid.uuid4().hex
-    reply = _answered(stream_turn(
-        e2e_client, next_sid, content=f"Reply with just REPLACEMENT-{next_marker}",
+    reply = _answered(send_and_follow(
+        e2e_client, next_sid, f"Reply with just REPLACEMENT-{next_marker}", until="end",
     ), next_marker, next_sid)
     assert first_marker not in reply
     wait_until_settled(e2e_client, next_sid)

@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict
 
 from astrabox.api.routes.response_envelope import ApiEnvelope
 from astrabox.api.routes.sessions import (
-    DeliveryFailure, SessionHistoryBlockPage, SessionHistoryBlockDetails,
+    SessionHistoryBlockPage, SessionHistoryBlockDetails,
 )
 from astrabox.api.routes.session_files import FileDownloadResponse, SessionFileListing
 from astrabox.common.utils.api_response import error_response, success_response
@@ -56,32 +56,31 @@ class ShareRevoked(BaseModel):
 class SharedSession(BaseModel):
     """A session as a link recipient sees it.
 
-    A capability URL grants transcript reading, not access to the owner's
-    Session/runtime document. Only fields used by the read-only transcript UI
-    cross this boundary.
+    A capability URL grants reading the conversation, not access to the owner's
+    session or its runtime. Only what the read-only page shows crosses this
+    boundary: the title, the interaction the conversation waits on (without
+    the tool input it asks about), and whether files may be downloaded.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     title: str | None = None
-    delivery_state: str | None = None
-    delivery_failure: DeliveryFailure | None = None
     pending_interaction: dict[str, Any] | None = None
     share_allow_download: bool
 
 
 class SharedMessagePage(BaseModel):
-    """One page of a shared conversation, newest page first.
+    """One page of a shared conversation as UI messages, newest page first.
 
-    ``has_more`` drives pagination. The active overlay and pending interaction
-    preserve a live read-only transcript without exposing internal cursors.
+    ``before`` is the cursor for the next older page. A share has no stream to
+    follow, so the page carries no output position.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     messages: list[dict[str, Any]]
     has_more: bool
-    active_turn_overlay: dict[str, Any] | None = None
+    before: str | None = None
     pending_interaction: dict[str, Any] | None = None
 
 

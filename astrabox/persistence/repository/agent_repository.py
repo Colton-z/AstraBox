@@ -1,246 +1,1250 @@
-"""Repository for the Agent collection."""
+"""Agents: the authored definition and the runtime record, in typed tables.
+
+An Agent row holds every authored field of the definition; the categories it
+is listed under, the vaults bound to it, the MCP servers assigned to it from
+extension catalogs and the connector servers it offers are rows of their own
+tables, keyed by the Agent. Reads hand services the familiar document shape.
+
+Every authored write goes through :meth:`AgentRepository.update_definition`,
+which applies the change only while the Agent is at the version the writer
+read and moves the version with it, so two writers that read the same
+definition cannot both succeed.
+
+The runtime state of the Agent's boxes is kept apart from the definition: one
+``agent_runtimes`` row per Agent with its resident box, runtime generation and
+client pool, and tables of their own for its prepared slots, box admissions,
+displaced client pools, gateway keys and undestroyed sandboxes. Every runtime
+write is one statement or a short transaction. A write that changes the
+prepared slots or admits a conversation locks the runtime row first, and a
+writer whose decision rests on what :meth:`AgentRepository.read_ledger`
+returned names the revision it read, so a change made since sends it back to
+read again.
+
+Writes that acquire something for an Agent (a box, a seat, an admission, a
+client pool, a published generation) apply only to a live Agent; writes that
+release what an Agent holds apply to a deleted one too.
+"""
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Iterable, Mapping
+from datetime import datetime, timezone
+from typing import Any, Literal
 
-from astrabox.persistence.repository.backend import (
-    get_async_collection,
-    run_mongo_with_retry,
+from sqlalchemy import (
+    and_,
+    case,
+    delete,
+    false,
+    func,
+    insert,
+    or_,
+    select,
+    true,
+    update,
 )
-from astrabox.persistence.repository.environment_repository import write_environment_binding
-from astrabox.persistence.repository.index_verification import ensure_unique_index
-from astrabox.persistence.repository.session_repository import _safe_create_index
-from astrabox.common.logger.logger_factory import get_logger
-from astrabox.common.utils.settings import load_astrabox_settings
-from astrabox.common.utils.time_utils import utcnow_iso
+from sqlalchemy.dialects.postgresql import aggregate_order_by
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncConnection
+from sqlalchemy.sql import ColumnElement, Select
 
-logger = get_logger(__name__)
+from astrabox.persistence.sql import (
+    ForeignKeyViolation,
+    execute,
+    fetch_all,
+    fetch_one,
+    fetch_value,
+    from_iso,
+    to_iso,
+    transaction,
+)
+from astrabox.persistence.sql.models.agents import (
+    Agent,
+    AgentBoxAdmission,
+    AgentCategoryLink,
+    AgentConnectorServer,
+    AgentMCPAssignment,
+    AgentPreparedSlot,
+    AgentRetiringClientPool,
+    AgentRuntime,
+    AgentSlotGatewayEntry,
+    AgentUndestroyedSandbox,
+    AgentVaultBinding,
+)
+from astrabox.persistence.sql.models.sessions import Session
+from astrabox.persistence.sql.notify import notice
 
-#: Where each Agent row keeps the key the Agent list is ordered by. Every
-#: write through this repository sets it with the name; rows stored before the
-#: key existed are given theirs by schema migration 5, before the API serves.
+_AGENTS = Agent.__table__
+_SESSIONS = Session.__table__
+_LINKS = AgentCategoryLink.__table__
+_VAULTS = AgentVaultBinding.__table__
+_ASSIGNMENTS = AgentMCPAssignment.__table__
+_CONNECTORS = AgentConnectorServer.__table__
+_RUNTIMES = AgentRuntime.__table__
+_SLOTS = AgentPreparedSlot.__table__
+_ADMISSIONS = AgentBoxAdmission.__table__
+_RETIRING = AgentRetiringClientPool.__table__
+_GATEWAY_ENTRIES = AgentSlotGatewayEntry.__table__
+_UNDESTROYED = AgentUndestroyedSandbox.__table__
+
+_LIVE = _AGENTS.c.state != "DELETED"
+
+#: Where each Agent read carries the key the console list is ordered by.
 NAME_SORT_KEY_FIELD = "_name_key"
+
+#: Authored fields stored in a column of the same name.
+_COLUMN_FIELDS = (
+    "name",
+    "description",
+    "use_cases",
+    "model",
+    "system",
+    "engine_options",
+    "artifacts_enabled",
+    "skills",
+    "mcp_servers",
+    "packages",
+    "default_repo",
+    "terminal_panel",
+    "diff_panel",
+    "exposure_mode",
+    "idle_hibernate_seconds",
+    "prepared_capacity",
+    "enabled",
+    "environment_name",
+    "visibility",
+    "admins",
+    "allowed_user_ids",
+)
+
+#: Authored fields stored in tables of their own.
+_CHILD_FIELDS = ("categories", "credential_vault_ids", "mcp_assignments", "connector_servers")
+
+#: Every field an authoring write may change.
+AUTHORED_FIELDS = frozenset((*_COLUMN_FIELDS, *_CHILD_FIELDS, "display_meta", "extension_catalog"))
+
+#: Fields set once, when the Agent is created.
+_CREATE_FIELDS = frozenset({"agent_id", "created_by", "org_id", "state", "version", "updated_by"})
+
+#: Runtime record columns a read carries when set, by the key services read.
+_RUNTIME_KEYS = {
+    "sandbox_id": "sandbox_id",
+    "sandbox_backend": "sandbox_backend",
+    "resident_generation": "_resident_sandbox_generation",
+    "runtime_generation": "_runtime_generation",
+    "sandbox_generation": "_sandbox_generation",
+    "client_pool_epoch": "_client_pool_epoch",
+    "client_pool_name": "_client_pool_name",
+    "client_pool_backend": "_client_pool_backend",
+    "prewarm_revision": "_prewarm_revision",
+    "prepared_runtime_generation": "_prepared_runtime_generation",
+    "prepared_runtime_error": "_prepared_runtime_error",
+    "last_conversation_uid": "conversation_uid_cursor",
+    "workspace_id": "workspace_id",
+}
+
+_RUNTIME_COLUMNS = tuple(
+    _RUNTIMES.c[name]
+    for name in (
+        *_RUNTIME_KEYS,
+        "expires_at",
+        "seats_per_box",
+        "capacity_last_miss_at",
+        "resources_operation_provider",
+        "resources_operation_id",
+        "resources_operation_deadline",
+        "slots_revision",
+        "admissions_revision",
+    )
+)
+
+#: Slot manifest keys stored in a column of the same name; the rest of a
+#: manifest is kept as given.
+_SLOT_COLUMNS = (
+    "slot_id",
+    "state",
+    "placement",
+    "sandbox_id",
+    "sandbox_backend",
+    "runtime_generation",
+    "claimed_session_id",
+    "retire_reason",
+)
+_SLOT_TIMES = ("prepared_at", "claimed_at", "retiring_at")
+
+#: Slot manifest keys a read omits when unset, as a manifest that never had them.
+_OPTIONAL_SLOT_KEYS = ("runtime_generation", "claimed_session_id", "retire_reason", *_SLOT_TIMES)
+
+#: A stored time in the form slot manifests carry it, whatever the session's zone.
+_UTC_ISO_FORMAT = 'YYYY-MM-DD"T"HH24:MI:SS.US"+00:00"'
+
+#: Columns a read omits from the document when empty, as a document without
+#: the key would.
+_OPTIONAL_FIELDS = (
+    "description",
+    "system",
+    "engine_options",
+    "mcp_servers",
+    "default_repo",
+    "exposure_mode",
+    "idle_hibernate_seconds",
+    "environment_name",
+    "org_id",
+    "updated_by",
+)
+
+#: Foreign keys a write can name a missing row through, by the reference.
+_REFERENCES = {
+    "fk_agents_environment_name_environments": "environment",
+    "fk_agent_category_links_category_id_agent_categories": "category",
+    "fk_agent_vault_bindings_vault_id_vaults": "vault",
+}
+
+
+class AgentReferenceMissing(Exception):
+    """A write named an Environment, category or vault that does not exist."""
+
+    def __init__(self, reference: str) -> None:
+        super().__init__(f"the Agent names a {reference} that does not exist")
+        self.reference = reference
 
 
 def agent_name_sort_key(name: Any) -> str:
     """The Agent list's order for ``name``: the name without its case.
 
-    Stored on the row rather than computed by each backend, because the SQL
-    store's matcher, SQL itself and MongoDB each fold case differently, and a
-    page that resumes after a key has to compare it the way the order was
-    built.
+    Stored with the row rather than computed in SQL, because ``str.casefold``
+    and PostgreSQL's ``lower`` fold some characters differently, and a page that
+    resumes after a key has to compare it the way the order was built.
     """
 
     return str(name or "").casefold()
 
 
-def _with_name_sort_key(fields: dict[str, Any]) -> dict[str, Any]:
-    """``fields``, plus the sort key when they set the name."""
+def _ordered(column: Any, order: Any, owner: Any) -> Any:
+    """One Agent's child values as an array in their stored order (NULL for none)."""
+    return (
+        select(func.array_agg(aggregate_order_by(column, order)))
+        .where(owner == _AGENTS.c.agent_id)
+        .scalar_subquery()
+    )
 
-    if "name" not in fields:
-        return fields
-    return {**fields, NAME_SORT_KEY_FIELD: agent_name_sort_key(fields["name"])}
+
+def _definition() -> Select[Any]:
+    """Every Agent column with its child tables and runtime record, one row per Agent."""
+    return select(
+        _AGENTS,
+        *_RUNTIME_COLUMNS,
+        select(func.array_agg(_UNDESTROYED.c.sandbox_id))
+        .where(_UNDESTROYED.c.agent_id == _AGENTS.c.agent_id)
+        .scalar_subquery()
+        .label("undestroyed_sandbox_ids"),
+        _ordered(_LINKS.c.category_id, _LINKS.c.position, _LINKS.c.agent_id).label(
+            "categories"
+        ),
+        _ordered(_VAULTS.c.vault_id, _VAULTS.c.position, _VAULTS.c.agent_id).label(
+            "credential_vault_ids"
+        ),
+        select(
+            func.jsonb_agg(
+                aggregate_order_by(
+                    func.jsonb_build_object(
+                        "provider", _ASSIGNMENTS.c.provider, "item_id", _ASSIGNMENTS.c.item_id
+                    ),
+                    _ASSIGNMENTS.c.position,
+                )
+            )
+        )
+        .where(_ASSIGNMENTS.c.agent_id == _AGENTS.c.agent_id)
+        .scalar_subquery()
+        .label("mcp_assignments"),
+        select(func.jsonb_object_agg(_CONNECTORS.c.connector_id, _CONNECTORS.c.hub_server_id))
+        .where(_CONNECTORS.c.agent_id == _AGENTS.c.agent_id)
+        .scalar_subquery()
+        .label("connector_servers"),
+    ).select_from(_AGENTS.outerjoin(_RUNTIMES, _RUNTIMES.c.agent_id == _AGENTS.c.agent_id))
+
+
+def _view(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One Agent as the document services read."""
+    display_meta: dict[str, Any] = {"tags": list(row["tags"] or [])}
+    for key in ("display_name", "icon"):
+        if row[key] is not None:
+            display_meta[key] = row[key]
+    doc: dict[str, Any] = {
+        "agent_id": row["agent_id"],
+        "name": row["name"],
+        NAME_SORT_KEY_FIELD: row["name_key"],
+        "display_meta": display_meta,
+        "use_cases": list(row["use_cases"] or []),
+        "categories": list(row["categories"] or []),
+        "model": row["model"],
+        "artifacts_enabled": row["artifacts_enabled"],
+        "skills": list(row["skills"] or []),
+        "packages": list(row["packages"] or []),
+        "terminal_panel": row["terminal_panel"],
+        "diff_panel": row["diff_panel"],
+        "prepared_capacity": row["prepared_capacity"],
+        "enabled": row["enabled"],
+        "visibility": row["visibility"],
+        "admins": list(row["admins"] or []),
+        "allowed_user_ids": list(row["allowed_user_ids"] or []),
+        "credential_vault_ids": list(row["credential_vault_ids"] or []),
+        "mcp_assignments": list(row["mcp_assignments"] or []),
+        "extension_catalog": {
+            "skill_ids": list(row["catalog_skill_ids"] or []),
+            "skills": list(row["catalog_skills"] or []),
+        },
+        "version": row["version"],
+        "state": row["state"],
+        "created_by": row["created_by"],
+        "created_at": to_iso(row["created_at"]),
+        "updated_at": to_iso(row["updated_at"]),
+    }
+    for field in _OPTIONAL_FIELDS:
+        if row[field] is not None:
+            doc[field] = row[field]
+    if row["connector_servers"]:
+        doc["connector_servers"] = dict(row["connector_servers"])
+    for column, key in _RUNTIME_KEYS.items():
+        if row[column] is not None:
+            doc[key] = row[column]
+    if row["expires_at"] is not None:
+        doc["expires_at"] = to_iso(row["expires_at"])
+    if row["undestroyed_sandbox_ids"]:
+        doc["undestroyed_sandbox_ids"] = sorted(row["undestroyed_sandbox_ids"])
+    doc["_seats_per_box"] = int(row["seats_per_box"] or 0)
+    if row["capacity_last_miss_at"] is not None:
+        doc["_prepared_capacity_last_miss_at"] = to_iso(row["capacity_last_miss_at"])
+    if row["resources_operation_id"] is not None:
+        doc["_prepared_resources_operation"] = {
+            "provider": row["resources_operation_provider"],
+            "operation_id": row["resources_operation_id"],
+            "deadline": row["resources_operation_deadline"],
+        }
+    return doc
+
+
+def _utc_iso(column: Any) -> ColumnElement[Any]:
+    return func.to_char(func.timezone("UTC", column), _UTC_ISO_FORMAT)
+
+
+def _slot_json() -> ColumnElement[Any]:
+    """One prepared slot as its manifest: the preparation receipt and the slot's columns."""
+    pairs: list[Any] = []
+    for name in _SLOT_COLUMNS:
+        pairs += [name, _SLOTS.c[name]]
+    for name in _SLOT_TIMES:
+        pairs += [name, _utc_iso(_SLOTS.c[name])]
+    return _SLOTS.c.manifest.op("||")(func.jsonb_build_object(*pairs))
+
+
+def _slot_manifest(item: Mapping[str, Any]) -> dict[str, Any]:
+    manifest = dict(item)
+    for key in _OPTIONAL_SLOT_KEYS:
+        if manifest.get(key) is None:
+            manifest.pop(key, None)
+    return manifest
+
+
+def _slot_values(agent_id: str, manifest: Mapping[str, Any]) -> dict[str, Any]:
+    """A slot manifest as a row of ``agent_prepared_slots``."""
+    values: dict[str, Any] = {
+        "agent_id": agent_id,
+        "manifest": {
+            key: value
+            for key, value in manifest.items()
+            if key not in _SLOT_COLUMNS and key not in _SLOT_TIMES
+        },
+    }
+    for key in _SLOT_COLUMNS:
+        values[key] = manifest.get(key)
+    for key in _SLOT_TIMES:
+        values[key] = from_iso(manifest.get(key))
+    return values
+
+
+def _ledger() -> Select[Any]:
+    """:func:`_definition` with the Agent's slots, admissions and displaced pools.
+
+    One statement, so the revisions and the rows they count are read together.
+    """
+    slots = (
+        select(
+            func.jsonb_agg(
+                aggregate_order_by(_slot_json(), _SLOTS.c.prepared_at, _SLOTS.c.slot_id)
+            )
+        )
+        .where(_SLOTS.c.agent_id == _AGENTS.c.agent_id)
+        .scalar_subquery()
+        .label("prepared_slots")
+    )
+    admissions = (
+        select(
+            func.jsonb_agg(
+                aggregate_order_by(
+                    func.jsonb_build_object(
+                        "sandbox_id",
+                        _ADMISSIONS.c.sandbox_id,
+                        "session_id",
+                        _ADMISSIONS.c.session_id,
+                        "at",
+                        func.extract("epoch", _ADMISSIONS.c.admitted_at),
+                    ),
+                    _ADMISSIONS.c.admitted_at,
+                )
+            )
+        )
+        .where(_ADMISSIONS.c.agent_id == _AGENTS.c.agent_id)
+        .scalar_subquery()
+        .label("box_admissions")
+    )
+    retiring = (
+        select(
+            func.jsonb_agg(
+                aggregate_order_by(
+                    func.jsonb_build_object(
+                        "name", _RETIRING.c.pool_name, "backend", _RETIRING.c.backend
+                    ),
+                    _RETIRING.c.recorded_at,
+                    _RETIRING.c.pool_name,
+                )
+            )
+        )
+        .where(_RETIRING.c.agent_id == _AGENTS.c.agent_id)
+        .scalar_subquery()
+        .label("retiring_client_pools")
+    )
+    return _definition().add_columns(slots, admissions, retiring)
+
+
+def _ledger_view(row: Mapping[str, Any]) -> dict[str, Any]:
+    """One Agent with its shared-box ledger, as :meth:`AgentRepository.read_ledger` returns it."""
+    doc = _view(row)
+    doc["_prepared_slots"] = [_slot_manifest(item) for item in row["prepared_slots"] or []]
+    doc["box_admissions"] = [
+        {**item, "at": float(item["at"])} for item in row["box_admissions"] or []
+    ]
+    doc["_retiring_client_pools"] = [dict(item) for item in row["retiring_client_pools"] or []]
+    doc["_slots_revision"] = int(row["slots_revision"] or 0)
+    doc["_admissions_revision"] = int(row["admissions_revision"] or 0)
+    return doc
+
+
+def _live(agent_id: str) -> Select[Any]:
+    """``agent_id`` while it is not deleted, for a runtime write's condition."""
+    return select(_AGENTS.c.agent_id).where(_AGENTS.c.agent_id == agent_id, _LIVE)
+
+
+async def _definition_holds(
+    conn: AsyncConnection, agent_id: str, *conditions: ColumnElement[bool]
+) -> bool:
+    """Whether the live Agent meets ``conditions``, keeping its definition so until commit."""
+    row = (
+        await conn.execute(
+            select(_AGENTS.c.agent_id)
+            .where(_AGENTS.c.agent_id == agent_id, _LIVE, *conditions)
+            .with_for_update(read=True)
+        )
+    ).first()
+    return row is not None
+
+
+async def _admit(
+    conn: AsyncConnection,
+    agent_id: str,
+    *,
+    sandbox_id: str,
+    session_id: str,
+    young_since: datetime,
+) -> None:
+    """Charge ``session_id`` to a box of the Agent, forgetting admissions older than ``young_since``."""
+    await conn.execute(
+        delete(_ADMISSIONS).where(
+            _ADMISSIONS.c.agent_id == agent_id, _ADMISSIONS.c.admitted_at < young_since
+        )
+    )
+    admission = pg_insert(_ADMISSIONS).values(
+        agent_id=agent_id,
+        sandbox_id=sandbox_id,
+        session_id=session_id,
+        admitted_at=datetime.now(timezone.utc),
+    )
+    await conn.execute(
+        admission.on_conflict_do_update(
+            index_elements=[
+                _ADMISSIONS.c.agent_id,
+                _ADMISSIONS.c.sandbox_id,
+                _ADMISSIONS.c.session_id,
+            ],
+            set_={"admitted_at": admission.excluded.admitted_at},
+        )
+    )
+
+
+def _operation_values(operation: Mapping[str, Any] | None) -> dict[str, Any]:
+    if operation is None:
+        return {
+            "resources_operation_provider": None,
+            "resources_operation_id": None,
+            "resources_operation_deadline": None,
+        }
+    return {
+        "resources_operation_provider": str(operation["provider"]),
+        "resources_operation_id": str(operation["operation_id"]),
+        "resources_operation_deadline": float(operation["deadline"]),
+    }
+
+
+def _operation_is(operation: Mapping[str, Any] | None) -> ColumnElement[bool]:
+    if operation is None:
+        return _RUNTIMES.c.resources_operation_id.is_(None)
+    return and_(
+        _RUNTIMES.c.resources_operation_provider == str(operation["provider"]),
+        _RUNTIMES.c.resources_operation_id == str(operation["operation_id"]),
+        _RUNTIMES.c.resources_operation_deadline == float(operation["deadline"]),
+    )
+
+
+#: The runtime record columns a generation fence compares, by the key a read
+#: carries them under.
+_GENERATION_FENCE = {
+    "_prewarm_revision": _RUNTIMES.c.prewarm_revision,
+    "_client_pool_epoch": _RUNTIMES.c.client_pool_epoch,
+    "_runtime_generation": _RUNTIMES.c.runtime_generation,
+    "_sandbox_generation": _RUNTIMES.c.sandbox_generation,
+}
+
+
+class _NothingChanged(Exception):
+    """The row a short transaction meant to change was not as read; roll it back."""
+
+
+def _column_values(fields: Mapping[str, Any]) -> dict[str, Any]:
+    """The Agent columns ``fields`` sets, in their stored form."""
+    values: dict[str, Any] = {}
+    for field in _COLUMN_FIELDS:
+        if field not in fields:
+            continue
+        value = fields[field]
+        if field in ("use_cases", "admins", "allowed_user_ids", "skills", "packages"):
+            value = list(value or [])
+        elif field in ("artifacts_enabled", "enabled"):
+            value = value is not False
+        elif field in ("terminal_panel", "diff_panel"):
+            value = bool(value)
+        elif field == "prepared_capacity":
+            value = int(value or 0)
+        values[field] = value
+    if "name" in values:
+        values["name_key"] = agent_name_sort_key(values["name"])
+    if "display_meta" in fields:
+        display_meta = fields["display_meta"] if isinstance(fields["display_meta"], dict) else {}
+        values["display_name"] = display_meta.get("display_name")
+        values["icon"] = display_meta.get("icon")
+        values["tags"] = list(display_meta.get("tags") or [])
+    if "extension_catalog" in fields:
+        catalog = (
+            fields["extension_catalog"] if isinstance(fields["extension_catalog"], dict) else {}
+        )
+        values["catalog_skill_ids"] = list(catalog.get("skill_ids") or [])
+        values["catalog_skills"] = list(catalog.get("skills") or [])
+    return values
+
+
+def _unique(values: Iterable[Any]) -> list[str]:
+    seen: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in seen:
+            seen.append(text)
+    return seen
+
+
+def _child_values(fields: Mapping[str, Any]) -> dict[str, Any]:
+    """The child collections ``fields`` sets, in the form a read returns them."""
+    values: dict[str, Any] = {}
+    for field in ("categories", "credential_vault_ids"):
+        if field in fields:
+            values[field] = _unique(fields[field] or [])
+    if "mcp_assignments" in fields:
+        assignments: list[dict[str, str]] = []
+        for entry in fields["mcp_assignments"] or []:
+            if not isinstance(entry, dict):
+                continue
+            pair = {
+                "provider": str(entry.get("provider") or "").strip().lower(),
+                "item_id": str(entry.get("item_id") or "").strip(),
+            }
+            if all(pair.values()) and pair not in assignments:
+                assignments.append(pair)
+        values["mcp_assignments"] = assignments
+    if "connector_servers" in fields:
+        values["connector_servers"] = {
+            str(name): str(server) for name, server in (fields["connector_servers"] or {}).items()
+        }
+    return values
+
+
+async def _replace_children(conn: AsyncConnection, agent_id: str, children: Mapping[str, Any]) -> None:
+    """Replace each child collection ``children`` names (as :func:`_child_values` forms it)."""
+    if "categories" in children:
+        await conn.execute(delete(_LINKS).where(_LINKS.c.agent_id == agent_id))
+        if children["categories"]:
+            await conn.execute(
+                insert(_LINKS),
+                [
+                    {"agent_id": agent_id, "category_id": category_id, "position": position}
+                    for position, category_id in enumerate(children["categories"])
+                ],
+            )
+    if "credential_vault_ids" in children:
+        await conn.execute(delete(_VAULTS).where(_VAULTS.c.agent_id == agent_id))
+        if children["credential_vault_ids"]:
+            await conn.execute(
+                insert(_VAULTS),
+                [
+                    {"agent_id": agent_id, "vault_id": vault_id, "position": position}
+                    for position, vault_id in enumerate(children["credential_vault_ids"])
+                ],
+            )
+    if "mcp_assignments" in children:
+        await conn.execute(delete(_ASSIGNMENTS).where(_ASSIGNMENTS.c.agent_id == agent_id))
+        if children["mcp_assignments"]:
+            await conn.execute(
+                insert(_ASSIGNMENTS),
+                [
+                    {"agent_id": agent_id, "position": position, **assignment}
+                    for position, assignment in enumerate(children["mcp_assignments"])
+                ],
+            )
+    if "connector_servers" in children:
+        await conn.execute(delete(_CONNECTORS).where(_CONNECTORS.c.agent_id == agent_id))
+        if children["connector_servers"]:
+            await conn.execute(
+                insert(_CONNECTORS),
+                [
+                    {"agent_id": agent_id, "connector_id": name, "hub_server_id": server}
+                    for name, server in children["connector_servers"].items()
+                ],
+            )
+
+
+def _stored_children(row: Mapping[str, Any]) -> dict[str, Any]:
+    """An Agent row's child collections in the form :func:`_child_values` gives."""
+    return {
+        "categories": list(row["categories"] or []),
+        "credential_vault_ids": list(row["credential_vault_ids"] or []),
+        "mcp_assignments": list(row["mcp_assignments"] or []),
+        "connector_servers": dict(row["connector_servers"] or {}),
+    }
+
+
+async def _read(conn: AsyncConnection, agent_id: str) -> dict[str, Any]:
+    row = (await conn.execute(_definition().where(_AGENTS.c.agent_id == agent_id))).one()
+    return _view(row._mapping)
+
+
+def _missing_reference(exc: ForeignKeyViolation) -> AgentReferenceMissing:
+    return AgentReferenceMissing(_REFERENCES.get(str(exc.constraint or ""), "reference"))
+
+
+def visible_to(viewer: str, *, platform_admin: bool) -> ColumnElement[bool]:
+    """The Agents ``viewer`` may see and use: ``agent_access.can_view_agent`` in SQL."""
+    if platform_admin:
+        return true()
+    public = _AGENTS.c.visibility == "public"
+    me = str(viewer or "").strip()
+    if not me:
+        return public
+    return or_(
+        public,
+        _AGENTS.c.created_by == me,
+        _AGENTS.c.admins.any(me),
+        and_(_AGENTS.c.visibility == "allowlist", _AGENTS.c.allowed_user_ids.any(me)),
+    )
+
+
+def manageable_by(viewer: str, *, platform_admin: bool) -> ColumnElement[bool]:
+    """The Agents ``viewer`` may manage: ``agent_access.can_manage_agent`` in SQL."""
+    if platform_admin:
+        return true()
+    me = str(viewer or "").strip()
+    if not me:
+        return false()
+    return or_(_AGENTS.c.created_by == me, _AGENTS.c.admins.any(me))
 
 
 class AgentRepository:
-    def __init__(self) -> None:
-        settings = load_astrabox_settings()
-        self._collection_name = settings.agents_collection
-        self._index_ready = False
+    """Agents: their authored definition and their runtime record."""
 
-    async def _ensure_indexes(self) -> None:
-        if self._index_ready:
-            return
-        collection = await get_async_collection(self._collection_name)
-        if collection is not None:
-            await ensure_unique_index(
-                collection,
-                "agent_id",
-                collection_name=self._collection_name,
-            )
-            try:
-                await _safe_create_index(
-                    collection,
-                    [("user_id", 1), ("deleted", 1), ("updated_at", -1)],
-                )
-                await _safe_create_index(
-                    collection,
-                    [("state", 1), ("updated_at", 1)],
-                )
-                await _safe_create_index(collection, "sandbox_id")
-                await _safe_create_index(
-                    collection,
-                    [("sandbox_id", 1), ("expires_at", 1)],
-                )
-                await _safe_create_index(collection, "credential_vault_ids")
-            except Exception as exc:
-                logger.warning("ensure agent indexes failed: %s", exc)
-        self._index_ready = True
+    # ── definition ─────────────────────────────────────────────────────────
 
     async def create_agent(self, payload: dict[str, Any]) -> dict[str, Any]:
-        await self._ensure_indexes()
-        now = utcnow_iso()
-        doc = _with_name_sort_key({"deleted": False, "created_at": now, "updated_at": now, **payload})
-        collection = await get_async_collection(self._collection_name)
-        await write_environment_binding(
-            self._collection_name, str(doc.get("environment_name") or "").strip(),
-            "agents.create", lambda bound: bound.insert_one(doc),
-        )
-        stored = await run_mongo_with_retry(
-            "agents.read_after_create",
-            lambda: collection.find_one({"agent_id": doc["agent_id"]}),
-        )
-        return stored or doc
+        """Store a new Agent; raises :class:`AgentReferenceMissing` for an unknown reference."""
+        unknown = sorted(set(payload) - AUTHORED_FIELDS - _CREATE_FIELDS - {"created_at", "updated_at"})
+        if unknown:
+            raise ValueError(f"an Agent has no fields {unknown}")
+        agent_id = str(payload["agent_id"])
+        values = {
+            **_column_values(payload),
+            **{key: payload[key] for key in _CREATE_FIELDS if key in payload},
+        }
+        for key in ("created_at", "updated_at"):
+            if payload.get(key):
+                values[key] = from_iso(payload[key])
 
-    async def get_agent(
-        self, agent_id: str, *, include_deleted: bool = False
-    ) -> dict[str, Any] | None:
-        """Read one agent row, or ``None`` when no visible row matches.
+        async def create(conn: AsyncConnection) -> dict[str, Any]:
+            await conn.execute(insert(_AGENTS).values(**values))
+            await conn.execute(insert(_RUNTIMES).values(agent_id=agent_id))
+            await _replace_children(conn, agent_id, _child_values(payload))
+            return await _read(conn, agent_id)
 
-        Deleting an agent only flips ``deleted``; the sessions and transcripts it
-        owns keep naming it afterwards. ``include_deleted`` is for the read paths
-        that must still resolve such an owner's durable metadata — every other
-        caller takes the default, which hides deleted rows.
-        """
-        collection = await get_async_collection(self._collection_name)
-        query: dict[str, Any] = {"agent_id": agent_id}
-        if not include_deleted:
-            query["deleted"] = {"$ne": True}
-        return await run_mongo_with_retry(
-            "agents.get",
-            lambda: collection.find_one(query),
-        )
+        try:
+            return await transaction(create)
+        except ForeignKeyViolation as exc:
+            raise _missing_reference(exc) from exc
 
-    async def find_agent_by_sandbox_id(self, sandbox_id: str) -> dict[str, Any] | None:
-        target = str(sandbox_id or "").strip()
-        if not target:
-            return None
-        collection = await get_async_collection(self._collection_name)
-        return await run_mongo_with_retry(
-            "agents.find_by_sandbox_id",
-            lambda: collection.find_one({"sandbox_id": target, "deleted": {"$ne": True}}),
-            fault_context={"sandbox_id": target},
-        )
+    async def get_agent(self, agent_id: str) -> dict[str, Any] | None:
+        """One Agent, or ``None`` when there is none or it is deleted."""
+        row = await fetch_one(_definition().where(_AGENTS.c.agent_id == agent_id, _LIVE))
+        return _view(row) if row is not None else None
 
-    async def _agent_id_page(
+    async def has_agents(self) -> bool:
+        """Whether any Agent that is not deleted exists."""
+        return bool(await fetch_value(select(select(_AGENTS.c.agent_id).where(_LIVE).exists())))
+
+    async def update_definition(
         self,
-        query: dict[str, Any],
+        agent_id: str,
         *,
-        after_agent_id: str | None,
-        limit: int,
-        operation: str,
-    ) -> list[dict[str, Any]]:
-        """One page of ``query``'s rows in ``agent_id`` order, after ``after_agent_id``."""
+        expected_version: int,
+        changes: dict[str, Any],
+        updated_by: str | None,
+    ) -> dict[str, Any] | None:
+        """Apply authored ``changes`` while the Agent is at ``expected_version``.
 
-        page_limit = max(1, min(int(limit or 200), 10_000))
-        after = str(after_agent_id or "").strip()
-        if after:
-            query = {**query, "agent_id": {"$gt": after}}
-        collection = await get_async_collection(self._collection_name)
-
-        async def _list() -> list[dict[str, Any]]:
-            cursor = collection.find(query).sort("agent_id", 1).limit(page_limit)
-            return [doc async for doc in cursor]
-
-        return await run_mongo_with_retry(operation, _list)
-
-    async def list_agents_with_resident_boxes(
-        self, *, after_agent_id: str | None = None, limit: int = 200
-    ) -> list[dict[str, Any]]:
-        """One page of the Agent rows naming a resident shared box.
-
-        Rows come in ``agent_id`` order after ``after_agent_id``, so a sweep
-        that carries the last id forward reaches every row; a page shorter
-        than ``limit`` is the last.
+        A change moves the version by one and stamps ``updated_at`` and
+        ``updated_by``; changes that leave every stored value as it is write
+        nothing. Returns the Agent as stored afterwards, or ``None`` when its
+        version moved since it was read or it is deleted. Raises
+        :class:`AgentReferenceMissing` when a change names an Environment,
+        category or vault that does not exist.
         """
+        unknown = sorted(set(changes) - AUTHORED_FIELDS)
+        if unknown:
+            raise ValueError(f"not authored Agent fields: {unknown}")
+        values = _column_values(changes)
+        children = _child_values(changes)
 
-        return await self._agent_id_page(
-            {"sandbox_id": {"$type": "string", "$ne": ""}},
-            after_agent_id=after_agent_id,
-            limit=limit,
-            operation="agents.list_agents_with_resident_boxes",
-        )
-
-    async def list_agents_with_prepared_capacity(
-        self, *, after_agent_id: str | None = None, limit: int = 200
-    ) -> list[dict[str, Any]]:
-        """One page of the live Agents that asked for prepared capacity.
-
-        The warm-capacity sweep reads this rather than the resident-box list:
-        an Agent whose box expired or whose slot build failed has no box to be
-        listed by, and it is exactly the Agent the sweep exists to rebuild.
-        Rows come in ``agent_id`` order after ``after_agent_id``; a page
-        shorter than ``limit`` is the last.
-        """
-
-        return await self._agent_id_page(
-            {
-                "prepared_capacity": {"$gt": 0},
-                "state": {"$nin": ["DELETING", "DELETED"]},
-            },
-            after_agent_id=after_agent_id,
-            limit=limit,
-            operation="agents.list_agents_with_prepared_capacity",
-        )
-
-    async def total_prepared_capacity(self, *, excluding_agent_id: str = "") -> int:
-        """Sum of ``prepared_capacity`` over live Agents, optionally leaving one out."""
-
-        total = 0
-        after: str | None = None
-        while True:
-            page = await self.list_agents_with_prepared_capacity(after_agent_id=after)
-            total += sum(
-                int(row.get("prepared_capacity") or 0)
-                for row in page
-                if str(row.get("agent_id") or "") != excluding_agent_id
+        async def change(conn: AsyncConnection) -> dict[str, Any] | None:
+            current = (
+                await conn.execute(
+                    _definition()
+                    .where(_AGENTS.c.agent_id == agent_id, _LIVE)
+                    .with_for_update(of=_AGENTS)
+                )
+            ).first()
+            if current is None or current._mapping["version"] != expected_version:
+                return None
+            stored = current._mapping
+            changed_children = {
+                field: value
+                for field, value in children.items()
+                if _stored_children(stored)[field] != value
+            }
+            if not changed_children and all(
+                stored[column] == value for column, value in values.items()
+            ):
+                return _view(stored)
+            await conn.execute(
+                update(_AGENTS)
+                .where(_AGENTS.c.agent_id == agent_id)
+                .values(
+                    **values,
+                    version=_AGENTS.c.version + 1,
+                    updated_at=func.now(),
+                    updated_by=updated_by,
+                )
             )
-            if len(page) < 200:
-                return total
-            after = str(page[-1].get("agent_id") or "")
+            await _replace_children(conn, agent_id, changed_children)
+            return await _read(conn, agent_id)
+
+        try:
+            return await transaction(change)
+        except ForeignKeyViolation as exc:
+            raise _missing_reference(exc) from exc
+
+    async def mark_deleting(self, agent_id: str) -> bool:
+        """Record that the Agent's deletion has started."""
+        return (
+            await execute(
+                update(_AGENTS)
+                .where(_AGENTS.c.agent_id == agent_id, _LIVE)
+                .values(state="DELETING")
+            )
+        ) == 1
+
+    async def soft_delete(self, agent_id: str) -> bool:
+        """Hide the Agent; its row stays for the conversations that name it."""
+        async def write(conn: AsyncConnection) -> bool:
+            result = await conn.execute(
+                update(_AGENTS)
+                .where(_AGENTS.c.agent_id == agent_id, _LIVE)
+                .values(state="DELETED")
+            )
+            if result.rowcount != 1:
+                return False
+            await conn.execute(
+                select(notice(_SESSIONS.c.session_id, "session")).where(
+                    _SESSIONS.c.agent_id == agent_id, _SESSIONS.c.deleted.is_(False)
+                )
+            )
+            return True
+
+        return await transaction(write)
+
+    # ── lists ──────────────────────────────────────────────────────────────
+
+    async def list_visible_agents(
+        self, viewer: str, *, platform_admin: bool
+    ) -> list[dict[str, Any]]:
+        """Every live Agent ``viewer`` may see, the most recently edited first."""
+        rows = await fetch_all(
+            _definition()
+            .where(_LIVE, visible_to(viewer, platform_admin=platform_admin))
+            .order_by(_AGENTS.c.updated_at.desc(), _AGENTS.c.agent_id.desc())
+        )
+        return [_view(row) for row in rows]
+
+    async def list_manageable_agents(
+        self, viewer: str, *, platform_admin: bool
+    ) -> list[dict[str, Any]]:
+        """Every live Agent ``viewer`` may manage, the most recently edited first."""
+        rows = await fetch_all(
+            _definition()
+            .where(_LIVE, manageable_by(viewer, platform_admin=platform_admin))
+            .order_by(_AGENTS.c.updated_at.desc(), _AGENTS.c.agent_id.desc())
+        )
+        return [_view(row) for row in rows]
+
+    async def manageable_agent_ids(self, viewer: str, *, platform_admin: bool) -> list[str]:
+        """The ids of the live Agents ``viewer`` may manage, sorted."""
+        rows = await fetch_all(
+            select(_AGENTS.c.agent_id)
+            .where(_LIVE, manageable_by(viewer, platform_admin=platform_admin))
+            .order_by(_AGENTS.c.agent_id)
+        )
+        return [str(row["agent_id"]) for row in rows]
+
+    async def count_visible_agents(
+        self, viewer: str, *, platform_admin: bool
+    ) -> tuple[int, int]:
+        """How many live Agents ``viewer`` may see, and how many of them are enabled."""
+        row = await fetch_one(
+            select(
+                func.count().label("total"),
+                func.count().filter(_AGENTS.c.enabled).label("enabled"),
+            ).where(_LIVE, visible_to(viewer, platform_admin=platform_admin))
+        )
+        return (int(row["total"]), int(row["enabled"])) if row is not None else (0, 0)
+
+    async def list_visible_agents_page(
+        self,
+        viewer: str,
+        *,
+        platform_admin: bool,
+        after: tuple[str, str] | None,
+        limit: int,
+        needle: str = "",
+        enabled: bool | None = None,
+    ) -> list[dict[str, Any]]:
+        """One page of the live Agents ``viewer`` may see, by name regardless of case.
+
+        Rows come in ``(name_key, agent_id)`` order after ``after``.
+        ``needle`` keeps the Agents whose name, display name or model contains
+        it, ignoring case; ``enabled`` keeps the enabled or the disabled ones.
+        """
+        conditions: list[ColumnElement[bool]] = [
+            _LIVE,
+            visible_to(viewer, platform_admin=platform_admin),
+        ]
+        if after is not None:
+            name_key, agent_id = after
+            conditions.append(
+                or_(
+                    _AGENTS.c.name_key > name_key,
+                    and_(_AGENTS.c.name_key == name_key, _AGENTS.c.agent_id > agent_id),
+                )
+            )
+        wanted = str(needle or "").strip().lower()
+        if wanted:
+            conditions.append(
+                or_(
+                    *(
+                        func.strpos(func.lower(func.coalesce(column, "")), wanted) > 0
+                        for column in (_AGENTS.c.name, _AGENTS.c.display_name, _AGENTS.c.model)
+                    )
+                )
+            )
+        if enabled is not None:
+            conditions.append(_AGENTS.c.enabled.is_(enabled))
+        rows = await fetch_all(
+            _definition()
+            .where(*conditions)
+            .order_by(_AGENTS.c.name_key, _AGENTS.c.agent_id)
+            .limit(max(1, min(int(limit or 200), 10_000)))
+        )
+        return [_view(row) for row in rows]
+
+    async def visible_tag_counts(
+        self, viewer: str, *, platform_admin: bool
+    ) -> list[dict[str, Any]]:
+        """The tags of the live Agents ``viewer`` may see, most used first."""
+        tag = func.unnest(_AGENTS.c.tags).label("tag")
+        tags = (
+            select(_AGENTS.c.agent_id, tag)
+            .where(_LIVE, visible_to(viewer, platform_admin=platform_admin))
+            .subquery()
+        )
+        count = func.count(func.distinct(tags.c.agent_id))
+        rows = await fetch_all(
+            select(tags.c.tag, count.label("agents"))
+            .group_by(tags.c.tag)
+            .order_by(count.desc(), tags.c.tag)
+        )
+        return [{"tag": row["tag"], "agents": int(row["agents"])} for row in rows]
 
     async def list_live_agents_page(
         self, *, after_agent_id: str | None = None, limit: int = 200
     ) -> list[dict[str, Any]]:
-        """One page of the Agents that are not deleted, in ``agent_id`` order.
+        """One page of the live Agents, in ``agent_id`` order after ``after_agent_id``."""
+        conditions: list[ColumnElement[bool]] = [_LIVE]
+        if after_agent_id:
+            conditions.append(_AGENTS.c.agent_id > after_agent_id)
+        rows = await fetch_all(
+            _definition()
+            .where(*conditions)
+            .order_by(_AGENTS.c.agent_id)
+            .limit(max(1, min(int(limit or 200), 10_000)))
+        )
+        return [_view(row) for row in rows]
 
-        For work that must reach every Agent, one page at a time.
+    async def list_agents_by_ids(self, agent_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """Map each live ``agent_id`` to its Agent; unknown and deleted ids are absent."""
+        ids = _unique(agent_ids)
+        if not ids:
+            return {}
+        rows = await fetch_all(_definition().where(_AGENTS.c.agent_id.in_(ids), _LIVE))
+        return {str(row["agent_id"]): _view(row) for row in rows}
+
+    async def list_agents_by_credential_vault_id(self, vault_id: str) -> list[dict[str, Any]]:
+        """Every live Agent a vault is bound to."""
+        target = str(vault_id or "").strip()
+        if not target:
+            return []
+        bound = select(_VAULTS.c.agent_id).where(_VAULTS.c.vault_id == target)
+        rows = await fetch_all(
+            _definition()
+            .where(_AGENTS.c.agent_id.in_(bound), _LIVE)
+            .order_by(_AGENTS.c.agent_id)
+        )
+        return [_view(row) for row in rows]
+
+    async def list_catalog_selections(self) -> list[dict[str, Any]]:
+        """Every live Agent holding a catalog selection, enabled or not."""
+        assigned = select(_ASSIGNMENTS.c.agent_id)
+        rows = await fetch_all(
+            _definition()
+            .where(
+                _LIVE,
+                or_(
+                    _AGENTS.c.agent_id.in_(assigned),
+                    func.cardinality(_AGENTS.c.catalog_skill_ids) > 0,
+                    func.jsonb_array_length(_AGENTS.c.catalog_skills) > 0,
+                ),
+            )
+            .order_by(_AGENTS.c.agent_id)
+        )
+        return [_view(row) for row in rows]
+
+    async def list_agents_by_environment(
+        self, name: str, *, conn: AsyncConnection
+    ) -> list[dict[str, Any]]:
+        """Every Agent naming an Environment, deleted ones included, on ``conn``.
+
+        Each carries ``holds_compute``: whether the Agent's runtime record
+        still names a box, a client pool, a prepared slot or a sandbox its
+        deletion could not confirm destroyed.
         """
+        owner = _AGENTS.c.agent_id
+        holds_compute = or_(
+            _RUNTIMES.c.sandbox_id.is_not(None),
+            _RUNTIMES.c.client_pool_name.is_not(None),
+            select(_SLOTS.c.slot_id).where(_SLOTS.c.agent_id == owner).exists(),
+            select(_RETIRING.c.pool_name).where(_RETIRING.c.agent_id == owner).exists(),
+            select(_UNDESTROYED.c.sandbox_id).where(_UNDESTROYED.c.agent_id == owner).exists(),
+        ).label("holds_compute")
+        rows = (
+            await conn.execute(
+                _definition()
+                .add_columns(holds_compute)
+                .where(_AGENTS.c.environment_name == name)
+                .order_by(_AGENTS.c.agent_id)
+            )
+        ).all()
+        return [
+            {**_view(row._mapping), "holds_compute": bool(row._mapping["holds_compute"])}
+            for row in rows
+        ]
 
-        return await self._agent_id_page(
-            {"deleted": {"$ne": True}},
-            after_agent_id=after_agent_id,
-            limit=limit,
-            operation="agents.list_live_agents_page",
+    async def list_agent_ids_by_environment(
+        self, name: str, *, after_agent_id: str | None = None, limit: int = 200
+    ) -> list[str]:
+        """One page of the live Agents naming an Environment, in ``agent_id`` order."""
+        conditions: list[ColumnElement[bool]] = [_LIVE, _AGENTS.c.environment_name == name]
+        if after_agent_id:
+            conditions.append(_AGENTS.c.agent_id > after_agent_id)
+        rows = await fetch_all(
+            select(_AGENTS.c.agent_id)
+            .where(*conditions)
+            .order_by(_AGENTS.c.agent_id)
+            .limit(max(1, min(int(limit or 200), 10_000)))
+        )
+        return [str(row["agent_id"]) for row in rows]
+
+    async def total_prepared_capacity(self, *, excluding_agent_id: str = "") -> int:
+        """Sum of ``prepared_capacity`` over Agents not being deleted, optionally leaving one out."""
+        return int(
+            await fetch_value(
+                select(func.coalesce(func.sum(_AGENTS.c.prepared_capacity), 0)).where(
+                    # The prepared-capacity sweep's predicate, so its index serves the sum.
+                    _AGENTS.c.prepared_capacity > 0,
+                    _AGENTS.c.state == "ACTIVE",
+                    _AGENTS.c.agent_id != excluding_agent_id,
+                )
+            )
+            or 0
         )
 
-    async def list_agents_by_sandbox_id(
-        self, sandbox_id: str
-    ) -> list[dict[str, Any]]:
-        """Return every active Agent that still names ``sandbox_id``.
+    # ── the Agent's runtime record ─────────────────────────────────────────
 
-        One healthy shared sandbox has one Agent owner. Returning the complete
-        set keeps lifecycle convergence correct if a damaged database contains
-        duplicate owners: terminal resource evidence must not leave one stale
-        pointer behind merely because ``find_one`` happened to choose another.
+    async def allocate_conversation_uid(self, agent_id: str, *, first: int, last: int) -> int | None:
+        """Hand the next POSIX owner to one of a live Agent's conversations.
+
+        One statement moves the counter, so concurrent conversations each get
+        their own number and none is handed out twice. The first number is
+        ``first`` (also past a counter left below it); ``None`` when the Agent
+        is not live or the next number would pass ``last``.
         """
+        following = func.greatest(
+            func.coalesce(_RUNTIMES.c.last_conversation_uid, first - 1) + 1, first
+        )
+        value = await fetch_value(
+            update(_RUNTIMES)
+            .where(
+                _RUNTIMES.c.agent_id == agent_id,
+                _RUNTIMES.c.agent_id.in_(_live(agent_id)),
+                following <= last,
+            )
+            .values(last_conversation_uid=following)
+            .returning(_RUNTIMES.c.last_conversation_uid)
+        )
+        return int(value) if value is not None else None
+
+    async def claim_workspace_id(self, agent_id: str, minted: str) -> str | None:
+        """The live Agent's durable workspace id, setting ``minted`` when it has none.
+
+        One statement decides, so concurrent box creators all mount the root the
+        first of them recorded. ``None`` when the Agent is not live.
+        """
+        value = await fetch_value(
+            update(_RUNTIMES)
+            .where(_RUNTIMES.c.agent_id == agent_id, _RUNTIMES.c.agent_id.in_(_live(agent_id)))
+            .values(workspace_id=func.coalesce(_RUNTIMES.c.workspace_id, minted))
+            .returning(_RUNTIMES.c.workspace_id)
+        )
+        return str(value) if value is not None else None
+
+    async def record_capacity_miss(self, agent_id: str) -> None:
+        """Record that a new conversation of the Agent found no prepared unit."""
+        await execute(
+            update(_RUNTIMES)
+            .where(_RUNTIMES.c.agent_id == agent_id)
+            .values(capacity_last_miss_at=func.now())
+        )
+
+    async def record_seats_per_box(self, agent_id: str, seats: int) -> bool:
+        """Record how many seats the Agent's latest pool box held; whether it changed."""
+        return (
+            await execute(
+                update(_RUNTIMES)
+                .where(_RUNTIMES.c.agent_id == agent_id, _RUNTIMES.c.seats_per_box != seats)
+                .values(seats_per_box=seats)
+            )
+        ) == 1
+
+    async def record_undestroyed_sandbox(self, agent_id: str, sandbox_id: str) -> None:
+        """Keep the name of a sandbox the Agent's teardown could not confirm destroyed."""
+        await execute(
+            pg_insert(_UNDESTROYED)
+            .values(agent_id=agent_id, sandbox_id=sandbox_id)
+            .on_conflict_do_nothing(index_elements=[_UNDESTROYED.c.agent_id, _UNDESTROYED.c.sandbox_id])
+        )
+
+    # ── gateway keys of claimed prepared slots ─────────────────────────────
+
+    async def record_gateway_entry(
+        self,
+        agent_id: str,
+        *,
+        slot_id: str,
+        session_id: str,
+        endpoint_provider: str | None,
+    ) -> str:
+        """Record that ``session_id`` owns the gateway key of a claimed slot.
+
+        Returns the Session that owns the entry: ``session_id`` once it is
+        recorded (again, when it already was), another Session when that one
+        recorded the slot first.
+        """
+        entry = pg_insert(_GATEWAY_ENTRIES).values(
+            agent_id=agent_id,
+            slot_id=slot_id,
+            session_id=session_id,
+            endpoint_provider=endpoint_provider,
+        )
+        owner = await fetch_value(
+            entry.on_conflict_do_update(
+                index_elements=[_GATEWAY_ENTRIES.c.agent_id, _GATEWAY_ENTRIES.c.slot_id],
+                set_={"endpoint_provider": entry.excluded.endpoint_provider},
+                where=_GATEWAY_ENTRIES.c.session_id == session_id,
+            ).returning(_GATEWAY_ENTRIES.c.session_id)
+        )
+        if owner is not None:
+            return str(owner)
+        return str(
+            await fetch_value(
+                select(_GATEWAY_ENTRIES.c.session_id).where(
+                    _GATEWAY_ENTRIES.c.agent_id == agent_id,
+                    _GATEWAY_ENTRIES.c.slot_id == slot_id,
+                )
+            )
+        )
+
+    async def list_gateway_entries(self, agent_id: str) -> list[dict[str, Any]]:
+        """The Agent's gateway-key entries: ``slot_id``, ``session_id``, ``endpoint_provider``."""
+        rows = await fetch_all(
+            select(
+                _GATEWAY_ENTRIES.c.slot_id,
+                _GATEWAY_ENTRIES.c.session_id,
+                _GATEWAY_ENTRIES.c.endpoint_provider,
+            )
+            .where(_GATEWAY_ENTRIES.c.agent_id == agent_id)
+            .order_by(_GATEWAY_ENTRIES.c.recorded_at, _GATEWAY_ENTRIES.c.slot_id)
+        )
+        return [dict(row) for row in rows]
+
+    async def remove_gateway_entry(self, agent_id: str, *, slot_id: str, session_id: str) -> bool:
+        """Remove one entry while ``session_id`` still owns it; whether this call removed it."""
+        return (
+            await execute(
+                delete(_GATEWAY_ENTRIES).where(
+                    _GATEWAY_ENTRIES.c.agent_id == agent_id,
+                    _GATEWAY_ENTRIES.c.slot_id == slot_id,
+                    _GATEWAY_ENTRIES.c.session_id == session_id,
+                )
+            )
+        ) == 1
+
+    # ── the shared-box ledger ──────────────────────────────────────────────
+
+    async def read_ledger(self, agent_id: str) -> dict[str, Any] | None:
+        """A live Agent with its shared-box ledger, read in one statement.
+
+        :meth:`get_agent` plus ``_prepared_slots`` (slot manifests, oldest
+        first), ``box_admissions`` (``sandbox_id``, ``session_id`` and ``at`` in
+        epoch seconds), ``_retiring_client_pools`` and the revisions a fenced
+        write names: ``_slots_revision`` and ``_admissions_revision``. ``None``
+        when the Agent is missing or deleted.
+        """
+        row = await fetch_one(_ledger().where(_AGENTS.c.agent_id == agent_id, _LIVE))
+        return _ledger_view(row) if row is not None else None
+
+    async def list_slots(self, agent_id: str) -> list[dict[str, Any]]:
+        """The Agent's slot manifests, oldest first, deleted Agent or not."""
+        rows = await fetch_all(
+            select(_slot_json().label("manifest"))
+            .where(_SLOTS.c.agent_id == agent_id)
+            .order_by(_SLOTS.c.prepared_at, _SLOTS.c.slot_id)
+        )
+        return [_slot_manifest(row["manifest"]) for row in rows]
+
+    async def find_agent_by_sandbox_id(self, sandbox_id: str) -> dict[str, Any] | None:
+        """The live Agent whose resident box is ``sandbox_id``, if any."""
+        target = str(sandbox_id or "").strip()
+        if not target:
+            return None
+        row = await fetch_one(
+            _definition()
+            .where(_RUNTIMES.c.sandbox_id == target, _LIVE)
+            .order_by(_AGENTS.c.agent_id)
+            .limit(1)
+        )
+        return _view(row) if row is not None else None
+
+    async def list_agents_by_sandbox_id(self, sandbox_id: str) -> list[dict[str, Any]]:
+        """Every live Agent whose resident box is ``sandbox_id``."""
         target = str(sandbox_id or "").strip()
         if not target:
             return []
-        collection = await get_async_collection(self._collection_name)
-
-        async def _list() -> list[dict[str, Any]]:
-            cursor = collection.find(
-                {"sandbox_id": target, "deleted": {"$ne": True}}
-            )
-            return [doc async for doc in cursor]
-
-        return await run_mongo_with_retry(
-            "agents.list_by_sandbox_id",
-            _list,
-            fault_context={"sandbox_id": target},
+        rows = await fetch_all(
+            _definition()
+            .where(_RUNTIMES.c.sandbox_id == target, _LIVE)
+            .order_by(_AGENTS.c.agent_id)
         )
+        return [_view(row) for row in rows]
+
+    async def list_agents_with_resident_boxes(
+        self, *, after_agent_id: str | None = None, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        """One page of the Agents, deleted ones included, naming a resident box.
+
+        Rows come in ``agent_id`` order after ``after_agent_id``; a page shorter
+        than ``limit`` is the last.
+        """
+        conditions: list[ColumnElement[bool]] = [_RUNTIMES.c.sandbox_id.is_not(None)]
+        if after_agent_id:
+            conditions.append(_RUNTIMES.c.agent_id > after_agent_id)
+        rows = await fetch_all(
+            _definition()
+            .where(*conditions)
+            .order_by(_RUNTIMES.c.agent_id)
+            .limit(max(1, min(int(limit or 200), 10_000)))
+        )
+        return [_view(row) for row in rows]
+
+    async def list_agents_with_prepared_capacity(
+        self, *, after_agent_id: str | None = None, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        """One page of the active Agents that asked for prepared capacity, with their ledgers.
+
+        The warm-capacity sweep reads this rather than the resident-box list:
+        an Agent whose box expired or whose slot build failed has no box to be
+        listed by, and it is exactly the Agent the sweep exists to rebuild.
+        """
+        conditions: list[ColumnElement[bool]] = [
+            _AGENTS.c.prepared_capacity > 0,
+            _AGENTS.c.state == "ACTIVE",
+        ]
+        if after_agent_id:
+            conditions.append(_AGENTS.c.agent_id > after_agent_id)
+        rows = await fetch_all(
+            _ledger()
+            .where(*conditions)
+            .order_by(_AGENTS.c.agent_id)
+            .limit(max(1, min(int(limit or 200), 10_000)))
+        )
+        return [_ledger_view(row) for row in rows]
 
     async def list_dead_binding_probe_candidates(
         self,
@@ -249,328 +1253,688 @@ class AgentRepository:
         after_agent_id: str | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
-        """One page of the Agent-owned sandboxes whose durable lease is absent or stale.
-
-        Rows come in ``agent_id`` order after ``after_agent_id``: a probe that
-        cannot settle a binding leaves its row in the set.
-        """
-        return await self._agent_id_page(
-            {
-                "deleted": {"$ne": True},
-                "sandbox_id": {"$gt": ""},
-                "$or": [
-                    {"expires_at": {"$exists": False}},
-                    {"expires_at": None},
-                    {"expires_at": {"$lte": now_iso}},
-                ],
-            },
-            after_agent_id=after_agent_id,
-            limit=max(1, min(int(limit or 50), 500)),
-            operation="agents.list_dead_binding_probe_candidates",
+        """One page of the live Agents whose resident box lease is unknown or past."""
+        conditions: list[ColumnElement[bool]] = [
+            _LIVE,
+            _RUNTIMES.c.sandbox_id.is_not(None),
+            or_(_RUNTIMES.c.expires_at.is_(None), _RUNTIMES.c.expires_at <= from_iso(now_iso)),
+        ]
+        if after_agent_id:
+            conditions.append(_RUNTIMES.c.agent_id > after_agent_id)
+        rows = await fetch_all(
+            _definition()
+            .where(*conditions)
+            .order_by(_RUNTIMES.c.agent_id)
+            .limit(max(1, min(int(limit or 50), 500)))
         )
+        return [_view(row) for row in rows]
 
-    async def list_agents_by_credential_vault_id(
-        self, vault_id: str
-    ) -> list[dict[str, Any]]:
-        """Return every active Agent that still references the managed Vault.
-
-        Every one, not the first: an operator unbinding a Vault has to be told
-        the whole set, or the refusal turns into one round trip per holder.
-        """
-        target = str(vault_id or "").strip()
-        if not target:
-            return []
-        collection = await get_async_collection(self._collection_name)
-
-        async def _list() -> list[dict[str, Any]]:
-            cursor = collection.find(
-                {
-                    "credential_vault_ids": target,
-                    "deleted": {"$ne": True},
-                }
-            )
-            return [doc async for doc in cursor]
-
-        return await run_mongo_with_retry(
-            "agents.list_by_credential_vault_id",
-            _list,
-            fault_context={"vault_id": target},
-        )
-
-    async def list_agents_by_environment(
-        self, name: str, *, transaction: Any = None,
-    ) -> list[dict[str, Any]]:
-        """Preset references, including deleted owners with cleanup bookkeeping."""
-        collection = (
-            transaction.collection(self._collection_name) if transaction is not None
-            else await get_async_collection(self._collection_name)
-        )
-
-        async def _list() -> list[dict[str, Any]]:
-            cursor = collection.find(
-                {"environment_name": name},
-                projection={
-                    "agent_id": 1, "name": 1, "display_meta": 1,
-                    "deleted": 1, "sandbox_id": 1, "undestroyed_sandbox_ids": 1,
-                    "_prepared_slots": 1, "_client_pool_name": 1, "_retiring_client_pools": 1,
-                },
-            )
-            return [doc async for doc in cursor]
-
-        if transaction is not None:
-            return await _list()
-        return await run_mongo_with_retry("agents.list_by_environment", _list)
-
-    async def list_agents_by_ids(
-        self,
-        agent_ids: list[str],
-        *,
-        include_deleted: bool = False,
-        projection: dict[str, int] | None = None,
-    ) -> dict[str, dict[str, Any]]:
-        """Map each resolved ``agent_id`` to its row; unresolved ids are absent.
-
-        ``include_deleted`` widens the read to deleted rows exactly as it does in
-        :meth:`get_agent`.
-        """
-        ids = sorted({str(agent_id or "").strip() for agent_id in agent_ids if str(agent_id or "").strip()})
-        if not ids:
-            return {}
-        collection = await get_async_collection(self._collection_name)
-
-        async def _list() -> list[dict[str, Any]]:
-            query: dict[str, Any] = {"agent_id": {"$in": ids}}
-            if not include_deleted:
-                query["deleted"] = {"$ne": True}
-            cursor = collection.find(
-                query,
-                projection=dict(projection) if projection is not None else None,
-            )
-            return [doc async for doc in cursor]
-
-        rows = await run_mongo_with_retry("agents.list_by_ids", _list)
-        return {
-            str(row.get("agent_id") or ""): row
-            for row in rows
-            if str(row.get("agent_id") or "").strip()
-        }
-
-    async def list_all_agents(self) -> list[dict[str, Any]]:
-        """Every live Agent, the most recently edited first.
-
-        Uncapped: the answer holds every Agent however many there are. A
-        caller that shows a page at a time reads
-        :meth:`list_agents_by_name_page` instead.
-        """
-        await self._ensure_indexes()
-        collection = await get_async_collection(self._collection_name)
-
-        async def _list() -> list[dict[str, Any]]:
-            cursor = collection.find({"deleted": {"$ne": True}}).sort(
-                [("updated_at", -1), ("agent_id", -1)]
-            )
-            return [doc async for doc in cursor]
-
-        return await run_mongo_with_retry("agents.list_all", _list)
-
-    async def list_agent_access_docs(self) -> list[dict[str, Any]]:
-        """Every live Agent's name, owners, visibility and enabled flag.
-
-        The fields that decide who sees and manages an Agent, for counting and
-        scoping over the whole collection without reading whole Agents.
-        """
-        await self._ensure_indexes()
-        collection = await get_async_collection(self._collection_name)
-
-        async def _list() -> list[dict[str, Any]]:
-            cursor = collection.find(
-                {"deleted": {"$ne": True}},
-                projection={
-                    "agent_id": 1,
-                    "name": 1,
-                    "created_by": 1,
-                    "admins": 1,
-                    "visibility": 1,
-                    "allowed_user_ids": 1,
-                    "enabled": 1,
-                },
-            )
-            return [doc async for doc in cursor]
-
-        return await run_mongo_with_retry("agents.list_access_docs", _list)
-
-    async def list_catalog_selections(self) -> list[dict[str, Any]]:
-        """Every live Agent's id, name, enabled flag and extension-catalog selection.
-
-        For checking the whole collection's catalog selections against the
-        deployment's extension provider without reading whole Agents.
-        """
-        await self._ensure_indexes()
-        collection = await get_async_collection(self._collection_name)
-
-        async def _list() -> list[dict[str, Any]]:
-            cursor = collection.find(
-                {"deleted": {"$ne": True}},
-                projection={
-                    "agent_id": 1,
-                    "name": 1,
-                    "enabled": 1,
-                    "mcp_assignments": 1,
-                    "extension_catalog": 1,
-                },
-            )
-            return [doc async for doc in cursor]
-
-        return await run_mongo_with_retry("agents.list_catalog_selections", _list)
-
-    async def list_agents_by_name_page(
-        self, *, after: tuple[str, str] | None, limit: int
-    ) -> list[dict[str, Any]]:
-        """One page of the live Agents by name, case-insensitively, after ``after``.
-
-        Rows come in ``(_name_key, agent_id)`` order: the name without its
-        case (:func:`agent_name_sort_key`), then the id for names that fold to
-        the same key. ``after`` is that pair for the last row already read; a
-        page shorter than ``limit`` is the last. Both keys are strings, so the
-        store orders the page itself and reads only the page.
-        """
-        await self._ensure_indexes()
-        page_limit = max(1, min(int(limit or 200), 10_000))
-        query: dict[str, Any] = {"deleted": {"$ne": True}}
-        if after is not None:
-            name_key, agent_id = after
-            query["$or"] = [
-                {NAME_SORT_KEY_FIELD: {"$gt": name_key}},
-                {NAME_SORT_KEY_FIELD: name_key, "agent_id": {"$gt": agent_id}},
-            ]
-        collection = await get_async_collection(self._collection_name)
-
-        async def _list() -> list[dict[str, Any]]:
-            cursor = (
-                collection.find(query)
-                .sort([(NAME_SORT_KEY_FIELD, 1), ("agent_id", 1)], string_keyed=True)
-                .limit(page_limit)
-            )
-            return [doc async for doc in cursor]
-
-        return await run_mongo_with_retry("agents.list_by_name_page", _list)
-
-    async def update_agent(self, agent_id: str, updates: dict[str, Any]) -> bool:
-        """Write exactly ``updates``.
-
-        ``updated_at`` means the Agent's definition changed, which is what the
-        console shows and sorts by. The runtime keeps its bookkeeping on this
-        row too, so the write does not stamp it: the authoring paths put
-        ``updated_at`` in ``updates`` when an authored field changed.
-        """
-        collection = await get_async_collection(self._collection_name)
-        fields = _with_name_sort_key(updates)
-        if "environment_name" in fields:
-            result = await write_environment_binding(
-                self._collection_name, str(fields["environment_name"] or "").strip(),
-                "agents.update",
-                lambda bound: bound.update_one({"agent_id": agent_id}, {"$set": fields}),
-            )
-        else:
-            result = await run_mongo_with_retry(
-                "agents.update",
-                lambda: collection.update_one({"agent_id": agent_id}, {"$set": fields}),
-            )
-        return result.modified_count > 0
-
-    async def compare_and_update_agent(
+    async def realign_resident_lease(
         self,
         agent_id: str,
         *,
-        expected: dict[str, Any],
-        updates: dict[str, Any],
+        sandbox_id: str,
+        observed_expires_at: str | None,
+        expires_at: str | None,
     ) -> bool:
-        """Write exactly ``updates`` where ``expected`` still holds.
+        """Record the resident box's lease end while the box and the end read are unchanged."""
+        return (
+            await execute(
+                update(_RUNTIMES)
+                .where(
+                    _RUNTIMES.c.agent_id == agent_id,
+                    _RUNTIMES.c.agent_id.in_(_live(agent_id)),
+                    _RUNTIMES.c.sandbox_id == sandbox_id,
+                    _RUNTIMES.c.expires_at.is_not_distinct_from(from_iso(observed_expires_at)),
+                )
+                .values(expires_at=from_iso(expires_at))
+            )
+        ) == 1
 
-        Like :meth:`update_agent`, it leaves ``updated_at`` to the caller.
+    async def claim_resident_box(
+        self,
+        agent_id: str,
+        *,
+        observed: Mapping[str, Any],
+        admissions_revision: int,
+        sandbox_id: str,
+        sandbox_backend: str,
+        resident_generation: str | None,
+        session_id: str,
+        young_since: datetime,
+    ) -> bool:
+        """Make ``sandbox_id`` the live Agent's resident box and admit the claiming conversation.
+
+        Applies only while the runtime record's ``sandbox_id``,
+        ``sandbox_backend``, ``runtime_generation`` and ``sandbox_generation``
+        are as given in ``observed`` (a key left out is not compared) and no
+        conversation was admitted since ``admissions_revision``: the claim's
+        capacity verdict counted exactly those admissions. The claiming
+        conversation is charged in the same transaction, so the box is never
+        published with nothing recorded against it.
         """
-        collection = await get_async_collection(self._collection_name)
-        fields = _with_name_sort_key(updates)
-        query = {"agent_id": agent_id, "deleted": {"$ne": True}, **dict(expected)}
-        if "environment_name" in fields:
-            result = await write_environment_binding(
-                self._collection_name, str(fields["environment_name"] or "").strip(),
-                "agents.compare_and_update",
-                lambda bound: bound.update_one(query, {"$set": fields}),
+        conditions: list[ColumnElement[bool]] = [
+            _RUNTIMES.c.agent_id == agent_id,
+            _RUNTIMES.c.agent_id.in_(_live(agent_id)),
+            _RUNTIMES.c.admissions_revision == admissions_revision,
+        ]
+        for key in ("sandbox_id", "sandbox_backend", "runtime_generation", "sandbox_generation"):
+            if key in observed:
+                conditions.append(_RUNTIMES.c[key].is_not_distinct_from(observed[key] or None))
+        values: dict[str, Any] = {
+            "sandbox_id": sandbox_id,
+            "sandbox_backend": sandbox_backend,
+            "expires_at": None,
+            "admissions_revision": _RUNTIMES.c.admissions_revision + 1,
+        }
+        if resident_generation:
+            values["resident_generation"] = resident_generation
+
+        async def claim(conn: AsyncConnection) -> bool:
+            claimed = await conn.execute(
+                update(_RUNTIMES).where(*conditions).values(**values).returning(_RUNTIMES.c.agent_id)
             )
-        else:
-            result = await run_mongo_with_retry(
-                "agents.compare_and_update",
-                lambda: collection.update_one(query, {"$set": fields}),
+            if claimed.first() is None:
+                return False
+            await _admit(
+                conn, agent_id, sandbox_id=sandbox_id, session_id=session_id, young_since=young_since
             )
-        return bool(getattr(result, "modified_count", 0) or getattr(result, "matched_count", 0))
+            return True
+
+        return await transaction(claim)
+
+    async def admit_to_box(
+        self,
+        agent_id: str,
+        *,
+        sandbox_id: str,
+        session_id: str,
+        admissions_revision: int,
+        young_since: datetime,
+    ) -> bool:
+        """Charge a conversation to a box of the live Agent, unless another was admitted since.
+
+        ``False`` when an admission landed after ``admissions_revision`` was
+        read: the caller asks the box about its capacity again with that
+        admission counted, so "room for one more" is answered once per asker,
+        not once per reading.
+        """
+
+        async def admit(conn: AsyncConnection) -> bool:
+            fenced = await conn.execute(
+                update(_RUNTIMES)
+                .where(
+                    _RUNTIMES.c.agent_id == agent_id,
+                    _RUNTIMES.c.agent_id.in_(_live(agent_id)),
+                    _RUNTIMES.c.admissions_revision == admissions_revision,
+                )
+                .values(admissions_revision=_RUNTIMES.c.admissions_revision + 1)
+                .returning(_RUNTIMES.c.agent_id)
+            )
+            if fenced.first() is None:
+                return False
+            await _admit(
+                conn, agent_id, sandbox_id=sandbox_id, session_id=session_id, young_since=young_since
+            )
+            return True
+
+        return await transaction(admit)
+
+    async def release_box_admission(self, agent_id: str, *, sandbox_id: str, session_id: str) -> None:
+        """Withdraw one conversation's admission to a box, deleted Agent or not."""
+        await execute(
+            delete(_ADMISSIONS).where(
+                _ADMISSIONS.c.agent_id == agent_id,
+                _ADMISSIONS.c.sandbox_id == sandbox_id,
+                _ADMISSIONS.c.session_id == session_id,
+            )
+        )
+
+    async def clear_stale_resident(
+        self,
+        agent_id: str,
+        *,
+        sandbox_id: str,
+        sandbox_backend: str,
+        resident_generation: str | None,
+    ) -> bool:
+        """Stop naming a resident box built for an older generation, while it is as read."""
+        return (
+            await execute(
+                update(_RUNTIMES)
+                .where(
+                    _RUNTIMES.c.agent_id == agent_id,
+                    _RUNTIMES.c.agent_id.in_(_live(agent_id)),
+                    _RUNTIMES.c.sandbox_id == sandbox_id,
+                    _RUNTIMES.c.sandbox_backend == sandbox_backend,
+                    _RUNTIMES.c.resident_generation.is_not_distinct_from(
+                        resident_generation or None
+                    ),
+                )
+                .values(
+                    sandbox_id=None, sandbox_backend=None, resident_generation=None, expires_at=None
+                )
+            )
+        ) == 1
 
     async def clear_resident_sandbox_binding(
         self, agent_id: str, *, sandbox_id: str, sandbox_backend: str | None = None,
     ) -> bool:
-        """Clear a confirmed-gone binding even when its owner has been deleted.
+        """Clear a confirmed-gone resident box, deleted Agent or not; whether it was cleared.
 
-        The expected binding fences a replacement made during the provider probe.
-        This cleanup cannot restore the Agent or change its authored definition.
+        The expected binding fences a replacement made during the provider
+        probe. The same transaction withdraws every slot still waiting in the
+        box: each keeps its cleanup address for ordinary retirement, and a slot
+        a conversation already claimed keeps its hand-off.
         """
         if not agent_id or not sandbox_id:
             raise ValueError("agent_id and sandbox_id are required for binding cleanup")
-        query = {"agent_id": agent_id, "sandbox_id": sandbox_id}
+        conditions: list[ColumnElement[bool]] = [
+            _RUNTIMES.c.agent_id == agent_id,
+            _RUNTIMES.c.sandbox_id == sandbox_id,
+        ]
         if sandbox_backend:
-            query["sandbox_backend"] = sandbox_backend
-        collection = await get_async_collection(self._collection_name)
-        for _attempt in range(8):
-            row = await run_mongo_with_retry(
-                "agents.read_resident_sandbox_binding",
-                lambda: collection.find_one(query),
-            )
-            if row is None:
+            conditions.append(_RUNTIMES.c.sandbox_backend == sandbox_backend)
+
+        async def clear(conn: AsyncConnection) -> bool:
+            held = (
+                await conn.execute(
+                    select(_RUNTIMES.c.sandbox_backend).where(*conditions).with_for_update()
+                )
+            ).first()
+            if held is None:
                 return False
-            slots = row.get("_prepared_slots")
-            updates: dict[str, Any] = {
-                "sandbox_id": None,
-                "sandbox_backend": None,
-                "_resident_sandbox_generation": None,
-                "expires_at": None,
-            }
-            if isinstance(slots, list):
-                # Withdraw every slot advertised in the dead box in the same
-                # write as its parent binding. Keep each cleanup address for
-                # ordinary retirement; a claim that already won still owns its
-                # hand-off cleanup.
-                updates["_prepared_slots"] = [
-                    {
-                        **manifest,
-                        "state": "retiring",
-                        "retire_reason": "resident sandbox is confirmed gone",
-                        "retiring_at": utcnow_iso(),
-                    }
-                    if isinstance(manifest, dict)
-                    and manifest.get("placement") == "shared_slot"
-                    and manifest.get("sandbox_id") == sandbox_id
-                    and manifest.get("sandbox_backend") == row.get("sandbox_backend")
-                    and manifest.get("state") == "prepared"
-                    else manifest
-                    for manifest in slots
-                ]
-            expected = {
-                **query,
-                "_prepared_slots": (
-                    slots if "_prepared_slots" in row else {"$exists": False}
-                ),
-            }
-            result = await run_mongo_with_retry(
-                "agents.clear_resident_sandbox_binding",
-                lambda: collection.update_one(expected, {"$set": updates}),
+            await conn.execute(
+                update(_RUNTIMES)
+                .where(_RUNTIMES.c.agent_id == agent_id)
+                .values(
+                    sandbox_id=None,
+                    sandbox_backend=None,
+                    resident_generation=None,
+                    expires_at=None,
+                    slots_revision=_RUNTIMES.c.slots_revision + 1,
+                )
             )
-            if result.modified_count > 0:
-                return True
-        raise RuntimeError(
-            f"Agent {agent_id!r} prepared ownership changed repeatedly during binding cleanup"
+            await conn.execute(
+                update(_SLOTS)
+                .where(
+                    _SLOTS.c.agent_id == agent_id,
+                    _SLOTS.c.sandbox_id == sandbox_id,
+                    _SLOTS.c.sandbox_backend == held._mapping["sandbox_backend"],
+                    _SLOTS.c.placement == "shared_slot",
+                    _SLOTS.c.state == "prepared",
+                )
+                .values(
+                    state="retiring",
+                    retire_reason="resident sandbox is confirmed gone",
+                    retiring_at=datetime.now(timezone.utc),
+                )
+            )
+            return True
+
+        return await transaction(clear)
+
+    async def box_has_recorded_occupants(
+        self, sandbox_id: str, *, excluding: str, young_since: datetime,
+    ) -> bool:
+        """Whether a live Agent's ledger places anything other than ``excluding`` in a box.
+
+        A slot in the box occupies it whatever its state, and so does an
+        admission recorded at or after ``young_since``; ``excluding`` names the
+        Session or slot whose own record does not count.
+        """
+        owners = select(_AGENTS.c.agent_id).where(_LIVE)
+        slots = select(_SLOTS.c.slot_id).where(
+            _SLOTS.c.sandbox_id == sandbox_id,
+            _SLOTS.c.slot_id != excluding,
+            _SLOTS.c.agent_id.in_(owners),
+        )
+        admissions = select(_ADMISSIONS.c.session_id).where(
+            _ADMISSIONS.c.sandbox_id == sandbox_id,
+            _ADMISSIONS.c.session_id != excluding,
+            _ADMISSIONS.c.admitted_at >= young_since,
+            _ADMISSIONS.c.agent_id.in_(owners),
+        )
+        return bool(await fetch_value(select(or_(slots.exists(), admissions.exists()))))
+
+    # ── prepared slots ─────────────────────────────────────────────────────
+
+    async def adopt_pool_box(
+        self,
+        agent_id: str,
+        *,
+        seats: list[dict[str, Any]],
+        resident: tuple[str, str, str | None],
+    ) -> bool:
+        """Enter the seats of a box taken from the client pool in the live Agent's ledger.
+
+        ``resident`` is the box as ``(sandbox_id, backend, generation)``; it
+        becomes the Agent's resident box when the Agent names none. ``False``
+        when the Agent is not live.
+        """
+        named = _RUNTIMES.c.sandbox_id.is_not(None)
+        taken = dict(zip(("sandbox_id", "sandbox_backend", "resident_generation"), resident))
+
+        async def adopt(conn: AsyncConnection) -> bool:
+            adopted = await conn.execute(
+                update(_RUNTIMES)
+                .where(_RUNTIMES.c.agent_id == agent_id, _RUNTIMES.c.agent_id.in_(_live(agent_id)))
+                .values(
+                    # Every expression reads the row as it was, so the box is
+                    # taken whole or not at all.
+                    **{
+                        column: case((named, _RUNTIMES.c[column]), else_=value)
+                        for column, value in {**taken, "expires_at": None}.items()
+                    },
+                    slots_revision=_RUNTIMES.c.slots_revision + 1,
+                )
+                .returning(_RUNTIMES.c.agent_id)
+            )
+            if adopted.first() is None:
+                return False
+            await conn.execute(insert(_SLOTS), [_slot_values(agent_id, seat) for seat in seats])
+            return True
+
+        return await transaction(adopt)
+
+    async def apply_slot_claims(
+        self,
+        agent_id: str,
+        *,
+        slots_revision: int,
+        admissions_revision: int,
+        claims: list[tuple[str, str]],
+        withdrawals: list[tuple[str, str]],
+        young_since: datetime,
+    ) -> dict[str, dict[str, Any]] | None:
+        """Hand prepared slots to Sessions and withdraw those without room, in one transaction.
+
+        ``claims`` pairs a slot with the Session it goes to, ``withdrawals`` a
+        slot with why it is withdrawn. A claimed slot's admission moves to its
+        Session in the same transaction, so the preparation's admission never
+        protects a placement a Session now owns. Returns each Session's claimed
+        manifest, or ``None`` when the Agent is not live or its slots or
+        admissions changed since the revisions were read: every decision here
+        rests on them.
+        """
+
+        async def apply(conn: AsyncConnection) -> dict[str, dict[str, Any]] | None:
+            fenced = await conn.execute(
+                update(_RUNTIMES)
+                .where(
+                    _RUNTIMES.c.agent_id == agent_id,
+                    _RUNTIMES.c.agent_id.in_(_live(agent_id)),
+                    _RUNTIMES.c.slots_revision == slots_revision,
+                    _RUNTIMES.c.admissions_revision == admissions_revision,
+                )
+                .values(
+                    slots_revision=_RUNTIMES.c.slots_revision + 1,
+                    admissions_revision=_RUNTIMES.c.admissions_revision + 1,
+                )
+                .returning(_RUNTIMES.c.agent_id)
+            )
+            if fenced.first() is None:
+                return None
+            now = datetime.now(timezone.utc)
+            for slot_id, reason in withdrawals:
+                await conn.execute(
+                    update(_SLOTS)
+                    .where(
+                        _SLOTS.c.agent_id == agent_id,
+                        _SLOTS.c.slot_id == slot_id,
+                        _SLOTS.c.state == "prepared",
+                    )
+                    .values(state="retiring", retire_reason=reason, retiring_at=now)
+                )
+            assigned: dict[str, dict[str, Any]] = {}
+            for slot_id, session_id in claims:
+                claimed = (
+                    await conn.execute(
+                        update(_SLOTS)
+                        .where(
+                            _SLOTS.c.agent_id == agent_id,
+                            _SLOTS.c.slot_id == slot_id,
+                            _SLOTS.c.state == "prepared",
+                        )
+                        .values(state="claimed", claimed_session_id=session_id, claimed_at=now)
+                        .returning(_slot_json())
+                    )
+                ).first()
+                if claimed is None:
+                    raise RuntimeError(
+                        f"prepared slot {slot_id!r} of Agent {agent_id!r} changed "
+                        "under its revision fence"
+                    )
+                manifest = _slot_manifest(claimed[0])
+                await conn.execute(
+                    delete(_ADMISSIONS).where(
+                        _ADMISSIONS.c.agent_id == agent_id,
+                        _ADMISSIONS.c.sandbox_id == manifest["sandbox_id"],
+                        _ADMISSIONS.c.session_id == slot_id,
+                    )
+                )
+                await _admit(
+                    conn,
+                    agent_id,
+                    sandbox_id=str(manifest["sandbox_id"]),
+                    session_id=session_id,
+                    young_since=young_since,
+                )
+                assigned[session_id] = manifest
+            return assigned
+
+        return await transaction(apply)
+
+    async def retire_slot(
+        self,
+        agent_id: str,
+        slot_id: str,
+        *,
+        state: str,
+        claimed_session_id: str | None,
+        reason: str,
+    ) -> bool:
+        """Withdraw a slot while it is in ``state`` for ``claimed_session_id``; whether it was."""
+        return await self._change_slot(
+            agent_id,
+            slot_id,
+            state=state,
+            claimed_session_id=claimed_session_id,
+            change=update(_SLOTS).values(
+                state="retiring", retire_reason=reason, retiring_at=datetime.now(timezone.utc)
+            ),
         )
 
-    async def soft_delete(self, agent_id: str, user_id: str) -> bool:
-        return await self.update_agent(
+    async def remove_slot(
+        self, agent_id: str, slot_id: str, *, state: str, claimed_session_id: str | None,
+    ) -> bool:
+        """Remove a slot while it is in ``state`` for ``claimed_session_id``; whether it was."""
+        return await self._change_slot(
             agent_id,
-            {"deleted": True, "state": "DELETED"},
+            slot_id,
+            state=state,
+            claimed_session_id=claimed_session_id,
+            change=delete(_SLOTS),
         )
+
+    async def _change_slot(
+        self,
+        agent_id: str,
+        slot_id: str,
+        *,
+        state: str,
+        claimed_session_id: str | None,
+        change: Any,
+    ) -> bool:
+        """Apply ``change`` to one slot as read, moving the slots revision with it.
+
+        A slot never returns to a state it left, and a claim never changes
+        hands, so its state and claiming Session identify the version read.
+        """
+
+        async def apply(conn: AsyncConnection) -> bool:
+            locked = await conn.execute(
+                update(_RUNTIMES)
+                .where(_RUNTIMES.c.agent_id == agent_id)
+                .values(slots_revision=_RUNTIMES.c.slots_revision + 1)
+                .returning(_RUNTIMES.c.agent_id)
+            )
+            if locked.first() is None:
+                return False
+            changed = await conn.execute(
+                change.where(
+                    _SLOTS.c.agent_id == agent_id,
+                    _SLOTS.c.slot_id == slot_id,
+                    _SLOTS.c.state == state,
+                    _SLOTS.c.claimed_session_id.is_not_distinct_from(claimed_session_id or None),
+                )
+            )
+            if changed.rowcount != 1:
+                raise _NothingChanged()
+            return True
+
+        try:
+            return await transaction(apply)
+        except _NothingChanged:
+            return False
+
+    # ── runtime generation, client pool and prepared capacity ─────────────
+
+    async def publish_runtime_generation(
+        self,
+        agent_id: str,
+        *,
+        observed: Mapping[str, Any],
+        runtime_generation: str,
+        sandbox_generation: str,
+        client_pool_epoch: str,
+    ) -> bool:
+        """Publish a runtime generation while the ledger is as ``observed``.
+
+        ``observed`` is a :meth:`read_ledger` result. Its generations, client
+        pool epoch, resident box and slots revision must all be unchanged, so a
+        slot added or a box claimed after the read sends the caller back to
+        retire what it missed and read again.
+        """
+        fence = {
+            "_runtime_generation": _RUNTIMES.c.runtime_generation,
+            "_sandbox_generation": _RUNTIMES.c.sandbox_generation,
+            "_client_pool_epoch": _RUNTIMES.c.client_pool_epoch,
+            "sandbox_id": _RUNTIMES.c.sandbox_id,
+            "sandbox_backend": _RUNTIMES.c.sandbox_backend,
+            "_resident_sandbox_generation": _RUNTIMES.c.resident_generation,
+        }
+        return (
+            await execute(
+                update(_RUNTIMES)
+                .where(
+                    _RUNTIMES.c.agent_id == agent_id,
+                    _RUNTIMES.c.agent_id.in_(_live(agent_id)),
+                    _RUNTIMES.c.slots_revision == int(observed["_slots_revision"]),
+                    *(
+                        column.is_not_distinct_from(observed.get(key) or None)
+                        for key, column in fence.items()
+                    ),
+                )
+                .values(
+                    runtime_generation=runtime_generation,
+                    sandbox_generation=sandbox_generation,
+                    client_pool_epoch=client_pool_epoch,
+                )
+            )
+        ) == 1
+
+    async def record_client_pool(
+        self, agent_id: str, *, client_pool_epoch: str, name: str, backend: str,
+    ) -> Literal["recorded", "superseded", "missing"]:
+        """Record a client pool as the live Agent's before anything starts it.
+
+        The pool it displaces is kept for retirement in the same transaction.
+        ``"superseded"`` when the Agent's pool epoch is not
+        ``client_pool_epoch``; ``"missing"`` when the Agent is not live.
+        """
+
+        async def record(conn: AsyncConnection) -> Literal["recorded", "superseded", "missing"]:
+            row = (
+                await conn.execute(
+                    select(
+                        _RUNTIMES.c.client_pool_epoch,
+                        _RUNTIMES.c.client_pool_name,
+                        _RUNTIMES.c.client_pool_backend,
+                    )
+                    .where(
+                        _RUNTIMES.c.agent_id == agent_id,
+                        _RUNTIMES.c.agent_id.in_(_live(agent_id)),
+                    )
+                    .with_for_update()
+                )
+            ).first()
+            if row is None:
+                return "missing"
+            current = row._mapping
+            if current["client_pool_epoch"] != client_pool_epoch:
+                return "superseded"
+            if (current["client_pool_name"], current["client_pool_backend"]) == (name, backend):
+                return "recorded"
+            if current["client_pool_name"] is not None:
+                await conn.execute(
+                    pg_insert(_RETIRING)
+                    .values(
+                        agent_id=agent_id,
+                        pool_name=current["client_pool_name"],
+                        backend=current["client_pool_backend"],
+                    )
+                    .on_conflict_do_nothing(
+                        index_elements=[_RETIRING.c.agent_id, _RETIRING.c.pool_name]
+                    )
+                )
+            await conn.execute(
+                update(_RUNTIMES)
+                .where(_RUNTIMES.c.agent_id == agent_id)
+                .values(client_pool_name=name, client_pool_backend=backend)
+            )
+            return "recorded"
+
+        return await transaction(record)
+
+    async def clear_client_pool(self, agent_id: str, *, name: str, backend: str) -> bool:
+        """Stop naming a retired client pool and its epoch while it is the one recorded."""
+        return (
+            await execute(
+                update(_RUNTIMES)
+                .where(
+                    _RUNTIMES.c.agent_id == agent_id,
+                    _RUNTIMES.c.client_pool_name == name,
+                    _RUNTIMES.c.client_pool_backend == backend,
+                )
+                .values(client_pool_name=None, client_pool_backend=None, client_pool_epoch=None)
+            )
+        ) == 1
+
+    async def list_retiring_client_pools(self, agent_id: str) -> list[dict[str, str]]:
+        """The client pools newer ones displaced, oldest first: ``name`` and ``backend``."""
+        rows = await fetch_all(
+            select(_RETIRING.c.pool_name, _RETIRING.c.backend)
+            .where(_RETIRING.c.agent_id == agent_id)
+            .order_by(_RETIRING.c.recorded_at, _RETIRING.c.pool_name)
+        )
+        return [{"name": str(row["pool_name"]), "backend": str(row["backend"])} for row in rows]
+
+    async def remove_retiring_client_pool(self, agent_id: str, name: str) -> bool:
+        """Forget a displaced client pool once it is retired."""
+        return (
+            await execute(
+                delete(_RETIRING).where(
+                    _RETIRING.c.agent_id == agent_id, _RETIRING.c.pool_name == name
+                )
+            )
+        ) == 1
+
+    async def request_prewarm_refresh(
+        self,
+        agent_id: str,
+        *,
+        version: int,
+        prepared_capacity: int,
+        enabled: bool,
+        prewarm_revision: str | None,
+        new_revision: str,
+    ) -> bool:
+        """Record an explicit rebuild request while the Agent is as the requester read it."""
+
+        async def request(conn: AsyncConnection) -> bool:
+            if not await _definition_holds(
+                conn,
+                agent_id,
+                _AGENTS.c.version == version,
+                _AGENTS.c.prepared_capacity == prepared_capacity,
+                _AGENTS.c.enabled.is_(enabled),
+            ):
+                return False
+            changed = await conn.execute(
+                update(_RUNTIMES)
+                .where(
+                    _RUNTIMES.c.agent_id == agent_id,
+                    _RUNTIMES.c.prewarm_revision.is_not_distinct_from(prewarm_revision or None),
+                )
+                .values(prewarm_revision=new_revision, prepared_runtime_error=None)
+            )
+            return changed.rowcount == 1
+
+        return await transaction(request)
+
+    async def record_prepared_runtime(
+        self,
+        agent_id: str,
+        *,
+        version: int,
+        prewarm_revision: str | None,
+        generation: str | None = None,
+        error: str | None = None,
+    ) -> bool:
+        """Record what a reconciliation prepared, or why it failed.
+
+        Applies only while the definition is at ``version`` and the rebuild
+        request is ``prewarm_revision``: a reconciliation that started before
+        an edit does not report for the edited Agent. ``error`` records a
+        failure and keeps the generation prepared before; without it
+        ``generation`` is recorded and the error cleared.
+        """
+        values: dict[str, Any] = (
+            {"prepared_runtime_error": error}
+            if error is not None
+            else {"prepared_runtime_error": None, "prepared_runtime_generation": generation}
+        )
+
+        async def record(conn: AsyncConnection) -> bool:
+            if not await _definition_holds(conn, agent_id, _AGENTS.c.version == version):
+                return False
+            changed = await conn.execute(
+                update(_RUNTIMES)
+                .where(
+                    _RUNTIMES.c.agent_id == agent_id,
+                    _RUNTIMES.c.prewarm_revision.is_not_distinct_from(prewarm_revision or None),
+                )
+                .values(**values)
+            )
+            return changed.rowcount == 1
+
+        return await transaction(record)
+
+    async def swap_prepared_operation(
+        self,
+        agent_id: str,
+        *,
+        expected: Mapping[str, Any] | None,
+        replacement: Mapping[str, Any] | None,
+        generation: Mapping[str, Any] | None = None,
+    ) -> bool:
+        """Replace the Agent's resource synchronization ``expected`` with ``replacement``.
+
+        An operation is ``provider``, ``operation_id`` and ``deadline``;
+        ``None`` is none. ``generation`` additionally requires the live Agent
+        to still be at its ``version``, ``_prewarm_revision``,
+        ``_client_pool_epoch``, ``_runtime_generation`` and
+        ``_sandbox_generation``, as a new operation must be.
+        """
+
+        async def swap(conn: AsyncConnection) -> bool:
+            conditions: list[ColumnElement[bool]] = [
+                _RUNTIMES.c.agent_id == agent_id,
+                _operation_is(expected),
+            ]
+            if generation is not None:
+                if not await _definition_holds(
+                    conn, agent_id, _AGENTS.c.version == generation["version"]
+                ):
+                    return False
+                conditions.extend(
+                    column.is_not_distinct_from(generation.get(key) or None)
+                    for key, column in _GENERATION_FENCE.items()
+                )
+            changed = await conn.execute(
+                update(_RUNTIMES).where(*conditions).values(**_operation_values(replacement))
+            )
+            return changed.rowcount == 1
+
+        return await transaction(swap)

@@ -109,11 +109,6 @@ def _client_pool_session_id(pool_name: str) -> str:
     return f"client-pool-{pool_hash}-{uuid4().hex[:24]}"
 
 
-def _client_pool_owns_session(pool_name: str, session_id: str | None) -> bool:
-    pool_hash = hashlib.sha256(pool_name.encode("utf-8")).hexdigest()[:12]
-    return str(session_id or "").startswith(f"client-pool-{pool_hash}-")
-
-
 def _pool_member(spec: SandboxClientPoolSpec) -> SandboxClientPoolMember:
     return SandboxClientPoolMember(
         pool_name=spec.pool_name,

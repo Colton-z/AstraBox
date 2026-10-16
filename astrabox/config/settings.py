@@ -214,9 +214,9 @@ class AstraBoxSettings(BaseSettings):
       selected at the storage seam. Independent of ``sandbox_backend``: where a
       workspace's files live is a durability decision, not a runtime one.
     * **State** (``state_dir``) — on-disk root for workspaces and local artifacts.
-    * **Database** (``db_backend`` / ``db_url``) — PostgreSQL via
-      SQLAlchemy+asyncpg. Maintained launchers inject a URL built from their
-      generated database credential; another launch path must set one.
+    * **Database** (``db_url``) — PostgreSQL via SQLAlchemy+asyncpg, the only
+      store. Maintained launchers inject a URL built from their generated
+      database credential; another launch path must set one.
     """
 
     model_config = SettingsConfigDict(
@@ -287,14 +287,15 @@ class AstraBoxSettings(BaseSettings):
         ]
 
     # --- sandbox resource envelopes ----------------------------------------
-    # A conversation's own box and an Agent's shared box each have one
-    # envelope, for every box of that kind: created on demand, prepared in a
-    # pool, or replacing a lost one. Limits are the ceiling; requests are the
+    # A conversation's own box, an Agent's shared box and an Assistant's
+    # workspace box each have one envelope, for every box of that kind:
+    # created on demand, prepared in a pool, or replacing a lost one. Limits are the ceiling; requests are the
     # Kubernetes scheduler's reservation. Memory requests equal the limits, so a
     # node never promises memory it lacks; CPU requests are lower, because a
     # busy CPU only slows a box down. A shared box carries its base runtime once
     # for every conversation it holds, and admits another while its free memory
-    # allows.
+    # allows. An Assistant's box stays running between messages and is idle
+    # most of the time, so it reserves little CPU.
     sandbox_cpu_limit: str = Field(default="1", description="CPU limit of a conversation's own box.")
     sandbox_memory_limit: str = Field(default="1Gi", description="Memory limit of a conversation's own box.")
     sandbox_cpu_request: str = Field(
@@ -313,6 +314,18 @@ class AstraBoxSettings(BaseSettings):
     shared_sandbox_memory_request: str = Field(
         default="4Gi", description="Memory request of an Agent's shared box."
     )
+    assistant_sandbox_cpu_limit: str = Field(
+        default="1", description="CPU limit of an Assistant's workspace box."
+    )
+    assistant_sandbox_memory_limit: str = Field(
+        default="1Gi", description="Memory limit of an Assistant's workspace box."
+    )
+    assistant_sandbox_cpu_request: str = Field(
+        default="100m", description="CPU request of an Assistant's workspace box."
+    )
+    assistant_sandbox_memory_request: str = Field(
+        default="1Gi", description="Memory request of an Assistant's workspace box."
+    )
 
     @field_validator(
         "sandbox_cpu_limit",
@@ -323,6 +336,10 @@ class AstraBoxSettings(BaseSettings):
         "shared_sandbox_memory_limit",
         "shared_sandbox_cpu_request",
         "shared_sandbox_memory_request",
+        "assistant_sandbox_cpu_limit",
+        "assistant_sandbox_memory_limit",
+        "assistant_sandbox_cpu_request",
+        "assistant_sandbox_memory_request",
         mode="before",
     )
     @classmethod
@@ -337,6 +354,8 @@ class AstraBoxSettings(BaseSettings):
         "sandbox_cpu_request",
         "shared_sandbox_cpu_limit",
         "shared_sandbox_cpu_request",
+        "assistant_sandbox_cpu_limit",
+        "assistant_sandbox_cpu_request",
         mode="after",
     )
     @classmethod
@@ -349,6 +368,8 @@ class AstraBoxSettings(BaseSettings):
         "sandbox_memory_request",
         "shared_sandbox_memory_limit",
         "shared_sandbox_memory_request",
+        "assistant_sandbox_memory_limit",
+        "assistant_sandbox_memory_request",
         mode="after",
     )
     @classmethod
@@ -395,7 +416,7 @@ class AstraBoxSettings(BaseSettings):
 
     @model_validator(mode="after")
     def _sandbox_requests_within_limits(self) -> AstraBoxSettings:
-        for box, prefix in (("conversation", ""), ("shared", "shared_")):
+        for box, prefix in (("conversation", ""), ("shared", "shared_"), ("assistant", "assistant_")):
             for kind, parse in (("cpu", cpu_quantity), ("memory", memory_quantity)):
                 request = getattr(self, f"{prefix}sandbox_{kind}_request")
                 limit = getattr(self, f"{prefix}sandbox_{kind}_limit")
@@ -427,24 +448,18 @@ class AstraBoxSettings(BaseSettings):
         return self.state_dir.expanduser()
 
     # --- persistence -------------------------------------------------------
-    db_backend: str = Field(
-        default="postgresql",
-        description="Persistence backend name (PostgreSQL by default).",
-    )
     scheduler_provider: str = Field(
         default="dbos",
         description=(
             "Name of the scheduler provider that runs scheduled Deployments; "
-            "'none' disables them. Startup checks it against the repository backend."
+            "'none' disables them."
         ),
     )
     db_url: str | None = Field(
         default=None,
         description=(
-            "Explicit database URL. The maintained local launchers supply one "
-            "from generated service-scoped credentials; PostgreSQL never uses "
-            "a repository-known fallback password. The optional SQLite "
-            "compatibility backend derives a file under state_dir."
+            "PostgreSQL URL. The maintained local launchers supply one from "
+            "generated service-scoped credentials; there is no fallback password."
         ),
     )
 
@@ -468,21 +483,13 @@ class AstraBoxSettings(BaseSettings):
 
     @property
     def resolved_db_url(self) -> str:
-        """Return the configured URL or the SQLite compatibility path."""
+        """The configured PostgreSQL URL."""
         if self.db_url:
             return self.db_url
-        if self.db_backend in {"postgres", "postgresql"}:
-            raise ValueError(
-                "ASTRABOX_DB_URL is required for PostgreSQL. Use the maintained "
-                "Compose/dev launcher to generate local database credentials, or "
-                "set an explicit URL for an external PostgreSQL service."
-            )
-        if self.db_backend == "sqlite":
-            db_path = self.resolved_state_dir() / "astrabox.sqlite"
-            return f"sqlite+aiosqlite:///{db_path}"
         raise ValueError(
-            f"db_url is required for db_backend={self.db_backend!r}; "
-            "only the SQLite compatibility backend has an in-process local default."
+            "ASTRABOX_DB_URL is required. Use the maintained Compose/dev launcher "
+            "to generate local database credentials, or set a URL for an external "
+            "PostgreSQL service."
         )
 
     # ---- dotted-key config shim --------------------------------------------
@@ -497,7 +504,6 @@ class AstraBoxSettings(BaseSettings):
         "astrabox.sandbox_backend": "sandbox_backend",
         "astrabox.storage_provider": "storage_provider",
         "astrabox.state_dir": "state_dir",
-        "astrabox.db.backend": "db_backend",
         "astrabox.db.url": "db_url",
     }
 

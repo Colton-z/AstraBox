@@ -14,7 +14,7 @@
  *   reader is returned to;
  * - refreshing that deep link, and the Agents list compared with the API's own
  *   answer;
- * - a live turn that publishes an artifact, delivered over the session's event
+ * - a live response that publishes an artifact, delivered over the session's
  *   stream;
  * - the artifact's share link opened without a session. Its frame renders only
  *   when the artifact runtime loads from below the prefix, which the frame's
@@ -114,11 +114,14 @@ test('a console published below a gateway path keeps every address below it', as
       await expect(reader.getByText(agent.name, { exact: true }).first()).toBeVisible();
     }
 
-    // ── A live turn publishes an artifact over the session's event stream ──
+    // ── A live response publishes an artifact over the session's stream ────
     const streams: string[] = [];
     page.on('response', (response) => {
       const url = new URL(response.url());
-      if (url.pathname.endsWith('/ai-stream') && String(response.headers()['content-type'] || '').startsWith('text/event-stream')) {
+      if (
+        /\/sessions\/[^/]+\/stream$/.test(url.pathname)
+        && String(response.headers()['content-type'] || '').startsWith('text/event-stream')
+      ) {
         streams.push(url.pathname);
       }
     });
@@ -136,8 +139,8 @@ test('a console published below a gateway path keeps every address below it', as
     const shown = marker('PREFIXED');
     await publishArtifact(page, scene, marker('Prefixed artifact'), simplePage(shown), {});
     await expect(artifactFrame(page).locator('#marker')).toHaveText(shown);
-    expect(streams, 'the turn arrives over the event stream below the prefix')
-      .toContain(apiPath(`/sessions/${sessionId}/ai-stream`));
+    expect(streams, 'the response arrives over the session stream below the prefix')
+      .toContain(apiPath(`/sessions/${sessionId}/stream`));
 
     // ── The artifact's share link, opened without a session ────────────────
     const sharedArtifact = await shareArtifact(page);

@@ -38,7 +38,7 @@ API documentation use top-level paths.
 | Assistants | Manage Assistants and their persistent workspaces | `/assistants` |
 | Artifacts | Manage durable pages, versions, sharing, and viewer capabilities | `/artifacts`, `/artifact-share/{token}/runtime` |
 | Environments | Manage the infrastructure available to Agents | `/admin/environments` |
-| Sessions | Read Session state, submit turns, stream events, and manage lifecycle | `/sessions` |
+| Sessions | Read Session state, send messages, stream events, and manage lifecycle | `/sessions` |
 | Files | List, upload, move, download, and delete files in a Session workspace | `/sessions/{session_id}/files` |
 | Extensions | Assign remote MCP servers and Skills to an Agent | `/agents/{agent_id}/extensions` |
 | Remote MCP servers | Manage administrator-provided remote MCP connections | `/admin/mcp-servers` |

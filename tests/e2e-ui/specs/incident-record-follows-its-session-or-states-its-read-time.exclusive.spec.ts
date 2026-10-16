@@ -6,13 +6,14 @@
  * compute. The second incident keeps the current sandbox binding intact so
  * cleanup can still reach it. Every verdict checks that the incident remains
  * authoritative: a turn that overwrites it is a fixture failure, not a pass.
- * No model wording or live current_turn_id mirror is part of this contract.
+ * No model wording or running-response field is part of this contract.
  */
 import { expect, test, type Locator, type Page } from '@playwright/test';
 
 import { AstraApi, type AdminSessionRecord } from '../fixtures/astraApi';
-import { patchSessionDoc } from '../fixtures/dbOracle';
+import { postgresRows, postgresTextRows, sqlLiteral } from '../fixtures/dbOracle';
 import { apiPath, appPath, parseTimeoutEnv } from '../fixtures/env';
+import { POSTGRES_CONTAINER_HANDLE, requireServiceContainer } from '../fixtures/serviceContainer';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 
 /**
@@ -88,6 +89,29 @@ function card(page: Page, heading: string): Locator {
     .filter({ has: page.getByRole('heading', { name: heading, exact: true }) });
 }
 
+/** What one write left on the session row, read back from the statement that wrote it. */
+interface PatchedSession {
+  session_id: string;
+  runtime_unavailable: boolean;
+  sandbox_id: string | null;
+}
+
+/**
+ * Set columns on this conversation's `sessions` row. A plain SQL write sends no
+ * session notice, so nothing in the platform is told about it: what changes
+ * is only what the next read of the row sees.
+ */
+function patchSessionRow(sessionId: string, assignments: string): PatchedSession[] {
+  return postgresTextRows(
+    requireServiceContainer(POSTGRES_CONTAINER_HANDLE),
+    process.env.ASTRABOX_E2E_POSTGRES_DB || 'astrabox',
+    process.env.ASTRABOX_E2E_POSTGRES_USER || 'astrabox',
+    `UPDATE sessions SET ${assignments} WHERE session_id = ${sqlLiteral(sessionId)} `
+      + `RETURNING json_build_object('session_id', session_id, `
+      + `'runtime_unavailable', runtime_unavailable, 'sandbox_id', sandbox_id)::text`,
+  ).map((line) => JSON.parse(line) as PatchedSession);
+}
+
 test('an incident record follows its session while the turn runs, or says when it was read', async ({
   page,
   request,
@@ -141,11 +165,21 @@ test('an incident record follows its session while the turn runs, or says when i
     'terminate reclaims the compute and leaves the conversation alive',
   ).toEqual('sandbox-reclaimed');
 
+  // The reader can finish a reconnect after reclaim; let it release its lease
+  // before writing the incident that the record must keep quoting.
+  await expect.poll(() => postgresRows(
+    `SELECT owner FROM session_readers WHERE session_id = ${sqlLiteral(sessionId)} `
+      + 'AND expires_at > now()',
+  ), {
+    timeout: MECHANISM_MS,
+    message: 'the reclaimed runtime reader must release its lease before incident injection',
+  }).toEqual([]);
+
   // The incident's words. The single synthetic write in this spec, and the
   // field the death-convergence writer sets — see the header for why terminate
   // leaves it empty and why an empty one cannot be found on the list.
   const marker = `E2E-INCIDENT-${runId}`;
-  const patched = patchSessionDoc(sessionId, { last_error: marker });
+  const patched = patchSessionRow(sessionId, `last_error = ${sqlLiteral(marker)}`);
   expect(patched, 'exactly one session row carries this conversation').toHaveLength(1);
   expect(
     Boolean(patched[0].runtime_unavailable),
@@ -287,10 +321,11 @@ test('an incident record follows its session while the turn runs, or says when i
     .streamPrompt(sessionId, 'Count slowly from 1 to 60, one number per line.')
     .catch(() => undefined);
 
-  // One read carries every fact the record is then required to show. Dispatch
-  // re-borrows a box and clears the degradation (`runtime_ensure.py:884 / :920`,
-  // inside `contextlib.suppress`) — so a red here is the backend, not the
-  // console, and the assertion says so.
+  // One read carries every fact the record is then required to show. The
+  // message is held while the session's reader finds the runtime gone and asks
+  // for a replacement box; the recovery that starts it clears the degradation
+  // (`_reset` in session_lifecycle/recovery.py) — so a red here is the backend,
+  // not the console, and the assertion says so.
   const healed = await api.waitForAdminSession(
     sessionId,
     (s) =>
@@ -302,9 +337,9 @@ test('an incident record follows its session while the turn runs, or says when i
   const healedSandboxId = String(healed.sandbox_id || '').trim();
   expect(
     healedSandboxId,
-    'the page cannot be accused of not following until the deployment has moved. The turn '
-      + 'did not clear the incident: the dispatch write-back (runtime_ensure.py:884 / :920) '
-      + 'never landed, or the re-borrow failed — a different defect from this one.',
+    'the page cannot be accused of not following until the deployment has moved. The held '
+      + 'message did not clear the incident: no replacement box was started for it, or its '
+      + 'startup failed — a different defect from this one.',
   ).not.toEqual(firstSandboxId);
   test.info().annotations.push({ type: 'e2e_healed_sandbox_id', description: healedSandboxId });
 
@@ -340,13 +375,13 @@ test('an incident record follows its session while the turn runs, or says when i
 
   // ── incident 2: the same session goes wrong again, under the same eyes ────
   // The binding is left intact on purpose: see the header. This is the shape
-  // `runtime_ensure` writes when a turn cannot attach to a box that is still
-  // there (runtime_ensure.py:770, :790).
+  // the runtime attach writes when it cannot reach a box that is still there
+  // (`_attach_runtime_for_turn` in runtime_ensure.py).
   const secondMarker = `E2E-INCIDENT-AGAIN-${runId}`;
-  const patchedAgain = patchSessionDoc(sessionId, {
-    runtime_unavailable: true,
-    last_error: secondMarker,
-  });
+  const patchedAgain = patchSessionRow(
+    sessionId,
+    `runtime_unavailable = true, last_error = ${sqlLiteral(secondMarker)}`,
+  );
   expect(patchedAgain, 'exactly one session row carries this conversation').toHaveLength(1);
   expect(
     String(patchedAgain[0].sandbox_id || '').trim(),
@@ -426,9 +461,9 @@ test('an incident record follows its session while the turn runs, or says when i
         + '(expected 0 today).\n'
         + '  CAUSE: READY is in RESTING_SESSION_STATES (SessionDetailPage.tsx:77), so '
         + '`follow` goes false and useKeepCurrent clears its interval (useKeepCurrent.ts:73-78). '
-        + 'READY is also what the row reads for the whole of a running turn '
-        + '(bridge_loop.py:747), so this record stops reading its session exactly while '
-        + 'the session is busy.\n'
+        + 'READY is also the lifecycle state the record\'s `state` carries for the whole of a '
+        + 'running response (what runs is reported beside it as `conversation_state`), so this '
+        + 'record stops reading its session exactly while the session is busy.\n'
         + '  EITHER ANSWER PASSES: keep following a session that is not at rest, OR print '
         + `when the record was read ("${CAPTURED_AT.source}", manage:system.captured_at) and `
         + `give it a "${REFRESH}" control (common:refresh — every list page already has one, `
@@ -525,9 +560,9 @@ test('an incident record follows its session while the turn runs, or says when i
   });
 
   // ── tail: leave the conversation in a state teardown can take offline ────
-  // `_assert_conversation_safe_to_take_offline` refuses to delete a session
-  // while a turn is active (lifecycle/commands.py:502-530), and the tracker's
-  // delete runs on the passing path. The verdict is already taken, so a noisy
+  // `_refuse_while_working` (session_lifecycle/service.py) refuses to delete a
+  // session while its runtime reports it is working, and the tracker's delete
+  // runs on the passing path. The verdict is already taken, so a noisy
   // teardown must not be able to change the result — hence the catches.
   await api.interruptSession(sessionId).catch(() => undefined);
   // Bounded on purpose. A stream that ignores the interrupt must not be able to

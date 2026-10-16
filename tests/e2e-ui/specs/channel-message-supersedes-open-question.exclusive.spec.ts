@@ -2,14 +2,14 @@
  * A new channel message supersedes an unanswered questionnaire in that thread.
  *
  * A later message that does not answer the question means the participant
- * moved on: the parked turn is stopped, which closes the old AskUserQuestion
- * with an error result, then the message starts its own turn on the same
- * resident sandbox. The old answer path must not be reused as the new
- * message's input.
+ * moved on: the response waiting on it is stopped, which closes the old
+ * AskUserQuestion with an error result, then the message is answered by a
+ * response of its own on the same resident sandbox. The old answer path must
+ * not be reused as the new message's input.
  */
 import { expect, test, type APIRequestContext } from '@playwright/test';
 
-import { AstraApi, messageText } from '../fixtures/astraApi';
+import { AstraApi, messageText, messageToolCalls } from '../fixtures/astraApi';
 import { PlatformApi } from '../fixtures/platformApi';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { apiPath } from '../fixtures/env';
@@ -127,6 +127,8 @@ test('a newer channel message stops the open AskUserQuestion before its own turn
 
   const pending = await api.waitForPendingInteraction(sessionId);
   expect(String(pending.tool_name || '')).toBe('AskUserQuestion');
+  const parked = String(pending.response_id || '');
+  expect(parked, 'the open question must name the response it pauses').not.toEqual('');
   const toolCallId = String(pending.tool_call_id || '').trim();
   expect(toolCallId, 'the open channel question must expose its engine tool id')
     .not.toEqual('');
@@ -151,12 +153,9 @@ test('a newer channel message stops the open AskUserQuestion before its own turn
     assistantsBeforeNext,
     (message) => messageText(message).includes(`${nextMarker}_DONE`),
   );
-  const completed = await api.waitForSession(sessionId, (session) => (
-    session.state === 'READY'
-    && !session.current_turn_id
-    && !session.pending_interaction
-    && session.last_turn_status === 'COMPLETED'
-  ));
+  const completed = await api.waitForSessionReady(sessionId);
+  expect(completed.last_response?.outcome, 'the newer message must be answered to completion').toBe('completed');
+  expect(completed.last_response?.response_id).not.toBe(parked);
   expect(
     String(completed.sandbox_id || ''),
     'superseding a channel question must not replace healthy resident compute',
@@ -164,12 +163,13 @@ test('a newer channel message stops the open AskUserQuestion before its own turn
 
   const history = await api.getMessages(sessionId, 100);
   const resultMessageIndex = history.messages.findIndex((message) => (
-    (message.blocks || []).some((block) => (
-      block.type === 'tool_result'
-      && block.tool_use_id === toolCallId
-      && block.is_error === true
-    ))
+    message.role === 'assistant'
+    && messageToolCalls(message).some((call) => call.toolCallId === toolCallId && call.state === 'output-error')
   ));
+  expect(
+    history.messages.find((message) => message.role === 'assistant' && message.id === parked)?.metadata?.outcome,
+    'the response waiting on the question was stopped, not answered',
+  ).toBe('cancelled');
   const nextMessageIndex = history.messages.findIndex((message) => (
     message.role === 'user' && messageText(message).includes(nextMarker)
   ));

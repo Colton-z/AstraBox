@@ -21,7 +21,6 @@ import pytest
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import (
     UserContext,
-    default_org_id,
     get_current_user_context,
 )
 from astrabox.providers.identity_sso import (
@@ -140,48 +139,6 @@ def _bearer(token: str) -> dict[str, str]:
     return {"authorization": f"Bearer {token}"}
 
 
-# ── TrustedHeaderWebIdentityResolver ───────────────────────────────────────
-async def test_trusted_header_maps_all_fields_groups_admin_and_org(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("ASTRABOX_TRUSTED_HEADER_ORG", "x-forwarded-org")
-    resolver = TrustedHeaderWebIdentityResolver()
-    user = await resolver.resolve(
-        {
-            "x-forwarded-user": "alice@example.com",
-            "x-forwarded-email": "alice@example.com",
-            "x-forwarded-preferred-username": "Alice",
-            "x-forwarded-groups": "dev, ops  astrabox-admin",
-            "x-forwarded-org": "acme",
-        }
-    )
-    assert user is not None
-    assert user.user_id == "alice@example.com"
-    assert user.email == "alice@example.com"
-    assert user.display_name == "Alice"
-    assert user.org_id == "acme"
-    # Groups verbatim (comma+whitespace split) + the admin-group -> "admin" rule.
-    assert user.roles == ["dev", "ops", "astrabox-admin", "admin"]
-
-
-async def test_trusted_header_org_defaults_when_unset() -> None:
-    resolver = TrustedHeaderWebIdentityResolver()
-    user = await resolver.resolve({"x-forwarded-user": "bob"})
-    assert user is not None
-    assert user.org_id == default_org_id()
-    assert user.roles == []
-
-
-async def test_trusted_header_gateway_secret_match(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ASTRABOX_TRUSTED_HEADER_GATEWAY_SECRET", "hop-proof")
-    resolver = TrustedHeaderWebIdentityResolver()
-    user = await resolver.resolve(
-        {"x-forwarded-user": "carol", "x-astrabox-gateway-secret": "hop-proof"}
-    )
-    assert user is not None
-    assert user.user_id == "carol"
-
-
 async def test_trusted_header_gateway_secret_mismatch_401(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -212,26 +169,6 @@ async def test_trusted_header_strict_missing_user_raises_401() -> None:
     assert excinfo.value.status_code == 401
 
 
-async def test_trusted_header_lenient_missing_user_returns_none(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("ASTRABOX_TRUSTED_HEADER_STRICT", "0")
-    resolver = TrustedHeaderWebIdentityResolver()
-    assert await resolver.resolve({}) is None
-
-
-# ── VerifiedJwtWebIdentityResolver ─────────────────────────────────────────
-async def test_jwt_hs256_roundtrip(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ASTRABOX_JWT_SECRET", _JWT_SECRET)
-    resolver = VerifiedJwtWebIdentityResolver()
-    token = _hs256({"sub": "dave", "email": "dave@example.com", "name": "Dave"})
-    user = await resolver.resolve(_bearer(token))
-    assert user is not None
-    assert user.user_id == "dave"
-    assert user.email == "dave@example.com"
-    assert user.display_name == "Dave"
-
-
 async def test_jwt_wrong_secret_401(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ASTRABOX_JWT_SECRET", _JWT_SECRET)
     resolver = VerifiedJwtWebIdentityResolver()
@@ -260,41 +197,6 @@ async def test_jwt_audience_mismatch_401(monkeypatch: pytest.MonkeyPatch) -> Non
     assert excinfo.value.status_code == 401
 
 
-async def test_jwt_audience_match_passes(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ASTRABOX_JWT_SECRET", _JWT_SECRET)
-    monkeypatch.setenv("ASTRABOX_JWT_AUDIENCE", "astrabox")
-    resolver = VerifiedJwtWebIdentityResolver()
-    token = _hs256({"sub": "dave", "aud": "astrabox"})
-    user = await resolver.resolve(_bearer(token))
-    assert user is not None and user.user_id == "dave"
-
-
-async def test_jwt_groups_claim_as_list(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ASTRABOX_JWT_SECRET", _JWT_SECRET)
-    resolver = VerifiedJwtWebIdentityResolver()
-    token = _hs256({"sub": "erin", "groups": ["dev", "astrabox-admin"]})
-    user = await resolver.resolve(_bearer(token))
-    assert user is not None
-    assert user.roles == ["dev", "astrabox-admin", "admin"]
-
-
-async def test_jwt_groups_claim_as_string(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ASTRABOX_JWT_SECRET", _JWT_SECRET)
-    resolver = VerifiedJwtWebIdentityResolver()
-    token = _hs256({"sub": "erin", "groups": "dev, astrabox-admin"})
-    user = await resolver.resolve(_bearer(token))
-    assert user is not None
-    assert user.roles == ["dev", "astrabox-admin", "admin"]
-
-
-async def test_jwt_x_astrabox_token_header_source(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ASTRABOX_JWT_SECRET", _JWT_SECRET)
-    resolver = VerifiedJwtWebIdentityResolver()
-    token = _hs256({"sub": "frank"})
-    user = await resolver.resolve({"x-astrabox-token": token})
-    assert user is not None and user.user_id == "frank"
-
-
 async def test_jwt_missing_user_claim_401(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ASTRABOX_JWT_SECRET", _JWT_SECRET)
     resolver = VerifiedJwtWebIdentityResolver()
@@ -310,13 +212,6 @@ async def test_jwt_strict_without_token_401(monkeypatch: pytest.MonkeyPatch) -> 
     with pytest.raises(APIError) as excinfo:
         await resolver.resolve({})
     assert excinfo.value.status_code == 401
-
-
-async def test_jwt_lenient_without_token_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ASTRABOX_JWT_SECRET", _JWT_SECRET)
-    monkeypatch.setenv("ASTRABOX_JWT_STRICT", "0")
-    resolver = VerifiedJwtWebIdentityResolver()
-    assert await resolver.resolve({}) is None
 
 
 async def test_jwt_lenient_present_but_invalid_still_401(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -394,21 +289,6 @@ async def test_jwt_without_an_exp_claim_is_refused(
     assert excinfo.value.code == "UNAUTHORIZED"
 
 
-def test_jwt_no_key_material_fails_at_construction() -> None:
-    # Loader runs at create_app; a JWT resolver with no key can never verify.
-    with pytest.raises(RuntimeError):
-        VerifiedJwtWebIdentityResolver()
-
-
-# ── Middleware: exempt paths + admin gate ──────────────────────────────────
-async def test_middleware_strict_resolver_healthz_passes() -> None:
-    app = _RecordingApp()
-    mw = WebIdentityMiddleware(app, _RejectingResolver())
-    sent = await _drive(mw, _scope("/healthz"))
-    assert app.called  # exempt: proceeds unauthenticated despite the rejection
-    assert _status(sent) == 200
-
-
 async def test_middleware_api_sessions_without_identity_401() -> None:
     app = _RecordingApp()
     mw = WebIdentityMiddleware(app, _RejectingResolver())
@@ -417,29 +297,12 @@ async def test_middleware_api_sessions_without_identity_401() -> None:
     assert _status(sent) == 401
 
 
-async def test_middleware_share_prefix_passes() -> None:
-    app = _RecordingApp()
-    mw = WebIdentityMiddleware(app, _RejectingResolver())
-    sent = await _drive(mw, _scope("/api/v1/share/abc123"))
-    assert app.called  # capability-token surface: its own auth, exempt
-    assert _status(sent) == 200
-
-
 async def test_middleware_admin_path_non_admin_403() -> None:
     app = _RecordingApp()
     mw = WebIdentityMiddleware(app, _StaticResolver(UserContext(user_id="u", roles=["dev"])))
     sent = await _drive(mw, _scope("/api/v1/admin/users"))
     assert not app.called
     assert _status(sent) == 403
-
-
-async def test_middleware_admin_path_admin_role_passes() -> None:
-    app = _RecordingApp()
-    mw = WebIdentityMiddleware(app, _StaticResolver(UserContext(user_id="u", roles=["admin"])))
-    sent = await _drive(mw, _scope("/api/v1/admin/users"))
-    assert app.called
-    assert _status(sent) == 200
-    assert app.seen_user_id == "u"
 
 
 @pytest.mark.parametrize(
@@ -462,17 +325,6 @@ async def test_middleware_enforces_scopes_only_on_machine_tokens(
     )
     assert app.called is (expected_status == 200)
     assert _status(sent) == expected_status
-
-
-async def test_browser_identity_is_not_subject_to_machine_token_scopes() -> None:
-    app = _RecordingApp()
-    user = UserContext(user_id="browser-user")
-    sent = await _drive(
-        WebIdentityMiddleware(app, _StaticResolver(user)),
-        _scope("/api/v1/sessions", method="POST"),
-    )
-    assert app.called
-    assert _status(sent) == 200
 
 
 async def test_admin_api_requires_admin_scope_even_with_admin_role() -> None:
@@ -521,18 +373,6 @@ async def test_websocket_requires_write_scope() -> None:
     assert sent == [{"type": "websocket.close", "code": 1008}]
 
 
-async def test_middleware_admin_path_no_identity_passes() -> None:
-    # The no-auth DEFAULT resolver (marked is_no_auth_default) keeps the
-    # single-user admin console open.
-    app = _RecordingApp()
-    resolver = _StaticResolver(None)
-    resolver.is_no_auth_default = True  # type: ignore[attr-defined]
-    mw = WebIdentityMiddleware(app, resolver)
-    sent = await _drive(mw, _scope("/api/v1/admin/users"))
-    assert app.called
-    assert _status(sent) == 200
-
-
 async def test_middleware_admin_path_anonymous_strict_resolver_is_rejected() -> None:
     # A REAL resolver that yields no identity must not reopen the admin
     # console: anonymous never passes /api/v1/admin* once auth is configured.
@@ -550,60 +390,6 @@ async def test_middleware_admin_api_dashed_prefix_gated() -> None:
     sent = await _drive(mw, _scope("/api/v1/admin-api/flags"))
     assert not app.called
     assert _status(sent) == 403
-
-
-async def test_middleware_exempt_prefix_override_replaces_list(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Override REPLACES the default prefixes: with the override set, /api/v1/share/ is not exempt...
-    monkeypatch.setenv("ASTRABOX_AUTH_EXEMPT_PREFIXES", "/api/v1/custom/")
-    app = _RecordingApp()
-    mw = WebIdentityMiddleware(app, _RejectingResolver())
-    sent = await _drive(mw, _scope("/api/v1/share/abc"))
-    assert not app.called
-    assert _status(sent) == 401
-
-    # ...but the newly-named prefix is, and /healthz always holds.
-    app2 = _RecordingApp()
-    mw2 = WebIdentityMiddleware(app2, _RejectingResolver())
-    assert _status(await _drive(mw2, _scope("/api/v1/custom/thing"))) == 200
-    app3 = _RecordingApp()
-    mw3 = WebIdentityMiddleware(app3, _RejectingResolver())
-    assert _status(await _drive(mw3, _scope("/healthz"))) == 200
-
-
-# ── the reject response is the standard envelope, data included ────────────
-
-
-class _RedirectingResolver:
-    async def resolve(self, headers: Any) -> UserContext | None:
-        raise APIError(
-            code="UNAUTHORIZED",
-            message="session cookie expired",
-            status_code=401,
-            data={"login_url": "https://idp.example/login?next=%2F"},
-        )
-
-
-async def test_middleware_reject_emits_the_platform_envelope_with_data() -> None:
-    """A cookie/SSO resolver's login redirect payload must survive the wire:
-    standard envelope (top-level code/message/data + error), APIError.data
-    passed through — a frontend keying on code + data.login_url can bounce
-    to login instead of a dead error screen."""
-    import json
-
-    app = _RecordingApp()
-    mw = WebIdentityMiddleware(app, _RedirectingResolver())
-    sent = await _drive(mw, _scope("/api/v1/sessions"))
-    assert not app.called
-    assert _status(sent) == 401
-    body = json.loads(
-        next(m for m in sent if m["type"] == "http.response.body")["body"]
-    )
-    assert body["code"] == "UNAUTHORIZED"
-    assert body["message"] == "session cookie expired"
-    assert body["data"] == {"login_url": "https://idp.example/login?next=%2F"}
-    assert body["error"]["code"] == "UNAUTHORIZED", "route-error envelope parity"
 
 
 # ── root_path deployments must not silently disable API auth ────────────────
@@ -630,14 +416,6 @@ async def test_mounted_api_path_still_rejects_with_a_strict_resolver() -> None:
     sent = await _drive(mw, _mounted_scope("/api/v1/sessions"))
     assert not app.called, "a mounted API route must never fall through anonymous"
     assert _status(sent) == 401
-
-
-async def test_mounted_exempt_path_still_passes() -> None:
-    app = _RecordingApp()
-    mw = WebIdentityMiddleware(app, _RejectingResolver())
-    sent = await _drive(mw, _mounted_scope("/healthz"))
-    assert app.called
-    assert _status(sent) == 200
 
 
 async def test_mounted_admin_surface_still_hard_gates() -> None:

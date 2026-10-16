@@ -237,24 +237,6 @@ class AstraBoxRuntimeSettings(BaseSettings):
         ),
     )
 
-    # --- mongodb -----------------------------------------------------------
-    environment_collection: str = Field(
-        default="environment",
-        validation_alias=AliasChoices(AliasPath("astrabox", "mongodb", "environment_collection")),
-    )
-    deployments_collection: str = Field(
-        default="deployments",
-        validation_alias=AliasChoices(AliasPath("astrabox", "mongodb", "deployments_collection")),
-    )
-    sessions_collection: str = Field(
-        default="sessions",
-        validation_alias=AliasChoices(AliasPath("astrabox", "mongodb", "sessions_collection")),
-    )
-    messages_collection: str = Field(
-        default="messages",
-        validation_alias=AliasChoices(AliasPath("astrabox", "mongodb", "messages_collection")),
-    )
-
     # --- top-level astrabox ------------------------------------------------
     session_ttl_seconds: int = Field(
         default=86400, validation_alias=AliasChoices(AliasPath("astrabox", "session_ttl_seconds"))
@@ -458,28 +440,6 @@ class AstraBoxRuntimeSettings(BaseSettings):
         default=True,
         validation_alias=AliasChoices(
             "ASTRABOX_AGENT_ENABLED", AliasPath("astrabox", "agent", "enabled")
-        ),
-    )
-    agents_collection: str = Field(
-        default="agents",
-        validation_alias=AliasChoices(AliasPath("astrabox", "mongodb", "agents_collection")),
-    )
-    assistant_catalog_collection: str = Field(
-        default="assistant_catalog",
-        validation_alias=AliasChoices(
-            AliasPath("astrabox", "mongodb", "assistant_catalog_collection")
-        ),
-    )
-    assistant_defaults_collection: str = Field(
-        default="assistant_defaults",
-        validation_alias=AliasChoices(
-            AliasPath("astrabox", "mongodb", "assistant_defaults_collection")
-        ),
-    )
-    assistant_workspace_collection: str = Field(
-        default="assistant_workspace",
-        validation_alias=AliasChoices(
-            AliasPath("astrabox", "mongodb", "assistant_workspace_collection")
         ),
     )
     # Default for an Agent that omits its per-Agent idle window. The expiration

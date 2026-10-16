@@ -1,5 +1,8 @@
 # 错误参考
 
+> 处理 AstraBox 错误信封，并判断失败的请求
+> 能否重试。
+
 AstraBox API 使用统一的错误信封格式返回错误。每个错误响应包含结构化信息，便于程序化
 处理和问题排查。
 
@@ -10,15 +13,15 @@ AstraBox REST 资源接口使用以下 JSON 结构：
 ```json
 {
   "code": "SESSION_BUSY",
-  "message": "session is busy",
-  "data": null,
+  "message": "cannot delete session while the agent is working",
+  "data": { "runtime_status": "working" },
   "error": {
     "code": "SESSION_BUSY",
     "status_code": 409,
     "category": "state",
     "retryable": true,
     "owner": "session",
-    "user_message": "session is busy"
+    "user_message": "cannot delete session while the agent is working"
   }
 }
 ```
@@ -32,7 +35,7 @@ AstraBox REST 资源接口使用以下 JSON 结构：
 |---|---|---|---|
 | `code` | string | 是 | 用于程序化处理的稳定错误码 |
 | `message` | string | 是 | 可以向调用方显示的消息 |
-| `data` | any \| null | 是 | 错误提供的结构化数据 |
+| `data` | any \| null | 是 | 错误相关的结构化数据（如有） |
 | `error.code` | string | 是 | 与顶层 `code` 相同的稳定错误码 |
 | `error.status_code` | integer | 是 | 为错误码登记的状态；传输处理应使用实际 HTTP 响应状态码 |
 | `error.category` | string | 是 | 错误类别，例如 `request`、`auth`、`state` 或 `persistence` |
@@ -55,7 +58,6 @@ AstraBox REST 资源接口使用以下 JSON 结构：
 | 404 | `NOT_FOUND`、`SESSION_NOT_FOUND` | 目标资源不存在或不可访问 |
 | 409 | `SESSION_BUSY`、`IDEMPOTENCY_KEY_CONFLICT` | 资源状态与当前操作冲突 |
 | 429 | `ADMISSION_DENIED` | 部署的准入策略拒绝任务 |
-| 499 | `REQUEST_CANCELLED` | 调用方取消了请求 |
 | 5xx | `PERSISTENCE_UNAVAILABLE`、`UNEXPECTED_SERVER_ERROR` | AstraBox、基础设施或上游依赖发生故障 |
 
 表中仅列出示例，并非完整的错误码目录。请查看部署版本的 `/openapi.json`，并读取失败
@@ -70,7 +72,7 @@ AstraBox REST 资源接口使用以下 JSON 结构：
 **常见触发场景：**
 
 - 缺少必需字段（如 `permission_mode`）
-- 字段值类型错误（如 `string` 传了 `number`）
+- 字段值类型错误（例如应为字符串的位置传了数字）
 - 参数超出允许范围
 - JSON 格式错误
 
@@ -207,21 +209,21 @@ curl --fail-with-body --silent --show-error \
 **常见触发场景：**
 
 - 使用相同幂等键创建不同的对话
-- Session 正在处理另一个 Turn
+- Agent 正在工作时，请求删除或归档 Session、结束对话或终止其沙箱
 - Agent 或 Environment 状态不允许当前操作
 
 ```json
 {
   "code": "SESSION_BUSY",
-  "message": "session is busy",
-  "data": null,
+  "message": "cannot delete session while the agent is working",
+  "data": { "runtime_status": "working" },
   "error": {
     "code": "SESSION_BUSY",
     "status_code": 409,
     "category": "state",
     "retryable": true,
     "owner": "session",
-    "user_message": "session is busy"
+    "user_message": "cannot delete session while the agent is working"
   }
 }
 ```
@@ -272,12 +274,10 @@ response=$(curl --silent --show-error -D "$headers" -w "\n%{http_code}" \
   "$SERVICE_URL/api/v1/agents" \
   -H "Authorization: Bearer $ACCESS_TOKEN")
 
-# 提取 HTTP 状态码
 http_code=$(echo "$response" | tail -1)
 body=$(echo "$response" | sed '$d')
 
 if [ "$http_code" -ge 400 ]; then
-  # 提取错误码
   error_code=$(echo "$body" | python3 -c "import sys,json; print(json.load(sys.stdin)['code'])")
   retryable=$(echo "$body" | python3 -c "import sys,json; print(json.load(sys.stdin)['error']['retryable'])")
   traceparent=$(sed -n 's/^[Tt]raceparent: //p' "$headers" | tr -d '\r')

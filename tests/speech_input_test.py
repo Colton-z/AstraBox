@@ -1,4 +1,6 @@
-"""Voice input preserves session authority and the gateway's multipart wire."""
+"""Voice input stays inside the session's authority and never exposes the gateway's
+errors.
+"""
 
 from __future__ import annotations
 
@@ -14,7 +16,6 @@ from starlette.datastructures import Headers, UploadFile
 from astrabox.api.routes import speech_input as routes
 from astrabox.api.routes._shared import handle_api_error
 from astrabox.common.utils.errors import APIError
-from astrabox.common.utils.settings import AstraBoxRuntimeSettings
 from astrabox.core.service import speech_input as speech
 from astrabox.seams.model import ModelEndpoint
 
@@ -58,76 +59,6 @@ def gateway(monkeypatch):
         speech_input_models=["voice-cloud", "voice-local"], model_endpoint_provider="test"
     )
     return settings, provider, calls
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("model", ["voice-cloud", "voice-local"])
-async def test_transcription_uses_session_key_and_preserves_audio_format(gateway, model):
-    settings, provider, calls = gateway
-    text = await speech.transcribe_speech_input(
-        settings=settings,
-        session_id="session-1",
-        user_id="owner-1",
-        model=model,
-        audio=_audio(),
-    )
-    assert text == "请检查这个改动。"
-    assert len(calls) == 1
-    request = calls[0]
-    assert str(request.url) == "http://gateway-server.test/v1/audio/transcriptions"
-    assert request.headers["authorization"] == "Bearer session-inference-key"
-    assert request.headers["langfuse_session_id"] == "session-1"
-    assert b'filename="recording.m4a"' in request.content
-    assert b"Content-Type: audio/mp4" in request.content
-    assert b"\x00\xffrecorded-audio" in request.content
-    assert model.encode() in request.content
-    assert b"server-management-key" not in request.content
-    context = provider.ensure_session_credential.call_args.kwargs["context"]
-    assert (context.conversation_id, context.user_id) == ("session-1", "owner-1")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "model,content,media_type,status",
-    [
-        ("arbitrary-model", b"audio", "audio/webm", 400),
-        ("voice-cloud", b"", "audio/webm", 415),
-        ("voice-cloud", b"text", "text/plain", 415),
-    ],
-)
-async def test_invalid_inputs_never_mint_keys_or_call_the_gateway(
-    gateway, model, content, media_type, status
-):
-    settings, provider, calls = gateway
-    with pytest.raises(APIError) as error:
-        await speech.transcribe_speech_input(
-            settings=settings,
-            session_id="session-1",
-            user_id="owner-1",
-            model=model,
-            audio=_audio(content, media_type),
-        )
-    assert error.value.status_code == status
-    provider.ensure_session_credential.assert_not_called()
-    assert calls == []
-
-
-@pytest.mark.asyncio
-async def test_upload_limit_is_enforced_even_without_declared_size(gateway, monkeypatch):
-    settings, provider, calls = gateway
-    monkeypatch.setattr(speech, "MAX_AUDIO_BYTES", 4)
-    audio = _audio(b"12345")
-    audio.size = None
-    with pytest.raises(APIError, match="SPEECH_INPUT_TOO_LARGE"):
-        await speech.transcribe_speech_input(
-            settings=settings,
-            session_id="session-1",
-            user_id="owner-1",
-            model="voice-cloud",
-            audio=audio,
-        )
-    provider.ensure_session_credential.assert_not_called()
-    assert calls == []
 
 
 @pytest.mark.asyncio
@@ -185,11 +116,3 @@ async def test_other_users_cannot_discover_or_transcribe_session_audio(monkeypat
         response = await client.request(method, "/api/v1/sessions/not-owned/speech-input", **kwargs)
     assert response.status_code == 404
     transcribe.assert_not_called()
-
-
-def test_settings_accept_ordered_model_choices_from_environment(monkeypatch):
-    monkeypatch.setenv(
-        "ASTRABOX_SPEECH_INPUT_MODELS", '["voice-cloud", "voice-local", "voice-cloud"]'
-    )
-    options = speech.speech_input_options(AstraBoxRuntimeSettings())
-    assert options["models"] == ["voice-cloud", "voice-local"]

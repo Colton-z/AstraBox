@@ -176,13 +176,13 @@ async def _start_deployment_session(
     preemptible=True,
     should_retry=_should_retry_run_step,
 )
-async def _drive_deployment_turn(
+async def _admit_deployment_input(
     context: dict[str, Any], workflow_id: str, session_id: str, scheduled_at: datetime
 ) -> dict[str, str]:
-    binding = await _handler().admit_turn(
+    binding = await _handler().admit_input(
         _invocation(context, workflow_id, scheduled_at), session_id=session_id
     )
-    return {"command_id": binding.command_id, "turn_id": binding.turn_id}
+    return {"input_id": binding.input_id}
 
 
 @DBOS.workflow(name=WORKFLOW_NAME)
@@ -198,12 +198,12 @@ async def run_deployment_workflow(scheduled_at: datetime, context: dict[str, Any
     await DBOS.update_workflow_attributes_async(
         workflow_id, {**attributes, "session_id": session_id}
     )
-    result = await _drive_deployment_turn(context, workflow_id, session_id, scheduled_at)
-    turn_id = str(result.get("turn_id") or "").strip()
-    if turn_id:
+    result = await _admit_deployment_input(context, workflow_id, session_id, scheduled_at)
+    input_id = str(result.get("input_id") or "").strip()
+    if input_id:
         await DBOS.update_workflow_attributes_async(
             workflow_id,
-            {**attributes, "session_id": session_id, "turn_id": turn_id},
+            {**attributes, "session_id": session_id, "input_id": input_id},
         )
 
 
@@ -259,7 +259,7 @@ def _record(status: Mapping[str, Any]) -> RunRecord:
         state=cast(Any, state),
         created_at=created_at,
         session_id=str(attributes.get("session_id") or "") or None,
-        turn_id=str(attributes.get("turn_id") or "") or None,
+        input_id=str(attributes.get("input_id") or "") or None,
         failed=state == "FAILED",
     )
 
@@ -269,8 +269,6 @@ def _dbos_url(raw_url: str) -> str | None:
     driver = url.drivername.lower()
     if driver.startswith("postgresql") or driver.startswith("postgres"):
         return url.set(drivername="postgresql+psycopg").render_as_string(hide_password=False)
-    if driver.startswith("sqlite"):
-        return url.set(drivername="sqlite").render_as_string(hide_password=False)
     return None
 
 
@@ -288,24 +286,12 @@ class DbosSchedulerProvider(SchedulerProvider):
         self._system_database_url: str | None = None
         self._started = False
 
-    def configure(self, *, repository_backend: Any) -> None:
-        sql_database_url = getattr(repository_backend, "sql_database_url", None)
-        if not callable(sql_database_url):
-            raise SchedulerConfigurationError(
-                "the dbos scheduler keeps its schedules and Run ledger in the "
-                "repository's SQL database, and this repository backend has none"
-            )
-        try:
-            raw_url = str(sql_database_url())
-        except ValueError as exc:
-            raise SchedulerConfigurationError(
-                f"the dbos scheduler could not resolve the repository's database URL: {exc}"
-            ) from exc
-        dbos_url = _dbos_url(raw_url)
+    def configure(self, *, database_url: str) -> None:
+        dbos_url = _dbos_url(database_url)
         if dbos_url is None:
             raise SchedulerConfigurationError(
-                "the dbos scheduler supports PostgreSQL and SQLite; the repository "
-                f"database uses {make_url(raw_url).drivername!r}"
+                "the dbos scheduler keeps its schedules and Run ledger in PostgreSQL; "
+                f"the database URL uses {make_url(database_url).drivername!r}"
             )
         self._system_database_url = dbos_url
 

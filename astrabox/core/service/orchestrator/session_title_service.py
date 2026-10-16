@@ -12,15 +12,14 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.secrets import SecretProvider
 from astrabox.common.utils.settings import TITLE_MODEL_MAX_TOKENS, load_astrabox_settings
 from astrabox.common.utils.time_utils import utcnow_iso
-from astrabox.core.service.orchestrator.history_blocks import (
-    preceding_user_text,
-    process_summary_input,
-)
 from astrabox.core.service.orchestrator.runtime.config_resolver import (
     RuntimeConfigResolver,
 )
-from astrabox.persistence.repository.process_summary_repository import (
-    ProcessSummaryRepository,
+from astrabox.core.service.orchestrator.session_runtime.ui_message import fold_message
+from astrabox.persistence.repository.session_runtime_repository import (
+    FactBatch,
+    ResponseEnd,
+    SessionRuntimeRepository,
 )
 from astrabox.seams.model import (
     ModelEndpoint,
@@ -30,13 +29,18 @@ from astrabox.seams.model import (
 
 logger = get_logger(__name__)
 
-TITLE_SOURCE_FIRST_TURN_MODEL = "first_turn_model"
-TITLE_GENERATION_STATUS_GENERATING = "GENERATING"
-TITLE_GENERATION_STATUS_COMPLETED = "COMPLETED"
-TITLE_GENERATION_STATUS_FAILED = "FAILED"
-TITLE_GENERATION_STATUS_SKIPPED = "SKIPPED"
-_TITLE_GENERATION_MAX_USER_TURNS = 3
-_TITLE_DECISION_USER_TURN_LIMIT = 2
+#: ``sessions.title_source`` of a title the title service wrote.
+TITLE_SOURCE_GENERATED = "generated"
+#: ``sessions.title_generation_status``: the one generation claim's state.
+TITLE_GENERATION_STATUS_GENERATING = "generating"
+TITLE_GENERATION_STATUS_COMPLETED = "completed"
+TITLE_GENERATION_STATUS_FAILED = "failed"
+TITLE_GENERATION_STATUS_SKIPPED = "skipped"
+#: A title comes from one of the conversation's first responses, and the
+#: first of those may defer it until the user has said what the conversation
+#: is about.
+_TITLE_RESPONSE_WINDOW = 3
+_TITLE_DECISION_RESPONSES = 2
 
 _TITLE_FORCED_SYSTEM_PROMPT = (
     "You name saved chats for a sidebar.\n"
@@ -118,9 +122,6 @@ _PROCESS_SUMMARY_SYSTEM_PROMPT = (
 _PROCESS_SUMMARY_MAX_CHARS = 160
 _PROCESS_SUMMARY_USER_TEXT_LIMIT = 2000
 _PROCESS_SUMMARY_PROCESS_TEXT_LIMIT = 6000
-
-PROCESS_SUMMARY_STATUS_COMPLETED = "completed"
-PROCESS_SUMMARY_STATUS_FAILED = "failed"
 
 
 class TitleGenerationDecision:
@@ -561,7 +562,7 @@ class ConversationTitleModel:
         prompt = (
             "Early title decision:\n"
             f"<user_turn_index>{int(turn_index)}</user_turn_index>\n"
-            f"<max_user_turns>{_TITLE_GENERATION_MAX_USER_TURNS}</max_user_turns>\n"
+            f"<max_user_turns>{_TITLE_RESPONSE_WINDOW}</max_user_turns>\n"
             "<current_user_message>\n"
             f"{_truncate_middle(user_text, 4000)}\n"
             "</current_user_message>\n"
@@ -704,242 +705,87 @@ class ConversationTitleModel:
 
 
 class SessionTitleService:
+    """Titles a conversation from its first responses.
+
+    Titles are offered by :meth:`on_facts`, a consumer of the facts each
+    session reader records (``session_runtime/platform.py``); ``spawn`` starts
+    each generation as a task of its own, so the reader never waits on a
+    model call.
+    """
+
     def __init__(
         self,
         *,
         sessions_repo: Any,
-        message_view: Any,
+        spawn: Callable[..., Any],
         model: Any | None = None,
-        process_summary_repo: Any | None = None,
+        facts: SessionRuntimeRepository | None = None,
     ) -> None:
         self._enabled = load_astrabox_settings().title_model_enabled
         self._sessions_repo = sessions_repo
-        self._message_view = message_view
+        self._spawn = spawn
         self._model = model or ConversationTitleModel()
-        self._process_summary_repo = process_summary_repo or ProcessSummaryRepository()
+        self._facts = facts or SessionRuntimeRepository()
 
-    async def read_process_summaries(
-        self,
-        session_id: str,
-        message_ids: list[str],
-    ) -> dict[str, Any]:
-        """Return the stored label of each response that has one."""
+    async def on_facts(self, session_id: str, batch: FactBatch) -> None:
+        """Offer a title for each response the batch ended.
 
-        rows = await self._process_summary_repo.read(session_id, message_ids)
-        if not self._enabled:
-            for row in rows.values():
-                if not row.get("summary"):
-                    row.update(status="disabled", summary=None, error=None)
-        return rows
-
-    async def generate_process_summary(
-        self,
-        *,
-        session_id: str,
-        message_id: str,
-        user_text: str,
-        process_text: str,
-        through_seq: int,
-        turn_completed: bool,
-        retry_failed: bool = False,
-    ) -> dict[str, Any]:
-        """Write the label for one response, or hand back the row someone else owns.
-
-        The claim is what makes this safe to call from two places at once: the
-        turn worker offers a label as soon as the turn settles, and a reader
-        opening that page asks for the same one. Whoever loses the claim reads
-        the row instead of running a second completion against the same input.
+        Every response counts, whoever started it: an answer to a message, a
+        response the runtime began on its own, and one a later reader saw
+        end after the reader that saw it start was gone. Each offer runs as its
+        own task and reads what it needs from the recorded facts.
         """
-
         if not self._enabled:
-            existing = await self.read_process_summaries(session_id, [message_id])
-            return dict(existing.get(message_id) or {
-                "status": "disabled",
-                "summary": None,
-                "error": None,
-                "through_seq": int(through_seq),
-                "turn_completed": bool(turn_completed),
-            })
-
-        claim_token = await self._process_summary_repo.claim(
-            session_id,
-            message_id,
-            through_seq=int(through_seq),
-            turn_completed=bool(turn_completed),
-            retry_failed=bool(retry_failed),
-        )
-        if claim_token is None:
-            existing = await self.read_process_summaries(session_id, [message_id])
-            return dict(existing.get(message_id) or {})
-
-        data: dict[str, Any]
-        try:
-            request_config = None
-            resolve_config = getattr(self._model, "resolve_request_config", None)
-            if callable(resolve_config):
-                request_config = resolve_config()
-            kwargs: dict[str, Any] = {
-                "user_text": user_text,
-                "process_text": process_text,
-            }
-            if request_config is not None:
-                kwargs["request_config"] = request_config
-            summary = await self._model.generate_process_summary(**kwargs)
-            data = {
-                "status": PROCESS_SUMMARY_STATUS_COMPLETED,
-                "summary": summary,
-                "error": None,
-            }
-        except Exception as exc:
-            logger.exception(
-                "process summary generation failed session=%s message=%s err=%s",
-                session_id,
-                message_id,
-                exc,
-            )
-            data = {
-                "status": PROCESS_SUMMARY_STATUS_FAILED,
-                "summary": None,
-                "error": f"{type(exc).__name__}: {exc}"[:500],
-            }
-        data["through_seq"] = int(through_seq)
-        data["turn_completed"] = bool(turn_completed)
-        recorded = await self._process_summary_repo.finish(
-            session_id,
-            message_id,
-            data,
-            claim_token=claim_token,
-        )
-        if not recorded:
-            # The lease expired and a retry reopened the row while this call
-            # was still waiting on the model: the row is the retry's, and its
-            # outcome is the one readers get. An outcome that was not written
-            # is never handed back as if it had been.
-            existing = await self.read_process_summaries(session_id, [message_id])
-            current = existing.get(message_id)
-            if not isinstance(current, dict) or not current:
-                raise RuntimeError(
-                    "process summary row is missing after its claim was superseded "
-                    f"session={session_id} message={message_id}"
+            return
+        for fact in batch.facts:
+            if isinstance(fact, ResponseEnd):
+                self._spawn(
+                    self.generate_for_response(session_id, fact.response_id),
+                    name=f"session-title-{session_id}",
                 )
-            return dict(current)
-        return data
 
-    async def generate_process_summary_for_turn(
-        self,
-        session_id: str,
-        turn_id: str,
-    ) -> dict[str, Any]:
-        """Offer a label for every foldable response of a turn that has settled.
-
-        The turn worker calls this so the labels are already there when the
-        page renders the folded headers. A turn with a native input queue holds
-        several responses, each answering the user record just before it, and
-        each is named on its own; a response that shows in full has nothing
-        folded to name and is skipped rather than failed.
-        """
-
-        if not self._enabled:
-            return {"status": "disabled"}
-
-        turn_messages = await self._message_view._messages_for_turn(
-            session_id,
-            turn_id=turn_id,
-        )
-        through_seq: int | None = None
-        responses: dict[str, dict[str, Any]] = {}
-        for record in turn_messages:
-            if str(record.get("role") or "").strip() != "assistant":
-                continue
-            message_id = str(record.get("message_id") or "").strip()
-            if not message_id:
-                continue
-            summary_input = process_summary_input(record)
-            if summary_input is None:
-                continue
-            if through_seq is None:
-                through_seq = await self._message_view.history_checkpoint_seq(session_id)
-            responses[message_id] = await self.generate_process_summary(
-                session_id=session_id,
-                message_id=message_id,
-                user_text=preceding_user_text(turn_messages, message_id),
-                process_text=summary_input.process_text,
-                through_seq=through_seq,
-                turn_completed=summary_input.turn_completed,
-            )
-        if not responses:
-            return {"status": "skipped", "reason": "no_folded_process"}
-        return {"status": "completed", "responses": responses}
-
-    async def generate_for_first_completed_turn(
-        self,
-        *,
-        session_id: str,
-        turn_id: str,
-        assistant_text: str | None = None,
-    ) -> dict[str, Any]:
+    async def generate_for_response(self, session_id: str, response_id: str) -> dict[str, Any]:
+        """Title the conversation from one ended response, when it may still be titled."""
         if not self._enabled:
             return {"status": "skipped", "reason": "disabled"}
         try:
-            return await self._generate_for_first_completed_turn(
-                session_id=session_id,
-                turn_id=turn_id,
-                assistant_text=assistant_text,
-            )
+            return await self._generate_for_response(session_id, response_id)
         except Exception as exc:
             logger.exception(
-                "session title generation failed unexpectedly session=%s turn=%s err=%s",
+                "session title generation failed unexpectedly session=%s response=%s err=%s",
                 session_id,
-                turn_id,
+                response_id,
                 exc,
             )
             return {"status": "error", "error": str(exc)}
 
-    async def _generate_for_first_completed_turn(
-        self,
-        *,
-        session_id: str,
-        turn_id: str,
-        assistant_text: str | None = None,
-    ) -> dict[str, Any]:
+    async def _generate_for_response(self, session_id: str, response_id: str) -> dict[str, Any]:
         session = await self._sessions_repo.get_session(session_id)
         if not isinstance(session, dict):
             return {"status": "skipped", "reason": "session_missing"}
         if not self._session_allows_generated_title(session):
             return {"status": "skipped", "reason": "title_not_default"}
-
-        user_messages = await self._message_view.list_first_user_messages(
-            session_id,
-            limit=_TITLE_GENERATION_MAX_USER_TURNS,
-        )
-        if not user_messages:
-            return {"status": "skipped", "reason": "user_message_missing"}
-        current_user = None
-        turn_index = 0
-        for index, user_message in enumerate(user_messages, start=1):
-            if str(user_message.get("turn_id") or "").strip() == turn_id:
-                current_user = user_message
-                turn_index = index
-                break
-        if not isinstance(current_user, dict):
+        index = await self._facts.response_ordinal(session_id, response_id)
+        if index is None:
+            return {"status": "skipped", "reason": "response_missing"}
+        if index > _TITLE_RESPONSE_WINDOW:
             return {"status": "skipped", "reason": "outside_title_window"}
 
-        assistant_message = await self._message_view.get_assistant_message_for_turn(
-            session_id,
-            turn_id=turn_id,
+        inputs = await self._facts.inputs_for_response(session_id, response_id)
+        user_text = "\n\n".join(
+            str(row.get("content") or "").strip() for row in inputs if str(row.get("content") or "").strip()
         )
-        if not isinstance(assistant_message, dict):
-            return {"status": "skipped", "reason": "assistant_missing"}
-        if str(assistant_message.get("role") or "").strip() != "assistant":
-            return {"status": "skipped", "reason": "assistant_role_mismatch"}
-
-        user_text = str(current_user.get("content") or "").strip()
-        resolved_assistant_text = (
-            str(assistant_text or "").strip()
-            or str(assistant_message.get("content") or "").strip()
+        output = await self._facts.output_for_responses(session_id, [response_id])
+        message = fold_message(response_id, [row["part"] for row in output])
+        assistant_text = "\n\n".join(
+            str(part.get("text") or "").strip()
+            for part in message["parts"]
+            if part.get("type") == "text" and str(part.get("text") or "").strip()
         )
-        if not user_text or not resolved_assistant_text:
-            return {"status": "skipped", "reason": "empty_turn_text"}
+        if not assistant_text:
+            # A title names what the conversation is about; a response that
+            # said nothing does not show it, whatever started it.
+            return {"status": "skipped", "reason": "empty_response_text"}
 
         request_config = None
         resolve_config = getattr(self._model, "resolve_request_config", None)
@@ -948,35 +794,25 @@ class SessionTitleService:
                 request_config = resolve_config()
             except Exception as exc:
                 logger.error(
-                    "session title model config unavailable session=%s turn=%s err=%s",
+                    "session title model config unavailable session=%s response=%s err=%s",
                     session_id,
-                    turn_id,
+                    response_id,
                     exc,
                 )
                 return {"status": "error", "error": str(exc)}
 
         current_title = session.get("title")
-        now = utcnow_iso()
         claimed = await self._sessions_repo.compare_and_update_session(
             session_id,
             expected={
                 "title": current_title,
-                # Not every backend matches an absent field via {"$ne": ...}
-                # (standard MongoDB does). A fresh session has no
-                # title_generation_status yet, so a bare {"$ne": GENERATING}
-                # guard never matches and the claim silently fails. Express
-                # "not currently generating" as absent-or-non-GENERATING so
-                # first-turn claims succeed.
-                "$or": [
-                    {"title_generation_status": {"$exists": False}},
-                    {"title_generation_status": {"$ne": TITLE_GENERATION_STATUS_GENERATING}},
-                ],
+                "title_generation_status": {"$ne": TITLE_GENERATION_STATUS_GENERATING},
             },
             updates={
                 "title_generation_status": TITLE_GENERATION_STATUS_GENERATING,
-                "title_generation_turn_id": turn_id,
-                "title_generation_turn_index": turn_index,
-                "title_generation_started_at": now,
+                "title_generation_response_id": response_id,
+                "title_generation_response_index": index,
+                "title_generation_started_at": utcnow_iso(),
                 "title_generation_error": None,
                 "title_generation_skip_reason": None,
             },
@@ -988,27 +824,27 @@ class SessionTitleService:
         try:
             kwargs: dict[str, Any] = {
                 "user_text": user_text,
-                "assistant_text": resolved_assistant_text,
+                "assistant_text": assistant_text,
             }
             if request_config is not None:
                 kwargs["request_config"] = request_config
-            if turn_index <= _TITLE_DECISION_USER_TURN_LIMIT:
+            if index <= _TITLE_DECISION_RESPONSES:
                 decision = await self._model.decide_title_generation(
                     **kwargs,
-                    turn_index=turn_index,
+                    turn_index=index,
                 )
                 if not bool(getattr(decision, "should_generate", False)):
                     await self._record_generation_skipped(
                         session_id=session_id,
-                        turn_id=turn_id,
-                        turn_index=turn_index,
+                        response_id=response_id,
+                        index=index,
                         expected_title=current_title,
                         request_config=request_config,
                     )
                     return {
                         "status": "skipped",
                         "reason": "model_deferred_title",
-                        "turn_index": turn_index,
+                        "response_index": index,
                     }
                 clean_title = _clean_model_title(str(getattr(decision, "title", "") or ""))
             else:
@@ -1019,7 +855,7 @@ class SessionTitleService:
         except Exception as exc:
             await self._record_generation_failure(
                 session_id=session_id,
-                turn_id=turn_id,
+                response_id=response_id,
                 expected_title=current_title,
                 request_config=request_config,
                 error=exc,
@@ -1029,13 +865,13 @@ class SessionTitleService:
         completed_at = utcnow_iso()
         updates = {
             "title": clean_title,
-            "title_source": TITLE_SOURCE_FIRST_TURN_MODEL,
-            "title_turn_id": turn_id,
-            "title_user_message_id": str(current_user.get("message_id") or ""),
-            "title_assistant_message_id": str(assistant_message.get("message_id") or turn_id),
+            "title_source": TITLE_SOURCE_GENERATED,
+            "title_response_id": response_id,
+            "title_user_message_id": str(inputs[0]["client_message_id"]) if inputs else None,
+            "title_assistant_message_id": response_id,
             "title_generated_at": completed_at,
             "title_generation_status": TITLE_GENERATION_STATUS_COMPLETED,
-            "title_generation_turn_index": turn_index,
+            "title_generation_response_index": index,
             "title_generation_completed_at": completed_at,
             "title_generation_error": None,
             "title_generation_skip_reason": None,
@@ -1049,10 +885,11 @@ class SessionTitleService:
             expected={
                 "title": current_title,
                 "title_generation_status": TITLE_GENERATION_STATUS_GENERATING,
-                "title_generation_turn_id": turn_id,
+                "title_generation_response_id": response_id,
             },
             updates=updates,
             touch_updated_at=False,
+            notify="session",
         )
         if not applied:
             return {"status": "skipped", "reason": "title_changed"}
@@ -1062,7 +899,7 @@ class SessionTitleService:
         self,
         *,
         session_id: str,
-        turn_id: str,
+        response_id: str,
         expected_title: Any,
         request_config: Any | None,
         error: Exception,
@@ -1077,9 +914,9 @@ class SessionTitleService:
         if model_name:
             updates["title_model_name"] = model_name
         logger.warning(
-            "session title generation failed session=%s turn=%s model=%s error=%s",
+            "session title generation failed session=%s response=%s model=%s error=%s",
             session_id,
-            turn_id,
+            response_id,
             model_name,
             error_text,
         )
@@ -1088,7 +925,7 @@ class SessionTitleService:
             expected={
                 "title": expected_title,
                 "title_generation_status": TITLE_GENERATION_STATUS_GENERATING,
-                "title_generation_turn_id": turn_id,
+                "title_generation_response_id": response_id,
             },
             updates=updates,
             touch_updated_at=False,
@@ -1098,8 +935,8 @@ class SessionTitleService:
         self,
         *,
         session_id: str,
-        turn_id: str,
-        turn_index: int,
+        response_id: str,
+        index: int,
         expected_title: Any,
         request_config: Any | None,
     ) -> None:
@@ -1107,7 +944,7 @@ class SessionTitleService:
             "title_generation_status": TITLE_GENERATION_STATUS_SKIPPED,
             "title_generation_error": None,
             "title_generation_skip_reason": "model_deferred_title",
-            "title_generation_turn_index": turn_index,
+            "title_generation_response_index": index,
             "title_generation_skipped_at": utcnow_iso(),
         }
         model_name = str(getattr(request_config, "model_name", "") or "").strip()
@@ -1118,7 +955,7 @@ class SessionTitleService:
             expected={
                 "title": expected_title,
                 "title_generation_status": TITLE_GENERATION_STATUS_GENERATING,
-                "title_generation_turn_id": turn_id,
+                "title_generation_response_id": response_id,
             },
             updates=updates,
             touch_updated_at=False,
@@ -1126,13 +963,10 @@ class SessionTitleService:
 
     @staticmethod
     def _session_allows_generated_title(session: dict[str, Any]) -> bool:
-        if str(session.get("title_source") or "").strip() == TITLE_SOURCE_FIRST_TURN_MODEL:
+        """Whether the title is still the session's default: empty, or the Agent's name."""
+        if str(session.get("title_source") or "").strip() == TITLE_SOURCE_GENERATED:
             return False
         title = str(session.get("title") or "").strip()
         if not title:
             return True
-        defaults = {
-            str(session.get("template_name") or "").strip(),
-            str(session.get("deployment_name") or "").strip(),
-        }
-        return title in {item for item in defaults if item}
+        return title == str(session.get("deployment_name") or "").strip()

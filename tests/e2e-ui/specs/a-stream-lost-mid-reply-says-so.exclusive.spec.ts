@@ -1,31 +1,29 @@
 /**
- * E2E: the page admits that it lost its stream, while the turn keeps running.
+ * E2E: the page admits that it lost its stream, while the response keeps
+ * running.
  *
  * The journey is a route that goes away mid-answer. The user sends a message,
- * the reply starts arriving, and then the connection carrying it breaks — a
- * dropped VPN, a proxy recycled, a captive portal. The platform is untouched:
- * the turn is still running in the sandbox and the reply is still owed. What
- * the user sees is a "Processing" pill, a live run dot, and nothing else, for
- * five minutes — `useSessionChat.ts:765` arms the only notice at
- * `5 * 60 * 1000`, and `:1486-1489` (`isTransientSilent`) actively suppresses
- * the banner that the stream error would otherwise raise at once. Behind that
- * silence `turnStream.ts:42-44` retries up to 100 times at a 5s cap — about
- * eight minutes of invisible work. Nothing keeps the page's view of its own
- * connection fresh, so the staleness is paid by the person watching it: they
- * conclude the product is broken and reload.
+ * the response starts, and then the connection carrying it breaks — a dropped
+ * VPN, a proxy recycled, a captive portal. The platform is untouched: the
+ * response is still running in the sandbox and the reply is still owed. What a
+ * page that says nothing shows is a "Processing" pill and a live run dot, for
+ * as long as the outage lasts; the person watching it concludes the product is
+ * broken and reloads.
  *
- * The claim under test is not "reconnect faster" and not "stop the turn". It is
- * that a page which has lost its only live channel says so within a window a
- * person will wait, and withdraws the notice once the route returns. The budget
- * is the product decision this spec writes down; raising it toward 300s to make
- * the lane green would be weakening the assertion, not tuning it.
+ * The claim under test is not "reconnect faster" and not "stop the response".
+ * It is that a page which has lost its only live channel says so within a
+ * window a person will wait, and withdraws the notice once the route returns.
+ * The console's notice is `chat:banner.backend_unavailable`, raised when the
+ * stream has failed to connect for `STREAM_TROUBLE_NOTICE_DELAY_MS` (10s, in
+ * `useSessionChat.ts`) and withdrawn when the stream is connected again. The
+ * budget below is the product decision this spec writes down; raising it to
+ * make the lane green would be weakening the assertion, not tuning it.
  *
  * WHY the outage is stream-only: killing everything also fails the session
- * detail poll, which sets `lifecycleError` (`useSessionLifecycle.ts:167`) and
- * raises a DIFFERENT banner within seconds through `shouldShowSessionErrorBanner`.
- * A spec that watches that banner proves nothing about the silent path, so the
- * session GET, the messages GET and every POST are deliberately left alone —
- * and the spec asserts they stayed healthy.
+ * detail poll, which raises a DIFFERENT banner (the lifecycle error) within
+ * seconds. A spec that watches that banner proves nothing about the stream, so
+ * the session GET, the history GETs and every POST are deliberately left
+ * alone — and the spec asserts they stayed healthy.
  *
  * WHY both a route abort and an in-page body cut: `page.route` cannot kill an
  * SSE response that is already established (it was matched and released long
@@ -33,28 +31,32 @@
  * makes every reconnect fail; the body cut breaks the connection the page is
  * reading right now. Neither fabricates success — only failure.
  *
- * WHY the backend barrier: `hold_after_frame` on `text-delta` parks the real
- * turn worker right after the first delta, so "the reply is still owed" is true
- * for a bounded window instead of a race against model speed. Its release
- * timeout is 120s (`astrabox/testing/e2e_faults.py:44`), which is the ceiling
- * on the whole outage.
+ * WHY the reader hold: an E2E-only barrier (`response_part_read`, armed
+ * through `fixtures/frameHold.ts`) holds the session's reader right after it
+ * reads the response's first `text-delta`, once that part is committed, so
+ * the page has it. Nothing the engine writes after it reaches the session until
+ * the spec releases the hold, so "the reply is still owed" is true for a
+ * bounded window instead of a race against model speed. The backend gives the
+ * hold up after 120s (`_HOLD_RELEASE_TIMEOUT_SECONDS` in
+ * `astrabox/testing/e2e_faults.py`), which is the ceiling on the whole outage.
+ * It needs the E2E deployment stack (`ASTRABOX_E2E_FAULTS=1` and the shared
+ * fault-file path); absent that the barrier is never consumed and the spec
+ * fails loudly rather than skipping.
  *
- * Engine-independent: `text-delta` is the normalized v5 frame type every
- * engine's translated frame carries, the prompt asks for tool-free prose, and
- * no assertion reads engine-specific text. It DOES require the E2E deployment
- * stack (`ASTRABOX_E2E_FAULTS=1` and the shared fault-file path), like the
- * three existing fault-file specs; absent that the barrier is never consumed
- * and the spec fails loudly rather than skipping.
+ * Engine-independent: `text-delta` is the part type every engine's translated
+ * output carries, the prompt asks for tool-free prose, and no assertion reads
+ * engine-specific text.
  *
- * NOT COVERED: the flapping stream. `onData` calls `resetTransientState`
- * (`useSessionChat.ts:525`), so a connection that delivers one frame and drops
- * again re-arms a fresh five-minute clock with no ceiling. This spec keeps the
+ * NOT COVERED: the flapping stream. The notice is withdrawn whenever a
+ * request delivers a part, so a connection that delivers one part and drops
+ * again re-arms a fresh notice delay with no ceiling. This spec keeps the
  * route down for the whole window and therefore proves only the sustained
  * outage; the unbounded case needs a spec of its own.
  */
 import { expect, test, type Page, type Route } from '@playwright/test';
 
-import { AstraApi } from '../fixtures/astraApi';
+import { AstraApi, type InputReceipt } from '../fixtures/astraApi';
+import { sessionResponseRows } from '../fixtures/dbOracle';
 import { apiPath, parseTimeoutEnv } from '../fixtures/env';
 import {
   armFrameHoldFault,
@@ -75,18 +77,18 @@ import {
  * How long the page may stay silent about a connection it has lost.
  *
  * THE PRODUCT DECISION. Twenty seconds is roughly the span in which a person
- * decides whether a page is working; the shipped behaviour is 300s. The
- * fallback is the contract, and the env knob exists so a lane can tighten it —
- * loosening it toward 300s makes this spec pass by agreeing with the defect.
+ * decides whether a page is working. The fallback is the contract, and the env
+ * knob exists so a lane can tighten it — loosening it makes this spec pass by
+ * agreeing with a silent page.
  */
 const DEGRADED_NOTICE_BUDGET_MS = parseTimeoutEnv('ASTRABOX_E2E_STREAM_DEGRADED_NOTICE_MS', 20_000);
-// Upper bound on the real turn reaching its first text delta at the barrier.
+// Upper bound on the response reaching its first text delta at the barrier.
 const FIRST_DELTA_MS = parseTimeoutEnv('ASTRABOX_E2E_STREAM_DEGRADED_FIRST_DELTA_MS', 60_000);
 // How long the page may take to make its retries visible as failed attempts.
 const RETRY_OBSERVED_MS = parseTimeoutEnv('ASTRABOX_E2E_STREAM_DEGRADED_RETRY_MS', 45_000);
-// How long the restored route may take to carry a successful subscription again.
+// How long the restored route may take to carry a successful request again.
 const RESTORE_MS = parseTimeoutEnv('ASTRABOX_E2E_STREAM_DEGRADED_RESTORE_MS', 60_000);
-// How long the released turn may take to finish and settle durably.
+// How long the released response may take to finish and be recorded.
 const SETTLE_MS = parseTimeoutEnv('ASTRABOX_E2E_STREAM_DEGRADED_SETTLE_MS', 90_000);
 
 /**
@@ -94,16 +96,14 @@ const SETTLE_MS = parseTimeoutEnv('ASTRABOX_E2E_STREAM_DEGRADED_SETTLE_MS', 90_0
  *
  * This is the anti-vacuity guard for the assertion: without it a page that
  * simply never reconnected — never noticed anything to reconnect from — would
- * satisfy "the stream was down" for the wrong reason. Two is what the page
- * shows inside the window: the reconnect right after the cut, and one more
- * about thirty seconds later; the resume backoff (`turnStream.ts:44`, capped
- * at 5s) is not the cadence the page actually retries on after a failed
- * reopen, which is a question for the product, not for this guard.
+ * satisfy "the stream was down" for the wrong reason. The page's follower
+ * retries after 250ms, 1s, 2s and then every 5s, so two refused attempts come
+ * within seconds of the cut.
  */
 const MIN_ABORTED_ATTEMPTS = 2;
 
 // One rendered character proves the first delta reached the browser. The
-// barrier, not an amount of prose, is what proves the turn is live.
+// barrier, not an amount of prose, is what proves the response is live.
 const LIVE_PREFIX_MIN_CHARS = 1;
 // A visible suffix after release, measured from rendered text parts only.
 const RESUMED_GROWTH_MIN_CHARS = 40;
@@ -120,13 +120,14 @@ const DUPLICATE_WINDOW_CHARS = 48;
  */
 const DEGRADED_NOTICE = 'The backend is temporarily unavailable. Please try again shortly.';
 
-// A FAILED turn renders its error INTO the transcript as an assistant message,
-// so "a reply bubble exists" is satisfied by exactly the failure under test.
-const TURN_ERROR = /API Error|AGENT_RUNTIME_ERROR|SANDBOX_GONE|Traceback/i;
+// A FAILED response renders its error INTO the transcript as an assistant
+// message (`chat:result.turn_failed`), so "a reply bubble exists" is satisfied
+// by exactly the failure under test.
+const RESPONSE_ERROR = /This turn failed|API Error|AGENT_RUNTIME_ERROR|SANDBOX_GONE|Traceback/i;
 
 test.use({ locale: 'en-US' });
 
-/** One session output subscription the BROWSER opened, as the page saw it. */
+/** One session stream request the BROWSER opened, as the page saw it. */
 interface StreamConnection {
   id: number;
   afterSeq: number | null;
@@ -149,9 +150,9 @@ type CutWindow = Window & typeof globalThis & {
 /**
  * Give the spec a way to break the connection the page is reading RIGHT NOW.
  *
- * The page's transport calls `globalThis.fetch` (`useSessionChat.ts:393-395`),
- * so wrapping `window.fetch` before the app's first script puts this between
- * the backend and the AI SDK parser. Status, headers and every byte are the
+ * The page's follower calls `globalThis.fetch` for every stream request, so
+ * wrapping `window.fetch` before the app's first script puts this between the
+ * backend and the AI SDK parser. Status, headers and every byte are the
  * backend's own; the only thing this adds is `cut()`, which errors the open
  * body with the same `TypeError('network error')` a dropped route produces and
  * cancels the upstream reader. It fabricates no success.
@@ -166,7 +167,7 @@ async function installStreamCut(page: Page, sessionId: string): Promise<void> {
       cut: async () => {
         const open = state.connections.filter((connection) => connection.open);
         if (open.length === 0) {
-          throw new Error('no open session output subscription to cut');
+          throw new Error('no open session stream request to cut');
         }
         // The newest one is the channel the page is reading; an older open
         // record would mean the page holds two, which is its own defect.
@@ -188,12 +189,7 @@ async function installStreamCut(page: Page, sessionId: string): Promise<void> {
       const method = String(init?.method ?? request?.method ?? 'GET').toUpperCase();
       const url = new URL(request?.url ?? String(input), window.location.href);
       const response = await originalFetch(input, init);
-      if (
-        !armed
-        || method !== 'GET'
-        || url.pathname !== streamPath
-        || url.searchParams.get('follow') !== 'session'
-      ) {
+      if (!armed || method !== 'GET' || url.pathname !== streamPath) {
         return response;
       }
       const rawCursor = url.searchParams.get('after_seq');
@@ -257,7 +253,7 @@ async function installStreamCut(page: Page, sessionId: string): Promise<void> {
         headers: response.headers,
       });
     };
-  }, { streamPath: apiPath(`/sessions/${sessionId}/ai-stream`) });
+  }, { streamPath: apiPath(`/sessions/${sessionId}/stream`) });
 }
 
 async function streamConnections(page: Page): Promise<StreamConnection[]> {
@@ -285,7 +281,7 @@ function normalizeRendered(text: string): string {
  * The first stretch of *text* that appears twice, with both neighbourhoods.
  *
  * A reconnect that repaints the prefix it already showed and then tails the
- * same frames again puts the same sentences on screen twice. A window this long
+ * same parts again puts the same sentences on screen twice. A window this long
  * cannot recur in prose by accident, so a hit is a repaint defect and not a
  * wordy model — and the surroundings are reported because the window alone
  * sends the reader on a scavenger hunt.
@@ -310,8 +306,7 @@ function firstRepeatedWindow(text: string, size: number): string | null {
 
 // Teardown that changes state runs on the passing path only, and afterEach
 // hooks run in registration order — so the interrupt that settles a still-held
-// turn goes BEFORE the tracker's delete, which would otherwise answer
-// SESSION_BUSY and leave the orphan this ordering exists to avoid.
+// response goes BEFORE the tracker's delete.
 let heldSessionId = '';
 onPassOnly(async ({ request }) => {
   if (heldSessionId) await new AstraApi(request).interruptSession(heldSessionId);
@@ -334,17 +329,17 @@ test('a stream lost mid-reply is admitted on the page while the turn keeps runni
   sessions.push(sessionId);
   await api.waitForSessionReady(sessionId);
 
-  // Exact pathnames, never a glob: `/sessions/{id}` is a prefix of
-  // `/sessions/{id}/messages` and of the stream itself, and a matcher that
-  // caught those would break the half of the API this outage must leave alone.
-  const aiStreamPath = apiPath(`/sessions/${sessionId}/ai-stream`);
+  // Exact pathnames, never a glob: `/sessions/{id}` is a prefix of every
+  // session route, and a matcher that caught the others would break the half
+  // of the API this outage must leave alone.
+  const streamPath = apiPath(`/sessions/${sessionId}/stream`);
   const sessionDetailPath = apiPath(`/sessions/${sessionId}`);
-  const isAiStream = (url: URL) => url.pathname === aiStreamPath;
+  const isStream = (url: URL) => url.pathname === streamPath;
 
-  // Every ai-stream attempt this spec refused, counted on the Node side where
-  // the refusal actually happens.
+  // Every stream attempt this spec refused, counted on the Node side where the
+  // refusal actually happens.
   let abortedStreamAttempts = 0;
-  const abortAiStream = async (route: Route) => {
+  const abortStream = async (route: Route) => {
     abortedStreamAttempts += 1;
     await route.abort('connectionreset');
   };
@@ -359,15 +354,13 @@ test('a stream lost mid-reply is admitted on the page while the turn keeps runni
     detailResponses.push({ at: Date.now(), status: response.status() });
   });
 
-  // Which of the two silences this is, if the assertion goes red: the timer
-  // armed and the page waited five minutes, or `onError` never fired and the
-  // page will never say anything at all. Identical failure text, different
-  // defect — so the console is captured and reported either way.
+  // Whether the page noticed the loss at all, if the assertion goes red: a page
+  // that logged its lost requests and stayed silent is a different defect from
+  // one that never saw a failure. Captured and reported either way.
   const streamErrorLogs: string[] = [];
   page.on('console', (message) => {
     const text = message.text();
-    if (text.includes('[useSessionChat] stream error:')
-      || text.includes('[useSessionChat] session stream failed:')) {
+    if (text.includes('[useSessionChat] session stream lost:')) {
       streamErrorLogs.push(`${message.type()}: ${text.slice(0, 300)}`);
     }
   });
@@ -381,13 +374,13 @@ test('a stream lost mid-reply is admitted on the page while the turn keeps runni
       /* localStorage unavailable — the en-US navigator locale still applies */
     }
   });
-  // Installed BEFORE the first navigation, so the console's first channel open
-  // is wrapped too.
+  // Installed BEFORE the first navigation, so the console's first stream
+  // request is wrapped too.
   await installStreamCut(page, sessionId);
 
   const frameHoldPath = frameHoldFaultPath(sessionId);
   armFrameHoldFault(frameHoldPath, sessionId, 'text-delta');
-  test.info().annotations.push({ type: 'e2e_turn_frame_hold_file', description: frameHoldPath });
+  test.info().annotations.push({ type: 'e2e_reader_part_hold_file', description: frameHoldPath });
 
   const statusPill = page.getByTestId('run-view').getByTestId('status-pill').first();
   const degradedNotice = page
@@ -398,7 +391,7 @@ test('a stream lost mid-reply is admitted on the page while the turn keeps runni
     await openSessionView(page, sessionId);
     await expectComposerEnabled(page);
 
-    // ── The user sends one long turn from the composer. ──────────────────────
+    // ── The user sends one long message from the composer. ───────────────────
     const prompt = [
       `E2E lost route ${runId}. Answer directly and do not use any tool.`,
       'Write four to six paragraphs of plain prose explaining, for a beginner,',
@@ -406,22 +399,23 @@ test('a stream lost mid-reply is admitted on the page while the turn keeps runni
       'healthy while delivering nothing, and how a reader can tell the two apart.',
       'Output only the prose.',
     ].join('\n');
-    await expectPromptDelivered(await startPromptDelivery(page, sessionId, prompt));
+    const delivery = await startPromptDelivery(page, sessionId, prompt);
+    const receipt = ((await (await expectPromptDelivered(delivery)).json()) as { data: InputReceipt }).data;
     await expect(
       page.getByTestId('user-message').last(),
-      'the user bubble must render — proof the turn was dispatched from the page',
+      'the user bubble must render — proof the message was sent from the page',
     ).toContainText(String(runId), { timeout: 30_000 });
 
     // ── Prove the stream was live and delivering before it is cut. ───────────
-    // Anti-vacuity first: the backend must have consumed THIS session's own
-    // declaration. Without it every assertion below could pass on an ordinary
-    // settled turn — or on a deployment where the fault hooks are not armed.
+    // Anti-vacuity first: the reader must have consumed THIS session's own
+    // hold. Without it every assertion below could pass on an ordinary finished
+    // response — or on a deployment where the barrier is not armed.
     await expect
       .poll(() => frameHoldConsumed(frameHoldPath, sessionId, 'text-delta'), {
         timeout: FIRST_DELTA_MS,
         message:
-          'the real turn worker must consume this session\'s text-delta frame hold. '
-          + 'If it never does, the deployment is not running with ASTRABOX_E2E_FAULTS=1 '
+          'the session reader must consume this session\'s text-delta hold. If it never does, '
+          + 'the deployment is not running with ASTRABOX_E2E_FAULTS=1 '
           + `or ${frameHoldPath} is not the path the backend reads.`,
       })
       .toBe(true);
@@ -431,12 +425,18 @@ test('a stream lost mid-reply is admitted on the page while the turn keeps runni
         message: 'the held text delta must render before the connection is cut',
       })
       .toBeGreaterThanOrEqual(LIVE_PREFIX_MIN_CHARS);
+    const heldResponse = sessionResponseRows(sessionId).find((row) => row.input_ids.includes(receipt.input_id));
+    expect(heldResponse?.status, 'the response answering the message must be running').toBe('running');
+    const responseId = heldResponse!.response_id;
+    await expect(
+      page.locator(`[data-message-id="${responseId}"]`).getByTestId('assistant-message'),
+      'the running response must be on the page, streaming, before the connection is cut',
+    ).toHaveAttribute('data-streaming', 'true', { timeout: FIRST_DELTA_MS });
 
-    const preCutText = (await assistantTranscript(page)).trim();
-    const preCutRendered = normalizeRendered(preCutText);
+    const preCutRendered = normalizeRendered(await assistantTranscript(page));
     await expect(
       statusPill,
-      'the header must read PROCESSING before the cut — the turn is live',
+      'the header must read PROCESSING before the cut — the response is live',
     ).toHaveAttribute('data-state', 'PROCESSING');
     const detailsBeforeCut = detailResponses.length;
 
@@ -444,8 +444,8 @@ test('a stream lost mid-reply is admitted on the page while the turn keeps runni
     // Order matters. The abort is armed first so the reconnect the page makes
     // in response to the cut is refused too; the cut then breaks the connection
     // already established, which no route could reach. Everything else — the
-    // session GET, the messages GET, every POST — is left alone on purpose.
-    await page.route(isAiStream, abortAiStream);
+    // session GET, the history GETs, every POST — is left alone on purpose.
+    await page.route(isStream, abortStream);
     const cutConnectionId = await page.evaluate(
       () => (window as CutWindow).__astraboxStreamCut.cut(),
     );
@@ -461,7 +461,7 @@ test('a stream lost mid-reply is admitted on the page while the turn keeps runni
       .poll(() => abortedStreamAttempts, {
         timeout: RETRY_OBSERVED_MS,
         message:
-          `the page must retry its lost subscription at least ${MIN_ABORTED_ATTEMPTS} times `
+          `the page must retry its lost stream at least ${MIN_ABORTED_ATTEMPTS} times `
           + '— without that, the silence below is not a silence about anything',
       })
       .toBeGreaterThanOrEqual(MIN_ABORTED_ATTEMPTS);
@@ -470,12 +470,12 @@ test('a stream lost mid-reply is admitted on the page while the turn keeps runni
     expect(cutConnection.open, 'the cut connection must be unreadable after the cut').toBe(false);
 
     // And the outage is stream-only: the rest of the API kept answering, so the
-    // banner asserted below can only be the transient one.
+    // banner asserted below can only be the stream one.
+    await expect.poll(() => detailResponses.slice(detailsBeforeCut).length, {
+      timeout: Math.max(1_000, DEGRADED_NOTICE_BUDGET_MS - (Date.now() - cutAt)),
+      message: 'the page must keep reading session detail through the outage',
+    }).toBeGreaterThan(0);
     const detailsAfterCut = detailResponses.slice(detailsBeforeCut);
-    expect(
-      detailsAfterCut.length,
-      'the page must keep reading session detail through the outage',
-    ).toBeGreaterThan(0);
     expect(
       detailsAfterCut.filter((entry) => entry.status !== 200),
       'the session detail route must stay healthy — a failing one raises a different banner',
@@ -488,16 +488,15 @@ test('a stream lost mid-reply is admitted on the page while the turn keeps runni
     await expect(
       degradedNotice,
       `the page must acknowledge the lost connection within ${DEGRADED_NOTICE_BUDGET_MS}ms of `
-        + 'losing it. The shipped page arms its only notice at 5 * 60 * 1000 '
-        + '(useSessionChat.ts:765) and the banner that would otherwise fire is '
-        + 'suppressed by isTransientSilent (useSessionChat.ts:1486-1489), so the '
-        + 'user watches a Processing pill for five minutes and reloads.',
+        + 'losing it, or the user watches a Processing pill over a stream that is not '
+        + 'delivering and reloads',
     ).toBeVisible({ timeout: remainingMs });
 
     // ── The anti-cheat companion, read at the same moment. ───────────────────
-    // The acknowledgement must be about the CONNECTION. A fix that quiets the
-    // page by pretending the turn ended would pass the line above and lose the
-    // user's answer, so the turn is required to still be running right here.
+    // The acknowledgement must be about the CONNECTION. A page that quiets
+    // itself by pretending the response ended would pass the line above and
+    // lose the user's answer, so the response is required to still be running
+    // right here.
     const pillAtAdmission = await statusPill.getAttribute('data-state');
     const pulseAtAdmission = await statusPill.getAttribute('data-pulse');
     const detailAtAdmission = await api.getSession(sessionId);
@@ -507,27 +506,29 @@ test('a stream lost mid-reply is admitted on the page while the turn keeps runni
     ).toBe('PROCESSING');
     expect(pulseAtAdmission, 'the header run dot must still be live').toBe('true');
     expect(
-      String(detailAtAdmission.current_turn_id || '').trim(),
-      'the platform must still report the turn active — nothing was cancelled',
-    ).not.toEqual('');
+      (detailAtAdmission.current_responses ?? []).map((response) => response.response_id),
+      'the platform must still report the response running — nothing was cancelled',
+    ).toContain(responseId);
 
     // ── RESTORE: the route comes back. ───────────────────────────────────────
     // A product that admits an outage must also take the admission back, or the
-    // next thing it teaches the user is to ignore it.
+    // next thing it teaches the user is to ignore it. The response is still
+    // held here, so the restored request has nothing new to deliver: the
+    // notice has to go because the channel is back, not because parts arrived.
     const restored = page.waitForResponse(
       (response) => response.request().method() === 'GET'
-        && isAiStream(new URL(response.url()))
+        && isStream(new URL(response.url()))
         && response.status() === 200,
       { timeout: RESTORE_MS },
     );
-    await page.unroute(isAiStream, abortAiStream);
+    await page.unroute(isStream, abortStream);
     await restored;
     await expect(
       degradedNotice,
       'the acknowledgement must clear once the page holds a live channel again',
     ).toBeHidden({ timeout: RESTORE_MS });
 
-    // ── RELEASE: the turn the user was waiting for finishes on that page. ────
+    // ── RELEASE: the response the user was waiting for finishes on that page.
     releaseFrameHoldFault(frameHoldPath);
     await expect
       .poll(async () => normalizeRendered(await assistantTranscript(page)).length, {
@@ -542,26 +543,32 @@ test('a stream lost mid-reply is admitted on the page while the turn keeps runni
       'the reconnect must not render the same stretch of the answer twice',
     ).toBeNull();
 
-    // The durable half: the turn the outage interrupted is recorded COMPLETED,
-    // not FAILED and not recovered into a second one.
-    await api.waitForSession(
-      sessionId,
-      (record) => String(record.state || '') === 'READY'
-        && String(record.last_turn_status || '') === 'COMPLETED',
-      SETTLE_MS,
-    );
+    // The recorded half: the response the outage interrupted is recorded
+    // completed, and it is the only one answering the message — not failed,
+    // and not followed by a second one.
+    await expect
+      .poll(() => {
+        const row = sessionResponseRows(sessionId).find((item) => item.response_id === responseId);
+        return row ? `${row.status}/${row.outcome ?? ''}` : 'missing';
+      }, { timeout: SETTLE_MS, message: 'the platform must record the response as completed' })
+      .toBe('ended/completed');
+    expect(
+      sessionResponseRows(sessionId).filter((row) => row.input_ids.includes(receipt.input_id)),
+      'exactly one response answers the message',
+    ).toHaveLength(1);
+    await api.waitForSessionReady(sessionId, SETTLE_MS);
     await expect(
       statusPill,
-      'the header must return to READY once the resumed turn settles',
+      'the header must return to READY once the response ends',
     ).toHaveAttribute('data-state', 'READY', { timeout: RESTORE_MS });
 
-    const reply = page.getByTestId('assistant-message').last();
-    await expect(reply, 'the resumed turn should have rendered assistant content').not.toBeEmpty();
-    await expect(reply).not.toContainText(TURN_ERROR);
+    const reply = page.locator(`[data-message-id="${responseId}"]`).getByTestId('assistant-message');
+    await expect(reply, 'the response should have rendered assistant content').not.toBeEmpty();
+    await expect(reply).not.toContainText(RESPONSE_ERROR);
   } finally {
     // The declaration goes first and unconditionally: a hold nobody releases
-    // raises on the backend after 120s and fails the turn for an unrelated
-    // reason, and a file left behind would park the next turn in this
+    // stops the reader on the backend after 120s for a reason unrelated to this
+    // spec, and a file left behind would hold the next response in this
     // deployment. `trackSessions()` still decides whether the session survives.
     releaseFrameHoldFault(frameHoldPath);
     clearFrameHoldFault(frameHoldPath);
@@ -572,8 +579,7 @@ test('a stream lost mid-reply is admitted on the page while the turn keeps runni
       type: 'e2e_stream_error_console',
       description: streamErrorLogs.length
         ? streamErrorLogs.slice(0, 5).join(' | ')
-        : 'none — the page logged NO stream error, so the five-minute timer never armed '
-          + 'and the page would have stayed silent forever, not for five minutes',
+        : 'none — the page logged NO lost stream request, so it never knew to say anything',
     });
     test.info().annotations.push({
       type: 'e2e_aborted_stream_attempts',

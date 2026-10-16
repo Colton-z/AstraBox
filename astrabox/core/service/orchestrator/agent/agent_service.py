@@ -7,7 +7,7 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
-from astrabox.persistence.repository import AgentRepository
+from astrabox.persistence.repository.agent_repository import AgentRepository
 from astrabox.persistence.repository.agent_repository import NAME_SORT_KEY_FIELD
 from astrabox.persistence.repository.keyset import (
     SWEEP_PAGE_SIZE,
@@ -15,14 +15,17 @@ from astrabox.persistence.repository.keyset import (
     decode_list_cursor,
     encode_list_cursor,
     iter_keyset_pages,
-    read_filtered_page,
 )
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext, default_org_id
 from astrabox.core.service.orchestrator.agent import agent_catalog
 from astrabox.core.model import AgentState
-from astrabox.core.service.orchestrator.agent_access import can_manage_agent, can_view_agent
+from astrabox.core.service.orchestrator.agent_access import (
+    can_manage_agent,
+    can_view_agent,
+    is_platform_admin,
+)
 from astrabox.core.service.orchestrator.agent_schema import (
     AGENT_PRIVATE_STORED_FIELDS,
     agent_artifacts_enabled,
@@ -33,36 +36,13 @@ from astrabox.seams.sandbox_disposal import SandboxDestruction
 
 logger = get_logger(__name__)
 
-# Bounds the post-wake ACTIVE-poll loop in
-# agent_mcp_service._ensure_active_agent.
+#: How long a caller waits for a new conversation to leave ``CREATING``
+#: (``agent_mcp_service`` and the artifact runner).
 _AGENT_STARTUP_TIMEOUT_SECONDS = 300
 
 #: The status narrowings the Agent list page accepts.
 AGENT_LIST_STATUSES = frozenset({"all", "enabled", "disabled"})
 _AGENT_LIST_CURSOR_KEYS = ("name_key", "agent_id")
-
-
-def _agent_enabled(doc: dict[str, Any]) -> bool:
-    """An Agent is enabled unless its row says otherwise, as the console reads it."""
-
-    value = doc.get("enabled")
-    return not (value is False or str(value).strip().lower() == "false")
-
-
-def _agent_matches(doc: dict[str, Any], *, needle: str, status: str) -> bool:
-    """Whether a row passes the list page's search and status narrowing."""
-
-    enabled = _agent_enabled(doc)
-    if (status == "enabled" and not enabled) or (status == "disabled" and enabled):
-        return False
-    if not needle:
-        return True
-    display_meta = doc.get("display_meta")
-    display_name = display_meta.get("display_name") if isinstance(display_meta, dict) else None
-    return any(
-        needle in str(value or "").lower()
-        for value in (doc.get("name"), display_name, doc.get("model"))
-    )
 
 
 class AgentService:
@@ -75,16 +55,12 @@ class AgentService:
         sessions_repo: Any,
         runtime_manager: Any,
         agent_config: Any,
-        turn_service: Any,
-        broker: Any,
         agent_repo: Any | None = None,
     ) -> None:
         self._platform = platform_service
         self._sessions_repo = sessions_repo
         self._runtime_manager = runtime_manager
         self._agent_config = agent_config
-        self._turn_service = turn_service
-        self._broker = broker
         self._agent_repo = agent_repo if agent_repo is not None else AgentRepository()
 
         self._bootstrap_lock = asyncio.Lock()
@@ -189,15 +165,21 @@ class AgentService:
         if not target or self._quiesced_reason:
             return 0
         scheduled = 0
-        async for row in self._live_agents():
-            if str(row.get("environment_name") or "").strip() != target:
-                continue
-            agent_id = str(row.get("agent_id") or "").strip()
-            if not agent_id:
-                continue
-            self._schedule_runtime_reconciliation(agent_id)
+        async for row in iter_keyset_pages(
+            lambda after: self._environment_agent_ids_page(target, after),
+            key="agent_id",
+        ):
+            self._schedule_runtime_reconciliation(str(row["agent_id"]))
             scheduled += 1
         return scheduled
+
+    async def _environment_agent_ids_page(
+        self, environment_name: str, after: str | None
+    ) -> list[dict[str, Any]]:
+        ids = await self._agent_repo.list_agent_ids_by_environment(
+            environment_name, after_agent_id=after, limit=SWEEP_PAGE_SIZE
+        )
+        return [{"agent_id": agent_id} for agent_id in ids]
 
     def _live_agents(self) -> AsyncIterator[dict[str, Any]]:
         """Every Agent that is not deleted, read in pages.
@@ -221,12 +203,13 @@ class AgentService:
         could still enumerate through this call.
         """
         await self.ensure_bootstrap()
-        rows = await self._agent_repo.list_all_agents()
+        rows = await self._agent_repo.list_visible_agents(
+            user.user_id, platform_admin=is_platform_admin(user.roles)
+        )
         favorites = await agent_catalog.favorite_repository().agent_ids_for(user.user_id)
         return [
             {**self._user_view(user, r), "favorited": str(r.get("agent_id") or "") in favorites}
             for r in rows
-            if can_view_agent(r, user.user_id, user.roles)
         ]
 
     async def set_favorite(self, user: UserContext, agent_id: str, *, favorite: bool) -> dict[str, Any]:
@@ -241,31 +224,9 @@ class AgentService:
 
     async def list_agent_tags(self, user: UserContext) -> list[dict[str, Any]]:
         """The tags of the Agents the caller may see, most used first."""
-        rows = await self._agent_repo.list_all_agents()
-        return agent_catalog.tag_counts(
-            r for r in rows if can_view_agent(r, user.user_id, user.roles)
+        return await self._agent_repo.visible_tag_counts(
+            user.user_id, platform_admin=is_platform_admin(user.roles)
         )
-
-    async def category_agent_counts(self) -> dict[str, int]:
-        """How many Agents each category holds, for the administrator."""
-        counts: dict[str, int] = {}
-        for row in await self._agent_repo.list_all_agents():
-            for category_id in row.get("categories") or []:
-                counts[str(category_id)] = counts.get(str(category_id), 0) + 1
-        return counts
-
-    async def unbind_category(self, category_id: str) -> int:
-        """Take a category off every Agent that has it; the number of Agents changed."""
-        changed = 0
-        for row in await self._agent_repo.list_all_agents():
-            categories = [str(c) for c in row.get("categories") or []]
-            if category_id in categories:
-                await self._agent_repo.update_agent(
-                    str(row["agent_id"]),
-                    {"categories": [c for c in categories if c != category_id]},
-                )
-                changed += 1
-        return changed
 
     async def list_agents_page(
         self,
@@ -299,20 +260,16 @@ class AgentService:
                 status_code=400,
             ) from exc
         await self.ensure_bootstrap()
-        needle = str(query or "").strip().lower()
-        rows, has_more = await read_filtered_page(
-            lambda after_key, size: self._agent_repo.list_agents_by_name_page(
-                after=after_key, limit=size
-            ),
-            after=after,
-            key_of=lambda row: (
-                str(row.get(NAME_SORT_KEY_FIELD) or ""),
-                str(row.get("agent_id") or ""),
-            ),
-            keep=lambda row: can_view_agent(row, user.user_id, user.roles)
-            and _agent_matches(row, needle=needle, status=status),
-            limit=limit,
+        platform_admin = is_platform_admin(user.roles)
+        fetched = await self._agent_repo.list_visible_agents_page(
+            user.user_id,
+            platform_admin=platform_admin,
+            after=(after[0], after[1]) if after is not None else None,
+            limit=limit + 1,
+            needle=query,
+            enabled={"enabled": True, "disabled": False}.get(status),
         )
+        rows, has_more = fetched[:limit], len(fetched) > limit
         page: dict[str, Any] = {
             "agents": [self._user_view(user, row) for row in rows],
             "has_more": has_more,
@@ -328,20 +285,10 @@ class AgentService:
             ),
         }
         if after is None:
-            visible = [
-                doc
-                for doc in await self._agent_repo.list_agent_access_docs()
-                if can_view_agent(doc, user.user_id, user.roles)
-            ]
-            page["total"] = len(visible)
-            page["enabled"] = sum(_agent_enabled(doc) for doc in visible)
+            page["total"], page["enabled"] = await self._agent_repo.count_visible_agents(
+                user.user_id, platform_admin=platform_admin
+            )
         return page
-
-    async def list_all_agents(self) -> list[dict[str, Any]]:
-        """Every agent, unfiltered — for internal paths that already hold their
-        own authorization (runtime startup resolving an existing session)."""
-        rows = await self._agent_repo.list_all_agents()
-        return [self._sanitize(r) for r in rows]
 
     async def get_agent(self, user: UserContext, agent_id: str) -> dict[str, Any]:
         agent = await self._must_view(user, agent_id)
@@ -374,7 +321,7 @@ class AgentService:
                 ),
                 status_code=403,
             )
-        return await self._prepared_runtime_status(agent)
+        return await self._prepared_runtime_status(agent_id)
 
     async def _runtime_enabled(self, agent: dict[str, Any]) -> bool:
         """Read runtime eligibility without constructing a startup configuration."""
@@ -389,7 +336,7 @@ class AgentService:
         environment = await self._agent_config.get_environment(str(agent.get("environment_name") or ""))
         return environment is not None and environment.get("enabled") is not False
 
-    async def _prepared_runtime_status(self, agent: dict[str, Any]) -> dict[str, Any]:
+    async def _prepared_runtime_status(self, agent_id: str) -> dict[str, Any]:
         from astrabox.core.service.orchestrator.agent.prepared_capacity import LAST_MISS_FIELD
         from astrabox.core.service.orchestrator.agent.prepared_slots import (
             _manifest_is_reapable, slot_manifests,
@@ -402,6 +349,9 @@ class AgentService:
             sandbox_for_name,
         )
 
+        agent = await self._agent_repo.read_ledger(agent_id)
+        if agent is None:
+            raise APIError(code="AGENT_NOT_FOUND", message="agent not found", status_code=404)
         target = int(agent.get("prepared_capacity") or 0)
         enabled = target > 0 and await self._runtime_enabled(agent)
         last_miss_at = str(agent.get(LAST_MISS_FIELD) or "").strip() or None
@@ -511,24 +461,21 @@ class AgentService:
                 message="enable the Agent and its Environment and give it prepared capacity before requesting a refresh",
                 status_code=409,
             )
-        updates = {"_prewarm_revision": uuid.uuid4().hex, "_prepared_runtime_error": None}
-        updated = await self._agent_repo.compare_and_update_agent(
+        if not await self._agent_repo.request_prewarm_refresh(
             agent_id,
-            expected={
-                key: agent.get(key) if key in agent else {"$exists": False}
-                for key in ("version", "prepared_capacity", "enabled", "_prewarm_revision")
-            },
-            updates=updates,
-        )
-        if not updated:
+            version=int(agent["version"]),
+            prepared_capacity=int(agent.get("prepared_capacity") or 0),
+            enabled=agent.get("enabled") is not False,
+            prewarm_revision=agent.get("_prewarm_revision"),
+            new_revision=uuid.uuid4().hex,
+        ):
             raise APIError(
                 code="AGENT_RUNTIME_GENERATION_CONFLICT",
                 message="Agent changed while requesting prewarm refresh; reload its configuration",
                 status_code=409,
             )
-        agent.update(updates)
         self.schedule_runtime_reconciliation(agent_id)
-        return await self._prepared_runtime_status(agent)
+        return await self._prepared_runtime_status(agent_id)
 
     async def delete_agent(self, user: UserContext, agent_id: str) -> dict[str, Any]:
         agent = await self._must_view(user, agent_id)
@@ -538,10 +485,7 @@ class AgentService:
                 message="only the creator or an admin may delete this agent",
                 status_code=403,
             )
-        await self._agent_repo.update_agent(
-            agent_id,
-            {"state": AgentState.DELETING.value},
-        )
+        await self._agent_repo.mark_deleting(agent_id)
         agent["state"] = AgentState.DELETING.value
         runtime_key = self._agent_runtime_key(agent_id)
         sandbox_id = str(agent.get("sandbox_id") or "").strip() or None
@@ -554,26 +498,28 @@ class AgentService:
             logger.warning("failed to terminate agent sandbox: %s", exc)
         # Soft-delete hides this row from `find_agent_by_sandbox_id`, which is
         # the only place a by-id destroy can learn this box's backend. Whatever
-        # the delete could not confirm gone therefore has to be written onto the
-        # row before it stops being findable, or the box outlives every way of
+        # the delete could not confirm gone therefore has to be recorded for the
+        # Agent before it stops being findable, or the box outlives every way of
         # naming it.
         keep = keep_name_updates(destruction, row=agent)
-        if keep:
+        if keep and destruction is not None and destruction.leaked_sandbox_id:
             logger.error(
                 "agent delete could not confirm the destruction of agent=%s "
-                "sandbox=%s; it is recorded as undestroyed on the row: %s",
+                "sandbox=%s; it is recorded as undestroyed for the Agent: %s",
                 agent_id,
                 sandbox_id,
-                destruction.detail if destruction is not None else "the destroy raised",
+                destruction.detail,
             )
-            await self._agent_repo.update_agent(agent_id, keep)
+            await self._agent_repo.record_undestroyed_sandbox(
+                agent_id, destruction.leaked_sandbox_id
+            )
             agent.update(keep)
         await self._reconcile_agent_runtime(agent_id)
         retirement = self._pool_retirement_tasks.get(agent_id)
         if retirement is not None:
             await retirement
-        await self._agent_repo.soft_delete(agent_id, user.user_id)
-        await agent_catalog.favorite_repository().remove_agent(agent_id)
+        await self._release_records_naming(agent_id)
+        await self._agent_repo.soft_delete(agent_id)
         agent["state"] = AgentState.DELETED.value
         agent["expires_at"] = None
         # The pointer is cleared only on a confirmed destruction, by the same
@@ -581,6 +527,18 @@ class AgentService:
         if destruction is not None and destruction.confirmed:
             agent["sandbox_id"] = None
         return self._sanitize(agent)
+
+    async def _release_records_naming(self, agent_id: str) -> None:
+        """Remove what other records keep for an Agent being deleted.
+
+        The one place an Agent deletion reaches records outside the Agent's own
+        rows. It runs before the Agent is hidden, so a failure here leaves the
+        Agent to be deleted again; the Agent's own rows stay for the
+        conversations that name it.
+        """
+        # Its schedules, webhooks and channel bindings must stop firing.
+        await self._platform.delete_target_deployments(agent_id=agent_id)
+        await agent_catalog.favorite_repository().remove_agent(agent_id)
 
     def _schedule_runtime_reconciliation(self, agent_id: str) -> bool:
         """Reconcile persisted configuration without delaying its caller.
@@ -663,22 +621,13 @@ class AgentService:
         """Clean retained supplier addresses without gating new preparation."""
         from astrabox.core.service.orchestrator.agent.client_pool import retire_agent_client_pool
 
-        lock = self._runtime_reconciliation_locks.setdefault(agent_id, asyncio.Lock())
         while True:
-            row = await self._agent_repo.get_agent(agent_id)
-            pending = (row or {}).get("_retiring_client_pools") or []
+            pending = await self._agent_repo.list_retiring_client_pools(agent_id)
             if not pending:
                 return
             retired = pending[0]
             await retire_agent_client_pool(retired["name"], backend_name=retired["backend"])
-            async with lock:
-                row = await self._agent_repo.get_agent(agent_id)
-                pending = (row or {}).get("_retiring_client_pools") or []
-                await self._agent_repo.compare_and_update_agent(
-                    agent_id,
-                    expected={"_retiring_client_pools": pending},
-                    updates={"_retiring_client_pools": [item for item in pending if item != retired]},
-                )
+            await self._agent_repo.remove_retiring_client_pool(agent_id, retired["name"])
 
     async def _reconcile_agent_runtime(self, agent_id: str) -> None:
         """Publish one platform generation and prepare its configured capacity."""
@@ -700,17 +649,15 @@ class AgentService:
         target = str(agent_id or "").strip()
         lock = self._runtime_reconciliation_locks.setdefault(target, asyncio.Lock())
         async with lock:
-            row = await self._agent_repo.get_agent(target)
+            row = await self._agent_repo.read_ledger(target)
             if not isinstance(row, dict):
                 return
             previous_pool_name = str(row.get(CLIENT_POOL_NAME_FIELD) or "").strip()
             previous_pool_backend = str(row.get(CLIENT_POOL_BACKEND_FIELD) or "").strip()
-            version = row.get("version") if "version" in row else {"$exists": False}
+            # What this pass reports is recorded only for the definition and
+            # rebuild request it started from.
+            version = int(row["version"])
             revision = row.get("_prewarm_revision")
-            expected = {
-                "version": version,
-                "_prewarm_revision": revision if "_prewarm_revision" in row else {"$exists": False},
-            }
             try:
                 if row.get("_retiring_client_pools"):
                     self._schedule_pool_retirement(target)
@@ -739,17 +686,8 @@ class AgentService:
                         )
                         # A Session start may have recorded a newer namespace
                         # meanwhile; it stays named, and another pass retires it.
-                        cleared = await self._agent_repo.compare_and_update_agent(
-                            target,
-                            expected={
-                                key: row[key] if key in row else {"$exists": False}
-                                for key in (CLIENT_POOL_NAME_FIELD, CLIENT_POOL_BACKEND_FIELD)
-                            },
-                            updates={
-                                CLIENT_POOL_NAME_FIELD: None,
-                                CLIENT_POOL_BACKEND_FIELD: None,
-                                "_client_pool_epoch": None,
-                            },
+                        cleared = await self._agent_repo.clear_client_pool(
+                            target, name=previous_pool_name, backend=previous_pool_backend
                         )
                         if not cleared:
                             self._reconciliation_requested.add(target)
@@ -769,8 +707,7 @@ class AgentService:
                         runtime_manager=self._runtime_manager,
                         agent_repo=self._agent_repo,
                     )
-                    recorded = await self._agent_repo.get_agent(target)
-                    if isinstance(recorded, dict) and recorded.get("_retiring_client_pools"):
+                    if await self._agent_repo.list_retiring_client_pools(target):
                         self._schedule_pool_retirement(target)
                     from astrabox.core.service.orchestrator.runtime.runtime_profile import (
                         resolve_sandbox_tenancy,
@@ -794,23 +731,17 @@ class AgentService:
                             runtime_manager=self._runtime_manager,
                             agent_repo=self._agent_repo,
                         )
-                await self._agent_repo.compare_and_update_agent(
-                    target,
-                    expected=expected,
-                    updates={
-                        "_prepared_runtime_error": None,
-                        "_prepared_runtime_generation": generation,
-                    },
+                await self._agent_repo.record_prepared_runtime(
+                    target, version=version, prewarm_revision=revision, generation=generation
                 )
             except BaseException as exc:
                 if isinstance(exc, asyncio.CancelledError):
                     raise
-                await self._agent_repo.compare_and_update_agent(
+                await self._agent_repo.record_prepared_runtime(
                     target,
-                    expected=expected,
-                    updates={
-                        "_prepared_runtime_error": (f"{type(exc).__name__}: {str(exc).strip()}")
-                    },
+                    version=version,
+                    prewarm_revision=revision,
+                    error=f"{type(exc).__name__}: {str(exc).strip()}",
                 )
                 raise
 
@@ -822,9 +753,6 @@ class AgentService:
                 message="only the creator or an admin may prepare this agent",
                 status_code=403,
             )
-        if str(agent.get("state") or "").strip() != AgentState.ACTIVE.value:
-            await self._agent_repo.update_agent(agent_id, {"state": AgentState.ACTIVE.value})
-            agent["state"] = AgentState.ACTIVE.value
         return self._sanitize(agent)
 
     async def hibernate_agent(self, user: UserContext, agent_id: str) -> dict[str, Any]:
@@ -847,10 +775,9 @@ class AgentService:
     ) -> dict[str, Any]:
         """Create a new user-visible conversation session with an agent.
 
-        The conversation is provisioned through the same
-        ``kernel.create_session`` → ``StartSessionStartup`` path as chat
-        (lifecycle_worker's agent_chat branch plans an ``agent_conversation``
-        subject).
+        The conversation is provisioned through the session lifecycle's
+        ``create_session``, whose startup plans the Agent conversation's
+        runtime subject.
         """
         agent = await self._must_access(agent_id)
         harness = await self._agent_config.resolve_agent_harness(
@@ -877,13 +804,6 @@ class AgentService:
         idempotency_key: str | None = None,
         source_type: str = "agent",
     ) -> dict[str, Any]:
-        kernel = getattr(self._platform, "_session_kernel", None)
-        if kernel is None:
-            raise APIError(
-                code="AGENT_RUNTIME_ERROR",
-                message="session kernel unavailable for agent conversation",
-                status_code=500,
-            )
         create_options: dict[str, Any] = {
             # No permission_mode: creation falls to the product default for
             # (agent_chat, engine) declared once in engine/capabilities.py.
@@ -896,13 +816,7 @@ class AgentService:
         }
         if idempotency_key is not None:
             create_options["idempotency_key"] = idempotency_key
-        response = await kernel.create_session(
-            user,
-            # The Session resolves the Agent by ``agent_id``; this positional
-            # value is only the display/grouping label expected by the kernel.
-            agent_id,
-            **create_options,
-        )
+        response = await self._platform._session_lifecycle.create_session(user, **create_options)
         session_id = str((response or {}).get("session_id") or "").strip()
         return {
             "session_id": session_id,
@@ -910,20 +824,6 @@ class AgentService:
             "deployment_name": agent.get("name"),
         }
 
-    async def chat_stream(
-        self,
-        user: UserContext,
-        agent_id: str,
-        content: str,
-    ) -> AsyncIterator[dict[str, Any]]:
-        _ = (user, agent_id, content)
-        raise APIError(
-            code="AGENT_DIRECT_CHAT_DISABLED",
-            message="Agents don't support a primary chat session — create a conversation first",
-            status_code=409,
-        )
-        if False:
-            yield {}
 
     async def _must_access(self, agent_id: str) -> dict[str, Any]:
         """Resolve by id with no visibility check — internal paths only.

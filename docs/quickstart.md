@@ -109,13 +109,16 @@ SESSION_ID=$(curl --fail --silent --show-error --request POST \
   --data '{}' \
   | jq -er '.data.session_id')
 
-curl --fail --no-buffer --silent --show-error --request POST \
-  "$SERVICE_URL/api/v1/sessions/$SESSION_ID/ai-stream" \
+curl --fail --silent --show-error --output /dev/null --request POST \
+  "$SERVICE_URL/api/v1/sessions/$SESSION_ID/inputs" \
   --header 'Content-Type: application/json' \
   --data '{
     "content": "Write a Python function that computes Fibonacci numbers and run a test.",
-    "client_message_id": "quickstart-turn-1"
+    "client_message_id": "quickstart-message-1"
   }'
+
+curl --fail --no-buffer --silent --show-error \
+  "$SERVICE_URL/api/v1/sessions/$SESSION_ID/stream?after_seq=0"
 ```
 
 For a deployment with team login, add the bearer token described in

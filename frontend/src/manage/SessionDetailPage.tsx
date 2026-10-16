@@ -35,7 +35,7 @@ import {
   shortId,
 } from './sessionConfig';
 import { TraceDigest } from './SessionTraceDigest';
-import { TurnFrames } from './SessionTurnFrames';
+import { ResponseParts } from './SessionResponseParts';
 import { keepsLastRead, useKeepCurrent, type ReloadContext } from '@/hooks/useKeepCurrent';
 
 function joinList(values: string[] | null | undefined): string {
@@ -72,8 +72,8 @@ function formatMcpConfig(value: unknown): string {
  *
  * The record shows its read time and can be refreshed without navigating away.
  */
-// READY also covers running turns. These records disclose their read time;
-// creation and recovery additionally follow through the existing polling hook.
+// The lifecycle state, READY while a response runs too. These records disclose
+// their read time; creation additionally follows through the polling hook.
 const RESTING_SESSION_STATES = new Set(['READY', 'TERMINATED', 'DELETED']);
 
 export default function SessionDetailPage() {
@@ -312,21 +312,21 @@ export default function SessionDetailPage() {
       )}
 
       {/* The counts and the tail of the conversation, not the whole transcript:
-          inspecting individual frames stays a deeper drill opened deliberately. */}
+          inspecting individual parts stays a deeper drill opened deliberately. */}
       <ConsoleCard title={t('manage:sessions.trace_section')}>
         {trace ? (
           <>
-            <ConsoleFieldRow label={t('manage:sessions.field_current_turn')}>
-              <p className="font-mono select-text">{trace.current_turn_id || '—'}</p>
+            <ConsoleFieldRow label={t('manage:sessions.field_running_responses')}>
+              <p className="font-mono select-text">{trace.current_response_ids.join(', ') || '—'}</p>
             </ConsoleFieldRow>
-            <ConsoleFieldRow label={t('manage:sessions.field_turn_count')}>
-              <p className="tabular-nums">{trace.turns?.length ?? 0}</p>
+            <ConsoleFieldRow label={t('manage:sessions.field_response_count')}>
+              <p className="tabular-nums">{trace.responses.length}</p>
             </ConsoleFieldRow>
             <ConsoleFieldRow label={t('manage:sessions.field_events')}>
               <p className="tabular-nums">
                 {t('manage:sessions.events_value', {
-                  messages: trace.messages?.length ?? 0,
-                  frames: trace.frames?.length ?? 0,
+                  messages: trace.messages.length,
+                  parts: trace.parts.length,
                 })}
               </p>
             </ConsoleFieldRow>
@@ -341,15 +341,15 @@ export default function SessionDetailPage() {
 
       {/* A separate block from the digest above, because it answers a different
           question: that one is the tail of the conversation at a glance, this
-          is one turn opened deliberately and read frame by frame. It is the
+          is one response opened deliberately and read part by part. It is the
           deepest drill the console offers — the one the digest card above
           defers to. */}
-      {trace && (trace.frames?.length || trace.turns?.length) ? (
+      {trace && (trace.parts.length || trace.responses.length) ? (
         <ConsoleCard
-          title={t('manage:sessions.frames_section')}
-          intro={t('manage:sessions.frames_intro')}
+          title={t('manage:sessions.parts_section')}
+          intro={t('manage:sessions.parts_intro')}
         >
-          <TurnFrames sessionId={detail.session_id} trace={trace} />
+          <ResponseParts sessionId={detail.session_id} trace={trace} />
         </ConsoleCard>
       ) : null}
     </ConsoleRecordPage>

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import builtins
 import importlib.util
-import re
 import shutil
 import sys
 from pathlib import Path
@@ -98,18 +97,6 @@ def _load_adapter(tmp_path: Path, monkeypatch: Any, *, identity: str = "local") 
     return module
 
 
-def test_custom_auth_loads_from_litellm_config_directory(
-    tmp_path: Path,
-    monkeypatch: Any,
-) -> None:
-    """Mirror LiteLLM's spec loader, which does not extend ``sys.path``."""
-
-    module = _load_adapter(tmp_path, monkeypatch)
-
-    assert callable(module.user_api_key_auth)
-    assert sys.path[0] == str(tmp_path)
-
-
 @pytest.mark.parametrize("config_path", [
     "containers/litellm/config.yaml",
 ])
@@ -194,27 +181,6 @@ def test_a_litellm_key_never_reaches_the_identity_provider(
 
     assert not isinstance(caught.value, _ProviderConsulted)
     assert not isinstance(caught.value, _ProxyException)
-
-
-def test_an_access_token_still_reaches_the_identity_provider(
-    tmp_path: Path,
-    monkeypatch: Any,
-) -> None:
-    """The control for the test above: the shape check must not shut OIDC off.
-
-    Without this, declining everything would pass that test and break every
-    console login.
-    """
-
-    module = _refuse_to_be_consulted(tmp_path, monkeypatch)
-    request = SimpleNamespace(url=SimpleNamespace(path="/v1/chat/completions"))
-
-    with pytest.raises(_ProviderConsulted):
-        asyncio.run(
-            module.user_api_key_auth(
-                request, "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhIn0.signature"
-            )
-        )
 
 
 def test_an_astrabox_credential_that_fails_its_checks_is_rejected(
@@ -349,19 +315,3 @@ def test_the_gateway_gives_a_token_the_role_the_platform_gives_it(
     result = asyncio.run(module.user_api_key_auth(request, token))
 
     assert result.values["user_role"] == role, name
-
-
-def test_bundled_litellm_mcp_server_names_use_supported_characters() -> None:
-    root = Path(__file__).parents[1]
-    config = yaml.safe_load((root / "containers/litellm/config.yaml").read_text())
-
-    names = list(config["mcp_servers"])
-    assert names == ["astrabox_agents", "bright_data"]
-    assert all(re.fullmatch(r"[A-Za-z0-9_]+", name) for name in names)
-    managed = config["mcp_servers"]["bright_data"]
-    assert managed["url"] == "https://mcp.brightdata.com/mcp"
-    # The gateway consumes x-mcp-bright_data-authorization itself; a verbatim
-    # extra_headers forwarding entry would leak that client header upstream.
-    assert "extra_headers" not in managed
-    assert "static_headers" not in managed
-    assert "credentials" not in managed

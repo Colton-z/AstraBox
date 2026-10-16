@@ -37,13 +37,14 @@ Agent 使用基于占位符的受保护凭证时：
 3. 出站代理检查请求的目标地址、方法、路径和允许替换的位置。
 4. 符合规则的请求会获得真实值；不符合规则的请求不会获得凭证，也可能被 Environment 的网络规则阻止。
 
-凭证 API 永远不会返回真实值，控制台也不会显示。轮换 MCP 凭证后，AstraBox 会在下一项
-顶层 Agent 任务开始前刷新受保护凭证，Agent 使用原有占位符。出站环境变量和 HTTP Basic
-凭证在准备或重连运行时解析，不会在已运行的环境中随每项任务刷新。
+凭证 API 永远不会返回真实值，控制台也不会显示。轮换 MCP 凭证后，AstraBox 会在把下一条
+消息交给 Agent 程序之前刷新受保护凭证，Agent 使用原有占位符。出站环境变量和 HTTP Basic
+凭证在运行准备或重连时解析，运行期间不会在每条消息前重新解析。
 
-HTTP Basic 直接注入请求头。请在 Vault 中配置不含凭证的 HTTPS 目标 URL、用户名和只写
-密码或 Token。AstraBox 会在下载 Skill 和 Plugin 的 Git 仓库前安装认证规则，预热也使用
-同一路径。主机和路径匹配时，OpenSandbox 添加原生 Basic 认证请求头。
+HTTP Basic 则直接注入请求头。请在 Vault 中配置不含凭证的目标 URL、用户名和只写的密码或
+Token；沙箱内的请求不含凭证占位符。AstraBox 会在下载 Skill 和 Plugin 的 Git 仓库前安装
+凭证规则，预备容量也是如此。HTTPS 主机和路径匹配时，OpenSandbox 添加原生 Basic 认证
+请求头。参见[私有 Git 示例](credentials.md#2-add-a-credential)。
 
 ## 目标地址和请求限制
 
@@ -53,9 +54,11 @@ HTTP Basic 直接注入请求头。请在 Vault 中配置不含凭证的 HTTPS �
 
 远程 MCP 服务使用受保护认证时，必须提供不含查询参数的 Streamable HTTP URL，并使用 HTTPS 443 端口；明确允许明文传输后也可以使用 HTTP 80 端口。带认证的 SSE 不受支持，因为它的 POST 地址会动态返回，无法预先限制。
 
+HTTP Basic 要求使用 443 端口、路径不是根路径的不含凭证 HTTPS URL。它匹配该路径本身及其子路径上的 `GET`、`HEAD` 和 `POST` 请求。例如，`https://github.com/acme/private-skills.git` 覆盖 `/acme/private-skills.git/info/refs`，但不覆盖 `/acme/private-skills.git-other/info/refs`。不匹配的请求不会从这项绑定获得 Basic 凭证。重定向后的目标地址要保持在配置的范围内；AstraBox 不会把凭证转发给其他主机或代码仓库路径。
+
 ## 网络访问单独配置
 
-Agent 的 Environment（运行环境）仍通过 `limited` 或 `unrestricted` 网络模式控制普通出站访问。分配受保护凭证会把它的准确目标地址加入沙箱实际使用的网络规则，但不会修改已保存的 Environment，也不会允许其他无关地址。凭证的方法和路径规则会继续决定哪些匹配请求能够获得密钥。
+Agent 的 Environment（运行环境）仍通过 `limited` 或 `unrestricted` 网络模式控制普通出站访问。分配受保护凭证会把它的准确目标地址加入沙箱实际使用的网络规则，但不会修改已保存的 Environment，也不会允许其他无关地址。凭证的方法和路径规则决定哪些匹配请求能够获得密钥。
 
 远程 MCP 调用和其他沙箱流量都使用当前部署的网络出口。Environment 设置和出站 IP 地址见[网络访问](networking.md)。
 
@@ -70,21 +73,25 @@ ASTRABOX_SANDBOX_EGRESS_MODE=dns+nft
 
 沙箱后端必须提供出站代理，并支持受保护凭证。仓库维护的 OpenSandbox 部署会通过标准
 创建路径为冷启动和客户端池容量提供这些组件。它们在 Session 领取沙箱前就已存在，
-不能等到 Session 第一次需要凭证时再安装。
+不会等到 Session 第一次需要凭证时才安装。
 
-如果已经启用凭证保护，但所选后端无法提供，AstraBox 会拒绝启动运行环境，不会把真实凭证放进沙箱。如果运维者明确关闭凭证保护，模型凭证会通过 Agent 程序的环境变量传递；已保存的远程 MCP 服务凭证和外部 API 环境变量凭证将不可用。
+如果已经启用凭证保护，但所选后端无法提供，AstraBox 会拒绝启动运行时，不会把真实凭证放进沙箱。
 
-自定义部署和预备容量的要求见 [OpenSandbox 凭证保护](providers/opensandbox.md#credential-protection)。
+Agent 程序收到的是不含密钥的占位符。沙箱创建后，AstraBox 把真实的网关凭证及其匹配规则
+写入出站代理。所选 Agent 程序的集成会把该凭证限定在它的模型 API 方法和路径上。
 
-## 验证正在运行的沙箱
+需要明确通过沙箱环境变量传递凭证时，设置 `ASTRABOX_SANDBOX_CREDENTIAL_VAULT=false`。
+这种模式下，所选 Agent 程序通过进程环境变量收到模型或网关凭证。已保存的远程 MCP 服务
+凭证、HTTP Basic 凭证和外部 API 环境变量凭证在这种模式下不可用，因为它们的值不能进入
+工作负载。
 
-1. 在**管理台 → 凭证**中打开已分配的凭证库，检查三种凭证传递方式。
-2. 使用已分配的 Agent 启动 Session，并向允许的目标地址发起一次请求。
-3. 打开**管理台 → 沙箱**，选择对应沙箱，查看**网络与凭证**。该面板直接显示沙箱报告的网络规则和生效凭证名称，永远不会显示保存值。
+管理台会显示当前生效的传递模式，返回的凭证元数据不含保存值。
 
-Environment 独立声明普通出站可达性。`unrestricted` 允许所有地址；`limited` 允许
-其允许列表和平台已知地址。Environment 记录无需复制 Vault binding，也不会读取 Plugin
-内部的 MCP 声明：
+## 独立配置普通网络访问
+
+Environment 独立于凭证传递声明普通出站可达性。`unrestricted` 允许所有地址；`limited`
+允许其允许列表和平台已知地址，它不会重复 Vault binding，也不会读取 Plugin 内部的 MCP
+声明：
 
 ```json
 {
@@ -97,20 +104,21 @@ Environment 独立声明普通出站可达性。`unrestricted` 允许所有地�
 ```
 
 平台会推导模型地址、AstraBox 回调地址和已声明的 Plugin Git 地址。
-`allow_mcp_servers` 允许 Agent 直接声明的远程 MCP URL。Plugin 保持引擎原生且内容
-不透明；管理员需要列出 Plugin 内部使用的地址。其余请求由 provider 阻止，附加的 Vault
-binding 明确授权精确目标地址时除外。
+`allow_mcp_servers` 允许 Agent 直接声明的远程 MCP URL。从扩展目录分配的服务通过部署的
+扩展网关访问，网关地址无需这个设置即可访问。Plugin 保持 Agent 程序的原生格式，AstraBox 不解析其内容；管理员
+需要列出 Plugin 内部使用的地址。发往其他主机的请求都会被阻止，除非附加的 Vault binding
+明确授权了该精确目标地址。
 
 AstraBox 凭证计划会保留目标地址、方法、路径、transport 和安全传输意图。provider 必须
 准确实现该范围，或者在分配前拒绝；不能静默扩大凭证范围。分配该计划也会把 binding
 地址加入沙箱的有效策略。这不是第二项管理员任务：把范围为 `api.example.com` 的凭证
-分配给工作负载，就代表授权访问 `api.example.com`。方法和路径规则继续决定密钥的注入
-位置；同一地址上的其他请求不带凭证。
+分配给工作负载，就代表授权访问 `api.example.com`。方法和路径规则仍然决定哪些请求会被注入
+密钥；同一主机上的其他请求不带凭证。
 
 Vault 分配保持 Environment 记录原样。Environment 网络配置与 Vault 记录生命周期相互
 独立。移除分配会从新沙箱策略中移除它管理的地址授权。
 
-OpenSandbox egress v1.1.5 支持在 HTTPS 443 上拦截凭证；凭证明示允许不安全传输时也支持
+OpenSandbox egress v1.1.7 支持在 HTTPS 443 上拦截凭证；凭证明示允许不安全传输时也支持
 HTTP 80，并且要求 `dns+nft`。它还会校验每个运行时 binding 地址明确可达。因此 adapter
 会把每个已附加的 binding 地址渲染为精确允许规则。该规则在 `unrestricted` 下是冗余项；
 在 `limited` 下则是 Vault 分配携带的地址授权。Environment 允许列表无需重复填写。
@@ -156,7 +164,7 @@ Content-Type: application/json
 ```
 
 Session 会在 `GITHUB_TOKEN` 中收到不透明值。主机、方法、路径和注入位置都匹配时，
-所选 provider 才会替换保存值。更换沙箱也会更换占位符。
+所选 provider 才会代入保存的值。更换沙箱也会更换占位符。
 
 MCP 凭证类型可以分配给 Agent 和 Assistant。引擎直接连接已配置的 MCP URL；AstraBox
 把 provider 网关请求头和匹配的 Vault 请求头合并为 provider-neutral、绑定目标地址的
@@ -174,36 +182,36 @@ MCP 凭证类型可以分配给 Agent 和 Assistant。引擎直接连接已配�
 | `allowed_requests.methods` | 一个或多个 HTTP 方法 |
 | `allowed_requests.paths` | `/repos/acme/*` 这样的绝对路径模式 |
 
-省略 `allowed_requests` 时只应用主机范围。更新凭证会轮换只写入的保存值；归档凭证
-会移除保存的密钥并保留元数据。下一个根 turn 的准备阶段会把活动 MCP 绑定替换成同一
-目标地址和 Vault 范围内的免凭证绑定。
+省略 `allowed_requests` 时只应用主机范围。更新凭证会轮换只写入的保存值；停用凭证
+会移除保存的密钥并保留元数据，并且 AstraBox 会在 Agent 程序收到下一条消息之前，把活动
+MCP 绑定替换成同一目标地址和 Vault 范围内的免凭证绑定。
 
 provider-neutral MCP 凭证计划会保留配置的 URL 和 transport。OpenSandbox 当前要求带凭证
-的端点不含查询参数，并使用 HTTPS 443 或 HTTP 80。它的 adapter 会拒绝带凭证 SSE，
-因为 OpenSandbox 无法预先绑定该 transport 动态返回的 POST URL；能保持这项范围的其他
-provider 可以支持。免凭证 SSE 可以使用。
+传递的端点是不含查询参数的 Streamable HTTP 端点，并使用 HTTPS 443 或 HTTP 80。它的
+adapter 会拒绝带凭证 SSE，因为 OpenSandbox 无法预先绑定该 transport 动态返回的 POST URL；
+能保持这项范围的其他 provider 可以支持。免凭证 SSE 可以使用。
 
-## 使用 OpenSandbox 准备容量
+## 使用 OpenSandbox 预备容量
 
-预热沙箱在 AstraBox 分配时已经存在。SDK 客户端池的 creator 会通过与冷启动容量相同的
+预热沙箱在 AstraBox 领取它时已经存在。SDK 客户端池的 creator 会通过与冷启动容量相同的
 标准 OpenSandbox 创建路径生成每个成员，在任何 Session 出现前提供有效网络策略并启用
 凭证代理。OpenSandbox 会配置代理，为该沙箱的端点生成认证信息，并把它返回给 SDK。
 池只保留沙箱 ID；领取时通过 OpenSandbox 重新连接，并取回该沙箱自己的认证信息。
 这里不存在部署级出站令牌。
 
-AstraBox 在发布 Agent 预备沙箱前，会用非密钥探测值验证所需 binding。真实凭证只在
-分配或恢复沙箱后写入；Environment 允许列表无需重复 Vault binding 地址。
+在准备流程下载 Skill 或 Plugin 之前，creator 会把 Agent 当前完整的凭证计划提供给出站代理
+一侧的 Vault。模型、环境变量、MCP 和 HTTP Basic 凭证使用与冷创建相同的传递路径；预热
+不会用虚假的密钥值代替。受保护的值留在沙箱环境之外。分配和恢复通过同一份计划刷新当前
+绑定。Environment 允许列表无需重复 Vault binding 地址。
 
 自定义部署和预备容量的要求见
 [OpenSandbox 凭证保护](providers/opensandbox.md#credential-protection)。
 
-## 验证凭证交付
+## 验证正在运行的沙箱
 
-在**管理 → Credential Vault**中确认显示的交付模式和 Vault 分配。然后新建 Session，
-测试一个符合主机、方法和路径规则的请求。访问其他地址时出现 DNS 解析错误，说明
-Environment 允许列表已经生效。
-
-完整 Vault 请求和响应模型以 `/docs` 或 `/openapi.json` 当前发布的字段定义为准。
+1. 在**管理台 → 凭证**中打开已分配的凭证库，检查三种凭证传递方式。
+2. 使用已分配的 Agent 启动 Session，并向允许的目标地址发起一次请求。
+3. 打开**管理台 → 沙箱**，选择对应沙箱，查看**网络与凭证**。该面板直接显示沙箱报告的网络规则和生效凭证名称，永远不会显示保存值。
 
 如果沙箱无法报告安全设置，控制台会明确显示错误，不会把空响应当作凭证已经受到保护的证据。
 

@@ -112,7 +112,7 @@ HTML has **Preview** and **Source** tabs. Preview serves the live workspace
 through OpenSandbox's browser endpoint, so relative CSS, JavaScript, images,
 module imports, and links resolve against their file locations. Scripts run
 inside a sandboxed frame. Refresh reloads the page and its resources; the
-viewer also refreshes when the conversation finishes a turn.
+viewer also refreshes when the Agent finishes responding.
 
 HTML preview requires an updated bundled sandbox image and browser-reachable
 OpenSandbox endpoints. The image starts a separate nginx service on port 8002;
@@ -166,7 +166,8 @@ changes appear at the same paths.
 ### List files
 
 Expand folders in **Files** to browse the workspace. The open directories
-refresh after a turn completes; select **Refresh** to reload them at any time.
+refresh after the Agent finishes responding; select **Refresh** to reload them
+at any time.
 
 The corresponding API operation lists one directory at a time:
 

@@ -191,7 +191,7 @@ jobs:
           done
           echo "── smoke logs ──"
           tail -n 120 /tmp/astrabox-e2e/server.log 2>/dev/null | grep -aiv -E 'AUTH_TOKEN|API_KEY' || true
-          tail -n 80 /tmp/astrabox-e2e/ai-stream.sse 2>/dev/null || true
+          tail -n 80 /tmp/astrabox-e2e/stream.sse 2>/dev/null || true
 
       - name: Clean up agent containers we spawned
         if: ${{ always() }}

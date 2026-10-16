@@ -268,6 +268,13 @@ class PlatformMCPService:
         return await self._expose_port_service.expose_port(deployment_id=server["deployment_id"], port=port, title=arguments.get("title"))
 
     async def _session_binding(self, deployment_id: str) -> dict[str, Any]:
+        """Who a call through this address acts for, and the artifact it is limited to.
+
+        An address that names a Session acts for that Session, with the
+        Session's own ``artifact_grant``. An Assistant workspace's address
+        serves every conversation of its owner and names none of them, so it
+        acts for the owner and carries no grant.
+        """
         binding = await self._binding_repo.get_binding(deployment_id)
         sid = str((binding or {}).get("session_id") or (deployment_id if not binding else ""))
         if sid:
@@ -276,7 +283,7 @@ class PlatformMCPService:
                 raise APIError(code="MCP_BINDING_NOT_FOUND", message="MCP binding not found", status_code=404)
             ref = session.get("workspace_ref") or {}
             return {**(binding or {}), **session, "session_id": sid,
-                    "assistant_id": ref.get("assistant_id"), "artifact_grant": (binding or {}).get("artifact_grant")}
+                    "assistant_id": ref.get("assistant_id")}
         if not binding or not binding.get("user_id"):
             raise APIError(code="MCP_BINDING_NOT_FOUND", message="MCP binding not found", status_code=404)
         return binding
@@ -497,7 +504,7 @@ class PlatformMCPService:
                 fetched = await self._artifacts.get(user, aid, args.get("version"))
                 version = fetched["version"]
             else:
-                viewer, record, version = await self._artifacts.refresh(viewer)
+                viewer, record, version = await self._artifacts.refresh(viewer, content=True)
                 if "version" in args and args["version"] != version["version"]:
                     raise self._artifacts._not_found()
             return {"description": record["description"], "manifest": version["manifest"],
@@ -515,16 +522,6 @@ class PlatformMCPService:
             raise invalid("invalid artifact_data action")
         _, _, version = await self._artifacts.refresh(viewer)
         return {**rows, **self._artifacts.marker(version)}
-
-    async def _resolve_template_name(self, deployment_id: str) -> str | None:
-        normalized = str(deployment_id or "").strip()
-        binding = await self._binding_repo.get_binding(normalized)
-        if isinstance(binding, dict):
-            return str(binding.get("template_name") or "").strip() or None
-        session = await self._sessions_repo.get_session(normalized)
-        if isinstance(session, dict):
-            return str(session.get("template_name") or "").strip() or None
-        return None
 
     # ── Session-scoped MCP server-target resolution ──────────────────────
     # (transport/service-code extraction from a session's template MCP config;
@@ -547,10 +544,6 @@ class PlatformMCPService:
         template_name = ""
         if isinstance(binding, dict):
             template_name = str(binding.get("template_name") or "").strip()
-        if not template_name:
-            if not session:
-                return None
-            template_name = str(session.get("template_name") or "").strip()
         if not template_name:
             return None
         agent_resolver = getattr(self._agent_config, "resolve_agent_harness", None)

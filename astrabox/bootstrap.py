@@ -423,14 +423,10 @@ def _note_backends_without_inventory_listing(enabled_backends: Sequence[str]) ->
 def _select_scheduler_provider() -> None:
     """Select ``ASTRABOX_SCHEDULER_PROVIDER`` and check it against the repository.
 
-    A provider that cannot run with the active repository backend (the
-    built-in ``dbos`` needs a SQL database) refuses the start here, instead of
-    failing the first schedule a user creates. The backend is resolved as the
-    repository resolves it (:func:`active_backend_name`), not from the
-    configured name alone.
+    A provider that cannot run with the platform database refuses the start
+    here, instead of failing the first schedule a user creates.
     """
     from astrabox.config.settings import get_settings
-    from astrabox.persistence.repository.backend import active_backend, active_backend_name
     from astrabox.seams.scheduler import (
         SchedulerConfigurationError,
         configured_scheduler,
@@ -444,14 +440,16 @@ def _select_scheduler_provider() -> None:
     scheduler = configured_scheduler()
     if scheduler is None:
         return
-    repository = active_backend_name()
     try:
-        scheduler.configure(repository_backend=active_backend())
+        database_url = get_settings().resolved_db_url
+    except ValueError as exc:
+        raise BootstrapConfigError(str(exc)) from exc
+    try:
+        scheduler.configure(database_url=database_url)
     except SchedulerConfigurationError as exc:
         raise BootstrapConfigError(
-            f"ASTRABOX_SCHEDULER_PROVIDER={scheduler.name} cannot run with the "
-            f"{repository!r} repository backend: {exc}. Select a scheduler provider "
-            "that supports this repository backend, or set "
+            f"ASTRABOX_SCHEDULER_PROVIDER={scheduler.name} cannot run with this "
+            f"database: {exc}. Select another scheduler provider, or set "
             "ASTRABOX_SCHEDULER_PROVIDER=none to disable scheduled Deployments."
         ) from exc
 

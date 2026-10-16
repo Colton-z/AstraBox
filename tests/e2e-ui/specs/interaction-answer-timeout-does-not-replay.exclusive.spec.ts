@@ -5,11 +5,17 @@
 import { expect, test } from '@playwright/test';
 import type { APIRequestContext, Page } from '@playwright/test';
 
-import { AstraApi, messageText } from '../fixtures/astraApi';
+import {
+  AstraApi,
+  messageText,
+  messageToolCalls,
+  toolCallSettled,
+  type MessageRecord,
+} from '../fixtures/astraApi';
 import { apiPath } from '../fixtures/env';
 import { trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
-import { documentsByField, sessionEvents } from '../fixtures/dbOracle';
+import { sessionInputRows, sessionInteractionRows } from '../fixtures/dbOracle';
 
 const sessions = trackSessions();
 
@@ -18,6 +24,48 @@ function httpFailureRecord(value: unknown): Record<string, unknown> {
     throw new Error(`expected a stored object, received ${JSON.stringify(value)}`);
   }
   return value as Record<string, unknown>;
+}
+
+/** The API path the console answers one interaction on. */
+function answerPathFor(sessionId: string, interactionId: string): string {
+  return apiPath(`/sessions/${sessionId}/interactions/${encodeURIComponent(interactionId)}/answer`);
+}
+
+/** The history tool parts of one tool call that ran to a result. */
+function settledCalls(messages: MessageRecord[], toolCallId: string) {
+  return messages.flatMap((message) => messageToolCalls(message))
+    .filter((call) => call.toolCallId === toolCallId && toolCallSettled(call));
+}
+
+/**
+ * The native transcript's blocks for one tool call: the calls and the results
+ * the engine wrote, read from the SessionStore copy through the admin route. A
+ * transcript the store does not hold yet reads as empty, so a poll waits for it.
+ */
+async function nativeToolBlocks(
+  api: AstraApi,
+  sessionId: string,
+  toolCallId: string,
+): Promise<{ calls: Record<string, unknown>[]; results: Record<string, unknown>[] }> {
+  let raw: string;
+  try {
+    raw = await api.adminSessionTranscript(sessionId);
+  } catch (error) {
+    if (/transcript -> 404:/.test(String(error))) return { calls: [], results: [] };
+    throw error;
+  }
+  // A gzip archive starts with byte 0x1f; the main transcript alone is JSONL.
+  expect(raw.charCodeAt(0), 'one question leaves one main transcript, not an archive').not.toBe(0x1f);
+  const blocks = raw.split('\n').filter((line) => line.trim()).flatMap((line) => {
+    const entry = httpFailureRecord(JSON.parse(line));
+    if (entry.type !== 'assistant' && entry.type !== 'user') return [];
+    const content = httpFailureRecord(entry.message).content;
+    return Array.isArray(content) ? content.map(httpFailureRecord) : [];
+  });
+  return {
+    calls: blocks.filter((block) => block.type === 'tool_use' && block.id === toolCallId),
+    results: blocks.filter((block) => block.type === 'tool_result' && block.tool_use_id === toolCallId),
+  };
 }
 
 async function expectAnswerHttpFailure(
@@ -42,57 +90,39 @@ async function expectAnswerHttpFailure(
   const submitted = await sendPrompt(page, sessionId, prompt);
   expect(submitted.status()).toBe(200);
   const receipt = httpFailureRecord(httpFailureRecord(await submitted.json()).data);
-  const commandId = String(receipt.command_id || '');
   const inputId = String(receipt.input_id || '');
-  expect(commandId).not.toBe('');
+  const clientMessageId = String(receipt.client_message_id || '');
   expect(inputId).not.toBe('');
+  expect(clientMessageId).not.toBe('');
   const pending = await api.waitForPendingInteraction(sessionId);
   expect(pending.tool_name).toBe('AskUserQuestion');
   expect(pending.presentation).toBe('form');
   const toolId = String(pending.tool_call_id || '');
-  const turnId = String(pending.turn_id || '');
+  const responseId = String(pending.response_id || '');
   expect(toolId).not.toBe('');
-  expect(turnId).not.toBe('');
+  expect(responseId).not.toBe('');
 
+  // The platform's own records: the one input the page sent, and the
+  // interaction the question opened, with no answer stored on it.
   const interaction = () => {
-    const rows = documentsByField('interaction_snapshots', '$.session_id', sessionId)
+    const rows = sessionInteractionRows(sessionId)
       .filter((row) => row.interaction_id === pending.interaction_id);
-    expect(rows, 'the real native question must have exactly one durable interaction').toHaveLength(1);
+    expect(rows, 'the real native question must have exactly one recorded interaction').toHaveLength(1);
     return rows[0];
   };
-  const commands = () => sessionEvents(sessionId).filter((event) => event.event_type === 'command.accepted');
-  const nativeQuestion = () => {
-    const blocks = documentsByField('transcript_entries', '$.platform_session_id', sessionId)
-      .filter((row) => row.subpath == null)
-      .flatMap((row) => {
-        const entry = httpFailureRecord(JSON.parse(String(row.entry_json)));
-        if (entry.type !== 'assistant' && entry.type !== 'user') return [];
-        const content = httpFailureRecord(entry.message).content;
-        return Array.isArray(content) ? content.map(httpFailureRecord) : [];
-      });
-    return {
-      calls: blocks.filter((block) => block.type === 'tool_use' && block.id === toolId),
-      results: blocks.filter((block) => block.type === 'tool_result' && block.tool_use_id === toolId),
-    };
-  };
-  const originalCommands = commands();
-  const originalInputs = originalCommands.filter((event) => (
-    httpFailureRecord(event.payload).command_type === 'StartTurn'
-  ));
-  expect(originalInputs).toHaveLength(1);
-  expect(originalInputs[0]).toMatchObject({
-    causation_id: commandId, turn_id: turnId,
-    payload: { command_type: 'StartTurn', input_id: inputId, content: prompt },
-  });
-  expect(originalCommands.filter((event) => httpFailureRecord(event.payload).command_type === 'AnswerInteraction'))
-    .toHaveLength(0);
+  const inputs = () => sessionInputRows(sessionId).map((row) => ({
+    input_id: row.input_id, client_message_id: row.client_message_id, content: row.content,
+  }));
+  const nativeQuestion = () => nativeToolBlocks(api, sessionId, toolId);
+  const originalInputs = inputs();
+  expect(originalInputs).toEqual([{ input_id: inputId, client_message_id: clientMessageId, content: prompt }]);
   const originalInteraction = interaction();
-  expect(originalInteraction).toMatchObject({ interaction_state: 'OPEN', active: true, turn_id: turnId });
-  expect(originalInteraction.answer_command_id || null).toBeNull();
-  await expect.poll(() => nativeQuestion().calls.length, {
+  expect(originalInteraction).toMatchObject({ status: 'open', response_id: responseId });
+  expect(originalInteraction.answer ?? null).toBeNull();
+  await expect.poll(async () => (await nativeQuestion()).calls.length, {
     message: 'the native question must reach database custody before the answer fault',
   }).toBe(1);
-  const originalNativeQuestion = nativeQuestion();
+  const originalNativeQuestion = await nativeQuestion();
   expect(originalNativeQuestion.results).toHaveLength(0);
 
   const panel = page.getByTestId('pending-interaction-panel');
@@ -101,7 +131,7 @@ async function expectAnswerHttpFailure(
   await yes.click();
   const submit = panel.getByRole('button', { name: /Submit answer|提交回答/ });
   await expect(submit).toBeEnabled();
-  const answerPath = apiPath(`/sessions/${sessionId}/interaction-respond`);
+  const answerPath = answerPathFor(sessionId, String(pending.interaction_id));
   const answerRoute = `**${answerPath}`;
   const attempts: Record<string, unknown>[] = [];
   const unexpectedApiFailures: string[] = [];
@@ -134,7 +164,7 @@ async function expectAnswerHttpFailure(
     expect(response.status()).toBe(failure.status);
     expect(await response.text()).toBe(failure.body);
     expect(attempts).toHaveLength(1);
-    expect(attempts[0].interaction_id).toBe(pending.interaction_id);
+    expect(httpFailureRecord(attempts[0].answer), 'the page posts its answer to that interaction').toBeTruthy();
     await expect(page.getByText(failure.visibleError)).toBeVisible();
     // Preserve the donor's one-second no-replay observation. This is a
     // negative assertion window after a received HTTP error, not setup sleep.
@@ -143,22 +173,19 @@ async function expectAnswerHttpFailure(
     await expect(panel).toBeVisible();
     await expect(yes, 'the original question must remain answerable').toBeEnabled();
     expect(await api.getPendingInteraction(sessionId)).toMatchObject({
-      interaction_id: pending.interaction_id, tool_call_id: toolId, turn_id: turnId,
+      interaction_id: pending.interaction_id, tool_call_id: toolId, response_id: responseId,
     });
-    expect(commands(), 'the rejected POST must not append an AnswerInteraction command').toEqual(originalCommands);
-    expect(interaction()).toMatchObject({ interaction_state: 'OPEN', active: true, turn_id: turnId });
-    expect(interaction().answer_command_id || null).toBeNull();
-    expect(sessionEvents(sessionId).filter((event) => event.turn_id === turnId
-      && event.event_type === 'interaction.answer_persisted')).toHaveLength(0);
-    expect(nativeQuestion(), 'no supplier answer result may exist for an undelivered answer')
+    expect(inputs(), 'the rejected POST must not add an input').toEqual(originalInputs);
+    expect(interaction(), 'the rejected POST must leave the interaction open')
+      .toMatchObject({ status: 'open', response_id: responseId });
+    expect(interaction().answer ?? null, 'the rejected POST must not store an answer').toBeNull();
+    expect(await nativeQuestion(), 'no supplier answer result may exist for an undelivered answer')
       .toEqual(originalNativeQuestion);
     const history = await api.getMessages(sessionId, 100);
     expect(history.messages.filter((message) => message.role === 'user').map((message) => ({
-      id: message.message_id, text: messageText(message),
-    }))).toEqual([{ id: `${inputId}:user`, text: prompt }]);
-    expect(history.messages.flatMap((message) => message.blocks || []).filter((block) => (
-      block.type === 'tool_result' && block.tool_use_id === toolId
-    ))).toHaveLength(0);
+      id: message.id, text: messageText(message),
+    }))).toEqual([{ id: clientMessageId, text: prompt }]);
+    expect(settledCalls(history.messages, toolId)).toHaveLength(0);
     expect(await page.evaluate(() => performance.timeOrigin)).toBe(documentOrigin);
     expect(documentRequests, 'a failed answer must not reload the document to recover authentication').toBe(0);
     expect(unexpectedApiFailures, 'only the selected answer route may return an API failure').toEqual([]);
@@ -183,7 +210,9 @@ test('a hung questionnaire answer request times out without replaying and restor
   await api.waitForSessionReady(sessionId);
   await api.setPermissionMode(sessionId, 'default');
 
-  const answerRoute = `**${apiPath(`/sessions/${sessionId}/interaction-respond`)}`;
+  // The interaction does not exist yet, so the route matches any answer in
+  // this session.
+  const answerRoute = `**${apiPath(`/sessions/${sessionId}/interactions/`)}*/answer`;
   let answerRequestCount = 0;
   let releaseAnswerRequest!: () => void;
   const answerRequestHeld = new Promise<void>((resolve) => { releaseAnswerRequest = resolve; });
@@ -227,12 +256,13 @@ test('a hung questionnaire answer request times out without replaying and restor
     expect(await api.getPendingInteraction(sessionId), 'no answer reached the server').toMatchObject({
       interaction_id: pending.interaction_id,
       tool_call_id: pending.tool_call_id,
-      turn_id: pending.turn_id,
+      response_id: pending.response_id,
     });
     const history = await api.getMessages(sessionId, 100);
-    expect(history.messages.flatMap((message) => message.blocks || []).filter((block) => (
-      block.type === 'tool_result' && block.tool_use_id === pending.tool_call_id
-    )), 'an undelivered answer cannot have a durable tool result').toHaveLength(0);
+    expect(
+      settledCalls(history.messages, String(pending.tool_call_id)),
+      'an undelivered answer cannot have a durable tool result',
+    ).toHaveLength(0);
     expect(answerRequestCount, 'an ambiguous answer POST must never be replayed automatically').toBe(1);
   } finally {
     releaseAnswerRequest();
@@ -265,8 +295,10 @@ test('an answer response timeout reports uncertainty without replaying the accep
   expect(pending.tool_name).toBe('AskUserQuestion');
   const toolCallId = String(pending.tool_call_id || '').trim();
   expect(toolCallId).not.toEqual('');
+  const responseId = String(pending.response_id || '').trim();
+  expect(responseId).not.toEqual('');
 
-  const answerPath = apiPath(`/sessions/${sessionId}/interaction-respond`);
+  const answerPath = answerPathFor(sessionId, String(pending.interaction_id));
   const answerRoute = `**${answerPath}`;
   const answerRequests: Array<Record<string, unknown>> = [];
   let serverReceipt: { status: number; body: Record<string, unknown> } | null = null;
@@ -306,7 +338,7 @@ test('an answer response timeout reports uncertainty without replaying the accep
       body: { code: 'OK', data: { interaction_id: pending.interaction_id, answered: true } },
     });
     expect(answerRequests).toHaveLength(1);
-    expect(answerRequests[0]!.interaction_id).toBe(pending.interaction_id);
+    expect(httpFailureRecord(answerRequests[0]!.answer), 'the page posts its answer to that interaction').toBeTruthy();
     await expect.poll(() => abortAt, {
       timeout: 20_000,
       message: 'the browser must stop waiting on the held response at its own deadline',
@@ -317,17 +349,20 @@ test('an answer response timeout reports uncertainty without replaying the accep
       'the timeout must explain uncertainty, not claim that the answer was rejected').toBeVisible();
 
     await api.waitForSession(sessionId, (session) => (
-      session.state === 'READY' && !session.current_turn_id && !session.pending_interaction
-      && session.last_turn_status === 'COMPLETED'
+      session.state === 'READY' && (session.current_responses ?? []).length === 0
+      && !session.pending_interaction
+      && session.last_response?.response_id === responseId
+      && session.last_response?.outcome === 'completed'
     ), 60_000);
     await expect(panel, 'refresh must not resurrect an already answered questionnaire').toHaveCount(0);
     await expect(page.getByTestId('composer-prompt')).toBeEnabled();
     const settled = await api.getMessages(sessionId, 100);
-    const answers = settled.messages.flatMap((message) => message.blocks || []).filter((block) => (
-      block.type === 'tool_result' && block.tool_use_id === toolCallId
-    ));
-    expect(answers, 'the real engine must record the answer exactly once').toHaveLength(1);
-    expect(answers[0]!.is_error).not.toBe(true);
+    const answers = settledCalls(settled.messages, toolCallId);
+    expect(answers, 'history must show the questionnaire answered once').toHaveLength(1);
+    expect(answers[0]!.state, 'the answered questionnaire is a result, not an error').toBe('output-available');
+    const native = await nativeToolBlocks(api, sessionId, toolCallId);
+    expect(native.results, 'the real engine must record the answer exactly once').toHaveLength(1);
+    expect(native.results[0]!.is_error).not.toBe(true);
 
     const beforeNext = await api.assistantCount(sessionId);
     const nextPrompt = `Give one brief example of a farewell greeting. Do not use tools. Reference ${runId} is a label.`;
@@ -336,10 +371,12 @@ test('an answer response timeout reports uncertainty without replaying the accep
       sessionId, beforeNext, (message) => messageText(message).trim().length > 0, 60_000,
     );
     await api.waitForSession(sessionId, (session) => (
-      session.state === 'READY' && !session.current_turn_id && !session.pending_interaction
-      && session.last_turn_status === 'COMPLETED'
+      session.state === 'READY' && (session.current_responses ?? []).length === 0
+      && !session.pending_interaction
+      && session.last_response?.response_id !== responseId
+      && session.last_response?.outcome === 'completed'
     ), 60_000);
-    expect(answerRequests, 'neither timeout recovery nor the next turn may resend the answer').toHaveLength(1);
+    expect(answerRequests, 'neither timeout recovery nor the next message may resend the answer').toHaveLength(1);
     const finalHistory = await api.getMessages(sessionId, 100);
     expect(finalHistory.messages.filter((message) => (
       message.role === 'user' && messageText(message) === nextPrompt

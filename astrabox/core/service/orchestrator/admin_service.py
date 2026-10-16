@@ -1,4 +1,9 @@
-"""Admin operations: list sessions, kill session, system overview."""
+"""Admin operations: list sessions, kill session, system overview.
+
+Session reads come from the session's row and the runtime's recorded facts:
+its inputs, responses and interactions, and the browser parts each response
+produced, the same records the conversation's own pages read.
+"""
 
 from __future__ import annotations
 
@@ -12,16 +17,11 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from astrabox.core.service.orchestrator.session_kernel.service import SessionKernelService
+    from astrabox.core.service.orchestrator.session_lifecycle.service import SessionLifecycleService
+    from astrabox.core.service.orchestrator.session_runtime.service import SessionRuntimeService
 
-from astrabox.core.service.orchestrator.session_message_view import SessionMessageView
-from astrabox.persistence.repository import (
-    SessionEventRepository,
-    SessionRepository,
-)
-from astrabox.persistence.repository.session_snapshot_repository import (
-    SessionSnapshotRepository,
-)
+from astrabox.persistence.repository.session_repository import SessionRepository
+from astrabox.persistence.repository.session_runtime_repository import SessionRuntimeRepository
 from astrabox.persistence.repository.user_profile_repository import UserProfileRepository
 from astrabox.persistence.repository.transcript_entry_repository import (
     TranscriptEntryRepository,
@@ -36,18 +36,11 @@ from astrabox.core.service.orchestrator.agent_access import (
 from astrabox.common.utils.settings import load_astrabox_settings
 from astrabox.common.utils.time_utils import parse_iso, utcnow_iso
 from astrabox.core.model import SessionState
-from astrabox.core.service.orchestrator.sandbox_names import keep_name_updates
 from astrabox.core.service.orchestrator.admin_error_capture import list_runtime_errors
 from astrabox.core.service.orchestrator.engine.capabilities import (
     capabilities_for_engine_kind,
 )
-from astrabox.core.service.orchestrator.session_kernel.conversation_recovery import (
-    snapshot_active_turn_id,
-)
-from astrabox.core.service.orchestrator.runtime_binding import (
-    is_assistant_user_conversation,
-    runtime_subject_kind,
-)
+from astrabox.core.service.orchestrator.runtime_binding import runtime_subject_kind
 from astrabox.core.service.orchestrator.runtime_manager import RemoteAgentRuntimeManager
 from astrabox.core.service.orchestrator.agent_config_service import AgentConfigService
 
@@ -76,205 +69,24 @@ def _truncate_admin_text(value: Any, limit: int = 240) -> str:
     return f"{text[: max(limit - 3, 0)]}..."
 
 
-def _extract_content_preview(content: Any) -> str:
-    if isinstance(content, str):
-        return _truncate_admin_text(content)
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, str):
-                text = item.strip()
-                if text:
-                    parts.append(text)
-                continue
-            if not isinstance(item, dict):
-                continue
-            text = str(item.get("text") or "").strip()
+def _message_preview(message: dict[str, Any]) -> str:
+    """A message's text, with each tool call or file it holds named in brackets."""
+    pieces: list[str] = []
+    for part in message.get("parts") or []:
+        if not isinstance(part, dict):
+            continue
+        kind = str(part.get("type") or "")
+        if kind == "text":
+            text = str(part.get("text") or "").strip()
             if text:
-                parts.append(text)
-                continue
-            event = item.get("event")
-            tool_name = str(
-                item.get("name")
-                or item.get("tool_name")
-                or item.get("type")
-                or (event.get("type") if isinstance(event, dict) else "")
-                or ""
-            ).strip()
-            if tool_name:
-                parts.append(f"[{tool_name}]")
-        return _truncate_admin_text(" ".join(parts))
-    if isinstance(content, dict):
-        text = str(content.get("text") or content.get("content") or "").strip()
-        if text:
-            return _truncate_admin_text(text)
-    normalized = _normalize_admin_value(content)
-    if normalized in (None, "", [], {}):
-        return ""
-    return _truncate_admin_text(normalized)
-
-
-def _extract_content_text(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, str):
-                text = item.strip()
-                if text:
-                    parts.append(text)
-                continue
-            if not isinstance(item, dict):
-                continue
-            text = str(item.get("text") or item.get("content") or "").strip()
-            if text:
-                parts.append(text)
-                continue
-            event = item.get("event")
-            tool_name = str(
-                item.get("name")
-                or item.get("tool_name")
-                or item.get("type")
-                or (event.get("type") if isinstance(event, dict) else "")
-                or ""
-            ).strip()
-            if tool_name:
-                parts.append(f"[{tool_name}]")
-        return "\n".join(parts)
-    if isinstance(content, dict):
-        text = str(content.get("text") or content.get("content") or "").strip()
-        if text:
-            return text
-    normalized = _normalize_admin_value(content)
-    if normalized in (None, "", [], {}):
-        return ""
-    return str(normalized)
-
-
-def _extract_content_events(content: Any) -> list[dict[str, Any]]:
-    if not isinstance(content, list):
-        return []
-
-    events: list[dict[str, Any]] = []
-    for item in content:
-        if not isinstance(item, dict):
-            continue
-        raw_event = item.get("event")
-        normalized_event = _normalize_admin_value(raw_event) if isinstance(raw_event, dict) else None
-        if normalized_event is None:
-            continue
-
-        event_type = str(
-            normalized_event.get("type")
-            or item.get("type")
-            or ""
-        ).strip()
-        event_name = str(
-            item.get("name")
-            or item.get("tool_name")
-            or normalized_event.get("name")
-            or ""
-        ).strip()
-        event_entry = {
-            "type": event_type,
-            "name": event_name,
-            "event": normalized_event,
-        }
-        if not event_entry["name"]:
-            event_entry.pop("name", None)
-        if not event_entry["type"]:
-            event_entry.pop("type", None)
-        events.append(event_entry)
-    return events
-
-
-def _normalize_export_block(value: Any) -> dict[str, Any] | None:
-    if not isinstance(value, dict):
-        return None
-    raw = _normalize_admin_value(value)
-    block_type = str(raw.get("type") or "").strip()
-    if not block_type:
-        return None
-
-    if block_type == "text":
-        return {
-            "type": "text",
-            "text": str(raw.get("text") or ""),
-        }
-    if block_type == "thinking":
-        return {
-            "type": "thinking",
-            "thinking": str(raw.get("thinking") or ""),
-        }
-    if block_type == "tool_use":
-        return {
-            "type": "tool_use",
-            "id": str(raw.get("id") or ""),
-            "name": str(raw.get("name") or ""),
-            "input": raw.get("input") if isinstance(raw.get("input"), dict) else {},
-        }
-    if block_type == "tool_result":
-        return {
-            "type": "tool_result",
-            "tool_use_id": str(raw.get("tool_use_id") or ""),
-            "content": str(raw.get("content") or ""),
-            "is_error": bool(raw.get("is_error")),
-        }
-    if block_type == "result":
-        entry = {
-            "type": "result",
-            "result": str(raw.get("result") or ""),
-        }
-        for key in ("duration_ms", "duration_api_ms", "total_cost_usd", "num_turns", "usage"):
-            value = raw.get(key)
-            if value not in (None, "", []):
-                entry[key] = value
-        return entry
-    return raw
-
-
-def _extract_message_blocks(raw: dict[str, Any]) -> list[dict[str, Any]]:
-    for candidate in (raw.get("blocks"), raw.get("content")):
-        if not isinstance(candidate, list):
-            continue
-        blocks = [
-            normalized
-            for normalized in (_normalize_export_block(item) for item in candidate)
-            if normalized is not None
-        ]
-        if blocks:
-            return blocks
-    return []
-
-
-def _normalize_export_text(value: Any) -> str:
-    return str(value or "").strip()
-
-
-def _dedupe_export_blocks(
-    text: str,
-    blocks: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    canonical_text = _normalize_export_text(text)
-    deduped: list[dict[str, Any]] = []
-
-    for block in blocks:
-        item = dict(block)
-        block_type = str(item.get("type") or "").strip()
-
-        if block_type == "text":
-            if canonical_text and _normalize_export_text(item.get("text")) == canonical_text:
-                continue
-
-        if block_type == "result":
-            result_text = _normalize_export_text(item.get("result"))
-            if canonical_text and result_text == canonical_text:
-                item.pop("result", None)
-
-        deduped.append(item)
-
-    return deduped
+                pieces.append(text)
+        elif kind == "dynamic-tool":
+            pieces.append(f"[{part.get('toolName') or 'tool'}]")
+        elif kind.startswith("tool-"):
+            pieces.append(f"[{kind.removeprefix('tool-')}]")
+        elif kind == "file":
+            pieces.append("[file]")
+    return " ".join(pieces)
 
 
 class AdminService:
@@ -282,40 +94,21 @@ class AdminService:
         self,
         *,
         sessions_repo: SessionRepository,
-        message_view: SessionMessageView,
-        session_events_repo: SessionEventRepository,
+        session_runtime: SessionRuntimeService,
+        session_lifecycle: SessionLifecycleService,
         agent_config: AgentConfigService,
         runtime_manager: RemoteAgentRuntimeManager,
         sanitize_session,
-        session_kernel: SessionKernelService,
     ) -> None:
         self._sessions_repo = sessions_repo
-        self._message_view = message_view
-        self._session_events_repo = session_events_repo
+        self._session_runtime = session_runtime
+        self._facts = SessionRuntimeRepository()
+        self._session_lifecycle = session_lifecycle
         self._user_profiles_repo = UserProfileRepository()
         self._transcript_entries_repo = TranscriptEntryRepository()
-        self._session_snapshots_repo = SessionSnapshotRepository()
         self._agent_config = agent_config
         self._runtime_manager = runtime_manager
         self._sanitize_session = sanitize_session
-        self._session_kernel = session_kernel
-
-    @staticmethod
-    def _derive_conversation_state(snapshot: dict[str, Any] | None) -> str | None:
-        """The state a user is shown for this session, or ``None`` if unknown.
-
-        Delegates to the same pure function the user-facing reads use, so the
-        two surfaces cannot drift into two different derivations of one answer.
-        A session with no snapshot yet has no conversation state — reporting a
-        default here would invent agreement rather than report its absence.
-        """
-        if not isinstance(snapshot, dict):
-            return None
-        from astrabox.core.service.orchestrator.session_kernel.service_mixins.session_read import (
-            SessionReadRenderingMixin,
-        )
-
-        return str(SessionReadRenderingMixin.derive_ui_state(snapshot)["state"])
 
     async def _assert_can_manage_session(self, user, session: dict[str, Any]) -> None:
         """Authorize ``user`` against the Session's durable owner.
@@ -463,16 +256,10 @@ class AdminService:
     def _runtime_rows(runtimes: dict[str, Any]) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         for session_id, runtime in sorted(runtimes.items()):
-            current_task = getattr(runtime, "current_task", None)
             lock = getattr(runtime, "lock", None)
             rows.append({
                 "session_id": str(session_id),
                 "sandbox_id": str(getattr(runtime, "sandbox_id", "") or "") or None,
-                "current_task_done": (
-                    bool(current_task.done())
-                    if isinstance(current_task, asyncio.Task)
-                    else None
-                ),
                 "lock_locked": bool(lock.locked()) if isinstance(lock, asyncio.Lock) else None,
                 "owner_loop_running": (
                     bool(getattr(runtime, "owner_loop").is_running())
@@ -553,47 +340,33 @@ class AdminService:
             "load_avg": load_avg,
             "runtimes": {
                 "count": len(runtime_rows),
-                "current_task_count": sum(1 for row in runtime_rows if row["current_task_done"] is False),
                 "locked_count": sum(1 for row in runtime_rows if row["lock_locked"] is True),
                 "items": runtime_rows,
             },
         }
 
-    async def _manageable_template_names(self, user) -> set[str]:
-        """Agent names the user creates or co-administers."""
+    async def _manageable_agent_ids(self, user) -> list[str]:
+        """The ids of the Agents the user creates or co-administers.
+
+        Sessions are scoped by the Agent id they name: Agent names are not
+        unique, so a scope of names would hand one manager the conversations of
+        every other Agent that happens to share a name with theirs.
+        """
         viewer = getattr(user, "user_id", "") if user is not None else ""
         if not viewer:
-            return set()
-        docs = await self._agent_config.list_agent_access_docs()
-        return {
-            str(d.get("name") or "").strip()
-            for d in docs
-            if str(d.get("name") or "").strip() and can_manage_agent(d, viewer, user.roles)
-        }
+            return []
+        return await self._agent_config.manageable_agent_ids(user)
 
     async def admin_navigation_summary(self, user) -> dict[str, int]:
         """Counts for the management rail, under each collection's read scope."""
-        docs, environments = await asyncio.gather(
-            self._agent_config.list_agent_access_docs(),
+        manageable, agents, environments = await asyncio.gather(
+            self._manageable_agent_ids(user),
+            self._agent_config.count_visible_agents(user),
             self._agent_config.count_environment_configs(),
         )
-        viewer = getattr(user, "user_id", "") if user is not None else ""
-        roles = getattr(user, "roles", ()) if user is not None else ()
-        manageable_names = (
-            sorted(
-                {
-                    name
-                    for doc in docs
-                    if can_manage_agent(doc, viewer, roles)
-                    if (name := str(doc.get("name") or "").strip())
-                }
-            )
-            if viewer
-            else []
-        )
-        sessions = await self._sessions_repo.count_all_sessions(template_names=manageable_names)
+        sessions = await self._sessions_repo.count_all_sessions(agent_ids=manageable)
         return {
-            "agents": sum(can_view_agent(doc, viewer, roles) for doc in docs),
+            "agents": agents,
             "environments": environments,
             "sessions": sessions,
         }
@@ -621,18 +394,18 @@ class AdminService:
         number about the collection, and deriving it from a page would print the
         page size no matter how many exist.
         """
-        manageable = sorted(await self._manageable_template_names(user))
+        manageable = await self._manageable_agent_ids(user)
         # An empty scope is a real answer, and `[]` says it in the query: match
         # nothing. Never `None`, which the repository reads as unscoped.
         page = max(1, int(page))
         page_size = max(1, min(int(page_size), 200))
         total = await self._sessions_repo.count_all_sessions(
-            template_names=manageable, agent_id=agent_id, since=since, until=until
+            agent_ids=manageable, agent_id=agent_id, since=since, until=until
         )
         rows = await self._sessions_repo.list_all_sessions(
             limit=page_size,
             skip=(page - 1) * page_size,
-            template_names=manageable,
+            agent_ids=manageable,
             agent_id=agent_id,
             since=since,
             until=until,
@@ -655,8 +428,8 @@ class AdminService:
         narrowed to modelled states. An unknown state can therefore be absent
         from ``by_state`` without silently shrinking ``total``.
         """
-        manageable = sorted(await self._manageable_template_names(user))
-        return await self._sessions_repo.count_session_totals(template_names=manageable)
+        manageable = await self._manageable_agent_ids(user)
+        return await self._sessions_repo.count_session_totals(agent_ids=manageable)
 
     async def admin_iter_manageable_sessions(
         self,
@@ -674,12 +447,12 @@ class AdminService:
         Rows only — enrichment is per-session work the export does not need.
         """
         skip = 0
-        manageable = sorted(await self._manageable_template_names(user))
+        manageable = await self._manageable_agent_ids(user)
         while True:
             rows = await self._sessions_repo.list_all_sessions(
                 limit=batch_size,
                 skip=skip,
-                template_names=manageable,
+                agent_ids=manageable,
                 agent_id=agent_id,
                 since=since,
                 until=until,
@@ -800,7 +573,6 @@ class AdminService:
             "sandbox_id": str(session.get("sandbox_id") or "").strip() or None,
             "user_id": str(session.get("user_id") or "").strip() or None,
             "display_name": str(display_row.get("display_name") or "").strip() or None,
-            "template_name": str(session.get("template_name") or "").strip() or None,
             "message": _truncate_admin_text(last_error or state, limit=500),
             "last_error": last_error or None,
             "runtime_unavailable": runtime_unavailable,
@@ -843,14 +615,6 @@ class AdminService:
             item = self._summarize_session_error(row, nick_map=nick_map)
             if item is not None:
                 errors.append(item)
-        # The turn a session is running is recorded in its conversation
-        # snapshot; the row these summaries come from carries none.
-        snapshots = await self._session_snapshots_repo.get_snapshots_batch(
-            [str(item["session_id"]) for item in errors],
-            projection={"session_id": 1, "conversation_state": 1, "current_turn_id": 1},
-        )
-        for item in errors:
-            item["turn_id"] = snapshot_active_turn_id(snapshots.get(str(item["session_id"])))
 
         # Runtime errors captured at the logging layer (e.g. MCP runtime failures)
         # that never land in session state — see admin_error_capture.
@@ -883,24 +647,27 @@ class AdminService:
 
         ``state`` is the session's **lifecycle**, read from the ``sessions``
         row: is this session alive and able to accept work. ``conversation_state``
-        is what a **user** is shown, derived from the conversation snapshot: does
-        the last turn have proof it finished.
+        is what a **user** is shown for it (READY, PROCESSING, WAITING_INPUT or
+        the lifecycle state), from the runtime's recorded status and its open
+        responses, interactions and held inputs, which ride along as
+        ``current_responses``, ``last_response``, ``pending_interaction`` and
+        ``held_inputs``.
 
-        They answer different questions and can legitimately disagree — a
-        session whose box is ready but whose last terminal frame was lost is
-        READY and PROCESSING at the same time, and both are true. Carrying both
-        here is what makes that difference readable: an operator holding one
-        value has no way to tell a real disagreement from two definitions, and
-        the second value is otherwise only derived on user-facing surfaces.
+        They answer different questions and can legitimately disagree: a
+        READY session whose runtime is producing a response is PROCESSING to
+        its user, and both are true. Carrying both here is what makes that
+        difference readable; the second is computed by the same function the
+        user-facing reads use.
         """
         session = await self._sessions_repo.get_session(session_id)
         if session is None:
             raise APIError(code="SESSION_NOT_FOUND", message="session not found", status_code=404)
         await self._assert_can_manage_session(user, session)
         clean = self._sanitize_session(session)
-        clean["conversation_state"] = self._derive_conversation_state(
-            await self._session_snapshots_repo.get_snapshot(session_id)
-        )
+        view = await self._session_runtime.runtime_view(session)
+        clean["conversation_state"] = view["state"]
+        for key in ("current_responses", "last_response", "pending_interaction", "held_inputs"):
+            clean[key] = view[key]
         self._apply_user_display(clean, await self._nick_map_for_sessions([session]))
         runtime = self._runtime_manager.get_runtime(
             session_id,
@@ -932,183 +699,107 @@ class AdminService:
         return clean
 
     @staticmethod
-    def _summarize_message(
-        message: dict[str, Any],
-        *,
-        include_raw: bool = True,
-        flatten_content: bool = False,
-    ) -> dict[str, Any]:
-        raw = _normalize_admin_value(message)
-        content = raw.get("content")
-        blocks = _extract_message_blocks(raw)
-        result = {
-            "message_id": str(raw.get("message_id") or raw.get("id") or ""),
-            "turn_id": str(raw.get("turn_id") or ""),
-            "role": str(raw.get("role") or ""),
-            "created_at": str(raw.get("created_at") or ""),
-            "updated_at": str(raw.get("updated_at") or ""),
+    def _summarize_message(message: dict[str, Any]) -> dict[str, Any]:
+        """One history message for the trace: who, when, a preview and the message itself."""
+        metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+        return {
+            "message_id": str(message.get("id") or ""),
+            "role": str(message.get("role") or ""),
+            "input_id": metadata.get("input_id"),
+            "response_id": metadata.get("response_id"),
+            "created_at": str(metadata.get("created_at") or metadata.get("started_at") or ""),
+            "content_preview": _truncate_admin_text(_message_preview(message)),
+            "raw": _normalize_admin_value(message),
         }
-        if flatten_content:
-            text = _extract_content_text(content)
-            deduped_blocks = _dedupe_export_blocks(text, blocks)
-            if text:
-                result["text"] = text
-            events = _extract_content_events(content)
-            if events:
-                result["events"] = events
-            if deduped_blocks:
-                result["blocks"] = deduped_blocks
-            interaction_response = raw.get("interaction_response")
-            if isinstance(interaction_response, dict):
-                result["interaction_response"] = interaction_response
-            answered_pending = raw.get("answered_pending_interaction")
-            if isinstance(answered_pending, dict):
-                result["answered_pending_interaction"] = answered_pending
-        else:
-            result["content"] = content
-            result["content_preview"] = _extract_content_preview(content)
-            if blocks:
-                result["blocks"] = blocks
-        if include_raw:
-            result["raw"] = raw
-        return result
 
     @staticmethod
-    def _summarize_frame(
-        frame: dict[str, Any],
-        *,
-        include_raw: bool = True,
-    ) -> dict[str, Any]:
-        raw = _normalize_admin_value(frame)
-        payload = raw.get("payload")
-        frame_type = (
-            str(payload.get("type") or "")
-            if isinstance(payload, dict)
-            else str(raw.get("type") or "")
-        )
-        text = ""
-        if isinstance(payload, dict):
-            text = str(payload.get("delta") or payload.get("text") or payload.get("errorText") or "")
-        result = {
-            "turn_id": str(raw.get("turn_id") or ""),
-            "command_id": str(raw.get("command_id") or ""),
-            "seq": raw.get("frame_seq"),
-            "type": frame_type,
-            "created_at": str(raw.get("created_at") or ""),
+    def _summarize_part(row: dict[str, Any]) -> dict[str, Any]:
+        part = row.get("part") if isinstance(row.get("part"), dict) else {}
+        text = str(part.get("delta") or part.get("text") or part.get("errorText") or "")
+        return {
+            "seq": row.get("seq"),
+            "type": str(part.get("type") or ""),
+            "created_at": str(row.get("created_at") or ""),
             "text": text,
             "text_preview": _truncate_admin_text(text, limit=320),
+            "raw": _normalize_admin_value(part),
         }
-        if include_raw:
-            result["raw"] = raw
-        return result
 
     @staticmethod
-    def _build_turn_summaries(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        summaries: dict[str, dict[str, Any]] = {}
-        order: list[str] = []
+    def _response_summaries(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Each response on the page with what it answered, newest first."""
+        summaries: list[dict[str, Any]] = []
+        user_preview = ""
         for message in messages:
-            turn_id = str(message.get("turn_id") or "").strip()
-            if not turn_id:
+            if message["role"] == "user":
+                user_preview = message["content_preview"]
                 continue
-            if turn_id not in summaries:
-                summaries[turn_id] = {
-                    "turn_id": turn_id,
-                    "message_count": 0,
-                    "roles": [],
-                    "latest_created_at": "",
-                    "user_preview": "",
-                    "assistant_preview": "",
-                }
-            if turn_id in order:
-                order.remove(turn_id)
-            order.append(turn_id)
-
-            summary = summaries[turn_id]
-            summary["message_count"] += 1
-
-            role = str(message.get("role") or "").strip()
-            if role and role not in summary["roles"]:
-                summary["roles"].append(role)
-
-            created_at = str(message.get("created_at") or "")
-            if created_at:
-                summary["latest_created_at"] = created_at
-
-            preview = str(message.get("content_preview") or "").strip()
-            if role == "user" and preview and not summary["user_preview"]:
-                summary["user_preview"] = preview
-            if role == "assistant" and preview:
-                summary["assistant_preview"] = preview
-
-        return [summaries[turn_id] for turn_id in reversed(order)]
+            metadata = message["raw"].get("metadata") or {}
+            summaries.append({
+                "response_id": message["response_id"],
+                "origin": metadata.get("origin"),
+                "status": metadata.get("status"),
+                "outcome": metadata.get("outcome"),
+                "native_reason": metadata.get("native_reason"),
+                "started_at": metadata.get("started_at"),
+                "ended_at": metadata.get("ended_at"),
+                "user_preview": user_preview if metadata.get("origin") != "engine" else "",
+                "assistant_preview": message["content_preview"],
+            })
+        return list(reversed(summaries))
 
     async def admin_get_session_trace(
         self,
         user,
         session_id: str,
         *,
-        turn_id: str | None = None,
+        response_id: str | None = None,
         message_limit: int = 100,
-        frame_limit: int = 500,
+        part_limit: int = 500,
     ) -> dict[str, Any]:
+        """The session's latest messages beside one response's browser parts.
+
+        Messages are the conversation's history page, as its user reads it.
+        The parts are the response's own output log, the latest ``part_limit``
+        of them; ``truncated_part_count`` says how many earlier ones the limit
+        left out. Without ``response_id`` the trace opens on the newest
+        response still running, else the newest on the page.
+        """
         session = await self._sessions_repo.get_session(session_id)
         if session is None:
             raise APIError(code="SESSION_NOT_FOUND", message="session not found", status_code=404)
         await self._assert_can_manage_session(user, session)
 
-        safe_message_limit = max(1, min(int(message_limit), 200))
-        safe_frame_limit = max(1, min(int(frame_limit), 1000))
+        safe_message_limit = max(1, min(int(message_limit), 100))
+        safe_part_limit = max(1, min(int(part_limit), 1000))
+        history = await self._session_runtime.history_for(session_id, limit=safe_message_limit)
+        messages = [self._summarize_message(item) for item in history["messages"]]
+        responses = self._response_summaries(messages)
+        current = [
+            str(row["response_id"])
+            for row in (await self._facts.activity(session_id))["open_responses"]
+        ]
+        selected = str(response_id or "").strip() or (current[-1] if current else "")
+        if not selected and responses:
+            selected = str(responses[0]["response_id"] or "")
 
-        # Admin and chat read the same canonical message view derived from the
-        # durable Session event log. This keeps turn summaries and frame lookup
-        # aligned with the transcript the Session API exposes.
-        raw_messages, _has_more = await self._message_view.list_page(
-            session_id, limit=safe_message_limit
-        )
-        messages = [self._summarize_message(item) for item in raw_messages]
-        turns = self._build_turn_summaries(messages)
-
-        current_turn_id = snapshot_active_turn_id(
-            await self._session_snapshots_repo.get_snapshot(session_id)
-        ) or ""
-        selected_turn_id = str(turn_id or "").strip() or current_turn_id
-        if not selected_turn_id and turns:
-            selected_turn_id = str(turns[0].get("turn_id") or "").strip()
-
-        raw_frames: list[dict[str, Any]] = []
-        truncated_frame_count = 0
-        if selected_turn_id:
-            raw_frames = await self._session_events_repo.list_frames(
-                session_id,
-                turn_id=selected_turn_id,
-                after_seq=-1,
-                limit=safe_frame_limit + 1,
+        parts: list[dict[str, Any]] = []
+        total = 0
+        if selected:
+            parts, total = await self._facts.response_output_tail(
+                session_id, selected, limit=safe_part_limit
             )
-            if len(raw_frames) > safe_frame_limit:
-                truncated_frame_count = len(raw_frames) - safe_frame_limit
-                raw_frames = raw_frames[-safe_frame_limit:]
-
-        if selected_turn_id and not any(str(item.get("turn_id") or "") == selected_turn_id for item in turns):
-            turns.insert(0, {
-                "turn_id": selected_turn_id,
-                "message_count": 0,
-                "roles": [],
-                "latest_created_at": "",
-                "user_preview": "",
-                "assistant_preview": "",
-            })
-
         return {
             "session_id": session_id,
             "state": str(session.get("state") or ""),
-            "current_turn_id": current_turn_id or None,
-            "selected_turn_id": selected_turn_id or None,
+            "current_response_ids": current,
+            "selected_response_id": selected or None,
             "message_limit": safe_message_limit,
-            "frame_limit": safe_frame_limit,
+            "part_limit": safe_part_limit,
             "messages": messages,
-            "turns": turns,
-            "frames": [self._summarize_frame(item) for item in raw_frames],
-            "truncated_frame_count": truncated_frame_count,
+            "responses": responses,
+            "parts": [self._summarize_part(row) for row in parts],
+            "truncated_part_count": total - len(parts),
         }
 
     async def admin_session_transcript_files(
@@ -1230,9 +921,7 @@ class AdminService:
         if session is None or str(session.get("state") or "") == SessionState.DELETED.value:
             raise APIError(code="SESSION_NOT_FOUND", message="session not found", status_code=404)
         validated = validate_history_import(messages)
-        result = await SessionHistoryImporter(self._session_events_repo).import_messages(
-            session_id, validated,
-        )
+        result = await SessionHistoryImporter(self._facts).import_messages(session_id, validated)
         logger.info(
             "session history imported: session=%s imported=%s unchanged=%s",
             session_id, result["imported"], result["unchanged"],
@@ -1244,80 +933,16 @@ class AdminService:
         if session is None:
             raise APIError(code="SESSION_NOT_FOUND", message="session not found", status_code=404)
         await self._assert_can_manage_session(user, session)
-        if is_assistant_user_conversation(session):
-            raise APIError(
-                code="ASSISTANT_WORKSPACE_SHARED_RUNTIME",
-                message="assistant user conversations share an assistant workspace sandbox; kill the workspace owner runtime instead",
-                status_code=409,
-            )
-
-        sandbox_id = str(session.get("sandbox_id") or "").strip() or None
-        try:
-            destruction = await self._runtime_manager.terminate_runtime(
-                session_id, fallback_sandbox_id=sandbox_id,
-            )
-        except Exception as exc:
-            logger.warning("admin kill failed session=%s err=%s", session_id, exc)
-            raise APIError(
-                code="ADMIN_KILL_FAILED",
-                message=f"failed to terminate session runtime: {exc}",
-                status_code=502,
-            ) from exc
-
-        # TERMINATED takes this row out of the expiration watcher's probe set,
-        # so a box whose destruction was not confirmed would stop being looked
-        # at by anything. Record its id on the row's ledger in the same write,
-        # and report it to the operator, who needs to know whether the kill
-        # worked.
-        keep = keep_name_updates(destruction, row=session)
-        if keep:
-            logger.error(
-                "admin kill could not confirm the destruction of session=%s "
-                "sandbox=%s; it is recorded as undestroyed: %s",
-                session_id,
-                sandbox_id,
-                destruction.detail,
-            )
-        await self._sessions_repo.update_session(session_id, {
-            **keep,
-            "state": SessionState.TERMINATED.value,
-            "runtime_unavailable": True,
-            "last_error": "killed by admin",
-        })
-        event = await self._session_events_repo.append_event({
-            "session_id": session_id,
-            "channel": "lifecycle",
-            "event_type": "session.terminated",
-            "payload": {"reason": "admin_kill", "destruction": destruction.outcome},
-        })
-        terminated = await self._sessions_repo.get_session(session_id)
-        if terminated is None:
-            raise APIError(code="SESSION_NOT_FOUND", message="session not found", status_code=404)
-        await self._session_kernel.project_lifecycle_snapshot_from_session(
-            session_id=session_id,
-            event_seq=int(event["event_seq"]),
-            session=terminated,
-            fallback_permission_mode=None,
-        )
-
-        return {
-            "session_id": session_id,
-            "sandbox_id": sandbox_id,
-            "killed": destruction.confirmed,
-            "destruction": destruction.outcome,
-            "destruction_detail": destruction.detail,
-        }
+        return await self._session_lifecycle.kill_session(session)
 
     def admin_system_overview(self) -> dict[str, Any]:
-        from astrabox.persistence.repository.backend import active_backend_name
-
         runtimes = self._runtime_map(self._runtime_manager)
         settings = load_astrabox_settings()
         health = self.admin_process_health()
         return {
             "machine_id": socket.gethostname(),
             "server_env": os.getenv("SERVER_ENV", "unknown"),
-            "persistence_backend": active_backend_name(),
+            "persistence_backend": "postgresql",
             "active_runtimes": len(runtimes),
             "mcp_proxy_base_url": settings.mcp_proxy_base_url,
             "runtime_session_ids": list(runtimes.keys()),

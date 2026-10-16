@@ -7,21 +7,28 @@ const SHARED_RUNNER_PORT_SPAN = 500;
 export interface StaleWriterReconnectEvidence {
   expectedSandboxId: string;
   actualSandboxId: string;
-  firstTurnId: string;
-  secondTurnId: string;
+  /** The response answering the warm-up message. */
+  firstResponseId: string;
+  /** The response answering the message sent after the disconnect. */
+  secondResponseId: string;
   secondMarker: string;
   secondReplyText: string;
+  /** The session detail's state once the second response settled. */
   state: string;
-  currentTurnId: string;
-  lastTurnStatus: string;
+  /** How many responses the session detail still reports running or paused. */
+  openResponseCount: number;
+  /** The session detail's last ended response, and how it ended. */
+  lastResponseId: string;
+  lastResponseOutcome: string;
   assistantDelta: number;
   matchingAssistantCount: number;
+  /** The type of the last part the platform recorded for the second response. */
   terminalType: string;
 }
 
 export interface StaleWriterReconnectVerdict {
   addressedSandboxSurvived: boolean;
-  openedDistinctTurn: boolean;
+  openedDistinctResponse: boolean;
   replyReachedPlatform: boolean;
   completedExactlyOnce: boolean;
   settledReady: boolean;
@@ -51,10 +58,10 @@ export function staleWriterReconnectVerdict(
     addressedSandboxSurvived:
       evidence.expectedSandboxId.length > 0 &&
       evidence.actualSandboxId === evidence.expectedSandboxId,
-    openedDistinctTurn:
-      evidence.firstTurnId.length > 0 &&
-      evidence.secondTurnId.length > 0 &&
-      evidence.secondTurnId !== evidence.firstTurnId,
+    openedDistinctResponse:
+      evidence.firstResponseId.length > 0 &&
+      evidence.secondResponseId.length > 0 &&
+      evidence.secondResponseId !== evidence.firstResponseId,
     replyReachedPlatform:
       evidence.secondMarker.length > 0 &&
       evidence.secondReplyText.includes(evidence.secondMarker),
@@ -62,8 +69,9 @@ export function staleWriterReconnectVerdict(
       evidence.assistantDelta === 1 && evidence.matchingAssistantCount === 1,
     settledReady:
       evidence.state === 'READY' &&
-      evidence.currentTurnId === '' &&
-      evidence.lastTurnStatus === 'COMPLETED',
+      evidence.openResponseCount === 0 &&
+      evidence.lastResponseId === evidence.secondResponseId &&
+      evidence.lastResponseOutcome === 'completed',
     durableFinish: evidence.terminalType === 'finish',
   };
 }

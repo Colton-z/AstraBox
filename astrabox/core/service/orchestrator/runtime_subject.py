@@ -17,11 +17,12 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol, TypeAlias
 
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.settings import load_astrabox_settings
+from astrabox.common.utils.time_utils import parse_iso, utcnow
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.service.orchestrator.assistant.assistant_workspace_service import (
     get_assistant_profile_ready_marker,
@@ -47,6 +48,8 @@ logger = get_logger(__name__)
 
 _RUNTIME_SUBJECT_READY_TIMEOUT_SECONDS = 300.0
 _RUNTIME_SUBJECT_READY_POLL_SECONDS = 0.5
+#: How long a conversation waits for the platform's own profile refresh to publish.
+_PROFILE_REFRESH_WAIT_SECONDS = 120.0
 
 RuntimeStartupAction = Literal[
     "create_runtime",
@@ -348,6 +351,48 @@ class AssistantWorkspaceRuntimeSubject:
                 workspace_plan=plan,
                 renewal_ttl_seconds=(renewal_seconds if renewal_seconds > 0 else None),
             )
+        ready_sandbox_id = (
+            str((workspace or {}).get("current_sandbox_id") or "").strip()
+            if str((workspace or {}).get("state") or "").strip() == "READY"
+            else ""
+        )
+        if is_assistant_workspace_bootstrap(session) and ready_sandbox_id:
+            # The workspace is running a profile from another revision. A
+            # workspace Session prepares the current one on the same box, as a
+            # conversation would, so the next conversation finds it ready. It
+            # is bound to that box first, as a conversation's binding is.
+            bound = await self._sessions_repo.compare_and_update_session(
+                session_id,
+                expected={
+                    "state": "CREATING",
+                    **(
+                        {"sandbox_generation": session["sandbox_generation"]}
+                        if session.get("sandbox_generation") is not None
+                        else {}
+                    ),
+                },
+                updates={"sandbox_id": ready_sandbox_id},
+            )
+            if not bound:
+                raise APIError(
+                    code="RUNTIME_RECOVERY_SUPERSEDED",
+                    message="Assistant workspace Session changed before it was bound",
+                    status_code=409,
+                )
+            return RuntimeStartupTarget(
+                action="attach_runtime",
+                session={**session, "sandbox_id": ready_sandbox_id},
+                workspace_plan=self._runtime_manager.plan_assistant_runtime_attach(
+                    user_id=user_id,
+                    assistant_id=assistant_id,
+                    runtime_key=session_id,
+                    sandbox_id=ready_sandbox_id,
+                    existing_terminal_cwd=None,
+                    engine_kind=engine_kind,
+                    resume_engine_session_key=resume_engine_session_key,
+                ),
+                binding_expires_at=(workspace or {}).get("current_sandbox_expires_at"),
+            )
         if is_assistant_workspace_bootstrap(session):
             raise APIError(
                 code="RUNTIME_SUBJECT_MATERIALIZATION_LOST",
@@ -402,6 +447,16 @@ class AssistantWorkspaceRuntimeSubject:
             sandbox_id=sandbox_id,
             configuration_revision=getattr(template, "assistant_revision", None),
         )
+        if marker is None and await self._profile_refresh_in_flight(
+            workspace, revision=getattr(template, "assistant_revision", None),
+        ):
+            # The platform is already preparing this revision on the box; a
+            # second preparation could restart the backend under the first.
+            return RuntimeStartupPending(
+                session=reconciled,
+                binding=replace(binding, status="PROVISIONING"),
+                progress="preparing_assistant_profile",
+            )
         action: RuntimeStartupAction = (
             "use_ready_binding" if marker is not None else "attach_runtime"
         )
@@ -411,6 +466,31 @@ class AssistantWorkspaceRuntimeSubject:
             workspace_plan=plan,
             binding_expires_at=binding.expires_at,
         )
+
+    async def _profile_refresh_in_flight(
+        self, workspace: dict[str, Any] | None, *, revision: str | None,
+    ) -> bool:
+        """Whether a workspace Session is still preparing ``revision``.
+
+        A refresh that ended without publishing it leaves its Session
+        terminated, and one that has not published within
+        ``_PROFILE_REFRESH_WAIT_SECONDS`` is not waited for: in both cases the
+        conversation prepares the profile itself.
+        """
+        refresh = (workspace or {}).get("profile_refresh")
+        if not isinstance(refresh, dict) or not revision or refresh.get("revision") != revision:
+            return False
+        try:
+            age = (utcnow() - parse_iso(str(refresh.get("started_at") or ""))).total_seconds()
+        except (TypeError, ValueError):
+            return False
+        if age > _PROFILE_REFRESH_WAIT_SECONDS:
+            return False
+        refresh_session_id = str(refresh.get("session_id") or "").strip()
+        if not refresh_session_id:
+            return False
+        refresh_session = await self._sessions_repo.get_session(refresh_session_id)
+        return str((refresh_session or {}).get("state") or "") == "CREATING"
 
     async def publish_runtime_ready(
         self,

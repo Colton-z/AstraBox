@@ -1,0 +1,93 @@
+--- a/components/execd/pkg/web/controller/filesystem_upload.go
++++ b/components/execd/pkg/web/controller/filesystem_upload.go
+@@ -41,26 +41,55 @@
+ 	return &uploadError{status: status, code: code, message: message}
+ }
+ 
++// AstraBox modification: stream ordered metadata/file pairs without a body spool.
+ // UploadFile uploads files with metadata to specified paths
+ func (c *FilesystemController) UploadFile() {
+ 	rec := beginFilesystemMetric("upload")
+ 	defer rec.Finish(c.basicController)
+ 
+-	metadataParts, fileParts, uerr := c.parseUploadForm()
+-	if uerr != nil {
+-		c.RespondError(uerr.status, uerr.code, uerr.message)
++	reader, err := c.ctx.Request.MultipartReader()
++	if err != nil {
++		c.RespondError(http.StatusBadRequest, model.ErrorCodeInvalidFile, "multipart form is empty")
+ 		return
+ 	}
+ 
+-	for i := range metadataParts {
+-		if uerr := c.processUploadPair(metadataParts[i], fileParts[i]); uerr != nil {
++	uploaded := 0
++	for {
++		metadataPart, err := reader.NextPart()
++		if err == io.EOF && uploaded > 0 {
++			rec.MarkSuccess()
++			c.RespondSuccess(nil)
++			return
++		}
++		if err != nil || metadataPart.FormName() != "metadata" {
++			c.RespondError(http.StatusBadRequest, model.ErrorCodeInvalidFileMetadata, "metadata file is missing")
++			return
++		}
++		meta, uerr := parseUploadMetadataContent(metadataPart)
++		metadataPart.Close()
++		if uerr != nil {
+ 			c.RespondError(uerr.status, uerr.code, uerr.message)
+ 			return
+ 		}
+-	}
+-
+-	rec.MarkSuccess()
+-	c.RespondSuccess(nil)
++		filePart, err := reader.NextPart()
++		if err != nil || filePart.FormName() != "file" {
++			c.RespondError(http.StatusBadRequest, model.ErrorCodeInvalidFileContent, "file is missing")
++			return
++		}
++		resolvedPath, uerr := resolveUploadTarget(meta.Path, meta.Permission)
++		if uerr == nil {
++			uerr = writeUploadStream(resolvedPath, filePart)
++		}
++		if uerr == nil {
++			uerr = applyUploadPermission(resolvedPath, meta.Permission)
++		}
++		if uerr != nil {
++			c.RespondError(uerr.status, uerr.code, uerr.message)
++			return
++		}
++		filePart.Close()
++		uploaded++
++	}
+ }
+ 
+ func (c *FilesystemController) parseUploadForm() ([]*multipart.FileHeader, []*multipart.FileHeader, *uploadError) {
+@@ -119,8 +148,12 @@
+ 			fmt.Sprintf("error opening metadata file. %v", err),
+ 		)
+ 	}
++	defer metadataFile.Close()
++	return parseUploadMetadataContent(metadataFile)
++}
++
++func parseUploadMetadataContent(metadataFile io.Reader) (*model.FileMetadata, *uploadError) {
+ 	metaBytes, err := io.ReadAll(metadataFile)
+-	metadataFile.Close()
+ 	if err != nil {
+ 		return nil, newUploadError(
+ 			http.StatusBadRequest,
+@@ -173,7 +206,10 @@
+ 		)
+ 	}
+ 	defer file.Close()
+-
++	return writeUploadStream(resolvedPath, file)
++}
++
++func writeUploadStream(resolvedPath string, file io.Reader) *uploadError {
+ 	dst, err := os.OpenFile(resolvedPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.ModePerm)
+ 	if err != nil {
+ 		return newUploadError(

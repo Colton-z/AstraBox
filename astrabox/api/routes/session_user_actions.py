@@ -12,6 +12,7 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.api_response import success_response
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import API_READ_SCOPE, API_WRITE_SCOPE
+from astrabox.core.service.orchestrator.runtime.preparation import preparation_subject
 from astrabox.persistence.repository.session_repository import SessionRepository
 from astrabox.seams.runtime_preparation import (
     SessionUserActionContext, SessionUserActionState, runtime_preparation_provider,
@@ -55,7 +56,7 @@ async def _context(request: Request, session_id: str, *, write: bool) -> Session
     if session is None:
         raise APIError(code="SESSION_NOT_FOUND", message="Session not found", status_code=404)
     return SessionUserActionContext(
-        session_id=session_id, principal_id=user.user_id, agent_id=session.get("agent_id"),
+        session_id=session_id, principal_id=user.user_id, subject=preparation_subject(session),
     )
 
 

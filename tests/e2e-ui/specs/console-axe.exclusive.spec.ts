@@ -24,6 +24,8 @@ import { test, expect, type Page } from '@playwright/test';
 
 import { appPath } from '../fixtures/env';
 
+test.use({ trace: 'on' });
+
 /** The four tag sets that make up WCAG 2.1 A and AA. */
 const WCAG = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];
 
@@ -62,6 +64,10 @@ async function scan(page: Page, route: string): Promise<Violation[]> {
   expect(new URL(page.url()).pathname, `${route}: the console must reach the requested route`)
     .toBe(route);
   await expect(page.locator('h1'), `${route}: the console surface must render`).toHaveCount(1);
+  await expect(
+    page.locator('[data-slot="loading-state"]'),
+    `${route}: the console surface must finish loading before it is measured`,
+  ).toHaveCount(0);
   await expect(
     page.locator('[data-slot="error-state"]'),
     `${route}: the console surface must load before it is measured`,
@@ -112,10 +118,13 @@ async function openFirstRecord(page: Page, route: string): Promise<string | null
 
 async function openSection(page: Page, route: string): Promise<void> {
   await page.goto(appPath(route));
-  await expect(
-    page.getByRole('button', { name: 'Refresh', exact: true }),
-    `${route}: the section must finish loading before it is measured`,
-  ).toBeEnabled();
+  // Configuration forms load through ConsoleRecordLoading and have no Refresh action.
+  if (route !== '/manage/assistant-defaults' && route !== '/manage/connectors') {
+    await expect(
+      page.getByRole('button', { name: 'Refresh', exact: true }),
+      `${route}: the section must finish loading before it is measured`,
+    ).toBeEnabled();
+  }
 }
 
 test('every console route passes WCAG 2.1 AA as axe measures it', async ({ page }) => {

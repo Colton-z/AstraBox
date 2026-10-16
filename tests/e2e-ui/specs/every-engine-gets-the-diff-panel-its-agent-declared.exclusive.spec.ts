@@ -1,12 +1,12 @@
 /** The Diff panel is what the Agent declared it would be, for every engine. */
 import { expect, test, type Page } from '@playwright/test';
 
-import { AstraApi, visibleMessages } from '../fixtures/astraApi';
+import { AstraApi, messageText, visibleMessages } from '../fixtures/astraApi';
 import { revealAssistantProcess } from '../fixtures/assistantProcess';
 import { engineCases, engineProfileFor, toolName } from '../fixtures/engineProfile';
 import { trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
-import { aiStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
+import { sessionStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
 
 const sessions = trackSessions();
 let sessionId = '';
@@ -30,7 +30,7 @@ test.afterEach(async ({ request, page }, info) => {
   const [session, history, stream] = await Promise.all([
     observe(() => api.getSession(sessionId)),
     observe(() => api.getMessages(sessionId, 50)),
-    observe(() => aiStreamBodies(page)),
+    observe(() => sessionStreamBodies(page)),
   ]);
   await info.attach('diff-panel-scene', {
     body: JSON.stringify({ sessionId, observations, session, history, stream }),
@@ -54,7 +54,7 @@ function toolCards(page: Page) {
 }
 
 async function expectLiveToolCard(page: Page, marker: string): Promise<void> {
-  const chunks = (await aiStreamBodies(page)).flatMap((body) => body.text.split('\n')
+  const chunks = (await sessionStreamBodies(page)).flatMap((body) => body.text.split('\n')
     .filter((line) => line.startsWith('data:'))
     .map((line) => line.slice(5).trim())
     .filter((line) => line && line !== '[DONE]')
@@ -116,7 +116,7 @@ async function expectCompletedToolCard(page: Page, marker: string): Promise<void
 }
 
 async function expectOrdinaryReplyAndColdCards(page: Page, api: AstraApi, session: string, marker: string): Promise<void> {
-  const before = new Set(visibleMessages(await api.getMessages(session, 50)).map((message) => message.message_id));
+  const before = new Set(visibleMessages(await api.getMessages(session, 50)).map((message) => message.id));
   // Counted from what the reader can reach: a folded header holds its cards out
   // of the page entirely once the transcript has been rebuilt from history.
   // The caller may have just reloaded, and the reveal opens only the headers
@@ -127,9 +127,8 @@ async function expectOrdinaryReplyAndColdCards(page: Page, api: AstraApi, sessio
   expect(count, 'the conversation already contains rendered tool cards').toBeGreaterThan(0);
   await sendPrompt(page, session, 'The file work is finished. What does a text file store? Answer in one short plain sentence without Markdown. Do not use tools.');
   const readReplyText = async () => visibleMessages(await api.getMessages(session, 50))
-      .filter((message) => message.role === 'assistant' && !before.has(message.message_id))
-      .map((message) => (message.blocks ?? []).filter((block) => block.type === 'text')
-        .map((block) => String(block.text ?? '')).join('\n').trim())
+      .filter((message) => message.role === 'assistant' && !before.has(message.id))
+      .map((message) => messageText(message).trim())
       .find((text) => text.length > 0) ?? '';
   await expect.poll(async () => (await readReplyText()).length, { timeout: 60_000 }).toBeGreaterThan(0);
   await expect.poll(async () => record(await api.getSession(session)).state, { timeout: 60_000 }).toBe('READY');
@@ -247,10 +246,10 @@ for (const declared of writing) {
     // offered the tab at all; one that declared it must count the write.
     const declared = record(record(await api.getSession(sessionId)).workspace_panels);
     observations.push({ engine, declared });
-    // The write landing in the sandbox is not the turn ending. The panel counts
-    // from the tool parts this tab has been delivered, so a turn still running
-    // is a count that has not finished arriving — a different thing from a
-    // count the panel refused to make.
+    // The write landing in the sandbox is not the response ending. The panel
+    // counts from the tool parts this tab has been delivered, so a response
+    // still running is a count that has not finished arriving — a different
+    // thing from a count the panel refused to make.
     await expect
       .poll(async () => String(record(await api.getSession(sessionId)).state), { timeout: 150_000 })
       .toBe('READY');
@@ -262,7 +261,7 @@ for (const declared of writing) {
         body: JSON.stringify({
           sessionId, target, declared,
           history: await api.getMessages(sessionId, 50),
-          stream: await aiStreamBodies(page),
+          stream: await sessionStreamBodies(page),
         }),
         contentType: 'application/json',
       });
@@ -311,8 +310,12 @@ for (const declared of writing) {
     const content = page.getByTestId('file-diff-content');
     await expect(content.locator('[data-diff-kind="removed"]')).toContainText(contentMarker);
     await expect(content.locator('[data-diff-kind="added"]')).toContainText(replacement);
-    await expect.poll(async () => record(await api.getSession(sessionId)).last_turn_status,
-      { timeout: 60_000 }).toBe('COMPLETED');
+    // The file changed inside the edit response, so the session reads READY
+    // only once that response has ended.
+    await expect.poll(async () => {
+      const current = await api.getSession(sessionId);
+      return { state: current.state, outcome: current.last_response?.outcome };
+    }, { timeout: 60_000 }).toEqual({ state: 'READY', outcome: 'completed' });
     const beforeReload = await content.innerText();
     const history = await api.getMessages(sessionId, 50);
     expect(JSON.stringify(history), 'native result projection must be in database-backed history')

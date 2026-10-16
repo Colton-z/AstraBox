@@ -1,6 +1,6 @@
 /**
  * MCP-capable Agents report expired OAuth credentials before new work uses
- * them. Other engines must reject unsupported MCP configuration explicitly.
+ * them.
  * Each case owns its cold Environment, Agent and credential Vault.
  */
 import fs from 'node:fs';
@@ -9,7 +9,7 @@ import { test, expect } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
 import { engineCases, engineProfileFor } from '../fixtures/engineProfile';
-import { apiPath, appPath, parseTimeoutEnv, refuseIfNotTheDeployment } from '../fixtures/env';
+import { appPath, parseTimeoutEnv, refuseIfNotTheDeployment } from '../fixtures/env';
 import { PlatformApi } from '../fixtures/platformApi';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { expectComposerEnabled, openSessionView } from '../fixtures/sessionPage';
@@ -92,11 +92,8 @@ onPassOnly(async ({ request }) => {
   }
 });
 
-for (const declared of engineCases()) {
-const acceptsMcp = declared.engine_kind === 'claude_code';
-const journey = acceptsMcp
-  ? 'an expired MCP OAuth credential is reported on its record before a conversation dies on it'
-  : 'unsupported MCP configuration is refused without changing the Agent';
+for (const declared of engineCases().filter((profile) => profile.engine_kind === 'claude_code')) {
+const journey = 'an expired MCP OAuth credential is reported on its record before a conversation dies on it';
 test(`${declared.engine_kind}: ${journey}`, async ({
   page,
   request,
@@ -113,7 +110,7 @@ test(`${declared.engine_kind}: ${journey}`, async ({
   const engine = engines.find((item) => item.engine_kind === declared.engine_kind);
   expect(Array.isArray(engine?.configuration_inputs)).toBe(true);
   expect((engine!.configuration_inputs as string[]).includes('mcp_servers'),
-    'this case must match the deployed adapter configuration contract').toBe(acceptsMcp);
+    'this case must match the deployed adapter configuration contract').toBe(true);
 
   // ── 0. Preflight. Fail loud, never skip. ──────────────────────────────────
   await refuseIfNotTheDeployment(async (url, headers) => ({
@@ -190,9 +187,9 @@ test(`${declared.engine_kind}: ${journey}`, async ({
   // is what makes this credential unhealable rather than merely stale.
   expect(weekend.auth.refresh, 'the console form authors no refresh block').toBeUndefined();
   expect(
-    String(weekend.auth.expires_at || ''),
+    Date.parse(String(weekend.auth.expires_at || '')),
     'the API must carry back the expiry the operator entered',
-  ).toEqual(fridayExpiry);
+  ).toEqual(Date.parse(fridayExpiry));
   expect(JSON.stringify(weekend)).not.toContain(WEEKEND_TOKEN);
   expect(JSON.stringify(neighbour)).not.toContain(NEIGHBOUR_TOKEN);
 
@@ -206,29 +203,6 @@ test(`${declared.engine_kind}: ${journey}`, async ({
   });
   agentId = String(created.agent_id || '');
   expect(agentId, 'the created Agent must have an id').not.toEqual('');
-  if (!acceptsMcp) {
-    const before = await api.getAgent(agentId);
-    const response = await request.put(apiPath(`/agents/${agentId}`), {
-      data: {
-        name: before.name,
-        model: before.model,
-        environment_name: before.environment_name,
-        version: before.version,
-        mcp_servers: { [SERVER_ALIAS]: { type: 'http', url: WEEKEND_URL } },
-      },
-    });
-    expect(response.status(), 'an unsupported field must be refused before any conversation starts').toBe(400);
-    const refused = await response.json();
-    expect(refused.code).toBe('INVALID_REQUEST');
-    expect(refused.message).toContain(`engine '${declared.engine_kind}'`);
-    expect(refused.message).toContain('mcp_servers');
-    expect(JSON.stringify(refused)).not.toContain(WEEKEND_TOKEN);
-    const after = await api.getAgent(agentId);
-    expect(after.version).toBe(before.version);
-    expect(after.mcp_servers || {}).toEqual(before.mcp_servers || {});
-    expect(after.state).toBe('ACTIVE');
-    return;
-  }
   await platform.data('PUT', `/admin/agents/${agentId}/credential-vaults`, {
     vault_ids: [vaultId],
   });
@@ -313,17 +287,17 @@ test(`${declared.engine_kind}: ${journey}`, async ({
     auth: { expires_at: pastExpiry },
   });
   expect(
-    String(lapsed.auth.expires_at || ''),
+    Date.parse(String(lapsed.auth.expires_at || '')),
     'the precondition has to be proven before anything is judged on it: the PATCH must '
       + 'echo the past expiry back',
-  ).toEqual(pastExpiry);
+  ).toEqual(Date.parse(pastExpiry));
   const neighbourAfter = await platform.listCredentials(vaultId);
   expect(
-    String(
+    Date.parse(String(
       neighbourAfter.find((item) => item.credential_id === neighbourId)?.auth.expires_at || '',
-    ),
+    )),
     'the neighbour credential must be untouched, or the two rows stop being a contrast',
-  ).toEqual(neighbourExpiry);
+  ).toEqual(Date.parse(neighbourExpiry));
 
   // ── 6. Monday: the operator comes back to the record. ─────────────────────
   // A real navigation, which is a full document load and therefore a fresh

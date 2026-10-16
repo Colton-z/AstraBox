@@ -5,15 +5,15 @@ import { useTranslation } from 'react-i18next';
 import { Download, FileText, Lock } from 'lucide-react';
 
 import { VirtualizedMessageList } from '@/session/components/VirtualizedMessageList';
-import { useFirstPageMessages } from '@/session/hooks/useFirstPageMessages';
+import { useSessionHistory } from '@/session/hooks/useSessionHistory';
 import { TranscriptAccessContext, sharedTranscriptAccess } from '@/session/TranscriptAccess';
-import { prepareInitialMessages } from '@/session/prepareInitialMessages';
 import {
   buildSharedFileDownloadUrl,
   getSharedSession,
   listSharedFiles,
+  type SharedSession,
 } from '@/api';
-import type { SessionFileEntry, SessionRecord } from '@/types';
+import type { SessionFileEntry } from '@/types';
 
 // Read-only conversation view reached through /share/:token. The token is the
 // viewer credential; owner authentication is required only to create or revoke
@@ -30,8 +30,8 @@ export default function SharePage() {
 
 function SharedConversation({ token }: { token: string }) {
   const { t } = useTranslation();
-  const history = useFirstPageMessages(token);
-  const [session, setSession] = useState<(SessionRecord & { share_allow_download?: boolean }) | null>(null);
+  const history = useSessionHistory(token);
+  const [session, setSession] = useState<SharedSession | null>(null);
   const [files, setFiles] = useState<SessionFileEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -65,9 +65,7 @@ function SharedConversation({ token }: { token: string }) {
     };
   }, [token]);
 
-  const messages = useMemo(() => session ? prepareInitialMessages(
-    history.durableRecords, history.overlay, session,
-  ) : [], [history.durableRecords, history.overlay, session]);
+  const messages = history.messages;
 
   const title = useMemo(
     () => String(session?.title || '').trim() || t('misc:share.title_fallback'),
@@ -110,7 +108,6 @@ function SharedConversation({ token }: { token: string }) {
           ) : (
             <VirtualizedMessageList
               messages={messages}
-              isStreaming={false}
               shouldAutoFollow={false}
               firstItemIndex={100_000 - messages.length}
               hasMore={history.hasMore}

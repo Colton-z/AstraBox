@@ -24,7 +24,7 @@
  *    real exchanges — which are all still there, complete;
  * 2. the history API keeps every submitted input as a user row, with the
  *    original message ids, roles and chronological order, and each real
- *    exchange's assistant row with the text the completed turn settled on;
+ *    exchange's assistant row with the text the completed response settled on;
  * 3. a cold page renders exactly those rows, in that order, under those ids,
  *    with no user bubble carrying either summary.
  *
@@ -38,21 +38,22 @@
  * exchange returns "Not enough messages to compact." A refusal fails promptly
  * with the same retained scene, rather than waiting for a boundary that the
  * vendor has explicitly declined to produce.
- *
- * The compact boundary also reaches the platform as a private engine
- * diagnostic (`SystemMessage` → `data-raw-event` → `engine.diagnostic`). That
- * channel is read and attached as evidence; it is not an assertion, because the
- * native SessionStore is the authority this spec is about.
  */
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 
-import { AstraApi, messageText, type MessageRecord } from '../fixtures/astraApi';
-import { documentsByField, oracleDbPath, sessionEvents } from '../fixtures/dbOracle';
+import {
+  AstraApi,
+  answersInput,
+  messageText,
+  type InputReceipt,
+  type MessageRecord,
+} from '../fixtures/astraApi';
+import { oracleDbPath, postgresRows, sqlLiteral } from '../fixtures/dbOracle';
 import { parseTimeoutEnv } from '../fixtures/env';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { expectPromptDelivered, openSessionView, startPromptDelivery } from '../fixtures/sessionPage';
-import { aiStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
+import { sessionStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
 
 const COMPACT_COMMAND = '/compact';
 // The vendor's command envelope, as its SessionStore records a typed command.
@@ -64,8 +65,10 @@ const FAILURE_STATUSES = new Set(['failed', 'timedOut', 'interrupted']);
 
 // ── The native SessionStore mirror ─────────────────────────────────────────
 //
-// One row per SDK JSONL line in `transcript_entries`, keyed by
-// `platform_session_id`, raw line in `entry_json`, native position in `seq`.
+// One row per SDK JSONL line in `transcript_entries`, in the transcript file
+// (`transcript_scopes`) of this platform session it belongs to; the main
+// transcript has an empty subpath. Raw line in `entry_json`, native position
+// in `seq`.
 
 interface NativeEntry {
   seq: number;
@@ -79,9 +82,13 @@ interface NativeEntry {
  * one, so it throws with its position instead of vanishing from the list.
  */
 function mainScopeEntries(sessionId: string): NativeEntry[] {
-  const rows = documentsByField('transcript_entries', '$.platform_session_id', sessionId)
-    .filter((row) => row.subpath == null);
-  const scopeIds = new Set(rows.map((row) => String(row.scope_id || '').trim()));
+  const rows = postgresRows<{ scope_id: number; seq: number; entry_json: string }>(
+    `SELECT e.scope_id, e.seq, e.entry_json FROM transcript_entries e `
+      + `JOIN transcript_scopes s ON s.scope_id = e.scope_id `
+      + `WHERE s.platform_session_id = ${sqlLiteral(sessionId)} AND s.subpath = '' `
+      + `ORDER BY e.scope_id, e.seq`,
+  );
+  const scopeIds = new Set(rows.map((row) => String(row.scope_id)));
   if (scopeIds.size > 1) {
     throw new Error(
       `session ${sessionId} holds ${scopeIds.size} main SessionStore scopes; `
@@ -217,30 +224,9 @@ function normalizeRendered(text: string): string {
   return text.replace(/\s+/g, '').replace(/[*_`#>|~\-–—·•]/g, '');
 }
 
-// ── The private diagnostic channel (evidence only) ─────────────────────────
-
-function compactBoundaryDiagnostics(sessionId: string): Record<string, unknown>[] {
-  return sessionEvents(sessionId)
-    .filter((event) => String(event.event_type ?? '') === 'engine.diagnostic')
-    .map((event) => ({ event, payload: (event.payload ?? {}) as Record<string, unknown> }))
-    .filter(({ payload }) => String(payload.subtype ?? '') === 'compact_boundary')
-    .map(({ event, payload }) => {
-      const raw = (payload.raw ?? {}) as Record<string, unknown>;
-      const data = (raw.data ?? {}) as Record<string, unknown>;
-      return {
-        event_seq: event.event_seq ?? null,
-        turn_id: event.turn_id ?? null,
-        event_type: payload.event_type ?? null,
-        sdk_type: raw.__sdk_type ?? null,
-        compact_metadata: data.compact_metadata ?? null,
-        native_uuid: data.uuid ?? null,
-      };
-    });
-}
-
-/** Parsed `data:` frames of every ai-stream body the browser has read so far. */
+/** Parsed `data:` frames of every session stream body the browser has read so far. */
 async function browserStreamFrames(page: Page): Promise<Record<string, unknown>[]> {
-  const bodies = await aiStreamBodies(page);
+  const bodies = await sessionStreamBodies(page);
   const frames: Record<string, unknown>[] = [];
   for (const body of bodies) {
     for (const line of body.text.split('\n')) {
@@ -259,18 +245,21 @@ async function browserStreamFrames(page: Page): Promise<Record<string, unknown>[
 
 interface SettledInput {
   content: string;
-  turnId: string;
+  /** The platform's id for the accepted input. */
+  inputId: string;
+  /** The user row's id: the `client_message_id` the composer posted. */
   userMessageId: string;
-  /** The turn's durable assistant rows, as the completed turn left them. */
+  /** The assistant rows answering the input, as the completed response left them. */
   assistantRows: { messageId: string; text: string }[];
 }
 
 /**
- * Submit `content` through the composer and wait for its turn to settle, then
- * read what the durable history holds for that turn. The user row is located
- * by the `client_message_id` the composer actually posted, so the second
- * `/compact` finds its own row and not the first one's: two submissions with
- * the same text are two external inputs, and each must keep its own identity.
+ * Submit `content` through the composer and wait for the response to it to
+ * end, then read what the durable history holds for that input. The user row
+ * is located by the `client_message_id` the composer actually posted, so the
+ * second `/compact` finds its own row and not the first one's: two
+ * submissions with the same text are two external inputs, and each must keep
+ * its own identity.
  */
 async function submitAndSettle(
   api: AstraApi,
@@ -281,55 +270,52 @@ async function submitAndSettle(
   const knownUserIds = new Set(
     ((await api.getMessages(sessionId, 50)).messages || [])
       .filter((row) => row.role === 'user')
-      .map((row) => String(row.message_id || '').trim()),
+      .map((row) => row.id),
   );
   const delivery = await startPromptDelivery(page, sessionId, content);
-  await expectPromptDelivered(delivery);
+  const accepted = await expectPromptDelivered(delivery);
+  const receipt = ((await accepted.json()) as { data: InputReceipt }).data;
   const { clientMessageId } = delivery;
+  expect(receipt.client_message_id, 'the receipt must name the message the composer posted').toBe(clientMessageId);
+  expect(receipt.duplicate, `${JSON.stringify(content)} must be accepted as a new input`).toBe(false);
 
   let userRow: MessageRecord | undefined;
   await expect.poll(async () => {
     const rows = (await api.getMessages(sessionId, 50)).messages || [];
-    const matches = rows.filter((row) => (
-      row.role === 'user'
-      && String(row.client_message_id || '').trim() === clientMessageId
-    ));
+    const matches = rows.filter((row) => row.role === 'user' && row.id === clientMessageId);
     if (matches.length > 1) {
       throw new Error(
         `client_message_id ${clientMessageId} projected ${matches.length} user rows: `
-          + JSON.stringify(matches.map((row) => ({ message_id: row.message_id, turn_id: row.turn_id }))),
+          + JSON.stringify(matches.map((row) => ({ id: row.id, input_id: row.metadata?.input_id ?? null }))),
       );
     }
     userRow = matches[0];
-    return userRow ? String(userRow.message_id || '').trim() : '';
+    return userRow ? userRow.id : '';
   }, {
     timeout: TURN_TIMEOUT_MS,
     intervals: [500, 1_000, 1_500],
     message: `the durable history must project submission ${clientMessageId} (${JSON.stringify(content)}) as a user row`,
   }).toMatch(/\S/);
-  const turnId = String(userRow!.turn_id || '').trim();
-  const userMessageId = String(userRow!.message_id || '').trim();
+  const userMessageId = userRow!.id;
   expect(messageText(userRow!), `user row ${userMessageId} must carry the submitted text`).toBe(content);
   expect(knownUserIds.has(userMessageId), `user row ${userMessageId} must be new to this submission`).toBe(false);
-  expect(turnId, `user row ${userMessageId} must belong to a turn`).not.toEqual('');
+  expect(userRow!.metadata?.input_id, `user row ${userMessageId} must be the accepted input`).toBe(receipt.input_id);
 
-  const settled = await api.waitForSession(sessionId, (session) => (
-    !String(session.current_turn_id || '').trim()
-    && String(session.last_turn_id || '').trim() === turnId
-  ), TURN_TIMEOUT_MS);
+  const reply = await api.waitForReplyTo(sessionId, receipt.input_id, { timeoutMs: TURN_TIMEOUT_MS });
+  const settled = await api.waitForSession(sessionId, (session) => session.state === 'READY', TURN_TIMEOUT_MS);
   expect(
-    { state: settled.state, last_turn_status: settled.last_turn_status, last_error: settled.last_error || null },
-    `turn ${turnId} for ${JSON.stringify(content)} must settle COMPLETED and READY`,
-  ).toEqual({ state: 'READY', last_turn_status: 'COMPLETED', last_error: null });
+    { state: settled.state, outcome: reply.metadata?.outcome ?? null, last_error: settled.last_error || null },
+    `the response to ${JSON.stringify(content)} must complete and leave the session READY`,
+  ).toEqual({ state: 'READY', outcome: 'completed', last_error: null });
 
   const history = await api.getMessages(sessionId, 50);
   const assistantRows = (history.messages || [])
-    .filter((row) => row.role === 'assistant' && String(row.turn_id || '').trim() === turnId)
-    .map((row) => ({ messageId: String(row.message_id || '').trim(), text: messageText(row) }));
-  return { content, turnId, userMessageId, assistantRows };
+    .filter((row) => answersInput(row, receipt.input_id))
+    .map((row) => ({ messageId: row.id, text: messageText(row) }));
+  return { content, inputId: receipt.input_id, userMessageId, assistantRows };
 }
 
-/** A real exchange: exactly one assistant row with text the completed turn settled on. */
+/** A real exchange: exactly one assistant row with text the completed response settled on. */
 function onlyReply(input: SettledInput): { messageId: string; text: string } {
   expect(
     input.assistantRows,
@@ -401,7 +387,7 @@ interface Scene {
   sessionId: string;
   agentId: string;
   inputs: SettledInput[];
-  /** Browser-observed ai-stream frames captured after each compact turn settled. */
+  /** Browser-observed stream frames captured after each compact response ended. */
   compactTurnStreams: Record<string, unknown>[];
 }
 
@@ -425,9 +411,9 @@ async function probe<T>(read: () => T | Promise<T>): Promise<Probe<T>> {
 
 // Registered as an `afterEach` because that is where the result is real; inside
 // the body a failing test still reads as passing. Every read is independent of
-// the assertion that failed: the mirror, the history API, the private
-// diagnostic channel and the browser's own stream are each reported as either
-// their value or the exact error that prevented reading them.
+// the assertion that failed: the session, the mirror, the history API and the
+// browser's own stream are each reported as either their value or the exact
+// error that prevented reading them.
 test.afterEach(async ({ page, request }, testInfo) => {
   if (!FAILURE_STATUSES.has(String(testInfo.status || ''))) return;
   const api = new AstraApi(request);
@@ -444,20 +430,19 @@ test.afterEach(async ({ page, request }, testInfo) => {
         const messagePage = await api.getMessages(sessionId, 50);
         return {
           has_more: messagePage.has_more ?? null,
-          active_turn_overlay: messagePage.active_turn_overlay ?? null,
+          pending_interaction: messagePage.pending_interaction ?? null,
           rows: (messagePage.messages || []).map((row) => ({
             role: row.role,
-            message_id: row.message_id,
-            turn_id: row.turn_id,
+            id: row.id,
+            input_id: row.metadata?.input_id ?? null,
+            input_ids: row.metadata?.input_ids ?? null,
+            outcome: row.metadata?.outcome ?? null,
             text: excerpt(messageText(row)),
           })),
         };
       })
       : noSession,
     native_mirror: sessionId ? await probe(() => mirrorSummary(mainScopeEntries(sessionId))) : noSession,
-    compact_boundary_diagnostics: sessionId
-      ? await probe(() => compactBoundaryDiagnostics(sessionId))
-      : noSession,
     browser_stream_frames: await probe(async () => (await browserStreamFrames(page))
       .map((frame) => excerpt(frame, 400))),
   };
@@ -648,7 +633,7 @@ test('two real native compactions keep the complete history, its identities and 
     ).not.toHaveLength(0);
     expect(
       normalizeRendered(native.assistants.map((item) => nativeText(item.entry)).join('')),
-      `the native answer to ${exchange.marker} must be the text the completed turn settled on`,
+      `the native answer to ${exchange.marker} must be the text the completed response settled on`,
     ).toBe(normalizeRendered(exchange.reply.text));
   }
   const nativeOrder = [
@@ -682,7 +667,7 @@ test('two real native compactions keep the complete history, its identities and 
       session_id: sessionId,
       inputs: inputs.map((input) => ({
         content: input.content,
-        turn_id: input.turnId,
+        input_id: input.inputId,
         user_message_id: input.userMessageId,
         assistant_rows: input.assistantRows.map((row) => ({ message_id: row.messageId, text: excerpt(row.text) })),
       })),
@@ -691,7 +676,6 @@ test('two real native compactions keep the complete history, its identities and 
         summary: { seq: summary.seq, uuid: summary.uuid, parentUuid: summary.entry.parentUuid ?? null, text: excerpt(nativeText(summary.entry)) },
       })),
       envelopes: envelopes.map((item) => item.seq),
-      compact_boundary_diagnostics: compactBoundaryDiagnostics(sessionId),
     }),
   });
 
@@ -699,45 +683,52 @@ test('two real native compactions keep the complete history, its identities and 
 
   const history = await api.getMessages(sessionId, 50);
   expect(history.has_more, 'the whole conversation fits one page').toBe(false);
-  expect(history.active_turn_overlay ?? null, 'no turn is active after the last settle').toBeNull();
+  expect(
+    (await api.getSession(sessionId)).current_responses ?? [],
+    'no response is running after the last settle',
+  ).toEqual([]);
   const rows = history.messages || [];
 
   expect(
     rows.filter((row) => row.role === 'user').map((row) => ({
-      message_id: row.message_id, turn_id: row.turn_id, text: messageText(row),
+      id: row.id, input_id: row.metadata?.input_id ?? null, text: messageText(row),
     })),
     'user rows must be exactly all seven submitted inputs, under their original ids, in order',
   ).toEqual(inputs.map((input) => ({
-    message_id: input.userMessageId, turn_id: input.turnId, text: input.content,
+    id: input.userMessageId, input_id: input.inputId, text: input.content,
   })));
   for (const { input, reply, marker } of exchanges) {
     expect(
-      rows.filter((row) => row.role === 'assistant' && row.turn_id === input.turnId).map((row) => ({
-        message_id: row.message_id, text: messageText(row),
+      rows.filter((row) => answersInput(row, input.inputId)).map((row) => ({
+        id: row.id, text: messageText(row),
       })),
       `the assistant row answering ${marker} must keep its id and settled text across both compactions`,
-    ).toEqual([{ message_id: reply.messageId, text: reply.text }]);
+    ).toEqual([{ id: reply.messageId, text: reply.text }]);
   }
-  const knownTurns = new Set(inputs.map((input) => input.turnId));
+  // The submitted input a history row belongs to: its own for a user row, the
+  // one it answers for an assistant row; empty for a row no submission explains.
+  const inputOrder = inputs.map((input) => input.inputId);
+  const rowInput = (row: MessageRecord): string => (row.role === 'user'
+    ? String(row.metadata?.input_id || '')
+    : String((row.metadata?.input_ids ?? []).find((id) => inputOrder.includes(String(id))) ?? ''));
   expect(
-    rows.filter((row) => !knownTurns.has(String(row.turn_id || ''))).map((row) => ({
-      role: row.role, message_id: row.message_id, turn_id: row.turn_id, text: excerpt(messageText(row)),
+    rows.filter((row) => !inputOrder.includes(rowInput(row))).map((row) => ({
+      role: row.role, id: row.id, input_ids: row.metadata?.input_ids ?? null, text: excerpt(messageText(row)),
     })),
-    'history must hold no row outside the seven submitted turns',
+    'history must hold no row outside the seven submitted inputs',
   ).toEqual([]);
-  const turnOrder = inputs.map((input) => input.turnId);
-  const rowTurnIndexes = rows.map((row) => turnOrder.indexOf(String(row.turn_id || '')));
+  const rowInputIndexes = rows.map((row) => inputOrder.indexOf(rowInput(row)));
   expect(
-    rowTurnIndexes,
-    'history rows must stay in chronological turn order through both compactions',
-  ).toEqual([...rowTurnIndexes].sort((left, right) => left - right));
+    rowInputIndexes,
+    'history rows must stay in chronological input order through both compactions',
+  ).toEqual([...rowInputIndexes].sort((left, right) => left - right));
   for (const input of inputs) {
-    const turnRows = rows.filter((row) => row.turn_id === input.turnId);
-    expect(turnRows[0]?.role, `turn ${input.turnId} must start with its user row`).toBe('user');
+    const inputRows = rows.filter((row) => rowInput(row) === input.inputId);
+    expect(inputRows[0]?.role, `input ${input.inputId} must start with its user row`).toBe('user');
   }
   for (const head of summaryHeads) {
     expect(
-      rows.filter((row) => messageText(row).includes(head)).map((row) => ({ role: row.role, message_id: row.message_id })),
+      rows.filter((row) => messageText(row).includes(head)).map((row) => ({ role: row.role, id: row.id })),
       'a native compact summary is engine recovery context, never a history row',
     ).toEqual([]);
   }
@@ -746,48 +737,77 @@ test('two real native compactions keep the complete history, its identities and 
 
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(page.getByTestId('run-view')).toBeVisible({ timeout: 60_000 });
-  await expect(
-    page.getByTestId('user-message'),
-    'the cold page must render exactly all seven submitted inputs as user bubbles',
-  ).toHaveCount(inputs.length, { timeout: 30_000 });
-  const expectedIds = rows.map((row) => String(row.message_id || ''));
-  await expect.poll(
-    () => page.getByTestId('session-conversation').evaluate((scroller) => (
-      Array.from(scroller.querySelectorAll<HTMLElement>('[data-message-id]'))
-        .map((element) => String(element.dataset.messageId || ''))
-    )),
-    {
-      timeout: 30_000,
-      message: 'the cold page must render every history row under its original id, in history order',
-    },
-  ).toEqual(expectedIds);
-  const readDomRows = () => page.getByTestId('session-conversation').evaluate((scroller) => (
-    Array.from(scroller.querySelectorAll<HTMLElement>('[data-message-id]')).map((element) => {
-      const user = element.querySelector<HTMLElement>('[data-testid="user-message"]');
-      const assistant = element.querySelector<HTMLElement>('[data-testid="assistant-message"]');
-      return {
-        id: String(element.dataset.messageId || ''),
-        role: user ? 'user' : assistant ? 'assistant' : 'other',
-        userText: user ? user.innerText : '',
-        assistantText: Array.from(
-          element.querySelectorAll<HTMLElement>('[data-testid="assistant-text"]'),
-        ).map((node) => node.innerText).join('\n'),
-      };
-    })
-  ));
-  // Virtuoso mounts the initial rows hidden until its initial scroll settles.
-  // Matching identities alone does not establish that their text is rendered.
-  await expect.poll(async () => (
-    (await readDomRows()).filter((row) => row.role === 'user').map((row) => row.userText.trim())
-  ), {
+  const expectedIds = rows.map((row) => row.id);
+  const scroller = page.getByTestId('session-conversation');
+  const readDomRows = () => scroller.evaluate((element) => {
+    const viewport = element.getBoundingClientRect();
+    return {
+      top: element.scrollTop,
+      height: element.clientHeight,
+      rows: Array.from(element.querySelectorAll<HTMLElement>('[data-message-id]')).map((row) => {
+        const rect = row.getBoundingClientRect();
+        const user = row.querySelector<HTMLElement>('[data-testid="user-message"]');
+        const assistant = row.querySelector<HTMLElement>('[data-testid="assistant-message"]');
+        return {
+          id: String(row.dataset.messageId || ''),
+          index: Number(row.dataset.messageVirtualIndex),
+          visible: rect.bottom > viewport.top && rect.top < viewport.bottom,
+          role: user ? 'user' : assistant ? 'assistant' : 'other',
+          userText: user ? user.innerText : '',
+          assistantText: Array.from(
+            row.querySelectorAll<HTMLElement>('[data-testid="assistant-text"]'),
+          ).map((node) => node.innerText).join('\n'),
+        };
+      }),
+    };
+  });
+  const seen = new Map<string, Awaited<ReturnType<typeof readDomRows>>['rows'][number]>();
+  // Walk overlapping viewports: cold history starts at the bottom, and rows
+  // outside the viewport and overscan are intentionally unmounted.
+  await expect.poll(async () => {
+    const current = await readDomRows();
+    // Virtuoso initially hides its measured rows until the first scroll settles.
+    if (!current.rows.some((row) => row.visible && (row.userText || row.assistantText))) return [];
+    const mountedIds = current.rows.map((row) => row.id);
+    expect(new Set(mountedIds).size, 'mounted history must not duplicate a message').toBe(mountedIds.length);
+    const positions = mountedIds.map((id) => {
+      expect(expectedIds, `unexpected cold history row ${id}`).toContain(id);
+      return expectedIds.indexOf(id);
+    });
+    expect(positions, 'mounted cold rows must retain history order')
+      .toEqual([...positions].sort((left, right) => left - right));
+    for (const row of current.rows.filter((item) => item.visible)) {
+      const expected = rows[expectedIds.indexOf(row.id)];
+      expect(row.role, `cold row ${row.id} must retain its role`).toBe(expected.role);
+      if (row.role === 'user') {
+        expect(row.userText.trim(), `cold input ${row.id} must be readable`).toBe(messageText(expected));
+      }
+      const exchange = exchanges.find(({ reply }) => reply.messageId === row.id);
+      if (exchange) {
+        expect(normalizeRendered(row.assistantText), `cold reply ${row.id} must be readable`)
+          .toBe(normalizeRendered(exchange.reply.text));
+      }
+      seen.set(row.id, row);
+    }
+    if (seen.size < rows.length) {
+      await scroller.hover();
+      await page.mouse.wheel(0, -Math.max(1, Math.floor(current.height / 2)));
+      await expect.poll(() => scroller.evaluate((element) => element.scrollTop), {
+        message: 'the reader must advance through older cold history',
+      }).not.toBe(current.top);
+    }
+    return [...seen.values()].sort((left, right) => left.index - right.index).map((row) => row.id);
+  }, {
     timeout: 30_000,
-    message: 'all seven cold user bubbles must render their exact submitted text',
-  }).toEqual(inputs.map((input) => input.content));
-  const domRows = await readDomRows();
+    message: 'the cold page must render every history row under its original id, in history order',
+  }).toEqual(expectedIds);
+  const domRows = [...seen.values()].sort((left, right) => left.index - right.index);
+  expect(domRows.filter((row) => row.role === 'user'),
+    'the cold page must render exactly all seven submitted inputs as user bubbles').toHaveLength(inputs.length);
   expect(
     domRows.map((row) => ({ id: row.id, role: row.role })),
     'each rendered row must keep the role its history row has',
-  ).toEqual(rows.map((row) => ({ id: String(row.message_id || ''), role: row.role })));
+  ).toEqual(rows.map((row) => ({ id: row.id, role: row.role })));
   expect(
     domRows.filter((row) => row.role === 'user').map((row) => row.userText.trim()),
     'user bubbles must read exactly the submitted inputs, /compact included',
@@ -802,8 +822,8 @@ test('two real native compactions keep the complete history, its identities and 
   }
   for (const head of summaryHeads) {
     await expect(
-      page.getByTestId('user-message').filter({ hasText: head }),
+      domRows.filter((row) => row.role === 'user' && row.userText.includes(head)),
       'SDK compact summaries are recovery context, not user messages',
-    ).toHaveCount(0);
+    ).toHaveLength(0);
   }
 });

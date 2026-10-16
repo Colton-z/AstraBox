@@ -33,10 +33,7 @@
     "stopping": "Stopping…",
     "processing": "Working",
     "sending": "Sending…",
-    "sending_with_phase": "Sending · {{phase}}",
     "ready": "Ready",
-    "pending_recovery": "Recovery needed",
-    "background_running": "Running in background",
     "runtime_disconnected": "Runtime disconnected"
   },
   "banner": {
@@ -50,9 +47,7 @@
     "send": "Send",
     "queue": "Queue",
     "placeholder": "Type a message…",
-    "placeholder_agent_terminated": "Agent terminated — this session is read-only",
     "placeholder_terminated": "Start a new session to continue",
-    "placeholder_recovery": "This session needs recovery first — recover it to continue",
     "placeholder_streaming": "Waiting for a response…",
     "commands": "Commands",
     "shortcut_hint": "Shift+Enter for a new line",
@@ -125,7 +120,8 @@
     "awaiting_confirmation": "Awaiting confirmation",
     "denied": "Denied",
     "completed": "Done",
-    "failed": "Failed"
+    "failed": "Failed",
+    "unfinished": "Not finished"
   },
   "tool": {
     "open_in_agents": "Open in Agents",
@@ -199,19 +195,6 @@
     "expiry_7d": "7 days",
     "expiry_30d": "30 days"
   },
-  "send": {
-    "unconfirmed_failure": "Failed to send the message — no confirmation from the backend.",
-    "unconfirmed_timeout": "Sending the message timed out — no confirmation from the backend."
-  },
-  "retry": {
-    "recover_label": "Recover session",
-    "recover_summary": "This session needs to be recovered before you can continue.",
-    "recover_summary_sandbox_lost": "The original sandbox cannot be reattached automatically — you'll need to recover the session manually. The system won't rerun your last message.",
-    "budget_exhausted_summary": "Auto-resume reached its limit. The current reply is still being processed in the background.",
-    "resend_label": "Resend",
-    "delivery_failed_summary": "Your last message didn't reach the sandbox — you can resend it.",
-    "turn_failed_summary": "Your last message reached the sandbox, but this turn failed."
-  },
   "files": {
     "download": "Download",
     "more_actions": "More actions",
@@ -223,7 +206,6 @@
     "folder_contents": "{{name}} contents",
     "empty_folder": "Empty folder",
     "unavailable": "Files unavailable",
-    "unavailable_agent_terminated": "Agent terminated — files are unavailable.",
     "unavailable_session_not_ready": "Session isn't ready — files are unavailable.",
     "current_directory": "Current directory",
     "drop_to_upload": "Drop here to upload to {{dir}}",

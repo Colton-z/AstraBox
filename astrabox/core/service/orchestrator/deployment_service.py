@@ -1,4 +1,4 @@
-"""Deployment management and invocation through the Session kernel.
+"""Deployment management and invocation through the Session runtime.
 
 Deployments are trigger bindings on an Agent or an Assistant. Built-in
 schedules create durable Runs through the deployment's selected scheduler
@@ -6,7 +6,9 @@ provider (:mod:`astrabox.seams.scheduler`); external systems can instead call
 an authenticated webhook or a registered channel provider. Every path starts a
 normal Session on the binding's target through
 :class:`~astrabox.core.service.orchestrator.conversation_targets.ConversationTargets`
-and uses the existing turn authority.
+and sends its message with :meth:`SessionRuntimeService.send_as
+<astrabox.core.service.orchestrator.session_runtime.service.SessionRuntimeService.send_as>`;
+a Run's status is the Session's response to the Run's input.
 
 Identity: platform bindings run as their target owner. Personal schedules run
 as the authenticated user who owns the schedule, with target access checked
@@ -40,14 +42,11 @@ from collections.abc import AsyncIterator
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from astrabox.persistence.repository import (
-    DeploymentRepository,
-    SessionEventRepository,
-    SessionSnapshotRepository,
-)
+from astrabox.persistence.repository.deployment_repository import DeploymentRepository
+from astrabox.persistence.repository.deployment_repository import DeploymentTargetMissing
+from astrabox.persistence.repository.session_runtime_repository import SessionRuntimeRepository
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
-from astrabox.common.utils.time_utils import utcnow_iso
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.service.orchestrator.agent_access import is_platform_admin
 from astrabox.seams.channel_response import (
@@ -73,6 +72,7 @@ from astrabox.core.service.orchestrator.deployment_scheduling import (
     run_payload,
     schedule_definition,
 )
+from astrabox.core.service.orchestrator.session_runtime.service import SessionRuntimeService
 from astrabox.seams.scheduler import (
     InvalidSchedule,
     RunPermanentError,
@@ -125,13 +125,6 @@ def _hmac_signature(secret: str, timestamp: str, raw_body: bytes) -> str:
     return base64.b64encode(mac.digest()).decode("utf-8")
 
 
-# How long to wait for a freshly-created session's sandbox to become READY
-# before sending the first message. Webhook is non-interactive: unlike the MCP
-# flow (create_conversation then a later send_message), there is no external
-# client to retry, so this waits for readiness here before sending.
-_SESSION_READY_TIMEOUT_SECONDS = 120
-_SESSION_READY_POLL_SECONDS = 2.0
-
 #: ``scheduler=`` default: resolve the deployment's selected provider per call.
 _SELECTED_SCHEDULER: Any = object()
 
@@ -143,16 +136,13 @@ class DeploymentService:
         deployment_repo: DeploymentRepository,
         agent_repo: Any,
         agent_service_getter: Any,
-        stream_message_events_ds: Any,
-        dispatch_turn_input: Any,
         sessions_repo: Any,
-        spawn_background_task: Any,
+        session_runtime: SessionRuntimeService,
+        session_facts: SessionRuntimeRepository,
         agent_config: Any,
         channel_ingress: ChannelIngressService,
         channel_credentials: ChannelCredentialService | None = None,
         scheduler: SchedulerProvider | None | Any = _SELECTED_SCHEDULER,
-        session_snapshots_repo: Any | None = None,
-        session_events_repo: Any | None = None,
         assistant_service_getter: Any = None,
     ) -> None:
         self._deployment_repo = deployment_repo
@@ -164,33 +154,15 @@ class DeploymentService:
             assistant_service_getter=assistant_service_getter,
         )
         self._agent_config = agent_config
-        # platform_service.stream_message_events_ds (bound method)
-        self._stream_message_events_ds = stream_message_events_ds
-        # platform_service.dispatch_turn_input (bound method). Scheduled Runs
-        # need the durable admission receipt, not the turn's output stream.
-        self._dispatch_turn_input = dispatch_turn_input
         self._sessions_repo = sessions_repo
+        self._session_runtime = session_runtime
+        self._facts = session_facts
         # Tests pass a provider (or ``None`` for disabled scheduling); the
         # server resolves the deployment's selection on each call.
         self._scheduler_override = scheduler
-        self._session_snapshots_repo = (
-            session_snapshots_repo
-            if session_snapshots_repo is not None
-            else SessionSnapshotRepository()
-        )
-        self._session_events_repo = (
-            session_events_repo
-            if session_events_repo is not None
-            else SessionEventRepository()
-        )
         # The channel spine (durable work items, dispatch, delivery).
         self._channel_ingress = channel_ingress
         self._channel_credentials = channel_credentials or ChannelCredentialService()
-        # platform_service._spawn_background_task: detaches from the request task
-        # scope (fresh contextvars + strong ref) so the deferred turn survives
-        # after the webhook's HTTP response returns. Raw asyncio.ensure_future
-        # would be torn down with the request task.
-        self._spawn_background_task = spawn_background_task
 
     # ── scheduler provider access ────────────────────────────────────────────
 
@@ -282,7 +254,7 @@ class DeploymentService:
 
     @staticmethod
     def _can_manage_agent(user: UserContext, agent: dict[str, Any] | None) -> bool:
-        owner_id = str((agent or {}).get("user_id") or "").strip()
+        owner_id = str((agent or {}).get("created_by") or "").strip()
         return bool(agent) and (
             is_platform_admin(getattr(user, "roles", []))
             or bool(owner_id and owner_id == user.user_id)
@@ -326,12 +298,32 @@ class DeploymentService:
         rows = await self._deployment_repo.list_by_assistant(assistant_id)
         return [self._sanitize(row) for row in rows]
 
-    async def delete_for_assistant(self, assistant_id: str) -> None:
-        """Delete every binding of a deleted Assistant, schedules included."""
-        for row in await self._deployment_repo.list_by_assistant(assistant_id):
-            with contextlib.suppress(APIError):
-                await self.delete(
-                    str(row.get("deployment_id") or ""), assistant_id=assistant_id
+    async def delete_for_target(self, *, agent_id: str = "", assistant_id: str = "") -> None:
+        """Delete every Deployment of a deleted Agent or Assistant, so none keeps firing.
+
+        An Assistant's include the personal schedules created from it. The
+        rows go first, in one statement: a schedule that fires afterwards finds
+        no Deployment and fails without starting a conversation, and a channel
+        binding's records go with its row. Each row's schedule projection and
+        channel credentials are removed next. A schedule the scheduler cannot
+        remove now is removed when the scheduler next starts, since startup
+        reconciles its schedules to the stored ones; the failure is logged.
+        """
+        removed = await self._deployment_repo.delete_for_target(
+            agent_id=agent_id, assistant_id=assistant_id
+        )
+        for row in removed:
+            deployment_id = str(row["deployment_id"])
+            scene = str(row.get("scene") or "")
+            try:
+                if scene == SCENE_SCHEDULE:
+                    await self._delete_schedule(deployment_id)
+                elif channel_scene_name(scene) is not None:
+                    await self._channel_credentials.purge(deployment_id)
+            except Exception:
+                logger.exception(
+                    "deleted Deployment %s (scene=%s) left its schedule or credentials behind",
+                    deployment_id, scene,
                 )
 
     @staticmethod
@@ -497,7 +489,7 @@ class DeploymentService:
         row = await self._deployment_repo.get_by_id(deployment_id)
         if (not user.user_id or not row or row.get("scope") != "personal"
                 or row.get("owner_user_id") != user.user_id or row.get("owner_org_id") != user.org_id
-                or row.get("scene") != SCENE_SCHEDULE or row.get("deleted") is True):
+                or row.get("scene") != SCENE_SCHEDULE):
             self._raise_deployment_not_found()
         assert row is not None
         return row
@@ -505,9 +497,10 @@ class DeploymentService:
     async def list_personal_schedules(
         self, user: UserContext, *, source_assistant_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        rows = await self._deployment_repo.list_personal_schedules(user.user_id, user.org_id)
-        return [self._sanitize(row) for row in rows
-                if source_assistant_id is None or row.get("source_assistant_id") == source_assistant_id]
+        rows = await self._deployment_repo.list_personal_schedules(
+            user.user_id, user.org_id, source_assistant_id=source_assistant_id,
+        )
+        return [self._sanitize(row) for row in rows]
 
     async def create_personal_schedule(
         self, user: UserContext, *, agent_id: str, source_assistant_id: str,
@@ -665,11 +658,8 @@ class DeploymentService:
             **target_fields(*target),
             "created_by": str(creator_user_id or "").strip(),
             "enabled": True,
-            "deleted": False,
             "scene": scene,
             "prompt_prefix": str(prompt_prefix or ""),
-            "created_at": utcnow_iso(),
-            "updated_at": utcnow_iso(),
         }
         if personal_user is not None:
             doc.update(scope="personal", owner_user_id=personal_user.user_id,
@@ -742,7 +732,7 @@ class DeploymentService:
             # The repository is the desired-state authority. Write it first so
             # any invocation created during projection sees committed config;
             # startup reconciliation repairs a crash between these two writes.
-            stored = await self._deployment_repo.upsert(deployment_id, doc)
+            stored = await self._store_new(deployment_id, doc)
             try:
                 await self._apply_schedule(doc)
                 return self._sanitize(stored)
@@ -752,7 +742,7 @@ class DeploymentService:
                 # desired-state write needs to be rolled back here.
                 cleanup_error: Exception | None = None
                 try:
-                    await self._deployment_repo.soft_delete_for_deployment(
+                    await self._deployment_repo.delete_for_deployment(
                         deployment_id, str(agent_id).strip(),
                         assistant_id=str(assistant_id).strip(),
                         owner_user_id=personal_user.user_id if personal_user else "",
@@ -795,7 +785,7 @@ class DeploymentService:
         if normalized_credentials is not None:
             await self._channel_credentials.put(deployment_id, normalized_credentials)
         try:
-            stored = await self._deployment_repo.upsert(deployment_id, doc)
+            stored = await self._store_new(deployment_id, doc)
         except Exception:
             if normalized_credentials is not None:
                 with contextlib.suppress(Exception):
@@ -816,8 +806,8 @@ class DeploymentService:
     ) -> dict[str, Any]:
         # Resolve visibility before validating the patch so missing, deleted and
         # foreign ids remain indistinguishable.  The repository repeats the
-        # same scope/deleted predicates on the eventual atomic write, closing
-        # the read -> mutation race.
+        # same scope predicate on the eventual atomic write, closing the
+        # read -> mutation race.
         existing = await self._get_for_deployment(
             deployment_id, agent_id, assistant_id=assistant_id, owner_user_id=owner_user_id, owner_org_id=owner_org_id
         )
@@ -969,7 +959,7 @@ class DeploymentService:
             updates["prompt_prefix"] = prompt
             if "schedule" in updates:
                 updates["schedule"] = self._normalize_schedule(updates["schedule"])
-            candidate = {**existing, **updates, "updated_at": utcnow_iso()}
+            candidate = {**existing, **updates}
             # The scheduler provider validates and changes its schedule first.
             # If the guarded product write then fails or loses a delete race,
             # restore the old schedule; startup reconciliation is the
@@ -979,7 +969,7 @@ class DeploymentService:
                 updated = await self._deployment_repo.update_for_deployment(
                     deployment_id,
                     agent_id,
-                    {**updates, "updated_at": candidate["updated_at"]},
+                    updates,
                     assistant_id=assistant_id, owner_user_id=owner_user_id, owner_org_id=owner_org_id,
                 )
             except Exception:
@@ -1058,7 +1048,7 @@ class DeploymentService:
             updated = await self._deployment_repo.update_for_deployment(
                 deployment_id,
                 agent_id,
-                {**updates, "updated_at": utcnow_iso()},
+                updates,
                 assistant_id=assistant_id,
             )
         except Exception:
@@ -1244,7 +1234,7 @@ class DeploymentService:
             # Repeat the guarded mutation even for an invisible id. Besides
             # preserving the one atomic repository boundary, this keeps a
             # missing/deleted/foreign id indistinguishable under a race.
-            await self._deployment_repo.soft_delete_for_deployment(
+            await self._deployment_repo.delete_for_deployment(
                 deployment_id, agent_id, assistant_id=assistant_id, owner_user_id=owner_user_id, owner_org_id=owner_org_id
             )
             self._raise_deployment_not_found()
@@ -1256,7 +1246,7 @@ class DeploymentService:
             prior_credentials = await self._channel_credentials.get(deployment_id)
             await self._channel_credentials.purge(deployment_id)
         try:
-            deleted = await self._deployment_repo.soft_delete_for_deployment(
+            deleted = await self._deployment_repo.delete_for_deployment(
                 deployment_id, agent_id, assistant_id=assistant_id, owner_user_id=owner_user_id, owner_org_id=owner_org_id
             )
         except Exception:
@@ -1273,6 +1263,16 @@ class DeploymentService:
                     deployment_id, prior_credentials
                 )
             self._raise_deployment_not_found()
+
+    async def _store_new(self, deployment_id: str, doc: dict[str, Any]) -> dict[str, Any]:
+        """Insert a new Deployment; a target deleted meanwhile is the same 404 as a missing one."""
+        try:
+            return await self._deployment_repo.create(deployment_id, doc)
+        except DeploymentTargetMissing as exc:
+            kind = "agent" if str(exc).endswith("_agents") else "assistant"
+            raise APIError(
+                code="NOT_FOUND", message=f"{kind} not found", status_code=404
+            ) from exc
 
     async def _restore_channel_credentials(
         self,
@@ -1320,7 +1320,7 @@ class DeploymentService:
         self, deployment_id: str, *, headers: dict[str, str], raw_body: bytes
     ) -> dict[str, Any]:
         deployment = await self._deployment_repo.get_by_id(deployment_id)
-        if not deployment or deployment.get("deleted") or deployment.get("enabled") is False:
+        if not deployment or deployment.get("enabled") is False:
             raise APIError(code="NOT_FOUND", message="deployment not found or disabled", status_code=404)
 
         # Channel scenes: the provider authenticates the callback and maps the
@@ -1348,8 +1348,10 @@ class DeploymentService:
                 status_code=404,
             )
 
-        # Built-in scenes: verify the webhook signature, forward the payload,
-        # start a fresh conversation, drive one turn fire-and-forget.
+        # Built-in scenes: verify the webhook signature, start a fresh
+        # conversation and send it the payload. The Session accepts the
+        # message while its runtime is still starting, and its runtime answers
+        # it once ready.
         self._verify_signature(deployment, headers, raw_body)
         content = self._build_content(deployment, raw_body)
         target = await self._targets.resolve(deployment)
@@ -1365,9 +1367,14 @@ class DeploymentService:
         user = UserContext(user_id=creator_user_id)
         started = await self._targets.start_conversation(target, user)
         session_id = str(started.get("session_id") or "")
-        self._spawn_background_task(
-            self._fire_when_ready(user, session_id, content, deployment_id),
-            name=f"deployment-fire-{deployment_id}",
+        if not session_id:
+            raise RuntimeError(f"deployment {deployment_id}: conversation start returned no session")
+        await self._session_runtime.send_as(
+            session_id,
+            content,
+            author_user_id=creator_user_id,
+            source="webhook",
+            client_message_id=f"deployment:{deployment_id}:{session_id}",
         )
         logger.warning(
             "deployment trigger accepted: deployment=%s %s=%s creator=%s session=%s scene=%s",
@@ -1393,11 +1400,7 @@ class DeploymentService:
         """Route one official-platform callback to its managed connector."""
 
         deployment = await self._deployment_repo.get_by_id(deployment_id)
-        if (
-            not deployment
-            or deployment.get("deleted") is True
-            or deployment.get("enabled") is False
-        ):
+        if not deployment or deployment.get("enabled") is False:
             raise APIError(
                 code="NOT_FOUND",
                 message="deployment not found or disabled",
@@ -1445,24 +1448,10 @@ class DeploymentService:
         scheduler = self._require_scheduler()
         async with self._scheduling():
             records = list(await scheduler.list_runs(deployment_id, limit=limit))
-        session_ids = [record.session_id for record in records if record.session_id]
-        snapshots = await self._session_snapshots_repo.get_snapshots_batch(
-            session_ids,
-            projection={
-                "session_id": 1,
-                "current_turn_id": 1,
-                "active_interaction_id": 1,
-                "last_turn_id": 1,
-                "last_turn_status": 1,
-                "last_turn_error": 1,
-            },
-        )
+        progress = await asyncio.gather(*(self._run_progress(record) for record in records))
         return [
-            self._render_run(
-                record,
-                snapshot=snapshots.get(record.session_id or ""),
-            )
-            for record in records
+            self._render_run(record, progress=item)
+            for record, item in zip(records, progress, strict=True)
         ]
 
     async def trigger_now(
@@ -1481,7 +1470,7 @@ class DeploymentService:
                 trigger="manual",
                 payload=run_payload(deployment),
             )
-        return self._render_run(record, snapshot=await self._snapshot_for_run(record))
+        return self._render_run(record, progress=await self._run_progress(record))
 
     async def replay_run(
         self,
@@ -1519,18 +1508,28 @@ class DeploymentService:
                 payload=run_payload(deployment, input_text=captured),
                 replayed_from_run_id=run_id,
             )
-        return self._render_run(record, snapshot=await self._snapshot_for_run(record))
+        return self._render_run(record, progress=await self._run_progress(record))
 
-    async def _snapshot_for_run(self, run: RunRecord) -> dict[str, Any] | None:
-        if not run.session_id:
+    async def _run_progress(self, run: RunRecord) -> dict[str, Any] | None:
+        """What the Session recorded of a Run's input: the input and the response to it.
+
+        ``None`` while the provider has bound no input to the Run.
+        """
+        if not run.session_id or not run.input_id:
             return None
-        return await self._session_snapshots_repo.get_snapshot(run.session_id)
+        admitted = await self._facts.get_input(run.session_id, run.input_id)
+        response = (
+            await self._facts.response_for_input(run.session_id, run.input_id)
+            if admitted is not None
+            else None
+        )
+        return {"input": admitted, "response": response}
 
     async def _personal_run_user(self, context: dict[str, Any]) -> UserContext:
         deployment = await self._deployment_repo.get_by_id(str(context.get("deployment_id") or ""))
         owner = str(context.get("owner_user_id") or "")
         owner_org = str(context.get("owner_org_id") or "")
-        if (not deployment or deployment.get("deleted") is True
+        if (not deployment
                 or deployment.get("scope") != "personal" or deployment.get("scene") != SCENE_SCHEDULE
                 or not owner or deployment.get("owner_user_id") != owner
                 or not owner_org or deployment.get("owner_org_id") != owner_org
@@ -1557,7 +1556,6 @@ class DeploymentService:
         deployment = await self._deployment_repo.get_by_id(deployment_id)
         if (
             not deployment
-            or deployment.get("deleted") is True
             or str(deployment.get("scene") or "") != SCENE_SCHEDULE
             or target_ref(deployment) != target_ref(context)
         ):
@@ -1584,18 +1582,21 @@ class DeploymentService:
             raise RuntimeError("Deployment Run conversation start returned no session")
         return session_id
 
-    async def drive_run_turn(
+    async def admit_run_input(
         self,
         context: dict[str, Any],
         *,
         run_id: str,
         session_id: str,
     ) -> dict[str, Any]:
-        """Admit (or find) one Run's turn; the scheduler provider calls this.
+        """Admit (or find) one Run's input in its Session; the scheduler provider calls this.
 
-        The turn's ``client_message_id`` is derived from the Run id, so a
-        provider that calls again for the same Run finds the admitted command
-        instead of admitting a second one.
+        The input's ``client_message_id`` is derived from the Run id, so a
+        provider that calls again for the same Run gets the input it admitted
+        before instead of a second one. The Session accepts the input while its
+        runtime is still starting; its runtime answers it once ready. A Session
+        that cannot take input (it was deleted or ended) fails the Run
+        permanently.
         """
 
         target = await self._targets.resolve(context)
@@ -1611,44 +1612,21 @@ class DeploymentService:
             raise RunPermanentError(
                 "Deployment Run's Agent or owner is missing"
             )
-        if not await self._wait_session_ready(session_id):
-            raise RuntimeError(
-                f"session {session_id} did not become ready in "
-                f"{_SESSION_READY_TIMEOUT_SECONDS}s"
+        try:
+            admitted = await self._session_runtime.send_as(
+                session_id,
+                str(context.get("input_text") or ""),
+                author_user_id=creator_user_id,
+                source="schedule",
+                client_message_id=f"deployment-run:{run_id}",
             )
-        client_message_id = f"deployment-run:{run_id}"
-        command = await self._session_events_repo.find_command_by_client_message_id(
-            session_id, client_message_id=client_message_id
-        )
-        if isinstance(command, dict):
-            return self._run_turn_binding(command)
-
-        receipt = await self._dispatch_turn_input(
-            personal_user or UserContext(user_id=creator_user_id),
-            session_id,
-            str(context.get("input_text") or ""),
-            client_message_id=client_message_id,
-        )
-        command_id = str((receipt or {}).get("command_id") or "").strip()
-        turn_id = str((receipt or {}).get("turn_id") or "").strip()
-        if command_id and not turn_id:
-            # SDK FIFO receipts intentionally expose the input id instead of
-            # the platform turn. Its accepted command remains the authority.
-            accepted = await self._session_events_repo.get_command_event(
-                session_id, command_id=command_id
-            )
-            turn_id = str((accepted or {}).get("turn_id") or "").strip()
-        if not command_id or not turn_id:
-            raise RuntimeError("Deployment Run turn admission returned no command binding")
-        return {"command_id": command_id, "turn_id": turn_id}
-
-    @staticmethod
-    def _run_turn_binding(command: dict[str, Any]) -> dict[str, str]:
-        command_id = str(command.get("causation_id") or "").strip()
-        turn_id = str(command.get("turn_id") or "").strip()
-        if not command_id or not turn_id:
-            raise RuntimeError("Deployment Run command has no turn binding")
-        return {"command_id": command_id, "turn_id": turn_id}
+        except APIError as exc:
+            if exc.code not in {"SESSION_NOT_FOUND", "AGENT_DELETED", "AGENT_RUNTIME_ERROR"}:
+                raise
+            raise RunPermanentError(
+                f"Deployment Run's Session cannot take its input: {exc.code}"
+            ) from exc
+        return {"input_id": str(admitted["input_id"])}
 
     @staticmethod
     def _require_schedule(deployment: dict[str, Any]) -> None:
@@ -1659,42 +1637,52 @@ class DeploymentService:
                 status_code=404,
             )
 
-    #: The public status of a Run whose turn the bound Session does not yet
-    #: describe, by the provider's dispatch state.
+    #: The public status of a Run the Session has no record of, by the
+    #: provider's dispatch state. A dispatched Run whose input the Session no
+    #: longer holds (its Session was deleted) has no known outcome.
     _DISPATCH_STATUS = {
         "QUEUED": "QUEUED",
         "DISPATCHING": "RUNNING",
-        "DISPATCHED": "COMPLETED",
+        "DISPATCHED": "UNKNOWN",
         "FAILED": "FAILED",
         "CANCELLED": "CANCELLED",
+    }
+    #: A Run's status by how the response to its input ended.
+    _OUTCOME_STATUS = {
+        "completed": "COMPLETED",
+        "failed": "FAILED",
+        "cancelled": "CANCELLED",
     }
 
     @classmethod
     def _render_run(
-        cls, run: RunRecord, *, snapshot: dict[str, Any] | None
+        cls, run: RunRecord, *, progress: dict[str, Any] | None
     ) -> dict[str, Any]:
-        """The public Run: the provider's dispatch state, then the bound Session's turn."""
+        """The public Run: the Session's response to the Run's input, else the dispatch state.
+
+        ``progress`` is :meth:`_run_progress`. An admitted input is
+        ``RUNNING`` until the runtime ends its response, ``WAITING_INPUT``
+        while that response waits on a person, then the response's outcome.
+        """
 
         invocation = run.invocation
-        session_id = run.session_id or ""
-        turn_id = run.turn_id or ""
-        if isinstance(snapshot, dict) and session_id and not turn_id:
-            # A Run owns a fresh Session, so its in-flight turn is unambiguous
-            # before the provider has recorded the turn id.
-            turn_id = str(snapshot.get("current_turn_id") or "")
         status = cls._DISPATCH_STATUS.get(run.state, "UNKNOWN")
         error: str | None = None
-        if isinstance(snapshot, dict) and turn_id:
-            if str(snapshot.get("last_turn_id") or "") == turn_id:
-                status = str(snapshot.get("last_turn_status") or "UNKNOWN")
-                if snapshot.get("last_turn_error"):
-                    error = str(snapshot["last_turn_error"])
-            elif str(snapshot.get("current_turn_id") or "") == turn_id:
-                status = (
-                    "WAITING_INPUT"
-                    if snapshot.get("active_interaction_id")
-                    else "RUNNING"
-                )
+        admitted = progress["input"] if progress is not None else None
+        response = progress["response"] if progress is not None else None
+        if admitted is not None and admitted["state"] == "failed":
+            status = "FAILED"
+            error = str((admitted.get("failure") or {}).get("message") or "the Run's input was refused")
+        elif admitted is not None and response is None:
+            status = "RUNNING"
+        elif response is not None and response["status"] == "waiting":
+            status = "WAITING_INPUT"
+        elif response is not None and response["status"] == "ended":
+            status = cls._OUTCOME_STATUS.get(str(response.get("outcome") or ""), "UNKNOWN")
+            if status == "FAILED":
+                error = str((response.get("error") or {}).get("message") or "the response failed")
+        elif response is not None:
+            status = "RUNNING"
         if error is None and status == "FAILED" and run.failed:
             # The provider keeps its own failure detail for operators; it is
             # not part of the Run API.
@@ -1713,8 +1701,8 @@ class DeploymentService:
                 else None
             ),
             "replayed_from_run_id": invocation.replayed_from_run_id,
-            "session_id": session_id or None,
-            "turn_id": turn_id or None,
+            "session_id": run.session_id or None,
+            "input_id": run.input_id or None,
             "error": error,
             "created_at": run.created_at.isoformat() if run.created_at is not None else None,
         }
@@ -1790,70 +1778,6 @@ class DeploymentService:
         raw_text = raw_body.decode("utf-8", errors="replace")
         return f"{prefix}\n\n{raw_text}" if prefix else raw_text
 
-    async def _wait_session_ready(self, session_id: str) -> bool:
-        """Poll until the session's sandbox is READY (bounded). Returns readiness."""
-        deadline_polls = max(1, int(_SESSION_READY_TIMEOUT_SECONDS / _SESSION_READY_POLL_SECONDS))
-        for _ in range(deadline_polls):
-            session = await self._sessions_repo.get_session(session_id)
-            state = str((session or {}).get("state") or "")
-            if state in ("READY", "WAITING_INPUT", "BACKGROUND_RUNNING"):
-                return True
-            if state in ("TERMINATED", "DELETED", "RECOVERY_REQUIRED"):
-                return False
-            await asyncio.sleep(_SESSION_READY_POLL_SECONDS)
-        return False
-
-    async def _fire_when_ready(
-        self,
-        user: UserContext,
-        session_id: str,
-        content: str,
-        deployment_id: str,
-    ) -> None:
-        """Background: wait for the session to be READY, then drive one turn.
-
-        Non-interactive — there is no client to retry SESSION_BUSY, so this waits
-        for provisioning here before sending. Errors are logged, never raised
-        (this runs detached from the webhook's HTTP response). Built-in scenes
-        are fire-and-forget by contract; the durable channel spine lives in
-        ChannelIngressService.
-        """
-        try:
-            if not session_id:
-                logger.error("webhook %s: conversation start returned no session", deployment_id)
-                return
-            ready = await self._wait_session_ready(session_id)
-            if not ready:
-                logger.error(
-                    "webhook %s: session %s did not become ready in %ss; turn not sent",
-                    deployment_id, session_id, _SESSION_READY_TIMEOUT_SECONDS,
-                )
-                return
-            agen = self._stream_message_events_ds(
-                user,
-                session_id,
-                content,
-                client_message_id=f"deployment:{deployment_id}:{session_id}",
-            )
-            await self._drain(agen)
-        except Exception as exc:
-            logger.error("webhook %s background fire failed: %s", deployment_id, exc)
-
-    @staticmethod
-    async def _drain(agen: Any) -> bool:
-        """Drain the turn stream; return True only if it completed without error."""
-        ok = True
-        try:
-            async for _ in agen:
-                pass
-        except Exception as exc:
-            ok = False
-            logger.error("webhook background drain failed: %s", exc)
-        finally:
-            with contextlib.suppress(Exception):
-                await agen.aclose()
-        return ok
-
     @staticmethod
     def _sanitize(
         doc: dict[str, Any] | None, *, include_secret: bool = False
@@ -1861,7 +1785,6 @@ class DeploymentService:
         if not doc:
             return {}
         clean = dict(doc)
-        clean.pop("_id", None)
         clean.pop("source_cursor", None)
         if channel_scene_name(str(clean.get("scene") or "")) is not None:
             clean["execution_mode"] = binding_execution_mode(clean)

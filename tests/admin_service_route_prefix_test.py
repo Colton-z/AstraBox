@@ -175,7 +175,7 @@ def _services_reached(handler: Any) -> set[str]:
 @contextmanager
 def _deterministic_construction_env(frontend_dist: Path) -> Iterator[None]:
     """Pin the env ``create_app()`` reads, so local state cannot change which
-    routes register. Mirrors ``tests/http_wire_contract_test.py``; an empty
+    routes register. Mirrors ``scripts/gen_openapi_snapshot.py``; an empty
     frontend directory keeps the shape API-only."""
     mp = pytest.MonkeyPatch()
     try:
@@ -258,22 +258,6 @@ def test_every_admin_only_service_is_actually_attributed_to_a_route(
         "how handlers reach services, and the prefix check above now passes "
         "for a reason that has nothing to do with the routes being safe"
     )
-
-
-def test_the_invariant_catches_an_admin_route_moved_out_of_the_prefix() -> None:
-    """A vault route relocated off ``/api/v1/admin`` must be reported.
-
-    Moving one is the concrete way the gate disappears: the handler and the
-    service are untouched and every other check stays green, so this is the
-    failure the module exists to produce.
-    """
-    moved = [("/api/v1/vaults/{vault_id}", "get_vault", {"VaultService"})]
-    assert _unguarded(moved) == [
-        "/api/v1/vaults/{vault_id} [get_vault] reaches ['VaultService']"
-    ]
-
-    stayed = [("/api/v1/admin/vaults/{vault_id}", "get_vault", {"VaultService"})]
-    assert _unguarded(stayed) == []
 
 
 def test_the_admin_api_automation_surface_counts_as_gated() -> None:

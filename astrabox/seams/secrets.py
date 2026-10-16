@@ -16,12 +16,19 @@ Values are write-mostly: the platform reads them back only at injection time
 substitution) — they are never returned by any API.
 
 The ``local`` provider (:mod:`astrabox.providers.secret_store`) keeps values
-encrypted at rest (AES-GCM) in the regular metadata store under a persistent
+encrypted at rest (AES-GCM) in the platform database under a persistent
 deployment key. The ``aws_kms`` provider uses the AWS Encryption SDK for
-envelope encryption while keeping ciphertext in that same store. A deployment
+envelope encryption while keeping ciphertext in that same database. A deployment
 selects one with ``ASTRABOX_SECRET_STORE``; an external provider can register at
 the ``astrabox.providers.secrets`` entry-point group. Dispatch is name-keyed and
 fails loud on an unknown or misconfigured provider.
+
+Environment inline credentials require a provider derived from
+``EncryptedCollectionSecretStore``: their references and ciphertext commit in
+one PostgreSQL transaction, and reads select them in one snapshot. Both built-in
+providers support this. Other providers remain usable for credential-free
+Environments, but saving or resolving inline Environment credentials refuses
+with ``ENVIRONMENT_SECRET_STORE_NOT_TRANSACTIONAL``.
 
 This module imports only the standard library.
 """

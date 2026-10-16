@@ -67,9 +67,9 @@ export function firstRepeatedWindow(text: string, size: number): string | null {
  * blocks also fall below the rendered sliding-window threshold.
  */
 export function expectNoDuplicateTextBlocks(message: MessageRecord, label: string): void {
-  const textBlocks = (message.blocks || [])
-    .filter((block) => String(block.type || '') === 'text')
-    .map((block) => String(block.text || block.content || '').trim())
+  const textBlocks = (message.parts || [])
+    .filter((part) => String(part.type || '') === 'text')
+    .map((part) => String(part.text || '').trim())
     .filter((text) => text.length > 20);
   const duplicates = textBlocks.filter((text, index) => textBlocks.indexOf(text) !== index);
   expect(duplicates, `${label} should not duplicate persisted assistant text blocks`).toEqual([]);

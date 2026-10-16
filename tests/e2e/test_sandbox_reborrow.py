@@ -9,9 +9,9 @@ suite pins the platform's recovery contract for that event:
   and reports ``runtime_unavailable`` — the reclaim is a recoverable degradation,
   not a dead end.
 
-* **The next message runs on live compute.** Sending after the reclaim recovers the
-  session: the turn streams a real model reply and settles back to ``READY`` on a
-  working placement.
+* **The next message runs on live compute.** The message sent after the reclaim
+  is held until a box answers it: the platform borrows one, the response streams
+  a real model reply, and the session settles back to ``READY`` on that box.
 
 Whether the reclaim destroys the BOX is not a property of this endpoint and the test
 does not assume it. Under ``conversation`` tenancy the box is the conversation's own and
@@ -21,9 +21,9 @@ slot keeps it alive, an empty one is destroyed rather than held for the rest of 
 lease.
 
 So the test reads the reclaim's own ``killed`` and holds the re-borrow to it: a box
-that really died must not be the one the next turn runs on.
+that really died must not be the one the next message runs on.
 
-Sessions are created with ``bypassPermissions`` so a trivial text turn settles without
+Sessions are created with ``bypassPermissions`` so a text-only reply settles without
 pausing on a tool-permission prompt — this suite exercises the sandbox lifecycle, not
 the approval gate.
 
@@ -42,16 +42,16 @@ import pytest
 
 from tests.e2e._sandbox_helpers import (
     assert_release_matches_the_box,
+    deadline_after,
     permission_mode,
     TERMINAL_STATES,
-    box_is_running,
     environment_sandbox_tenancy,
     release_session,
     create_session,
     data,
     get_session,
     poll_until_agent_ready,
-    stream_turn,
+    send_and_follow,
     wait_until_settled,
 )
 
@@ -83,23 +83,16 @@ def _terminate_sandbox(client: httpx.Client, sid: str, *, sandbox_id: str) -> di
     cannot satisfy in either direction, and it stops this assertion from
     encoding a deployment's tenancy at all.
 
-    A turn's stream can close (``[DONE]``) a beat before the server's
-    ``conversation_state`` leaves STREAMING, so a terminate issued right after a
-    settled turn can briefly race a still-active turn — a 409 SESSION_BUSY that the
-    server marks ``retryable``. Retry that specific race before failing loud.
+    The caller settles the conversation first: a reclaim is refused only while
+    the runtime reports it is working, and a settled conversation's runtime is
+    idle.
     """
-    deadline = time.monotonic() + 30.0
-    while True:
-        resp = client.post(f"/api/v1/sessions/{sid}/sandbox/terminate", timeout=60.0)
-        if resp.status_code == 409 and time.monotonic() < deadline:
-            body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
-            if str((body.get("data") or {}).get("reason") or "") == "active_conversation_turn":
-                time.sleep(2.0)
-                continue
-        result = data(resp)  # 200 unwraps; any other status fails loud with the envelope
-        break
+    result = data(client.post(f"/api/v1/sessions/{sid}/sandbox/terminate", timeout=60.0))
     assert str(result.get("session_id") or "") == sid, f"terminate targeted the wrong session: {result}"
     assert str(result.get("status") or "") == "sandbox-reclaimed", f"unexpected terminate status: {result}"
+    assert str(result.get("sandbox_id") or "") == sandbox_id, (
+        f"terminate reclaimed another sandbox than the session's {sandbox_id}: {result}"
+    )
     if environment_sandbox_tenancy(client) != "agent":
         assert result.get("killed") is True, (
             f"a conversation-owned sandbox must be killed by its reclaim: {result}"
@@ -113,22 +106,6 @@ def _terminate_sandbox(client: httpx.Client, sid: str, *, sandbox_id: str) -> di
     return result
 
 
-def _box_leaves_running(client: httpx.Client, sandbox_id: str, timeout: float = 30.0) -> bool:
-    """Whether the box stops reporting RUNNING within the budget.
-
-    Polled rather than asked once: destruction is confirmed to the caller
-    before the control plane's own inventory has caught up, so a single read
-    would fail on the lag rather than on the claim.
-    """
-    deadline = time.monotonic() + timeout
-    while True:
-        if not box_is_running(sandbox_id=sandbox_id, client=client):
-            return True
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(1.0)
-
-
 def _wait_runtime_unavailable(client: httpx.Client, sid: str, timeout: float = 45.0) -> dict:
     """Poll session detail until it reports the reclaimed (``runtime_unavailable``) state.
 
@@ -136,7 +113,7 @@ def _wait_runtime_unavailable(client: httpx.Client, sid: str, timeout: float = 4
     the session instead reaches a terminal state, and fails loud on timeout. Returns the
     settled detail.
     """
-    deadline = time.monotonic() + timeout
+    deadline = deadline_after(timeout)
     last: dict = {}
     while time.monotonic() < deadline:
         last = get_session(client, sid)
@@ -150,21 +127,25 @@ def _wait_runtime_unavailable(client: httpx.Client, sid: str, timeout: float = 4
             return last
         time.sleep(1.0)
     pytest.fail(
-        f"session {sid} never reported runtime_unavailable within {timeout:.0f}s after "
-        f"sandbox terminate; state={last.get('state')!r}"
+        f"session {sid} never reported runtime_unavailable after sandbox terminate; "
+        f"state={last.get('state')!r}"
     )
 
 
-def _reply_turn(client: httpx.Client, sid: str, prompt: str, expect: str) -> None:
-    """Drive one text-only turn and assert the model streamed the expected token.
+def _answered(client: httpx.Client, sid: str, prompt: str, expect: str) -> None:
+    """Send one text-only message and assert its response streamed the expected token.
 
-    ``expect`` is matched case-insensitively as a substring of the streamed reply.
+    ``expect`` is matched case-insensitively as a substring of the streamed reply,
+    and the response must end normally.
     """
-    res = stream_turn(client, sid, content=prompt)
-    assert res.saw_ui_header, "missing x-vercel-ai-ui-message-stream: v1 header"
-    assert res.error is None, f"turn errored: {res.error}"
-    assert res.n_text_delta > 0, f"turn streamed no text-delta (finish={res.finish_reason})"
-    assert expect.upper() in res.text.upper(), f"expected {expect!r} in the reply, got: {res.text!r}"
+    reply = send_and_follow(client, sid, prompt, until="end")
+    assert reply.saw_ui_header, "missing x-vercel-ai-ui-message-stream: v1 header"
+    assert reply.error is None, f"the response failed: {reply.error}"
+    assert reply.finish_reason == "stop", (
+        f"the response did not end normally: finish={reply.finish_reason!r} outcome={reply.outcome!r}"
+    )
+    assert reply.n_text_delta > 0, "the response streamed no text-delta"
+    assert expect.upper() in reply.text.upper(), f"expected {expect!r} in the reply, got: {reply.text!r}"
 
 
 def test_active_session_automatically_recovers_after_sandbox_reclaim(e2e_client: httpx.Client) -> None:
@@ -173,17 +154,21 @@ def test_active_session_automatically_recovers_after_sandbox_reclaim(e2e_client:
     sid = str(created["session_id"])
     try:
         poll_until_agent_ready(e2e_client, sid)
-        _reply_turn(e2e_client, sid, "Reply with exactly the single digit 2. Do not use tools.", "2")
+        _answered(e2e_client, sid, "Reply with exactly the single digit 2. Do not use tools.", "2")
         before = wait_until_settled(e2e_client, sid)
         original_box = _sandbox_id(before)
+        assert original_box, f"a settled conversation holds no sandbox: {before}"
         reclaimed = _terminate_sandbox(e2e_client, sid, sandbox_id=original_box)
         _wait_runtime_unavailable(e2e_client, sid)
         assert get_session(e2e_client, sid)["state"] not in {"TERMINATED", "DELETED"}
         marker = "AUTO" + uuid.uuid4().hex[:6].upper()
-        _reply_turn(e2e_client, sid, f"Reply with exactly {marker}. Do not use tools.", marker)
+        _answered(e2e_client, sid, f"Reply with exactly {marker}. Do not use tools.", marker)
         after = wait_until_settled(e2e_client, sid)
         assert after["state"] == "READY"
-        assert _sandbox_id(after)
+        assert _sandbox_id(after), f"the answered conversation holds no sandbox: {after}"
+        assert not after.get("runtime_unavailable"), (
+            f"the conversation answered but still reports its runtime unavailable: {after}"
+        )
         if reclaimed.get("killed"):
             assert _sandbox_id(after) != original_box
     finally:

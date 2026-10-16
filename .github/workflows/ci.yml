@@ -2,12 +2,13 @@ name: ci
 
 # Unit / lint / typecheck — the fast gate on every push + PR.
 # DESIGN CONSTRAINT: this workflow MUST be green with NO Docker and NO secret.
-# It never starts the daemon, never reads an LLM key, and never runs the live
-# turn (the `e2e` pytest mark + the Playwright suite are gated in e2e.yml). It
-# exercises exactly: ruff (lint), the comment-style gate, a workflow-syntax
-# parse, and mypy (typecheck) + the non-e2e pytest for the backend, plus
-# tsc --noEmit + vite build for the console web app and Go unit tests for the
-# optional snapshot differ.
+# Its steps never start a daemon, never read an LLM key, and never run the live
+# turn (the `e2e` pytest mark + the Playwright suite are gated in e2e.yml); the
+# backend job's unit tests use a PostgreSQL service container with a throwaway
+# password. It exercises exactly: ruff (lint), the comment-style gate, the
+# repository consistency checks, a workflow-syntax parse, and mypy (typecheck) +
+# the non-e2e pytest for the backend, plus tsc --noEmit + vite build for the
+# console web app and Go unit tests for the optional snapshot differ.
 
 on:
   push:
@@ -40,6 +41,22 @@ jobs:
   backend:
     name: backend · ruff + mypy + pytest (no docker, no secret)
     runs-on: ubuntu-latest
+    services:
+      # The `database` fixture creates one database per pytest process on this
+      # server and drops it at the end (tests/_database.py).
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: astrabox
+          POSTGRES_PASSWORD: astrabox
+          POSTGRES_DB: astrabox
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U astrabox -d astrabox"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     steps:
       - uses: actions/checkout@v7
 
@@ -55,12 +72,6 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-
-      # tests/sdk_contract_ui_schema_test.py validates the platform's stream
-      # frames against the AI SDK the console installs, so the console's
-      # locked dependencies must be present before pytest.
-      - name: Install the console's dependencies
-        run: npm --prefix frontend ci
 
       - name: Install the package (editable) with the [dev] tools
         # Editable install registers the entry-points create_app()'s lifespan loads;
@@ -92,6 +103,25 @@ jobs:
         # reaches the client as category="unregistered", owner="unknown", which
         # says nothing about who has to act.
         run: python scripts/check_error_registry.py
+
+      - name: Environment variable registry
+        # Every variable the code reads has a row in astrabox/config/env_registry.py
+        # and every row is read; docs/configuration.md is what the registry renders.
+        run: python scripts/check_env_registry.py
+
+      - name: HTTP surface
+        # Routes are unique and register deterministically, the committed OpenAPI
+        # snapshot is current, and every _svc() call in a route resolves.
+        run: python scripts/check_http_surface.py
+
+      - name: Background tasks
+        # Every created asyncio task is held or awaited.
+        run: python scripts/check_background_tasks.py
+
+      - name: Release contents
+        # Every default image is one release.yml publishes, Compose names the same
+        # registry, and every built-in storage provider is in the entry-point table.
+        run: python scripts/check_release.py
 
       - name: Credential seam
         run: python scripts/check_credential_seam.py
@@ -145,6 +175,8 @@ jobs:
       - name: Pytest (unit — the `-m 'not e2e'` lane; the live turn is deselected)
         # pyproject sets addopts = -m 'not e2e', so the Docker/secret-requiring
         # live-turn suite (tests/e2e/) is skipped here and only runs in e2e.yml.
+        env:
+          ASTRABOX_TEST_POSTGRES_URL: postgresql://astrabox:astrabox@127.0.0.1:55432/astrabox
         run: python scripts/node-toolchain.py --no-download python -m pytest
 
   web:
@@ -294,145 +326,3 @@ jobs:
           .venv/bin/python -m pip install -q build
       - name: Build the release artifacts (self-checking)
         run: make build-dist
-
-  # ── postgresql-conformance ─────────────────────────────────────────────────
-  # PostgreSQL is the production persistence path, so its real-driver contract
-  # is a first-class CI gate rather than a mocked unit test.
-  postgresql-conformance:
-    name: postgresql-conformance · pytest -m postgresql
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_USER: astrabox
-          POSTGRES_PASSWORD: astrabox
-          POSTGRES_DB: astrabox
-        ports:
-          - 55432:5432
-        options: >-
-          --health-cmd "pg_isready -U astrabox -d astrabox"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 12
-    steps:
-      - uses: actions/checkout@v7
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
-      - name: Install package and test tools
-        run: |
-          python -m pip install -U pip
-          python -m pip install -e '.[dev]'
-      - name: Pytest (real PostgreSQL collection contract)
-        env:
-          ASTRABOX_TEST_POSTGRES_URL: postgresql+asyncpg://astrabox:astrabox@127.0.0.1:55432/astrabox
-        run: >-
-          python -m pytest -m postgresql
-          tests/postgresql_collection_conformance_test.py
-          tests/postgresql_schema_migrations_test.py
-          tests/postgresql_transcript_sequence_test.py
-          tests/sql_document_transaction_test.py
-          tests/environment_delete_test.py
-          tests/environment_delete_lifecycle_test.py
-          tests/turn_preparation_turn_authority_test.py
-          tests/runtime_recovery_repository_test.py
-
-  # ── mongo-conformance ─────────────────────────────────────────────────────
-  # `backend` (above) keeps its own "no Docker, no secret" contract; database
-  # integration jobs remain separate, clearly-labeled siblings. This job runs
-  # the opt-in `-m mongo` conformance lane
-  # (tests/mongo_collection_conformance_test.py) against a disposable,
-  # unauthenticated `mongo:7` service container, so still NO repo secret is
-  # needed. Mirrors `make test-mongo` (see Makefile) 1:1: same pip extra, same
-  # marker selection.
-  #
-  # This is an advisory status check. Required-to-merge status is configured in
-  # branch protection rather than in the workflow.
-  mongo-conformance:
-    name: mongo-conformance · pytest -m mongo (mongo:7 service, non-required)
-    runs-on: ubuntu-latest
-    services:
-      mongo:
-        image: mongo:7
-        ports:
-          - 27017:27017
-        options: >-
-          --health-cmd "mongosh --eval \"db.adminCommand('ping')\""
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - name: Install the package (editable) with the [mongo,dev] extras
-        # [mongo] brings pymongo so tests/mongo_collection_conformance_test.py's
-        # `pytest.importorskip("pymongo")` finds it instead of skipping, and so
-        # astrabox.persistence.repository.mongo's own imports resolve.
-        run: |
-          python -m pip install -U pip
-          python -m pip install -e '.[mongo,dev]'
-
-      - name: Pytest (mongo conformance — the `-m mongo` lane; mirrors `make test-mongo`)
-        # pyproject's addopts deselects `-m mongo` by default; the explicit
-        # `-m mongo` here overrides that deselect for this invocation only (see
-        # pyproject.toml's [tool.pytest.ini_options] comment). ASTRABOX_DB_URL's
-        # `mongodb://` prefix alone is enough to steer active_backend_name() to
-        # "mongo" (checked ahead of ASTRABOX_DB_BACKEND) — both are set here for
-        # clarity/parity with docs/deploy.md.
-        env:
-          ASTRABOX_DB_BACKEND: mongo
-          ASTRABOX_DB_URL: mongodb://localhost:27017/astrabox_ci
-        run: python -m pytest -m mongo
-
-
-  mongo-transactions:
-    name: mongo-transactions · native replica-set acceptance
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
-      - name: Install Mongo and test dependencies
-        run: python -m pip install -e '.[mongo,dev]'
-      - name: Start an isolated transaction-capable MongoDB
-        run: |
-          docker run --detach --name astrabox-mongo-transactions \
-            --publish 127.0.0.1:27017:27017 \
-            --ulimit nofile=64000:64000 \
-            mongo:7 --replSet astrabox-test --bind_ip_all
-          for attempt in $(seq 1 30); do
-            if docker exec astrabox-mongo-transactions mongosh --quiet --eval 'db.adminCommand({ping: 1})' >/dev/null 2>&1; then
-              break
-            fi
-            sleep 1
-          done
-          docker exec astrabox-mongo-transactions mongosh --quiet --eval \
-            'rs.initiate({_id: "astrabox-test", members: [{_id: 0, host: "localhost:27017"}]})'
-          for attempt in $(seq 1 30); do
-            if docker exec astrabox-mongo-transactions mongosh --quiet --eval \
-              'quit(db.hello().isWritablePrimary ? 0 : 1)'; then
-              exit 0
-            fi
-            sleep 1
-          done
-          docker logs astrabox-mongo-transactions
-          exit 1
-      - name: Verify native transaction behavior
-        env:
-          ASTRABOX_DB_BACKEND: mongo
-          ASTRABOX_DB_URL: mongodb://localhost:27017/astrabox_ci?replicaSet=astrabox-test
-        run: python -m pytest -m mongo_transaction
-      - name: Remove this job's MongoDB
-        if: always()
-        run: docker rm --force astrabox-mongo-transactions

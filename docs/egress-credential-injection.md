@@ -55,10 +55,11 @@ For placeholder-based credentials:
    rules.
 
 The real value is never returned by the credentials API or shown in the
-console. Rotated MCP credentials are refreshed before the next top-level Agent
-task; the Agent uses its placeholder. Outbound environment-variable and HTTP
-Basic credentials are resolved when AstraBox prepares or reconnects the runtime,
-not before every task in an already running runtime.
+console. Rotated MCP credentials are refreshed before AstraBox hands the Agent
+program its next message; the Agent uses its placeholder. Outbound
+environment-variable and HTTP Basic credentials are resolved when AstraBox
+prepares or reconnects the runtime, not before every message in an already
+running runtime.
 
 HTTP Basic uses direct header injection instead. Configure the clean target
 URL, username, and write-only password or token in the Vault; the sandbox
@@ -250,8 +251,9 @@ preparation gives each assignment its own placeholder context.
 
 Omitting `allowed_requests` applies the host scope alone. Updating a credential
 rotates its write-only value. Archiving it removes the saved secret and keeps
-its metadata; the next root-turn preparation replaces the live MCP binding
-with a non-injecting binding for the same destination and Vault scope.
+its metadata; before the Agent program receives its next message, AstraBox
+replaces the live MCP binding with a non-injecting binding for the same
+destination and Vault scope.
 
 The neutral MCP credential plan preserves the configured URL and transport.
 OpenSandbox currently requires a query-free Streamable HTTP endpoint on HTTPS

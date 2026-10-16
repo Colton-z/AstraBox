@@ -13,8 +13,6 @@ import { PlanConfirmationInteractionCard } from './composer/PlanConfirmationInte
 import { DecisionInteractionCard } from './composer/DecisionInteractionCard';
 import type { SubmitAction } from './composer/types';
 
-export { ComposerQueue } from './composer/ComposerQueue';
-
 export function PendingInteractionCard({
   interaction,
   submitting,

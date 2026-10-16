@@ -1,7 +1,7 @@
 /**
  * Typed API helper for the AstraBox backend. The spec-facing surface is four
  * entry points — create, wait, turn, oracle — over the `/api/v1` contract
- * (agents → conversations → sessions → ai-stream).
+ * (agents → conversations → sessions → inputs, and the session's stream).
  *
  * Envelope: responses wrap payloads as `{ data: ... }`; `data()` unwraps and
  * fails loud on non-2xx with the body text in the error.
@@ -82,37 +82,97 @@ export interface WorkspaceState {
   [key: string]: unknown;
 }
 
+/** A response the runtime produced, as the session's reader recorded it. */
+export interface ResponseRecord {
+  response_id: string;
+  /** `input`, or `engine` for one the runtime started itself. */
+  origin?: string | null;
+  /** `running`, `waiting` (paused at an interaction) or `ended`. */
+  status?: string | null;
+  /** `completed`, `failed` or `cancelled` once ended. */
+  outcome?: string | null;
+  native_reason?: string | null;
+  error?: Record<string, unknown> | null;
+  started_at?: string | null;
+  ended_at?: string | null;
+}
+
+/** An input the platform still holds: accepted, not yet taken by the runtime. */
+export interface HeldInput {
+  input_id: string;
+  client_message_id?: string | null;
+  content?: string | null;
+  state?: string | null;
+  created_at?: string | null;
+}
+
+/**
+ * One session as `GET /sessions` and `GET /sessions/{id}` answer
+ * (`SessionRecord` in `astrabox/api/routes/sessions.py`). No index signature:
+ * a field the platform does not record fails to compile instead of reading as
+ * `undefined` at run time.
+ *
+ * On the detail, `state` folds in what the runtime is doing: `READY` means the
+ * session is up with nothing running, nothing waiting on its owner and no
+ * input the platform still holds; `PROCESSING` and `WAITING_INPUT` say which
+ * of those it is.
+ */
 export interface SessionRecord {
   session_id: string;
-  state?: string;
-  sandbox_id?: string | null;
-  conversation_state?: string | null;
-  terminal_cwd?: string | null;
-  last_error?: string | null;
-  // Agent-conversation fields exposed by GET /sessions/{id} (verified against the
-  // live projection): the session IS an agent's conversation, always ACTIVE.
-  agent_id?: string | null;
-  session_kind?: string | null;
-  title?: string | null;
+  user_id?: string | null;
+  /** CREATING / READY / PROCESSING / WAITING_INPUT / TERMINATED / DELETED. */
+  state?: string | null;
+  /** `idle`, `working` or `waiting`, as the runtime last reported. */
+  runtime_status?: string | null;
   // Permission mode the conversation runs under. Community conversations are
   // created with `bypassPermissions` (POST /conversations hardcodes it) — switch
-  // with setPermissionMode(), or pass permission_mode per-turn via streamPrompt.
+  // with setPermissionMode(), or pass permission_mode per input via streamPrompt.
   permission_mode?: string | null;
-  current_turn_id?: string | null;
-  last_turn_id?: string | null;
-  last_turn_status?: string | null;
-  pending_interaction?: PendingInteraction | null;
+  model_name?: string | null;
+  sandbox_id?: string | null;
+  terminal_cwd?: string | null;
+  title?: string | null;
+  source_type?: string | null;
+  // Agent-conversation fields: the session IS an agent's conversation.
+  agent_id?: string | null;
+  assistant_id?: string | null;
+  deployment_name?: string | null;
+  session_kind?: string | null;
+  engine_kind?: string | null;
+  expires_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  /** When the conversation last gained a reply, and when its owner last read it. */
+  last_output_at?: string | null;
+  read_at?: string | null;
+  runtime_unavailable?: boolean | null;
+  engine_available?: boolean | null;
+  last_error?: string | null;
+  startup_progress?: string | null;
+  recovery_reason?: string | null;
+  workspace_panels?: Record<string, boolean> | null;
   engine_capabilities?: {
     permission_modes?: string[];
     [key: string]: unknown;
   } | null;
-  [key: string]: unknown;
+  pending_interaction?: PendingInteraction | null;
+  slash_commands?: unknown[] | null;
+  slash_command_details?: Array<Record<string, unknown>> | null;
+  /** Detail only: the responses still running or paused. */
+  current_responses?: ResponseRecord[] | null;
+  /** Detail only: the last response that ended. */
+  last_response?: ResponseRecord | null;
+  /** Detail only: inputs the platform still holds. */
+  held_inputs?: HeldInput[] | null;
+  /** Detail only: the output position to follow the session's stream from. */
+  output_seq?: number | null;
 }
 
 /** Operator-only session detail. Native runtime coordinates never belong to getSession(). */
 export interface AdminSessionRecord extends SessionRecord {
   engine_session_key?: string | null;
   runtime_identity?: Record<string, unknown> | null;
+  [key: string]: unknown;
 }
 
 export interface SessionCreated {
@@ -122,42 +182,79 @@ export interface SessionCreated {
   [key: string]: unknown;
 }
 
-export interface MessageRecord {
-  role: 'user' | 'assistant' | string;
-  content?: unknown;
-  blocks?: Array<Record<string, unknown>>;
-  content_blocks?: Array<Record<string, unknown>>;
-  parts?: Array<Record<string, unknown>>;
-  turn_id: string;
-  message_id: string;
-  created_at?: string;
+/**
+ * What history records about one message (`session_runtime/ui_message.py`).
+ * A user message carries its input's facts; an assistant message its
+ * response's facts, folded from the metadata of the response's `start` and
+ * `finish` parts.
+ */
+export interface MessageMetadata {
+  // An input's facts.
+  input_id?: string | null;
+  created_at?: string | null;
+  /** `pending`, `delivered`, `admitted` or `failed`. */
+  state?: string | null;
+  author_user_id?: string | null;
+  source?: string | null;
+  failure?: {
+    code?: string;
+    message?: string;
+    status_code?: number;
+    user_action?: Record<string, unknown> | null;
+  } | null;
+  // A response's facts.
+  response_id?: string | null;
+  /** The inputs the response answers; empty for one the runtime started itself. */
+  input_ids?: string[] | null;
+  /** `input`, or `engine` for a response nobody's message asked for. */
+  origin?: string | null;
+  /** `running`, `waiting` (paused at an interaction) or `ended`. */
+  status?: string | null;
+  /** `completed`, `failed` or `cancelled` once ended. */
+  outcome?: string | null;
+  native_reason?: string | null;
+  started_at?: string | null;
+  ended_at?: string | null;
+  error?: Record<string, unknown> | null;
+  /** A history-block detail read: the header it reopens. */
+  history_block_id?: string | null;
   [key: string]: unknown;
 }
 
 /**
- * The overlay the messages page carries for an in-flight turn (first page only).
- * `resume_cursor.frame_seq` is the replay cursor fed to GET ai-stream `after_seq`.
+ * One message of a session's history: an AI SDK UI message. A user message is
+ * one accepted input — its id is the input's `client_message_id`. An assistant
+ * message is one response — its id is the response id. No index signature: a
+ * field history does not carry (`blocks`, `content`, `message_id`, `turn_id`)
+ * fails to compile instead of reading as `undefined`.
  */
-export interface ActiveTurnOverlay {
-  turn_id: string;
-  message: MessageRecord;
-  messages?: MessageRecord[];
-  resume_cursor?: { turn_id?: string; frame_seq?: number | null };
+export interface MessageRecord {
+  id: string;
+  role: 'user' | 'assistant' | 'system' | string;
+  parts: Array<Record<string, unknown>>;
+  metadata?: MessageMetadata;
 }
 
+/**
+ * One page of history, oldest first. The first page also carries `output_seq`
+ * (the position its parts were read through, which the stream continues from)
+ * and the interaction waiting on the owner.
+ */
 export interface MessagePage {
   messages: MessageRecord[];
   has_more?: boolean;
-  active_turn_overlay?: ActiveTurnOverlay | null;
+  before?: string | null;
+  output_seq?: number | null;
+  pending_interaction?: PendingInteraction | null;
   [key: string]: unknown;
 }
 
 /**
- * The page the console reads, with each settled response's tool work folded.
+ * The page the console reads, with each ended response's work folded behind
+ * `data-process-block` parts.
  *
- * Same records as `MessagePage`, paged by record instead of by timestamp:
  * `next_cursor` is the opaque token the next page is asked for with, and it
- * pins that page to the history this one saw.
+ * pins that page to the output position this one was read at.
  */
 export interface HistoryBlockPage extends MessagePage {
   next_cursor?: string | null;
@@ -205,19 +302,31 @@ export type PermissionMode = string;
 export interface PendingInteraction {
   interaction_id: string;
   kind?: string;
-  turn_id?: string;
+  /** The response the interaction pauses. */
+  response_id?: string;
   tool_name?: string;
   tool_call_id?: string;
   permission_suggestions?: Array<Record<string, unknown>>;
   [key: string]: unknown;
 }
 
-/** Result of POST /sessions/{id}/interaction-respond. */
+/** Result of POST /sessions/{id}/interactions/{interaction_id}/answer. */
 export interface InteractionAnswerResult {
+  session_id: string;
   interaction_id: string;
   answered: boolean;
-  turn_id?: string;
   [key: string]: unknown;
+}
+
+/** Result of POST /sessions/{id}/inputs: the session accepted the message. */
+export interface InputReceipt {
+  session_id: string;
+  input_id: string;
+  client_message_id: string;
+  accepted_at: string;
+  state: string;
+  /** The same `client_message_id` was accepted before; this receipt describes that input. */
+  duplicate: boolean;
 }
 
 /** Result of reclaiming a conversation's compute without ending the conversation. */
@@ -237,11 +346,9 @@ export interface PermissionModeResult {
   [key: string]: unknown;
 }
 
-/** Outcome of GET /sessions/{id}/ai-stream (durable-frame replay/resume). */
+/** Outcome of GET /sessions/{id}/stream?after_seq= (the output after a position, through one response's end). */
 export interface ResumeStreamResult {
-  /** 200 when frames were replayed; 204 when there is nothing to resume. */
   status: number;
-  /** true on a 200 replay, false on a 204 (no resumable stream). */
   replayed: boolean;
   /** Frame `type` values in arrival order. */
   frameTypes: string[];
@@ -253,7 +360,10 @@ export interface ResumeStreamResult {
   raw: string;
 }
 
+/** One response read off the session's stream: the one answering the input sent. */
 export interface TurnResult {
+  /** The input the response answers. */
+  inputId: string;
   /** Concatenated text-delta payloads. */
   text: string;
   /** Frame `type` values in arrival order (for shape assertions). */
@@ -263,70 +373,87 @@ export interface TurnResult {
   /** `toolName` of each `tool-input-start` frame, in arrival order. */
   toolNames: string[];
   /**
-   * Wall-clock ms for the whole turn (request → stream closed). NOTE:
+   * Wall-clock ms from the send to the response's end. NOTE:
    * APIRequestContext buffers the SSE body, so per-frame timing is not
    * observable here — latency-shape assertions belong in UI specs, on the
    * status-pill `data-pulse` transition.
    */
   totalMs: number;
+  /** The response's frames as the SSE the stream carried them in. */
+  raw: string;
 }
 
-/**
- * Flatten a message's prose, excluding tool results and thinking blocks.
- * Structured `blocks` carry the same text as
- * `content` on assistant messages, so counting both would double it — prefer the
- * structured blocks and fall back to `content` only when no structured text
- * exists.
- */
+/** A message's prose: its text parts, excluding tool results and reasoning. */
 export function messageText(message: MessageRecord): string {
-  const chunks: string[] = [];
-  const collect = (list?: Array<Record<string, unknown>>) => {
-    for (const block of list || []) {
-      if (block.type !== 'text') continue;
-      const text = block.text ?? block.content;
-      if (typeof text === 'string') {
-        chunks.push(text);
-      }
-    }
-  };
-  collect(message.blocks);
-  collect(message.content_blocks);
-  collect(message.parts);
-  if (chunks.length === 0 && typeof message.content === 'string') {
-    chunks.push(message.content);
-  }
-  return chunks.join('');
+  return (message.parts || [])
+    .filter((part) => part.type === 'text' && typeof part.text === 'string')
+    .map((part) => String(part.text))
+    .join('');
 }
 
-/** Apply the first-page active-turn overlay exactly as the console does. */
-export function visibleMessages(page: MessagePage): MessageRecord[] {
-  const messages = [...(page.messages || [])];
-  const overlay = page.active_turn_overlay;
-  if (!overlay) return messages;
+/** A tool call a message carries: one AI SDK tool part. */
+export interface ToolCallPart {
+  toolCallId: string;
+  /** The engine's own name for the tool. */
+  toolName: string;
+  /** The AI SDK tool state: `input-available`, `approval-requested`, `output-available`, `output-error`, … */
+  state: string;
+  input?: unknown;
+  output?: unknown;
+  errorText?: string;
+}
 
-  const overlayMessages = overlay.messages?.length
-    ? overlay.messages
-    : [overlay.message];
-  for (const overlayMessage of overlayMessages) {
-    const overlayMessageId = String(overlayMessage.message_id ?? '').trim();
-    if (!overlayMessageId) {
-      throw new Error('active-turn overlay message is missing message_id');
-    }
-    const existingIndex = messages.findIndex((message) => {
-      if (message.role !== overlayMessage.role) return false;
-      const messageId = String(message.message_id ?? '').trim();
-      if (!messageId) {
-        throw new Error('durable message is missing message_id');
-      }
-      return messageId === overlayMessageId;
-    });
-    if (existingIndex >= 0) {
-      messages[existingIndex] = overlayMessage;
-    } else {
-      messages.push(overlayMessage);
+/** The tool calls a message carries, in order. */
+export function messageToolCalls(message: MessageRecord): ToolCallPart[] {
+  return (message.parts || [])
+    .filter((part) => part.type === 'dynamic-tool' || String(part.type || '').startsWith('tool-'))
+    .map((part) => ({
+      toolCallId: String(part.toolCallId ?? ''),
+      toolName: part.type === 'dynamic-tool' ? String(part.toolName ?? '') : String(part.type).slice('tool-'.length),
+      state: String(part.state ?? ''),
+      input: part.input,
+      output: part.output,
+      ...(typeof part.errorText === 'string' ? { errorText: part.errorText } : {}),
+    }));
+}
+
+/** Whether a tool call ran to a result, successful or not. */
+export function toolCallSettled(call: ToolCallPart): boolean {
+  return call.state === 'output-available' || call.state === 'output-error' || call.state === 'output-denied';
+}
+
+/** A message's parts of one type, e.g. `reasoning`, `file` or `data-process-block`. */
+export function messageParts(message: MessageRecord, type: string): Array<Record<string, unknown>> {
+  return (message.parts || []).filter((part) => part.type === type);
+}
+
+/** Whether an assistant message is the response to the input `inputId`. */
+export function answersInput(message: MessageRecord, inputId: string): boolean {
+  return message.role === 'assistant'
+    && Array.isArray(message.metadata?.input_ids)
+    && message.metadata.input_ids.map(String).includes(inputId);
+}
+
+/** The messages a history page shows, as the console renders them. */
+export function visibleMessages(page: MessagePage): MessageRecord[] {
+  return [...(page.messages || [])];
+}
+
+/** Every `data:` frame of an SSE body, parsed; `[DONE]` and comments are skipped. */
+export function sseFrames(raw: string): Record<string, unknown>[] {
+  const frames: Record<string, unknown>[] = [];
+  for (const rawLine of raw.split('\n')) {
+    const line = rawLine.trim();
+    if (!line.startsWith('data:')) continue;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === '[DONE]') continue;
+    try {
+      frames.push(JSON.parse(payload) as Record<string, unknown>);
+    } catch {
+      continue;
     }
   }
-  return messages;
+  return frames;
 }
 
 export class AstraApi {
@@ -472,31 +599,21 @@ export class AstraApi {
     return this.data<unknown>('DELETE', `/assistants/${assistantId}`, undefined, 60_000);
   }
 
-  /**
-   * The first enabled environment running the resident `assistant` engine.
-   *
-   * An Assistant cannot borrow an Agent's environment: the engine is a property
-   * of the environment, and `POST /assistants` rejects `claude_code` outright
-   * ("assistants run the resident assistant engine"). Selecting by engine
-   * rather than by name keeps this working on any deployment that has one, and
-   * says what is missing on one that does not.
-   */
+  /** The configured Assistant fixture; temporary Environments can name unavailable images. */
   async assistantEnvironmentName(): Promise<string> {
+    const expectedName = 'astrabox-e2e-assistant';
     const environments = await this.data<Array<Record<string, unknown>>>(
       'GET',
       '/admin/environments',
     );
     const match = (environments || []).find(
-      (e) => String(e.engine_kind || '').trim() === 'assistant' && e.enabled !== false,
+      (e) => e.name === expectedName
+        && String(e.engine_kind || '').trim() === 'assistant' && e.enabled !== false,
     );
     if (!match) {
       throw new Error(
-        // `enabled` is listed because it is what disqualifies a candidate here:
-        // a message that shows the engine alone reads as self-contradictory when
-        // a disabled assistant environment exists, and sends the reader after
-        // the matching logic instead of at the row.
-        'no enabled environment runs the assistant engine; an Assistant cannot use an ' +
-          `agent environment. Have: ${(environments || [])
+        `configured Assistant Environment ${JSON.stringify(expectedName)} must be enabled ` +
+          `and run the assistant engine. Have: ${(environments || [])
             .map((e) => `${e.name}(engine=${e.engine_kind}, enabled=${e.enabled})`)
             .join(', ')}`,
       );
@@ -676,6 +793,12 @@ export class AstraApi {
     );
   }
 
+  /**
+   * Wait until the session is up with a box and at rest: the detail's
+   * `READY` means nothing is running, nothing waits on the owner and the
+   * platform holds no input (`runtime_view_state` in
+   * `session_runtime/service.py`).
+   */
   async waitForSessionReady(
     sessionId: string,
     timeoutMs = parseTimeoutEnv('ASTRABOX_E2E_READY_TIMEOUT_MS', 180_000),
@@ -702,77 +825,116 @@ export class AstraApi {
   }
 
   /**
-   * Drive one turn over the ai-stream SSE endpoint and collect the frame tail.
-   * This supports API-focused specs and UI specs that need a second,
-   * out-of-band turn.
-   */
-  /**
-   * Admit a turn and return, without reading its stream.
+   * Send a message and return its receipt, without reading the stream.
    *
-   * `sendTurn` reads the SSE body to completion, so a turn that pauses on a
+   * `sendTurn` reads the response to its end, so a response that pauses on a
    * tool permission blocks the caller until somebody answers it — which makes
    * it useless for nudging a model that did NOT reach for a tool. This is the
-   * product's own separation: `turn-inputs` answers with a receipt and nothing
-   * about the turn's lifetime, so the caller can go on to watch for the state
-   * it actually wants.
+   * product's own separation: `inputs` answers with a receipt and nothing
+   * about the response's lifetime, so the caller can go on to watch for the
+   * state it actually wants.
    */
-  async postTurnInput(sessionId: string, content: string): Promise<void> {
-    const response = await this.request.fetch(
-      apiPath(`/sessions/${sessionId}/turn-inputs`),
-      {
-        method: 'POST',
-        data: { content, client_message_id: randomUUID() },
-        timeout: 30_000,
-      },
+  async postTurnInput(
+    sessionId: string,
+    content: string,
+    options: { clientMessageId?: string } = {},
+  ): Promise<InputReceipt> {
+    return this.data<InputReceipt>(
+      'POST',
+      `/sessions/${sessionId}/inputs`,
+      { content, client_message_id: options.clientMessageId ?? randomUUID() },
+      30_000,
     );
-    if (!response.ok()) {
-      throw new Error(
-        `turn-inputs -> ${response.status()}: ${(await response.text()).slice(0, 500)}`,
-      );
-    }
   }
 
+  /**
+   * Send a message and read its response off the session's stream.
+   *
+   * The stream is followed from the output position the session reported
+   * before the send, so nothing the response writes is missed. Responses that
+   * answer other inputs, or that the runtime started itself, are read past.
+   * The read ends at the response's first `finish` or `error` — its end, or
+   * the pause at an interaction (`finishReason: tool-calls`).
+   *
+   * A permission mode belongs to the session, not to one message: given one,
+   * the session is switched to it through its own route before the send (and
+   * left there), unless it already runs in it.
+   */
   async sendTurn(
     sessionId: string,
     content: string,
     timeoutMs = parseTimeoutEnv('ASTRABOX_E2E_TURN_TIMEOUT_MS', 150_000),
+    permissionMode?: string,
   ): Promise<TurnResult> {
     const started = Date.now();
-    const response = await this.request.fetch(apiPath(`/sessions/${sessionId}/ai-stream`), {
-      method: 'POST',
-      data: { content, client_message_id: randomUUID() },
-      headers: { Accept: 'text/event-stream' },
-      timeout: timeoutMs,
-    });
-    if (!response.ok()) {
-      throw new Error(`ai-stream -> ${response.status()}: ${(await response.text()).slice(0, 500)}`);
+    const detail = await this.getSession(sessionId);
+    if (permissionMode && detail.permission_mode !== permissionMode) {
+      await this.setPermissionMode(sessionId, permissionMode);
     }
-    const body = await response.text();
+    const afterSeq = Number(detail.output_seq ?? 0);
+    const receipt = await this.postTurnInput(sessionId, content);
+    const { frames, raw } = await this.readResponse(sessionId, afterSeq, receipt.input_id, started + timeoutMs);
     const result: TurnResult = {
-      text: '', frameTypes: [], errorText: null, toolNames: [], totalMs: Date.now() - started,
+      inputId: receipt.input_id,
+      text: '',
+      frameTypes: [],
+      errorText: null,
+      toolNames: [],
+      totalMs: Date.now() - started,
+      raw,
     };
-    for (const rawLine of body.split('\n')) {
-      const line = rawLine.trim();
-      if (!line.startsWith('data:')) continue;
-      const payload = line.slice(5).trim();
-      if (!payload || payload === '[DONE]') continue;
-      let frame: Record<string, unknown>;
-      try {
-        frame = JSON.parse(payload) as Record<string, unknown>;
-      } catch {
-        continue;
-      }
+    for (const frame of frames) {
       const type = String(frame.type || '');
       result.frameTypes.push(type);
       if (type === 'text-delta' && typeof frame.delta === 'string') {
         result.text += frame.delta;
       } else if (type === 'tool-input-start') {
         result.toolNames.push(String(frame.toolName ?? ''));
-      } else if (type === 'error') {
+      } else if (type === 'error' && result.errorText === null) {
         result.errorText = String(frame.errorText ?? 'unknown error');
       }
     }
     return result;
+  }
+
+  /**
+   * The frames of the response answering `inputId`, read off the session's
+   * stream after `afterSeq` until that response finishes or pauses. Each
+   * request to the stream ends after one response's end; the next one
+   * continues from the `data-resume-cursor` the last carried.
+   */
+  async readResponse(
+    sessionId: string,
+    afterSeq: number,
+    inputId: string,
+    deadline: number,
+  ): Promise<{ frames: Record<string, unknown>[]; raw: string }> {
+    let cursor = afterSeq;
+    const frames: Record<string, unknown>[] = [];
+    // The response's own frames, as the SSE the stream carried them in.
+    const raw = () => frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join('');
+    let answering = false;
+    while (Date.now() < deadline) {
+      const read = await this.resumeStream(sessionId, cursor, Math.max(1_000, deadline - Date.now()));
+      for (const frame of sseFrames(read.raw)) {
+        const type = String(frame.type || '');
+        if (type === 'data-resume-cursor') {
+          cursor = Number((frame.data as { seq?: unknown } | undefined)?.seq ?? cursor);
+          continue;
+        }
+        if (type === 'start' && frame.messageMetadata) {
+          const inputIds = (frame.messageMetadata as { input_ids?: unknown }).input_ids;
+          answering = Array.isArray(inputIds) && inputIds.map(String).includes(inputId);
+        }
+        if (!answering) continue;
+        frames.push(frame);
+        if (type === 'finish') return { frames, raw: raw() };
+      }
+    }
+    throw new Error(
+      `session ${sessionId} did not finish the response to input ${inputId} before the deadline; ` +
+        `frames=${JSON.stringify(frames.map((frame) => frame.type))}`,
+    );
   }
 
   /** Parse an SSE body's `data:` frames into type list / text / first error. */
@@ -780,22 +942,12 @@ export class AstraApi {
     const frameTypes: string[] = [];
     let text = '';
     let errorText: string | null = null;
-    for (const rawLine of raw.split('\n')) {
-      const line = rawLine.trim();
-      if (!line.startsWith('data:')) continue;
-      const payload = line.slice(5).trim();
-      if (!payload || payload === '[DONE]') continue;
-      let frame: Record<string, unknown>;
-      try {
-        frame = JSON.parse(payload) as Record<string, unknown>;
-      } catch {
-        continue;
-      }
+    for (const frame of sseFrames(raw)) {
       const type = String(frame.type || '');
       frameTypes.push(type);
       if (type === 'text-delta' && typeof frame.delta === 'string') {
         text += frame.delta;
-      } else if (type === 'error') {
+      } else if (type === 'error' && errorText === null) {
         errorText = String(frame.errorText ?? 'unknown error');
       }
     }
@@ -876,7 +1028,7 @@ export class AstraApi {
    * Community conversations are created with `bypassPermissions` (the create route
    * hardcodes it — there is NO permission_mode on POST /conversations), so a spec
    * that needs a tool-permission interaction to surface must switch to `default`
-   * here (or pass permissionMode per-turn to `streamPrompt`) BEFORE that turn.
+   * here BEFORE that message; a message carries no mode of its own.
    */
   setPermissionMode(sessionId: string, permissionMode: PermissionMode | string): Promise<PermissionModeResult> {
     return this.data<PermissionModeResult>(
@@ -929,15 +1081,17 @@ export class AstraApi {
     timeoutMs: number,
   ): Promise<PendingInteraction | null> {
     const deadline = Date.now() + timeoutMs;
-    let sawTurn = false;
+    let sawWork = false;
     while (Date.now() < deadline) {
-      const pending = await this.getPendingInteraction(sessionId);
-      if (pending) return pending;
       const session = await this.getSession(sessionId);
-      const turnId = String(session.current_turn_id || '').trim();
-      if (turnId) {
-        sawTurn = true;
-      } else if (sawTurn) {
+      const pending = session.pending_interaction;
+      if (pending && String(pending.interaction_id || '').trim()) return pending;
+      const working = (session.current_responses?.length ?? 0) > 0
+        || (session.held_inputs?.length ?? 0) > 0
+        || session.runtime_status === 'working';
+      if (working) {
+        sawWork = true;
+      } else if (sawWork) {
         // It ran and it is over, and nothing was gated.
         return null;
       }
@@ -947,8 +1101,8 @@ export class AstraApi {
   }
 
   /**
-   * Answer a pending interaction (POST /sessions/{id}/interaction-respond). `answer`
-   * is the raw interaction_response object — e.g. `{ decision: 'approve' }` /
+   * Answer a pending interaction (POST /sessions/{id}/interactions/{interaction_id}/answer).
+   * `answer` is the raw interaction response object — e.g. `{ decision: 'approve' }` /
    * `{ decision: 'reject' }` for a tool-permission prompt, `{ decline: true }` for
    * AskUserQuestion, `{ decision: 'approve'|'revise'|'reject' }` for ExitPlanMode.
    */
@@ -959,8 +1113,8 @@ export class AstraApi {
   ): Promise<InteractionAnswerResult> {
     return this.data<InteractionAnswerResult>(
       'POST',
-      `/sessions/${sessionId}/interaction-respond`,
-      { interaction_id: interactionId, answer },
+      `/sessions/${sessionId}/interactions/${encodeURIComponent(interactionId)}/answer`,
+      { answer },
     );
   }
 
@@ -990,8 +1144,9 @@ export class AstraApi {
   // ── Turns (raw stream / replay-resume / terminal) ───────────────────────
 
   /**
-   * Drive one turn over POST /sessions/{id}/ai-stream and return the RAW SSE body.
-   * `permissionMode` applies to THIS turn only. Use `sendTurn` for a parsed
+   * Send a message and return the RAW SSE of its response, read off the
+   * session's stream to its first `finish`. `permissionMode` switches the
+   * session to that mode first, as `sendTurn` does. Use `sendTurn` for a parsed
    * frame tail.
    */
   async streamPrompt(
@@ -1000,46 +1155,29 @@ export class AstraApi {
     permissionMode?: string,
     timeoutMs = parseTimeoutEnv('ASTRABOX_E2E_TURN_TIMEOUT_MS', 180_000),
   ): Promise<string> {
-    const response = await this.request.fetch(apiPath(`/sessions/${sessionId}/ai-stream`), {
-      method: 'POST',
-      data: {
-        content,
-        client_message_id: randomUUID(),
-        ...(permissionMode ? { permission_mode: permissionMode } : {}),
-      },
-      headers: { Accept: 'text/event-stream' },
-      timeout: timeoutMs,
-    });
-    const raw = await response.text();
-    if (!response.ok()) {
-      throw new Error(`ai-stream -> ${response.status()}: ${raw.slice(0, 500)}`);
-    }
-    return raw;
+    return (await this.sendTurn(sessionId, content, timeoutMs, permissionMode)).raw;
   }
 
   /**
-   * Replay/resume a turn's durable frames (GET /sessions/{id}/ai-stream?after_seq=N).
-   * The replay cursor is the `frame_seq` from the messages page
-   * `active_turn_overlay.resume_cursor`; passing the last-applied seq replays only
-   * newer frames. Returns `{ status: 204, replayed: false }` when nothing is
-   * resumable — the endpoint's no-active-stream signal.
+   * Read the session's stream after `afterSeq` (GET /sessions/{id}/stream?after_seq=N):
+   * what was recorded after that position, then live, through the end of one
+   * response. Each burst ends with a `data-resume-cursor` naming the position
+   * to read from next; the history page's `output_seq` is where a reader
+   * that loaded history starts.
    */
   async resumeStream(
     sessionId: string,
-    afterSeq = -1,
+    afterSeq = 0,
     timeoutMs = parseTimeoutEnv('ASTRABOX_E2E_TURN_TIMEOUT_MS', 60_000),
   ): Promise<ResumeStreamResult> {
     const response = await this.request.fetch(
-      apiPath(`/sessions/${sessionId}/ai-stream?after_seq=${afterSeq}`),
+      apiPath(`/sessions/${sessionId}/stream?after_seq=${afterSeq}`),
       { method: 'GET', headers: { Accept: 'text/event-stream' }, timeout: timeoutMs },
     );
     const status = response.status();
-    if (status === 204) {
-      return { status, replayed: false, frameTypes: [], text: '', errorText: null, raw: '' };
-    }
     const raw = await response.text();
     if (!response.ok()) {
-      throw new Error(`resume ai-stream -> ${status}: ${raw.slice(0, 500)}`);
+      throw new Error(`stream -> ${status}: ${raw.slice(0, 500)}`);
     }
     return { status, replayed: true, raw, ...this.parseFrames(raw) };
   }
@@ -1108,6 +1246,33 @@ export class AstraApi {
       minAssistantCount,
       () => true,
       timeoutMs,
+    );
+  }
+
+  /**
+   * Wait until history holds the response to the input `inputId`, and return
+   * it. By default the response must have ended (`metadata.status === 'ended'`);
+   * `ended: false` returns it as soon as it starts. How it ended is the
+   * caller's to judge, from `metadata.outcome`.
+   */
+  async waitForReplyTo(
+    sessionId: string,
+    inputId: string,
+    options: { ended?: boolean; timeoutMs?: number } = {},
+  ): Promise<MessageRecord> {
+    const ended = options.ended ?? true;
+    const timeoutMs = options.timeoutMs ?? parseTimeoutEnv('ASTRABOX_E2E_TURN_TIMEOUT_MS', 180_000);
+    const deadline = Date.now() + timeoutMs;
+    let last: MessageRecord | null = null;
+    while (Date.now() < deadline) {
+      const page = await this.getMessages(sessionId, 50);
+      last = visibleMessages(page).find((message) => answersInput(message, inputId)) ?? null;
+      if (last && (!ended || last.metadata?.status === 'ended')) return last;
+      await new Promise((r) => setTimeout(r, 1_000));
+    }
+    throw new Error(
+      `session ${sessionId} has no ${ended ? 'ended ' : ''}response to input ${inputId} after ${timeoutMs}ms; ` +
+        `last=${JSON.stringify(last ? { id: last.id, metadata: last.metadata } : null)}`,
     );
   }
 

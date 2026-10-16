@@ -1,9 +1,11 @@
 /** Official Satori references cannot cross a channel's execution-account boundary. */
 import { randomUUID } from 'node:crypto';
-import { expect, test } from '@playwright/test';
+import { expect, test, type APIRequestContext } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
-import { documentsByField } from '../fixtures/dbOracle';
+import {
+  channelAliasRows, channelInbound, channelMessageInputs, deploymentRow, sessionRow,
+} from '../fixtures/ingressRecords';
 import { call, deployedApiClient, issueToken, json, requiredEnvironment } from '../fixtures/oidcMachine';
 import { PlatformApi } from '../fixtures/platformApi';
 import { satoriSource } from '../fixtures/satoriSource';
@@ -28,6 +30,7 @@ test('Satori acknowledges a cross-account reply refusal and keeps ordinary conte
     storageState: { cookies: [], origins: [] },
   });
   let source: Awaited<ReturnType<typeof satoriSource>> | undefined;
+  let delegatedRequest: APIRequestContext | undefined;
   try {
     const discoveryResponse = await machine.get(`${requiredEnvironment('ASTRABOX_E2E_OIDC_ISSUER')}/.well-known/openid-configuration`);
     expect(discoveryResponse.ok()).toBe(true);
@@ -39,6 +42,12 @@ test('Satori acknowledges a cross-account reply refusal and keeps ordinary conte
     const executor = identity.payload.data as { user_id: string; is_admin: boolean };
     expect(executor.is_admin).toBe(false);
     expect(executor.user_id).toBeTruthy();
+    delegatedRequest = await playwright.request.newContext({
+      baseURL: requiredEnvironment('ASTRABOX_E2E_CONSOLE_URL'),
+      storageState: { cookies: [], origins: [] },
+      extraHTTPHeaders: { Authorization: `Bearer ${token.value}` },
+    });
+    const delegatedApi = new AstraApi(delegatedRequest);
     source = await satoriSource();
     const id = randomUUID();
     const firstMarker = `FIRST_${id}`;
@@ -53,78 +62,89 @@ test('Satori acknowledges a cross-account reply refusal and keeps ordinary conte
     await source.waitConnected();
 
     const alias = (messageId: string) => `e2e:${source!.botId}:channel:${id}:message:${messageId}`;
-    const inbound = (messageId: string) => documentsByField('channel_inbound', '$.deployment_id', deploymentId)
-      .find((row) => row.dedup_key === alias(messageId));
-    const sourceCursor = () => Number(documentsByField('deployments', '$.deployment_id', deploymentId)[0]?.source_cursor || 0);
+    const inbound = (messageId: string) => channelInbound(deploymentId, alias(messageId));
+    const sourceCursor = () => Number(deploymentRow(deploymentId)?.source_cursor || 0);
     function send(messageId: string, content: string) {
       const timestamp = Date.now();
       source!.send({ type: 'message-created', timestamp,
         channel: { id, type: 0 }, user: { id: 'participant', name: 'Participant' },
         message: { id: messageId, content, created_at: timestamp } });
     }
-    async function settled(messageId: string, deliveries: number, marker: string) {
+    async function settled(messageId: string, deliveries: number, marker: string, reader = api) {
       await expect.poll(() => {
         source!.healthy();
         const row = inbound(messageId);
         if (row?.session_id && !sessions.includes(String(row.session_id))) sessions.push(String(row.session_id));
         return row?.state;
       }, { timeout: 65_000 }).toBe('SETTLED');
+      const accepted = inbound(messageId)!;
+      const inputs = channelMessageInputs(accepted.item_id);
+      expect(inputs).toHaveLength(1);
+      const response = await reader.waitForReplyTo(String(accepted.session_id), inputs[0].input_id);
+      expect(response.metadata?.outcome).toBe('completed');
       await expect.poll(() => { source!.healthy(); return source!.deliveries.length; }).toBe(deliveries);
       expect(source!.deliveries[deliveries - 1].content).toContain(marker);
       return String(inbound(messageId)!.session_id);
     }
     send('first', `<at id="${source.botId}"/>Remember ${firstMarker} for this conversation and reply with that token only. Do not use tools.`);
     const original = await settled('first', 1, firstMarker);
-    const originalOwner = documentsByField('sessions', '$.session_id', original)[0]?.user_id;
+    const originalOwner = sessionRow(original)?.user_id;
     expect(originalOwner).toBeTruthy();
     expect(originalOwner).not.toBe(executor.user_id);
-    await expect.poll(() => documentsByField('channel_aliases', '$.deployment_id', deploymentId)
+    await expect.poll(() => channelAliasRows(deploymentId)
       .find((row) => row.alias === alias('reply-1'))?.session_id).toBe(original);
 
     await platform.updateDeployment(agentId, deploymentId, {
       execution_mode: 'account', execution_user_id: executor.user_id,
     });
+    await expect.poll(() => { source!.healthy(); return source!.connectionCount; }).toBe(2);
     const acceptedCursor = sourceCursor();
     expect(acceptedCursor).toBeGreaterThan(0);
     send('forbidden', `<quote id="reply-1">${firstMarker}</quote><at id="${source.botId}"/>${rejectedMarker}: continue that old reply.`);
     await expect.poll(() => { source!.healthy(); return inbound('forbidden')?.state; }).toBe('IGNORED');
     expect(inbound('forbidden')).toMatchObject({
-      ignored_reason: 'CHANNEL_REFERENCE_OWNER_MISMATCH', context_excluded: true,
-      session_id: null, command_id: null, turn_id: null,
+      ignored_reason: 'CHANNEL_REFERENCE_OWNER_MISMATCH', context_excluded: true, session_id: null,
     });
+    expect(channelMessageInputs(inbound('forbidden')!.item_id), 'a refused reply is never sent to any conversation')
+      .toEqual([]);
     // Management responses omit the internal cursor; its durable advance owns ACK safety.
     await expect.poll(sourceCursor).toBeGreaterThan(acceptedCursor);
     // The participant is told why, under the message that was refused.
     await expect.poll(() => source!.deliveries.length).toBe(2);
     expect(source.deliveries[1].content).toContain('<quote id="forbidden"');
     expect(source.deliveries[1].content).toContain('cannot continue');
-    expect(source.connectionCount).toBe(1);
+    expect(source.connectionCount).toBe(2);
 
     send('ordinary', contextMarker);
     await expect.poll(() => inbound('ordinary')?.state).toBe('OBSERVED');
     send('second', `<at id="${source.botId}"/>Reply only ${secondMarker}. Do not use tools.`);
-    const delegated = await settled('second', 3, secondMarker);
+    const delegated = await settled('second', 3, secondMarker, delegatedApi);
     expect(delegated).not.toBe(original);
-    expect(documentsByField('sessions', '$.session_id', delegated)[0]?.user_id).toBe(executor.user_id);
-    const frozen = inbound('second')!.frozen_input as { content: string; context: Array<{ message_id: string }> };
-    expect(frozen.context.map((row) => row.message_id)).toEqual([alias('ordinary')]);
-    expect(frozen.content).toContain(contextMarker);
-    expect(frozen.content).not.toContain(rejectedMarker);
-    expect(frozen.content).not.toContain(firstMarker);
+    expect(sessionRow(delegated)?.user_id).toBe(executor.user_id);
+    const second = inbound('second')!;
+    expect(second.frozen_context).toEqual([alias('ordinary')]);
+    const frozen = String(second.frozen_content);
+    expect(frozen).toContain(contextMarker);
+    expect(frozen).not.toContain(rejectedMarker);
+    expect(frozen).not.toContain(firstMarker);
+    expect(channelMessageInputs(second.item_id).map((row) => ({ session_id: row.session_id, content: row.content })),
+      'the delegated message is the one input its frozen text names').toEqual([{ session_id: delegated, content: frozen }]);
     const ownMessages = await call(machine, token.value, 'GET', `/sessions/${delegated}/messages`);
     expect(ownMessages.status).toBe(200);
     expect(JSON.stringify(ownMessages.payload)).not.toContain(firstMarker);
     expect(JSON.stringify(ownMessages.payload)).not.toContain(rejectedMarker);
 
     await platform.updateDeployment(agentId, deploymentId, { execution_mode: 'owner' });
+    await expect.poll(() => { source!.healthy(); return source!.connectionCount; }).toBe(3);
     send('same-owner', `<quote id="reply-1"/><at id="${source.botId}"/>Reply only with the token I asked you to remember earlier. Do not use tools.`);
     expect(await settled('same-owner', 4, firstMarker)).toBe(original);
-    expect(source.connectionCount).toBe(1);
+    expect(source.connectionCount).toBe(3);
     expect(inbound('forbidden')?.state).toBe('IGNORED');
     expect(inbound('forbidden')?.context_submitted).not.toBe(true);
     expect(source.deliveries).toHaveLength(4);
   } finally {
     await source?.close();
+    await delegatedRequest?.dispose();
     await machine.dispose();
   }
 });

@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
-import { documentsByField } from '../fixtures/dbOracle';
+import { postgresRows, sqlLiteral } from '../fixtures/dbOracle';
 import { nextPreparedSeat } from '../fixtures/preparedSeats';
 import { apiPath, appPath } from '../fixtures/env';
 import { PlatformApi } from '../fixtures/platformApi';
@@ -130,10 +130,12 @@ for (const tenancy of ['agent', 'conversation'] as const) {
       tracing: null,
     };
     await platform.putEnvironment(environmentName, environment);
+    // Leave a waiting seat beside the claimed Session in the Agent-shared box.
     for (const prewarm of [true, false]) {
       const agent = await api.createAgent({
         name: `${environmentName}_${prewarm ? 'warm' : 'cold'}`,
-        model, environment_name: environmentName, prepared_capacity: prewarm ? 1 : 0,
+        model, environment_name: environmentName,
+        prepared_capacity: prewarm ? (tenancy === 'agent' ? 2 : 1) : 0,
       });
       agents.push(agent.agent_id);
     }
@@ -216,7 +218,9 @@ for (const tenancy of ['agent', 'conversation'] as const) {
     }
     const afterRefusal = supplierRead(backend, poolName, liveBox, spareBox);
     expect(afterRefusal).toEqual(retired);
-    expect(documentsByField('sessions', '$.agent_id', warmAgent).map((row) => row.session_id)).toEqual([sessionId]);
+    expect(postgresRows<{ session_id: string }>(
+      `SELECT session_id FROM sessions WHERE agent_id = ${sqlLiteral(warmAgent)}`,
+    ).map((row) => row.session_id)).toEqual([sessionId]);
     expect((await api.adminSessionDetail(sessionId)).sandbox_id).toBe(liveBox);
 
     // Delete the Session before its Agent; keep the Environment disabled throughout.

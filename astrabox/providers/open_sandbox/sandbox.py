@@ -1449,6 +1449,9 @@ class OpenSandboxSandboxProvider(SandboxProvider):
                 # The in-box loop owns the deadline; the host bound only has to
                 # outlast it so a healthy slow poll is never cut off mid-probe.
                 timeout=float(timeout_seconds) + _INBOX_SERVICE_PROBE_MARGIN_SECONDS,
+                # The probe only reads, so a connection that drops mid-probe
+                # while the box's route warms up is safe to probe again.
+                idempotent=True,
             )
         except TimeoutError as exc:
             raise APIError(

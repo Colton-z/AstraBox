@@ -365,10 +365,13 @@ def register_assistant_routes(app: Any) -> None:
         # first, while the Assistant they resolve through still exists.
         await _service.get_assistant(user, assistant_id)
         await get_platform_service().delete_assistant_conversations(user, assistant_id)
+        # The Assistant, its workspace and its Vault bindings go in one
+        # transaction, once its box is proven destroyed.
         result = await _service.delete_assistant(user, assistant_id)
-        # The Assistant is gone, so its schedules and channel bindings must stop
-        # firing; they belong to it and no other account can manage them.
-        await get_platform_service().delete_all_assistant_deployments(assistant_id)
+        # The Assistant is gone, so its schedules and channel bindings, and the
+        # personal schedules created from it, must stop firing; they belong to
+        # it and no other account can manage them.
+        await get_platform_service().delete_target_deployments(assistant_id=assistant_id)
         return success_response(result)
 
     @app.post(

@@ -1,10 +1,10 @@
-"""E2E: a conversation's own box at the default size carries a turn that works.
+"""E2E: a conversation's own box at the default size carries a response that works.
 
 A conversation's own box is 1 CPU and 1Gi unless the deployment says
 otherwise. The engine has to fit in it while it works, not only while it idles:
-the turn here writes a file and runs it. The evidence is the box's own cgroup,
-read from inside the box after the turn: its memory ceiling is the default, and
-the kernel recorded no OOM kill in it.
+the response here writes a file and runs it. The evidence is the box's own
+cgroup, read from inside the box after the response: its memory ceiling is the
+default, and the kernel recorded no OOM kill in it.
 
 Run on a deployment that leaves ASTRABOX_SANDBOX_MEMORY_LIMIT unset:
 
@@ -23,7 +23,8 @@ from tests.e2e._sandbox_helpers import (
     permission_mode,
     poll_until_agent_ready,
     run_terminal,
-    stream_turn,
+    send_and_follow,
+    wait_until_settled,
 )
 
 pytestmark = pytest.mark.e2e
@@ -62,13 +63,17 @@ def test_a_conversation_own_box_at_the_default_size_finishes_a_working_turn(
         f"the conversation's own box is not at the default 1Gi: memory.max={ceiling!r}"
     )
 
-    result = stream_turn(e2e_client, sid, content=_PROMPT)
-    assert result.error is None, f"the turn errored: {result.error}"
-    assert result.finish_reason == "stop", f"the turn did not finish: {result.finish_reason!r}"
+    result = send_and_follow(e2e_client, sid, _PROMPT, until="end")
+    assert result.error is None, f"the response failed: {result.error}"
+    assert result.finish_reason == "stop", (
+        f"the response did not end normally: {result.finish_reason!r} outcome={result.outcome!r}"
+    )
     assert _EXPECTED_SUM in result.text.replace(",", ""), (
         f"the reply lacks what the script prints: {result.text!r}"
     )
-    assert "squares.py" in file_names(e2e_client, sid), "the turn did not write the file"
+    settled = wait_until_settled(e2e_client, sid)
+    assert settled["last_response"]["outcome"] == "completed", settled
+    assert "squares.py" in file_names(e2e_client, sid), "the response did not write the file"
 
     events = dict(
         line.split()
@@ -76,5 +81,5 @@ def test_a_conversation_own_box_at_the_default_size_finishes_a_working_turn(
         if line.strip()
     )
     assert int(events.get("oom_kill", "0")) == 0, (
-        f"the kernel killed a process in the box for memory during the turn: {events}"
+        f"the kernel killed a process in the box for memory during the response: {events}"
     )

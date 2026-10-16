@@ -520,78 +520,6 @@ def assert_identity_boundary_complete(
                     )
 
 
-def validate_workload_identity_evidence(
-    initialization: dict[str, Any],
-    identity: dict[str, Any],
-) -> dict[str, Any]:
-    """Validate real Claude subprocess identity evidence reported by the sidecar."""
-    evidence = (initialization or {}).get("runtime_identity_evidence")
-    if not isinstance(evidence, dict):
-        raise APIError(
-            code="IDENTITY_WORKLOAD_UNVERIFIED",
-            message="agent conversation initialization is missing workload identity evidence",
-            status_code=502,
-        )
-
-    expected_user = str(identity.get("linux_user") or "").strip()
-    expected_home = str(identity.get("home_dir") or "").rstrip("/")
-    expected_workspace = str(identity.get("workspace_dir") or "").rstrip("/")
-    expected_config = str(identity.get("config_dir") or "").rstrip("/")
-    expected_bin = f"{expected_home}/.local/bin"
-
-    _require_evidence_equal(evidence, "options_user", expected_user)
-    _require_evidence_equal(evidence, "username", expected_user)
-    _require_evidence_equal(evidence, "home", expected_home)
-    _require_evidence_equal(evidence, "pwd", expected_workspace)
-    _require_evidence_equal(evidence, "cwd", expected_workspace)
-    _require_evidence_equal(evidence, "options_cwd", expected_workspace)
-    _require_evidence_equal(evidence, "config_dir", expected_config)
-
-    expected_uid = _optional_int(identity.get("uid"))
-    if expected_uid is not None:
-        _require_evidence_int_equal(evidence, "uid", expected_uid)
-    path = str(evidence.get("path") or "")
-    if not (path == expected_bin or path.startswith(f"{expected_bin}:")):
-        raise _workload_mismatch("PATH", path, f"{expected_bin}:...")
-
-    if not bool(evidence.get("config_dir_exists")):
-        raise _workload_mismatch("config_dir_exists", evidence.get("config_dir_exists"), True)
-    if not bool(evidence.get("config_debug_dir_exists")):
-        raise _workload_mismatch("config_debug_dir_exists", evidence.get("config_debug_dir_exists"), True)
-
-    debug_file = str(evidence.get("debug_file") or "").strip()
-    if debug_file and not _is_under(debug_file, f"{expected_config}/debug"):
-        raise _workload_mismatch("debug_file", debug_file, f"{expected_config}/debug")
-
-    for path_value in evidence.get("paths") or []:
-        path_text = str(path_value or "").strip()
-        if path_text and not _is_under(path_text, f"{expected_config}/plugins"):
-            raise _workload_mismatch("plugin_path", path_text, f"{expected_config}/plugins")
-    expected_plugins = []
-    capability_plan = identity.get("capability_plan") if isinstance(identity, dict) else None
-    if isinstance(capability_plan, dict):
-        expected_plugins = [
-            str(item.get("path") or "").strip()
-            for item in capability_plan.get("claude_plugin_options") or []
-            if isinstance(item, dict) and str(item.get("path") or "").strip()
-        ]
-    reported_plugins = {
-        str(item or "").strip()
-        for item in evidence.get("paths") or []
-        if str(item or "").strip()
-    }
-    for expected_plugin in expected_plugins:
-        if expected_plugin not in reported_plugins:
-            raise _workload_mismatch("plugin_path", "<missing>", expected_plugin)
-
-    for path_value in evidence.get("add_dirs") or []:
-        path_text = str(path_value or "").strip()
-        if path_text and not _is_under(path_text, expected_home):
-            raise _workload_mismatch("add_dir", path_text, expected_home)
-
-    return evidence
-
-
 def _mcp_plan(servers: dict[str, Any], config_dir: str) -> list[dict[str, Any]]:
     """Author MCP servers; the target is the configuration directory's, where one exists.
 
@@ -622,13 +550,6 @@ def _template_value(template: Any | None, field: str) -> Any:
     return getattr(template, field, None)
 
 
-def _optional_int(value: Any) -> int | None:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def _is_under(path: str, root: str) -> bool:
     value = _safe_norm_path(path)
     base = _safe_norm_path(root)
@@ -640,27 +561,6 @@ def _safe_norm_path(path: Any) -> str:
     if not raw.startswith("/") or any(part == ".." for part in raw.split("/")):
         return ""
     return posixpath.normpath(raw).rstrip("/")
-
-
-def _require_evidence_equal(evidence: dict[str, Any], key: str, expected: str) -> None:
-    actual = str(evidence.get(key) or "").rstrip("/")
-    if actual != expected:
-        raise _workload_mismatch(key, actual, expected)
-
-
-def _require_evidence_int_equal(evidence: dict[str, Any], key: str, expected: int) -> None:
-    actual = _optional_int(evidence.get(key))
-    if actual != expected:
-        raise _workload_mismatch(key, actual, str(expected))
-
-
-def _workload_mismatch(key: str, actual: Any, expected: Any) -> APIError:
-    return APIError(
-        code="IDENTITY_WORKLOAD_MISMATCH",
-        message=f"Claude workload identity evidence mismatch: {key}={actual!r}, expected {expected!r}",
-        status_code=502,
-        data={"field": key, "actual": actual, "expected": expected},
-    )
 
 
 def _shell_word(value: Any) -> str:

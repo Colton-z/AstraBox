@@ -10,6 +10,7 @@
       },
       "contracts": {
         "approval_names_target": true,
+        "background_completion_response": true,
         "background_subagent": true,
         "permission_modes": true,
         "plan_interaction": true,
@@ -72,6 +73,7 @@
       },
       "contracts": {
         "approval_names_target": false,
+        "background_completion_response": true,
         "background_subagent": true,
         "permission_modes": true,
         "plan_interaction": false,
@@ -131,6 +133,7 @@
       },
       "contracts": {
         "approval_names_target": false,
+        "background_completion_response": false,
         "background_subagent": true,
         "permission_modes": true,
         "plan_interaction": false,
@@ -192,6 +195,7 @@
       },
       "contracts": {
         "approval_names_target": false,
+        "background_completion_response": true,
         "background_subagent": true,
         "permission_modes": false,
         "plan_interaction": false,

@@ -1,29 +1,37 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { UIMessage as SDKUIMessage } from 'ai';
-import { getSessionFileChanges, type SessionFileChangeTurn } from '../../api';
+import { getSessionFileChanges, type SessionFileChangeResponse } from '../../api';
 import { useKeepCurrent } from '../../hooks/useKeepCurrent';
-import { getMessageTurnId, platformTurnMetadata } from '../messageIdentity';
 
 interface ReadState {
   sessionId: string;
   throughSeq: number;
-  turns: Map<string, SessionFileChangeTurn>;
+  responses: Map<string, SessionFileChangeResponse>;
   loaded: boolean;
   error: string | null;
 }
 
 function empty(sessionId: string): ReadState {
-  return { sessionId, throughSeq: 0, turns: new Map(), loaded: false, error: null };
+  return { sessionId, throughSeq: 0, responses: new Map(), loaded: false, error: null };
 }
 
-/** Keep settled Diff data independent of the transcript's mounted window. */
+/**
+ * The Diff panel's file changes, independent of the transcript's loaded window.
+ *
+ * Ended responses come from the session's record (`GET …/file-changes`), read
+ * incrementally after the last position read; each response read replaces what
+ * was held for it. A response still running is shown from the conversation's
+ * own messages, which the stream keeps current.
+ */
 export function useSessionFileChanges({
-  sessionId, enabled, lifecycleState, lastTurnId, messages,
+  sessionId, enabled, working, lastResponseId, messages,
 }: {
   sessionId: string;
   enabled: boolean;
-  lifecycleState: string;
-  lastTurnId: string | null | undefined;
+  /** A response is running, so its changes keep arriving. */
+  working: boolean;
+  /** The last response that ended, by the session's detail: one more is there to read. */
+  lastResponseId: string | null | undefined;
   messages: SDKUIMessage[];
 }) {
   const [read, setRead] = useState<ReadState>(() => empty(sessionId));
@@ -41,9 +49,9 @@ export function useSessionFileChanges({
     try {
       const page = await getSessionFileChanges(sessionId, previous.throughSeq, request.signal);
       if (id !== requestId.current) return;
-      const turns = new Map(previous.turns);
-      for (const turn of page.turns) turns.set(turn.turn_id, turn);
-      const next = { sessionId, throughSeq: page.through_seq, turns, loaded: true, error: null };
+      const responses = new Map(previous.responses);
+      for (const response of page.responses) responses.set(response.response_id, response);
+      const next = { sessionId, throughSeq: page.through_seq, responses, loaded: true, error: null };
       latest.current = next;
       setRead(next);
     } catch (error) {
@@ -60,23 +68,20 @@ export function useSessionFileChanges({
       requestId.current += 1;
       controller.current?.abort();
     };
-  }, [refresh, lifecycleState, lastTurnId]);
-  useKeepCurrent(refresh, {
-    follow: enabled && (lifecycleState === 'busy' || lifecycleState === 'background'),
-  });
+  }, [refresh, lastResponseId]);
+  useKeepCurrent(refresh, { follow: enabled && working });
 
   const current = read.sessionId === sessionId ? read : empty(sessionId);
   const projected = useMemo((): SDKUIMessage[] => {
     if (!enabled || read.sessionId !== sessionId || !read.loaded) return [];
-    const settled: SDKUIMessage[] = [...read.turns.values()].flatMap((turn) => turn.messages.map((message) => ({
-      id: message.message_id,
+    const ended: SDKUIMessage[] = [...read.responses.values()].map((response) => ({
+      id: response.response_id,
       role: 'assistant',
-      metadata: platformTurnMetadata(turn.turn_id),
-      parts: message.parts,
-    })));
-    // The completed turn owns its whole projection. Mixing its old mounted
-    // messages back in would resurrect superseded results or double live IDs.
-    return [...settled, ...messages.filter((message) => !read.turns.has(getMessageTurnId(message)))];
+      parts: response.parts,
+    }));
+    // An ended response read from the record owns its changes; its copy among
+    // the loaded messages would count them twice.
+    return [...ended, ...messages.filter((message) => !read.responses.has(message.id))];
   }, [enabled, read, sessionId, messages]);
 
   return {

@@ -34,7 +34,7 @@ Resources and context have the following scopes:
 | Vaults | Child runs use the credentials made available to the parent Agent runtime. |
 | Conversation history | Each child run has its own engine-owned messages. It receives only the context passed by its parent. |
 | Agent configuration | Delegation follows the installed Agent program and the Agent configuration resolved for the Session runtime. |
-| Event stream | The parent Session stream emits `data-child-runs-changed` when clients should refresh the child-run view. A child-run endpoint returns one child's complete projected messages. |
+| Event stream | The parent Session stream carries the Agent program's child-run reports as transient `data-subagent` parts. A child-run endpoint returns one child's complete projected messages. |
 
 :::warning
 Parallel child runs share a filesystem. Define clear file or directory
@@ -105,8 +105,8 @@ curl --silent --show-error --request POST \
 Send a task that names a useful division of responsibilities:
 
 ```bash
-curl --no-buffer --silent --show-error --request POST \
-  "$SERVICE_URL/api/v1/sessions/$SESSION_ID/ai-stream" \
+curl --silent --show-error --request POST \
+  "$SERVICE_URL/api/v1/sessions/$SESSION_ID/inputs" \
   --header "Authorization: Bearer $ACCESS_TOKEN" \
   --header 'Content-Type: application/json' \
   --data '{
@@ -114,6 +114,9 @@ curl --no-buffer --silent --show-error --request POST \
     "client_message_id": "login-review-1"
   }'
 ```
+
+The request returns a receipt with the message's `input_id`. The reply arrives
+on the Session stream described in [SSE Event Stream](events-stream.md).
 
 A prompt does not force delegation. The Agent program decides whether a child
 run is useful and how to execute it.
@@ -162,9 +165,9 @@ curl --silent --show-error \
   --header "Authorization: Bearer $ACCESS_TOKEN"
 ```
 
-The Session stream uses `data-child-runs-changed` as a refresh signal. Read the
-child-run endpoints for the current tree and transcript instead of reconstructing
-state from transient notifications.
+The Session stream carries child-run reports as transient `data-subagent`
+parts. Read the child-run endpoints for the current tree and transcript instead
+of reconstructing state from those parts.
 
 ## Interrupt one child run
 
@@ -193,10 +196,11 @@ runs parent and child work. When the program requests a confirmation or other
 input, AstraBox publishes the interaction in the parent Session and returns the
 answer through the same engine adapter.
 
-Use the interaction ID with `POST
-/api/v1/sessions/{session_id}/interaction-respond`. A pending interaction means
-the current work is waiting for input, not that the child run completed. See
-[Permission modes](permission-modes.md) for the response shapes.
+Answer it with
+`POST /api/v1/sessions/{session_id}/interactions/{interaction_id}/answer`. A
+pending interaction means the current work is waiting for input, not that the
+child run completed. See [Permission modes](permission-modes.md) for the answer
+shapes.
 
 ## Limits
 
@@ -205,7 +209,7 @@ the current work is waiting for input, not that the child run completed. See
 | Agent roster | AstraBox has no platform child-Agent roster. The installed Agent program owns delegation. |
 | Child runs | Count and concurrency are defined by the Agent program and its current configuration. |
 | Delegation depth | The Agent program decides whether nested delegation is available; `depth` and `parent_child_run_id` report the resulting tree. |
-| Session foreground state | A Session can report `BACKGROUND_RUNNING` and accept foreground input while child tasks remain active. |
+| Messages during child runs | A Session accepts new messages while child runs remain active; the Agent program decides when to take them. |
 | Agent references | Child runs are engine conversations, not references to separate AstraBox Agent records or versions. |
 | Controls | Each row's `operations` array is authoritative; AstraBox does not require or infer a common delegation toolset. |
 

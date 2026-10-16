@@ -58,14 +58,18 @@ def _mentions(value: Any, needle: str, seen: set[int] | None = None) -> bool:
     return needle in str(value)
 
 
+# The app's startup upgrades the PostgreSQL schema before it serves a request.
+@pytest.mark.usefixtures("database")
 def test_the_callers_bearer_never_reaches_the_agent_service(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    database: str,
 ) -> None:
     """The structural tests say the token is not taken; this says it does not arrive.
 
     Driven through the real app so the identity middleware, the route, and the
-    service boundary are the ones under test.
+    service boundary are the ones under test. The app's startup reads the
+    stored Deployments, so it runs against the test database.
     """
 
     bearer = "idp-token-that-must-not-be-delegated"

@@ -10,17 +10,14 @@ from collections.abc import Callable, Sequence
 from dataclasses import asdict, is_dataclass, replace
 from typing import Any
 
-from astrabox.persistence.repository import (
-    AgentRepository,
-    EnvironmentRepository,
-    SessionRepository,
-)
+from astrabox.persistence.repository.agent_repository import AgentRepository
+from astrabox.persistence.repository.environment_repository import EnvironmentRepository
+from astrabox.persistence.repository.session_repository import SessionRepository
+from astrabox.persistence.repository.agent_repository import AgentReferenceMissing
 from astrabox.persistence.repository.assistant_catalog_repository import (
     AssistantCatalogRepository,
 )
-from astrabox.persistence.repository.assistant_workspace_repository import AssistantWorkspaceRepository
 from astrabox.common.utils.errors import APIError
-from astrabox.common.utils.time_utils import utcnow_iso
 from astrabox.common.utils.user_context import UserContext, default_org_id
 from astrabox.core.model import AgentView
 from astrabox.core.service.orchestrator.agent_access import (
@@ -31,6 +28,7 @@ from astrabox.core.service.orchestrator.agent_access import (
     assert_may_author,
     can_manage_agent,
     can_view_agent,
+    is_platform_admin,
     normalize_visibility,
     sanitize_access_control_payload,
 )
@@ -74,33 +72,28 @@ from astrabox.core.service.orchestrator.sandbox_names import read_undestroyed
 from astrabox.core.service.orchestrator.runtime.mcp_servers import CONNECTOR_PLATFORM_SERVER
 from astrabox.seams.extensions import extension_provider_for_name
 
-# The masked stand-in for a set ``provider_access.api_key`` in client-facing
-# environment reads — the plaintext model key never leaves the server. On write,
-# this exact value means "unchanged, keep the stored key" (a real key is never
-# this sentinel). Resolution uses the raw doc (``get_environment``), never this.
-ENV_API_KEY_SENTINEL = "••••••••"
-
-# Runtime-affecting Agent fields whose change bumps ``agent.version``.
-# Cosmetic, access, and lifecycle fields (display_meta, created_by, state, and
-# timestamps) are excluded because they do not change a prepared runtime.
-_VERSIONED_HARNESS_FIELDS = (
-    "model",
-    "system",
-    "skills",
-    "mcp_servers",
-    "mcp_assignments",
-    "artifacts_enabled",
-    "extension_catalog",
-    "packages",
-    "default_repo",
-    "engine_options",
+# What of an Assistant its runtime view is built from (``_resolve_assistant_harness``),
+# and so what its revision covers. The rest of the row is bookkeeping or
+# presentation: writing it prepares no runtime again.
+_ASSISTANT_RUNTIME_FIELDS = (
+    "owner_id",
+    "org_id",
+    "engine_kind",
     "environment_name",
-    "exposure_mode",
-    "idle_hibernate_seconds",
-    "terminal_panel",
-    "diff_panel",
-    "prepared_capacity",
+    "display_name",
+    "system",
+    "timezone",
+    "model_config_override",
+    "mcp_servers",
+    "skills",
+    "packages",
+    "engine_options",
+    "extension_catalog",
+    "mcp_assignments",
+    "connector_servers",
+    "credential_vault_ids",
 )
+
 
 def _session_has_runtime_reference(session: dict[str, Any]) -> bool:
     return bool(
@@ -109,19 +102,46 @@ def _session_has_runtime_reference(session: dict[str, Any]) -> bool:
         or session.get("state") == "CREATING"
         # Failed or superseded startup may retain scope without a main pointer.
         or session.get("startup_allocation")
-        or session.get("_retained_startup_allocations")
+        or session.get("retained_startup_allocations")
     )
 
 
 def _authored_change(existing: dict[str, Any], updates: dict[str, Any]) -> bool:
     """Whether a write changes any of the authored fields it carries.
 
-    ``updated_at`` and ``updated_by`` record who changed a definition and
-    when. Saving a form unchanged, or the runtime writing its own state to the
-    same row, changes no definition and must not move them.
+    An Agent's ``version``, ``updated_at`` and ``updated_by`` move with every
+    change to its definition. Saving a form unchanged changes no definition and
+    writes nothing.
     """
 
     return any(existing.get(key) != value for key, value in updates.items())
+
+
+#: How many times a write that replaces a whole field re-reads after another
+#: write moved the Agent's version. Such a write does not depend on what it
+#: read, so it may be applied again on top of the newer definition.
+_REPLACING_WRITE_ATTEMPTS = 3
+
+
+def _version_conflict() -> APIError:
+    return APIError(
+        code="AGENT_VERSION_CONFLICT",
+        message="agent was modified concurrently; retry with the latest version",
+        status_code=409,
+    )
+
+
+def _reference_missing(error: AgentReferenceMissing) -> APIError:
+    """The API error for an Agent write naming a record that does not exist."""
+    if error.reference == "environment":
+        return APIError(
+            code="ENVIRONMENT_NOT_FOUND",
+            message="environment no longer exists; reload its configuration",
+            status_code=404,
+        )
+    if error.reference == "category":
+        return invalid_request("an Agent category this Agent names was deleted; reload the categories")
+    return invalid_request(f"the Agent names a {error.reference} that does not exist")
 
 
 class AgentConfigService:
@@ -147,13 +167,11 @@ class AgentConfigService:
         *,
         assistant_repo: AssistantCatalogRepository | None = None,
         sessions_repo: SessionRepository | None = None,
-        assistant_workspace_repo: AssistantWorkspaceRepository | None = None,
         spawn_background_task: Callable[..., Any] | None = None,
     ) -> None:
         self._agent_repo = agent_repo
         self._environment_repo = environment_repo
         self._sessions_repo = sessions_repo or SessionRepository()
-        self._assistant_workspace_repo = assistant_workspace_repo or AssistantWorkspaceRepository()
         # The runtime-view resolver reads the Assistant catalog directly. An
         # Assistant view combines its Environment with its own overrides; using
         # the repository here avoids a service-construction cycle.
@@ -250,6 +268,7 @@ class AgentConfigService:
         Assistant, is treated as in :meth:`_build_agent_view`.
         """
         from astrabox.core.service.orchestrator.assistant.assistant_layers import (
+            LAYER_RUNTIME_FIELDS,
             inherited_layers,
             joined_instructions,
             merged_engine_options,
@@ -339,7 +358,14 @@ class AgentConfigService:
                 ]
             ),
             environment_name=env_name,
-            assistant_revision=self._assistant_revision(assistant, env, layers=[layer for _label, layer in layers]),
+            assistant_revision=self._assistant_revision(
+                assistant,
+                env,
+                layers=[
+                    {field: layer.get(field) for field in LAYER_RUNTIME_FIELDS}
+                    for _label, layer in layers
+                ],
+            ),
         )
         self._overlay_environment_runtime(view, env)
         return view
@@ -350,24 +376,21 @@ class AgentConfigService:
     ) -> str:
         """The identity of what an Assistant's runtime is prepared from.
 
-        Every stored field of the Assistant except its bookkeeping, the
-        layers it inherits, and the Environment's revision. It says only that
-        the definition moved; which change matters to the Agent program's
-        profile is the adapter's call when it prepares that profile again.
+        The Assistant's fields its runtime view is built from
+        (``_ASSISTANT_RUNTIME_FIELDS``), the runtime fields of the layers it
+        inherits as the caller passes them, and the Environment's revision.
+        Bookkeeping (the main conversation, the workspace id, the primary mark,
+        versions and timestamps) is left out, so writing it prepares nothing
+        again. It says only that the definition moved; which change matters to
+        the Agent program's profile is the adapter's call when it prepares that
+        profile again.
         """
 
-        definition = {
-            key: value
-            for key, value in assistant.items()
-            if key not in {"_id", "created_at", "updated_at", "deleted"}
-        }
+        definition = {field: assistant.get(field) for field in _ASSISTANT_RUNTIME_FIELDS}
         payload = json.dumps(
             {
                 "assistant": definition,
-                "layers": [
-                    {key: value for key, value in layer.items() if key != "_id"}
-                    for layer in layers or []
-                ],
+                "layers": list(layers or []),
                 "environment_updated_at": str(env.get("updated_at") or ""),
             },
             sort_keys=True,
@@ -463,8 +486,6 @@ class AgentConfigService:
             prepared_capacity=int(item.get("prepared_capacity") or 0),
             seats_per_box=int(item.get("_seats_per_box") or 0),
             version=self._coerce_positive_int(item.get("version")),
-            status=item.get("status"),
-            scope=item.get("scope"),
             display_name=display_meta.get("display_name") or str(item.get("name") or ""),
             icon=display_meta.get("icon"),
             use_cases=self._normalize_use_cases(item.get("use_cases")),
@@ -559,7 +580,7 @@ class AgentConfigService:
                 message=f"{ref} has no environment_name",
                 status_code=500,
             )
-        env = await self._environment_repo.get_any_by_name(env_name)
+        env = await self._environment_repo.get_with_secrets(env_name)
         if not env:
             raise APIError(
                 code="AGENT_ENVIRONMENT_MISSING",
@@ -603,24 +624,26 @@ class AgentConfigService:
         agent_id: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        """Write named access fields through the dedicated policy operation."""
+        """Write named access fields through the dedicated policy operation.
 
-        agent = await self._must_manage_agent_access(user, agent_id)
+        The request replaces the named fields whole, so a write that loses the
+        version race to another edit re-reads and applies it again.
+        """
+
         updates = sanitize_access_control_payload(payload)
-        if _authored_change(agent, updates):
-            updates.update(updated_at=utcnow_iso(), updated_by=user.user_id)
-        applied = await self._agent_repo.compare_and_update_agent(
-            str(agent["agent_id"]),
-            expected={},
-            updates=updates,
-        )
-        if not applied:
-            raise APIError(
-                code="AGENT_NOT_FOUND",
-                message="agent not found",
-                status_code=404,
+        for _ in range(_REPLACING_WRITE_ATTEMPTS):
+            agent = await self._must_manage_agent_access(user, agent_id)
+            if not _authored_change(agent, updates):
+                return self._agent_access_view(agent)
+            written = await self._agent_repo.update_definition(
+                str(agent["agent_id"]),
+                expected_version=int(agent["version"]),
+                changes=updates,
+                updated_by=user.user_id,
             )
-        return self._agent_access_view({**agent, **updates})
+            if written is not None:
+                return self._agent_access_view(written)
+        raise _version_conflict()
 
     async def _must_manage_agent_access(
         self, user: UserContext, agent_id: str
@@ -658,12 +681,23 @@ class AgentConfigService:
             "allowed_user_ids": agent_allowed_user_ids(agent),
         }
 
-    async def list_agent_access_docs(self) -> list[dict[str, Any]]:
-        """Return only the stored fields needed for view/manage-scope checks."""
-        return await self._agent_repo.list_agent_access_docs()
+    async def count_visible_agents(self, user: UserContext | None) -> int:
+        """How many Agents ``user`` may see."""
+        total, _enabled = await self._agent_repo.count_visible_agents(
+            str(getattr(user, "user_id", "") or ""),
+            platform_admin=is_platform_admin(getattr(user, "roles", ()) or ()),
+        )
+        return total
+
+    async def manageable_agent_ids(self, user: UserContext | None) -> list[str]:
+        """The ids of the Agents ``user`` may manage."""
+        return await self._agent_repo.manageable_agent_ids(
+            str(getattr(user, "user_id", "") or ""),
+            platform_admin=is_platform_admin(getattr(user, "roles", ()) or ()),
+        )
 
     async def get_environment(self, name: str) -> dict[str, Any] | None:
-        """Return the raw environment doc by name (None if missing)."""
+        """Return the environment doc by name, credentials masked (None if missing)."""
         target = str(name or "").strip()
         if not target:
             return None
@@ -682,7 +716,8 @@ class AgentConfigService:
         from astrabox.common.utils.settings import load_astrabox_settings
         from astrabox.seams.model import model_endpoint_for_name
 
-        env = await self.get_environment(name)
+        target = str(name or "").strip()
+        env = await self._environment_repo.get_with_secrets(target) if target else None
         if not env:
             return []
         settings = load_astrabox_settings()
@@ -719,14 +754,10 @@ class AgentConfigService:
     async def list_agent_configs(self, user: UserContext) -> list[dict[str, Any]]:
         # Management console: only agents the user can manage — the deployment's
         # admins, plus each agent's own creator/admins.
-        configs = await self._agent_repo.list_all_agents()
-        me = user.user_id
-        roles = user.roles
-        return [
-            self.sanitize_agent_doc(c)
-            for c in configs
-            if can_manage_agent(c, me, roles)
-        ]
+        configs = await self._agent_repo.list_manageable_agents(
+            user.user_id, platform_admin=is_platform_admin(user.roles)
+        )
+        return [self.sanitize_agent_doc(c) for c in configs]
 
     # ── Mutation: create (mint id, version=1) + update (version CAS) ────────
 
@@ -835,16 +866,16 @@ class AgentConfigService:
         doc = {
             "agent_id": agent_id,
             "enabled": True,
-            "version": 1,
-            "state": "ACTIVE",
-            "user_id": user.user_id,
             "created_by": user.user_id,
             "org_id": str(getattr(user, "org_id", None) or "").strip() or default_org_id(),
             "updated_by": user.user_id,
             "visibility": VISIBILITY_PRIVATE,
             **editable,
         }
-        stored = await self._agent_repo.create_agent(doc)
+        try:
+            stored = await self._agent_repo.create_agent(doc)
+        except AgentReferenceMissing as exc:
+            raise _reference_missing(exc) from None
         return self.sanitize_agent_doc(stored)
 
     async def set_agent_connector_servers(
@@ -870,25 +901,15 @@ class AgentConfigService:
         value = {str(name): str(url) for name, url in servers.items()} or None
         if existing.get("connector_servers") == value:
             return self.sanitize_agent_doc(existing)
-        stored_version = self._coerce_positive_int(existing.get("version")) or 1
-        applied = await self._agent_repo.compare_and_update_agent(
+        written = await self._agent_repo.update_definition(
             target,
-            expected={"version": stored_version},
-            updates={
-                "connector_servers": value,
-                "version": stored_version + 1,
-                "updated_at": utcnow_iso(),
-                "updated_by": user.user_id,
-            },
+            expected_version=int(existing["version"]),
+            changes={"connector_servers": value},
+            updated_by=user.user_id,
         )
-        if not applied:
-            raise APIError(
-                code="AGENT_VERSION_CONFLICT",
-                message="agent was modified concurrently; retry with the latest version",
-                status_code=409,
-            )
-        refreshed = await self._agent_repo.get_agent(target)
-        return self.sanitize_agent_doc(refreshed or existing)
+        if written is None:
+            raise _version_conflict()
+        return self.sanitize_agent_doc(written)
 
     async def upsert_agent_config(
         self,
@@ -898,11 +919,11 @@ class AgentConfigService:
     ) -> dict[str, Any]:
         """Update one Agent by id with optimistic concurrency.
 
-        Only the creator or an admin may edit. ``version`` auto-increments when a
-        runtime-affecting Agent field changes (a cosmetic or no-op update does
-        not bump it). If
-        the payload supplies a ``version``, it must match the stored version
-        (409 on mismatch); if it omits one, the update applies without the fence.
+        Only the creator or an admin may edit. ``version`` moves with every
+        change to the definition; a save that changes nothing writes nothing.
+        If the payload supplies a ``version``, it must match the stored version
+        (409 on mismatch); either way the write applies only while the Agent is
+        still at the version this request read.
         """
         target = str(agent_id or "").strip()
         if not target:
@@ -1003,31 +1024,23 @@ class AgentConfigService:
                     status_code=409,
                 )
 
-        # Reads report an Agent stored without the switch as on, so a client
-        # writing that value back leaves the Agent's definition unchanged.
-        current = {**existing, "artifacts_enabled": agent_artifacts_enabled(existing)}
-        changed = self._harness_changed(current, updates)
-        if changed:
-            updates["version"] = stored_version + 1
-        if _authored_change(current, updates):
-            updates.update(updated_at=utcnow_iso(), updated_by=me)
-
-        applied = await self._agent_repo.compare_and_update_agent(
-            target,
-            expected={"version": stored_version},
-            updates=updates,
-        )
-        if not applied:
-            # A concurrent writer bumped the version between the read and the
-            # CAS, so nothing here was written, a name or a category no less
-            # than a runtime field.
-            raise APIError(
-                code="AGENT_VERSION_CONFLICT",
-                message="agent was modified concurrently; retry with the latest version",
-                status_code=409,
+        if not _authored_change(existing, updates):
+            return self.sanitize_agent_doc(existing)
+        try:
+            written = await self._agent_repo.update_definition(
+                target,
+                expected_version=stored_version,
+                changes=updates,
+                updated_by=me,
             )
-        refreshed = await self._agent_repo.get_agent(target)
-        return self.sanitize_agent_doc(refreshed or {**existing, **updates})
+        except AgentReferenceMissing as exc:
+            raise _reference_missing(exc) from None
+        if written is None:
+            # A concurrent writer moved the version between the read and this
+            # write, so nothing here was written, a name or a category no less
+            # than a runtime field.
+            raise _version_conflict()
+        return self.sanitize_agent_doc(written)
 
     @staticmethod
     def _check_prepared_capacity_backend(capacity: int, *, sandbox_backend: str) -> None:
@@ -1119,25 +1132,14 @@ class AgentConfigService:
                 status_code=409,
             )
 
-    @staticmethod
-    def _harness_changed(existing: dict[str, Any], updates: dict[str, Any]) -> bool:
-        """Return whether a runtime-affecting Agent field differs."""
-        for key in _VERSIONED_HARNESS_FIELDS:
-            if key in updates and updates[key] != existing.get(key):
-                return True
-        return False
-
-    # ── Environment config (carries provider_access; api_key is write-only) ──
+    # ── Environment config (carries provider_access; credentials are write-only) ──
 
     async def list_environment_configs(self, user: UserContext) -> list[dict[str, Any]]:
-        configs = await self._environment_repo.list_all()
-        # NEVER ship the plaintext model api_key to the client — a masked
-        # placeholder only (a UI mask over a leaked key protects nothing).
+        # The repository masks every stored credential, so these documents
+        # never carry a credential's value to the client.
         return [
-            self._environment_with_engine_capabilities(
-                self._redact_env_secret(self.sanitize_agent_doc(c))
-            )
-            for c in configs
+            self._environment_with_engine_capabilities(config)
+            for config in await self._environment_repo.list_all()
         ]
 
     async def count_environment_configs(self) -> int:
@@ -1241,69 +1243,6 @@ class AgentConfigService:
             return []
         return await self.list_environment_models(target)
 
-    #: Environment secrets that never leave the server in a client-facing read,
-    #: as (containing object, field) pairs. Both are write-only in the same way,
-    #: so they are masked and restored by one rule rather than two that can
-    #: disagree about which fields are secret.
-    _ENV_SECRET_FIELDS: tuple[tuple[str, str], ...] = (
-        ("provider_access", "api_key"),
-        ("tracing", "auth_token"),
-    )
-
-    @classmethod
-    def _redact_env_secret(cls, doc: dict[str, Any]) -> dict[str, Any]:
-        """A copy of an environment doc with every stored secret masked.
-
-        A set value becomes :data:`ENV_API_KEY_SENTINEL`; an unset one is left
-        empty/absent. The real values stay server-side (``get_environment`` /
-        resolution keep the raw doc). The tracing credential is here for the same
-        reason the model key is: an admin read is still a read, and a collector
-        token is as reusable as a gateway key."""
-        if not isinstance(doc, dict):
-            return doc
-        out = doc
-        for holder, field_name in cls._ENV_SECRET_FIELDS:
-            block = out.get(holder)
-            if not isinstance(block, dict):
-                continue
-            if not str(block.get(field_name) or "").strip():
-                continue
-            out = {**out, holder: {**block, field_name: ENV_API_KEY_SENTINEL}}
-        return out
-
-    async def _preserve_env_secret_on_unchanged(
-        self, name: str, payload: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Write-only secrets: if the client sent a masked sentinel back (loaded
-        redacted, left untouched), restore the stored plaintext rather than
-        overwriting it with the mask. A real new value passes through; empty
-        clears. Masking a field without this half is worse than not masking it:
-        one form round-trip would save the mask over the real credential."""
-        pending = [
-            (holder, field_name)
-            for holder, field_name in self._ENV_SECRET_FIELDS
-            if isinstance(payload.get(holder), dict)
-            and str(payload[holder].get(field_name) or "") == ENV_API_KEY_SENTINEL
-        ]
-        if not pending:
-            return payload
-        existing = await self._environment_repo.get_any_by_name(name)
-        out = payload
-        for holder, field_name in pending:
-            block = {**out[holder]}
-            stored_block = (existing or {}).get(holder) if isinstance(existing, dict) else None
-            stored_value = (
-                str((stored_block or {}).get(field_name) or "")
-                if isinstance(stored_block, dict)
-                else ""
-            )
-            if stored_value:
-                block[field_name] = stored_value
-            else:
-                block.pop(field_name, None)
-            out = {**out, holder: block}
-        return out
-
     async def upsert_environment_config(
         self,
         user: UserContext,
@@ -1320,35 +1259,38 @@ class AgentConfigService:
         # Persist a concrete idle_action before validation because sandbox
         # cleanup reads this field directly from the stored Environment.
         payload = normalize_environment_payload(payload)
-        # Schema validation (types / required / enum); does not rewrite the payload.
-        validate_environment_payload({"name": name, **payload})
-        # Keep the stored api_key when the client left the mask untouched.
-        payload = await self._preserve_env_secret_on_unchanged(name, payload)
-
-        doc = {
-            "name": name,
-            "updated_at": utcnow_iso(),
-            "updated_by": user.user_id,
-            **{k: v for k, v in payload.items() if k not in ("name",)},
-        }
-        result = await self._environment_repo.upsert(name, doc)
-        return self._redact_env_secret(self.sanitize_agent_doc(result))
+        # Schema validation (types / required / enum / no undeclared fields);
+        # does not rewrite the payload.
+        validate_environment_payload({**payload, "name": name})
+        # The request is the whole Environment: a field it leaves out is
+        # cleared, and a credential sent back masked keeps the stored one.
+        return await self._environment_repo.put(
+            name,
+            {key: value for key, value in payload.items() if key != "name"},
+            updated_by=user.user_id,
+        )
 
     async def delete_environment_config(
         self, user: UserContext, name: str,
     ) -> dict[str, Any]:
-        """Remove an unreferenced preset through the administrator HTTP surface."""
+        """Remove an unreferenced preset through the administrator HTTP surface.
+
+        The Environment row stays locked from the reference check to the
+        delete (``EnvironmentRepository.delete_after_reference_check``), and
+        every owner that names an Environment does so through a foreign key, so
+        a binding either commits before the check reads or waits for the delete.
+        """
         target = str(name or "").strip()
         if not target:
             raise invalid_request("environment name is required")
 
-        async def check_references(transaction: Any) -> None:
-            agents = await self._agent_repo.list_agents_by_environment(target, transaction=transaction)
+        async def check_references(connection: Any) -> None:
+            agents = await self._agent_repo.list_agents_by_environment(target, conn=connection)
             deleted_agent_ids = [
-                str(agent["agent_id"]) for agent in agents if agent.get("deleted") is True
+                str(agent["agent_id"]) for agent in agents if agent.get("state") == "DELETED"
             ]
             sessions = await self._sessions_repo.list_agent_runtime_references(
-                deleted_agent_ids, transaction=transaction,
+                deleted_agent_ids, connection=connection,
             )
             agents_with_session_runtime = {
                 str(session["agent_id"]) for session in sessions
@@ -1356,35 +1298,25 @@ class AgentConfigService:
             }
             agents = [
                 agent for agent in agents
-                if agent.get("deleted") is not True
-                or str(agent.get("sandbox_id") or "").strip()
-                or read_undestroyed(agent)
+                if agent.get("state") != "DELETED"
                 # A claimed manifest may survive Agent deletion while its
                 # Session publishes ownership; pools may still be retiring.
-                or agent.get("_prepared_slots")
-                or str(agent.get("_client_pool_name") or "").strip()
-                or agent.get("_retiring_client_pools")
+                or agent["holds_compute"]
                 or str(agent["agent_id"]) in agents_with_session_runtime
             ]
-            assistants = await self._assistant_repo.list_assistants_by_environment(target, transaction=transaction)
+            # A deleted Assistant holds no workspace (its deletion removes it), so
+            # the compute it can still own is in the conversations it left.
+            assistants = await self._assistant_repo.list_assistants_by_environment(target)
             deleted_assistant_ids = [
                 str(assistant["assistant_id"]) for assistant in assistants if assistant.get("deleted") is True
             ]
             assistant_sessions = await self._sessions_repo.list_assistant_runtime_references(
-                deleted_assistant_ids, transaction=transaction,
-            )
-            workspaces = await self._assistant_workspace_repo.list_runtime_references(
-                deleted_assistant_ids, transaction=transaction,
+                deleted_assistant_ids, connection=connection,
             )
             assistants_with_runtime = {
                 str(session["assistant_id"]) for session in assistant_sessions
                 if _session_has_runtime_reference(session)
             }
-            assistants_with_runtime.update(
-                str(workspace["assistant_id"]) for workspace in workspaces
-                if str(workspace.get("current_sandbox_id") or "").strip()
-                or (workspace.get("state") == "MATERIALIZING" and workspace.get("provisioning_session_id"))
-            )
             assistants = [
                 assistant for assistant in assistants
                 if assistant.get("deleted") is not True
@@ -1419,9 +1351,7 @@ class AgentConfigService:
                     "target_id": str(layer["scope"]),
                     "target_name": "Assistant defaults",
                 }
-                for layer in await AssistantDefaultsRepository().list_by_environment(
-                    target, transaction=transaction
-                )
+                for layer in await AssistantDefaultsRepository().list_by_environment(target)
             )
             if holders:
                 shown = ", ".join(

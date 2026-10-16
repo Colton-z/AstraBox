@@ -50,7 +50,7 @@ under **Project repository**:
 | `branch` | string | No | Branch or tag to clone. Omission uses the repository default. |
 | `depth` | integer | No | Positive shallow-clone depth. Omission clones full history. |
 
-The checkout is placed in the Session working directory before the first turn.
+The checkout is placed in the Session working directory before the first message.
 
 :::note
 `deploy_key_secret_name` stores only a logical secret name on the Agent. The private key is read on the AstraBox server when the checkout is prepared and is never returned by the Agent API.

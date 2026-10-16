@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { expect, test } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
-import { documentsByField } from '../fixtures/dbOracle';
+import { nativeTranscriptRows } from '../fixtures/dbOracle';
 import { apiPath } from '../fixtures/env';
 import { requireSandboxHandle, waitForSandboxStopped } from '../fixtures/sandboxOps';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
@@ -16,23 +16,25 @@ interface NativeFile {
   entries: Record<string, unknown>[];
 }
 
+/**
+ * The session's native SessionStore files as the platform holds them, one per
+ * scope, named the way the export names its members
+ * (`AdminService.admin_session_transcript_files`): the project key, then the
+ * sub-agent's subpath or, for the main transcript, the native session id.
+ */
 function nativeFiles(sessionId: string): NativeFile[] {
-  const rows = documentsByField('transcript_entries', '$.platform_session_id', sessionId);
   const files = new Map<string, NativeFile>();
-  rows.sort((a, b) => Number(a.seq) - Number(b.seq));
-  for (const row of rows) {
-    expect(Number.isSafeInteger(row.seq), 'native entries have an explicit append order').toBe(true);
-    expect(typeof row.project_key).toBe('string');
-    expect(typeof row.session_id).toBe('string');
-    expect(typeof row.entry_json).toBe('string');
+  for (const row of nativeTranscriptRows(sessionId)) {
+    expect(Number.isSafeInteger(Number(row.seq)), 'native entries have an explicit append order').toBe(true);
     const projectKey = String(row.project_key);
-    const sdkSessionId = String(row.session_id);
+    const sdkSessionId = String(row.native_session_id);
     expect(projectKey).not.toBe('');
     expect(sdkSessionId).not.toBe('');
     const subpath = row.subpath == null ? null : String(row.subpath);
     const path = `${projectKey}/${subpath ?? sdkSessionId}.jsonl`;
     const file = files.get(path) ?? { path, sdkSessionId, subpath, entries: [] };
     expect(file.sdkSessionId, 'a filename must not merge different native sessions').toBe(sdkSessionId);
+    // Rows come in each scope's own append order (`nativeTranscriptRows`).
     file.entries.push(JSON.parse(String(row.entry_json)) as Record<string, unknown>);
     files.set(path, file);
   }
@@ -84,10 +86,12 @@ test('batch transcript export preserves each session native JSONL after compute 
     const turn = await api.sendTurn(created.session_id, prompt);
     expect(turn.errorText, 'each exported conversation must have a successful real turn').toBeNull();
     expect(turn.text.trim(), 'each real turn must deliver assistant text').not.toBe('');
+    const reply = await api.waitForReplyTo(created.session_id, turn.inputId);
+    expect(reply.metadata?.outcome, 'each exported conversation must have a completed response').toBe('completed');
     await api.waitForSession(created.session_id, (session) => (
       session.state === 'READY'
-      && !session.current_turn_id
-      && session.last_turn_status === 'COMPLETED'
+      && (session.current_responses ?? []).length === 0
+      && session.last_response?.response_id === reply.id
     ));
     await expect.poll(() => hasConversation(nativeFiles(created.session_id), prompt), {
       message: 'both native roles must reach the database before compute release',

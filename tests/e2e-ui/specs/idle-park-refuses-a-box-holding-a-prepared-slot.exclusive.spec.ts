@@ -5,34 +5,28 @@
  * box. The next browser conversation must claim that exact isolation and answer.
  * The fixture enables pause on its own shared Environment and retains failures.
  */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 
 import { expect, test } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
-import { sessionDoc, snapshotDoc } from '../fixtures/dbOracle';
+import { postgresRows, sqlLiteral } from '../fixtures/dbOracle';
 import { nextLedgerSeat } from '../fixtures/preparedSeats';
 import { appPath, parseTimeoutEnv } from '../fixtures/env';
 import { PlatformApi } from '../fixtures/platformApi';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { requireServiceContainer, SERVER_CONTAINER_HANDLE } from '../fixtures/serviceContainer';
 
-// Per-tick parking budget in the product (`_IDLE_SWEEP_SCAN_LIMIT`,
-// expiration_watcher.py:40). Mirrored here for one purpose: a tick reporting
-// FEWER candidates than this returned every row the candidate query matched, so
-// a row that matches the query was necessarily among them. A tick at or above it
-// was truncated and can prove nothing about this conversation.
-const IDLE_SWEEP_SCAN_LIMIT = 10;
-
 // Upstream's phase vocabulary, carried through by the provider verbatim
-// (providers/open_sandbox/sandbox.py:130-131). Membership, not inequality: a box
+// (`_RUNNING_STATES` in providers/open_sandbox/sandbox.py). Membership, not inequality: a box
 // reporting PAUSED or SUCCEED must fail this spec rather than merely "differ
 // from what we expected".
 const RUNNING_BOX_STATES = new Set(['RUNNING', 'READY']);
 
 // The window this Agent asks to be allowed to sit quiet, really waited out
-// rather than backdated — the sweep reads a snapshot clock, and a spec that
-// wrote that clock itself could not tell the product's silence from its own.
+// rather than backdated — the sweep reads the session row's activity clock, and
+// a spec that wrote that clock itself could not tell the product's silence from
+// its own.
 // Tunable so a lane short of wall can shrink it; every assertion reads the
 // Agent's STORED value rather than this constant.
 const IDLE_WINDOW_MS = parseTimeoutEnv('ASTRABOX_E2E_IDLE_PARK_WINDOW_MS', 15_000);
@@ -40,9 +34,9 @@ const IDLE_WINDOW_SECONDS = Math.max(1, Math.round(IDLE_WINDOW_MS / 1_000));
 
 // The pool preparing a box and the seats it carries.
 const PREPARED_READY_TIMEOUT_MS = parseTimeoutEnv('ASTRABOX_E2E_PREPARED_READY_TIMEOUT_MS', 60_000);
-// The one turn that gives the keeper a snapshot clock to read.
+// The one turn that gives the keeper a runtime status and an activity clock to read.
 const FIRST_TURN_TIMEOUT_MS = parseTimeoutEnv('ASTRABOX_E2E_IDLE_PARK_TURN_TIMEOUT_MS', 90_000);
-// How long the conversation may take to settle IDLE past its window.
+// How long the conversation may take to settle idle past its window.
 const QUIET_TIMEOUT_MS = parseTimeoutEnv(
   'ASTRABOX_E2E_IDLE_PARK_QUIET_TIMEOUT_MS',
   IDLE_WINDOW_MS + 45_000,
@@ -103,20 +97,60 @@ function preparedCapacity(id: string): PreparedCapacity {
   };
 }
 
-/** The park DECISION's own mark, written before the pause commit begins. */
-function parkedMark(sessionId: string): string {
-  return String(sessionDoc(sessionId)?.sandbox_parked_at || '').trim();
+/**
+ * What the keeper and its candidate query read off this conversation's
+ * `sessions` row. The quiet age is measured by the database from the latest of
+ * the last output, the last change of activity and the last resume of the box,
+ * which is the moment `_is_idle_past` (expiration_watcher.py) measures from.
+ */
+interface KeeperRow {
+  runtime_status: string | null;
+  open_responses: number;
+  quiet_ms: number | null;
+  sandbox_parked_at: string | null;
+  deleted: boolean;
+  runtime_unavailable: boolean;
+  sandbox_id: string | null;
+  state: string;
+  expires_at: string | null;
+  lease_live: boolean | null;
 }
 
-/** Milliseconds since the snapshot clock the keeper reads last moved, or null. */
-function quietFor(sessionId: string): { state: string; quietMs: number | null } {
-  const snapshot = snapshotDoc(sessionId);
-  if (!snapshot) return { state: '<no snapshot>', quietMs: null };
-  const updatedAt = Date.parse(String(snapshot.updated_at || ''));
+function keeperRow(sessionId: string): KeeperRow | null {
+  return postgresRows<KeeperRow>(
+    `SELECT s.runtime_status, `
+      + `(SELECT count(*) FROM session_responses r `
+      + `WHERE r.session_id = s.session_id AND r.status <> 'ended')::int AS open_responses, `
+      + `(extract(epoch FROM now() - GREATEST(s.last_output_at, s.updated_at, s.sandbox_resumed_at)) `
+      + `* 1000)::float8 AS quiet_ms, `
+      + `s.sandbox_parked_at, s.deleted, s.runtime_unavailable, s.sandbox_id, s.state, s.expires_at, `
+      + `s.expires_at > now() AS lease_live `
+      + `FROM sessions s WHERE s.session_id = ${sqlLiteral(sessionId)}`,
+  )[0] ?? null;
+}
+
+/** The park DECISION's own mark, written before the pause commit begins. */
+function parkedMark(sessionId: string): string {
+  return String(keeperRow(sessionId)?.sandbox_parked_at || '').trim();
+}
+
+/**
+ * The runtime's last reported status, whether a response is still open, and the
+ * milliseconds since the activity clock the keeper reads last moved.
+ */
+function quietFor(sessionId: string): { status: string; openResponses: number; quietMs: number | null } {
+  const row = keeperRow(sessionId);
+  if (!row) return { status: '<no session row>', openResponses: 0, quietMs: null };
   return {
-    state: String(snapshot.conversation_state || ''),
-    quietMs: Number.isFinite(updatedAt) ? Date.now() - updatedAt : null,
+    status: String(row.runtime_status ?? ''),
+    openResponses: Number(row.open_responses),
+    quietMs: row.quiet_ms === null ? null : Number(row.quiet_ms),
   };
+}
+
+/** Whether the keeper would call this conversation quiet past `windowMs`. */
+function quietPast(quiet: ReturnType<typeof quietFor>, windowMs: number): boolean {
+  return quiet.status === 'idle' && quiet.openResponses === 0 && (quiet.quietMs ?? -1) >= windowMs;
 }
 
 /**
@@ -124,15 +158,15 @@ function quietFor(sessionId: string): { state: string; quietMs: number | null } 
  *
  * Without it, "the box was not parked" is satisfied for free by a row the sweep
  * never looked at — a lapsed lease, a cleared sandbox pointer, a
- * `runtime_unavailable` mark. Mirrors `list_idle_reclaim_candidates`
- * (session_repository.py:536-549); the failure names the field that disqualified
- * the row rather than reporting a vague "not a candidate".
+ * `runtime_unavailable` mark. Mirrors `list_idle_reclaim_candidates` in
+ * session_repository.py; the failure names the field that disqualified the row
+ * rather than reporting a vague "not a candidate".
  */
 function disqualifiedFromTheSweep(sessionId: string, expectedSandbox: string): string {
-  const row = sessionDoc(sessionId);
+  const row = keeperRow(sessionId);
   if (!row) return 'the session row is gone';
-  if (row.deleted === true) return 'the row is marked deleted';
-  if (row.runtime_unavailable === true) return 'the row is marked runtime_unavailable';
+  if (row.deleted) return 'the row is marked deleted';
+  if (row.runtime_unavailable) return 'the row is marked runtime_unavailable';
   const sandboxId = String(row.sandbox_id || '').trim();
   if (!sandboxId) return 'the row no longer names a sandbox';
   if (sandboxId !== expectedSandbox) {
@@ -140,14 +174,12 @@ function disqualifiedFromTheSweep(sessionId: string, expectedSandbox: string): s
   }
   const state = String(row.state || '');
   if (state === 'TERMINATED' || state === 'DELETED') return `the row reached ${state}`;
-  const expiresAt = Date.parse(String(row.expires_at || ''));
-  if (!Number.isFinite(expiresAt)) {
-    return `the row has no readable expires_at (${String(row.expires_at)})`;
-  }
-  if (expiresAt <= Date.now()) {
+  if (row.lease_live === null) return 'the row has no sandbox lease (expires_at is empty)';
+  if (!row.lease_live) {
     return `the sandbox lease already lapsed at ${String(row.expires_at)} — the dead-binding `
       + 'sweep owns this row, not the idle sweep';
   }
+  if (String(row.sandbox_parked_at || '').trim()) return 'the row is already parked';
   return '';
 }
 
@@ -233,9 +265,10 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
 
   // ── An Environment that parks, over the box shape a slot can live in ─────
   // Cloned from the deployment's proven Agent-tenancy prewarm Environment: a
-  // prepared slot exists only inside an Agent-owned shared box
-  // (prepared_slots.py:620), and this is the Environment the other prepared-slot
-  // specs are built on. The only changed field is the one the journey rests on.
+  // prepared slot exists only inside an Agent-owned shared box (conversation
+  // tenancy prepares whole pool boxes instead), and this is the Environment the
+  // other prepared-slot specs are built on. The only changed field is the one
+  // the journey rests on.
   const sourceName = String(process.env.ASTRABOX_E2E_PREWARM_SHARED_ENVIRONMENT || '').trim();
   expect(
     sourceName,
@@ -299,14 +332,14 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
   expect(
     String(storedEnvironment.sandbox_tenancy || ''),
     'the box under test must be the Agent\'s, carrying its conversations as isolated sessions: '
-      + '`prepare_slot_for_agent` returns None outright for conversation tenancy '
-      + '(prepared_slots.py:620), so under any other tenancy there is no prepared slot inside a '
-      + 'conversation\'s box and this journey has no scene',
+      + 'under conversation tenancy every prepared unit is a whole pool box, so there is no '
+      + 'prepared slot inside a conversation\'s box and this journey has no scene',
   ).toEqual('agent');
   expect(
     String(storedEnvironment.sandbox_permission_level || ''),
     'Agent tenancy carves each conversation a namespace inside one box, which the write path '
-      + 'admits only at an elevated permission level (environment_schema.py:203-211)',
+      + 'admits only at an elevated permission level (`_assert_tenancy_has_permission_level` in '
+      + 'environment_schema.py)',
   ).toEqual('advanced');
   expect(
     storedEnvironment.enabled,
@@ -329,7 +362,7 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
     environment_name: parkEnvironment,
     // The whole point of the scene: warm capacity parked in the box alongside
     // the one conversation that is about to go quiet.
-    prepared_capacity: 1,
+    prepared_capacity: 2,
     idle_hibernate_seconds: IDLE_WINDOW_SECONDS,
   });
   agentId = String(created.agent_id || '');
@@ -337,7 +370,7 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
   // `createAgent` projects its payload through the authoring schema and drops
   // anything the schema does not declare. A dropped window is invisible: the
   // sweep would fall back to the 1800s deployment default
-  // (`_idle_window_if_parking`, expiration_watcher.py:538-546) and judge this
+  // (`_idle_window_if_parking` in expiration_watcher.py) and judge this
   // Agent by a clock this spec never set, and nothing would be asked inside this
   // run's wall.
   const readBack = await api.getAgent(agentId);
@@ -348,7 +381,7 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
   expect(
     readBack.prepared_capacity,
     'the Agent must carry the prewarm setting whose slot this journey protects',
-  ).toBe(1);
+  ).toBe(2);
   mark('agent_created', { agentId, agentName });
 
   /** Poll the Agent's advertised capacity until the platform says it is claimable. */
@@ -384,9 +417,10 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
   mark('idle_conversation_ready', { idleSession, box });
 
   // One real turn, and it is load-bearing twice. `_is_idle_past` reads the
-  // session SNAPSHOT, which exists only once turn activity wrote one, so without
-  // it the sweep would refuse for a reason that has nothing to do with this
-  // journey and the run would be a false green.
+  // runtime's own reported status, which a runtime that never answered has not
+  // reported as idle after working, and the activity clock the response moves;
+  // without it the sweep could refuse for a reason that has nothing to do with
+  // this journey and the run would be a false green.
   const turn = await api.sendTurn(
     idleSession,
     `E2E idle park ${runId}. Reply with the single word READY and nothing else.`,
@@ -394,8 +428,8 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
   );
   expect(
     turn.errorText,
-    'the first conversation must complete one ordinary turn; without it there is no snapshot '
-      + 'clock for the keeper to read and the sweep would refuse for the wrong reason',
+    'the first conversation must complete one ordinary turn; without it the keeper has no '
+      + 'reported runtime status to read and the sweep could refuse for the wrong reason',
   ).toBeNull();
   mark('first_turn_done', { totalMs: turn.totalMs });
 
@@ -443,12 +477,13 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
   // Really waited, never backdated. From here nothing touches the conversation
   // over HTTP: a read through an endpoint that ensures or attaches a runtime
   // would be this spec performing the presence it is trying to observe. Every
-  // reading below the wait comes from the document store or the control plane.
+  // reading below the wait comes from the database or the control plane.
   //
   // The parked mark is polled all the way through, so on a product where
   // the production loop parks this box within a couple of its own ticks — the
   // run fails here, in about half a minute, naming the defect, instead of at the
   // lane's wall on a browser step that never had a chance.
+  const observationSince = new Date().toISOString();
   const quietDeadline = Date.now() + QUIET_TIMEOUT_MS;
   for (;;) {
     const quiet = quietFor(idleSession);
@@ -458,19 +493,19 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
         + `unclaimed prepared slot. session=${idleSession} sandbox=${box} `
         + `slot=${JSON.stringify(manifestBefore)} quiet=${quiet.quietMs}ms `
         + `window=${IDLE_WINDOW_SECONDS}s. `
-        + '`_box_is_this_session_s_alone` (expiration_watcher.py:427) asks only '
-        + '`list_sessions_by_sandbox_id`, and a prepared slot is not a session row — while the '
-        + 'destroy path\'s `agent_box_has_other_occupants` (runtime_manager.py:3182) reads the '
-        + 'Agent row\'s `_prepared_slots` for exactly this reason. The next person now claims a '
-        + 'slot whose engine child the pause killed.',
+        + 'Before parking, the keeper asks `agent_box_has_other_recorded_occupants` whether '
+        + 'anything else holds the box, and an unclaimed prepared slot is such an occupant; this '
+        + 'park means that check did not count it. The next person now claims a slot whose '
+        + 'engine child the pause killed.',
     ).toEqual('');
-    if (quiet.state === 'IDLE' && (quiet.quietMs ?? -1) >= IDLE_WINDOW_MS) break;
+    if (quietPast(quiet, IDLE_WINDOW_MS)) break;
     if (Date.now() >= quietDeadline) {
       throw new Error(
-        `the conversation must be IDLE past its ${IDLE_WINDOW_SECONDS}s window before the keeper `
+        `the conversation must be idle past its ${IDLE_WINDOW_SECONDS}s window before the keeper `
           + `can be asked about it, and it was not within ${QUIET_TIMEOUT_MS}ms: `
-          + `${JSON.stringify(quiet)}. A conversation that never settles means its turn is still `
-          + 'running, or something is writing the snapshot clock that this spec did not ask to.',
+          + `${JSON.stringify(quiet)}. A conversation that never settles means its response is `
+          + 'still running or its runtime never reported idle, or something is moving the '
+          + 'activity clock that this spec did not ask to.',
       );
     }
     await new Promise((resolve) => setTimeout(resolve, 2_000));
@@ -489,7 +524,10 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
       + `nothing: ${disqualified} (session=${idleSession} sandbox=${box})`,
   ).toEqual('');
   const quietAtTick = quietFor(idleSession);
-  expect(quietAtTick.state, 'the snapshot must read IDLE when the keeper is asked').toEqual('IDLE');
+  expect(
+    { status: quietAtTick.status, openResponses: quietAtTick.openResponses },
+    'the runtime must report idle, with no response open, when the keeper is asked',
+  ).toEqual({ status: 'idle', openResponses: 0 });
   expect(
     quietAtTick.quietMs ?? -1,
     'the quiet age must have passed the Agent\'s window when the keeper is asked',
@@ -502,8 +540,8 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
 
   // ── The platform's own keeper runs over this box ─────────────────────────
   // `POST /admin/sandbox-idle-sweep` runs the identical `scan_once()` the timer
-  // runs (sandboxes.py:467-489), so the spec neither re-implements the sweep nor
-  // depends on catching a tick.
+  // runs, so the spec neither re-implements the sweep nor depends on catching a
+  // tick.
   const tick = sweepCounters(await platform.idleSweep());
   mark('sweep_driven', { tick });
   await test.info().attach('idle-sweep-tick', {
@@ -522,27 +560,34 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
   expect(
     candidates,
     'the keeper found no idle candidates at all, so this run cannot claim it judged anything: '
-      + `session=${idleSession} was IDLE for ${quietAtTick.quietMs}ms past a ${IDLE_WINDOW_SECONDS}s `
+      + `session=${idleSession} was idle for ${quietAtTick.quietMs}ms past a ${IDLE_WINDOW_SECONDS}s `
       + `window with a live lease when the tick ran. tick=${JSON.stringify(tick)}`,
   ).toBeGreaterThanOrEqual(1);
-  expect(
-    candidates,
-    `the tick reported ${candidates} idle candidates, at or above \`_IDLE_SWEEP_SCAN_LIMIT\` `
-      + `(${IDLE_SWEEP_SCAN_LIMIT}), which means the scan was truncated and cannot be said to have `
-      + 'reached this conversation. This deployment is holding too many live conversations for '
-      + `the gate to mean anything — tick=${JSON.stringify(tick)}`,
-  ).toBeLessThan(IDLE_SWEEP_SCAN_LIMIT);
+  // The keeper rotates pages; only its refusal naming this scene proves a visit.
+  const server = requireServiceContainer(SERVER_CONTAINER_HANDLE);
+  await expect.poll(() => {
+    const logs = spawnSync('docker', ['logs', '--since', observationSince, server], {
+      encoding: 'utf8', timeout: Math.max(1, quietDeadline - Date.now()),
+    });
+    if (logs.error) throw logs.error;
+    expect(logs.status, 'reading the keeper observation must succeed').toBe(0);
+    return `${logs.stdout}${logs.stderr}`.includes(
+      `not parking — sandbox=${box} has another owner besides session=${idleSession}`,
+    );
+  }, {
+    timeout: Math.max(1, quietDeadline - Date.now()),
+    intervals: [1_000],
+    message: `the keeper must visit session=${idleSession} and refuse to park occupied box=${box}`,
+  }).toBe(true);
 
   // ── THE VERDICT, read three ways off this run's own objects ──────────────
   expect(
     parkedMark(idleSession),
     'THE FINDING: the keeper paused a box that was holding this Agent\'s unclaimed prepared '
       + `slot. session=${idleSession} sandbox=${box} slot=${JSON.stringify(manifestBefore)} `
-      + `tick=${JSON.stringify(tick)}. \`_box_is_this_session_s_alone\` `
-      + '(expiration_watcher.py:427) asks only `list_sessions_by_sandbox_id`, and a prepared slot '
-      + 'is not a session row — while the destroy path\'s `agent_box_has_other_occupants` '
-      + '(runtime_manager.py:3182) reads the Agent row\'s `_prepared_slots` for exactly this '
-      + 'reason.',
+      + `tick=${JSON.stringify(tick)}. Before parking, the keeper asks `
+      + '`agent_box_has_other_recorded_occupants` whether anything else holds the box, and an '
+      + 'unclaimed prepared slot is such an occupant; this park means that check did not count it.',
   ).toEqual('');
   const boxState = String((await api.getSandbox(box)).state || '').toUpperCase();
   expect(

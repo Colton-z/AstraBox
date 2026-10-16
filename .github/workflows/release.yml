@@ -77,8 +77,59 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-  build:
+  build-execd:
     needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        component:
+          - execd
+        runner:
+          - os: ubuntu-24.04
+            arch: amd64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # GHCR image paths must be lowercase; the repo owner may not be.
+      - id: repo
+        run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: containers/${{ matrix.component }}/Dockerfile
+          platforms: linux/${{ matrix.runner.arch }}
+          # Push by digest only; the merge job below owns the tags.
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ steps.repo.outputs.owner }}/astrabox-${{ matrix.component }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=astrabox-${{ matrix.component }}-${{ matrix.runner.arch }}
+          cache-to: type=gha,mode=max,scope=astrabox-${{ matrix.component }}-${{ matrix.runner.arch }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests/${{ matrix.component }}
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${{ matrix.component }}/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.component }}-${{ matrix.runner.arch }}
+          path: /tmp/digests/${{ matrix.component }}/*
+          if-no-files-found: error
+          retention-days: 1
+
+  build:
+    needs: [version, build-execd]
     strategy:
       fail-fast: false
       matrix:
@@ -108,6 +159,19 @@ jobs:
       - id: repo
         run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
 
+      - uses: actions/download-artifact@v4
+        if: startsWith(matrix.component, 'sandbox-') && matrix.component != 'sandbox-hermes'
+        with:
+          name: digests-execd-${{ matrix.runner.arch }}
+          path: /tmp/execd-digest
+
+      - id: execd
+        if: startsWith(matrix.component, 'sandbox-') && matrix.component != 'sandbox-hermes'
+        run: |
+          digests=(/tmp/execd-digest/*)
+          [ "${#digests[@]}" -eq 1 ] || { echo "expected one execd digest, found ${#digests[@]}"; exit 1; }
+          echo "image=${{ env.REGISTRY }}/${{ steps.repo.outputs.owner }}/astrabox-execd@sha256:$(basename "${digests[0]}")" >> "$GITHUB_OUTPUT"
+
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -121,6 +185,7 @@ jobs:
           context: .
           file: containers/${{ matrix.component }}/Dockerfile
           platforms: linux/${{ matrix.runner.arch }}
+          build-args: ${{ steps.execd.outputs.image && format('SANDBOX_EXECD_IMAGE={0}', steps.execd.outputs.image) || '' }}
           # Push by digest only; the merge job below owns the tags.
           outputs: type=image,name=${{ env.REGISTRY }}/${{ steps.repo.outputs.owner }}/astrabox-${{ matrix.component }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=astrabox-${{ matrix.component }}-${{ matrix.runner.arch }}
@@ -212,12 +277,13 @@ jobs:
           retention-days: 1
 
   merge:
-    needs: [build, build-all-in-one]
+    needs: [build-execd, build, build-all-in-one]
     runs-on: ubuntu-24.04
     strategy:
       matrix:
         component:
           - server
+          - execd
           - sandbox-claude-code
           - sandbox-codex
           - sandbox-deepseek-harness

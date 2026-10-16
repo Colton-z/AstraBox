@@ -1,8 +1,10 @@
-"""Thin facade that composes SessionService, TurnService, TerminalService, AdminService.
+"""Thin facade that composes the platform's sub-services.
 
-All business logic lives in the sub-services. This file only wires them
-together and delegates every public method, so a caller holding this facade
-never needs to know which sub-service answers.
+All business logic lives in the sub-services: the session lifecycle (boxes),
+the session runtime (readers, sending, following), the session read model,
+the terminal, channels, deployments and admin. This file wires them together
+and delegates, so a caller holding this facade never needs to know which
+sub-service answers.
 """
 
 from __future__ import annotations
@@ -29,26 +31,18 @@ from astrabox.persistence.repository.artifact_version_repository import Artifact
 from astrabox.persistence.repository.artifact_data_repository import ArtifactDataRepository
 from astrabox.persistence.repository.artifact_event_repository import ArtifactEventRepository
 from astrabox.persistence.repository.artifact_viewer_repository import ArtifactViewerRepository
-from astrabox.persistence.repository import (
-    AgentRepository,
-    DeploymentRepository,
-    SessionArtifactRepository,
-    EnvironmentRepository,
-    InteractionSnapshotRepository,
-    MessageRepository,
-    PlatformMCPBindingRepository,
-    SessionRepository,
-    SessionEventRepository,
-    SessionSnapshotRepository,
-    TranscriptEntryRepository,
-)
+from astrabox.persistence.repository.artifact_budget_repository import ArtifactBudgetRepository
+from astrabox.persistence.repository.agent_repository import AgentRepository
+from astrabox.persistence.repository.deployment_repository import DeploymentRepository
+from astrabox.persistence.repository.environment_repository import EnvironmentRepository
+from astrabox.persistence.repository.platform_mcp_binding_repository import PlatformMCPBindingRepository
+from astrabox.persistence.repository.session_repository import SessionRepository
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.time_utils import utcnow_iso
 from astrabox.common.utils.settings import load_astrabox_settings
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.service.orchestrator.agent_access import is_platform_admin
-from astrabox.core.service.orchestrator.event_broker import SessionEventBroker
 from astrabox.core.service.orchestrator.vault_service import VaultService
 from astrabox.seams.sandbox import sandbox_for_template
 from astrabox.core.service.orchestrator.assistant.assistant_workspace_service import (
@@ -59,10 +53,7 @@ from astrabox.core.service.orchestrator.expiration_watcher import (
     ExpirationWatcher,
 )
 from astrabox.core.service.orchestrator.expose_port_service import ExposePortService
-from astrabox.core.service.orchestrator.sandbox_lifecycle import (
-    SandboxLifecycleService,
-    terminal_session_updates,
-)
+from astrabox.core.service.orchestrator.sandbox_lifecycle import SandboxLifecycleService
 from astrabox.core.service.connectors.service import ConnectorService
 from astrabox.core.service.orchestrator.platform_mcp_service import PlatformMCPService
 from astrabox.core.service.artifacts.service import ArtifactService
@@ -75,23 +66,16 @@ from astrabox.core.service.orchestrator.runtime_subject import (
     RuntimeSubjectCoordinator,
 )
 from astrabox.core.service.orchestrator.agent_config_service import AgentConfigService
-from astrabox.core.service.orchestrator.engine.base import (
-    bound_engine_client_manifest,
-)
 
 from astrabox.core.service.orchestrator.session_service import SessionService
-from astrabox.core.service.orchestrator.session_message_view import FileChangeCursorError, SessionMessageView
-from astrabox.core.service.orchestrator.session_public_projection import (
-    project_owner_session,
-    project_public_message_page,
-)
 from astrabox.core.service.orchestrator.session_share_service import SessionShareService
 from astrabox.core.service.orchestrator.session_title_service import SessionTitleService
-from astrabox.core.service.orchestrator.session_kernel.service import (
-    SessionKernelService,
+from astrabox.core.service.orchestrator.session_lifecycle.service import (
+    SessionLifecycleService,
 )
-from astrabox.core.service.orchestrator.turn_service import TurnService
+from astrabox.core.service.orchestrator.terminal_box import TerminalBox
 from astrabox.core.service.orchestrator.terminal_service import TerminalService
+from astrabox.persistence.repository.terminal_repository import TerminalRepository
 from astrabox.core.service.orchestrator.admin_service import AdminService
 from astrabox.core.service.orchestrator.channel_ingress_service import (
     ChannelIngressService,
@@ -150,18 +134,12 @@ class AgentPlatformService:
     def _build_repositories(self) -> None:
         self._environment_repo = EnvironmentRepository()
         self._sessions_repo = SessionRepository()
-        self._messages_repo = MessageRepository()
-        self._session_events_repo = SessionEventRepository()
-        self._session_message_view = SessionMessageView(self._session_events_repo)
-        self._session_snapshots_repo = SessionSnapshotRepository()
-        self._interaction_snapshots_repo = InteractionSnapshotRepository()
         self._artifact_records_repo = ArtifactRecordRepository()
         self._artifact_versions_repo = ArtifactVersionRepository()
         self._artifact_datas_repo = ArtifactDataRepository()
         self._artifact_events_repo = ArtifactEventRepository()
         self._artifact_viewers_repo = ArtifactViewerRepository()
-        self._session_artifacts_repo = SessionArtifactRepository()
-        self._transcript_entries_repo = TranscriptEntryRepository()
+        self._artifact_budgets_repo = ArtifactBudgetRepository()
         self._agent_repo = AgentRepository()
         self._platform_mcp_binding_repo = PlatformMCPBindingRepository()
         self._assistant_workspace_service = AssistantWorkspaceService()
@@ -174,11 +152,9 @@ class AgentPlatformService:
             spawn_background_task=self._spawn_background_task,
         )
         self._vault_service = VaultService()
-        self._broker = SessionEventBroker()
         self._runtime_manager = RemoteAgentRuntimeManager(
             sessions_repo=self._sessions_repo,
             agent_service_getter=self._agent_service_getter,
-            event_broker=self._broker,
         )
         self._sandbox_lifecycle_service = SandboxLifecycleService(platform_service=self)
 
@@ -207,52 +183,19 @@ class AgentPlatformService:
             "session_service",
             lambda: SessionService(
                 sessions_repo=self._sessions_repo,
-                messages_repo=self._messages_repo,
                 agent_config=self._agent_config,
                 runtime_manager=self._runtime_manager,
-                broker=self._broker,
                 ttl_seconds=self._ttl_seconds,
                 spawn_background_task=self._spawn_background_task,
                 vault_service=self._vault_service,
                 assistant_workspace_service=self._assistant_workspace_service,
             ),
         )
-        self._session_service._session_snapshots_repo = self._session_snapshots_repo
-        self._session_service._interaction_snapshots_repo = self._interaction_snapshots_repo
 
-        self._turn_service = self._construct(
-            "turn_service",
-            lambda: TurnService(
-                sessions_repo=self._sessions_repo,
-                messages_repo=self._messages_repo,
-                agent_config=self._agent_config,
-                runtime_manager=self._runtime_manager,
-                broker=self._broker,
-                must_get_owned_session=self._session_service.must_get_owned_session,
-                interaction_snapshots_repo=self._interaction_snapshots_repo,
-                session_snapshots_repo=self._session_snapshots_repo,
-                session_events_repo=self._session_events_repo,
-                message_view=self._session_message_view,
-                agent_repo=self._agent_repo,
-                agent_service_getter=agent_service_getter,
-                assistant_workspace_service=self._assistant_workspace_service,
-                sandbox_lifecycle_service=self._sandbox_lifecycle_service,
-            ),
-        )
-        self._terminal_service = self._construct(
-            "terminal_service",
-            lambda: TerminalService(
-                runtime_manager=self._runtime_manager,
-                must_get_owned_session=self._session_service.must_get_owned_session,
-                sessions_repo=self._sessions_repo,
-                assistant_workspace_service=self._assistant_workspace_service,
-            ),
-        )
         self._session_file_service = self._construct(
             "session_file_service",
             lambda: SessionFileService(
                 sessions_repo=self._sessions_repo,
-                session_snapshots_repo=self._session_snapshots_repo,
                 agent_repo=self._agent_repo,
                 runtime_manager=self._runtime_manager,
                 assistant_workspace_service=self._assistant_workspace_service,
@@ -282,9 +225,9 @@ class AgentPlatformService:
                 data=self._artifact_datas_repo,
                 events=self._artifact_events_repo,
                 viewers=self._artifact_viewers_repo,
+                budgets=self._artifact_budgets_repo,
                 file_service=self._session_file_service,
                 sessions_repo=self._sessions_repo,
-                binding_repo=self._platform_mcp_binding_repo,
                 runtime_manager=self._runtime_manager,
                 public_base_url=public_path_prefix(),
             ),
@@ -316,7 +259,7 @@ class AgentPlatformService:
             "session_title_service",
             lambda: SessionTitleService(
                 sessions_repo=self._sessions_repo,
-                message_view=self._session_message_view,
+                spawn=self._spawn_background_task,
             ),
         )
         self._runtime_subjects = RuntimeSubjectCoordinator(
@@ -325,38 +268,129 @@ class AgentPlatformService:
             assistant_workspace_service=self._assistant_workspace_service,
             assistant_lifecycle_getter=assistant_lifecycle_getter,
         )
-        self._session_kernel = self._construct(
-            "session_kernel",
-            lambda: SessionKernelService(
-                sessions_repo=self._sessions_repo,
-                turn_service=self._turn_service,
-                session_service=self._session_service,
-                terminal_service=self._terminal_service,
-                runtime_manager=self._runtime_manager,
-                broker=self._broker,
-                session_events_repo=self._session_events_repo,
-                session_snapshots_repo=self._session_snapshots_repo,
-                interaction_snapshots_repo=self._interaction_snapshots_repo,
-                message_view=self._session_message_view,
-                session_artifacts_repo=self._session_artifacts_repo,
-                transcript_entries_repo=self._transcript_entries_repo,
-                agent_repo=self._agent_repo,
-                assistant_workspace_service=self._assistant_workspace_service,
-                runtime_subjects=self._runtime_subjects,
-                title_service=self._session_title_service,
-                must_get_owned_session=self._session_service.must_get_owned_session,
-                spawn_background_task=self._spawn_background_task,
-            ),
+        self._session_lifecycle = SessionLifecycleService(
+            sessions_repo=self._sessions_repo,
+            session_service=self._session_service,
+            agent_config=self._agent_config,
+            runtime_manager=self._runtime_manager,
+            runtime_subjects=self._runtime_subjects,
+            assistant_workspace_service=self._assistant_workspace_service,
+            spawn_background_task=self._spawn_background_task,
         )
+        self._build_session_runtime()
+        self._build_session_reads()
+
+    def _build_session_runtime(self) -> None:
+        """The session readers, their notices, and the conversation API they serve."""
+        from astrabox.core.service.orchestrator.runtime_ensure import RuntimeEnsure
+        from astrabox.core.service.orchestrator.session_runtime.feed import SessionFeed
+        from astrabox.core.service.orchestrator.session_runtime.host import ReaderHost
+        from astrabox.core.service.orchestrator.session_runtime.platform import (
+            FactConsumer,
+            PlatformRuntimeConnector,
+            committed_facts,
+            reader_hooks,
+        )
+        from astrabox.core.service.orchestrator.session_runtime.service import SessionRuntimeService
+        from astrabox.persistence.repository.session_runtime_repository import SessionRuntimeRepository
+
+        self._session_facts = SessionRuntimeRepository()
+        self._session_feed = SessionFeed()
+        #: Acted on after each committed batch of runtime facts (titles, summaries, channels).
+        self.session_fact_consumers: list[FactConsumer] = []
+        self._runtime_ensure = RuntimeEnsure(
+            runtime_manager=self._runtime_manager,
+            sessions_repo=self._sessions_repo,
+            agent_config=self._agent_config,
+            agent_repo=self._agent_repo,
+            assistant_workspace_service=self._assistant_workspace_service,
+            sandbox_lifecycle_service=self._sandbox_lifecycle_service,
+        )
+        self._reader_host = ReaderHost(
+            repo=self._session_facts,
+            feed=self._session_feed,
+            connector=PlatformRuntimeConnector(
+                sessions=self._sessions_repo,
+                facts=self._session_facts,
+                runtime_ensure=self._runtime_ensure,
+                runtime_manager=self._runtime_manager,
+                replace=self._replace_runtime,
+            ),
+            hooks=reader_hooks(
+                sessions=self._sessions_repo,
+                runtime_manager=self._runtime_manager,
+                committed=committed_facts(self.session_fact_consumers),
+            ),
+            committed=committed_facts(self.session_fact_consumers),
+        )
+        self.session_runtime = SessionRuntimeService(
+            sessions=self._sessions_repo,
+            repo=self._session_facts,
+            feed=self._session_feed,
+            host=self._reader_host,
+        )
+        self._session_runtime_started = False
+
+    def _build_session_reads(self) -> None:
+        """The session pages, process summaries, shares, titles and the terminal."""
+        from astrabox.core.service.orchestrator.session_runtime.process_summaries import ProcessSummaries
+        from astrabox.core.service.orchestrator.session_runtime.views import SessionReads
+        from astrabox.core.service.orchestrator.session_title_service import ConversationTitleModel
+        from astrabox.persistence.repository.process_summary_repository import ProcessSummaryRepository
+        from astrabox.persistence.repository.session_read_repository import SessionReadRepository
+        from astrabox.persistence.repository.session_share_repository import SessionShareRepository
+
+        reads = SessionReadRepository()
+        self.process_summaries = ProcessSummaries(
+            facts=self._session_facts,
+            reads=reads,
+            repo=ProcessSummaryRepository(),
+            model=ConversationTitleModel(),
+            enabled=load_astrabox_settings().title_model_enabled,
+            spawn=self._spawn_background_task,
+        )
+        self.session_reads = SessionReads(
+            sessions=self._sessions_repo,
+            facts=self._session_facts,
+            reads=reads,
+            runtime=self.session_runtime,
+            summaries=self.process_summaries,
+        )
+        self.session_fact_consumers.append(self.process_summaries.on_facts)
+        self.session_fact_consumers.append(self._session_title_service.on_facts)
         self._session_share_service = self._construct(
             "session_share_service",
             lambda: SessionShareService(
-                sessions_repo=self._sessions_repo,
-                session_service=self._session_service,
-                session_kernel=self._session_kernel,
+                sessions=self._sessions_repo,
+                shares=SessionShareRepository(),
+                reads=self.session_reads,
                 session_file_service=self._session_file_service,
             ),
         )
+        self.terminal = self._construct(
+            "terminal_service",
+            lambda: TerminalService(
+                repo=TerminalRepository(),
+                sessions=self._sessions_repo,
+                feed=self._session_feed,
+                box=TerminalBox(
+                    runtime_manager=self._runtime_manager,
+                    sessions_repo=self._sessions_repo,
+                    assistant_workspace_service=self._assistant_workspace_service,
+                ),
+                spawn=self._spawn_background_task,
+            ),
+        )
+
+    async def _replace_runtime(self, session_id: str) -> None:
+        await self._session_lifecycle.replace_runtime(session_id)
+
+    async def _start_session_runtime(self) -> None:
+        if self._session_runtime_started:
+            return
+        self._session_runtime_started = True
+        await self._session_feed.start()
+        self._reader_host.start()
 
     def _build_admin_and_deployments(
         self, assistant_lifecycle_getter: Callable[[], Any] | None
@@ -369,12 +403,11 @@ class AgentPlatformService:
             "admin_service",
             lambda: AdminService(
                 sessions_repo=self._sessions_repo,
-                message_view=self._session_message_view,
-                session_events_repo=self._session_events_repo,
+                session_runtime=self.session_runtime,
                 agent_config=self._agent_config,
                 runtime_manager=self._runtime_manager,
                 sanitize_session=SessionService._sanitize_session,
-                session_kernel=self._session_kernel,
+                session_lifecycle=self._session_lifecycle,
             ),
         )
 
@@ -385,21 +418,15 @@ class AgentPlatformService:
             deployment_repo=self._agent_deployment_repo,
             agent_repo=self._agent_repo,
             agent_service_getter=self._agent_service_getter,
-            stream_message_events_ds=self.stream_message_events_ds,
-            resume_command_stream=self.resume_command_stream,
             sessions_repo=self._sessions_repo,
-            session_events_repo=self._session_events_repo,
-            message_view=self._session_message_view,
-            session_detail_getter=self.get_session,
-            answer_pending_interaction=self.answer_pending_interaction,
-            supersede_pending_interaction=self.supersede_pending_interaction,
+            session_runtime=self.session_runtime,
+            session_facts=self._session_facts,
             spawn_background_task=self._spawn_background_task,
             channel_credentials=self._channel_credentials,
-            read_session_output=self._session_kernel.read_session_output,
-            session_output_cursor=self._session_kernel.session_output_cursor,
             assistant_service_getter=assistant_lifecycle_getter,
-            observe_session_output=self._session_kernel.observe_session_output,
         )
+        # Replies reach channels from the facts the session readers record.
+        self.session_fact_consumers.append(self._channel_ingress_service.on_facts)
         self._channel_spine_reconciler = ChannelSpineReconciler(
             ingress_service=self._channel_ingress_service,
             spawn_background_task=self._spawn_background_task,
@@ -415,15 +442,12 @@ class AgentPlatformService:
                 deployment_repo=self._agent_deployment_repo,
                 agent_repo=self._agent_repo,
                 agent_service_getter=self._agent_service_getter,
-                stream_message_events_ds=self.stream_message_events_ds,
-                dispatch_turn_input=self.dispatch_turn_input,
                 sessions_repo=self._sessions_repo,
-                spawn_background_task=self._spawn_background_task,
+                session_runtime=self.session_runtime,
+                session_facts=self._session_facts,
                 agent_config=self._agent_config,
                 channel_ingress=self._channel_ingress_service,
                 channel_credentials=self._channel_credentials,
-                session_snapshots_repo=self._session_snapshots_repo,
-                session_events_repo=self._session_events_repo,
                 assistant_service_getter=assistant_lifecycle_getter,
             ),
         )
@@ -453,6 +477,11 @@ class AgentPlatformService:
     def close(self) -> None:
         self.quiesce(reason="lifecycle_cleanup")
 
+    @property
+    def quiesced_reason(self) -> str | None:
+        """Why this replica stopped serving, or None while it serves."""
+        return self._quiesced_reason
+
     def quiesce(self, *, reason: str) -> None:
         if self._quiesced_reason:
             logger.info(
@@ -471,7 +500,6 @@ class AgentPlatformService:
         for task in list(getattr(self, "_background_tasks", set())):
             if not task.done():
                 task.cancel("shutdown")
-        self._session_kernel.quiesce(reason=self._quiesced_reason)
         self._runtime_manager.quiesce(reason=self._quiesced_reason)
         with contextlib.suppress(Exception):
             self._expiration_watcher.quiesce()
@@ -482,6 +510,8 @@ class AgentPlatformService:
 
     async def wait_closed(self) -> None:
         """Await cancelled platform tasks while their database is still available."""
+        await self._reader_host.stop()
+        await self._session_feed.stop()
         tasks = tuple(self._background_tasks)
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for task, result in zip(tasks, results, strict=True):
@@ -532,6 +562,7 @@ class AgentPlatformService:
     # ── Bootstrap (delegated to bootstrap_reconciler) ─────────────────────
 
     async def ensure_bootstrap(self) -> None:
+        await self._start_session_runtime()
         await self._bootstrap_reconciler.ensure_bootstrap()
         if self._bootstrapped:
             self._session_list_bootstrapped = True
@@ -539,36 +570,8 @@ class AgentPlatformService:
     async def _ensure_session_list_bootstrap(self) -> None:
         """Start list-read prerequisites without the global session reconcile."""
         self._raise_if_quiesced()
-        self._session_kernel.ensure_background_tasks_started()
-        if not self._bootstrapped and not self._session_list_bootstrapped:
-            async with self._bootstrap_lock:
-                self._raise_if_quiesced()
-                self._session_kernel.ensure_background_tasks_started()
-                if not self._bootstrapped and not self._session_list_bootstrapped:
-                    await self._session_kernel.ensure_bootstrap()
-                    await self._sessions_repo.ensure_indexes()
-                    self._session_list_bootstrapped = True
+        await self._start_session_runtime()
         self._expiration_watcher.ensure_started()
-
-    async def _sync_lifecycle_projection_from_session(
-        self,
-        *,
-        session: dict[str, Any],
-        session_id: str,
-        updates: dict[str, Any],
-        reason: str,
-    ) -> None:
-        # sandbox_lifecycle.py's SandboxLifecycleService (constructed with
-        # platform_service=self, same as ExpirationWatcher/BootstrapReconciler)
-        # reaches into self._platform._sync_lifecycle_projection_from_session
-        # directly, so this name must stay resolvable on the facade; it
-        # delegates to bootstrap_reconciler.
-        await self._bootstrap_reconciler._sync_lifecycle_projection_from_session(
-            session=session,
-            session_id=session_id,
-            updates=updates,
-            reason=reason,
-        )
 
     @property
     def platform_mcp(self) -> PlatformMCPService:
@@ -667,8 +670,7 @@ class AgentPlatformService:
 
     async def list_sessions(self, user: UserContext) -> list[dict[str, Any]]:
         await self.ensure_bootstrap()
-        sessions = await self._session_kernel.list_sessions(user)
-        return [project_owner_session(session) for session in sessions]
+        return await self.session_reads.sessions(user)
 
     async def list_sessions_page(
         self,
@@ -678,57 +680,21 @@ class AgentPlatformService:
         cursor: str | None = None,
     ) -> dict[str, Any]:
         await self._ensure_session_list_bootstrap()
-        page = await self._session_kernel.list_sessions_page(
-            user,
-            limit=limit,
-            cursor=cursor,
-        )
-        return {
-            "sessions": [
-                project_owner_session(session)
-                for session in page.get("sessions") or []
-            ],
-            "has_more": bool(page.get("has_more")),
-            "next_cursor": page.get("next_cursor"),
-        }
+        return await self.session_reads.sessions_page(user, limit=limit, cursor=cursor)
 
     async def get_session(self, user: UserContext, session_id: str) -> dict[str, Any]:
         await self.ensure_bootstrap()
+        rendered = await self.session_reads.detail(user, session_id)
         session = await self._session_service.must_get_owned_session(user, session_id)
-        rendered = await self._session_kernel.get_session(
-            user,
-            session_id,
-            session=session,
-        )
-        rendered.setdefault("engine_capabilities", None)
         # Which workspace surfaces this Agent declares. Platform vocabulary,
         # deliberately beside `engine_capabilities` rather than inside it: the
-        # engine has no opinion about what a console shows, and folding a
-        # platform choice into the engine's manifest is the drift that rule
-        # guards against. Read live from the Agent rather than frozen with the
-        # runtime — it changes nothing a running sandbox depends on, so it must
-        # not need a rebuild to take effect.
+        # engine has no opinion about what a console shows. Read live from the
+        # Agent, so it needs no rebuild to take effect.
         rendered["workspace_panels"] = await self._declared_workspace_panels(session)
-        runtime = self._runtime_manager.get_runtime(
-            session_id,
-            sandbox_id=str(session.get("sandbox_id") or "").strip() or None,
-        )
-        if runtime is None:
-            return project_owner_session(rendered)
-
-        # Engine vocabulary crosses this boundary without a platform-owned
-        # translation table. The manifest was bound before the runtime became
-        # visible, so rendering does not depend on a healthy live transport.
-        try:
-            manifest = bound_engine_client_manifest(runtime)
-        except TypeError as exc:
-            raise APIError(
-                code="ENGINE_CAPABILITY_CONTRACT_VIOLATION",
-                message=str(exc),
-                status_code=502,
-            ) from exc
-        rendered["engine_capabilities"] = asdict(manifest)
-        return project_owner_session(rendered)
+        # The engine's own manifest, recorded when its runtime started.
+        rendered["engine_capabilities"] = session.get("engine_capabilities")
+        rendered["terminal_cwd"] = await self.terminal.directory(session_id) or session.get("terminal_cwd")
+        return rendered
 
     async def _declared_workspace_panels(
         self, session: dict[str, Any]
@@ -760,26 +726,14 @@ class AgentPlatformService:
         self, user: UserContext, session_id: str, *, before: str | None = None, limit: int = 20
     ) -> dict[str, Any]:
         await self.ensure_bootstrap()
-        session = await self._session_service.must_get_owned_session(user, session_id)
-        page = await self._session_kernel.get_messages(
-            user,
-            session_id,
-            before=before,
-            limit=limit,
-            session=session,
-        )
-        return project_public_message_page(page)
+        return await self.session_reads.messages(user, session_id, before=before, limit=limit)
 
     async def get_file_changes(
         self, user: UserContext, session_id: str, *, after_seq: int = 0,
     ) -> dict[str, Any]:
-        """Read native changes from owned durable history without a live sandbox."""
+        """Read native changes from recorded output without a live sandbox."""
         await self.ensure_bootstrap()
-        await self._session_service.must_get_owned_session(user, session_id)
-        try:
-            return await self._session_message_view.file_changes(session_id, after_seq=after_seq)
-        except FileChangeCursorError as exc:
-            raise APIError(code="INVALID_REQUEST", message=str(exc), status_code=400) from exc
+        return await self.session_reads.file_changes(user, session_id, after_seq=after_seq)
 
     async def get_history_blocks(
         self,
@@ -790,15 +744,7 @@ class AgentPlatformService:
         limit: int = 50,
     ) -> dict[str, Any]:
         await self.ensure_bootstrap()
-        session = await self._session_service.must_get_owned_session(user, session_id)
-        page = await self._session_kernel.get_history_blocks(
-            user,
-            session_id,
-            before=before,
-            limit=limit,
-            session=session,
-        )
-        return project_public_message_page(page)
+        return await self.session_reads.history_blocks(user, session_id, before=before, limit=limit)
 
     async def get_history_block_details(
         self,
@@ -809,86 +755,39 @@ class AgentPlatformService:
         cursor: str,
     ) -> dict[str, Any]:
         await self.ensure_bootstrap()
-        session = await self._session_service.must_get_owned_session(user, session_id)
-        page = await self._session_kernel.get_history_block_details(
-            user,
-            session_id,
-            block_id=block_id,
-            cursor=cursor,
-            session=session,
-        )
-        return {
-            "messages": project_public_message_page(page)["messages"],
-            "has_more": bool(page.get("has_more")),
-        }
+        return await self.session_reads.history_block_details(user, session_id, block_id, cursor=cursor)
 
     async def generate_process_summary(
         self,
         user: UserContext,
         session_id: str,
-        message_id: str,
+        response_id: str,
         *,
         retry_failed: bool = False,
     ) -> dict[str, Any]:
         await self.ensure_bootstrap()
-        session = await self._session_service.must_get_owned_session(user, session_id)
-        row = await self._session_kernel.generate_process_summary(
-            user,
-            session_id,
-            message_id,
-            retry_failed=retry_failed,
-            session=session,
+        return await self.session_reads.process_summary(
+            user, session_id, response_id, retry_failed=retry_failed
         )
-        # The stored row also carries the checkpoint the label was written
-        # against, which is this package's bookkeeping and not part of the
-        # answer a reader asked for.
-        return {
-            "status": str(row.get("status") or ""),
-            "summary": row.get("summary"),
-            "error": row.get("error"),
-            "turn_completed": row.get("turn_completed"),
-        }
 
-    async def list_session_child_runs(
-        self,
-        user: UserContext,
-        session_id: str,
-    ) -> dict[str, Any]:
+    async def list_session_child_runs(self, user: UserContext, session_id: str) -> dict[str, Any]:
         await self.ensure_bootstrap()
-        session = await self._session_service.must_get_owned_session(user, session_id)
-        return await self._session_kernel.list_child_runs(
-            user,
-            session_id,
-            session=session,
-        )
+        return await self.session_reads.child_runs(user, session_id)
 
     async def get_session_child_run_messages(
-        self,
-        user: UserContext,
-        session_id: str,
-        child_run_id: str,
+        self, user: UserContext, session_id: str, child_run_id: str
     ) -> dict[str, Any]:
         await self.ensure_bootstrap()
-        session = await self._session_service.must_get_owned_session(user, session_id)
-        return await self._session_kernel.get_child_run_messages(
-            user,
-            session_id,
-            child_run_id,
-            session=session,
-        )
+        return await self.session_reads.child_run_messages(user, session_id, child_run_id)
 
     async def stop_session_child_run(
-        self,
-        user: UserContext,
-        session_id: str,
-        child_run_id: str,
+        self, user: UserContext, session_id: str, child_run_id: str
     ) -> dict[str, Any]:
+        """Hand a sub-agent stop to the runtime through the session's reader."""
         await self.ensure_bootstrap()
-        return await self._session_kernel.stop_child_run(
-            user,
-            session_id,
-            child_run_id,
-        )
+        control_ref = await self.session_reads.child_run_stop_control(user, session_id, child_run_id)
+        receipt = await self.session_runtime.stop_child_run(user, session_id, control_ref)
+        return {**receipt, "child_run_id": child_run_id}
 
     # ── Session sharing (delegated to session_share_service) ─────────────────
     async def create_session_share(
@@ -952,8 +851,7 @@ class AgentPlatformService:
         permission_mode: str,
     ) -> dict[str, Any]:
         await self.ensure_bootstrap()
-        session = await self._session_service.must_get_owned_session(user, session_id)
-        return await self._session_kernel.update_session_permission_mode(
+        return await self._session_lifecycle.update_session_permission_mode(
             user,
             session_id,
             permission_mode,
@@ -965,8 +863,7 @@ class AgentPlatformService:
 
     async def delete_session(self, user: UserContext, session_id: str) -> dict[str, Any]:
         await self.ensure_bootstrap()
-        session = await self._session_service.must_get_owned_session(user, session_id)
-        return await self._session_kernel.delete_session(user, session_id)
+        return await self._session_lifecycle.delete_session(user, session_id)
 
     async def mark_session_read(self, user: UserContext, session_id: str) -> dict[str, Any]:
         """Record that the owner has read the conversation up to now."""
@@ -982,173 +879,25 @@ class AgentPlatformService:
 
     async def archive_session(self, user: UserContext, session_id: str) -> dict[str, Any]:
         await self.ensure_bootstrap()
-        session = await self._session_service.must_get_owned_session(user, session_id)
-        return await self._session_kernel.archive_session(user, session_id)
+        return await self._session_lifecycle.archive_session(user, session_id)
 
     async def terminate_sandbox(self, user: UserContext, session_id: str) -> dict[str, Any]:
         await self.ensure_bootstrap()
-        session = await self._session_service.must_get_owned_session(user, session_id)
-        return await self._session_kernel.terminate_sandbox(user, session_id)
+        return await self._session_lifecycle.terminate_sandbox(user, session_id)
 
     async def end_conversation(self, user: UserContext, session_id: str) -> dict[str, Any]:
         await self.ensure_bootstrap()
-        session = await self._session_service.must_get_owned_session(user, session_id)
-        return await self._session_kernel.end_conversation(user, session_id)
+        return await self._session_lifecycle.end_conversation(user, session_id)
 
     async def recover_session(self, user: UserContext, session_id: str) -> dict[str, Any]:
         await self.ensure_bootstrap()
-        session = await self._session_service.must_get_owned_session(user, session_id)
-        recovered = await self._session_kernel.recover_session(user, session_id)
-        return project_owner_session(recovered)
+        return await self._session_lifecycle.recover_session(user, session_id)
 
     async def get_webshell_url(self, user: UserContext, session_id: str) -> dict[str, Any]:
         await self.ensure_bootstrap()
         return await self._session_service.get_webshell_url(user, session_id)
 
     # ── Turn execution (delegated to session_kernel) ─────────────────
-
-    async def stream_message_events_ds(
-        self,
-        user: UserContext,
-        session_id: str,
-        content: str,
-        interaction_response: dict[str, Any] | None = None,
-        permission_mode: str | None = None,
-        client_message_id: str | None = None,
-    ) -> AsyncIterator[dict[str, Any]]:
-        """Data Stream Protocol: stream a single turn via session_kernel."""
-        await self.ensure_bootstrap()
-        session = await self._session_service.must_get_owned_session(user, session_id)
-        async for event in self._session_kernel.stream_ai_stream(
-            user,
-            session_id,
-            content,
-            interaction_response=interaction_response,
-            permission_mode=permission_mode,
-            client_message_id=client_message_id,
-        ):
-            yield event
-
-    async def dispatch_turn_input(
-        self,
-        user: UserContext,
-        session_id: str,
-        content: str,
-        *,
-        content_blocks: list[dict[str, Any]] | None = None,
-        permission_mode: str | None = None,
-        client_message_id: str | None = None,
-        admission_only: bool = False,
-    ) -> dict[str, Any]:
-        """Admit input and optionally leave delivery to its journal-backed worker."""
-        await self.ensure_bootstrap()
-        session = await self._session_service.must_get_owned_session(user, session_id)
-        return await self._session_kernel.dispatch_turn_input(
-            user,
-            session_id,
-            content,
-            content_blocks=content_blocks,
-            permission_mode=permission_mode,
-            client_message_id=client_message_id,
-            admission_only=admission_only,
-        )
-
-    async def follow_session_stream(
-        self,
-        user: UserContext,
-        session_id: str,
-        *,
-        after_seq: int = -1,
-    ) -> AsyncIterator[dict[str, Any]]:
-        """One terminal-bounded response from the session output subscription."""
-        await self.ensure_bootstrap()
-        await self._session_service.must_get_owned_session(user, session_id)
-        async for frame in self._session_kernel.follow_session_stream(
-            user,
-            session_id,
-            after_seq=after_seq,
-        ):
-            yield frame
-
-    async def resume_command_stream(
-        self, user: UserContext, session_id: str, *, command_id: str
-    ) -> AsyncIterator[dict[str, Any]]:
-        """Follow the original command's result without admitting another input."""
-        await self.ensure_bootstrap()
-        await self._session_service.must_get_owned_session(user, session_id)
-        async for frame in self._session_kernel.resume_command_stream(
-            session_id, command_id=command_id,
-        ):
-            yield frame
-
-    async def stream_message_events_ds_resume(
-        self,
-        user: UserContext,
-        session_id: str,
-        *,
-        after_seq: int = -1,
-    ) -> AsyncIterator[dict[str, Any]] | None:
-        await self.ensure_bootstrap()
-        session = await self._session_service.must_get_owned_session(user, session_id)
-        return await self._session_kernel.resume_ai_stream(
-            user,
-            session_id,
-            after_seq=after_seq,
-        )
-
-    async def interrupt(self, user: UserContext, session_id: str) -> dict[str, Any]:
-        await self.ensure_bootstrap()
-        session = await self._session_service.must_get_owned_session(user, session_id)
-        return await self._session_kernel.interrupt(user, session_id)
-
-    async def answer_pending_interaction(
-        self,
-        user: UserContext,
-        session_id: str,
-        interaction_id: str,
-        answer: dict[str, Any],
-    ) -> dict[str, Any]:
-        await self.ensure_bootstrap()
-        session = await self._session_service.must_get_owned_session(user, session_id)
-        return await self._session_kernel.answer_pending_interaction(
-            user,
-            session_id,
-            interaction_id,
-            answer,
-        )
-
-    async def supersede_pending_interaction(
-        self,
-        user: UserContext,
-        session_id: str,
-        interaction_id: str,
-    ) -> dict[str, Any]:
-        await self.ensure_bootstrap()
-        await self._session_service.must_get_owned_session(user, session_id)
-        return await self._session_kernel.supersede_pending_interaction(
-            user,
-            session_id,
-            interaction_id,
-        )
-
-    # ── Terminal (delegated to terminal_service) ─────────────────────────
-
-    async def run_terminal_command(
-        self,
-        user: UserContext,
-        session_id: str,
-        command: str,
-        cwd: str | None = None,
-    ) -> AsyncIterator[dict[str, Any]]:
-        await self.ensure_bootstrap()
-        session = await self._session_service.must_get_owned_session(user, session_id)
-        async for event in self._session_kernel.run_terminal_command(
-            user,
-            session_id,
-            command,
-            cwd,
-        ):
-            yield event
 
     async def list_session_files(
         self,
@@ -1420,11 +1169,19 @@ class AgentPlatformService:
         """
         await self.ensure_bootstrap()
         for session in await self._sessions_repo.list_assistant_conversations(user.user_id, assistant_id):
-            await self._session_kernel.delete_session(user, str(session["session_id"]))
+            await self._session_lifecycle.delete_session(user, str(session["session_id"]))
 
-    async def delete_all_assistant_deployments(self, assistant_id: str) -> None:
-        """Remove a deleted Assistant's bindings so none keeps firing."""
-        await self._deployment_service.delete_for_assistant(assistant_id)
+    async def delete_target_deployments(
+        self, *, agent_id: str = "", assistant_id: str = ""
+    ) -> None:
+        """Remove an Agent's or Assistant's Deployments as it is deleted, so none keeps firing.
+
+        The one call an Agent or Assistant deletion makes. An Assistant's
+        Deployments include the personal schedules created from it.
+        """
+        await self._deployment_service.delete_for_target(
+            agent_id=agent_id, assistant_id=assistant_id
+        )
         await self._channel_source_host.reconcile()
 
     async def list_assistant_deployment_runs(
@@ -1524,7 +1281,6 @@ class AgentPlatformService:
     ) -> dict[str, Any]:
         await self._deployment_service.assert_can_manage_agent(user, agent_id)
         await self._deployment_service.delete(deployment_id, agent_id=agent_id)
-        await self._channel_account_links.purge(deployment_id)
         await self._channel_source_host.reconcile()
         return {"deployment_id": deployment_id, "deleted": True}
 
@@ -1602,16 +1358,16 @@ class AgentPlatformService:
         user: UserContext,
         session_id: str,
         *,
-        turn_id: str | None = None,
+        response_id: str | None = None,
         message_limit: int = 100,
-        frame_limit: int = 500,
+        part_limit: int = 500,
     ) -> dict[str, Any]:
         return await self._admin_service.admin_get_session_trace(
             user,
             session_id,
-            turn_id=turn_id,
+            response_id=response_id,
             message_limit=message_limit,
-            frame_limit=frame_limit,
+            part_limit=part_limit,
         )
 
     async def admin_session_transcript_files(

@@ -21,7 +21,7 @@
  *   saved Skill, and calls the saved stdio MCP server, whose marker reaches the
  *   reply only through a real call to it.
  * - A catalog selection an Agent still holds from before the catalog was turned
- *   off (written into the record through the database oracle, the only way a
+ *   off (written into the Agent's rows in the database, the only way a
  *   deployment without a catalog can hold one) is listed on the page, refuses a
  *   new conversation with EXTENSION_CATALOG_DISABLED, leaves an existing
  *   conversation readable, and, once removed from the page, lets the next
@@ -40,8 +40,9 @@ import { expect, test, type APIRequestContext, type Page } from '@playwright/tes
 
 import { approveGates } from '../fixtures/approveGates';
 import { AstraApi, messageText } from '../fixtures/astraApi';
-import { patchDocs } from '../fixtures/dbOracle';
+import { postgresTextRows, sqlLiteral } from '../fixtures/dbOracle';
 import { apiPath, appPath } from '../fixtures/env';
+import { POSTGRES_CONTAINER_HANDLE, requireServiceContainer } from '../fixtures/serviceContainer';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 
 test.use({ locale: 'en-US' });
@@ -130,6 +131,33 @@ function catalogErrors(page: Page) {
   return page.getByRole('alert').filter({ hasText: /extension|catalog/i });
 }
 
+/**
+ * Give an Agent the catalog selection it would keep from before the catalog was
+ * turned off: one gateway MCP server (`agent_mcp_assignments`) and one compiled
+ * catalog Skill (`agents.catalog_skill_ids` / `catalog_skills`). One statement,
+ * so the Agent never holds half of it; anything but one row of each is refused.
+ */
+function holdStaleCatalogSelection(
+  agentId: string,
+  mcp: { provider: string; itemId: string },
+  skill: { id: string; source: string },
+): void {
+  const counts = postgresTextRows(
+    requireServiceContainer(POSTGRES_CONTAINER_HANDLE),
+    process.env.ASTRABOX_E2E_POSTGRES_DB || 'astrabox',
+    process.env.ASTRABOX_E2E_POSTGRES_USER || 'astrabox',
+    `WITH assigned AS (INSERT INTO agent_mcp_assignments (agent_id, provider, item_id, position) `
+      + `VALUES (${sqlLiteral(agentId)}, ${sqlLiteral(mcp.provider)}, ${sqlLiteral(mcp.itemId)}, 0) `
+      + `RETURNING agent_id), `
+      + `compiled AS (UPDATE agents SET catalog_skill_ids = ARRAY[${sqlLiteral(skill.id)}]::text[], `
+      + `catalog_skills = ${sqlLiteral(JSON.stringify([skill.source]))}::jsonb `
+      + `WHERE agent_id = ${sqlLiteral(agentId)} RETURNING agent_id) `
+      + `SELECT (SELECT count(*) FROM assigned), (SELECT count(*) FROM compiled)`,
+  );
+  expect(counts, 'the stale selection must be one assignment and one compiled Skill on this Agent')
+    .toEqual(['1|1']);
+}
+
 async function refusal(request: APIRequestContext, method: 'GET' | 'POST', route: string) {
   const response = await request.fetch(apiPath(route), { method });
   return { status: response.status(), code: String((await response.json()).code || '') };
@@ -189,10 +217,9 @@ test('an Agent page edits its own MCP servers, Skills and packages, and its conv
   const mcpField = tools.getByRole('textbox', { name: 'MCP servers', exact: true });
   await mcpField.fill(JSON.stringify(mcpServers, null, 2));
   await mcpField.blur();
-  const skills = tools.getByRole('group', { name: 'Skills', exact: true })
-    .filter({ has: page.getByRole('button', { name: 'Add', exact: true }) });
-  await skills.getByRole('button', { name: 'Add', exact: true }).click();
-  await skills.getByRole('textbox').fill(SKILL_SOURCE);
+  const skills = tools.getByRole('textbox', { name: 'Skills', exact: true });
+  await skills.fill(JSON.stringify([SKILL_SOURCE]));
+  await skills.blur();
   const packagesField = tools.getByRole('textbox', { name: 'Packages', exact: true });
   await packagesField.fill(JSON.stringify(packages));
   await packagesField.blur();
@@ -209,7 +236,7 @@ test('an Agent page edits its own MCP servers, Skills and packages, and its conv
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(mcpField).toBeVisible();
   expect(JSON.parse(await mcpField.inputValue())).toEqual(mcpServers);
-  await expect(skills.getByRole('textbox')).toHaveValue(SKILL_SOURCE);
+  expect(JSON.parse(await skills.inputValue())).toEqual([SKILL_SOURCE]);
   expect(JSON.parse(await packagesField.inputValue())).toEqual(packages);
   await expect(catalogErrors(page)).toHaveCount(0);
   expect(requests.catalog, 'opening, saving and reloading sends no catalog request').toEqual([]);
@@ -301,10 +328,16 @@ test('a catalog selection kept from before is shown, refused at use, and removed
   // What an Agent stores after selecting from a catalog that has since been
   // turned off: a gateway MCP server and a compiled catalog Skill.
   const staleSkill = 'https://github.com/example/catalog-skills.git#review';
-  patchDocs('agents', { '$.agent_id': agent.agent_id }, {
-    mcp_assignments: [{ provider: 'litellm', item_id: 'e2e-stale-mcp' }],
-    extension_catalog: { skill_ids: ['e2e-stale-skill'], skills: [staleSkill] },
-  });
+  holdStaleCatalogSelection(
+    agent.agent_id,
+    { provider: 'litellm', itemId: 'e2e-stale-mcp' },
+    { id: 'e2e-stale-skill', source: staleSkill },
+  );
+  const held = await api.getAgent(agent.agent_id);
+  expect(held.mcp_assignments, 'the Agent reads back the stale MCP selection')
+    .toEqual([{ provider: 'litellm', item_id: 'e2e-stale-mcp' }]);
+  expect(held.extension_catalog, 'the Agent reads back the stale compiled Skill')
+    .toEqual({ skill_ids: ['e2e-stale-skill'], skills: [staleSkill] });
 
   expect(await refusal(request, 'POST', `/agents/${agent.agent_id}/conversations`)).toEqual({
     status: 409,

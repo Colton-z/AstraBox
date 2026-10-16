@@ -10,7 +10,7 @@
  */
 import { test, expect } from '@playwright/test';
 
-import { AstraApi } from '../fixtures/astraApi';
+import { AstraApi, messageText } from '../fixtures/astraApi';
 import { trackSessions } from '../fixtures/sessionCleanup';
 import { appPath, parseTimeoutEnv } from '../fixtures/env';
 
@@ -31,12 +31,8 @@ test('one turn: send → pulse on → reply renders → pulse settles fast', asy
   try {
     await api.waitForSessionReady(sessionId);
 
-    // Record what the page's own stream carried. This assertion has failed
-    // intermittently with the message stuck in the composer's queue, and the
-    // server side is exhausted as evidence: the consumption frame is written
-    // within two seconds of the click, carries the client id the queue row is
-    // keyed by, and is replayed like every other frame. What is not visible
-    // from there is whether the browser received it, and a Playwright trace
+    // Record what the page's own stream carried: whether the browser received
+    // the response is not visible from the server side, and a Playwright trace
     // does not keep streaming bodies. Installed before the first navigation:
     // the stream opens during the page's own bootstrap.
     await page.addInitScript(() => {
@@ -46,7 +42,7 @@ test('one turn: send → pulse on → reply renders → pulse settles fast', asy
       window.fetch = async (...args: Parameters<typeof fetch>) => {
         const response = await original(...args);
         const url = String(typeof args[0] === 'string' ? args[0] : (args[0] as Request).url);
-        if (!url.includes('/ai-stream') || !response.body) return response;
+        if (!/\/sessions\/[^/]+\/stream\?/.test(url) || !response.body) return response;
         const [mine, theirs] = response.body.tee();
         void (async () => {
           const reader = mine.getReader();
@@ -80,14 +76,11 @@ test('one turn: send → pulse on → reply renders → pulse settles fast', asy
     await composer.fill(prompt);
     await page.locator('button[type="submit"]').first().click();
 
-    // The accepted input is immediately visible. It remains in the composer
-    // queue until the durable transcript carries the same message, then hands
-    // over to the user bubble; both are valid surfaces for this first check.
-    const queuedPrompt = page.getByTestId('composer-queue').filter({ hasText: prompt });
+    // The sent message is in the transcript from the moment it is sent.
     const userMessage = page.getByTestId('user-message').filter({ hasText: prompt }).last();
     await expect(
-      queuedPrompt.or(userMessage).first(),
-      'the sent message is visible in the queue or transcript',
+      userMessage,
+      'the sent message is visible in the transcript',
     ).toBeVisible({ timeout: 15_000 }).catch(async (failure: unknown) => {
       const frames = await page.evaluate(
         () => (window as unknown as { __astraFrames?: string[] }).__astraFrames ?? [],
@@ -115,10 +108,13 @@ test('one turn: send → pulse on → reply renders → pulse settles fast', asy
     // The assistant reply renders.
     await expect(reply).toContainText('4', { timeout: 120_000 });
 
-    // Settlement includes durable transcript projection, not only an engine
-    // reply. The queue may cover that latency, but it cannot replace the final
-    // user message record.
+    // The message is still there once the reply has landed, and history
+    // carries it under the id the page sent it with.
     await expect(userMessage).toContainText(prompt, { timeout: 120_000 });
+    const history = await api.getMessages(sessionId, 50);
+    const sent = history.messages.filter((message) => message.role === 'user');
+    expect(sent.map((message) => messageText(message)), 'history holds the one message sent').toEqual([prompt]);
+    await expect(page.locator(`[data-message-id="${sent[0].id}"]`), 'the page shows it under its history id').toHaveCount(1);
 
     // The settle-budget assertion: once the reply text is on screen, the header
     // must settle within budget — no phantom "generating" tail.
@@ -131,6 +127,25 @@ test('one turn: send → pulse on → reply renders → pulse settles fast', asy
     // composer keeps submit disabled by design — type first, then assert.
     await composer.fill('follow-up');
     await expect(page.getByTestId('composer-submit')).toBeEnabled({ timeout: 10_000 });
+
+    const historyRead = page.waitForResponse((response) => (
+      new URL(response.url()).pathname.endsWith(`/sessions/${sessionId}/history-blocks`)
+      && response.request().method() === 'GET' && response.ok()
+    ));
+    // A manual browser refresh must rebuild the same accepted message/reply.
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await historyRead;
+    await expect(page.locator(`[data-message-id="${sent[0].id}"]`)).toHaveCount(1);
+    await expect(page.getByTestId('assistant-message').last()).toContainText('4');
+    await expect(pill).toHaveAttribute('data-pulse', 'false');
+    await test.info().attach('frontend-source-evidence', {
+      body: JSON.stringify(await page.evaluate(() => ({
+        scripts: Array.from(document.scripts, (script) => script.src),
+        devResources: performance.getEntriesByType('resource').map((entry) => entry.name)
+          .filter((url) => /\/(?:@vite\/client|src\/main\.tsx)(?:\?|$)/.test(url)),
+      }))),
+      contentType: 'application/json',
+    });
   } finally {
     // The session is NOT deleted here. `trackSessions()` decides in an
     // afterEach, where the test's real status is known — see that fixture on

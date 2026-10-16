@@ -1,4 +1,7 @@
-# Agent MCP、Skill 和 Plugin 配置
+# Agent 工具与扩展
+
+> 为 Agent 配置 MCP 服务器、Skill 和 Plugin，同时保留其 Agent
+> 程序的原生工具。
 
 MCP 服务器、Skill 和 Plugin 可以扩展 Agent 的能力。在创建或更新 Agent 时配置它们，让 Agent 可以访问外部服务、使用领域流程和打包扩展。
 
@@ -81,7 +84,7 @@ provider 只在符合规则的受保护出站请求上加入凭证，让密钥�
 
 ![在 AstraBox 控制台配置 MCP 服务器、Skill 和 Plugin 仓库](./img/agent-create-console-zh.png)
 
-部署启用[扩展目录](#extension-catalog)时，已有 Agent 的「MCP 配置」和「Skill 配置」分别把目录多选框（以目录命名，例如「来自 LiteLLM 的 MCP 服务」）和自定义配置字段放在一起；两类来源合并生效，MCP 服务名称不能重复，完全相同的 Skill 来源会去重。不启用目录时，这两个字段单独显示为「MCP 服务」和「Skill」。直接配置字段使用下面的格式：
+部署启用[扩展目录](#extension-catalog)时，已有 Agent 的「MCP 配置」和「Skill 配置」分别把目录多选框（以目录命名，例如「来自 LiteLLM 的 MCP 服务」）和自定义配置字段放在一起；两类来源合并生效，MCP 服务名称不能重复，完全相同的 Skill 来源会去重。不启用目录时，这两个字段单独显示为「MCP 服务」和「Skill」。空字段只显示示例，不会保存它。在空字段中按 Tab 可以采用示例，然后编辑并明确保存。在已填写的字段中，Shift+Tab 或 Tab 保持正常的键盘导航。自定义配置字段使用下面的格式：
 
 ```json
 {
@@ -186,7 +189,7 @@ Plugin 或 Skill 配置中的仓库 URL 保持不含 Token，完成分配后新�
 - 为这类 Agent 或 Assistant 开始工作（新对话、预热的运行实例、Assistant 工作区）会以 `EXTENSION_CATALOG_DISABLED` 失败，而不是带着比记录更少的工具启动；Assistant 默认配置持有目录选择时，所有 Assistant 都是如此。新建 Agent 对话返回 `409`。已有对话仍可查看。
 - 记录页面会列出这些选择（MCP 服务的 provider 和条目、Skill 的 Git 来源），并提供「移除这些选择」。移除会保存一个空选择，这是不启用目录时唯一接受的选择。如果还要使用某个目录 Skill，先把列出的 Git 来源加到「Skill」字段，再移除选择。
 
-## 更新 Agent
+## 更新扩展配置
 
 在「管理台 > Agent」中打开 Agent。在扩展卡片中修改所选 MCP 服务器或 Skill，或修改直接配置的 MCP、Skill 和 Plugin 仓库字段，然后点击该部分的「保存」。
 
@@ -215,3 +218,10 @@ A：Agent 程序根据任务决定何时使用扩展。程序通过名称访问�
 **Q：扩展格式会随时间变化吗？**
 
 A：格式属于 Agent 程序、MCP 协议、Skill 规范或 Plugin 格式。请固定经过审核的 Git 版本，并关注相应上游项目的版本说明。
+
+## 下一步
+
+- [权限模式](permission-modes.md) — 控制 Agent 程序在执行工具操作前如何请求审批。
+- [Agent Skills](agent-skills.md) — 为 Agent 添加可复用的领域流程。
+- [定义 Agent](authoring-agents.md) — 查看完整的 Agent 配置。
+- [Session](sessions.md) — 开始并继续 Agent 的工作。

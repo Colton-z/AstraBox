@@ -1,8 +1,8 @@
 /** A real HTTP tool timeout must settle its native background Agent, live. */
-import { expect, test } from '@playwright/test';
+import { expect, test, type Response } from '@playwright/test';
 
 import { AstraApi, messageText, type ChildRunRecord } from '../fixtures/astraApi';
-import { sessionEvents } from '../fixtures/dbOracle';
+import { nativeTranscriptRows } from '../fixtures/dbOracle';
 import {
   configureNativeMcpClientAgent, discoverNativeMcpTools, NATIVE_MCP_PYTHON, nativeRootEntries, object,
   serverLog, startNativeMcpServer, trackNativeMcpScene,
@@ -27,11 +27,46 @@ function nativeParentBlocks(sessionId: string): Record<string, unknown>[] {
   });
 }
 
-function startedMessages(sessionId: string): Record<string, unknown>[] {
-  return sessionEvents(sessionId)
-    .filter((event) => event.event_type === 'engine.message')
-    .map((event) => object(object(event.payload).message))
-    .filter((message) => message.__sdk_type === 'TaskStartedMessage');
+/**
+ * Claude Code's own record of each Agent it ran: the `agent_metadata` entry of
+ * the Agent's SessionStore scope (`subagents/agent-<agent id>`), which names
+ * the parent's `Agent` tool use that launched it. The adapter reads the same
+ * entry (`engine/claude_code_background.py`).
+ */
+function nativeAgents(sessionId: string): Array<{ agentId: string; metadata: Record<string, unknown> }> {
+  const prefix = 'subagents/agent-';
+  return nativeTranscriptRows(sessionId)
+    .filter((row) => String(row.subpath ?? '').startsWith(prefix))
+    .map((row) => ({ agentId: String(row.subpath).slice(prefix.length), entry: object(JSON.parse(String(row.entry_json))) }))
+    .filter(({ entry }) => entry.type === 'agent_metadata')
+    .map(({ agentId, entry }) => ({ agentId, metadata: entry }));
+}
+
+/**
+ * The `<task-notification>` records Claude Code wrote into the parent's own
+ * SessionStore when it delivered a finished task to the model: a root user
+ * record whose text is the vendor's notification, with its task id, its
+ * launching tool use (when the vendor names it) and its status.
+ */
+function nativeTaskNotifications(sessionId: string): Array<{ taskId: string; toolUseId: string; status: string }> {
+  const field = (text: string, tag: string) => (new RegExp(`<${tag}>([^<]*)</${tag}>`).exec(text)?.[1] ?? '').trim();
+  return nativeRootEntries(sessionId).flatMap(({ entry }) => {
+    if (entry.type !== 'user' || entry.isSidechain === true) return [];
+    const content = object(entry.message).content;
+    const texts = typeof content === 'string' ? [content]
+      : Array.isArray(content) ? content.map(object).filter((block) => block.type === 'text').map((block) => String(block.text)) : [];
+    return texts.filter((text) => text.trimStart().startsWith('<task-notification')).map((text) => ({
+      taskId: field(text, 'task-id'), toolUseId: field(text, 'tool-use-id'), status: field(text, 'status'),
+    }));
+  });
+}
+
+/** The input id `POST /inputs` answered the page with. */
+async function inputIdOf(response: Response): Promise<string> {
+  const body = await response.json() as { data?: { input_id?: string } };
+  const inputId = String(body.data?.input_id || '');
+  expect(inputId, 'the page receives a receipt for its message').not.toEqual('');
+  return inputId;
 }
 
 function agentChildren(rows: ChildRunRecord[]): ChildRunRecord[] {
@@ -63,7 +98,7 @@ test('native HTTP MCP timeout settles one background Agent and preserves its too
   await page.setViewportSize({ width: 1280, height: 720 });
   await mirrorSseBodies(page);
   await openSessionView(page, sessionId);
-  await sendPrompt(page, sessionId, [
+  const launchInputId = await inputIdOf(await sendPrompt(page, sessionId, [
     `E2E native MCP timeout ${runId}. Follow this protocol exactly.`,
     'Launch exactly one Agent with run_in_background=true and subagent_type=general-purpose.',
     `That child must call ${TOOL} exactly once with {"delay_seconds":${DELAY_SECONDS}}.`,
@@ -72,15 +107,20 @@ test('native HTTP MCP timeout settles one background Agent and preserves its too
     'The parent must not wait for the child and must not call the MCP tool itself.',
     `Immediately after the Agent tool returns, the parent must reply with ${parentMarker}.`,
     `When the child's completion notification arrives later, report its final ${childMarker} marker.`,
-  ].join('\n'));
+  ].join('\n')));
   await expect(page.getByTestId('assistant-message').filter({ hasText: parentMarker })).toBeVisible();
+  // The launch reply ends while its child goes on in the background: the
+  // person can write again at once.
+  const launchReply = await api.waitForReplyTo(sessionId, launchInputId, { timeoutMs: 30_000 });
+  expect(launchReply.metadata?.outcome, 'the launch reply completes without waiting for its child').toBe('completed');
+  expect(messageText(launchReply)).toContain(parentMarker);
   const status = page.getByTestId('run-view').locator('header').getByTestId('status-pill');
-  await expect(status).toHaveText(/Running in background|后台任务运行中/, { timeout: 30_000 });
   await expect(page.getByTestId('composer-prompt')).toBeEnabled();
   const initialReplies = (await api.getMessages(sessionId)).messages.filter((message) => (
     message.role === 'assistant' && messageText(message).includes(parentMarker)
   ));
-  expect(initialReplies, 'the foreground launch reply is already durable').toHaveLength(1);
+  expect(initialReplies.map((message) => message.id), 'the foreground launch reply is already durable')
+    .toEqual([launchReply.id]);
   const initialReply = initialReplies[0];
 
   const opened = agentChildren(await api.waitForChildRuns(sessionId, (rows) => (
@@ -115,7 +155,9 @@ test('native HTTP MCP timeout settles one background Agent and preserves its too
   )));
   expect(completed).toHaveLength(1);
   expect(completed[0]).toMatchObject({ child_run_id: childId, closed: true, engine_status: 'completed' });
-  const settled = await api.waitForSession(sessionId, (session) => !session.current_turn_id && session.state === 'READY');
+  const settled = await api.waitForSession(sessionId, (session) => (
+    (session.current_responses ?? []).length === 0 && session.state === 'READY'
+  ));
   expect(settled.last_error || null).toBeNull();
 
   const log = await serverLog(api, scene);
@@ -130,48 +172,53 @@ test('native HTTP MCP timeout settles one background Agent and preserves its too
   expect(launches).toHaveLength(1);
   const description = String(object(launches[0].input).description || '').trim();
   expect(description).not.toEqual('');
-  const startedTasks = startedMessages(sessionId).filter((message) => message.tool_use_id === launches[0].id);
-  expect(startedTasks).toHaveLength(1);
-  expect(startedTasks[0].description).toBe(description);
+  const startedTasks = nativeAgents(sessionId).filter(({ metadata }) => metadata.toolUseId === launches[0].id);
+  expect(startedTasks, 'the launched Agent has its own native transcript naming its launch').toHaveLength(1);
+  expect(startedTasks[0].metadata.description).toBe(description);
   expect(completed[0].description).toBe(description);
-  const completedTasks = sessionEvents(sessionId)
-    .filter((event) => event.event_type === 'engine.message')
-    .map((event) => object(object(event.payload).message))
-    .filter((message) => message.task_id === startedTasks[0].task_id && (
-      (message.__sdk_type === 'TaskNotificationMessage' && message.status === 'completed')
-      || (message.__sdk_type === 'TaskUpdatedMessage' && object(message.patch).status === 'completed')
-    ));
-  // SDK 0.2.152 explicitly permits terminal TaskUpdated without notification;
-  // both name the same task whose launch handle was checked above.
-  expect(completedTasks.length, 'the exact launched task has a native terminal completion').toBeGreaterThan(0);
+  const taskId = startedTasks[0].agentId;
+  // The parent's reply to the finished child exists only because the vendor
+  // delivered this notification, so the exact launched task must carry one.
+  await expect.poll(() => nativeTaskNotifications(sessionId).filter((notice) => notice.taskId === taskId), {
+    timeout: 45_000, message: 'the exact launched task has a native terminal completion',
+  }).toEqual([expect.objectContaining({ status: 'completed' })]);
+  for (const notice of nativeTaskNotifications(sessionId).filter((item) => item.taskId === taskId)) {
+    if (notice.toolUseId) expect(notice.toolUseId, 'the notification names the launch it completes').toBe(launches[0].id);
+  }
   expect(nativeParentBlocks(sessionId).filter((block) => block.type === 'tool_use' && block.name === TOOL))
     .toEqual([]);
 
   // The launch reply may quote the future child marker. Completion belongs
-  // to its later turn, not to every bubble containing that substring.
+  // to its later response, not to every bubble containing that substring.
   await expect.poll(async () => (await api.getMessages(sessionId)).messages.filter((message) => (
-    message.role === 'assistant' && message.turn_id !== initialReply.turn_id
+    message.role === 'assistant' && message.id !== initialReply.id
     && messageText(message).includes(childMarker)
-  )).length, { timeout: 45_000, message: 'one subsequent parent turn reports the completed child' }).toBe(1);
+  )).length, { timeout: 45_000, message: 'one subsequent parent response reports the completed child' }).toBe(1);
   const history = await api.getMessages(sessionId);
   const completionReplies = history.messages.filter((message) => (
-    message.role === 'assistant' && message.turn_id !== initialReply.turn_id
+    message.role === 'assistant' && message.id !== initialReply.id
   ));
   expect(completionReplies, 'the completion produces one distinct parent reply').toHaveLength(1);
   expect(messageText(completionReplies[0])).toContain(childMarker);
-  await expect(page.locator(`[data-message-id="${completionReplies[0].message_id}"]`)
+  // Nobody wrote again: the runtime answered its finished child on its own.
+  expect(completionReplies[0].metadata?.origin, 'the completion reply is the runtime\'s own response').toBe('engine');
+  expect(completionReplies[0].metadata?.input_ids ?? [], 'a response the runtime started answers no input').toEqual([]);
+  expect(history.messages.filter((message) => message.role === 'user').map((message) => message.metadata?.input_id),
+    'the person sent one message').toEqual([launchInputId]);
+  await expect(page.locator(`[data-message-id="${completionReplies[0].id}"]`)
     .getByTestId('assistant-message')).toHaveCount(1);
-  await expect(page.locator(`[data-message-id="${completionReplies[0].message_id}"]`)
+  await expect(page.locator(`[data-message-id="${completionReplies[0].id}"]`)
     .getByTestId('assistant-message')).toContainText(childMarker);
   await expect(page.getByTestId('assistant-message'))
     .toHaveCount(history.messages.filter((message) => message.role === 'assistant').length);
-  const retainedInitial = history.messages.filter((message) => message.message_id === initialReply.message_id);
+  const retainedInitial = history.messages.filter((message) => message.id === initialReply.id);
   expect(retainedInitial, 'the original parent reply retains one identity').toHaveLength(1);
   expect(messageText(retainedInitial[0]), 'a child completion must not append text to the earlier parent reply')
     .toBe(messageText(initialReply));
+  // Each text part, in order, as the page renders them.
   const publicParentText = history.messages.filter((message) => message.role === 'assistant')
-    .flatMap((message) => message.blocks || []).filter((block) => block.type === 'text')
-    .map((block) => String(block.text || '')).join('\n');
+    .flatMap((message) => message.parts).filter((part) => part.type === 'text')
+    .map((part) => String(part.text || '')).join('\n');
   await expect.poll(() => nativeParentBlocks(sessionId).filter((block) => block.type === 'text')
     .map((block) => String(block.text || '')).join('\n'), {
     timeout: 30_000,
@@ -220,6 +267,6 @@ test('native HTTP MCP timeout settles one background Agent and preserves its too
   for (const process of processes) expect(process.env).toEqual(ENV);
   test.info().annotations.push({ type: 'native_mcp_timeout', description: JSON.stringify({
     sessionId, serverSession: scene.serverSession, serverUrl: scene.serverUrl, started, childId,
-    timeoutToolId, launchToolId: launches[0].id, taskId: startedTasks[0].task_id, log, effective,
+    timeoutToolId, launchToolId: launches[0].id, taskId, log, effective,
   }) });
 });

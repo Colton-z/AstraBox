@@ -3,7 +3,21 @@ import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 
 import { AstraApi, messageText, visibleMessages } from '../fixtures/astraApi';
-import { documentsByField, sessionEvents, waitForTurnTerminalProof } from '../fixtures/dbOracle';
+import {
+  nativeTranscriptRows,
+  sessionInputRows,
+  sessionOutputRows,
+  sessionResponseRows,
+  type SessionInputRow,
+  type SessionResponseRow,
+} from '../fixtures/dbOracle';
+import {
+  agentSessionRows,
+  channelInboundRows,
+  channelMessageInputs,
+  channelOutboxRows,
+  type ChannelInboundRow,
+} from '../fixtures/ingressRecords';
 import { PlatformApi } from '../fixtures/platformApi';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView } from '../fixtures/sessionPage';
@@ -24,7 +38,7 @@ function object(value: unknown): Record<string, unknown> {
 }
 
 function inboundRows() {
-  return documentsByField('channel_inbound', '$.deployment_id', deploymentId);
+  return channelInboundRows(deploymentId);
 }
 
 function messageRows() {
@@ -39,13 +53,24 @@ function messageRow(messageId: string) {
   return matches[0];
 }
 
-function commands() {
-  return sessionEvents(sessionId).filter((row) => row.event_type === 'command.accepted'
-    && object(row.payload).command_type === 'StartTurn');
+/** What a recorded message says, as its first signal recorded it. */
+function messageFacts(row: ChannelInboundRow) {
+  return {
+    content: row.content, reply_text: row.reply_text, participant: row.participant,
+    conversation: row.conversation, retain_context: row.retain_context,
+    provider_ignore_reason: row.provider_ignore_reason,
+  };
+}
+
+/** The inputs the Session accepted, by their identity and content: one per message that ran. */
+function inputs() {
+  return sessionInputRows(sessionId).map((row) => ({
+    input_id: row.input_id, client_message_id: row.client_message_id, source: row.source, content: row.content,
+  }));
 }
 
 function nativeInputs(content: string) {
-  return documentsByField('transcript_entries', '$.platform_session_id', sessionId)
+  return nativeTranscriptRows(sessionId)
     .filter((row) => row.subpath == null)
     .map((row) => ({ uuid: row.uuid, seq: row.seq, entry: object(JSON.parse(String(row.entry_json))) }))
     .filter((row) => {
@@ -63,7 +88,8 @@ function sendMessage(messageId: string, content: string, timestamp: number) {
     message: { id: messageId, content, created_at: timestamp } });
 }
 
-async function waitAccepted(messageId: string) {
+/** The one input a channel message became: its item id is the input's client message id. */
+async function waitAccepted(messageId: string): Promise<SessionInputRow> {
   await expect.poll(() => {
     source!.healthy();
     const row = messageRows().find((item) => item.dedup_key
@@ -73,32 +99,45 @@ async function waitAccepted(messageId: string) {
       sessions.push(sessionId);
     }
     if (!sessionId || !row) return 0;
-    return commands().filter((command) => object(command.payload).client_message_id
-      === `${row._id}::a0`).length;
-  }, { timeout: 60_000, message: 'the later legitimate source message must enter the native turn path' }).toBe(1);
+    return sessionInputRows(sessionId).filter((input) => input.client_message_id === row.item_id).length;
+  }, { timeout: 60_000, message: 'the later legitimate source message must become one input to the Session' }).toBe(1);
   const row = messageRow(messageId);
   expect(row.session_id).toBe(sessionId);
-  return commands().find((command) => object(command.payload).client_message_id === `${row._id}::a0`)!;
+  const input = sessionInputRows(sessionId).find((item) => item.client_message_id === row.item_id)!;
+  expect(input.source).toBe('channel');
+  return input;
 }
 
-async function waitSettled(messageId: string, command: Record<string, unknown>, deliveryCount: number) {
-  await waitForTurnTerminalProof(sessionId, String(command.turn_id), 'COMPLETED', 60_000);
+/**
+ * The message's response ran to completion, the runtime took exactly the
+ * accepted input, and its one delivery reached the channel.
+ */
+async function waitSettled(
+  messageId: string, input: SessionInputRow, deliveryCount: number,
+): Promise<SessionResponseRow> {
+  let response: SessionResponseRow | undefined;
+  await expect.poll(() => {
+    response = sessionResponseRows(sessionId).find((row) => row.input_ids.includes(input.input_id));
+    return response ? `${response.status}/${response.outcome ?? ''}` : 'no response yet';
+  }, { timeout: 60_000, message: 'the response answering the message must complete' }).toBe('ended/completed');
   await expect.poll(() => {
     source!.healthy();
     return { state: messageRow(messageId).state, deliveries: source!.deliveries.length };
   }, { timeout: 30_000 }).toEqual({ state: 'SETTLED', deliveries: deliveryCount });
-  const commandId = String(command.causation_id);
-  const receipts = sessionEvents(sessionId).filter((row) => row.causation_id === commandId
-    && ['input.delivered', 'input.consumed'].includes(String(row.event_type)));
-  expect(receipts.map((row) => row.event_type).sort()).toEqual(['input.consumed', 'input.delivered']);
-  expect(receipts.every((row) => object(row.payload).input_id === object(command.payload).input_id)).toBe(true);
-  expect(object(receipts.find((row) => row.event_type === 'input.consumed')!.payload).content)
-    .toBe(object(command.payload).content);
-  const outbox = documentsByField('channel_outbox', '$.session_id', sessionId)
-    .filter((row) => row.turn_id === command.turn_id);
-  expect(outbox).toHaveLength(1);
-  expect(outbox[0].state).toBe('DELIVERED');
-  evidence[`receipts-${deliveryCount}`] = receipts;
+  const taken = sessionInputRows(sessionId).find((row) => row.input_id === input.input_id)!;
+  expect(taken).toMatchObject({ state: 'admitted', response_id: response!.response_id, content: input.content });
+  // The runtime's own record of what it dequeued for this input.
+  const consumed = sessionOutputRows(sessionId, response!.response_id)
+    .map((row) => row.part)
+    .filter((part) => part.type === 'data-input-consumed' && object(part.data).inputId === input.input_id);
+  expect(consumed).toHaveLength(1);
+  expect(object(consumed[0].data).content).toBe(input.content);
+  const outbox = channelOutboxRows(sessionId).filter((row) => row.response_id === response!.response_id);
+  expect(outbox, 'one delivery belongs to the response it reports').toHaveLength(1);
+  await expect.poll(() => channelOutboxRows(sessionId)
+    .find((row) => row.response_id === response!.response_id)?.state).toBe('DELIVERED');
+  evidence[`settled-${deliveryCount}`] = { input: taken, response, consumed };
+  return response!;
 }
 
 test.beforeEach(async ({ request }) => {
@@ -119,8 +158,9 @@ test.afterEach(async ({ request }, info) => {
     await info.attach('channel-conflicting-redelivery-evidence', {
       body: JSON.stringify({ agentId, deploymentId, sessionId, ...evidence,
         retainedInbound: failed && deploymentId ? inboundRows() : [],
-        journal: failed && sessionId ? sessionEvents(sessionId) : [],
-        native: failed && sessionId ? documentsByField('transcript_entries', '$.platform_session_id', sessionId) : [],
+        inputs: failed && sessionId ? sessionInputRows(sessionId) : [],
+        responses: failed && sessionId ? sessionResponseRows(sessionId) : [],
+        native: failed && sessionId ? nativeTranscriptRows(sessionId) : [],
         retainedHistory: failed && sessionId ? await new AstraApi(request).getMessages(sessionId, 100) : null,
         deliveries: source?.deliveries, sourceErrors: source?.errors }),
       contentType: 'application/json',
@@ -154,9 +194,9 @@ test('conflicting redelivery preserves ignored context and settled input while l
       === `e2e:${source!.botId}:channel:room:message:${contextId}`)?.state;
   }).toBe('OBSERVED');
   const originalContext = messageRow(contextId);
-  expect(object(originalContext.payload).content).toBe(contextText);
+  expect(originalContext.content).toBe(contextText);
   expect(originalContext.session_id).toBeNull();
-  expect(originalContext.command_id).toBeNull();
+  expect(channelMessageInputs(originalContext.item_id), 'retained context is not an input').toEqual([]);
   expect(source!.deliveries).toHaveLength(0);
   evidence.originalContext = originalContext;
 
@@ -165,25 +205,29 @@ test('conflicting redelivery preserves ignored context and settled input while l
   sendMessage(contextId, changedContext, base);
   sendMessage(firstId, `${mention}${firstText}`, base + 1000);
   const first = await waitAccepted(firstId);
-  const firstContent = String(object(first.payload).content);
+  const firstContent = first.content;
   expect(firstContent).toContain(contextText);
   expect(firstContent).toContain(firstText);
   expect(firstContent).not.toContain(changedContext);
-  expect(messageRow(contextId).payload).toEqual(originalContext.payload);
-  expect(commands()).toEqual([first]);
+  expect(messageFacts(messageRow(contextId))).toEqual(messageFacts(originalContext));
+  expect(inputs()).toEqual([
+    { input_id: first.input_id, client_message_id: first.client_message_id, source: 'channel', content: firstContent },
+  ]);
   await waitSettled(firstId, first, 1);
   await expect.poll(() => nativeInputs(firstContent).length).toBe(1);
   const originalNative = nativeInputs(firstContent);
   const originalFirst = messageRow(firstId);
   expect(originalFirst.state).toBe('SETTLED');
+  expect(originalFirst.frozen_content, 'the input as sent is frozen with the message').toBe(firstContent);
+  expect(originalFirst.frozen_context).toEqual([`e2e:${source!.botId}:channel:room:message:${contextId}`]);
   evidence.originalFirst = originalFirst;
   evidence.originalNative = originalNative;
-  evidence.originalCommand = first;
+  evidence.originalInput = first;
 
   sendMessage(firstId, `${mention}${changedInput}`, base + 1000);
   sendMessage(laterId, `${mention}${laterText}`, base + 2000);
   const later = await waitAccepted(laterId);
-  expect(object(later.payload).content).toBe(laterText);
+  expect(later.content).toBe(laterText);
   await waitSettled(laterId, later, 2);
   await source!.waitSent(5);
   await expect.poll(() => nativeInputs(laterText).length).toBe(1);
@@ -191,23 +235,26 @@ test('conflicting redelivery preserves ignored context and settled input while l
   expect(messageRows().map((row) => row.dedup_key).sort()).toEqual(
     [contextId, firstId, laterId].map((messageId) => `e2e:${source!.botId}:channel:room:message:${messageId}`).sort(),
   );
-  expect(messageRow(contextId).payload).toEqual(originalContext.payload);
+  expect(messageFacts(messageRow(contextId))).toEqual(messageFacts(originalContext));
   expect(messageRow(contextId).state).toBe('OBSERVED');
   expect(messageRow(contextId).session_id).toBeNull();
-  expect(messageRow(contextId).command_id).toBeNull();
+  expect(channelMessageInputs(originalContext.item_id)).toEqual([]);
   expect(messageRow(contextId).context_submitted).toBe(true);
-  expect(messageRow(firstId).payload).toEqual(originalFirst.payload);
-  expect(messageRow(firstId).frozen_input).toEqual(originalFirst.frozen_input);
-  expect(messageRow(firstId).command_id).toBe(originalFirst.command_id);
-  expect(messageRow(firstId).turn_id).toBe(originalFirst.turn_id);
-  expect(commands()).toEqual([first, later]);
-  expect(first.causation_id).not.toBe(later.causation_id);
+  expect(messageFacts(messageRow(firstId))).toEqual(messageFacts(originalFirst));
+  expect(messageRow(firstId).frozen_content).toEqual(originalFirst.frozen_content);
+  expect(messageRow(firstId).frozen_context).toEqual(originalFirst.frozen_context);
+  expect(channelMessageInputs(originalFirst.item_id).map((row) => row.input_id),
+    'the redelivered message keeps its one input').toEqual([first.input_id]);
+  expect(inputs()).toEqual([
+    { input_id: first.input_id, client_message_id: first.client_message_id, source: 'channel', content: firstContent },
+    { input_id: later.input_id, client_message_id: later.client_message_id, source: 'channel', content: laterText },
+  ]);
   expect(nativeInputs(firstContent)).toEqual(originalNative);
   expect(source!.deliveries).toHaveLength(2);
   expect(source!.deliveries.every((delivery) => delivery.channel_id === 'room'
     && delivery.content.trim().length > 0)).toBe(true);
-  expect(documentsByField('channel_outbox', '$.session_id', sessionId)).toHaveLength(2);
-  expect(documentsByField('sessions', '$.agent_id', agentId).map((row) => row.session_id)).toEqual([sessionId]);
+  expect(channelOutboxRows(sessionId)).toHaveLength(2);
+  expect(agentSessionRows(agentId).map((row) => row.session_id)).toEqual([sessionId]);
 
   // The official adapter also emits login events. They are not user messages.
   const lifecycle = inboundRows().filter((row) => !String(row.dedup_key)
@@ -215,8 +262,8 @@ test('conflicting redelivery preserves ignored context and settled input while l
   for (const row of lifecycle) {
     expect(row.state).toBe('IGNORED');
     expect(row.session_id).toBeNull();
-    expect(row.command_id).toBeNull();
-    expect(object(row.payload).provider_ignore_reason)
+    expect(channelMessageInputs(row.item_id)).toEqual([]);
+    expect(row.provider_ignore_reason)
       .toMatch(/^channel event 'login-(?:added|updated)' is not message-created$/);
   }
 
@@ -227,8 +274,8 @@ test('conflicting redelivery preserves ignored context and settled input while l
   expect(replies.every((row) => messageText(row).trim().length > 0)).toBe(true);
   expect(await satoriReplyTexts(page, source!.deliveries, firstId))
     .toEqual(replies.map((reply) => messageText(reply).trim()));
-  expect(documentsByField('channel_outbox', '$.session_id', sessionId).map((row) => row.response_id).sort())
-    .toEqual(replies.map((reply) => reply.message_id).sort());
+  expect(channelOutboxRows(sessionId).map((row) => row.response_id).sort())
+    .toEqual(replies.map((reply) => reply.id).sort());
   await openSessionView(page, sessionId);
   const renderedInputs = page.getByTestId('user-message');
   await expect(renderedInputs).toHaveCount(2);
@@ -250,8 +297,9 @@ test('conflicting redelivery preserves ignored context and settled input while l
   await expect(renderedInputs).toHaveText(originalRenderedInputs, { useInnerText: true });
   await expect(page.getByText(changedContext, { exact: false })).toHaveCount(0);
   await expect(page.getByText(changedInput, { exact: false })).toHaveCount(0);
-  expect(commands()).toEqual([first, later]);
+  expect(inputs().map((row) => row.input_id)).toEqual([first.input_id, later.input_id]);
   expect(nativeInputs(firstContent)).toEqual(originalNative);
-  evidence.final = { inbound: inboundRows(), commands: commands(), history,
-    native: documentsByField('transcript_entries', '$.platform_session_id', sessionId), lifecycle };
+  evidence.final = { inbound: inboundRows(), inputs: sessionInputRows(sessionId),
+    responses: sessionResponseRows(sessionId), history,
+    native: nativeTranscriptRows(sessionId), lifecycle };
 });

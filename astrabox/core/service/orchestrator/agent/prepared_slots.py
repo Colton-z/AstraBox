@@ -8,12 +8,12 @@ The measured budget behind this split is recorded in
 ``docs/maintainers/claude-runtime-preparation.md``.
 
 Seats are prepared in the Agent's client-pool boxes before a box is published,
-as many as the box's memory holds, so the pool's replenishment, its replica
+within its memory and the Agent's requested capacity, so the pool's replenishment, replica
 election and its idle expiry cover seats exactly as they cover a conversation
 box. A box leaves the pool with all of its seats; the ones still waiting are
-recorded in the Agent row's seat ledger, where every claim, clear and
-retirement is a compare-and-set on the ledger, so each seat has exactly one
-owner.
+recorded as the Agent's prepared slots, where a claim applies only while the
+slots are as the claimer read them and a clear or retirement only while its
+slot is, so each seat has exactly one owner.
 
 Ownership: the provider owns placement and the runner; the engine adapter owns
 the vendor process; this module composes them and owns the seat ledger.
@@ -63,10 +63,9 @@ from astrabox.core.service.orchestrator.runtime.sandbox_client import (
 from astrabox.core.service.orchestrator.runtime.shared_sandbox_lease import (
     BOX_ADMISSIONS,
     SharedSandboxLease,
+    admissions_young_since,
     pending_reservations,
-    release_box_admission,
     room_for_one_more,
-    surviving_admissions,
 )
 from astrabox.core.service.orchestrator.runtime.storage import (
     bootstrap_conversation_runtime_from_agent_cache,
@@ -89,25 +88,19 @@ from astrabox.core.service.orchestrator.runtime.storage import (
 
 logger = get_logger(__name__)
 
-#: The Agent-row ledger of seats in boxes the Agent took from its client pool:
-#: every prepared, claimed or retiring engine seat, each in the box it names.
-#: A box leaves the pool with all of its seats, so the seats still waiting in
-#: it are recorded here for any replica's next conversation to claim.
+#: Where an Agent's ledger read lists the seats in boxes the Agent took from
+#: its client pool: every prepared, claimed or retiring engine seat, each in
+#: the box it names. A box leaves the pool with all of its seats, so the seats
+#: still waiting in it are recorded for any replica's next conversation to
+#: claim.
 PREPARED_SLOTS_FIELD = "_prepared_slots"
 
-#: The Agent-row ledger of Session gateway-key ownership: one entry per
-#: prepared-or-claimed slot, ``{"slot_id", "session_id"}``, with session_id
-#: null until claim. It is bookkeeping for claim and key garbage collection;
-#: the provider's own revision-guarded Vault state is the authority for live
-#: workload substitutions.
-GATEWAY_ENTRIES_FIELD = "_slot_gateway_entries"
+#: A claim that loses to another write to the Agent's slots or admissions reads
+#: them again. This is a short collision loop, not a retry of an external side
+#: effect.
+_SLOT_CLAIM_ATTEMPTS = 8
 
-#: A ledger mutation that loses a compare-and-set re-reads the whole observed
-#: list. Eight attempts matches the Agent-row cursor allocator: this is a short
-#: collision loop, not a retry of an external side effect.
-_GATEWAY_LEDGER_CAS_ATTEMPTS = 8
-
-#: Session states that release a ledger entry (and its gateway key).
+#: Session states that release a gateway-key entry (and its key).
 _TERMINAL_SESSION_STATES = {"TERMINATED", "RECOVERY_REQUIRED", "DELETED"}
 
 #: A claimed manifest this old is an orphan: the claiming Session either
@@ -121,64 +114,19 @@ def _utcnow_iso() -> str:
 
 
 def slot_manifests(row: Any) -> list[dict[str, Any]]:
-    """The Agent row's slot manifests, in publication order."""
+    """The slot manifests of an Agent ledger read, oldest first."""
 
     raw = row.get(PREPARED_SLOTS_FIELD) if isinstance(row, dict) else None
     return [dict(item) for item in (raw or []) if isinstance(item, dict)]
 
 
-def _observed_slots(row: dict[str, Any]) -> Any:
-    """The exact stored value a compare-and-set on the slot list must match."""
+def _held_as(manifest: dict[str, Any]) -> dict[str, Any]:
+    """The slot version ``manifest`` was read at, for a write that must find it unchanged."""
 
-    return row.get(PREPARED_SLOTS_FIELD) if PREPARED_SLOTS_FIELD in row else {"$exists": False}
-
-
-async def _change_slot(
-    repo: Any,
-    agent_id: str,
-    manifest: dict[str, Any],
-    replacement: dict[str, Any] | None,
-    *,
-    expected: dict[str, Any] | None = None,
-    updates: dict[str, Any] | None = None,
-) -> bool:
-    """Replace or remove exactly ``manifest`` in the slot list.
-
-    False when the list does not hold that exact manifest: another writer
-    claimed, retired or replaced it, and that writer's transition stands. A
-    write that loses only to a change to a different slot re-reads and retries.
-    """
-
-    slot_id = str(manifest.get("slot_id") or "")
-    for _attempt in range(_GATEWAY_LEDGER_CAS_ATTEMPTS):
-        row = await repo.get_agent(agent_id)
-        if not isinstance(row, dict):
-            return False
-        current = slot_manifests(row)
-        if manifest not in current:
-            return False
-        changed = [
-            item
-            for item in (
-                replacement if str(item.get("slot_id") or "") == slot_id else item
-                for item in current
-            )
-            if item is not None
-        ]
-        if await repo.compare_and_update_agent(
-            agent_id,
-            expected={**(expected or {}), PREPARED_SLOTS_FIELD: _observed_slots(row)},
-            updates={**(updates or {}), PREPARED_SLOTS_FIELD: changed},
-        ):
-            return True
-    raise APIError(
-        code="AGENT_RUNTIME_ERROR",
-        message=(
-            f"agent {agent_id!r} slot list changed repeatedly while slot "
-            f"{slot_id!r} was being updated"
-        ),
-        status_code=503,
-    )
+    return {
+        "state": str(manifest.get("state") or ""),
+        "claimed_session_id": str(manifest.get("claimed_session_id") or "").strip() or None,
+    }
 
 
 def _manifest_age_seconds(manifest: dict[str, Any], key: str) -> float | None:
@@ -292,7 +240,7 @@ async def reap_stale_slot_manifests(
     generation = str(getattr(template, "runtime_generation", "") or "").strip()
     repo = agent_repo if agent_repo is not None else AgentRepository()
     reasons: list[str] = []
-    for manifest in slot_manifests(await repo.get_agent(agent_id)):
+    for manifest in await repo.list_slots(agent_id):
         reason = _manifest_is_reapable(manifest, current_runtime_generation=generation)
         if reason is None:
             continue
@@ -313,10 +261,11 @@ async def _retire_manifest(
 ) -> None:
     """Apply the adoption-aware retirement rules to one slot manifest."""
 
+    slot_id = str(manifest.get("slot_id") or "")
     adopted = await _claimed_session_adopted_placement(manifest)
     if str(manifest.get("state") or "") == "claimed" and adopted:
         # The Session owns the placement; the manifest alone is debris.
-        await _change_slot(repo, agent_id, manifest, None)
+        await repo.remove_slot(agent_id, slot_id, **_held_as(manifest))
         logger.info(
             "cleared adopted slot manifest: agent=%s slot=%s (%s)",
             agent_id,
@@ -325,19 +274,20 @@ async def _retire_manifest(
         )
         return
 
-    # Own the manifest before touching the resource. A Session claims this same
-    # document with a CAS; if it won after the retirement caller's read, this
-    # transition loses and the Session's hand-off remains untouched. Keeping the
-    # cleanup address in a ``retiring`` manifest also lets a later reaper retry
-    # when the provider side effect fails or this worker exits midway through it.
+    # Own the manifest before touching the resource. A Session's claim
+    # changes this same slot; if it won after the retirement caller's read,
+    # this transition loses and the Session's hand-off remains untouched.
+    # Keeping the cleanup address in a ``retiring`` manifest also lets a later
+    # reaper retry when the provider side effect fails or this worker exits
+    # midway through it.
     retiring = {
         **manifest,
         "state": "retiring",
         "retire_reason": reason,
         "retiring_at": _utcnow_iso(),
     }
-    if manifest.get("state") != "retiring" and not await _change_slot(
-        repo, agent_id, manifest, retiring
+    if manifest.get("state") != "retiring" and not await repo.retire_slot(
+        agent_id, slot_id, reason=reason, **_held_as(manifest)
     ):
         logger.info(
             "prepared runtime retirement lost manifest ownership: agent=%s slot=%s (%s)",
@@ -367,7 +317,7 @@ async def retire_prepared_runtime(
     if not agent_id:
         return
     repo = agent_repo if agent_repo is not None else AgentRepository()
-    for manifest in slot_manifests(await repo.get_agent(agent_id)):
+    for manifest in await repo.list_slots(agent_id):
         await _retire_unless_handing_off(
             agent_id, manifest, reason=reason, repo=repo, runtime_manager=runtime_manager
         )
@@ -384,7 +334,7 @@ async def _retire_unless_handing_off(
     if str(manifest.get("state") or "") == "claimed":
         age = _manifest_age_seconds(manifest, "claimed_at")
         if age is not None and age <= CLAIMED_SLOT_ORPHAN_SECONDS:
-            # The claim CAS is the ownership hand-off. Until its orphan fence
+            # The claim is the ownership hand-off. Until its orphan fence
             # expires, neither an Agent generation change nor disabling prewarm
             # may interpret the Session's not-yet-published allocation as an
             # unowned unit. Normal claim cleanup clears it; the stale-manifest
@@ -415,11 +365,6 @@ def _template_skills(template: Any) -> list[SkillDescriptor]:
 #: receipt belongs to the live box: destroying the box invalidates it.
 POOL_SEATS_RECEIPT = f"{SANDBOX_IMAGE_WORKLOAD_HOME}/.astrabox-prepared-seats.json"
 
-#: Agent-row field holding how many seats the Agent's latest pool box held,
-#: which sizes the pool for the Agent's prepared capacity.
-SEATS_PER_BOX_FIELD = "_seats_per_box"
-
-
 def prepared_seat_ttl_seconds() -> int:
     """How long a prepared seat stays claimable after it was prepared.
 
@@ -438,7 +383,7 @@ async def prepare_pool_seats(
     runtime_manager: Any,
     agent_repo: Any | None = None,
 ) -> list[dict[str, Any]]:
-    """Fill one pool box with as many prepared seats as its memory holds.
+    """Prepare up to the Agent's requested capacity within one box's memory.
 
     Runs in the client pool's preparer, before the box is published, exactly
     where a conversation box prepares its engine: the pool replenishes, elects
@@ -470,7 +415,7 @@ async def prepare_pool_seats(
     footprint = 0
     try:
         reading = await lease.read_memory(sandbox_id)
-        while reading is not None and room_for_one_more(
+        while len(seats) < template.prepared_capacity and reading is not None and room_for_one_more(
             sandbox_id, reading[0], reading[1] + footprint, pending=len(seats)
         ):
             seats.append(
@@ -510,9 +455,7 @@ async def prepare_pool_seats(
             with _suppress_and_log("pool seat binding delete", str(seat.get("slot_id"))):
                 await _delete_prepared_platform_mcp_binding(str(seat.get("slot_id") or ""))
         raise
-    row = await repo.get_agent(agent_id)
-    if isinstance(row, dict) and row.get(SEATS_PER_BOX_FIELD) != len(seats):
-        await repo.update_agent(agent_id, {SEATS_PER_BOX_FIELD: len(seats)})
+    if await repo.record_seats_per_box(agent_id, len(seats)):
         # The pool was sized for the previous count; resize it.
         runtime_manager.schedule_agent_runtime_reconciliation(agent_id)
     logger.info(
@@ -879,42 +822,27 @@ async def _adopt_pool_box(template: Any, *, runtime_manager: Any, repo: Any) -> 
                 ),
                 status_code=500,
             )
-        for _attempt in range(_GATEWAY_LEDGER_CAS_ATTEMPTS):
-            row = await repo.get_agent(agent_id)
-            if not isinstance(row, dict):
-                raise APIError(
-                    code="AGENT_NOT_FOUND",
-                    message=f"agent {agent_id!r} disappeared while taking a pool box",
-                    status_code=404,
-                )
-            updates: dict[str, Any] = {
-                PREPARED_SLOTS_FIELD: [*slot_manifests(row), *seats],
-            }
-            expected: dict[str, Any] = {PREPARED_SLOTS_FIELD: _observed_slots(row)}
-            if not str(row.get("sandbox_id") or "").strip():
-                updates.update({
-                    "sandbox_id": acquired.sandbox_id,
-                    "sandbox_backend": str(provider.name),
-                    "_resident_sandbox_generation": str(
-                        getattr(template, "sandbox_generation", "") or ""
-                    ).strip() or None,
-                })
-                expected["sandbox_id"] = row.get("sandbox_id") if "sandbox_id" in row else {"$exists": False}
-            if await repo.compare_and_update_agent(
-                agent_id, expected=expected, updates=updates
-            ):
-                logger.info(
-                    "took pool box with seats: agent=%s box=%s seats=%d",
-                    agent_id,
-                    acquired.sandbox_id,
-                    len(seats),
-                )
-                return True
-        raise APIError(
-            code="AGENT_RUNTIME_ERROR",
-            message=f"agent {agent_id!r} slots changed repeatedly while taking a pool box",
-            status_code=503,
+        if not await repo.adopt_pool_box(
+            agent_id,
+            seats=seats,
+            resident=(
+                acquired.sandbox_id,
+                str(provider.name),
+                str(getattr(template, "sandbox_generation", "") or "").strip() or None,
+            ),
+        ):
+            raise APIError(
+                code="AGENT_NOT_FOUND",
+                message=f"agent {agent_id!r} disappeared while taking a pool box",
+                status_code=404,
+            )
+        logger.info(
+            "took pool box with seats: agent=%s box=%s seats=%d",
+            agent_id,
+            acquired.sandbox_id,
+            len(seats),
         )
+        return True
     except BaseException:
         destruction = await provider.confirm_destroyed(acquired.sandbox_id)
         if not destruction.confirmed:
@@ -936,9 +864,10 @@ async def claim_prepared_slots(
 ) -> dict[str, dict[str, Any]]:
     """Atomically give each Session its own prepared seat, as far as seats go.
 
-    One compare-and-set on the seat list hands out every seat a call assigns,
-    so the Sessions of one call never race each other's write; a Session left
-    out gets no entry and takes the ordinary path. Seats go oldest first. A
+    One transaction hands out every seat a call assigns, and only while the
+    Agent's slots and admissions are as this call read them, so the Sessions
+    of one call never race each other's write; a Session left out gets no
+    entry and takes the ordinary path. Seats go oldest first. A
     stale-generation seat is the reaper's to destroy, not the claimer's, and so
     is one past its idle lease. A seat whose box has no room left for one more
     conversation is withdrawn in the same write and the next one is tried:
@@ -961,8 +890,8 @@ async def claim_prepared_slots(
         return {}
     repo = agent_repo if agent_repo is not None else AgentRepository()
     sessions = ",".join(targets)
-    for _attempt in range(_GATEWAY_LEDGER_CAS_ATTEMPTS):
-        row = await repo.get_agent(target_agent)
+    for _attempt in range(_SLOT_CLAIM_ATTEMPTS):
+        row = await repo.read_ledger(target_agent)
         if not isinstance(row, dict):
             return {}
         slots = slot_manifests(row)
@@ -1023,11 +952,11 @@ async def claim_prepared_slots(
         fresh = [manifest for manifest in fresh if _seat_is_fresh(manifest)]
         now = time.time()
         seats = list(slots)
-        admissions = surviving_admissions(row)
+        admissions = [dict(entry) for entry in row.get(BOX_ADMISSIONS) or []]
         planned = {**row, PREPARED_SLOTS_FIELD: seats, BOX_ADMISSIONS: admissions}
         waiting = list(targets)
-        assigned: dict[str, dict[str, Any]] = {}
-        withdrawn = 0
+        claims: list[tuple[str, str]] = []
+        withdrawals: list[tuple[str, str]] = []
         for manifest in fresh:
             if not waiting:
                 break
@@ -1043,24 +972,14 @@ async def claim_prepared_slots(
             ):
                 # Withdraw the promise; the reaper owns the cleanup and active
                 # siblings keep their box.
-                seats[position] = {
-                    **manifest,
-                    "state": "retiring",
-                    "retire_reason": (
-                        "shared sandbox no longer has room for the prepared conversation"
-                    ),
-                    "retiring_at": _utcnow_iso(),
-                }
-                withdrawn += 1
+                seats[position] = {**manifest, "state": "retiring"}
+                withdrawals.append(
+                    (slot_id, "shared sandbox no longer has room for the prepared conversation")
+                )
                 continue
             session = waiting.pop(0)
-            claimed = {
-                **manifest,
-                "state": "claimed",
-                "claimed_session_id": session,
-                "claimed_at": _utcnow_iso(),
-            }
-            seats[position] = claimed
+            seats[position] = {**manifest, "state": "claimed", "claimed_session_id": session}
+            claims.append((slot_id, session))
             # A waiting process can be old while the conversation it receives
             # is new. Reserve its growth again, atomically with the hand-off,
             # and transfer the preparation's admission with the seat: a
@@ -1071,17 +990,18 @@ async def claim_prepared_slots(
                 if not (entry.get("sandbox_id") == sandbox_id and entry.get("session_id") == slot_id)
             ]
             admissions.append({"sandbox_id": sandbox_id, "session_id": session, "at": now})
-            assigned[session] = claimed
-        if not assigned and not withdrawn:
+        if not claims and not withdrawals:
             return {}
-        if await repo.compare_and_update_agent(
+        applied = await repo.apply_slot_claims(
             target_agent,
-            expected={
-                PREPARED_SLOTS_FIELD: _observed_slots(row),
-                BOX_ADMISSIONS: row.get(BOX_ADMISSIONS) if BOX_ADMISSIONS in row else {"$exists": False},
-            },
-            updates={PREPARED_SLOTS_FIELD: seats, BOX_ADMISSIONS: admissions},
-        ):
+            slots_revision=row["_slots_revision"],
+            admissions_revision=row["_admissions_revision"],
+            claims=claims,
+            withdrawals=withdrawals,
+            young_since=admissions_young_since(),
+        )
+        if applied is not None:
+            assigned = applied
             break
     else:
         raise APIError(
@@ -1170,9 +1090,10 @@ async def clear_claimed_slot(
 
     repo = agent_repo if agent_repo is not None else AgentRepository()
     target = str(agent_id or "").strip()
-    for manifest in slot_manifests(await repo.get_agent(target)):
-        if str(manifest.get("slot_id") or "") == str(slot_id or "").strip():
-            await _change_slot(repo, target, manifest, None)
+    wanted = str(slot_id or "").strip()
+    for manifest in await repo.list_slots(target):
+        if str(manifest.get("slot_id") or "") == wanted:
+            await repo.remove_slot(target, wanted, **_held_as(manifest))
             return
 
 
@@ -1200,7 +1121,6 @@ async def _publish_prepared_platform_mcp_binding(
             "template_name": agent_id,
             "sandbox_id": sandbox_id,
             "sandbox_backend": sandbox_backend,
-            "slot_id": slot_id,
             "source": "prepared_slot",
         }
     )
@@ -1213,7 +1133,12 @@ async def bind_claimed_platform_mcp_binding(
     session_id: str,
     user_id: str | None,
 ) -> None:
-    """Bind a prepared slot's stable MCP address to its claiming Session."""
+    """Bind a prepared slot's stable MCP address to its claiming Session.
+
+    The slot's engine already holds that address, so a slot whose route is
+    gone, or is held by another Session, cannot serve this one: the claim is
+    refused and the caller discards the unit.
+    """
 
     from astrabox.core.service.orchestrator.runtime.mcp_servers import (
         prepared_slot_mcp_deployment_id,
@@ -1222,15 +1147,18 @@ async def bind_claimed_platform_mcp_binding(
         PlatformMCPBindingRepository,
     )
 
-    await PlatformMCPBindingRepository().upsert_binding(
-        {
-            "deployment_id": prepared_slot_mcp_deployment_id(
-                str(claimed.get("slot_id") or "")
+    deployment_id = prepared_slot_mcp_deployment_id(str(claimed.get("slot_id") or ""))
+    if not await PlatformMCPBindingRepository().claim_prepared_binding(
+        deployment_id, session_id=session_id, user_id=user_id
+    ):
+        raise APIError(
+            code="AGENT_RUNTIME_ERROR",
+            message=(
+                f"prepared slot {claimed.get('slot_id')!r} has no platform MCP route "
+                f"Session {session_id!r} can claim"
             ),
-            "session_id": str(session_id or "").strip(),
-            "user_id": str(user_id or "").strip(),
-        }
-    )
+            status_code=502,
+        )
 
 
 async def _delete_prepared_platform_mcp_binding(slot_id: str) -> None:
@@ -1300,9 +1228,8 @@ async def discard_prepared_slot(
     # It is the durable fence that prevents the caller's cold fallback from
     # starting a second runtime while the claimed one may still be alive.
     await lease.release(binding)
-    await release_box_admission(
-        agent_repo=repo,
-        agent_id=agent_id,
+    await repo.release_box_admission(
+        agent_id,
         sandbox_id=binding.sandbox_id,
         session_id=str(manifest.get("claimed_session_id") or manifest.get("slot_id") or ""),
     )
@@ -1310,7 +1237,7 @@ async def discard_prepared_slot(
         await _delete_prepared_platform_mcp_binding(
             str(manifest.get("slot_id") or "")
         )
-    await _change_slot(repo, agent_id, manifest, None)
+    await repo.remove_slot(agent_id, str(manifest.get("slot_id") or ""), **_held_as(manifest))
     if runtime_manager is not None:
         await _dispose_vacated_box(
             repo,
@@ -1338,9 +1265,7 @@ async def _dispose_vacated_box(
         # The resident box takes the next conversations and slots; the
         # resident-box reaper decides when it is abandoned.
         return
-    if await runtime_manager.agent_box_has_other_occupants(
-        sandbox_id, excluding=excluding, agent_id=agent_id
-    ):
+    if await runtime_manager.agent_box_has_other_occupants(sandbox_id, excluding=excluding):
         return
     destruction = await runtime_manager.destroy_sandbox_by_id(sandbox_id)
     if destruction.confirmed:
@@ -1356,34 +1281,12 @@ async def _dispose_vacated_box(
         )
 
 
-async def _published_manifest_slot(repo: Any, agent_id: str) -> set[str]:
-    """The slots an unclaimed gateway entry may still belong to.
+async def _prune_gateway_entries(repo: Any, agent_id: str) -> list[dict[str, Any]]:
+    """Drop the entries whose Session ended, releasing each one's gateway key.
 
-    An unclaimed entry survives pruning only while something names its slot, so
-    every caller that prunes has to name the published ones. Dropping one leaves
-    a later claim with no durable owner for the Session key it mints. Both
-    callers read the published slots through here so their GC keep-sets cannot
-    diverge.
-    """
-
-    return {
-        str(manifest.get("slot_id") or "").strip()
-        for manifest in slot_manifests(await repo.get_agent(str(agent_id or "").strip()))
-        if str(manifest.get("slot_id") or "").strip()
-    }
-
-
-async def _prune_gateway_entries(
-    repo: Any,
-    agent_id: str,
-    *,
-    keep_slots: set[str],
-) -> list[dict[str, Any]]:
-    """Drop ledger entries whose Session ended (or whose slot is gone).
-
-    A dropped claimed entry also garbage-collects its Session's gateway key.
-    Unclaimed entries survive only for the slots the caller names — the
-    current manifest slot and the one being prepared.
+    Each entry is removed only while the Session this pruner read still owns
+    it, and its key is released only after that removal: a pruner that loses
+    the entry to another writer leaves the key alone. Returns the entries kept.
     """
 
     from astrabox.persistence.repository.session_repository import (
@@ -1391,100 +1294,34 @@ async def _prune_gateway_entries(
     )
     from astrabox.seams.model import ModelRequestContext, model_endpoint_for_name
 
-    for _attempt in range(_GATEWAY_LEDGER_CAS_ATTEMPTS):
-        row = await repo.get_agent(agent_id)
-        if not isinstance(row, dict):
-            raise APIError(
-                code="AGENT_NOT_FOUND",
-                message=f"agent {agent_id!r} disappeared while pruning gateway keys",
-                status_code=404,
-            )
-        field_present = GATEWAY_ENTRIES_FIELD in row
-        raw = row.get(GATEWAY_ENTRIES_FIELD)
-        entries = [dict(item) for item in (raw or []) if isinstance(item, dict)]
-        kept: list[dict[str, Any]] = []
-        released: list[tuple[str, str | None, str]] = []
-        for entry in entries:
-            session_id = str(entry.get("session_id") or "").strip()
-            slot_id = str(entry.get("slot_id") or "").strip()
-            if not slot_id:
-                continue
-            if session_id:
-                session = await SessionRepository().get_session(session_id)
-                state = str((session or {}).get("state") or "").strip()
-                if session is not None and state not in _TERMINAL_SESSION_STATES:
-                    kept.append(entry)
-                    continue
-                released.append(
-                    (
-                        session_id,
-                        str(entry.get("endpoint_provider") or "").strip() or None,
-                        slot_id,
-                    )
-                )
-                continue
-            if slot_id in keep_slots:
-                kept.append(entry)
-        if kept == entries:
-            return kept
-        expected = raw if field_present else {"$exists": False}
-        if not await repo.compare_and_update_agent(
-            agent_id,
-            expected={GATEWAY_ENTRIES_FIELD: expected},
-            updates={GATEWAY_ENTRIES_FIELD: kept},
-        ):
+    kept: list[dict[str, Any]] = []
+    for entry in await repo.list_gateway_entries(agent_id):
+        session_id = str(entry["session_id"])
+        slot_id = str(entry["slot_id"])
+        session = await SessionRepository().get_session(session_id)
+        state = str((session or {}).get("state") or "").strip()
+        if session is not None and state not in _TERMINAL_SESSION_STATES:
+            kept.append(entry)
             continue
-        # A losing pruner must not delete a key whose ledger owner it failed to
-        # remove. External cleanup begins only after this exact observed list
-        # was replaced successfully.
-        for session_id, endpoint_provider, slot_id in released:
-            with _suppress_and_log("session gateway credential release", slot_id):
-                await model_endpoint_for_name(
-                    endpoint_provider
-                ).release_session_credential(
-                    context=ModelRequestContext(conversation_id=session_id)
-                )
-        return kept
-    raise APIError(
-        code="AGENT_RUNTIME_ERROR",
-        message=(
-            f"agent {agent_id!r} gateway-key ledger changed repeatedly while "
-            "terminal entries were being pruned"
-        ),
-        status_code=503,
-    )
-
-
-async def gateway_ledger_entries(
-    agent_id: str,
-    *,
-    agent_repo: Any | None = None,
-) -> list[dict[str, Any]]:
-    """The raw ledger rows: ``{"slot_id", "session_id"}`` per live slot."""
-
-    target = str(agent_id or "").strip()
-    if not target:
-        return []
-    repo = agent_repo if agent_repo is not None else AgentRepository()
-    row = await repo.get_agent(target)
-    raw = (row or {}).get(GATEWAY_ENTRIES_FIELD) if isinstance(row, dict) else None
-    return [
-        dict(entry)
-        for entry in (raw or [])
-        if isinstance(entry, dict) and str(entry.get("slot_id") or "").strip()
-    ]
+        if not await repo.remove_gateway_entry(agent_id, slot_id=slot_id, session_id=session_id):
+            continue
+        with _suppress_and_log("session gateway credential release", slot_id):
+            await model_endpoint_for_name(
+                str(entry.get("endpoint_provider") or "").strip() or None
+            ).release_session_credential(
+                context=ModelRequestContext(conversation_id=session_id)
+            )
+    return kept
 
 
 _GATEWAY_PRUNE_TASKS: set[asyncio.Task[Any]] = set()
 
 
 def schedule_gateway_entry_prune(agent_id: str) -> None:
-    """Prune the Agent's gateway-key ledger in the background.
+    """Prune the Agent's gateway-key entries in the background.
 
-    Uses the same keep-set as :func:`record_gateway_entry`: the published
-    manifest slot, read fresh, plus every entry whose Session has not ended. A
-    failed prune is logged; the next prune for the Agent collects what this one
-    left.
+    A failed prune is logged; the next prune for the Agent collects what this
+    one left.
     """
 
     target_agent = str(agent_id or "").strip()
@@ -1492,9 +1329,7 @@ def schedule_gateway_entry_prune(agent_id: str) -> None:
         return
 
     async def _prune() -> None:
-        repo = AgentRepository()
-        keep = await _published_manifest_slot(repo, target_agent)
-        await _prune_gateway_entries(repo, target_agent, keep_slots=keep)
+        await _prune_gateway_entries(AgentRepository(), target_agent)
 
     task = asyncio.create_task(_prune(), name=f"gateway-entry-prune:{target_agent}")
     _GATEWAY_PRUNE_TASKS.add(task)
@@ -1518,81 +1353,53 @@ async def record_gateway_entry(
     *,
     slot_id: str,
     session_id: str,
+    endpoint_provider: str | None = None,
 ) -> None:
     """Record which Session owns a claimed workload's gateway key.
 
     Every prepared unit, a conversation box or a seat, is prepared in a pool
-    box before any Agent ledger names it, so its entry is written by the claim
+    box before any Agent record names it, so its entry is written by the claim
     that gives it a Session. For a whole-box workload the entry is
     garbage-collection bookkeeping only — each box's binding lives in its own
-    vault — but pruning is still what deletes a dead Session's gateway key.
+    vault — but pruning is still what deletes a dead Session's gateway key, and
+    ``endpoint_provider`` names the provider that issued it.
 
     The claim is on that Session's startup path, and pruning costs a Session
     read and a gateway-key deletion per Session that ended since the last
-    prune, so the claim appends its entry and leaves the prune to
+    prune, so the claim records its entry and leaves the prune to
     :func:`schedule_gateway_entry_prune`; its entry names a live Session, so
     the later prune keeps it.
     """
 
+    from astrabox.persistence.sql import ForeignKeyViolation
+
     target_agent = str(agent_id or "").strip()
     target_slot = str(slot_id or "").strip()
-    target_session = str(session_id or "").strip() or None
-    if not target_agent or not target_slot or target_session is None:
+    target_session = str(session_id or "").strip()
+    if not target_agent or not target_slot or not target_session:
         return
-    for _attempt in range(_GATEWAY_LEDGER_CAS_ATTEMPTS):
-        row = await repo.get_agent(target_agent)
-        if not isinstance(row, dict):
-            raise APIError(
-                code="AGENT_NOT_FOUND",
-                message=f"agent {target_agent!r} disappeared while recording a gateway key",
-                status_code=404,
-            )
-        field_present = GATEWAY_ENTRIES_FIELD in row
-        raw = row.get(GATEWAY_ENTRIES_FIELD)
-        entries = [dict(item) for item in (raw or []) if isinstance(item, dict)]
-        existing = next(
-            (
-                entry
-                for entry in entries
-                if str(entry.get("slot_id") or "").strip() == target_slot
-            ),
-            None,
-        )
-        if existing is not None:
-            current_session = str(existing.get("session_id") or "").strip() or None
-            if target_session is None or current_session == target_session:
-                return
-            if current_session is not None:
-                raise APIError(
-                    code="AGENT_RUNTIME_ERROR",
-                    message=(
-                        f"gateway workload {target_slot!r} is already owned by "
-                        f"Session {current_session!r}"
-                    ),
-                    status_code=409,
-                )
-            existing["session_id"] = target_session
-            replacement = entries
-        else:
-            replacement = [
-                *entries,
-                {"slot_id": target_slot, "session_id": target_session},
-            ]
-        expected = raw if field_present else {"$exists": False}
-        if await repo.compare_and_update_agent(
+    try:
+        owner = await repo.record_gateway_entry(
             target_agent,
-            expected={GATEWAY_ENTRIES_FIELD: expected},
-            updates={GATEWAY_ENTRIES_FIELD: replacement},
-        ):
-            return
-    raise APIError(
-        code="AGENT_RUNTIME_ERROR",
-        message=(
-            f"agent {target_agent!r} gateway-key ledger changed repeatedly while "
-            f"slot {target_slot!r} was being recorded"
-        ),
-        status_code=503,
-    )
+            slot_id=target_slot,
+            session_id=target_session,
+            endpoint_provider=str(endpoint_provider or "").strip() or None,
+        )
+    except ForeignKeyViolation:
+        raise APIError(
+            code="AGENT_NOT_FOUND",
+            message=f"agent {target_agent!r} disappeared while recording a gateway key",
+            status_code=404,
+        ) from None
+    if owner != target_session:
+        raise APIError(
+            code="AGENT_RUNTIME_ERROR",
+            message=(
+                f"gateway workload {target_slot!r} is already owned by "
+                f"Session {owner!r}"
+            ),
+            status_code=409,
+        )
 
 
 async def claimed_gateway_credential(

@@ -82,7 +82,7 @@ async def _warn_about_environments_on_disabled_backends() -> None:
     with ``SANDBOX_BACKEND_DISABLED`` when it needs a sandbox; this names the
     Environments before anyone meets that.
     """
-    from astrabox.persistence.repository import EnvironmentRepository
+    from astrabox.persistence.repository.environment_repository import EnvironmentRepository
     from astrabox.seams.sandbox import enabled_sandbox_names
 
     enabled = enabled_sandbox_names()
@@ -129,13 +129,16 @@ async def _seed_default_agent_if_empty() -> None:
     from astrabox.core.service.orchestrator.agent_schema import (
         default_prepared_capacity,
     )
-    from astrabox.persistence.repository import AgentRepository, EnvironmentRepository
+    from astrabox.core.service.orchestrator.environment_schema import (
+        normalize_environment_payload,
+    )
+    from astrabox.persistence.repository.agent_repository import AgentRepository
+    from astrabox.persistence.repository.environment_repository import EnvironmentRepository
     from astrabox.seams.sandbox import default_sandbox_backend, sandbox_for_name
 
     agents_repo = AgentRepository()
-    existing = await agents_repo.list_all_agents()
-    if existing:
-        logger.debug("agent seed skipped: %d agent(s) already present", len(existing))
+    if await agents_repo.has_agents():
+        logger.debug("agent seed skipped: agents already present")
         return
 
     # The default backend provider is the single source of truth for its
@@ -160,18 +163,16 @@ async def _seed_default_agent_if_empty() -> None:
 
     environments_repo = EnvironmentRepository()
     # The seed writes repositories directly instead of using
-    # AgentConfigService.upsert_environment_config, so it supplies record
-    # timestamps explicitly.
+    # AgentConfigService.upsert_environment_config, so it supplies the Agent
+    # records' timestamps explicitly.
     seeded_at = utcnow_iso()
     # The environment is the single source of runtime config (image, backend,
     # install policy) + model connectivity. Seed it first so the agent resolves
     # cleanly. No endpoint_provider / provider_access — deployment defaults apply.
-    await environments_repo.upsert_by_name(
+    # Normalized like an administrator's write, which settles its idle action.
+    await environments_repo.put(
         _DEFAULT_ENVIRONMENT_NAME,
-        {
-            "created_at": seeded_at,
-            "updated_at": seeded_at,
-            "updated_by": "system",
+        normalize_environment_payload({
             "enabled": True,
             "display_name": "Claude Code",
             "description": "Default environment: the built-in sandbox backend.",
@@ -194,7 +195,8 @@ async def _seed_default_agent_if_empty() -> None:
                 "allowed_hosts": [],
                 "allow_mcp_servers": True,
             },
-        },
+        }),
+        updated_by="system",
     )
 
     # The seed writes the repository directly, so it applies the same
@@ -231,9 +233,6 @@ async def _seed_default_agent_if_empty() -> None:
         return {
             "agent_id": str(uuid.uuid4()),
             "enabled": True,
-            "version": 1,
-            "state": "ACTIVE",
-            "user_id": "system",
             "created_by": "system",
             "visibility": "public",
             "name": name,
@@ -362,15 +361,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
        — publish the deployment-configured default backend and enabled backend
        set (settings) to the seam; the only place backend names enter the
        dispatch path. The scheduler provider is selected and checked against
-       the repository backend in the same composition step.
-    5. ``backend.create_all()`` — migration-free persistence schema bring-up for
-       the active backend (``CREATE TABLE IF NOT EXISTS`` + WAL for SQLite; a no-op
-       for Mongo). This is the canonical schema-bring-up seam.
-    6. ``run_pending_migrations()`` — the versioned schema-migration runner
-       (:mod:`astrabox.persistence.migrations`) that brings ``schema_meta`` up
-       to the running code's latest known version right after the DDL
-       bring-up above. It is a no-op when the store already carries the latest
-       registered schema version.
+       the database in the same composition step.
+    5. ``upgrade_to_head()`` — brings the PostgreSQL schema to this build's
+       Alembic head (:mod:`astrabox.persistence.sql.migrate`); replicas
+       starting together serialize on a PostgreSQL advisory lock, so each
+       revision runs once.
        ``sandbox_installation_id()`` then reads the installation id this
        database holds (creating it on a new database), which every sandbox
        create stamps and the ownerless reap matches, so a database that cannot
@@ -385,19 +380,19 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
        backend's sandbox quota, refusing one on a backend that cannot list
        its sandboxes, and ``reconcile_at_startup()`` folds each backend's
        inventory into its quota ledger.
-    7. ``_seed_default_agent_if_empty()`` — seed the built-in ``claude-code``
-       environment + a default Agent so the first turn has something to run.
-    8. ``_install_e2e_fault_hooks_if_armed()`` — E2E-only; a no-op unless
+    6. ``_seed_default_agent_if_empty()`` — seed the built-in ``claude-code``
+       environment + a default Agent so the first message has something to run.
+    7. ``_install_e2e_fault_hooks_if_armed()`` — E2E-only; a no-op unless
        ``ASTRABOX_E2E_FAULTS`` is set.
-    9. ``start_deployment_scheduler()`` — start the selected scheduler
+    8. ``start_deployment_scheduler()`` — start the selected scheduler
        provider and reconcile configured scheduled Deployments before any
        background repository readers can hold a PostgreSQL snapshot.
-    10. ``run_lifecycle_startup()`` — start the recovery control plane (reconcile
-       worker, expiration watcher) so a restarted idle instance
-       converges without traffic; logged-not-fatal on failure (the lazy
-       first-request bootstrap remains the fallback).
+    9. ``run_lifecycle_startup()`` — start the platform services (session
+       readers and their sweep, the expiration watcher, channel recovery) so
+       a restarted idle instance converges without traffic; logged-not-fatal
+       on failure (the lazy first-request bootstrap remains the fallback).
 
-    Steps 1–7 and 10 are fail-loud: key materialization, provider registration,
+    Steps 1–6 and 9 are fail-loud: key materialization, provider registration,
     schema bring-up, schema migration, and schedule reconciliation must not
     leave the app serving a capability that cannot execute.
 
@@ -408,8 +403,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     logged, not fatal.
     """
     # --- Startup composition, persistence, and default resources --------------
-    from astrabox.persistence.repository import backend as _dal_backend
-    from astrabox.persistence.migrations import run_pending_migrations
+    from astrabox.persistence.sql.migrate import upgrade_to_head
     from astrabox.seams.sandbox import enabled_sandbox_providers, sandbox_installation_id
     from astrabox.core.service.orchestrator.runtime.sandbox_quota import (
         configure_sandbox_quotas,
@@ -431,8 +425,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     validate_signing_key_config()
     session_signing_secret()
     bootstrap()
-    await _dal_backend.create_all()
-    await run_pending_migrations()
+    await upgrade_to_head()
     await sandbox_installation_id()
     await warn_about_catalog_selections_without_a_catalog()
     await _warn_about_environments_on_disabled_backends()
@@ -454,10 +447,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     await start_deployment_scheduler()
 
-    # Recovery control plane at boot, not on the first API request: a restarted
-    # idle instance must converge stuck sessions / reap expired sandboxes
-    # without waiting for traffic (run_lifecycle_startup → the reconcile worker
-    # and the expiration watcher). Failure is logged loud but
+    # Platform services at boot, not on the first API request: a restarted
+    # idle instance must resume session readers and reap expired sandboxes
+    # without waiting for traffic (run_lifecycle_startup). Failure is logged loud but
     # does not abort boot — the lazy first-request bootstrap remains the
     # fallback, so an API-only deployment (no Docker daemon) still boots.
     try:

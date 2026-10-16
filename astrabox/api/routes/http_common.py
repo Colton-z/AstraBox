@@ -89,16 +89,20 @@ def extract_trace_headers(request: Any) -> dict[str, str]:
 
 
 def map_storage_api_error(exc: Exception) -> APIError | None:
-    """Map known storage/backend exceptions to explicit API errors.
+    """Map database failures to explicit API errors.
 
-    Whether a failure is the record store being unreachable is the active
-    repository backend's own classification (``is_transient_error``), so a
-    PostgreSQL or SQLite outage answers the same retryable 503 as a MongoDB one.
+    An unreachable or overloaded PostgreSQL (a lost connection, a pool that
+    gave no connection in time) is a retryable 503; any other database error
+    is a 500.
     """
-    from astrabox.persistence.repository.backend import is_mongo_transient_error
+    from sqlalchemy.exc import DBAPIError, DisconnectionError, SQLAlchemyError
+    from sqlalchemy.exc import TimeoutError as PoolTimeout
 
     data = {"detail": str(exc)} if is_local_mode() else None
-    if is_mongo_transient_error(exc):
+    unavailable = isinstance(exc, (PoolTimeout, DisconnectionError, ConnectionError, OSError)) or (
+        isinstance(exc, DBAPIError) and exc.connection_invalidated
+    )
+    if unavailable:
         return APIError(
             code="PERSISTENCE_UNAVAILABLE",
             message="the record store is unavailable, please retry",
@@ -106,27 +110,15 @@ def map_storage_api_error(exc: Exception) -> APIError | None:
             data=data,
             evidence=data if isinstance(data, dict) else None,
         )
-    try:
-        from pymongo.errors import OperationFailure, PyMongoError
-
-        if isinstance(exc, OperationFailure):
-            return APIError(
-                code="PERSISTENCE_OPERATION_FAILED",
-                message="mongodb operation failed",
-                status_code=500,
-                data=data,
-                evidence=data if isinstance(data, dict) else None,
-            )
-        if isinstance(exc, PyMongoError):
-            return APIError(
-                code="PERSISTENCE_ERROR",
-                message="mongodb error",
-                status_code=500,
-                data=data,
-                evidence=data if isinstance(data, dict) else None,
-            )
-    except Exception:
-        return None
+    if isinstance(exc, SQLAlchemyError):
+        return APIError(
+            code="PERSISTENCE_ERROR",
+            message="database error",
+            status_code=500,
+            data=data,
+            evidence=data if isinstance(data, dict) else None,
+        )
+    return None
 
     return None
 

@@ -1,73 +1,35 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { UIMessage as SDKUIMessage } from 'ai';
-import type { InteractionResponse, PendingInteraction } from '../../types';
-import {
-  getVisiblePendingInteraction,
-  shouldReleaseSuppressedPendingInteraction,
-} from '../pendingInteractionState';
-import { buildPendingToolInfo } from '../pendingToolMatch';
+import { useMemo } from 'react';
+import type { UIMessage } from 'ai';
+import type { PendingInteraction } from '../../types';
+import { pendingToolCallId } from '../pendingToolMatch';
 
-// Session state owns whether an interaction is current. Message metadata is
-// retained only to locate the matching tool.
+/**
+ * The interaction the page shows in place of its composer, and the tool call
+ * in the transcript it waits on. A terminated session waits on nobody.
+ */
 export function usePendingInteractionDisplay({
   messages,
-  sessionPendingInteraction,
+  pendingInteraction,
   isTerminated,
-  interactionSubmitting,
-  handleInteractionSubmit,
 }: {
-  messages: SDKUIMessage[];
-  sessionPendingInteraction: PendingInteraction | null;
+  messages: UIMessage[];
+  pendingInteraction: PendingInteraction | null;
   isTerminated: boolean;
-  interactionSubmitting: boolean;
-  handleInteractionSubmit: (response: InteractionResponse) => Promise<void>;
 }) {
-  const [suppressedPIId, setSuppressedPIId] = useState<string | null>(null);
-  const authoritativePendingInteraction = useMemo(
-    () => getVisiblePendingInteraction(sessionPendingInteraction, suppressedPIId),
-    [sessionPendingInteraction, suppressedPIId],
+  const visiblePendingInteraction = isTerminated ? null : pendingInteraction;
+  const toolCallId = useMemo(
+    () => pendingToolCallId(visiblePendingInteraction, messages),
+    [messages, visiblePendingInteraction],
   );
-  const visiblePendingInteraction = useMemo(
-    () => isTerminated ? null : authoritativePendingInteraction,
-    [authoritativePendingInteraction, isTerminated],
-  );
-  const hasPendingInteraction = !!visiblePendingInteraction;
-  const pendingTool = buildPendingToolInfo(visiblePendingInteraction, messages);
-  const pendingToolCallId = String(visiblePendingInteraction?.tool_call_id ?? '').trim()
-    || String(pendingTool?.toolCallId ?? '').trim();
   const pendingConversationScrollKey = [
     String(visiblePendingInteraction?.interaction_id ?? '').trim(),
     messages.length,
-    pendingToolCallId,
+    toolCallId,
   ].join(':');
-  const handleVisibleInteractionSubmit = useCallback(async (response: InteractionResponse) => {
-    const interactionId = String(visiblePendingInteraction?.interaction_id ?? '').trim();
-    if (interactionId) {
-      setSuppressedPIId(interactionId);
-    }
-    await handleInteractionSubmit(response);
-  }, [handleInteractionSubmit, visiblePendingInteraction?.interaction_id]);
-
-  useEffect(() => {
-    if (!suppressedPIId) return;
-    if (shouldReleaseSuppressedPendingInteraction(
-      suppressedPIId,
-      sessionPendingInteraction?.interaction_id,
-      interactionSubmitting,
-    )) {
-      setSuppressedPIId(null);
-    }
-  }, [
-    suppressedPIId,
-    sessionPendingInteraction?.interaction_id,
-    interactionSubmitting,
-  ]);
   return {
     visiblePendingInteraction,
-    hasPendingInteraction,
-    pendingTool,
-    pendingToolCallId,
+    hasPendingInteraction: visiblePendingInteraction !== null,
+    pendingToolCallId: toolCallId,
     pendingConversationScrollKey,
-    handleVisibleInteractionSubmit,
   };
 }

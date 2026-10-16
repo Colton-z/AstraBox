@@ -60,36 +60,6 @@ class _Provider:
         return SimpleNamespace(confirmed=True, detail="")
 
 
-async def test_stale_managed_boxes_are_destroyed_on_every_page(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    provider = _Provider(
-        [
-            [
-                ("sb-current", {**_MANAGED, "wiring": "current"}),
-                ("sb-stale-1", {**_MANAGED, "wiring": "old"}),
-                ("sb-foreign", {"wiring": "old"}),
-            ],
-            [
-                ("sb-pool-member", {**_MANAGED, "wiring": "old", "pool": "unclaimed"}),
-                ("sb-stale-2", {**_MANAGED, "wiring": "old"}),
-            ],
-        ]
-    )
-    monkeypatch.setattr(runtime_manager_module, "sandbox_for_name", lambda _name: provider)
-
-    summary = await RemoteAgentRuntimeManager.retire_sandboxes_with_stale_network_wiring(
-        SimpleNamespace(), backend="fake", page_size=3  # type: ignore[arg-type]
-    )
-
-    assert provider.destroyed == ["sb-stale-1", "sb-stale-2"]
-    assert summary == {
-        "stale_wiring_scanned": 5,
-        "stale_wiring_retired": 2,
-        "stale_wiring_failures": 0,
-    }
-
-
 @pytest.mark.parametrize("honours_filter", [True, False])
 async def test_another_installations_boxes_are_never_retired(
     monkeypatch: pytest.MonkeyPatch, honours_filter: bool

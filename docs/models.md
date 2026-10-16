@@ -248,7 +248,7 @@ values fail settings validation.
 
 This uses [HTTPX's network timeout](https://www.python-httpx.org/advanced/timeouts/)
 for connection, read, write and connection-pool waits, not a deadline for the
-whole Agent turn. It does not add retries. A timeout retains the default Session
+whole request. It does not add retries. A timeout retains the default Session
 title and records the timeout type and configured duration in administrator
 Session detail and server logs.
 

@@ -26,26 +26,15 @@ class SessionRuntime:
     engine_session_key: Optional[str] = None
     permission_mode: str | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    current_task: Optional[asyncio.Task] = None
-    current_execution_id: Optional[str] = None
-    interrupting: bool = False
     engine_client: Any = None
     # Bound once, before the runtime enters the live map. Engine controls and
     # recovery read this copy instead of querying a possibly broken transport.
     engine_manifest: Optional["EngineCapabilityManifest"] = None
-    # Set only after EngineClient.bind_conversation has proved this
-    # process-local runtime adopted the durable engine conversation.
-    conversation_bound: bool = False
     runtime_identity: Optional[dict[str, Any]] = None
-    # Host-side preparation that must finish before a new root input reaches
-    # the resident engine. Protected MCP credentials use it to refresh the
+    # Host-side preparation that must finish before a new input reaches the
+    # engine. Protected MCP credentials use it to refresh the
     # process-local egress Vault after rotation without entering engine config.
     prepare_engine_input: Optional[Callable[[], Awaitable[None]]] = None
-    #: FIFO input commands this process has handed to ``engine_client``. Every
-    #: engine client ignores a command it already took, so only the first
-    #: hand-off of an input writes to the engine; ``deliver_pending_inputs``
-    #: prepares the sandbox before that one.
-    handed_input_command_ids: set[str] = field(default_factory=set)
     #: Under the shared-sandbox tenancy, the isolated session this conversation
     #: runs in. ``sandbox_id`` stays the box — every lifecycle operation
     #: addresses the box, and many conversations share one — so this is what

@@ -282,64 +282,36 @@ _CHILD_SESSION_EMITS = frozenset(
 
 
 class DeepSeekHarnessChildResources:
-    """Fold the official DSH catalog, history, and mux into child facts."""
+    """Fold the official DSH catalog, history, and mux into child facts.
 
-    def __init__(self, *, root_session_id: str, call: DshCall) -> None:
+    ``history_positions`` seeds, per child Session, the last transcript event
+    already reported, so a projector rebuilt for a later connection reports
+    only newer child messages; :meth:`history_positions` reads them back.
+    """
+
+    def __init__(
+        self, *, root_session_id: str, call: DshCall,
+        history_positions: dict[str, int] | None = None,
+    ) -> None:
         self._root_session_id = _required_string(root_session_id, field="root session id")
         self._call = call
         self._children: dict[str, _ChildState] = {}
-        self._history_max_seq: dict[str, int] = {}
+        self._history_max_seq: dict[str, int] = dict(history_positions or {})
         self._lock = asyncio.Lock()
-        self._catalogs: dict[str, dict[str, Any]] = {}
-        self._summary: dict[str, Any] | None = None
         self._running: dict[str, bool] = {}
         self._source_id = ""
-        self._recording: list[dict[str, Any]] | None = None
-        self._natives: list[dict[str, Any]] = []
 
-    def _native_input(self, record: dict[str, Any]) -> dict[str, Any]:
-        """Retain a supplier input and the identity of this observation."""
+    def _observe(self) -> None:
+        """Name the observation the following lifecycle facts come from."""
         self._source_id = uuid.uuid4().hex
-        observed = {"id": self._source_id, "record": deepcopy(record)}
-        if self._recording is not None:
-            self._recording.append(observed)
-        return observed
 
-    def native_records(self) -> list[dict[str, Any]]:
-        records, self._natives = self._natives, []
-        return records
+    def history_positions(self) -> dict[str, int]:
+        """Per child Session, the last transcript event this projector reported."""
+        return dict(self._history_max_seq)
 
-    def fold_native_record(self, observation: dict[str, Any]) -> list[dict[str, Any]]:
-        """Replay retained catalog reads and followed events without I/O."""
-        frames: list[dict[str, Any]] = []
-        for context in observation["catalogs"]:
-            frames.extend(self._fold_native_input(context, context_only=True))
-        for observed in observation["records"]:
-            frames.extend(self._fold_native_input(observed, context_only=False))
-        return frames
-
-    def _fold_native_input(
-        self, observed: dict[str, Any], *, context_only: bool
-    ) -> list[dict[str, Any]]:
-        self._source_id = _required_string(observed.get("id"), field="observation id")
-        record = observed["record"]
-        if record.get("method") == _SUMMARY_METHOD:
-            self._read_summary(record["value"])
-            return []
-        if record.get("method") == _CATALOG_METHOD:
-            parent = record["args"]["request"]["sessionId"]
-            frames: list[dict[str, Any]] = []
-            for entry in self._catalog_entries(record["value"]):
-                # Context supplies identity only once; replacing an observed
-                # child could overwrite activity from its later events.
-                if context_only and entry["id"] in self._children:
-                    continue
-                _, lifecycle = self._observe_catalog_child(parent, entry)
-                if lifecycle is not None:
-                    frames.append(lifecycle)
-            return frames
-        _, frames = self._fold_child_mux_frame(record)
-        return frames
+    def any_running(self) -> bool:
+        """Whether a child the harness reports as running is still open."""
+        return any(state.activity == "running" and not state.closed for state in self._children.values())
 
     def contains(self, session_id: str) -> bool:
         return str(session_id or "").strip() in self._children
@@ -382,9 +354,6 @@ class DeepSeekHarnessChildResources:
         # an Agent, and catalog entries remain visible after its disposal.
         summary = await self._call(_SUMMARY_METHOD, {"args": {"_request": {}}})
         self._read_summary(summary)
-        self._summary = self._native_input({
-            "method": _SUMMARY_METHOD, "args": {"_request": {}}, "value": summary,
-        })
         frames: list[dict[str, Any]] = []
         pending_parents = [self._root_session_id]
         visited_parents: set[str] = set()
@@ -398,15 +367,11 @@ class DeepSeekHarnessChildResources:
                 {"args": {"request": {"sessionId": parent_session_id}}},
             )
             entries = self._catalog_entries(value)
-            self._catalogs[parent_session_id] = self._native_input(
-                {
-                    "method": _CATALOG_METHOD,
-                    "args": {"request": {"sessionId": parent_session_id}},
-                    "value": value,
-                }
-            )
+            self._observe()
+            catalog_source = self._source_id
             for raw_entry in entries:
-                self._source_id = str(self._catalogs[parent_session_id]["id"])
+                # Every child's lifecycle fact from this read names the read.
+                self._source_id = catalog_source
                 state, lifecycle = self._observe_catalog_child(parent_session_id, raw_entry)
                 if lifecycle is not None:
                     frames.append(lifecycle)
@@ -527,9 +492,7 @@ class DeepSeekHarnessChildResources:
 
         frames: list[dict[str, Any]] = []
         for event in events:
-            self._native_input({"type": "session/event", "payload": {
-                "sessionId": state.child_session_id, "event": event,
-            }})
+            self._observe()
             frames.extend(self._event_frames(state, event))
         if events:
             self._history_max_seq[state.child_session_id] = max(previous_max, events[-1]["seq"])
@@ -583,23 +546,7 @@ class DeepSeekHarnessChildResources:
         """Consume a child-owned mux frame; leave root and foreign frames alone."""
 
         async with self._lock:
-            context = deepcopy(
-                ([self._summary] if self._summary is not None else [])
-                + list(self._catalogs.values())
-            )
-            self._recording = []
-            try:
-                owned, frames = await self._observe_mux_frame_unlocked(frame)
-                if frames:
-                    self._natives.append({
-                        "kind": "dsh-child-observation",
-                        "rootSessionId": self._root_session_id,
-                        "catalogs": context,
-                        "records": self._recording,
-                    })
-                return owned, frames
-            finally:
-                self._recording = None
+            return await self._observe_mux_frame_unlocked(frame)
 
     async def _observe_mux_frame_unlocked(
         self,
@@ -634,7 +581,7 @@ class DeepSeekHarnessChildResources:
             # subscription to an as-yet-unclassified child's descriptor is needed.
             return True, await self._refresh_unlocked()
 
-        self._native_input(frame)
+        self._observe()
         return self._fold_child_mux_frame(frame)
 
     def _fold_child_mux_frame(

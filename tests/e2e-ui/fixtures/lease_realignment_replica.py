@@ -14,6 +14,17 @@ from datetime import datetime, timezone
 from typing import Any
 
 
+#: Where each owner of a box keeps its lease: the label the evidence uses,
+#: the table and its key, the column naming the box, and the lease column.
+_LEASES = {
+    "sessions": ("sessions", "session_id", "sandbox_id", "expires_at"),
+    "agents": ("agent_runtimes", "agent_id", "sandbox_id", "expires_at"),
+    "assistant_workspace": (
+        "assistant_workspaces", "assistant_id", "current_sandbox_id", "current_sandbox_expires_at",
+    ),
+}
+
+
 async def run(session_id: str, owner_kind: str) -> None:
     from sqlalchemy import text
 
@@ -21,8 +32,7 @@ async def run(session_id: str, owner_kind: str) -> None:
     from astrabox.core.service.orchestrator.platform_service import AgentPlatformService
     from astrabox.deploy.onebox import _export_backend_wiring, ensure_database_wiring, needs_sandbox_server
     from astrabox.persistence.repository.assistant_catalog_repository import AssistantCatalogRepository
-    from astrabox.persistence.repository.backend import get_async_collection
-    from astrabox.persistence.repository.postgresql import get_engine
+    from astrabox.persistence.sql.ops import execute
 
     ensure_database_wiring()
     if needs_sandbox_server():
@@ -36,16 +46,14 @@ async def run(session_id: str, owner_kind: str) -> None:
 
     async def owners() -> list[dict[str, Any]]:
         groups = [
-            ("sessions", "session_id", "sandbox_id", "expires_at",
-             await current._sessions_repo.list_sessions_by_sandbox_id(sandbox_id)),
-            ("agents", "agent_id", "sandbox_id", "expires_at",
-             await current._agent_repo.list_agents_by_sandbox_id(sandbox_id)),
-            ("assistant_workspace", "_id", "current_sandbox_id", "current_sandbox_expires_at",
+            ("sessions", await current._sessions_repo.list_sessions_by_sandbox_id(sandbox_id)),
+            ("agents", await current._agent_repo.list_agents_by_sandbox_id(sandbox_id)),
+            ("assistant_workspace",
              await current._assistant_workspace_service.list_workspaces_by_sandbox_id(sandbox_id)),
         ]
-        return [{"collection": collection, "key": key, "binding": binding,
-                 "expiry": expiry, "row": row}
-                for collection, key, binding, expiry, rows in groups for row in rows]
+        return [{"collection": collection, "table": _LEASES[collection][0], "key": _LEASES[collection][1],
+                 "binding": _LEASES[collection][2], "expiry": _LEASES[collection][3], "row": row}
+                for collection, rows in groups for row in rows]
 
     initial = await owners()
     if owner_kind == "agent":
@@ -59,34 +67,23 @@ async def run(session_id: str, owner_kind: str) -> None:
     probe = await current._runtime_manager.get_sandbox_lifecycle_probe(sandbox_id)
     assert probe.probe_status == "OK" and not current._runtime_manager._is_terminal_sandbox_lifecycle_probe(probe)
 
-    # Missing and explicit-null projections are both repaired from real
-    # provider truth. Neither repair counts as user activity.
+    # A lease the owners lost is repaired from real provider truth, and the
+    # repair does not count as user activity. Each owner's lease column is
+    # cleared where the owner still names this box, one row at a time.
     ordinary = []
-    for missing in (True, False):
+    for _round in range(2):
         for item in await owners():
-            collection = await get_async_collection(item["collection"])
-            query = {item["key"]: item["row"][item["key"]], item["binding"]: sandbox_id}
-            update: dict[str, Any] = {"$set": {}}
-            if missing:
-                # The collection seam has no $unset. Like the lease-fault
-                # database oracle, remove only this field atomically.
-                async with get_engine().begin() as connection:
-                    changed = await connection.execute(text(
-                        "UPDATE astrabox_documents SET doc = doc - CAST(:expiry AS text) "
-                        "WHERE collection = :collection "
-                        "AND doc ->> CAST(:key AS text) = :owner_id "
-                        "AND doc ->> CAST(:binding AS text) = :sandbox_id RETURNING doc"
-                    ), {"expiry": item["expiry"], "collection": item["collection"],
-                        "key": item["key"], "owner_id": str(item["row"][item["key"]]),
-                        "binding": item["binding"], "sandbox_id": sandbox_id})
-                    assert item["expiry"] not in changed.scalar_one()
-            else:
-                update["$set"][item["expiry"]] = None
-            if item["collection"] == "sessions":
-                update.setdefault("$set", {})["sandbox_liveness_suspect_at"] = datetime.now(timezone.utc).isoformat()
-            if update["$set"]:
-                assert (await collection.update_one(query, update)).matched_count == 1
+            suspect = (
+                ", sandbox_liveness_suspect_at = now()" if item["collection"] == "sessions" else ""
+            )
+            # The names come from _LEASES above, never from the database.
+            changed = await execute(text(
+                f"UPDATE {item['table']} SET {item['expiry']} = NULL{suspect} "
+                f"WHERE {item['key']} = :owner_id AND {item['binding']} = :sandbox_id"
+            ).bindparams(owner_id=str(item["row"][item["key"]]), sandbox_id=sandbox_id))
+            assert changed == 1, item["collection"]
         before = await owners()
+        assert all(item["row"].get(item["expiry"]) is None for item in before)
         result = await current._sandbox_lifecycle_service.realign_live_sandbox_owners(sandbox_id)
         actual = await current._runtime_manager.get_sandbox_expires_at(sandbox_id)
         assert actual is not None
@@ -97,10 +94,10 @@ async def run(session_id: str, owner_kind: str) -> None:
                 old = next(row["row"] for row in before if row["collection"] == "sessions"
                            and row["row"]["session_id"] == item["row"]["session_id"])
                 assert item["row"]["updated_at"] == old["updated_at"]
-                assert item["row"].get("sandbox_liveness_suspect_at") == ""
+                assert not item["row"].get("sandbox_liveness_suspect_at")
                 for field in ("runtime_unavailable", "state", "last_error", "sandbox_id"):
                     assert item["row"].get(field) == old.get(field), field
-        ordinary.append({"missing": missing, "expires_at": actual.isoformat(),
+        ordinary.append({"round": _round, "expires_at": actual.isoformat(),
                          "sessions": list(result.realigned_sessions),
                          "agents": list(result.realigned_agents),
                          "workspaces": list(result.realigned_assistant_workspaces)})

@@ -4,9 +4,10 @@ import { expect, test } from '@playwright/test';
 
 import { AstraApi, messageText } from '../fixtures/astraApi';
 import { channelCallback } from '../fixtures/channelCallback';
-import { documentsByField, sessionEvents } from '../fixtures/dbOracle';
+import { sessionResponseRows } from '../fixtures/dbOracle';
 import { engineProfileFor } from '../fixtures/engineProfile';
 import { apiPath } from '../fixtures/env';
+import { channelInboundRows, channelOutboxRows } from '../fixtures/ingressRecords';
 import { childPrompt, codexWaits, expectNativeMode, launchEvidence, nativeRows } from '../fixtures/nativeChildLifecycle';
 import { PlatformApi } from '../fixtures/platformApi';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
@@ -99,7 +100,8 @@ test('Codex forwards the next main-agent reply after retaining an idle child com
     expect(codexWaits(sessionId, rootScope)).toEqual([]);
     await expect.poll(() => readGate(gate.started)).toBe(gate.marker);
     await api.waitForChildRuns(sessionId, (rows) => rows.length === 1 && rows[0].active, 15_000);
-    expect((await api.getSession(sessionId)).current_turn_id).toBeFalsy();
+    expect((await api.getSession(sessionId)).current_responses ?? [], 'the parent replied and is not working')
+      .toEqual([]);
     const initialReplies = nativeReplies();
     expect(initialReplies).toEqual(deliveries());
     const nativeFloor = Math.max(...native().map((row) => row.seq));
@@ -118,7 +120,8 @@ test('Codex forwards the next main-agent reply after retaining an idle child com
     await api.waitForChildRuns(sessionId, (rows) => rows.length === 1 && rows[0].closed, 15_000);
     expect(nativeReplies()).toEqual(initialReplies);
     expect(deliveries()).toEqual(initialReplies);
-    expect((await api.getSession(sessionId)).current_turn_id).toBeFalsy();
+    expect((await api.getSession(sessionId)).current_responses ?? [],
+      'a retained child completion starts no response of its own').toEqual([]);
     evidence.nativeNotices = notices();
     evidence.launches = launches;
 
@@ -134,8 +137,8 @@ test('Codex forwards the next main-agent reply after retaining an idle child com
     expect(final.messages.filter((message) => message.role === 'assistant')
       .map((message) => messageText(message).trim())).toEqual(expectedReplies);
     expect(final.messages.filter((message) => message.role === 'user').map(messageText)).toEqual([greeting, prompt, followup]);
-    expect(documentsByField('channel_inbound', '$.deployment_id', deploymentId)).toHaveLength(2);
-    await expect.poll(() => documentsByField('channel_outbox', '$.session_id', sessionId)
+    expect(channelInboundRows(deploymentId)).toHaveLength(2);
+    await expect.poll(() => channelOutboxRows(sessionId)
       .filter((row) => row.state === 'DELIVERED').length).toBe(expectedReplies.length);
     expect(codexWaits(sessionId, rootScope)).toEqual([]);
     await expect(page.getByTestId('assistant-text').filter({ hasText: receipt })).toBeVisible();
@@ -145,8 +148,8 @@ test('Codex forwards the next main-agent reply after retaining an idle child com
       await info.attach('codex-channel-completion-scene', {
         body: JSON.stringify({ ...evidence, sessionId, agentId, deploymentId, deliveries: recipient.deliveries,
           recipientErrors: recipient.errors, native: sessionId ? nativeRows(sessionId) : [],
-          events: sessionId ? sessionEvents(sessionId) : [],
-          outbox: sessionId ? documentsByField('channel_outbox', '$.session_id', sessionId) : [],
+          responses: sessionId ? sessionResponseRows(sessionId) : [],
+          outbox: sessionId ? channelOutboxRows(sessionId) : [],
         }), contentType: 'application/json',
       });
     } finally {

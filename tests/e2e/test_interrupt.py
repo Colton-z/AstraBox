@@ -1,25 +1,19 @@
-"""Interrupt e2e — interrupting a turn settles it, and the session stays usable.
+"""Interrupt e2e — a stop ends the running response, and the conversation goes on.
 
-This is the end-to-end proof that the ``POST /api/v1/sessions/{id}/interrupt``
-control path settles an in-flight turn without wedging the session, including
-a lost live terminal:
+``POST /api/v1/sessions/{id}/interrupt`` asks the runtime to stop. The proofs:
 
-* **streaming turn** — a real command writes its started marker and waits on a
-  fixture-controlled release file. The test interrupts before releasing it, so a
-  natural finish cannot substitute for cancellation. The turn must settle back
-  to ``READY`` without recording ``last_turn_status=FAILED`` or a turn error.
-* **held tool permission** — a turn paused on a native tool-permission interaction
-  is interrupted. The interrupt denies the held tool (so the uniquely-named file is
-  never written — a denied tool has no side effect), clears the pending interaction,
-  and settles the turn back to ``READY``.
+* **running command** — a real command writes its started marker and waits on
+  a release file the test never creates, so a natural finish cannot stand in
+  for the stop. The response ends ``cancelled`` (a user stop, not a failure),
+  the conversation settles, and the next message is answered.
+* **held tool permission** — a response paused on a tool approval is
+  interrupted. The held tool never runs (the uniquely named file is never
+  written), the interaction stops waiting on the owner, the response ends
+  ``cancelled``, and the next message is answered.
 
-* **lost terminal signal** — the executing turn is interrupted, then the bridge
-  loses its live terminal after receiving the cancelled result. The saved
-  outcome must remain cancelled and the next turn must still be usable.
-
-In each case the load-bearing proof that the session survived is that a second,
-short turn immediately streams a text-delta and settles ``READY`` again — the
-session is fully sendable after the interrupt.
+The outcome is read where the console reads it — the session's
+``last_response`` and the answer's history metadata — and checked against
+the platform's own record of the response.
 
 Run it explicitly (deselected in the default unit run):
 
@@ -28,19 +22,16 @@ Run it explicitly (deselected in the default unit run):
 
 from __future__ import annotations
 
-import json
-import os
 import shlex
 import time
 import uuid
-from pathlib import Path
 
 import httpx
 import pytest
 
 from tests.e2e._sandbox_helpers import (
-    SETTLE_TIMEOUT_S,
-    TERMINAL_STATES,
+    Reply,
+    answer_in_history,
     approval_presentation,
     assert_kubernetes_runtime_image,
     assert_permission_mode_unavailable,
@@ -48,18 +39,25 @@ from tests.e2e._sandbox_helpers import (
     create_session,
     data,
     file_names,
+    follow_reply,
     get_session,
+    history,
+    interrupt,
     list_files,
     pending_interaction,
     permission_mode,
     poll_until_agent_ready,
     poll_until_ready,
+    psql_rows,
+    recorded_response,
     release_assistant,
     release_session,
-    stream_turn,
+    send_and_follow,
+    sql_literal,
     tool_name,
-    wait_for_pending_interaction,
+    user_messages,
     wait_for_file,
+    wait_for_pending_interaction,
     wait_until_settled,
     workspace_path,
 )
@@ -67,159 +65,130 @@ from tests.e2e.test_conversation_end import _assistant_runtime, _wake_assistant
 
 pytestmark = pytest.mark.e2e
 
-# Surfaced ``session.state`` values that mean a turn is in-flight (streaming,
-# interrupting, or paused waiting on an interaction) rather than settled at READY.
-_IN_FLIGHT_STATES = {
-    "PROCESSING",
-    "STREAMING",
-    "BUSY",
-    "INTERRUPTING",
-    "WAITING_INPUT",
-    "BACKGROUND_RUNNING",
-}
 
-
-def _arm_terminal_drop(sid: str) -> Path:
-    """Drop this Session's next live terminal after its real result arrives."""
-    base = os.getenv(
-        "ASTRABOX_E2E_TURN_TERMINAL_DROP_FAULT_FILE",
-        "",
-    ).strip()
-    assert base and Path(base).is_absolute(), (
-        "terminal-drop faults require the backend's shared absolute fault path"
-    )
-    directory = Path(base + ".d")
-    directory.mkdir(parents=True, exist_ok=True)
-    # The backend consumes the declaration with an atomic file replacement
-    # under a different uid, just as the existing browser fault does.
-    directory.chmod(0o777)
-    path = directory / f"interrupt-{sid}-{uuid.uuid4().hex}.json"
-    with path.open("x", encoding="utf-8") as declaration:
-        json.dump({"faults": {"drop": 1}, "match": {"session_id": sid}}, declaration)
-    path.chmod(0o644)
-    return path
-
-
-def _assert_sendable(e2e_client: httpx.Client, sid: str) -> None:
-    """Prove the session is usable again: a short deterministic turn streams ``2``.
-
-    Fails loud if the follow-up turn errors, streams no text, omits the pinned answer,
-    or does not settle back to READY.
-    """
-    reply = stream_turn(
+def _assert_next_message_is_answered(e2e_client: httpx.Client, sid: str) -> Reply:
+    """Prove the conversation goes on: a short deterministic message is answered with ``2``."""
+    reply = send_and_follow(
         e2e_client,
         sid,
-        content="Reply with only the number 2 and nothing else. Do not use any tool.",
+        "Reply with only the number 2 and nothing else. Do not use any tool.",
+        until="end",
     )
-    assert reply.error is None, f"follow-up turn surfaced an error frame: {reply.error}"
-    assert reply.n_text_delta > 0, "follow-up turn streamed no text-delta (session not sendable)"
-    assert "2" in reply.text, f"follow-up reply did not contain '2': {reply.text!r}"
-    final = wait_until_settled(e2e_client, sid)
-    assert str(final.get("state")) == "READY", (
-        f"session not READY after follow-up turn: {final.get('state')!r}"
+    assert reply.error is None, f"the next message's response failed: {reply.error}"
+    assert reply.finish_reason == "stop", (
+        f"the next message's response did not end normally: {reply.finish_reason!r}"
+    )
+    assert "2" in reply.text, f"the next message's reply did not contain '2': {reply.text!r}"
+    settled = wait_until_settled(e2e_client, sid)
+    assert settled["last_response"]["response_id"] == reply.response_id, settled
+    assert settled["last_response"]["outcome"] == "completed", settled
+    return reply
+
+
+def _assert_stopped(e2e_client: httpx.Client, stopped: Reply) -> None:
+    """The stopped response ended as a user stop everywhere the platform tells it."""
+    sid = stopped.session_id
+    assert stopped.ended, f"the stopped response never ended on the stream: {stopped.response}"
+    settled = wait_until_settled(e2e_client, sid)
+    last = settled["last_response"]
+    assert last["response_id"] == stopped.response_id, settled
+    assert last["outcome"] == "cancelled" and not last.get("error"), (
+        f"a user stop was not recorded as a cancelled response: {last}"
+    )
+    record = recorded_response(sid, str(stopped.response_id))
+    assert record["status"] == "ended" and record["outcome"] == "cancelled", record
+    answer = answer_in_history(history(e2e_client, sid), stopped.input_id)
+    assert answer["metadata"].get("outcome") == "cancelled", answer["metadata"]
+
+
+def _interrupt_running_command(
+    e2e_client: httpx.Client,
+    sid: str,
+    *,
+    command_tool: str,
+    workspace_root: str | None = None,
+) -> None:
+    marker = f"interrupt_{uuid.uuid4().hex}"
+
+    def path_for(suffix: str) -> str:
+        if workspace_root is not None:
+            assert workspace_root == "/workspace", workspace_root
+            return f"{workspace_root}/{marker}.{suffix}"
+        return workspace_path(e2e_client, sid, f"{marker}.{suffix}")
+
+    started_path = path_for("started")
+    release_path = path_for("release")
+    exited_path = path_for("exited")
+    on_exit = f"printf exited > {shlex.quote(exited_path)}"
+    command = "sh -c " + shlex.quote(
+        f"trap {shlex.quote(on_exit)} EXIT; "
+        f"printf started > {shlex.quote(started_path)}; "
+        f"while [ ! -e {shlex.quote(release_path)} ]; do sleep 0.1; done"
+    )
+    running = send_and_follow(
+        e2e_client,
+        sid,
+        f"Use the {command_tool} tool to run exactly this one command in the "
+        "foreground and wait for it to finish. Do not create the release file or "
+        f"run any other command. I will stop the running command: {command}",
+        until="output",
+    )
+    assert running.saw_ui_header, "the session stream is not an AI SDK UI message stream"
+    assert running.response is not None and running.response.produced_output, (
+        "the response produced no model or tool output before it could be interrupted"
     )
 
-
-def _assert_turn_records_the_stop(e2e_client: httpx.Client, sid: str, turn_id: str) -> None:
-    """The stopped turn's message carries the outcome of a user stop.
-
-    A user stop completes the turn with a result whose ``finish_reason`` is
-    ``cancelled``, on every path: the engine's own cancelled terminal on a
-    running turn, and the platform's settle on a parked one. It is the fact a
-    reloaded page reads to say the response stopped early.
-    """
-    resp = e2e_client.get(f"/api/v1/sessions/{sid}/messages", params={"limit": "50"})
-    assert resp.status_code == 200, f"GET messages -> {resp.status_code}: {resp.text[:300]}"
-    messages = (data(resp) or {}).get("messages") or []
-    results = [
-        block
-        for message in messages
-        if message.get("turn_id") == turn_id and message.get("role") == "assistant"
-        for block in message.get("blocks") or []
-        if block.get("type") == "result"
-    ]
-    assert [block.get("finish_reason") for block in results] == ["cancelled"], (
-        f"the stopped turn {turn_id} does not record a cancelled result: {results}"
+    # Model output alone does not prove the tool started. The command owns
+    # both markers; the release file is never created, so only the stop can end it.
+    started = wait_for_file(e2e_client, sid, started_path, timeout=30.0)
+    assert started == b"started", f"the real command never confirmed execution: {started!r}"
+    names = file_names(e2e_client, sid)
+    assert f"{marker}.release" not in names, "the command gate was released before the interrupt"
+    assert f"{marker}.exited" not in names, "the command exited before the interrupt"
+    in_flight = get_session(e2e_client, sid)
+    assert in_flight.get("state") == "PROCESSING" and not in_flight.get("pending_interaction"), (
+        f"the command was not running at the interrupt boundary: {in_flight}"
+    )
+    assert running.response_id in [r["response_id"] for r in in_flight["current_responses"]], (
+        f"the detail does not show the running response {running.response_id}: {in_flight}"
     )
 
+    interrupt(e2e_client, sid)
+    follow_reply(e2e_client, running, until="end")
+    _assert_stopped(e2e_client, running)
+    assert f"{marker}.release" not in file_names(e2e_client, sid), (
+        "something released the command gate; a normal finish could have ended the response"
+    )
 
-def _post_turn_until_streaming(
-    e2e_client: httpx.Client, sid: str, content: str, *, read_budget_s: float = 30.0
-) -> tuple[bool, bool]:
-    """POST a long streaming turn and read its SSE only until it is observably streaming.
-
-    Reads until a model text/reasoning or tool-input frame arrives, or a hard
-    wall-clock ``read_budget_s`` elapses, then closes the stream. ``start`` and
-    ``data-turn-accepted`` are platform control frames, not proof that the engine
-    started producing output. The bound is load-bearing: the server keeps the
-    stream open with 15s keepalive comments, so an unbounded read would never
-    return. The turn keeps running server-side after the stream is closed; the
-    caller interrupts it via the control endpoint.
-
-    Returns ``(saw_ui_header, saw_output_frame)``. Fails loud if the endpoint does not
-    return an event stream.
-    """
-    start = time.monotonic()
-    saw_ui = False
-    saw_output_frame = False
-    output_frame_types = {
-        "reasoning-start",
-        "reasoning-delta",
-        "text-start",
-        "text-delta",
-        "tool-input-start",
-        "tool-input-delta",
-        "tool-input-available",
-    }
-    with e2e_client.stream(
-        "POST",
-        f"/api/v1/sessions/{sid}/ai-stream",
-        json={"content": content, "client_message_id": str(uuid.uuid4())},
-        headers={"Accept": "text/event-stream"},
-        timeout=httpx.Timeout(read_budget_s + 15.0, connect=30.0),
-    ) as resp:
-        content_type = resp.headers.get("content-type", "")
-        assert "text/event-stream" in content_type, (
-            f"ai-stream did not return SSE (content-type={content_type!r})"
-        )
-        saw_ui = resp.headers.get("x-vercel-ai-ui-message-stream") == "v1"
-        for raw in resp.iter_lines():
-            if time.monotonic() - start > read_budget_s:
-                break
-            line = raw.strip() if isinstance(raw, str) else raw.decode("utf-8", "replace").strip()
-            if not line.startswith("data:"):
-                continue
-            payload = line[len("data:") :].strip()
-            if not payload or payload == "[DONE]":
-                continue
-            try:
-                event = json.loads(payload)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(event, dict) and event.get("type") in output_frame_types:
-                saw_output_frame = True
-                break
-    return saw_ui, saw_output_frame
+    following = _assert_next_message_is_answered(e2e_client, sid)
+    assert following.response_id != running.response_id
+    messages = history(e2e_client, sid)
+    assert [m["id"] for m in user_messages(messages)] == [
+        running.client_message_id,
+        following.client_message_id,
+    ], [m["id"] for m in user_messages(messages)]
 
 
-def test_interrupt_streaming_turn_settles_and_session_stays_usable(e2e_client: httpx.Client) -> None:
-    """Interrupt an executing command, without a failure record, then run another turn."""
-    _interrupt_agent_turn(e2e_client, drop_terminal=False)
-
-
-def test_interrupt_with_lost_terminal_keeps_the_cancelled_result_and_next_turn(
+def test_interrupt_stops_a_running_command_and_the_next_message_is_answered(
     e2e_client: httpx.Client,
 ) -> None:
-    """A real interrupted turn retains cancellation when its live terminal is lost."""
-    _interrupt_agent_turn(e2e_client, drop_terminal=True)
+    """Interrupt an executing command: the response ends cancelled and the next message is answered."""
+    created = create_session(e2e_client, permission_mode=permission_mode("unattended"))
+    sid = str(created.get("session_id") or "")
+    assert sid, f"no session_id in create response: {created}"
+    try:
+        poll_until_agent_ready(e2e_client, sid)
+        _interrupt_running_command(e2e_client, sid, command_tool=tool_name("command"))
+    finally:
+        release_session(sid)
 
 
 @pytest.mark.assistant_live
-def test_assistant_interrupt_with_lost_terminal_keeps_the_cancelled_result_and_next_turn(
+def test_assistant_interrupt_stops_a_running_command_and_the_next_message_is_answered(
     e2e_client: httpx.Client,
     live_test_deadline: float,
 ) -> None:
-    """Hermes retains the same stopped outcome in its resident workspace."""
+    """Hermes ends a stopped response cancelled in its resident workspace and answers the next message."""
     assistant_id = ""
     sid = ""
     try:
@@ -261,247 +230,77 @@ def test_assistant_interrupt_with_lost_terminal_keeps_the_cancelled_result_and_n
         # new conversation. The Files API resolves that same owner identity.
         workspace_root = str(list_files(e2e_client, sid).get("root_path") or "")
         assert workspace_root == "/workspace", workspace_root
-        _interrupt_streaming_turn(
-            e2e_client,
-            sid,
-            command_tool="terminal",
-            drop_terminal=True,
-            workspace_root=workspace_root,
+        _interrupt_running_command(
+            e2e_client, sid, command_tool="terminal", workspace_root=workspace_root
         )
     finally:
         release_session(sid)
         release_assistant(assistant_id)
 
 
-def _interrupt_agent_turn(e2e_client: httpx.Client, *, drop_terminal: bool) -> None:
-    created = create_session(e2e_client, permission_mode=permission_mode("unattended"))
-    sid = str(created.get("session_id") or "")
-    assert sid, f"no session_id in create response: {created}"
-    try:
-        poll_until_agent_ready(e2e_client, sid)
-        _interrupt_streaming_turn(
-            e2e_client,
-            sid,
-            command_tool=tool_name("command"),
-            drop_terminal=drop_terminal,
-        )
-    finally:
-        release_session(sid)
-
-
-def _interrupt_streaming_turn(
-    e2e_client: httpx.Client,
-    sid: str,
-    *,
-    command_tool: str,
-    drop_terminal: bool,
-    workspace_root: str | None = None,
-) -> None:
-    fault_path: Path | None = None
-    scene_passed = False
-    try:
-        marker = f"interrupt_{uuid.uuid4().hex}"
-        def path_for(suffix: str) -> str:
-            if workspace_root is not None:
-                assert workspace_root == "/workspace", workspace_root
-                return f"{workspace_root}/{marker}.{suffix}"
-            return workspace_path(e2e_client, sid, f"{marker}.{suffix}")
-
-        started_path = path_for("started")
-        release_path = path_for("release")
-        exited_path = path_for("exited")
-        on_exit = f"printf exited > {shlex.quote(exited_path)}"
-        command = "sh -c " + shlex.quote(
-            f"trap {shlex.quote(on_exit)} EXIT; "
-            f"printf started > {shlex.quote(started_path)}; "
-            f"while [ ! -e {shlex.quote(release_path)} ]; do sleep 0.1; done"
-        )
-        long_prompt = (
-            f"Use the {command_tool} tool to run exactly this one command in the "
-            "foreground and wait for it to finish. Do not create the release file or "
-            f"run any other command. I will stop the running command: {command}"
-        )
-        # Start the long turn and read its stream only until it is observably streaming,
-        # then close it (the turn keeps running server-side). This proves the turn actually
-        # streamed before the read closes it, and the read cannot hang: it is hard
-        # wall-clock bounded.
-        saw_ui, saw_output_frame = _post_turn_until_streaming(e2e_client, sid, long_prompt)
-        assert saw_ui, "first turn was not a valid AI-SDK message stream"
-        assert saw_output_frame, (
-            "the long turn produced no model or tool frame before it could be interrupted"
-        )
-
-        # Model output alone does not prove the tool started. The command owns
-        # both markers; the fixture never releases its loop before interrupting.
-        started = wait_for_file(e2e_client, sid, started_path, timeout=30.0)
-        assert started == b"started", (
-            f"the real command never confirmed execution: {started!r}"
-        )
-        names = file_names(e2e_client, sid)
-        assert f"{marker}.release" not in names, "the command gate was released before interrupt"
-        assert f"{marker}.exited" not in names, "the command exited before interrupt"
-        in_flight = get_session(e2e_client, sid)
-        assert str(in_flight.get("state") or "") in _IN_FLIGHT_STATES, (
-            f"the tool was not in flight at the interrupt boundary: {in_flight}"
-        )
-        assert not in_flight.get("pending_interaction"), (
-            "the command must be executing, not waiting for permission"
-        )
-        if drop_terminal:
-            assert in_flight.get("current_turn_id"), in_flight
-            fault_path = _arm_terminal_drop(sid)
-
-        ack = data(e2e_client.post(f"/api/v1/sessions/{sid}/interrupt", timeout=30.0))
-        assert str(ack.get("session_id") or "") == sid, (
-            f"interrupt did not acknowledge the session: {ack}"
-        )
-
-        # READY describes session availability, not whether the last turn failed.
-        # Wait for this first turn's durable outcome as well as an idle session.
-        deadline = time.monotonic() + SETTLE_TIMEOUT_S
-        settled = get_session(e2e_client, sid)
-        while time.monotonic() < deadline:
-            settled = get_session(e2e_client, sid)
-            state = str(settled.get("state") or "")
-            if state in TERMINAL_STATES:
-                pytest.fail(f"session went terminal ({state}) after interrupt: {settled.get('last_error')!r}")
-            if (
-                state == "READY"
-                and not settled.get("pending_interaction")
-                and settled.get("last_turn_id")
-                and settled.get("last_turn_status")
-            ):
-                break
-            time.sleep(1.0)
-        else:
-            state = str(get_session(e2e_client, sid).get("state") or "")
-            pytest.fail(
-                f"session did not settle READY after interrupt within "
-                f"{SETTLE_TIMEOUT_S:.0f}s; state={state!r}"
-            )
-
-        assert settled.get("last_turn_status") == "COMPLETED", (
-            f"user interrupt was recorded as a failed turn: {settled}"
-        )
-        assert not settled.get("last_turn_error"), (
-            f"user interrupt left a turn error: {settled.get('last_turn_error')!r}"
-        )
-        interrupted_turn_id = settled["last_turn_id"]
-        _assert_turn_records_the_stop(e2e_client, sid, interrupted_turn_id)
-        if fault_path is not None:
-            assert interrupted_turn_id == in_flight["current_turn_id"], settled
-            declaration = json.loads(fault_path.read_text())
-            assert declaration.get("consumed") == [sid], (
-                "The real stopped result must consume the terminal-drop fault; "
-                f"an ordinary stop is not this scene: {declaration}"
-            )
-            assert declaration["faults"]["drop"] == 0, declaration
-
-        # The gate remains closed: a normal tool finish cannot unblock this turn.
-        _assert_sendable(e2e_client, sid)
-        follow_up = get_session(e2e_client, sid)
-        assert (
-            follow_up.get("last_turn_id")
-            and follow_up.get("last_turn_id") != interrupted_turn_id
-        ), (
-            "follow-up did not record a distinct completed turn"
-        )
-        assert follow_up.get("last_turn_status") == "COMPLETED", follow_up
-        assert not follow_up.get("last_turn_error"), follow_up
-        scene_passed = True
-    finally:
-        if fault_path is not None:
-            try:
-                print(f"TERMINAL_DROP_FAULT_PATH={fault_path}", flush=True)
-                if fault_path.exists():
-                    print("TERMINAL_DROP_FAULT=" + fault_path.read_text(), flush=True)
-                if scene_passed:
-                    fault_path.unlink(missing_ok=True)
-            except OSError as exc:
-                # Keep the original failed scene's exception when its evidence
-                # file cannot be read or removed during teardown.
-                print(f"TERMINAL_DROP_FAULT_CLEANUP_ERROR={exc}", flush=True)
-
-
 def test_interrupt_clears_pending_interaction_and_settles(e2e_client: httpx.Client) -> None:
-    """Interrupt a turn paused on a tool permission; it denies the tool and settles READY.
+    """Interrupt a response paused on a tool permission: the tool never runs and the response ends.
 
-    default mode holds the Write as a native ``tool_approval`` interaction (the turn
-    pauses). Interrupting while it waits denies the held tool — so the uniquely-named
-    file is never created — clears the pending interaction, and settles the turn back to
-    READY, after which the session still accepts a fresh turn.
+    The gated mode holds the write as a ``tool_approval`` interaction and the
+    response pauses. Interrupting while it waits ends the response
+    ``cancelled``; the interaction stops waiting on the owner without being
+    answered, the uniquely named file is never created, and the conversation
+    answers its next message.
     """
-    created = create_session(e2e_client, permission_mode=permission_mode("gated"))  # the mode under test; agent_chat defaults to bypassPermissions
+    created = create_session(e2e_client, permission_mode=permission_mode("gated"))
     sid = str(created.get("session_id") or "")
     assert sid, f"no session_id in create response: {created}"
     write_path = workspace_path(e2e_client, sid, f"interrupt_{uuid.uuid4().hex[:8]}.txt")
     write_name = write_path.rsplit("/", 1)[-1]
+    prompt = (
+        f"Use the {tool_name('write')} tool to create a file at {write_path} containing the "
+        "single word MANGO. Do not run any other tool or command."
+    )
     try:
         poll_until_agent_ready(e2e_client, sid)
 
         if not contract_supported("tool_approval"):
             assert_permission_mode_unavailable(e2e_client, sid)
-            turn = stream_turn(
-                e2e_client,
-                sid,
-                content=(
-                    f"Use the {tool_name('write')} tool to create a file at {write_path} "
-                    "containing the single word MANGO. Do not run any other tool or command."
-                ),
-            )
-            assert turn.error is None, turn.error
-            assert not turn.interactions
+            written = send_and_follow(e2e_client, sid, prompt, until="end")
+            assert written.error is None, written.error
+            assert not written.interactions
             assert pending_interaction(e2e_client, sid) is None
             assert wait_for_file(e2e_client, sid, write_path, timeout=60.0) is not None
-            _assert_sendable(e2e_client, sid)
+            wait_until_settled(e2e_client, sid)
+            _assert_next_message_is_answered(e2e_client, sid)
             return
 
-        # The turn pauses on the Write permission; stream_turn returns when it pauses.
-        turn = stream_turn(
-            e2e_client,
-            sid,
-            content=(
-                f"Use the {tool_name('write')} tool to create a file at {write_path} containing the "
-                f"single word MANGO. Do not run any other tool or command."
-            ),
+        paused = send_and_follow(e2e_client, sid, prompt, until="pause")
+        assert paused.saw_ui_header, "the session stream is not an AI SDK UI message stream"
+        assert paused.paused, (
+            f"the response did not pause on the write's approval: finish={paused.finish_reason!r}"
         )
-        assert turn.saw_ui_header, "turn was not a valid AI-SDK message stream"
+        pending = wait_for_pending_interaction(e2e_client, sid, timeout=15.0)
+        assert pending is not None and pending.get("response_id") == paused.response_id, (
+            f"no pending interaction on the paused response: {pending}"
+        )
+        assert str(pending.get("presentation")) == approval_presentation(), (
+            f"expected a tool approval interaction: {pending}"
+        )
+        interaction_id = str(pending["interaction_id"])
 
-        pi = pending_interaction(e2e_client, sid)
-        if pi is None:
-            pi = wait_for_pending_interaction(e2e_client, sid, timeout=20.0)
-        assert pi is not None, (
-            f"no pending interaction surfaced for the Write (finish={turn.finish_reason})"
+        interrupt(e2e_client, sid)
+        follow_reply(e2e_client, paused, until="end")
+        _assert_stopped(e2e_client, paused)
+        assert get_session(e2e_client, sid).get("pending_interaction") is None
+        record = psql_rows(
+            "SELECT status FROM session_interactions "
+            f"WHERE session_id = {sql_literal(sid)} AND interaction_id = {sql_literal(interaction_id)}"
         )
-        assert str(pi.get("presentation")) == approval_presentation(), (
-            f"expected a tool approval interaction: {pi}"
-        )
-
-        # Interrupt while WAITING_INPUT: the held tool is denied and the turn settles.
-        ack = data(e2e_client.post(f"/api/v1/sessions/{sid}/interrupt", timeout=30.0))
-        assert str(ack.get("session_id") or "") == sid, (
-            f"interrupt did not acknowledge the session: {ack}"
+        assert len(record) == 1 and record[0]["status"] not in ("open", "answered"), (
+            f"the interrupted interaction is still open or was answered: {record}"
         )
 
-        settled = wait_until_settled(e2e_client, sid)
-        assert str(settled.get("state")) == "READY", (
-            f"session not READY after interrupt: {settled.get('state')!r}"
-        )
-        assert not settled.get("pending_interaction"), (
-            "interrupt left the pending interaction uncleared"
-        )
-        assert settled.get("last_turn_status") == "COMPLETED", (
-            f"user interrupt of a parked turn was recorded as a failed turn: {settled}"
-        )
-        _assert_turn_records_the_stop(e2e_client, sid, str(pi.get("turn_id") or ""))
-
-        # Load-bearing: the denied Write had no side effect. The turn is fully settled,
-        # so the uniquely-named file must never have been created.
+        # Load-bearing: the stopped write had no side effect. The response has
+        # ended, so nothing of it can write the file any more.
         assert write_name not in file_names(e2e_client, sid), (
-            f"interrupted (denied) Write still created {write_path}"
+            f"the interrupted (never approved) write still created {write_path}"
         )
-
-        # The session is immediately usable again.
-        _assert_sendable(e2e_client, sid)
+        _assert_next_message_is_answered(e2e_client, sid)
     finally:
         release_session(sid)

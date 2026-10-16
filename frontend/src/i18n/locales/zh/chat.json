@@ -33,10 +33,7 @@
     "stopping": "停止中...",
     "processing": "处理中",
     "sending": "发送中...",
-    "sending_with_phase": "发送中 · {{phase}}",
     "ready": "就绪",
-    "pending_recovery": "待恢复",
-    "background_running": "后台任务运行中",
     "runtime_disconnected": "运行时断开"
   },
   "banner": {
@@ -50,9 +47,7 @@
     "send": "发送",
     "queue": "排队",
     "placeholder": "输入消息…",
-    "placeholder_agent_terminated": "Agent 已终止，历史会话只读",
     "placeholder_terminated": "请创建新会话继续使用",
-    "placeholder_recovery": "当前会话待恢复，请先恢复会话",
     "placeholder_streaming": "等待响应…",
     "commands": "命令",
     "shortcut_hint": "Shift+Enter 换行",
@@ -125,7 +120,8 @@
     "awaiting_confirmation": "等待确认",
     "denied": "已拒绝",
     "completed": "已完成",
-    "failed": "执行失败"
+    "failed": "执行失败",
+    "unfinished": "未完成"
   },
   "tool": {
     "open_in_agents": "在 Agents 中打开",
@@ -199,19 +195,6 @@
     "expiry_7d": "7 天",
     "expiry_30d": "30 天"
   },
-  "send": {
-    "unconfirmed_failure": "消息发送失败，未收到后端确认。",
-    "unconfirmed_timeout": "消息发送超时，未收到后端确认。"
-  },
-  "retry": {
-    "recover_label": "恢复会话",
-    "recover_summary": "当前会话需要先恢复，恢复后才能继续对话。",
-    "recover_summary_sandbox_lost": "原沙箱无法自动重连，需要你手动恢复会话；系统不会自动重跑上一条消息。",
-    "budget_exhausted_summary": "自动续流已达上限，当前回复仍在后台处理中。",
-    "resend_label": "重新发送",
-    "delivery_failed_summary": "上一条消息未能送达沙箱，可以重新发送。",
-    "turn_failed_summary": "上一条消息已送达沙箱，但这一轮执行失败了。"
-  },
   "files": {
     "download": "下载",
     "more_actions": "更多操作",
@@ -223,7 +206,6 @@
     "folder_contents": "{{name}} 的内容",
     "empty_folder": "空文件夹",
     "unavailable": "文件暂不可用",
-    "unavailable_agent_terminated": "Agent 已终止，文件不可用。",
     "unavailable_session_not_ready": "会话未就绪，文件暂不可用。",
     "current_directory": "当前目录",
     "drop_to_upload": "拖到这里，上传到 {{dir}}",

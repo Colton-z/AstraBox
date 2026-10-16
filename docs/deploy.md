@@ -140,6 +140,55 @@ To change the model service, answer its question again, or run it with
 `ASTRABOX_INSTALL_MODEL_PROVIDER` set; the settings it wrote for the previous
 service are removed.
 
+### Upgrade from AstraBox 0.1.8 {#upgrade-from-0-1-8}
+
+AstraBox 0.1.9 keeps its records in a new database schema and does not read the
+records of 0.1.8. An installation upgraded from 0.1.8 starts with an empty
+AstraBox database: its Agents, Environments, Assistants, Sessions and their
+history, Deployments, and Vaults are not carried over. The new release creates
+its default Environment and Agent as on a new installation; recreate the rest
+after the upgrade.
+
+A new database also gives the installation a new identity. AstraBox removes,
+reuses, and counts only the sandboxes its own installation created, so the
+sandboxes of the 0.1.8 installation keep running until you remove them. Before
+you run the installer for the new release:
+
+1. Stop the server. From `~/astrabox/containers`:
+
+   ```bash
+   docker compose stop server
+   ```
+
+2. Remove the sandboxes on the Docker host. These commands remove every
+   OpenSandbox sandbox on the host, including those of any other AstraBox
+   installation there:
+
+   ```bash
+   docker ps -aq --filter label=opensandbox.io/id | xargs -r docker rm -f
+   docker ps -aq --filter label=opensandbox.io/egress-sidecar-for | xargs -r docker rm -f
+   ```
+
+   When sandboxes run on Kubernetes or an existing OpenSandbox service, delete
+   the 0.1.8 installation's sandboxes there instead.
+
+3. Empty the AstraBox database. In the maintained Compose stack it is the
+   `astrabox` database of the `postgres` service; the LiteLLM and Casdoor
+   databases are separate and keep their data:
+
+   ```bash
+   docker compose exec postgres psql -U postgres \
+     -c 'DROP DATABASE astrabox WITH (FORCE)' \
+     -c 'CREATE DATABASE astrabox OWNER astrabox' \
+     -c 'REVOKE ALL ON DATABASE astrabox FROM PUBLIC' \
+     -c 'GRANT CONNECT, TEMPORARY ON DATABASE astrabox TO astrabox'
+   ```
+
+   With an external PostgreSQL service, point `ASTRABOX_DB_URL` at a new, empty
+   database instead.
+
+4. Run the installer for the new release.
+
 ### Model services the installer configures {#model-services-the-installer-configures}
 
 The bundled LiteLLM gateway serves each of these. Add further routes afterwards
@@ -471,13 +520,42 @@ and the others work.
 The hub keeps people's vendor tokens in its own encrypted database (the
 `contextforge-data` volume); back it up with the platform's data.
 
+## The AstraBox database {#the-astrabox-database}
+
+AstraBox keeps its records in PostgreSQL and supports no other database: the
+server does not start when `ASTRABOX_DB_URL` is not a `postgresql://` URL. The
+maintained Compose stack and the all-in-one container run PostgreSQL and build
+the URL from their generated credentials; any other deployment sets
+`ASTRABOX_DB_URL` to its own PostgreSQL service. Every platform replica uses
+the same database.
+
+The server brings the database schema to its release's version when it starts,
+before it serves requests. Replicas that start together take turns on a
+PostgreSQL advisory lock, so each schema change runs once. A schema change that
+fails stops the server and leaves the schema as it was. A database that a
+newer release has already upgraded does not start an older release.
+
+Each server process keeps up to 30 pooled connections for repository queries
+and up to 30 more for runtime attachment and archive locks. The separate pools
+let a lock holder run repository queries without waiting behind other lock
+holders. It also uses one connection for PostgreSQL notifications and the
+connections of the built-in scheduler. Size the database's connection limit
+for every replica. Because the
+server listens for notifications and caches prepared statements on its
+connections, connect it to PostgreSQL directly or through a connection pooler
+in session mode.
+
 ## Run multiple platform replicas
 
 The [platform-replica deployment recipe](deploy-distributed.md) connects
 multiple API hosts to shared services and signing keys. A request can reach
-either API replica; Kubernetes schedules the sandbox independently. Adding
-API replicas does not make local workspace disks shared or turn a single
-OpenSandbox lifecycle service into a highly available service.
+either API replica; Kubernetes schedules the sandbox independently. One replica
+at a time holds each Session's connection to its Agent program. A replica that
+accepts a message or an answer for the Session records it, and a PostgreSQL
+notification tells the replica that holds the connection. When that replica
+stops, another replica takes the Session over: within seconds after a clean
+shutdown, or once the stopped replica's 30-second lease expires. Adding API replicas does not make local workspace disks shared
+or turn a single OpenSandbox lifecycle service into a highly available service.
 
 ## Build sandbox images
 
@@ -511,7 +589,8 @@ sandboxes:
 | `.astrabox/database-secrets` | Generated database credentials and optional bundled-SSO credentials, under the installation directory (`~/astrabox`) or the checkout |
 | Optional workspace volume | Agent and Assistant workspace files, independently of any sandbox |
 
-Session messages and native session state are stored in the AstraBox database. Workspace files
+Session messages, the responses and output the Agent programs reported, and
+native session state are stored in the AstraBox database. Workspace files
 live on the workspace volume when configured, so terminating or replacing a sandbox
 does not remove them; a replacement box mounts the same stored workspace.
 Without a workspace volume, files depend on the sandbox or a retained
@@ -803,7 +882,9 @@ GET /readyz
 
 `/readyz` returns `503` after shutdown draining begins. Set the platform's
 termination grace period higher than `ASTRABOX_SHUTDOWN_DRAIN_SECONDS` so
-in-flight Agent work has time to finish.
+requests in flight on that replica have time to finish. Agent programs keep
+running in their sandboxes while a replica stops, and another replica takes
+over their Sessions.
 
 CPU, memory, disk, and sandbox timeouts come from the selected OpenSandbox
 runtime and its configuration. Before relying on paused sandboxes, verify every

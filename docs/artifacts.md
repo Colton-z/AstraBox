@@ -8,10 +8,6 @@ ends or its sandbox is destroyed; persistent workspace storage is not required.
 Artifacts are private personal resources. The user the creating conversation
 runs for owns them. Administrators do not gain access to another user's artifacts.
 
-Artifact writes require a transaction-capable store. PostgreSQL (the default)
-and SQLite support them. MongoDB requires a replica set or sharded cluster;
-artifact writes on standalone MongoDB fail with `ARTIFACT_STORE_UNAVAILABLE`.
-
 ## Create an artifact
 
 Ask an Agent or Assistant to publish substantial, reusable output as an artifact:

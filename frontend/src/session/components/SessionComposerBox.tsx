@@ -18,9 +18,7 @@ import {
   turnInputImages,
   type TurnInputImage,
 } from '../composerAttachments';
-import { ComposerQueue } from '../../components/Composer';
 import type { PermissionMode } from '../../types';
-import type { QueuedMessageItem } from '../../utils/messages';
 import type { DisplaySlashCommand } from '../slashCommands';
 import { PermissionModeStripInline } from './PermissionModeStrip';
 import { StopGenerationButton } from './StopGenerationButton';
@@ -114,10 +112,6 @@ function ComposerSubmit({
 export function SessionComposerBox({
   userAction,
   sessionId,
-  displayedQueue,
-  removeQueueItem,
-  retryQueueItem,
-  canRetryQueued,
   hasSlashCommands,
   showSlashPopup,
   slashPopupRef,
@@ -131,9 +125,7 @@ export function SessionComposerBox({
   setDraft,
   handleKeyDown,
   canSend,
-  isAgentRuntimeDeleted,
   isTerminated,
-  lifecycleState,
   isStreaming,
   isSubmitted,
   hasPendingInteraction,
@@ -149,10 +141,6 @@ export function SessionComposerBox({
 }: {
   userAction?: React.ReactNode;
   sessionId: string;
-  displayedQueue: QueuedMessageItem[];
-  removeQueueItem: (id: string) => void;
-  retryQueueItem: (id: string) => void;
-  canRetryQueued: boolean;
   hasSlashCommands: boolean;
   showSlashPopup: boolean;
   slashPopupRef: React.MutableRefObject<HTMLDivElement | null>;
@@ -166,9 +154,7 @@ export function SessionComposerBox({
   setDraft: (draft: string) => void;
   handleKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   canSend: boolean;
-  isAgentRuntimeDeleted: boolean;
   isTerminated: boolean;
-  lifecycleState: string;
   isStreaming: boolean;
   isSubmitted: boolean;
   hasPendingInteraction: boolean;
@@ -198,12 +184,6 @@ export function SessionComposerBox({
   return (
     <ReadingColumn className="pb-4 pt-2">
       {userAction}
-      <ComposerQueue
-        queuedMessages={displayedQueue}
-        onRemoveQueuedMessage={removeQueueItem}
-        onRetryQueuedMessage={retryQueueItem}
-        canRetryQueuedMessages={canRetryQueued}
-      />
       <PopoverPrimitive.Root open={showSlashPopup}>
         <div ref={composerAnchorRef} className="relative">
           <PromptInput
@@ -227,9 +207,7 @@ export function SessionComposerBox({
             onKeyDown={handleKeyDown}
             placeholder={
               canSend ? t('chat:composer.placeholder')
-                : isAgentRuntimeDeleted ? t('chat:composer.placeholder_agent_terminated')
                 : isTerminated ? t('chat:composer.placeholder_terminated')
-                : lifecycleState === 'recovery' ? t('chat:composer.placeholder_recovery')
                 : isStreaming ? t('chat:composer.placeholder_streaming') : ''
             }
             disabled={hasPendingInteraction || !canSend}

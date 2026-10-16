@@ -30,7 +30,7 @@ ARG SANDBOX_BASE_IMAGE=ghcr.io/agent-infra/sandbox:1.11.0
 # including creates issued by the official SDK client-pool creator. The pinned
 # image copy also serves each shared conversation from inside its existing
 # isolation session. Both placements use execd's supported PTY pipe.
-ARG SANDBOX_EXECD_IMAGE=opensandbox/execd:v1.1.0
+ARG SANDBOX_EXECD_IMAGE=astrabox/execd:latest
 FROM ${SANDBOX_EXECD_IMAGE} AS execd
 
 FROM ${SANDBOX_BASE_IMAGE}
@@ -154,6 +154,17 @@ RUN set -eux; \
     git apply /tmp/pi-subagents-pi1.patch; \
     echo '696d0d7a8b85ae3bca1563518b3b8a69a332dfffb708e7c9ebd91875f744968a  src/runs/background/runner-aliases.js' | sha256sum -c -; \
     rm /tmp/pi-subagents-pi1.patch
+
+# Bootstrap status carries the same workflow parent/key as the runner's status,
+# so the host can identify the child before its first queued widget is emitted.
+COPY --chmod=u=rw,go=r containers/sandbox-pi/patches/pi-subagents-startup-workflow-link.patch /tmp/pi-subagents-startup-workflow-link.patch
+RUN set -eux; \
+    cd "${PI_PREFIX}/node_modules/pi-subagents"; \
+    echo '52d54705ffce04e8714c615c89409b56b913f09e3efa1a13891f33c29478cb03  src/runs/background/async-execution.js' | sha256sum -c -; \
+    git apply --check /tmp/pi-subagents-startup-workflow-link.patch; \
+    git apply /tmp/pi-subagents-startup-workflow-link.patch; \
+    echo '9823bc89e97971c779795358a164f5e7fdf33b01b8fcb6cddccb4aecd8fa68c4  src/runs/background/async-execution.js' | sha256sum -c -; \
+    rm /tmp/pi-subagents-startup-workflow-link.patch
 
 # Registration runs during extension load, before a cold or parked session
 # starts. Pi's native MCP support owns discovery, tool exposure and transport.

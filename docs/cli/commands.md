@@ -575,7 +575,7 @@ astrabox apply -f astrabox.yaml --output json
 
 ## `astrabox run`
 
-`astrabox run` starts a conversation with an Agent, sends one task, and streams the reply until the Session stream closes. It can also continue an existing Session.
+`astrabox run` starts a conversation with an Agent, sends one task, and streams the reply until it ends or asks a question. It can also continue an existing Session.
 
 ### Usage
 
@@ -590,7 +590,7 @@ astrabox run <agent> <task> [options]
 | `agent` | Agent name or Agent ID. The positional value remains required when `--session` is used. | Yes | — |
 | `task` | Task to send to the Agent. | Yes | — |
 | `--session` | Continue an existing Session instead of starting a conversation. | No | Starts a conversation |
-| `--timeout` | Deadline in seconds for the whole run, including sandbox readiness and the turn. | No | `900` |
+| `--timeout` | Deadline in seconds for the whole run, including sandbox startup and the reply. | No | `900` |
 | `--endpoint` | Deployment base URL. | No | Local maintained address |
 | `--token` | Bearer token. | No | Environment or OAuth credentials |
 | `--output`, `-o` | Output format: `table` or `json`. | No | `table` |
@@ -603,7 +603,7 @@ astrabox run <agent> <task> [options]
 astrabox run researcher "Summarize this week's repository changes"
 ```
 
-The command resolves `researcher` by name or ID, creates a conversation, waits until its sandbox can accept a turn, and then streams the reply.
+The command resolves `researcher` by name or ID, creates a conversation, sends the task, and streams the reply. The task is held until the conversation's sandbox has started.
 
 #### Example 2: Send a longer task
 
@@ -634,7 +634,7 @@ astrabox run researcher "Continue from the previous result" \
   --session <session-id>
 ```
 
-The `agent` positional value is still required by the command syntax, but the existing Session selects the conversation that receives the task.
+The `agent` positional value is still required by the command syntax, but the existing Session selects the conversation that receives the task. If the Agent is still answering an earlier message, the task queues behind it and the command prints only the reply to this task.
 
 #### Example 6: Return one JSON result
 
@@ -652,7 +652,7 @@ astrabox run researcher "Run the smoke check" --timeout 120
 
 ### Execution Output
 
-With the default table output, response text is printed as it arrives. When the stream closes, the command reports the Session ID and whether the Agent is waiting for an answer.
+With the default table output, response text is printed as it arrives. When the reply ends or asks a question, the command reports the Session ID and whether the Agent is waiting for an answer.
 
 ```text
 Reviewing the repository now...
@@ -660,16 +660,16 @@ The release checklist has three remaining items.
 session <session-id>
 ```
 
-With `--output json`, the result contains the accumulated `text`, `frames`, `errors`, `session_id`, and `pending_interaction` fields.
+With `--output json`, the result contains the accumulated `text`, the number of reply `parts` read, `errors`, `session_id`, and `pending_interaction` fields.
 
 ### Notes
 
-1. **Sandbox readiness is included**: A new conversation exists before its sandbox is ready. The command waits for the Session to reach `READY` before sending the task.
-2. **One deadline covers the run**: `--timeout` covers both the readiness wait and the streamed turn.
-3. **A closed stream may mean a question**: The command reads the Session again and reports `pending_interaction` when the Agent is waiting for an answer.
+1. **No readiness wait**: A new conversation exists before its sandbox is ready. The deployment holds the task until the sandbox has started, so the command sends it at once.
+2. **One deadline covers the run**: `--timeout` covers sandbox startup and the streamed reply.
+3. **A question ends the run**: When the reply pauses on a question or an approval, the command reports it as `pending_interaction`.
 4. **Pending questions are answered elsewhere**: Answer in the web console or through the [HTTP API](../api.md).
 5. **Streaming differs by output format**: Table output prints response text live; JSON output buffers it so the JSON document remains parseable.
-6. **Agent errors affect the exit code**: If the streamed result contains errors, the command exits with code 1.
+6. **Agent errors affect the exit code**: If the reply contains errors, or the deployment could not hand the task to the Agent, the command exits with code 1.
 
 ---
 

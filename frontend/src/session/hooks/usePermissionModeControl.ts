@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { PermissionMode } from '../../types';
 import { getNextPermissionMode } from '../../utils/format';
 import { setSessionPermissionMode } from '../../api';
 
-// Permission-mode state and the shift-tab cycle action. `permissionModeRef`
-// mirrors the state because the chat hook reads the current mode from stream
-// callbacks that would otherwise close over stale state.
+// Permission-mode state and the shift-tab cycle action. The mode is the
+// session's: it changes through its own route, and no message carries one.
 export function usePermissionModeControl({
   sessionId,
   initialPermissionMode,
@@ -21,18 +20,15 @@ export function usePermissionModeControl({
     ? initialPermissionMode
     : (availableModes[0] ?? '');
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(initial);
-  const permissionModeRef = useRef<string | null>(initial || null);
   useEffect(() => {
     const next = initialPermissionMode && availableModes.includes(initialPermissionMode)
       ? initialPermissionMode
       : (availableModes[0] ?? '');
     setPermissionMode(next);
-    permissionModeRef.current = next || null;
   }, [availableModes, initialPermissionMode]);
-  useEffect(() => { permissionModeRef.current = permissionMode || null; }, [permissionMode]);
   const [modeSwitching, setModeSwitching] = useState(false);
   const canChangePermissionMode = availableModes.length > 1
-    && (lifecycleState === 'ready' || lifecycleState === 'background')
+    && lifecycleState === 'ready'
     && !modeSwitching;
   // Picking from the list and cycling with shift-tab are the same action: one
   // named mode is asked for, and the local state moves only once the backend
@@ -51,7 +47,6 @@ export function usePermissionModeControl({
 
   return {
     permissionMode,
-    permissionModeRef,
     modeSwitching,
     canChangePermissionMode,
     selectPermissionMode,

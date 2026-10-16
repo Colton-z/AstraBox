@@ -2,37 +2,30 @@ import { useEffect, useRef, useState } from 'react';
 import { MANUAL_REFRESH_EVENT } from '../../utils/format';
 
 // Maintains two independent refresh triggers: a nonce that makes the files
-// panel refetch after a turn becomes inactive, and a rehydrate call when the
-// app-wide manual-refresh event fires.
+// panel refetch after work ends, and a rehydrate call when the app-wide
+// manual-refresh event fires.
 export function useSessionRefreshEffects({
-  isStreaming,
-  isSubmitted,
-  lifecycleState,
+  working,
   handleRehydrate,
 }: {
-  isStreaming: boolean;
-  isSubmitted: boolean;
-  lifecycleState: string;
+  /** A response runs, or a message is on its way. */
+  working: boolean;
   handleRehydrate: () => Promise<void>;
 }) {
   // The agent writes files into the workspace while it works; the files panel
   // otherwise only fetches on mount + manual refresh. Bump a nonce on the
-  // work-active true→false transition; the panel refetches its open
-  // directories once. Work is a turn (isStreaming||isSubmitted) or a
-  // background child ('background'): a child that finishes while nobody
-  // types is the same edge, and one whose completion the engine answers with
-  // a turn (background→busy→ready) stays active until that answer ends, so
-  // the edge lands after every write either of them made.
+  // working true→false transition; the panel refetches its open directories
+  // once. A sub-agent that finishes on its own is answered by a response the
+  // runtime starts itself, so its writes land before that edge too.
   const [filesRefreshNonce, setFilesRefreshNonce] = useState(0);
-  const prevWorkActiveRef = useRef(false);
+  const prevWorkingRef = useRef(false);
   useEffect(() => {
-    const workActive = isStreaming || isSubmitted || lifecycleState === 'background';
-    const wasActive = prevWorkActiveRef.current;
-    prevWorkActiveRef.current = workActive;
-    if (wasActive && !workActive) {
+    const wasWorking = prevWorkingRef.current;
+    prevWorkingRef.current = working;
+    if (wasWorking && !working) {
       setFilesRefreshNonce((n) => n + 1);
     }
-  }, [isStreaming, isSubmitted, lifecycleState]);
+  }, [working]);
 
   useEffect(() => {
     const handler = () => { void handleRehydrate(); };

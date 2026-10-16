@@ -3,9 +3,10 @@ import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
-import { patchSnapshotDoc, sessionDoc, snapshotDoc } from '../fixtures/dbOracle';
+import { postgresRows, postgresTextRows, sqlLiteral } from '../fixtures/dbOracle';
 import { parseTimeoutEnv } from '../fixtures/env';
 import { PlatformApi } from '../fixtures/platformApi';
+import { POSTGRES_CONTAINER_HANDLE, requireServiceContainer } from '../fixtures/serviceContainer';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView } from '../fixtures/sessionPage';
 
@@ -31,7 +32,7 @@ const TURN_BUDGET_MS = parseTimeoutEnv('ASTRABOX_E2E_TURN_TIMEOUT_MS', 60_000);
 const READY_TIMEOUT_MS = parseTimeoutEnv('ASTRABOX_E2E_READY_TIMEOUT_MS', 90_000);
 // How long the keeper's decision may take to reach the BOX. The parked mark is
 // written before the pause begins and the commit itself takes tens of seconds
-// (`expiration_watcher.py:358-425`), during which the Pod still serves — so a
+// (`_park_sandbox` in expiration_watcher.py), during which the Pod still serves — so a
 // tab asked too early answers for a box the platform is in the middle of taking
 // away. Spending this window is what makes a pass mean "the keeper left it
 // alone" instead of "we looked first".
@@ -114,8 +115,45 @@ function sweepCounters(payload: Record<string, unknown>): Record<string, number>
   );
 }
 
+/**
+ * What the keeper reads off this conversation's `sessions` row: the runtime's
+ * last reported status, whether a response is still open, the moment quiet is
+ * measured from (the latest of the last output, the last change of activity and
+ * the last resume of the box — `_is_idle_past` in expiration_watcher.py), and
+ * the park decision's own mark.
+ */
+interface KeeperRow {
+  runtime_status: string | null;
+  open_responses: number;
+  quiet_since: string | null;
+  quiet_since_epoch: number | null;
+  sandbox_parked_at: string | null;
+}
+
+function keeperRow(sessionId: string): KeeperRow | null {
+  return postgresRows<KeeperRow>(
+    `SELECT s.runtime_status, `
+      + `(SELECT count(*) FROM session_responses r `
+      + `WHERE r.session_id = s.session_id AND r.status <> 'ended')::int AS open_responses, `
+      + `GREATEST(s.last_output_at, s.updated_at, s.sandbox_resumed_at) AS quiet_since, `
+      + `extract(epoch FROM GREATEST(s.last_output_at, s.updated_at, s.sandbox_resumed_at))::float8 `
+      + `AS quiet_since_epoch, s.sandbox_parked_at `
+      + `FROM sessions s WHERE s.session_id = ${sqlLiteral(sessionId)}`,
+  )[0] ?? null;
+}
+
 function parkedMark(sessionId: string): string {
-  return String(sessionDoc(sessionId)?.sandbox_parked_at || '').trim();
+  return String(keeperRow(sessionId)?.sandbox_parked_at || '').trim();
+}
+
+/** Run one write against the deployment database; the key column of every row it changed. */
+function writeRows(sql: string): string[] {
+  return postgresTextRows(
+    requireServiceContainer(POSTGRES_CONTAINER_HANDLE),
+    process.env.ASTRABOX_E2E_POSTGRES_DB || 'astrabox',
+    process.env.ASTRABOX_E2E_POSTGRES_USER || 'astrabox',
+    sql,
+  );
 }
 
 const sessions = trackSessions();
@@ -267,15 +305,18 @@ test('an exposed port outlives the idle window the user spent browsing it', asyn
   expect(turn.errorText, 'the baseline turn must not fail').toBeNull();
   expect(turn.text.trim(), 'the baseline must produce an ordinary reply').not.toEqual('');
   expect(turn.text.trim()).not.toMatch(/^API Error:\s*\d+\b/);
-  // The snapshot is the keeper's only evidence of quiet, and IDLE is the state
-  // it requires (`_IDLE_CONVERSATION_STATES`). Reading it here also proves the
-  // row exists before the backdate touches it.
+  // The keeper parks only a conversation whose runtime last reported itself
+  // idle (`_IDLE_RUNTIME_STATUSES`) with no response still open. Reading the row
+  // here also proves it exists before the backdate touches it.
   await expect
-    .poll(() => String(snapshotDoc(sessionId)?.conversation_state || '<no snapshot>'), {
+    .poll(() => {
+      const row = keeperRow(sessionId);
+      return row ? `${row.runtime_status ?? '<no status>'}, open responses ${row.open_responses}` : '<no row>';
+    }, {
       timeout: 45_000,
-      message: `the turn must settle before the user walks away (session ${sessionId})`,
+      message: `the response must settle before the user walks away (session ${sessionId})`,
     })
-    .toBe('IDLE');
+    .toBe('idle, open responses 0');
 
   // ── The agent puts something on a port, and the platform mints its link ──
   const source64 = Buffer.from(inBoxServer(marker), 'utf8').toString('base64');
@@ -303,22 +344,33 @@ test('an exposed port outlives the idle window the user spent browsing it', asyn
   expect(servingState, 'the box serving the page must be running').toEqual('running');
 
   // ── Twenty minutes pass, and the user says nothing to the console ────────
-  // Backdating the snapshot's `updated_at` is exactly the clock the keeper
-  // reads, and the only one; the tab stays open and the console tab is not
-  // touched again. Nothing else writes this row while the turn is settled, so
-  // the read-modify-write in `patchSnapshotDoc` cannot undo a concurrent write.
+  // The keeper measures quiet from the latest of three moments on the session
+  // row — its last output, its last change of activity (`updated_at`) and the
+  // last resume of its box — so every one that is set moves back together, in
+  // one statement; one left behind would still read as recent activity. The tab
+  // stays open and the console tab is not touched again.
   const idleSince = new Date(Date.now() - (IDLE_WINDOW_SECONDS + 120) * 1_000).toISOString();
-  patchSnapshotDoc(sessionId, { updated_at: idleSince });
+  const moment = `TIMESTAMPTZ ${sqlLiteral(idleSince)}`;
   expect(
-    String(snapshotDoc(sessionId)?.updated_at || ''),
-    'the simulated wait must be the snapshot clock the keeper reads',
-  ).toEqual(idleSince);
+    writeRows(
+      `UPDATE sessions SET updated_at = ${moment}, `
+        + `last_output_at = CASE WHEN last_output_at IS NULL THEN NULL ELSE ${moment} END, `
+        + `sandbox_resumed_at = CASE WHEN sandbox_resumed_at IS NULL THEN NULL ELSE ${moment} END `
+        + `WHERE session_id = ${sqlLiteral(sessionId)} AND sandbox_parked_at IS NULL RETURNING session_id`,
+    ),
+    'the simulated wait must land on this one unparked session row',
+  ).toEqual([sessionId]);
+  expect(
+    keeperRow(sessionId)?.quiet_since_epoch,
+    'the simulated wait must be the clock the keeper reads',
+  ).toBeCloseTo(Date.parse(idleSince) / 1_000, 3);
 
   // ── The platform's keeper runs over this conversation ───────────────────
   const sweep = sweepCounters(await platform.idleSweep());
-  const parkedAfterSweep = parkedMark(sessionId);
+  const keeperView = keeperRow(sessionId);
+  const parkedAfterSweep = String(keeperView?.sandbox_parked_at || '').trim();
   await test.info().attach('idle-sweep-summary', {
-    body: JSON.stringify({ sweep, sandbox_parked_at: parkedAfterSweep, sandbox_id: sandboxId }),
+    body: JSON.stringify({ sweep, session_row: keeperView, sandbox_id: sandboxId }),
     contentType: 'application/json',
   });
   expect(

@@ -1,11 +1,11 @@
 /**
  * E2E: an agent-chat session remains readable after its Agent is deleted.
  *
- * Deleting the Agent must preserve the session identity and durable messages.
- * The session projection reports a DELETED Agent runtime without marking the
- * session unavailable or attaching an error. In the browser, the existing
- * transcript remains visible, the composer is disabled, and the header shows a
- * settled terminal state rather than a recovery warning.
+ * Deleting the Agent must preserve the session identity and its history,
+ * without marking the session unavailable or attaching an error. In the
+ * browser, the existing transcript remains visible, the composer is disabled,
+ * and the header shows a settled terminal state rather than a recovery
+ * warning.
  */
 import { test, expect } from '@playwright/test';
 
@@ -13,7 +13,7 @@ import { AstraApi, messageText } from '../fixtures/astraApi';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { appPath } from '../fixtures/env';
 
-// One sandbox provision + one turn + the agent-deletion projection + the UI
+// One sandbox provision + one response + the agent deletion + the UI
 // re-open sit above the 240s suite default; mirror the lifecycle budget.
 
 // Teardown that changes state runs on the passing path only, and hook
@@ -35,26 +35,12 @@ test('agent_chat history remains readable after agent deletion', async ({ page, 
 
   let sessionId = '';
   try {
-    // ── Isolated agent (pure metadata, no sandbox). Source a concrete,
-    //    non-wildcard model from the seeded default agent's environment
-    //    catalogue — the create validator rejects a blank model. (Same
-    //    pattern as the per-session-sandbox spec.) ────────────────────────────
-    const base = await api.defaultAgent();
-    const environmentName = String(base.environment_name || '').trim();
-    expect(environmentName, 'seeded default agent must name an environment').not.toEqual('');
-    const models = await api.listEnvironmentModels(environmentName);
-    const model = models.find((m) => m && !m.includes('*')) || 'deepseek-chat';
-
-    const agent = await api.createAgent({
-      name: `__e2e_del_history_${runId}`,
-      model,
-      environment_name: environmentName,
-      prepared_capacity: 0,
-    });
+    // This conversation owns its box; deleting its Agent must not release it.
+    const agent = await api.createColdTestAgent(`__e2e_del_history_${runId}`);
     agentId = String(agent.agent_id || '');
     expect(agentId, 'created agent must have an id').not.toEqual('');
 
-    // ── One real turn so the conversation has durable history. ──────────────
+    // ── One real response so the conversation has durable history. ─────────
     const created = await api.startConversation(agentId);
     sessionId = created.session_id;
     sessions.push(sessionId);
@@ -67,21 +53,30 @@ test('agent_chat history remains readable after agent deletion', async ({ page, 
       (message) => messageText(message).trim() !== '',
     );
     const assistantText = messageText(assistant).trim();
-    expect(assistantText, 'the pre-deletion turn should produce durable assistant text').not.toEqual('');
+    expect(assistantText, 'the pre-deletion response should produce durable assistant text').not.toEqual('');
 
     // Settle back to READY (with the conversation's own live sandbox) BEFORE
     // deleting the agent, so the post-deletion binding resolves READY and the
     // session reads runtime_unavailable=false.
     await api.waitForSessionReady(sessionId);
 
-    // ── Delete the agent. In the per-session model this tears down only the
-    //    agent runtime (which owns nothing); the conversation keeps its own
-    //    sandbox and its whole history. ────────────────────────────────────────
+    const following = page.waitForResponse((response) => (
+      response.request().method() === 'GET'
+      && new URL(response.url()).pathname.endsWith(`/sessions/${sessionId}/stream`)
+      && response.ok()
+    ));
+    await page.goto(appPath(`/sessions/${sessionId}`));
+    await expect(page.getByTestId('composer-prompt')).toBeEnabled({ timeout: 45_000 });
+    await following;
+
+    // ── Delete the agent. This tears down only the agent's own runtime (which
+    //    owns nothing); the conversation keeps its own sandbox and its whole
+    //    history. ───────────────────────────────────────────────────────────────
     const deleted = await api.deleteAgent(agentId);
     expect(String(deleted.state || ''), 'delete should soft-delete the agent → DELETED').toEqual('DELETED');
 
     // ── Durable-state oracle: the session record survives, keeps its identity,
-    //    and is projected as a NORMAL terminal runtime (not abnormal). ─────────
+    //    and is not reported as abnormal. ──────────────────────────────────────
     const historical = await api.getSession(sessionId);
     expect(historical.session_id, 'session_id survives agent deletion').toBe(sessionId);
     expect(String(historical.agent_id || ''), 'agent_id survives agent deletion').toBe(agentId);
@@ -95,20 +90,6 @@ test('agent_chat history remains readable after agent deletion', async ({ page, 
       'deleted-agent history must NOT expose a last_error',
     ).toBe('');
 
-    const runtime = (historical.agent_runtime || {}) as Record<string, unknown>;
-    expect(
-      String(runtime.state || ''),
-      'the deleted agent is projected as a normal terminal DELETED runtime',
-    ).toBe('DELETED');
-    expect(
-      Boolean(runtime.runtime_unavailable),
-      'the deleted-agent runtime view must NOT be abnormal',
-    ).toBe(false);
-    expect(
-      String(runtime.last_error || '').trim(),
-      'the deleted-agent runtime view must NOT expose a last_error',
-    ).toBe('');
-
     // ── History remains READABLE after deletion: both the user marker (the
     //    text the test sent — deterministic) and the captured assistant reply
     //    persist. ─────────────────────────────────────────────────────────────
@@ -117,40 +98,40 @@ test('agent_chat history remains readable after agent deletion', async ({ page, 
     expect(joined, 'the user message must remain readable after agent deletion').toContain(marker);
     expect(joined, 'the assistant reply must remain readable after agent deletion').toContain(assistantText);
 
-    // ── In the browser: the transcript still renders, the composer is
-    //    read-only, and the header presents a calm terminal state. ─────────────
-    await page.goto(appPath(`/sessions/${sessionId}`));
-    await expect(page.getByTestId('run-view')).toBeVisible({ timeout: 45_000 });
+    // The open page follows deletion without navigation; a fresh page must
+    // present the same readable history and read-only composer.
+    for (const view of ['live', 'cold']) {
+      await test.step(`${view} deleted-Agent history`, async () => {
+        if (view === 'cold') await page.reload();
+        await expect(page.getByTestId('run-view')).toBeVisible({ timeout: 45_000 });
 
-    await expect(
-      page.getByTestId('user-message').filter({ hasText: marker }).last(),
-      'the historical user message renders after agent deletion',
-    ).toBeVisible({ timeout: 45_000 });
-    await expect(
-      page.getByTestId('assistant-message').last(),
-      'the historical assistant reply renders after agent deletion',
-    ).toBeVisible({ timeout: 45_000 });
+        await expect(
+          page.getByTestId('user-message').filter({ hasText: marker }).last(),
+          'the historical user message renders after agent deletion',
+        ).toBeVisible({ timeout: 45_000 });
+        await expect(
+          page.getByTestId('assistant-message').last(),
+          'the historical assistant reply renders after agent deletion',
+        ).toBeVisible({ timeout: 45_000 });
 
-    // A DELETED agent runtime forces canSend=false. With no pending interaction,
-    // the disabled textarea is the page's read-only history state.
-    const textarea = page.getByTestId('composer-prompt');
-    await expect(textarea, 'the composer is read-only for deleted-agent history').toBeDisabled({ timeout: 30_000 });
-    await expect(
-      textarea,
-      'the read-only composer still shows a placeholder hint',
-    ).toHaveAttribute('placeholder', /\S/);
+        const textarea = page.getByTestId('composer-prompt');
+        await expect(textarea, 'the composer is read-only for deleted-agent history').toBeDisabled({ timeout: 30_000 });
+        await expect(
+          textarea,
+          'the read-only composer still shows a placeholder hint',
+        ).toHaveAttribute('placeholder', /\S/);
 
-    // The run-view header presents a calm terminal state: TERMINATED with no
-    // pulse distinguishes archived history from a live or recoverable session.
-    const pill = page.getByTestId('run-view').getByTestId('status-pill').first();
-    await expect(
-      pill,
-      'deleted-agent history reads as a terminal record',
-    ).toHaveAttribute('data-state', 'TERMINATED', { timeout: 30_000 });
-    await expect(
-      pill,
-      'deleted-agent history is not live/generating',
-    ).toHaveAttribute('data-pulse', 'false');
+        const pill = page.getByTestId('run-view').getByTestId('status-pill').first();
+        await expect(
+          pill,
+          'deleted-agent history reads as a terminal record',
+        ).toHaveAttribute('data-state', 'TERMINATED', { timeout: 30_000 });
+        await expect(
+          pill,
+          'deleted-agent history is not live/generating',
+        ).toHaveAttribute('data-pulse', 'false');
+      });
+    }
   } finally {
     // The session and the agent are not released here. `trackSessions()` and
     // `onPassOnly()` decide in afterEach hooks, where the test's real status is

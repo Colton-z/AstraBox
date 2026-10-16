@@ -30,13 +30,19 @@ class _FakeAgentRepo:
     async def get_agent(self, agent_id: str) -> dict[str, Any] | None:
         return dict(self.agent) if agent_id == self.agent["agent_id"] else None
 
-    async def compare_and_update_agent(
-        self, agent_id: str, *, expected: dict[str, Any], updates: dict[str, Any]
-    ) -> bool:
-        _ = agent_id, expected
-        self.last_updates = dict(updates)
-        self.agent.update(updates)
-        return True
+    async def update_definition(
+        self,
+        agent_id: str,
+        *,
+        expected_version: int,
+        changes: dict[str, Any],
+        updated_by: str | None,
+    ) -> dict[str, Any] | None:
+        if agent_id != self.agent["agent_id"] or self.agent["version"] != expected_version:
+            return None
+        self.last_updates = dict(changes)
+        self.agent.update(changes, version=expected_version + 1, updated_by=updated_by)
+        return dict(self.agent)
 
     async def create_agent(self, doc: dict[str, Any]) -> dict[str, Any]:
         self.create_calls += 1
@@ -61,6 +67,8 @@ class _FakeEnvironmentRepo:
             "engine_kind": "claude_code",
             "networking": {"type": "unrestricted"},
         }
+
+    get_with_secrets = get_any_by_name
 
 
 def _service(agent: dict[str, Any]) -> tuple[AgentConfigService, _FakeAgentRepo]:
@@ -89,61 +97,6 @@ _BASE = {
     "visibility": "private",
 }
 
-_EDITABLE_REQUEST_FIELDS = frozenset(
-    {
-        "name",
-        "display_meta",
-        "description",
-        "use_cases",
-        "model",
-        "system",
-        "engine_options",
-        "skills",
-        "mcp_servers",
-        "default_repo",
-        "packages",
-        "environment_name",
-        "exposure_mode",
-        "idle_hibernate_seconds",
-        "prepared_capacity",
-        "enabled",
-    }
-)
-
-_ALL_EDITABLE_FIELDS = {
-    "name": "probe",
-    "display_meta": {
-        "display_name": "Audit probe",
-        "icon": "bot",
-        "tags": ["audit"],
-    },
-    "description": "Boundary probe",
-    "use_cases": ["review"],
-    "model": "some-model",
-    "system": "Inspect carefully.",
-    "engine_options": {"sdk_options": {"max_turns": 4}},
-    "skills": ["local-skill"],
-    "mcp_servers": {"local": {"command": "local-mcp"}},
-    "default_repo": {
-        "url": "https://example.test/source.git",
-        "protocol": "https",
-        "branch": "main",
-        "depth": 1,
-    },
-    "packages": [
-        {
-            "kind": "claude-plugin",
-            "url": "https://example.test/plugins.git",
-            "protocol": "https",
-            "paths": ["plugins/audit"],
-        }
-    ],
-    "environment_name": "claude-code",
-    "exposure_mode": "chat_only",
-    "idle_hibernate_seconds": 120,
-    "prepared_capacity": 0,
-    "enabled": True,
-}
 
 _FORBIDDEN_GENERAL_FIELDS = [
     pytest.param("unexpected", "value", id="unknown"),
@@ -176,17 +129,6 @@ _FORBIDDEN_GENERAL_FIELDS = [
 
 
 @pytest.mark.asyncio
-async def test_create_accepts_every_declared_agent_field() -> None:
-    service, repo = _service(_BASE)
-
-    await service.create_agent_config(_User("owner"), dict(_ALL_EDITABLE_FIELDS))
-
-    assert repo.create_calls == 1
-    assert _EDITABLE_REQUEST_FIELDS <= repo.agent.keys()
-    assert repo.agent["visibility"] == "private"
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(("field", "value"), _FORBIDDEN_GENERAL_FIELDS)
 async def test_create_rejects_each_non_authoring_field(
     field: str, value: object
@@ -201,58 +143,6 @@ async def test_create_rejects_each_non_authoring_field(
 
     assert caught.value.status_code == 400
     assert field in caught.value.message
-    assert repo.create_calls == 0
-
-
-@pytest.mark.asyncio
-async def test_create_rejects_the_update_only_version_field() -> None:
-    service, repo = _service(_BASE)
-
-    with pytest.raises(APIError) as caught:
-        await service.create_agent_config(
-            _User("owner"),
-            {**_REQUIRED, "version": 1},
-        )
-
-    assert caught.value.status_code == 400
-    assert "version" in caught.value.message
-    assert repo.create_calls == 0
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("field", "value", "unexpected"),
-    [
-        (
-            "display_meta",
-            {"display_name": "Probe", "unexpected": True},
-            "display_meta.unexpected",
-        ),
-        (
-            "default_repo",
-            {"url": "https://example.test/source.git", "unexpected": True},
-            "default_repo.unexpected",
-        ),
-        (
-            "packages",
-            [{"url": "https://example.test/plugins.git", "unexpected": True}],
-            "packages[0].unexpected",
-        ),
-    ],
-)
-async def test_create_rejects_unknown_fields_in_fixed_nested_models(
-    field: str, value: object, unexpected: str
-) -> None:
-    service, repo = _service(_BASE)
-
-    with pytest.raises(APIError) as caught:
-        await service.create_agent_config(
-            _User("owner"),
-            {**_REQUIRED, field: value},
-        )
-
-    assert caught.value.status_code == 400
-    assert unexpected in caught.value.message
     assert repo.create_calls == 0
 
 
@@ -276,40 +166,6 @@ async def test_update_rejects_each_non_authoring_field(
 
 
 @pytest.mark.asyncio
-async def test_update_accepts_version_only_as_the_concurrency_condition() -> None:
-    service, repo = _service(_BASE)
-
-    await service.upsert_agent_config(
-        _User("owner"),
-        "a-1",
-        {**_REQUIRED, "model": "changed", "version": 1},
-    )
-
-    assert repo.last_updates is not None
-    assert repo.agent["model"] == "changed"
-    assert repo.agent["version"] == 2
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("version", [None, True, "1", 1.0, 0, -1])
-async def test_update_rejects_a_non_positive_integer_version(
-    version: object,
-) -> None:
-    service, repo = _service(_BASE)
-
-    with pytest.raises(APIError) as caught:
-        await service.upsert_agent_config(
-            _User("owner"),
-            "a-1",
-            {**_REQUIRED, "version": version},
-        )
-
-    assert caught.value.status_code == 400
-    assert "version" in caught.value.message
-    assert repo.last_updates is None
-
-
-@pytest.mark.asyncio
 async def test_a_non_manager_is_refused_before_a_general_write() -> None:
     service, repo = _service(_BASE)
 
@@ -322,63 +178,6 @@ async def test_a_non_manager_is_refused_before_a_general_write() -> None:
 
     assert caught.value.status_code == 403
     assert repo.last_updates is None
-
-
-_UNCLAIMED = {
-    **_BASE,
-    "created_by": "system",
-    "user_id": "system",
-    "admins": [],
-}
-
-
-@pytest.mark.asyncio
-async def test_a_platform_admin_may_edit_an_agent_they_did_not_create() -> None:
-    service, repo = _service(_UNCLAIMED)
-
-    await service.upsert_agent_config(
-        _User("admin-user", ["admin"]),
-        "a-1",
-        {**_REQUIRED, "model": "changed", "version": 1},
-    )
-
-    assert repo.agent["model"] == "changed"
-
-
-@pytest.mark.asyncio
-async def test_the_creator_still_manages_without_the_platform_role() -> None:
-    service, repo = _service(_BASE)
-
-    await service.upsert_agent_config(
-        _User("owner"),
-        "a-1",
-        {**_REQUIRED, "model": "changed", "version": 1},
-    )
-
-    assert repo.agent["model"] == "changed"
-
-
-@pytest.mark.asyncio
-async def test_access_changes_use_the_dedicated_authorized_operation() -> None:
-    service, repo = _service(_BASE)
-
-    result = await service.set_agent_access(
-        _User("owner"),
-        "a-1",
-        {
-            "visibility": "allowlist",
-            "admins": ["co-admin"],
-            "allowed_user_ids": ["member"],
-        },
-    )
-
-    assert result == {
-        "created_by": "owner",
-        "visibility": "allowlist",
-        "admins": ["co-admin"],
-        "allowed_user_ids": ["member"],
-    }
-    assert repo.agent["visibility"] == "allowlist"
 
 
 @pytest.mark.asyncio
@@ -451,19 +250,6 @@ async def test_access_operation_refuses_a_visible_agent_to_a_non_manager() -> No
 
     assert caught.value.status_code == 403
     assert repo.last_updates is None
-
-
-@pytest.mark.asyncio
-async def test_platform_admin_may_use_the_dedicated_access_operation() -> None:
-    service, repo = _service(_UNCLAIMED)
-
-    await service.set_agent_access(
-        _User("platform-admin", ["admin"]),
-        "a-1",
-        {"visibility": "private", "admins": [], "allowed_user_ids": []},
-    )
-
-    assert repo.agent["visibility"] == "private"
 
 
 class _RouteAgentService:

@@ -414,12 +414,6 @@ CONVERSATION_UID_BASE = 2000
 #: silently, which is worse than an agent that stops taking new conversations.
 CONVERSATION_UID_CEILING = 60000
 
-#: Concurrent claims on one agent's cursor are resolved by retry, not by a lock.
-#: The bound is small because contention is per agent: it takes two of the same
-#: agent's conversations starting in the same instant to collide once.
-_UID_ALLOCATION_ATTEMPTS = 8
-
-
 async def allocate_agent_scoped_uid(agent_repo: Any, agent_id: str) -> int:
     """Hand out a POSIX owner no conversation of this agent has held before.
 
@@ -434,8 +428,8 @@ async def allocate_agent_scoped_uid(agent_repo: Any, agent_id: str) -> int:
     share a box needs a deployment-wide cursor instead, and this is the function
     that would have to change.
 
-    Claimed by compare-and-set on the agent row so two conversations starting
-    together cannot read the same cursor and both take it.
+    The repository moves the cursor in one statement, so two conversations
+    starting together cannot both take the same number.
     """
     agent_key = str(agent_id or "").strip()
     if not agent_key:
@@ -444,45 +438,25 @@ async def allocate_agent_scoped_uid(agent_repo: Any, agent_id: str) -> int:
             message="cannot allocate a conversation uid without an agent id",
             status_code=500,
         )
-    for _ in range(_UID_ALLOCATION_ATTEMPTS):
-        agent = await agent_repo.get_agent(agent_key)
-        if not isinstance(agent, dict):
-            raise APIError(
-                code="AGENT_NOT_FOUND",
-                message=f"agent {agent_key} not found while allocating a conversation uid",
-                status_code=404,
-            )
-        current = agent.get("conversation_uid_cursor")
-        cursor = int(current) if isinstance(current, int) else CONVERSATION_UID_BASE - 1
-        allocated = max(cursor + 1, CONVERSATION_UID_BASE)
-        if allocated > CONVERSATION_UID_CEILING:
-            raise APIError(
-                code="AGENT_RUNTIME_ERROR",
-                message=(
-                    f"agent {agent_key} has exhausted its conversation uid range "
-                    f"({CONVERSATION_UID_BASE}-{CONVERSATION_UID_CEILING}); numbers are "
-                    "never recycled because files outlive the conversations that wrote them"
-                ),
-                status_code=500,
-            )
-        # `expected` carries the cursor this loop just read. A racing claim moves
-        # it, this update matches nothing, and the retry re-reads rather than
-        # overwriting.
-        if await agent_repo.compare_and_update_agent(
-            agent_key,
-            expected={"conversation_uid_cursor": current}
-            if isinstance(current, int)
-            else {"conversation_uid_cursor": {"$exists": False}},
-            updates={"conversation_uid_cursor": allocated},
-        ):
-            return allocated
+    allocated = await agent_repo.allocate_conversation_uid(
+        agent_key, first=CONVERSATION_UID_BASE, last=CONVERSATION_UID_CEILING
+    )
+    if allocated is not None:
+        return int(allocated)
+    if await agent_repo.get_agent(agent_key) is None:
+        raise APIError(
+            code="AGENT_NOT_FOUND",
+            message=f"agent {agent_key} not found while allocating a conversation uid",
+            status_code=404,
+        )
     raise APIError(
         code="AGENT_RUNTIME_ERROR",
         message=(
-            f"could not claim a conversation uid for agent {agent_key} after "
-            f"{_UID_ALLOCATION_ATTEMPTS} attempts"
+            f"agent {agent_key} has exhausted its conversation uid range "
+            f"({CONVERSATION_UID_BASE}-{CONVERSATION_UID_CEILING}); numbers are "
+            "never recycled because files outlive the conversations that wrote them"
         ),
-        status_code=503,
+        status_code=500,
     )
 
 
@@ -684,26 +658,6 @@ def normalize_runtime_identity(value: Any) -> dict[str, Any] | None:
             except (TypeError, ValueError):
                 normalized.pop(int_key, None)
     return normalized
-
-
-def mark_runtime_identity_failed(
-    identity: dict[str, Any] | None,
-    error: BaseException,
-    *,
-    stage: str,
-) -> dict[str, Any] | None:
-    normalized = normalize_runtime_identity(identity)
-    if not normalized:
-        return None
-    failed = dict(normalized)
-    failed["status"] = "failed"
-    failed["current_stage"] = stage
-    evidence = failed.get("stage_evidence") if isinstance(failed.get("stage_evidence"), dict) else {}
-    failed["stage_evidence"] = {
-        **evidence,
-        f"{stage}_error": str(error),
-    }
-    return failed
 
 
 def _render_username(
@@ -1290,79 +1244,6 @@ async def provision_conversation_identity_with_bootstrap_script(
     return ready
 
 
-async def provision_conversation_identity(sandbox: Any, identity: dict[str, Any]) -> dict[str, Any]:
-    """Create and verify the Linux user/home/workspace for a conversation."""
-    normalized = normalize_runtime_identity(identity)
-    if not normalized:
-        raise APIError(
-            code="CONVERSATION_IDENTITY_INVALID",
-            message="runtime_identity is missing required fields",
-            status_code=500,
-        )
-    user = normalized["linux_user"]
-    home = normalized["home_dir"]
-    workspace = normalized["workspace_source_dir"]
-    config = normalized["config_dir"]
-    cache = normalized["cache_dir"]
-    temp = normalized["temp_dir"]
-    script = f"""
-set -euo pipefail
-user={shlex.quote(user)}
-home={shlex.quote(home)}
-workspace={shlex.quote(workspace)}
-config={shlex.quote(config)}
-cache={shlex.quote(cache)}
-tmpdir={shlex.quote(temp)}
-trap 'rc=$?; printf "CONVERSATION_IDENTITY_PROVISION_FAILED line=%s rc=%s\\n" "$LINENO" "$rc" >&2; exit "$rc"' ERR
-{_IDENTITY_BOOTSTRAP_REQUIRED_COMMANDS_SCRIPT}
-identity_error_prefix=CONVERSATION_IDENTITY
-
-{_CONVERSATION_IDENTITY_BOOTSTRAP_FUNCTIONS}
-
-establish_conversation_identity_root
-	actual_user=$(runuser -u "$user" -- id -un)
-	test "$actual_user" = "$user"
-	actual_home=$(runuser -u "$user" -- bash -lc 'printf "%s" "$HOME"')
-	test "$actual_home" = "$home"
-	actual_pwd=$(runuser -u "$user" -- bash -lc 'cd "$1" && pwd -P' _ "$workspace")
-	test "$actual_pwd" = "$workspace"
-	uid=$(id -u "$user")
-	gid=$(id -g "$user")
-printf 'CONVERSATION_IDENTITY_READY user=%s uid=%s gid=%s home=%s workspace=%s\\n' "$user" "$uid" "$gid" "$home" "$workspace"
-"""
-    result = await _run_identity_command(
-        sandbox,
-        f"bash -lc {shlex.quote(script)}",
-        timeout=None,
-        error_code="CONVERSATION_IDENTITY_UNSUPPORTED",
-        error_message="failed to provision conversation identity",
-    )
-    output = _command_output(result)
-    if result.exit_code != 0 or "CONVERSATION_IDENTITY_READY" not in output:
-        raise APIError(
-            code="CONVERSATION_IDENTITY_UNSUPPORTED",
-            message=f"failed to provision conversation identity: {_failure_reason(result)}; output={output[:2000]!r}",
-            status_code=502,
-        )
-    ready = dict(normalized)
-    ready["status"] = "ready"
-    ready["current_stage"] = "ready"
-    ready["stage_evidence"] = {
-        **(ready.get("stage_evidence") if isinstance(ready.get("stage_evidence"), dict) else {}),
-        "provision_output": output[:1000],
-    }
-    uid_gid = _parse_identity_ready_line(output)
-    ready.update(uid_gid)
-    logger.info(
-        "conversation identity provisioned: session=%s sandbox=%s user=%s workspace=%s",
-        ready.get("session_id"),
-        ready.get("sandbox_id"),
-        ready.get("linux_user"),
-        ready.get("workspace_dir"),
-    )
-    return ready
-
-
 def _env_shape(env: dict[str, str] | None) -> str:
     """The environment as names and lengths — never values.
 
@@ -1389,24 +1270,6 @@ def _failure_reason(result: SandboxCommandResult) -> str:
     if result.exit_code != 0:
         return f"exit_code={result.exit_code}"
     return "missing readiness marker"
-
-
-def _parse_identity_ready_line(output: str) -> dict[str, int]:
-    for line in str(output or "").splitlines():
-        if not line.startswith("CONVERSATION_IDENTITY_READY "):
-            continue
-        parsed: dict[str, int] = {}
-        for part in line.split()[1:]:
-            if "=" not in part:
-                continue
-            key, value = part.split("=", 1)
-            if key in {"uid", "gid"}:
-                try:
-                    parsed[key] = int(value)
-                except ValueError:
-                    pass
-        return parsed
-    return {}
 
 
 def _parse_bootstrap_ready_line(output: str) -> dict[str, Any]:

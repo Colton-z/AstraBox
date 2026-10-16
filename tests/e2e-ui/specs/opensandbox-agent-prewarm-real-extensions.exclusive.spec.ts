@@ -15,7 +15,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { AstraApi, type AdminSessionRecord, type SessionRecord } from '../fixtures/astraApi';
 import { revealAssistantProcess } from '../fixtures/assistantProcess';
 import { onPassOnly } from '../fixtures/sessionCleanup';
-import { sessionDoc, snapshotDoc } from '../fixtures/dbOracle';
+import { postgresRows, sqlLiteral } from '../fixtures/dbOracle';
 import { absoluteBaseUrl, appPath, parseTimeoutEnv } from '../fixtures/env';
 import { PlatformApi } from '../fixtures/platformApi';
 import { requireSandboxHandle, restartServerContainer, sandboxExec } from '../fixtures/sandboxOps';
@@ -211,16 +211,35 @@ function placement(session: AdminSessionRecord, shared: boolean): Placement {
   return resolved;
 }
 
-async function waitForIsolatedTerminalBinding(sessionId: string): Promise<string> {
+/** One command of a session's web terminal, as `terminal_commands` records it. */
+interface TerminalCommandRow {
+  command_id: string;
+  command: string;
+  status: string;
+  execution_id: string | null;
+}
+
+/**
+ * The session's terminal command carrying `marker`, once it is recorded running.
+ *
+ * The recorded row is what the terminal's interrupt acts on, so the stop is
+ * requested only after the platform holds the command as running.
+ */
+async function waitForRunningTerminalCommand(sessionId: string, marker: string): Promise<TerminalCommandRow> {
   const deadline = Date.now() + 30_000;
-  let last = '';
+  let last: TerminalCommandRow[] = [];
   while (Date.now() < deadline) {
-    last = String(snapshotDoc(sessionId)?.active_terminal_execution_id || '').trim();
-    if (last.startsWith('isolated-run:')) return last;
+    last = postgresRows<TerminalCommandRow>(
+      `SELECT command_id, command, status, execution_id FROM terminal_commands `
+        + `WHERE session_id = ${sqlLiteral(sessionId)} ORDER BY started_at`,
+    );
+    const running = last.filter((row) => row.status === 'running' && row.command.includes(marker));
+    if (running.length === 1) return running[0];
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error(
-    `shared terminal did not publish its isolated execution binding within 30000ms; last=${last || '<none>'}`,
+    `the terminal command carrying ${marker} was not recorded running within 30000ms; `
+      + `commands=${JSON.stringify(last.map((row) => ({ status: row.status, execution_id: row.execution_id })))}`,
   );
 }
 
@@ -486,13 +505,15 @@ test.describe.serial('OpenSandbox Agent prepared runtimes', () => {
     additionalAgentIds = [];
 
     try {
-      const agent = await api.createAgent(
-        extensionAgentCreateConfig(agentName, model, SHARED_ENVIRONMENT),
-      );
+      const agent = await api.createAgent({
+        ...extensionAgentCreateConfig(agentName, model, SHARED_ENVIRONMENT),
+        prepared_capacity: 2,
+      });
       agentId = String(agent.agent_id || '');
       expect(agentId).not.toEqual('');
 
       const pool = await waitForPoolReady(platform, agentId);
+      expect(pool.preparedCount, 'the two shared conversations need two prepared seats').toBeGreaterThanOrEqual(2);
       expect(
         pool.clientPoolName,
         'shared tenancy must use the OpenSandbox SDK client pool',
@@ -520,7 +541,7 @@ test.describe.serial('OpenSandbox Agent prepared runtimes', () => {
       const refilled = await waitForPoolReady(platform, agentId);
       expect(
         refilled.sandboxId,
-        'Agent-tenancy refill must prepare another isolated runtime in the Agent-owned box',
+        'the second prepared runtime must remain in the first conversation\'s box',
       ).toBe(first.sandboxId);
       expect(refilled.runtimeGeneration).toBe(pool.runtimeGeneration);
       expect(refilled.clientPoolName).toBe(pool.clientPoolName);
@@ -569,13 +590,24 @@ test.describe.serial('OpenSandbox Agent prepared runtimes', () => {
         undefined,
         120_000,
       );
-      const isolatedExecutionId = await waitForIsolatedTerminalBinding(firstId);
-      expect(isolatedExecutionId).toContain(firstId);
-      const interruptResult = await api.interruptSession(firstId);
-      expect(String((interruptResult as Record<string, unknown>).status || '')).toBe('completed');
+      const runningCommand = await waitForRunningTerminalCommand(firstId, interruptMarker);
+      expect(
+        runningCommand.execution_id,
+        'a shared-box terminal runs in its isolation session, not in a box-level shell process',
+      ).toBeNull();
+      // The terminal's own stop, not the conversation interrupt: it answers
+      // once the running command has ended.
+      const interruptResult = await api.data<{ session_id: string; status: string }>(
+        'POST',
+        `/sessions/${firstId}/terminal/interrupt`,
+      );
+      expect(interruptResult).toEqual({ session_id: firstId, status: 'completed' });
       const interruptedTerminal = await longTerminal;
       expect(interruptedTerminal).toContain(interruptMarker);
-      expect(interruptedTerminal).toContain('"exit_code": 130');
+      expect(
+        sseFrames(interruptedTerminal).filter((frame) => frame.type === 'exit').map((frame) => frame.exit_code),
+        'the interrupted command must end with the interrupt status',
+      ).toEqual([130]);
       const firstAfterInterrupt = placement(await api.adminSessionDetail(firstId), true);
       expect(firstAfterInterrupt.sandboxId).toBe(first.sandboxId);
       expect(firstAfterInterrupt.isolatedSessionId).toBe(first.isolatedSessionId);
@@ -591,7 +623,8 @@ test.describe.serial('OpenSandbox Agent prepared runtimes', () => {
       await useRealSkillAndPlugin(api, firstId, `P144_SHARED_EXTENSIONS_${runId}`);
       await expectToolCards(page, firstId);
       expectPluginDescription(
-        expectExtensionCommandMetadata(await api.getSession(firstId)), descriptionFragments,
+        expectExtensionCommandMetadata(await api.waitForSessionReady(firstId, READY_TIMEOUT_MS)),
+        descriptionFragments,
       );
       await expectExtensionCommandMenu(page, descriptionFragments);
 
@@ -615,10 +648,13 @@ test.describe.serial('OpenSandbox Agent prepared runtimes', () => {
       await restartServerContainer(absoluteBaseUrl());
       await api.deleteSession(firstId);
       sessions.delete(firstId);
-      const deletedRow = sessionDoc(firstId);
-      expect(deletedRow?.deleted).toBe(true);
+      const deletedRows = postgresRows<{ deleted: boolean; undestroyed_sandbox_ids: string[] }>(
+        `SELECT deleted, undestroyed_sandbox_ids FROM sessions WHERE session_id = ${sqlLiteral(firstId)}`,
+      );
+      expect(deletedRows, 'a deleted conversation keeps its row').toHaveLength(1);
+      expect(deletedRows[0].deleted).toBe(true);
       expect(
-        deletedRow?.undestroyed_sandbox_ids ?? [],
+        deletedRows[0].undestroyed_sandbox_ids,
         'a successfully released child session is not a leaked sandbox',
       ).toEqual([]);
 
@@ -680,7 +716,8 @@ test.describe.serial('OpenSandbox Agent prepared runtimes', () => {
       await useRealSkillAndPlugin(api, firstId, `P144_CONVERSATION_V1_${runId}`);
       await expectToolCards(page, firstId);
       expectPluginDescription(
-        expectExtensionCommandMetadata(await api.getSession(firstId)), descriptionFragments,
+        expectExtensionCommandMetadata(await api.waitForSessionReady(firstId, READY_TIMEOUT_MS)),
+        descriptionFragments,
       );
       await expectExtensionCommandMenu(page, descriptionFragments);
 

@@ -136,8 +136,9 @@ curl -X POST \
 AstraBox does not run the browser authorization flow. Obtain the token from the
 remote MCP service, then store it in the Vault. When the Credential contains a
 valid refresh configuration, AstraBox refreshes an expired access token when
-preparing or reconnecting the runtime and before each top-level Agent task.
-It does not check token expiry before every individual MCP HTTP request.
+preparing or reconnecting the runtime and before it hands the Agent program
+each message. It does not check token expiry before every individual MCP HTTP
+request.
 
 For a service that uses a custom request header, use `mcp_static_header`. To
 make another service credential available as an environment variable, use
@@ -272,8 +273,11 @@ Agent prompt, or error report. See the [configuration steps](#private-git-reposi
 
 **Q: What happens when an MCP OAuth token expires?** A: If the Credential has a
 refresh token and refresh configuration, AstraBox refreshes an expired token
-during runtime preparation or reconnect and before the next top-level Agent
-task. If refresh is unavailable or no longer valid, rotate the
+during runtime preparation or reconnect and before it hands the Agent program
+the next message. When several conversations or server replicas find the token
+expired at the same time, one of them refreshes it and the others use the new
+token, so a provider that rotates refresh tokens on every use keeps accepting
+the Credential. If refresh is unavailable or no longer valid, rotate the
 Credential.
 
 **Q: Can I update a Credential's token?** A: Yes. A `PATCH` request rotates the

@@ -139,8 +139,8 @@ export function StatusPill({
  *
  * Matching English words against the label — the translated string a user
  * sees — breaks in every other language: no pattern matches, so every row
- * falls through to `idle`. Six distinct states — 处理中, 等待回答, 后台运行中,
- * 创建中, 已终止, 待恢复 — then render in the same grey, and `idle` is the one
+ * falls through to `idle`. Five distinct states — 处理中, 等待回答, 创建中,
+ * 已终止, 待恢复 — then render in the same grey, and `idle` is the one
  * tone that carries no fill, so switching language silently erases the status
  * column while the theme is untouched.
  *
@@ -153,10 +153,10 @@ export function toneForState(state?: string): PillTone {
   // done (calm mint), never the breathing running pulse: the e2e suite asserts
   // `data-pulse=false` here as "no phantom generating tail".
   if (s === 'READY') return 'done';
-  if (['BACKGROUND_RUNNING', 'PROCESSING', 'BUSY', 'SENDING', 'ACTIVE', 'RUNNING'].includes(s)) {
+  if (['PROCESSING', 'SENDING', 'ACTIVE', 'RUNNING'].includes(s)) {
     return 'running';
   }
-  if (['CREATING', 'PROVISIONING', 'STARTING', 'PENDING', 'WAITING_INPUT', 'INTERRUPTING', 'TERMINATING', 'HIBERNATING', 'IDLE', 'PAUSED'].includes(s)) {
+  if (['CREATING', 'PROVISIONING', 'STARTING', 'PENDING', 'WAITING_INPUT', 'TERMINATING', 'HIBERNATING', 'IDLE', 'PAUSED'].includes(s)) {
     return 'pending';
   }
   if (['RECOVERY_REQUIRED', 'FAILED', 'ERROR'].includes(s)) return 'failed';

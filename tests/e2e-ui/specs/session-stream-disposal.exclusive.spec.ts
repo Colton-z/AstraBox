@@ -82,7 +82,7 @@ async function observeHistoryConsumption(page: Page, sessionId: string): Promise
     };
   }, {
     historyPath: apiPath(`/sessions/${sessionId}/history-blocks`),
-    streamPath: apiPath(`/sessions/${sessionId}/ai-stream`),
+    streamPath: apiPath(`/sessions/${sessionId}/stream`),
   });
 }
 
@@ -109,13 +109,13 @@ test('leaving during initial history load prevents a late stream from blocking A
   sessions.push(sessionId);
   const ready = await api.waitForSessionReady(sessionId);
   expect(ready.state).toBe('READY');
-  expect(ready.current_turn_id).toBeFalsy();
+  expect(ready.current_responses ?? [], 'nothing may be running before the page opens').toEqual([]);
 
   let heldRequests = 0;
   let heldResponseReady = false;
   let originalBody = '';
   const historyPath = apiPath(`/sessions/${sessionId}/history-blocks`);
-  const streamPath = apiPath(`/sessions/${sessionId}/ai-stream`);
+  const streamPath = apiPath(`/sessions/${sessionId}/stream`);
   const agentPath = apiPath(`/agents/${agentId}`);
   const historyRoute = async (route: Route) => {
     if (route.request().method() !== 'GET') return route.continue();
@@ -201,7 +201,7 @@ test('leaving during initial history load prevents a late stream from blocking A
     expect(await page.evaluate(() => performance.timeOrigin), 'departure must remain a single SPA document').toBe(documentStartedAt);
     const idle = await api.getSession(sessionId);
     expect(idle.state).toBe('READY');
-    expect(idle.current_turn_id).toBeFalsy();
+    expect(idle.current_responses ?? [], 'leaving the page must not have started anything').toEqual([]);
   } finally {
     if (!page.isClosed()) {
       await page.evaluate(() => (window as DisposalWindow).__historyDisposal?.disarm());

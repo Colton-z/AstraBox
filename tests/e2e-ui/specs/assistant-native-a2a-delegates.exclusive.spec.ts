@@ -3,8 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { expect, test, type APIRequestContext } from '@playwright/test';
 
 import { AstraApi, messageText } from '../fixtures/astraApi';
-import { documentsByField } from '../fixtures/dbOracle';
 import { apiPath } from '../fixtures/env';
+import { agentTaskReferences, sessionRow } from '../fixtures/ingressRecords';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 
 type Task = {
@@ -80,7 +80,7 @@ test('Hermes native A2A delegates two context-linked turns and returns the targe
   expect(reply.text).toContain(marker + suffix);
 
   // Fresh target Agent isolates these references from every other conversation.
-  const references = documentsByField('agent_task_references', '$.agent_id', agentId);
+  const references = agentTaskReferences(agentId);
   const tasks = references.filter((row) => row.kind === 'task');
   expect(tasks, JSON.stringify(references)).toHaveLength(2);
   const targetIds = [...new Set(tasks.map((row) => String(row.session_id || '')))];
@@ -92,15 +92,15 @@ test('Hermes native A2A delegates two context-linked turns and returns the targe
   const contexts = [...new Set(tasks.map((row) => String(row.context_id || '')))];
   expect(contexts).toHaveLength(1);
   expect(contexts[0]).not.toBe('');
-  const source = documentsByField('sessions', '$.session_id', sourceId)[0];
-  const target = documentsByField('sessions', '$.session_id', targetId)[0];
-  expect(source.user_id).toBeTruthy();
-  expect(target).toMatchObject({ user_id: source.user_id, agent_id: agentId, source_type: 'a2a' });
-  expect(tasks.every((row) => row.user_id === source.user_id)).toBe(true);
+  const source = sessionRow(sourceId);
+  const target = sessionRow(targetId);
+  expect(source?.user_id).toBeTruthy();
+  expect(target).toMatchObject({ user_id: source?.user_id, agent_id: agentId, source_type: 'a2a' });
+  expect(tasks.every((row) => row.user_id === source?.user_id)).toBe(true);
   expect(reply.text).toContain(targetId);
   expect(reply.text).toContain(contexts[0]);
 
-  const observed = await Promise.all(tasks.map((row) => observe<Task>(request, agentId, 'GetTask', { id: row._id })));
+  const observed = await Promise.all(tasks.map((row) => observe<Task>(request, agentId, 'GetTask', { id: row.reference_id })));
   for (const task of observed) {
     expect(task.contextId).toBe(contexts[0]);
     expect(task.status.state).toBe('TASK_STATE_COMPLETED');
@@ -110,7 +110,7 @@ test('Hermes native A2A delegates two context-linked turns and returns the targe
   const listed = await observe<{ tasks: Task[] }>(request, agentId, 'ListTasks', {
     contextId: contexts[0], includeArtifacts: true, pageSize: 100,
   });
-  expect(listed.tasks.map((task) => task.id).sort()).toEqual(tasks.map((row) => String(row._id)).sort());
+  expect(listed.tasks.map((task) => task.id).sort()).toEqual(tasks.map((row) => row.reference_id).sort());
   const texts = observed.map((task) => task.artifacts?.flatMap((artifact) => artifact.parts)
     .map((part) => part.text || '').join('\n') || '');
   expect(texts).toContainEqual(expect.stringContaining(marker + suffix));

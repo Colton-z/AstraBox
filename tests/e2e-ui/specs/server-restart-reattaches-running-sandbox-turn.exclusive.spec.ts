@@ -1,46 +1,46 @@
 /**
  * E2E: restarting the server during a running sandbox command restores and
- * settles the same turn.
+ * settles the same response.
  *
- * A long Bash command starts from the composer and must have a durable live
- * owner before restart. The sandbox and command survive while the shared server
- * container restarts. After a full page reload, the same turn must settle
- * COMPLETED exactly once, the Bash card must show a finished result, and the
- * composer must accept another message.
+ * A long Bash command starts from the composer and must have a live session
+ * reader before restart: the response is recorded running and the session's
+ * reader lease (`session_readers`) is live. The sandbox and command survive
+ * while the shared server container restarts; the new process takes the reader
+ * lease over once the dead process's lease expires and resumes reading the
+ * runtime from the recorded cursor. After a full page reload, the same
+ * response must end completed exactly once, the Bash card must show a finished
+ * result, and the composer must accept another message.
  *
  * The test is exclusive because restarting the server disrupts every session on
- * the host. A bounded frame probe skips when the model does not run Bash; a tool
- * frame that exists durably but does not render remains a failure.
+ * the host. A bounded probe asks again when the model does not run Bash; a tool
+ * call that was recorded but does not render remains a failure.
  */
 import { test, expect } from '@playwright/test';
 
 import { insist } from '../fixtures/insist';
-import { AstraApi, messageText } from '../fixtures/astraApi';
+import { AstraApi, messageText, messageToolCalls } from '../fixtures/astraApi';
 import { openLiveProcessGroup, revealAssistantProcess } from '../fixtures/assistantProcess';
 import { trackSessions } from '../fixtures/sessionCleanup';
 import { appPath, absoluteBaseUrl } from '../fixtures/env';
 import {
-  framesForTurn,
-  sessionEvents,
-  snapshotDoc,
-  turnSnapshot,
-  waitForTurnTerminalProof,
+  postgresRows,
+  sessionOutputRows,
+  sessionResponseRows,
+  sqlLiteral,
+  type SessionResponseRow,
 } from '../fixtures/dbOracle';
 import { restartServerContainer } from '../fixtures/sandboxOps';
 
 const BASH_PROBE_TIMEOUT_MS = 120_000;
 const RECOVERY_TIMEOUT_MS = 360_000;
-// How stale the driving worker's heartbeat may be and still count as "a live
-// worker owns this turn". Generous: the point is that SOMEONE is driving it,
-// not to pin the heartbeat cadence.
-const WORKER_HEARTBEAT_FRESH_MS = 120_000;
 // The console is served by the container that just restarted: the reloaded page
 // re-fetches the bundle and its first API calls land on a freshly-booted
-// backend. Generous, so a cold start is not reported as a lost turn.
+// backend. Generous, so a cold start is not reported as a lost response.
 const REHYDRATE_RENDER_MS = 90_000;
-// Taken only AFTER the kernel reports the turn terminal, so this is the screen's
-// lag behind a settled backend — short on purpose. A header still pulsing here
-// is the phantom-"generating" failure a browser is the only witness to.
+// Taken only AFTER the platform recorded the response's end, so this is the
+// screen's lag behind a settled backend — short on purpose. A header still
+// pulsing here is the phantom-"generating" failure a browser is the only
+// witness to.
 const SETTLE_MS = 60_000;
 // How long the reloaded transcript gets to finish painting its tool cards.
 const RENDER_TIMEOUT_MS = 45_000;
@@ -50,15 +50,48 @@ const RENDER_TIMEOUT_MS = 45_000;
 // locale is en-US, so both are matched).
 // `\b` keeps "Bash" from matching the SDK's separate "BashOutput" tool.
 const BASH_CARD = /^Bash\b/;
-// Non-terminal states: a card left here after the turn settled is a tool whose
-// result the recovery lost.
+// Non-terminal states: a card left here after the response settled is a tool
+// whose result the takeover lost.
 const BASH_UNSETTLED = /^Bash\s+(Working|Awaiting confirmation|处理中|等待确认)/;
-// The card the recovered turn owes the user: the long command ran and its
+// The card the recovered response owes the user: the long command ran and its
 // result came back (state output-available), not an error terminal.
 const BASH_DONE = /^Bash\s+(Done|已完成)/;
-// A FAILED turn renders its error INTO the transcript as an assistant message,
-// so "there is a reply bubble" is satisfied by exactly the failure under test.
+// A FAILED response renders its error INTO the transcript as an assistant
+// message, so "there is a reply bubble" is satisfied by exactly the failure
+// under test.
 const TURN_ERROR = /API Error|AGENT_RUNTIME_ERROR|SANDBOX_GONE|Traceback/i;
+
+/** The session's reader lease: which process reads its runtime, and whether that lease is live. */
+interface ReaderLeaseRow {
+  owner: string;
+  generation: number;
+  live: boolean;
+}
+
+function readerLease(sessionId: string): ReaderLeaseRow | null {
+  return postgresRows<ReaderLeaseRow>(
+    `SELECT owner, generation, expires_at > now() AS live FROM session_readers `
+      + `WHERE session_id = ${sqlLiteral(sessionId)}`,
+  )[0] ?? null;
+}
+
+/**
+ * The running response whose recorded parts announce the Bash call, if any.
+ *
+ * Read from the parts the session's reader relayed for each running response,
+ * so the binding comes from the platform's own record of the call rather than
+ * from the page.
+ */
+function runningBashResponse(sessionId: string): SessionResponseRow | null {
+  for (const row of sessionResponseRows(sessionId)) {
+    if (row.status !== 'running') continue;
+    const announcesBash = sessionOutputRows(sessionId, row.response_id).some(({ part }) => (
+      String(part.type ?? '') === 'tool-input-available' && String(part.toolName ?? '') === 'Bash'
+    ));
+    if (announcesBash) return row;
+  }
+  return null;
+}
 
 // Sessions created here are deleted only when the test passes. A failure keeps
 // the scene and names it in the report tail — see fixtures/sessionCleanup.ts.
@@ -80,11 +113,10 @@ test('server restart reattaches the same running sandbox turn', async ({ page, r
 
   try {
     await api.waitForSessionReady(sessionId);
-    // ARRANGE through the API. The page dispatches under the SESSION's
-    // permission mode (useSessionChat sends permissionModeRef.current, seeded
-    // from session.permission_mode at load), so the mode has to be armed BEFORE
-    // the page opens: a Bash that stops for an approval never reaches the
-    // restart window this spec is about.
+    // ARRANGE through the API, BEFORE the page opens: a message carries no
+    // permission mode of its own — the runtime applies the session's — and a
+    // Bash that stops for an approval never reaches the restart window this
+    // spec is about.
     await api.setPermissionMode(sessionId, 'bypassPermissions');
 
     await page.goto(appPath(`/sessions/${sessionId}`));
@@ -100,30 +132,28 @@ test('server restart reattaches the same running sandbox turn', async ({ page, r
       'Go ahead and run it now with the Bash tool and wait for it to finish before replying.',
     ].join('\n');
 
-    // ACT through the page: the user types the instruction and sends it, rather
-    // than through a detached fetch (POST ai-stream, abort the client read once a
-    // Bash frame appeared). Driving it through the composer keeps the browser
-    // holding the stream — that browser IS the turn nobody is watching once the
-    // server dies, and it is the state a real redeploy interrupts. `.fill()` sets
-    // the value without key events, so the multi-line prompt is not submitted
-    // early by an Enter newline.
+    // ACT through the page: the user types the instruction and sends it.
+    // Driving it through the composer keeps the browser following the stream —
+    // that browser IS the response nobody is watching once the server dies, and
+    // it is the state a real redeploy interrupts. `.fill()` sets the value
+    // without key events, so the multi-line prompt is not submitted early by an
+    // Enter newline.
     const composer = page.getByTestId('composer-prompt');
     await expect(composer, 'the composer must be enabled before sending').toBeEnabled({ timeout: 45_000 });
     await composer.fill(prompt);
     await page.getByTestId('composer-submit').click();
     await expect(
       page.getByTestId('user-message').last(),
-      'the user bubble should render — proof the turn was dispatched from the page',
+      'the user bubble should render — proof the message was sent from the page',
     ).toContainText(marker, { timeout: 30_000 });
 
     // The run reads as live to the user: the send button became a stop button.
     // Not a race with the model — `isSubmitted` flips inside the submit handler,
-    // before the send receipt (let alone a frame) can come back.
+    // before the send receipt (let alone a part) can come back.
     await expect(page.getByTestId('run-composer-stop')).toBeVisible({ timeout: 30_000 });
 
-    // ── PROBE: the turn must durably enter Bash before the restart. ──────────
-    let turnId = '';
-    let bashSeen = false;
+    // ── PROBE: the response must be recorded entering Bash before the restart. ─
+    let bound: SessionResponseRow | null = null;
     // Ask again rather than skip: a skip ends the round exactly as a
     // failure does, so the model's choice decided it instead of the
     // platform. A declined ask re-sends the same prompt once, then fails.
@@ -134,33 +164,25 @@ test('server restart reattaches the same running sandbox turn', async ({ page, r
       probe: async () => {
         const probeDeadline = Date.now() + BASH_PROBE_TIMEOUT_MS;
         while (Date.now() < probeDeadline) {
-          const snapshot = snapshotDoc(sessionId);
-          turnId = String(snapshot?.current_turn_id ?? '').trim() || turnId;
-          if (turnId) {
-            const frames = framesForTurn(turnId);
-            bashSeen = frames.some((frame) => {
-              const payload = (frame.payload ?? {}) as Record<string, unknown>;
-              return (
-                String(payload.type ?? '') === 'tool-input-available'
-                && String(payload.toolName ?? '') === 'Bash'
-              );
-            });
-            if (bashSeen) break;
-          }
+          bound = runningBashResponse(sessionId);
+          if (bound) return true;
           await new Promise((r) => setTimeout(r, 2_000));
         }
-        return bashSeen ? true : null;
+        return null;
       },
-      what: `model did not durably enter Bash within ${BASH_PROBE_TIMEOUT_MS}ms — nothing to take over`,
+      what: `model did not enter Bash within ${BASH_PROBE_TIMEOUT_MS}ms — nothing to take over`,
       budgetMs: BASH_PROBE_TIMEOUT_MS * 2,
       probeMs: BASH_PROBE_TIMEOUT_MS,
     });
+    const responseId = bound!.response_id;
+    const answeredInputs = bound!.input_ids;
+    expect(answeredInputs.length, 'the running response must answer the message that asked for it').toBeGreaterThan(0);
 
     // …and it reaches the USER as a tool card in the transcript. This is the
     // state the restart has to preserve — a command someone is watching run.
-    // Never a skip: the skip above is for the model declining to call Bash at
+    // Never a skip: the insist above is for the model declining to call Bash at
     // all; a Bash the platform recorded and the console never drew is a defect.
-    // The running turn holds its cards inside a process group that starts
+    // The running response holds its cards inside a process group that starts
     // closed, so the card reaches the user through the reader's own press.
     await openLiveProcessGroup(page);
     await expect(
@@ -168,30 +190,28 @@ test('server restart reattaches the same running sandbox turn', async ({ page, r
       'the running Bash must reach the user as a tool card before the restart',
     ).toBeVisible({ timeout: 60_000 });
 
-    // Before the restart this turn must really be OWNED and RUNNING, or "the new
-    // instance took it over" proves nothing. No pixel: the screen shows that
-    // something is running, never WHO is driving it. Ownership has no checkpoint
-    // owner_id + lease_epoch to read: the kernel is a single authority, and the
-    // surviving evidence that a live worker is driving THIS turn is the
-    // snapshot's own turn pointer plus a fresh worker heartbeat.
-    // (The owner/epoch ROTATION was never observable from a single-container
-    // restart anyway — see the note in the header — so nothing is lost here that
-    // this spec ever proved.)
-    const before = turnSnapshot(sessionId, turnId);
-    expect(before, `the snapshot must be on this turn before restart; before=${JSON.stringify(before)}`).not.toBeNull();
+    // Before the restart this response must really be RUNNING with a reader
+    // recording it, or "the new instance took it over" proves nothing. No
+    // pixel: the screen shows that something is running, never WHO reads it.
+    // The response open in the platform's records, on the session detail, and
+    // a live reader lease are that evidence — and if the command has already
+    // finished, this is where the run goes red instead of passing on a journey
+    // that never happened.
+    const before = sessionResponseRows(sessionId).find((row) => row.response_id === responseId);
     expect(
-      ['PROCESSING', 'STREAMING'].includes(String(before?.conversation_state ?? '')),
-      `conversation must be actively running before restart; before=${JSON.stringify(before)}`,
+      before?.status,
+      `the response must still be running before the restart; row=${JSON.stringify(before)}`,
+    ).toBe('running');
+    expect(
+      ((await api.getSession(sessionId)).current_responses ?? []).map((row) => row.response_id),
+      'the session detail must report the same response running before the restart',
+    ).toContain(responseId);
+    const leaseBefore = readerLease(sessionId);
+    test.info().annotations.push({ type: 'e2e_reader_lease_before_restart', description: JSON.stringify(leaseBefore) });
+    expect(
+      leaseBefore?.live,
+      `a reader must hold a live lease on the session before the restart; lease=${JSON.stringify(leaseBefore)}`,
     ).toBe(true);
-    const heartbeatAt = Date.parse(String(before?.worker_heartbeat_at ?? ''));
-    expect(
-      Number.isFinite(heartbeatAt),
-      `a worker must be driving the turn before restart; before=${JSON.stringify(before)}`,
-    ).toBe(true);
-    expect(
-      Date.now() - heartbeatAt,
-      'the driving worker heartbeat must be fresh before restart',
-    ).toBeLessThan(WORKER_HEARTBEAT_FRESH_MS);
 
     // ── Instance replacement, under an open browser. ────────────────────────
     const baseUrl = absoluteBaseUrl();
@@ -201,46 +221,73 @@ test('server restart reattaches the same running sandbox turn', async ({ page, r
     //    console must come back to the SAME conversation with the message they
     //    sent still in it. Nothing here can come from client memory — the tab
     //    that watched the restart is gone — so an intact transcript is durable
-    //    state the restarted instance rehydrated, which is the recovery this
-    //    spec is about, seen from the only seat that matters.
-    //    Nothing about the turn's LIVENESS is asserted at this instant on
-    //    purpose: whether the recovered turn is still running when the page
-    //    comes back depends on how long the restart took against a 120s sleep,
-    //    and a pill assertion here would be a coin flip, not an oracle.
+    //    state the restarted instance served, seen from the only seat that
+    //    matters.
+    //    Nothing about the response's LIVENESS is asserted at this instant on
+    //    purpose: whether it is still running when the page comes back depends
+    //    on how long the restart took against a 120s sleep, and a pill
+    //    assertion here would be a coin flip, not an oracle.
     await page.reload({ waitUntil: 'domcontentloaded' });
     await expect(page.getByTestId('run-view')).toBeVisible({ timeout: REHYDRATE_RENDER_MS });
     await expect(
       page.getByTestId('user-message').filter({ hasText: marker }).last(),
-      'after the restart a freshly loaded page must still hold the message that started the turn',
+      'after the restart a freshly loaded page must still hold the message that started the response',
     ).toBeVisible({ timeout: REHYDRATE_RENDER_MS });
 
-    // ── The interrupted turn must recover and settle COMPLETED. The Bash
-    //    sleeps ~120s, so recovery waits for the sandbox mirror to complete
-    //    before terminalizing — allow the full lifecycle window. No pixel: the
-    //    console shows no turn id, so THIS turn settling — rather than some
-    //    later turn, or a repaint over an unresolved one — is only bindable in
-    //    the durable record.
-    await waitForTurnTerminalProof(sessionId, turnId, 'COMPLETED', RECOVERY_TIMEOUT_MS);
+    // ── The interrupted response must be read to its end and complete. The
+    //    Bash sleeps ~120s, so allow the full lifecycle window. No pixel: the
+    //    console shows no response id, so THIS response ending — rather than
+    //    some later one, or a repaint over an unresolved one — is only bindable
+    //    in the platform's records.
+    let ended: SessionResponseRow | undefined;
+    await expect.poll(() => {
+      ended = sessionResponseRows(sessionId).find((row) => row.response_id === responseId);
+      return ended ? `${ended.status}/${ended.outcome ?? ''}` : 'missing';
+    }, {
+      timeout: RECOVERY_TIMEOUT_MS,
+      message: 'the interrupted response must complete once the new instance reads the runtime again',
+    }).toBe('ended/completed');
+    expect(ended!.error, 'the recovered response carries no failure').toBeNull();
+    const endedParts = sessionOutputRows(sessionId, responseId).map(({ part }) => part);
+    expect(
+      endedParts.filter((part) => part.type === 'error'),
+      'the recovered response records no error part',
+    ).toEqual([]);
+    expect(endedParts.at(-1)?.type, 'the recovered response ends on its own finish part').toBe('finish');
+    // Exactly once: each message the response answers is answered by this one
+    // response, not by a second one started after the restart.
+    for (const inputId of answeredInputs) {
+      expect(
+        sessionResponseRows(sessionId)
+          .filter((row) => row.input_ids.includes(inputId))
+          .map((row) => row.response_id),
+        `input ${inputId} must be answered by exactly the response the restart interrupted`,
+      ).toEqual([responseId]);
+    }
+
     const ready = await api.waitForSessionReady(sessionId, SETTLE_MS);
-    expect(ready.state, 'session should return READY after restart recovery').toBe('READY');
-    expect(String(snapshotDoc(sessionId)?.last_turn_status ?? ''), 'the recovered turn should complete').toBe('COMPLETED');
+    expect(ready.state, 'session should return READY after the takeover').toBe('READY');
+    expect(ready.last_response?.response_id, 'the last response is the one the restart interrupted')
+      .toBe(responseId);
+    expect(ready.last_response?.outcome, 'the recovered response should complete').toBe('completed');
 
-    const terminalEvents = sessionEvents(sessionId).filter(
-      (event) => String(event.turn_id ?? '') === turnId,
-    );
-    // The authoritative recovery signal is the durable snapshot
-    // (last_turn_status COMPLETED + a durable terminal proof) asserted above; the
-    // journal terminal trail is captured as evidence. (Not asserted as an
-    // exact count: single-node restart recovery can re-key the terminal event
-    // onto a recovery turn context, so the per-turn-id journal count is not a
-    // stable invariant here.)
-    const completedCount = terminalEvents.filter((event) => String(event.event_type ?? '') === 'turn.completed').length;
-    const failedCount = terminalEvents.filter((event) => String(event.event_type ?? '') === 'turn.failed').length;
+    // The dead process cannot have read the response to its end; the lease is
+    // held by the restarted process. A lease row is kept (a release only
+    // expires it) and every claim names its owner and moves the generation.
+    const leaseAfter = readerLease(sessionId);
+    test.info().annotations.push({ type: 'e2e_reader_lease_after_restart', description: JSON.stringify(leaseAfter) });
+    expect(leaseAfter, 'the session must still have a reader lease after the restart').not.toBeNull();
+    expect(leaseAfter!.owner, 'the reader lease must have been taken over by the restarted process')
+      .not.toBe(leaseBefore!.owner);
+    expect(
+      Number(leaseAfter!.generation),
+      'the takeover must be a later lease generation than the one the dead process held',
+    ).toBeGreaterThan(Number(leaseBefore!.generation));
 
-    // ── Now that the kernel is done, the screen has to agree, and quickly. The
-    //    sequencing is the difference between an oracle and a decoration: the
-    //    console derives "busy" from a session poll, so a settle assertion taken
-    //    before the kernel finished would pass in the middle of the turn.
+    // ── Now that the platform is done, the screen has to agree, and quickly.
+    //    The sequencing is the difference between an oracle and a decoration: a
+    //    settle assertion taken before the platform recorded the end would pass
+    //    in the middle of the response.
     //    Scoped to run-view ON PURPOSE. The app shell's sidebar renders a
     //    `status-pill` for EVERY conversation in the list (App.tsx SidebarMenu)
     //    and the sidebar precedes the route outlet in the DOM, so a bare
@@ -250,20 +297,19 @@ test('server restart reattaches the same running sandbox turn', async ({ page, r
     //    SessionHeader's pill is the only `status-pill` inside `run-view`.
     await expect(
       page.getByTestId('run-view').getByTestId('status-pill').first(),
-      'the header must stop pretending to work once the recovered turn ended',
+      'the header must stop pretending to work once the recovered response ended',
     ).toHaveAttribute('data-pulse', 'false', { timeout: SETTLE_MS });
 
-    // The turn lock released, in the only form a user can see it: the composer
-    // is back and sendable. (An EMPTY composer keeps submit disabled by
+    // The conversation is usable again, in the only form a user can see it: the
+    // composer is back and sendable. (An EMPTY composer keeps submit disabled by
     // design — type first, then assert.)
     await page.getByTestId('composer-prompt').fill('follow-up');
     await expect(page.getByTestId('composer-submit')).toBeEnabled({ timeout: 15_000 });
 
     // ── The recovered HISTORY, read the way a user reads history: come back to
     //    the finished conversation. This second load is what makes the
-    //    transcript claim about durable state rather than about frames this
-    //    particular tab happened to catch across the reconnect — the same
-    //    reason the resume-tail sibling ends on a reload.
+    //    transcript claim about durable state rather than about parts this
+    //    particular tab happened to catch across the reconnect.
     await page.reload({ waitUntil: 'domcontentloaded' });
     await expect(page.getByTestId('run-view')).toBeVisible({ timeout: REHYDRATE_RENDER_MS });
     await expect(page.getByTestId('user-message').filter({ hasText: marker }).last()).toBeVisible({
@@ -272,17 +318,17 @@ test('server restart reattaches the same running sandbox turn', async ({ page, r
 
     // A reply, not a rendered failure. Wording is never pinned — the backend is
     // deepseek and non-deterministic — so what is asserted is that the last
-    // bubble carries content and is not the failure bubble a lost turn leaves.
+    // bubble carries content and is not the failure bubble a lost response leaves.
     const reply = page.getByTestId('assistant-message').last();
-    await expect(reply, 'the recovered turn should have rendered assistant content').not.toBeEmpty();
+    await expect(reply, 'the recovered response should have rendered assistant content').not.toBeEmpty();
     await expect(reply).not.toContainText(TURN_ERROR);
 
     // The tool invocation AND its result, as the user meets them: a Bash card
-    // that is DONE. A card still reading "Working" after the turn is over is
-    // exactly what a tool_use whose tool_result the recovery dropped looks like
-    // on screen — and the durable pairing below cannot see that, because a
-    // missing result is a missing row, not a wrong one.
-    // A reloaded page carries the settled turn's work as one header, and the
+    // that is DONE. A card still reading "Working" after the response is over is
+    // exactly what a tool call whose result the takeover dropped looks like on
+    // screen — and the record pairing below cannot see that, because a missing
+    // result is a missing part, not a wrong one.
+    // A reloaded page carries the settled response's work as one header, and the
     // cards it stands for are not in the document until it is opened.
     await revealAssistantProcess(page);
     const bashCards = page.getByTestId('assistant-message').getByRole('button', { name: BASH_CARD });
@@ -313,7 +359,7 @@ test('server restart reattaches the same running sandbox turn', async ({ page, r
     await expect
       .poll(() => unsettledBashCards.count(), {
         timeout: RENDER_TIMEOUT_MS,
-        message: 'no Bash card may still read as running after the recovered turn settled',
+        message: 'no Bash card may still read as running after the recovered response settled',
       })
       .toBe(0);
 
@@ -327,38 +373,43 @@ test('server restart reattaches the same running sandbox turn', async ({ page, r
       await doneBashCards.nth(index).click();
     }
     // The card exposes no stable body hook, so its body is reached through the
-    // header button's parent. The marker identifies this run's command; durable
-    // blocks separately bind the tool input and result by id.
+    // header button's parent. The marker identifies this run's command; history
+    // separately binds the tool input and its result by call id.
     await expect(
       doneBashCards.locator('xpath=..').filter({ hasText: marker }).first(),
-      'a completed Bash card must carry the interrupted command that recovery preserved',
+      'a completed Bash card must carry the interrupted command the takeover preserved',
     ).toBeVisible({ timeout: RENDER_TIMEOUT_MS });
 
-    // ── The one fact the card cannot carry: the id pairing. The console merges
-    //    tool_use and tool_result into a single card and renders no ids, so
-    //    "the preserved result belongs to the preserved invocation" is only
-    //    provable in the durable blocks.
+    // ── The one fact the card cannot carry: the call pairing. The console
+    //    merges a tool call and its result into a single card and renders no
+    //    ids, so "the preserved result belongs to the preserved invocation" is
+    //    only provable in history, where one tool part carries both.
     const messagePage = await api.getMessages(sessionId, 50);
-    const terminalAssistant = [...messagePage.messages].reverse().find((message) => message.role === 'assistant');
-    const blocks = (terminalAssistant?.blocks ?? []) as Array<Record<string, unknown>>;
-    const bashToolUse = blocks.find(
-      (block) => block.type === 'tool_use' && block.name === 'Bash' && typeof block.id === 'string',
-    );
-    expect(bashToolUse, `recovered history must preserve the Bash invocation; blocks=${JSON.stringify(blocks.map((b) => b.type))}`).toBeTruthy();
+    const recovered = messagePage.messages.find((message) => message.id === responseId);
+    expect(recovered, 'history must hold the recovered response as one assistant message').toBeTruthy();
+    const bashCalls = messageToolCalls(recovered!).filter((call) => call.toolName === 'Bash');
     expect(
-      blocks.some((block) => block.type === 'tool_result' && block.tool_use_id === bashToolUse?.id),
-      'recovered history must preserve the matching Bash result',
-    ).toBe(true);
+      bashCalls.map((call) => ({ id: call.toolCallId, state: call.state })),
+      'recovered history must preserve the Bash invocation',
+    ).not.toEqual([]);
+    const markerCall = bashCalls.find((call) => JSON.stringify(call.input ?? '').includes(marker));
+    expect(markerCall, 'recovered history must preserve the Bash call that runs the marker command').toBeTruthy();
+    expect(markerCall!.state, 'the preserved Bash call must carry its result, not an error').toBe('output-available');
     expect(
-      messageText(terminalAssistant!) + JSON.stringify(blocks),
+      JSON.stringify(markerCall!.output ?? ''),
+      'the preserved Bash result must be the long command\'s own output',
+    ).toContain(marker);
+    expect(
+      messageText(recovered!) + JSON.stringify(recovered!.parts),
       'recovered history should carry the long-command marker evidence',
     ).toContain(marker);
 
     console.log('SERVER_RESTART_TAKEOVER_E2E_EVIDENCE', JSON.stringify({
       session_id: sessionId,
-      turn_id: turnId,
-      completed_count: completedCount,
-      failed_count: failedCount,
+      response_id: responseId,
+      input_ids: answeredInputs,
+      reader_lease_before: leaseBefore,
+      reader_lease_after: leaseAfter,
       final_state: ready.state,
     }));
   } finally {

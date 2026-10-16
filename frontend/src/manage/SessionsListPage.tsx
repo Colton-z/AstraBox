@@ -145,6 +145,8 @@ export default function SessionsListPage() {
   // raw value unless the root carries the same list as its `items`
   // (@base-ui/react/select), so without these the triggers would read
   // `__all__`, an agent's id, and a wire spelling like `PROVISIONING`.
+  const agentNames = useMemo(() => new Map(agents.map((a) => [a.agent_id, a.name])), [agents]);
+
   const agentOptions = useMemo(
     () => [
       { value: ALL, label: t('manage:filter.all_agents') },
@@ -200,12 +202,13 @@ export default function SessionsListPage() {
       key: 'agent',
       intent: 'text',
       header: t('manage:common_fields.agent'),
-      // `template_name` is the agent's name as the session recorded it
-      // (`session_service.py` writes it from the agent's own `name`). That is
-      // what a reader picks a row by; the agent's id truncates to nothing in
-      // this track (docs/frontend-design.md §2), and a name does not belong in
-      // the identifier face (§6).
-      cell: (s) => <span className="text-foreground">{s.template_name || '—'}</span>,
+      // The Agent's name, from the Agents this page already reads for its
+      // filter. That is what a reader picks a row by; the agent's id truncates
+      // to nothing in this track (docs/frontend-design.md §2), and a name does
+      // not belong in the identifier face (§6).
+      cell: (s) => (
+        <span className="text-foreground">{(s.agent_id && agentNames.get(s.agent_id)) || '—'}</span>
+      ),
     },
     {
       key: 'state',

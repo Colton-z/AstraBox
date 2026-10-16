@@ -26,7 +26,7 @@ so the reply is known to have come through the engine from the model service.
 The container is named ``astrabox-model-stub``; remove it with ``docker rm -f``.
 
 ``judge`` prints ``PASS <reply>`` or ``FAIL <reason>`` for a saved
-``/ai-stream`` response; ``scripts/installer-acceptance.sh`` judges its turn
+session stream response; ``scripts/installer-acceptance.sh`` judges its turn
 with it.
 
 ``restart`` opens one conversation per engine, restarts the installation in
@@ -102,8 +102,13 @@ def _model_error(text: str) -> bool:
     return any(marker in folded for marker in MODEL_ERROR_MARKERS)
 
 
+def _last_output_seq(api: "Api", session_id: str) -> int:
+    """The output position the session detail says to follow its stream from."""
+    return int(api.session_state(session_id).get("output_seq") or 0)
+
+
 def judge(stream: str) -> tuple[bool, str]:
-    """Judge an ``/ai-stream`` response by its structure, not its wording.
+    """Judge one response of the session stream by its structure, not its wording.
 
     Returns ``(True, reply)`` when the stream carried at least one complete
     text block, no error, and a ``stop`` finish; otherwise ``(False, reason)``.
@@ -132,6 +137,9 @@ def judge(stream: str) -> tuple[bool, str]:
             completed.append("".join(text[frame["id"]]))
         elif kind == "error":
             error = error or str(frame.get("errorText") or "error frame")
+        elif kind == "data-input-failed" and isinstance(frame.get("data"), dict):
+            refused = frame["data"]
+            error = error or f"the message was refused: {refused.get('code')}: {refused.get('message')}"
         elif kind == "data-result" and isinstance(frame.get("data"), dict):
             result = frame["data"]
             if result.get("is_error") or _model_error(str(result.get("result") or "")):
@@ -177,23 +185,33 @@ class Api:
             raise AcceptanceFailure(f"{method} {path} failed: {error}") from None
         return json.loads(raw)["data"] if raw else None
 
-    def stream(self, path: str, body: Any) -> str:
-        request = urllib.request.Request(
-            self.base_url + path,
-            method="POST",
-            data=json.dumps(body).encode(),
-            headers={"content-type": "application/json", "accept": "text/event-stream"},
-        )
+    def stream(self, path: str) -> str:
+        """Read one response of a session's follow stream; it ends after that response."""
+        request = urllib.request.Request(self.base_url + path, headers={"accept": "text/event-stream"})
         try:
             with urllib.request.urlopen(request, timeout=TURN_TIMEOUT_SECONDS) as response:
                 return response.read().decode(errors="replace")
         except urllib.error.HTTPError as error:
             detail = error.read().decode(errors="replace")
             raise AcceptanceFailure(
-                f"POST {path} returned HTTP {error.code}: {' '.join(detail.split())[:400]}"
+                f"GET {path} returned HTTP {error.code}: {' '.join(detail.split())[:400]}"
             ) from None
         except OSError as error:
-            raise AcceptanceFailure(f"POST {path} failed: {error}") from None
+            raise AcceptanceFailure(f"GET {path} failed: {error}") from None
+
+    def send(self, session_id: str, message: str, client_message_id: str) -> str:
+        """Send one message and return the stream of the response it starts.
+
+        The stream is read from the session's last output sequence, so the
+        first response after it is the one this message started.
+        """
+        after = _last_output_seq(self, session_id)
+        self.call(
+            "POST",
+            f"/api/v1/sessions/{session_id}/inputs",
+            {"content": message, "client_message_id": client_message_id},
+        )
+        return self.stream(f"/api/v1/sessions/{session_id}/stream?after_seq={after}")
 
     def session_state(self, session_id: str) -> dict[str, Any]:
         return self.call("GET", f"/api/v1/sessions/{session_id}")
@@ -286,6 +304,22 @@ def _await_state(api: Api, session_id: str, wanted: str, *, timeout: float, allo
         time.sleep(3)
 
 
+def _await_settled(api: Api, session_id: str) -> None:
+    """Wait until the session answers nothing and holds no message."""
+    deadline = time.monotonic() + SETTLE_TIMEOUT_SECONDS
+    while True:
+        session = api.session_state(session_id)
+        if (
+            session.get("state") == "READY"
+            and not session.get("current_responses")
+            and not session.get("held_inputs")
+        ):
+            return
+        if time.monotonic() >= deadline:
+            raise AcceptanceFailure(f"Session {session_id} did not settle in {SETTLE_TIMEOUT_SECONDS:.0f}s")
+        time.sleep(2)
+
+
 def run_engine(api: Api, engine: str, model: str, *, label: str, expect_text: str) -> str:
     """One engine from a new conversation to a settled first turn; returns the reply."""
 
@@ -296,19 +330,13 @@ def run_engine(api: Api, engine: str, model: str, *, label: str, expect_text: st
     print(f"  {engine}: Session {session_id} for {kind} {owner_id}", flush=True)
     try:
         _await_state(api, session_id, "READY", timeout=READY_TIMEOUT_SECONDS, allowed={"CREATING"})
-        stream = api.stream(
-            f"/api/v1/sessions/{session_id}/ai-stream",
-            {"content": MESSAGE, "client_message_id": f"installer-engine-{engine}-{uuid.uuid4().hex[:8]}"},
-        )
+        stream = api.send(session_id, MESSAGE, f"installer-engine-{engine}-{uuid.uuid4().hex[:8]}")
         ok, reply = judge(stream)
         if not ok:
             raise AcceptanceFailure(reply)
         if expect_text and expect_text not in reply:
             raise AcceptanceFailure(f"the reply does not carry {expect_text!r}: {reply[:200]!r}")
-        _await_state(
-            api, session_id, "READY", timeout=SETTLE_TIMEOUT_SECONDS,
-            allowed={"BUSY", "BACKGROUND_RUNNING"},
-        )
+        _await_settled(api, session_id)
         return reply
     finally:
         try:
@@ -393,16 +421,13 @@ def _await_serving(api: Api) -> None:
 
 
 def _ask(api: Api, session_id: str, message: str, expected: str) -> str:
-    stream = api.stream(
-        f"/api/v1/sessions/{session_id}/ai-stream",
-        {"content": message, "client_message_id": f"installer-restart-{uuid.uuid4().hex[:8]}"},
-    )
+    stream = api.send(session_id, message, f"installer-restart-{uuid.uuid4().hex[:8]}")
     ok, reply = judge(stream)
     if not ok:
         raise AcceptanceFailure(reply)
     if expected and expected not in reply:
         raise AcceptanceFailure(f"the reply does not carry {expected!r}: {reply[:200]!r}")
-    _await_state(api, session_id, "READY", timeout=SETTLE_TIMEOUT_SECONDS, allowed={"BUSY", "BACKGROUND_RUNNING"})
+    _await_settled(api, session_id)
     return reply
 
 

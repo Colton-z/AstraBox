@@ -2,43 +2,56 @@
 
 > Create, run, inspect, and archive Agent Sessions.
 
-A Session is one stateful Agent execution. It uses an Agent and Environment and
-preserves its messages, Events, and current state. You send messages to the
-Session, and it returns a stream of Events.
+A Session is one conversation with an Agent. It uses an Agent and Environment,
+keeps the messages you send and the responses the Agent program produces, and
+reports what the Agent program is doing now. You send messages to the Session,
+and its responses arrive on the Session's stream.
+
+The Agent program owns the conversation: whether it is working, which messages
+it has taken, and where each response starts and ends are what the program
+reports. AstraBox records those reports, shows them, and keeps your messages
+until the program has taken them.
 
 ## Session Status Lifecycle
 
-A Session is a state machine with the following core statuses:
+A Session reports one of these statuses in `state`:
 
 | Status | Description | Transitions to |
 | --- | --- | --- |
 | `CREATING` | Preparing or assigning the runtime. | `READY`, `TERMINATED` |
-| `READY` | Ready for a user message. | `BUSY`, `TERMINATED`, `RECOVERY_REQUIRED`, `DELETED` |
-| `BACKGROUND_RUNNING` | Ready for foreground input while child tasks remain active. | `READY`, `BUSY`, `TERMINATED`, `RECOVERY_REQUIRED`, `DELETED` |
-| `BUSY` | The Agent is processing the foreground turn. | `INTERRUPTING`, `READY`, `RECOVERY_REQUIRED`, `TERMINATED` |
-| `INTERRUPTING` | Interruption requested; waiting for the running turn to stop. | `READY`, `RECOVERY_REQUIRED` |
-| `RECOVERY_REQUIRED` | Stored history is available, but the runtime requires recovery. | `READY`, `CREATING`, `TERMINATED`, `DELETED` |
+| `READY` | Nothing is running; the Session accepts a message. | `PROCESSING`, `WAITING_INPUT`, `TERMINATED`, `DELETED` |
+| `PROCESSING` | The Agent program is working, a response is open, or AstraBox still holds messages the program has not taken. | `READY`, `WAITING_INPUT`, `TERMINATED`, `DELETED` |
+| `WAITING_INPUT` | A response is paused on an approval or a question. | `PROCESSING`, `READY`, `TERMINATED`, `DELETED` |
 | `TERMINATED` | The runtime is offline. | `CREATING`, `DELETED` |
 | `DELETED` | Deleted. | — (terminal state) |
+
+`runtime_status` carries the Agent program's own report: `working`, `waiting`,
+or `idle`. `PROCESSING` and `WAITING_INPUT` are derived from it and from the
+responses, questions, and messages AstraBox has recorded for the Session.
 
 Two additional lifecycle markers are surfaced alongside `state`:
 
 - **Archived**: recorded separately from `state`. The Session remains readable
   but leaves the active conversation list.
-- **Deleted**: represented by the terminal `DELETED` state. A deleted Session
-  cannot be restored.
+- **Runtime unavailable**: `runtime_unavailable` is `true` while the Session's
+  sandbox is gone or released. A `READY` Session keeps its history, and its
+  next message starts a new sandbox.
 
 1. <b>Created → CREATING</b> A new Session enters `CREATING` while AstraBox
    prepares or assigns its runtime.
-2. <b>CREATING → READY</b> The Session is ready for input.
-3. <b>READY → BUSY</b> Sending a message starts a foreground turn.
-4. <b>BUSY → READY</b> When the foreground turn completes, the Session becomes
-   ready for the next turn. It can report `BACKGROUND_RUNNING` while child
-   tasks remain active.
-5. <b>BUSY → INTERRUPTING → READY</b> Interrupting a foreground turn moves the
-   Session through `INTERRUPTING`. The Session remains reusable.
-6. <b>RECOVERY_REQUIRED or TERMINATED</b> The conversation remains stored, but
-   its runtime must be recovered or recreated before more work can run.
+2. <b>CREATING → READY</b> The Session is ready for input. A message sent while
+   the Session is still `CREATING` is kept and reaches the Agent program once
+   the runtime is ready.
+3. <b>READY → PROCESSING</b> Sending a message hands it to the Agent program,
+   which starts a response.
+4. <b>PROCESSING → WAITING_INPUT → PROCESSING</b> A response that needs an
+   approval or an answer pauses until someone responds, then continues.
+5. <b>PROCESSING → READY</b> The response ends and the Agent program reports it
+   is idle. A program that keeps working on its own, such as on a background
+   task, stays `PROCESSING` until it reports idle.
+6. <b>TERMINATED</b> The conversation remains stored, but its runtime must be
+   recovered (`POST /api/v1/sessions/{session_id}/recover`) before more work can
+   run.
 7. <b>DELETED (terminal)</b> Deleting the Session ends its lifecycle.
 
 Conversation recovery does not require a persistent workspace volume. AstraBox
@@ -46,65 +59,58 @@ stores the Agent program's native session data in the platform database and
 restores it for that program's own resume operation when compute is replaced.
 Workspace files have a separate lifetime: preserving them after sandbox loss or
 release requires optional persistent workspace storage. A lost connection alone
-does not prove the sandbox has failed; a confirmed sandbox failure ends the
-affected turn, and the next message can start recovery without replaying that
-failed task automatically.
+does not prove the sandbox has failed; AstraBox reconnects to the program and
+continues from the position it recorded. When the sandbox is confirmed lost,
+the response in progress ends as failed. Messages the program had not taken yet
+go to a new sandbox automatically, which resumes the conversation; a message
+the program had taken is not sent again.
 
 ## Automatic model request retries
 
 A retry performed by the selected Agent program or model gateway remains part
-of the active turn. AstraBox keeps the Session in `BUSY`; it does not expose a
-separate `rescheduling` state. Keep the stream open and do not resend the same
-message while the turn is active.
+of the response in progress. The Session stays `PROCESSING`; AstraBox does not
+expose a separate `rescheduling` state. Keep following the stream and do not
+resend the same message while the response is open.
 
-If the stream reports an error, use the recorded turn failure and subsequent
-Session state as the source of truth. The selected Agent program or model
-gateway owns any retry classification; AstraBox does not manufacture a second
-retry status.
+If the stream reports an error, use the response's recorded `outcome` and the
+Session's subsequent state as the source of truth. The selected Agent program
+or model gateway owns any retry classification; AstraBox does not manufacture
+a second retry status.
 
 ## Interrupt Semantics
 
-- **Interrupt on `READY`**: an idempotent no-op; the Session stays ready.
-- **Interrupt with an active turn**: AstraBox records the request, moves the
-  Session through `INTERRUPTING`, and returns `status: "accepted"`.
-- **After interrupt**: the Session remains reusable after the turn settles.
-
 ```bash
-# Interrupt the current turn
+# Interrupt the response in progress
 curl --silent --show-error --request POST \
   "$SERVICE_URL/api/v1/sessions/$SESSION_ID/interrupt" \
   --header "Authorization: Bearer $ACCESS_TOKEN"
 ```
 
-Only `DELETED` is final. Interrupting a foreground turn does not delete the
-Session or its saved history.
+- **`status: "accepted"`**: AstraBox passes the request to the Agent program,
+  which stops the response in progress and reports how it ended, for example
+  `cancelled`.
+- **`status: "idle"`**: no runtime is connected, so nothing runs to interrupt.
+- **After interrupt**: the Session remains reusable; send the next message as
+  usual.
 
-## Sending Messages While a Turn Is Active (409 Error)
+Only `DELETED` is final. Interrupting a response does not delete the Session or
+its saved history. A Session's web terminal has its own stop operation,
+`POST /api/v1/sessions/{session_id}/terminal/interrupt`; the conversation
+interrupt does not stop a terminal command.
 
-`POST /api/v1/sessions/{session_id}/ai-stream` returns `HTTP 409 SESSION_BUSY`
-when the Session already has an active foreground turn or is still settling an
-interrupt. Wait for `READY` or `BACKGROUND_RUNNING`, or interrupt the current
-turn before sending the next foreground message.
+## Sending Messages While the Agent Is Working
 
-```json
-{
-  "code": "SESSION_BUSY",
-  "message": "session already has an active turn",
-  "data": null,
-  "error": {
-    "code": "SESSION_BUSY",
-    "status_code": 409,
-    "category": "state",
-    "retryable": true,
-    "owner": "session",
-    "user_message": "session already has an active turn"
-  }
-}
-```
+A Session accepts a message at any status except `TERMINATED` and `DELETED`.
+AstraBox hands messages to the Agent program in the order it accepted them. A
+program that is already working queues a message in its own queue and answers
+it when it is ready; whether it answers queued messages one at a time or
+together is the program's choice. Each response lists the messages it answers
+in `input_ids`.
 
-Wait for the current turn's terminal stream frame before sending another
-message. A pending interaction must instead be answered through the interaction
-response endpoint.
+Sending to a `TERMINATED` or deleted Session returns `HTTP 409
+AGENT_RUNTIME_ERROR`. Recover a `TERMINATED` Session first. A pending approval
+or question is answered through the interaction answer endpoint, not by
+sending a message.
 
 ## Create a Session
 
@@ -163,16 +169,22 @@ commonly used fields are:
 | `title` | string/null | Session title. |
 | `model_name` | string/null | Model reported for the current runtime. |
 | `permission_mode` | string/null | Mode selected for the Agent program, when supported. |
-| `current_turn_id` | string/null | Active turn ID. |
-| `last_turn_status` | string/null | Status of the most recent turn. |
+| `runtime_status` | string/null | `idle`, `working` or `waiting`, as the Agent program last reported. |
+| `current_responses` | array | Responses the Agent program is producing now. |
+| `last_response` | object/null | The most recent response that ended, with its `outcome` (`completed`, `failed` or `cancelled`) and the program's own `native_reason`. |
+| `pending_interaction` | object/null | The approval or question the Session is waiting on. |
+| `held_inputs` | array | Messages accepted but not yet taken by the Agent program. |
+| `output_seq` | integer | The output position to follow the Session's stream from. |
+| `runtime_unavailable` | boolean | Whether the Session's sandbox is gone or released. |
 | `created_at` | string/null | Creation time. |
 | `updated_at` | string/null | Last update time. |
 
-Session list responses contain a summary; `GET
+Session list responses contain a summary of each Session, with its `state`
+from the last status the Agent program reported; `GET
 /api/v1/sessions/{session_id}` returns the complete current details. When the
-Agent program reports token usage or model cost for a completed turn, the
-console shows it with the turn result. Billing and quotas remain with the model
-service configured for the deployment.
+Agent program reports token usage or model cost for a response, the console
+shows it with that response. Billing and quotas remain with the model service
+configured for the deployment.
 
 AstraBox does not accept an Agent object, Agent version, or Environment in the
 creation body. The request path identifies the Agent, and the Agent already
@@ -181,8 +193,8 @@ snapshot or lock an Agent version:
 
 - AstraBox resolves the current Agent and Environment when it first prepares a
   runtime for the Session.
-- Saving an Agent or Environment does not reconfigure an active turn or running
-  runtime in place.
+- Saving an Agent or Environment does not reconfigure a running runtime in
+  place.
 - If AstraBox later recreates the runtime, the same Session can use the current saved
   Agent and Environment configuration.
 - The Agent `version` field detects concurrent updates. It is not a selectable
@@ -203,19 +215,21 @@ microphone button records speech and appends its transcript to the editable
 draft. Review the text before sending it. See [Voice input](voice-input.md)
 for setup, recording limits, and retry behavior.
 
-The request body for `POST /sessions/{id}/ai-stream` contains one user message
-and returns that turn as an AI SDK UI Message Stream v1 event stream.
+`POST /api/v1/sessions/{session_id}/inputs` accepts one message and returns a
+receipt at once. The response to it arrives on the Session's stream.
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `content` | string | Yes | The user message. |
 | `client_message_id` | string | No | A caller-generated idempotency key for the message. |
-| `permission_mode` | string | No | A permission mode supported by the Session's Agent program. |
+
+To change the permission mode the Agent program uses, update the Session's
+permission mode (see [Read and Update Sessions](#read-and-update-sessions)).
 
 ```bash
-# Send a message and stream the response
-curl --no-buffer --silent --show-error --request POST \
-  "$SERVICE_URL/api/v1/sessions/$SESSION_ID/ai-stream" \
+# Send a message
+curl --silent --show-error --request POST \
+  "$SERVICE_URL/api/v1/sessions/$SESSION_ID/inputs" \
   --header "Authorization: Bearer $ACCESS_TOKEN" \
   --header 'Content-Type: application/json' \
   --data '{
@@ -224,32 +238,77 @@ curl --no-buffer --silent --show-error --request POST \
   }'
 ```
 
-Sending the message changes a `READY` Session to `BUSY`; a Session in
-`BACKGROUND_RUNNING` can also accept a new foreground turn. When processing
-completes, the Session returns to `READY`, or reports `BACKGROUND_RUNNING` if
-child tasks remain active. The stream ends with `data: [DONE]` after the
-foreground turn reaches a terminal result.
+The receipt names the accepted message:
 
-## Read Events
-
-The `ai-stream` response uses the AI SDK UI Message Stream protocol. Open a
-Session-follow connection to wait for one complete turn without sending input:
-
-```text
-GET /api/v1/sessions/{session_id}/ai-stream?follow=session
+```json
+{
+  "code": "OK",
+  "message": "success",
+  "data": {
+    "session_id": "SESSION_ID",
+    "input_id": "INPUT_ID",
+    "client_message_id": "analysis-1",
+    "accepted_at": "2026-05-18T12:00:00Z",
+    "state": "pending",
+    "duplicate": false
+  }
+}
 ```
 
-A `data-resume-cursor` frame carries the latest safe integer in
-`data.frameSeq`. Save that value and reconnect with `after_seq`; AstraBox does
-not use the SSE `Last-Event-ID` header:
+Sending the same `client_message_id` again returns the message accepted the
+first time, with `duplicate: true`; the Agent program receives it once. A
+deployment's admission policy can refuse a message with `HTTP 429
+ADMISSION_DENIED`.
+
+A message that the Agent program or the deployment's preparation refuses does
+not start a response: the stream reports it as a `data-input-failed` part with
+the reason, and the message keeps its `failure` in the Session history.
+
+## Read the Session Stream
+
+The stream uses the AI SDK UI Message Stream protocol and delivers each
+response as one UI message, starting after the position you pass in
+`after_seq`. To wait for the next response, start from the Session's
+`output_seq`, which `GET /api/v1/sessions/{session_id}` and the first page of
+messages return; a new Session's output starts at `0`:
 
 ```text
-GET /api/v1/sessions/{session_id}/ai-stream?follow=session&after_seq=42
+GET /api/v1/sessions/{session_id}/stream?after_seq=0
 ```
 
-For durable conversation history, call `GET
-/api/v1/sessions/{session_id}/messages` and page backwards with `before`. See
-[SSE Event Stream](events-stream.md) for frame shapes and reconnection.
+A `data-resume-cursor` part carries the latest position in `data.seq`. Save
+that value and reconnect with `after_seq`; AstraBox does not use the SSE
+`Last-Event-ID` header:
+
+```text
+GET /api/v1/sessions/{session_id}/stream?after_seq=42
+```
+
+One stream request ends after the part that finishes a response. Open the next
+one with the saved `after_seq` to receive the following response. For durable
+conversation history, call `GET /api/v1/sessions/{session_id}/messages` and page
+backwards with `before`. See [SSE Event Stream](events-stream.md) for part
+shapes and reconnection.
+
+## Answer Approvals and Questions
+
+When a response pauses on an approval or a question, the stream sends a
+`data-interaction` part (and a `tool-approval-request` for a tool approval),
+and the Session reports it as `pending_interaction`. Answer it with its
+interaction ID:
+
+```bash
+curl --silent --show-error --request POST \
+  "$SERVICE_URL/api/v1/sessions/$SESSION_ID/interactions/$INTERACTION_ID/answer" \
+  --header "Authorization: Bearer $ACCESS_TOKEN" \
+  --header 'Content-Type: application/json' \
+  --data '{"answer": {"decision": "approve"}}'
+```
+
+The answer's shape depends on the interaction's `presentation`; see
+[Permission Modes](permission-modes.md). An interaction that was already
+answered, withdrawn, or expired returns `HTTP 409 INTERACTION_NOT_OPEN`. The
+response continues on the Session stream.
 
 ## Read and Update Sessions
 
@@ -284,6 +343,7 @@ Example paginated response:
         "session_id": "SESSION_ID",
         "agent_id": "AGENT_ID",
         "state": "READY",
+        "runtime_status": "idle",
         "title": "code-reviewer",
         "created_at": "2026-05-18T12:00:00Z",
         "updated_at": "2026-05-18T12:30:00Z"
@@ -298,14 +358,16 @@ Example paginated response:
 Paged list responses use `has_more` and `next_cursor`. Without `page=1`, the
 same list route returns the console's unpaged array. Permission mode is the only
 Session configuration this route family updates; the selected Agent program
-defines its accepted values.
+defines its accepted values. AstraBox stores the mode on the Session and
+applies it to the running Agent program; a Session without a running program
+receives it when its runtime starts.
 
 ### Unread replies
 
-A Session records when it last gained a reply (`last_output_at`), whether a
-person's turn produced it or the Agent program replied on its own, such as an
-Assistant's scheduled job or heartbeat. Its owner's `read_at` records when they
-last read it:
+A Session records when it last gained output (`last_output_at`), whether a
+person's message produced it or the Agent program replied on its own, such as
+an Assistant's scheduled job or heartbeat. Its owner's `read_at` records when
+they last read it:
 
 ```bash
 curl --silent --show-error --request POST \
@@ -318,8 +380,8 @@ console marks it read while it is open in a visible tab and shows a dot beside
 an unread conversation in the list. With notifications turned on (the bell
 beside **Sessions** in the list), it shows a browser notification for each new
 unread reply while a console tab is open, including a tab in the background.
-A reply the Agent program sent on its own also moves its conversation to the
-top of the list.
+A response that ends, including one the Agent program started on its own,
+moves its conversation to the top of the list.
 
 ## Child Runs
 
@@ -353,39 +415,50 @@ Delete a Session when its record and runtime should enter the terminal
 DELETE /api/v1/sessions/{session_id}
 ```
 
-Ending or deleting a Session is different from interrupting its current turn.
-Use the lifecycle operation that matches the intended retention behavior.
+Ending or deleting a Session is different from interrupting its current
+response. Use the lifecycle operation that matches the intended retention
+behavior.
 
-## Multi-Turn Conversation Workflow
+Archiving, deleting, ending a conversation and terminating its sandbox return
+`HTTP 409 SESSION_BUSY` while the Agent program reports that it is working.
+Interrupt the work first, or wait for it to finish. A Session that is waiting
+for an answer to an approval or a question is not working and can be archived
+or deleted.
 
-Sessions support multi-turn conversations. The recommended pattern is:
+## Conversation Workflow
 
-1. Send the user message through `POST /sessions/{id}/ai-stream`.
-2. Consume the AI SDK UI Message Stream response.
-3. Wait for the terminal frame and for the Session to report `READY` or
-   `BACKGROUND_RUNNING`.
-4. Send the next message to the same Session.
+Sessions support multi-message conversations. The recommended pattern is:
+
+1. Send the user message through `POST /sessions/{id}/inputs`.
+2. Follow `GET /sessions/{id}/stream` from the last saved cursor (or the
+   Session's `output_seq`), and read the response until its `finish` part.
+3. Answer any approval or question the response pauses on.
+4. Send the next message to the same Session. A message sent while the Agent
+   program is still working waits in the program's queue.
 
 ```bash
 BASE_URL="$SERVICE_URL/api/v1"
 
-# Turn 1: Make the initial request
-curl --no-buffer --silent --show-error --request POST \
-  "$BASE_URL/sessions/$SESSION_ID/ai-stream" \
+# Message 1: Make the initial request
+curl --silent --show-error --request POST \
+  "$BASE_URL/sessions/$SESSION_ID/inputs" \
   --header "Authorization: Bearer $ACCESS_TOKEN" \
   --header 'Content-Type: application/json' \
-  --data '{"content":"Create a Python Flask project scaffold.","client_message_id":"turn-1"}'
+  --data '{"content":"Create a Python Flask project scaffold.","client_message_id":"message-1"}'
 
-# Turn 2: Add a follow-up requirement
-curl --no-buffer --silent --show-error --request POST \
-  "$BASE_URL/sessions/$SESSION_ID/ai-stream" \
+# Read the response; a new Session's output starts at 0
+curl --no-buffer --silent --show-error \
+  "$BASE_URL/sessions/$SESSION_ID/stream?after_seq=0" \
+  --header "Authorization: Bearer $ACCESS_TOKEN" \
+  --header 'Accept: text/event-stream'
+
+# Message 2: Add a follow-up requirement
+curl --silent --show-error --request POST \
+  "$BASE_URL/sessions/$SESSION_ID/inputs" \
   --header "Authorization: Bearer $ACCESS_TOKEN" \
   --header 'Content-Type: application/json' \
-  --data '{"content":"Add unit tests and a CI configuration to the project.","client_message_id":"turn-2"}'
+  --data '{"content":"Add unit tests and a CI configuration to the project.","client_message_id":"message-2"}'
 ```
-
-> Wait for the foreground turn to finish before sending the next message.
-> Sending while the Session is still `BUSY` or `INTERRUPTING` returns HTTP 409.
 
 ## Share a Session
 
@@ -438,49 +511,47 @@ Imported messages read, page and share like any other message, and carry
 ## Best practices
 
 1. **Treat Agent configuration as live** — A Session does not pin an Agent
-   version. Saving an Agent does not alter a running turn, but a recreated
+   version. Saving an Agent does not alter a running runtime, but a recreated
    runtime uses the current saved Agent and Environment configuration.
 2. **Use stable request identifiers** — Give each Session creation request a
    stable `Idempotency-Key` and each message a stable `client_message_id` for
    duplicate prevention and traceability.
-3. **Interrupt and archive intentionally** — Interrupt a foreground turn that
-   should stop; archive the Session only when it should leave the active list
-   and release its runtime.
+3. **Interrupt and archive intentionally** — Interrupt a response that should
+   stop; archive the Session only when it should leave the active list and
+   release its runtime.
 
 ## FAQ
 
-**Q: What happens if I send a message to a `BUSY` Session?**
+**Q: What happens if I send a message while the Agent is working?**
 
-A: `POST /sessions/{id}/ai-stream` returns `HTTP 409 SESSION_BUSY`. Wait for the
-foreground turn to settle or interrupt it. Integrations that submit input and
-consume output separately can use `POST /sessions/{id}/turn-inputs`; whether
-input can join an active turn follows the selected Agent program.
+A: AstraBox accepts it and hands it to the Agent program, which queues it and
+answers it after the current work, possibly in the same response as other
+queued messages. The response's `input_ids` name the messages it answers.
 
 **Q: A message was refused. Can I send it again with the same `client_message_id`?**
 
-A: Not to get a different answer. A message has one outcome, and a refused
-message's turn is already over, so the same `client_message_id` returns the
-same refusal every time: for example `SANDBOX_GONE` when the Session's sandbox
-was lost, or `INPUT_NOT_DELIVERED` when a runtime could not be attached. Both
-report `error.retryable: false`. Send the text again as a new message with a new
-`client_message_id`; that message moves the Session to a new sandbox when its
-old one is gone.
+A: Not to get a different answer. The same `client_message_id` always names
+the same message, so sending it again returns the first receipt and the
+message's recorded `failure`. Send the text again as a new message with a new
+`client_message_id`.
 
 **Q: Can I still use a Session after interrupting?**
 
-A: Yes. After the active turn settles, send the next message to continue.
-Interrupting a turn does not delete the Session or its history.
+A: Yes. Send the next message to continue. Interrupting a response does not
+delete the Session or its history.
 
 **Q: How do I get the complete conversation history?**
 
-A: Call `GET /sessions/{id}/messages` and page backwards with `before`. During
-an active turn, the first page also includes messages that are still being
-generated.
+A: Call `GET /sessions/{id}/messages` and page backwards with the `before`
+cursor each page returns. Messages are AI SDK UI messages: one per message you
+sent and one per response. During an active response, the first page includes
+the parts generated so far and `output_seq`, the position to follow the
+Session's stream from for the rest.
 
 **Q: How do I reconnect after an SSE disconnect?**
 
-A: Save `data.frameSeq` from the latest `data-resume-cursor` frame, then
-reconnect with the `after_seq` query parameter. AstraBox does not consume
+A: Save `data.seq` from the latest `data-resume-cursor` part, then reconnect
+with the `after_seq` query parameter. AstraBox does not consume
 `Last-Event-ID`.
 
 **Q: Why is an Environment missing when I create or edit an Agent?**

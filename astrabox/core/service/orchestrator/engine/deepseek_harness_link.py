@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import uuid
 from collections.abc import AsyncIterator
@@ -19,8 +20,7 @@ import httpx
 import websockets
 
 from astrabox.common.utils.errors import APIError
-from astrabox.core.service.orchestrator.engine.base import EngineOutputAlreadyObserved, EngineStreamDetached
-from astrabox.core.service.orchestrator.engine.deepseek_harness_history import read_history_events
+from astrabox.core.service.orchestrator.engine.base import EngineStreamDetached
 from astrabox.core.service.orchestrator.runtime.pty_terminal import (
     resolve_sandbox_endpoint,
     websocket_header_kwargs,
@@ -48,12 +48,10 @@ class DshApiLink:
     def __init__(
         self, *, endpoint: SandboxEndpoint, sandbox: Any = None,
         http_transport: Any = None,
-        observe_only: bool = False,
     ) -> None:
         self.endpoint = endpoint
         self._sandbox = sandbox
         self._http_transport = http_transport
-        self._observe_only = observe_only
         self._headers = dict(endpoint.headers)
         self._frames: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
         self._socket: Any = None
@@ -62,18 +60,17 @@ class DshApiLink:
         self._detached: str | None = None
         self._streams: dict[str, tuple[str, dict[str, Any]]] = {}
         self._openings: dict[str, asyncio.Future[dict[str, Any]]] = {}
-        self._resume_sequences: dict[str, int] = {}
         self._snapshots: dict[str, dict[str, Any]] = {}
         self._event_client_id: str | None = None
+        self._process_identity: str | None = None
 
     @classmethod
     async def connect(
         cls, sandbox: Any, *, port: int = DSH_API_PORT,
         launch_url_path: str = "/home/agent/.deepseek-harness/web-url",
-        observe_only: bool = False,
     ) -> "DshApiLink":
         endpoint = await resolve_sandbox_endpoint(sandbox, port)
-        link = cls(endpoint=endpoint, sandbox=sandbox, observe_only=observe_only)
+        link = cls(endpoint=endpoint, sandbox=sandbox)
         try:
             launch_url = (await sandbox.files.read_bytes(launch_url_path)).decode("utf-8").strip()
             await link._authenticate(launch_url)
@@ -86,6 +83,19 @@ class DshApiLink:
     @property
     def is_live(self) -> bool:
         return not self._closed and self._pump is not None and not self._pump.done()
+
+    @property
+    def process_identity(self) -> str:
+        """The harness process this link reached, as a digest of its launch token.
+
+        The vendor mints one random launch token per harness process
+        (``@deepseek-ai/dsh-client-connection``), so a restarted harness
+        answers under a different identity. The token itself is a credential
+        and is never kept beyond the cookie exchange.
+        """
+        if self._process_identity is None:
+            raise EngineStreamDetached("deepseek_harness link has not authenticated")
+        return self._process_identity
 
     async def _authenticate(self, launch_url: str) -> None:
         tokens = parse_qs(urlparse(launch_url).query).get("token", [])
@@ -105,6 +115,7 @@ class DshApiLink:
                 f"deepseek_harness vendor token exchange failed (HTTP {response.status_code})"
             )
         self._headers["Cookie"] = "; ".join(value.split(";", 1)[0] for value in cookies)
+        self._process_identity = hashlib.sha256(tokens[0].encode("utf-8")).hexdigest()[:16]
 
     async def call(
         self, method: str, payload: dict[str, Any], *, rpc_id: str | None = None,
@@ -150,20 +161,18 @@ class DshApiLink:
         }})
         return True
 
-    async def follow_session(
-        self, address: dict[str, Any], *, after_sequence: int | None = None,
-    ) -> dict[str, Any]:
-        """Follow live output, optionally replaying a native event suffix first."""
+    async def follow_session(self, address: dict[str, Any]) -> dict[str, Any]:
+        """Follow one Session address once per link and return its opening snapshot.
+
+        The snapshot's ``cursor`` is the last durable event it covers; every
+        event after it arrives on :meth:`iter_frames` in order, preceded by the
+        process-local assistant baseline taken at the same cut.
+        """
         key = json.dumps(address, sort_keys=True)
-        if after_sequence is not None:
-            if isinstance(after_sequence, bool) or not isinstance(after_sequence, int) or after_sequence < -1:
-                raise ValueError("deepseek_harness resume sequence must be an integer >= -1")
-            if key in self._snapshots:
-                raise ValueError("deepseek_harness cannot resume an already-open follow stream")
         if key not in self._snapshots:
             snapshot = await self._open_stream("session/follow", {"args": {"request": {
                 "address": address, "maxMessages": 1, "assistantStream": True,
-            }}}, after_sequence=after_sequence)
+            }}})
             if snapshot.get("type") != "snapshot":
                 raise EngineStreamDetached("deepseek_harness follow did not open with a snapshot")
             self._snapshots[key] = snapshot
@@ -179,31 +188,24 @@ class DshApiLink:
             yield frame
 
     async def _attach_downlinks(self) -> None:
-        try:
-            self._socket = await websockets.connect(
-                f"{self._ws_origin()}/astrabox/output?takeover={0 if self._observe_only else 1}",
-                open_timeout=_CONNECT_TIMEOUT_SECONDS,
-                **websocket_header_kwargs(self._headers),
-            )
-        except websockets.exceptions.InvalidStatus as exc:
-            if self._observe_only and exc.response.status_code == 409:
-                raise EngineOutputAlreadyObserved("deepseek_harness output already has a live collector") from exc
-            raise
+        # The image's output carrier serves one collector; taking it over
+        # closes any earlier one, so the session's reader is the only reader.
+        self._socket = await websockets.connect(
+            f"{self._ws_origin()}/astrabox/output?takeover=1",
+            open_timeout=_CONNECT_TIMEOUT_SECONDS,
+            **websocket_header_kwargs(self._headers),
+        )
         self._pump = asyncio.create_task(self._pump_frames())
         ready = await self._open_stream("$events", {"args": {}})
         if ready.get("type") != "ready" or not ready.get("clientId"):
             raise EngineStreamDetached("deepseek_harness Remote events missing ready identity")
         self._event_client_id = str(ready["clientId"])
 
-    async def _open_stream(
-        self, endpoint: str, payload: dict[str, Any], *, after_sequence: int | None = None,
-    ) -> dict[str, Any]:
+    async def _open_stream(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
         stream_id = uuid.uuid4().hex
         opening: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._streams[stream_id] = (endpoint, payload)
         self._openings[stream_id] = opening
-        if after_sequence is not None:
-            self._resume_sequences[stream_id] = after_sequence
         await self._socket.send(json.dumps({
             "type": "open", "streamId": stream_id, "endpoint": endpoint, "payload": payload,
         }))
@@ -212,7 +214,6 @@ class DshApiLink:
         except BaseException:
             self._streams.pop(stream_id, None)
             self._openings.pop(stream_id, None)
-            self._resume_sequences.pop(stream_id, None)
             await self._socket.send(json.dumps({"type": "cancel", "streamId": stream_id}))
             raise
 
@@ -242,16 +243,6 @@ class DshApiLink:
                         baseline = value.get("assistantStream")
                         if not isinstance(baseline, dict):
                             raise EngineStreamDetached("deepseek_harness follow omitted assistant baseline")
-                        after_sequence = self._resume_sequences.pop(stream_id, None)
-                        if after_sequence is not None:
-                            events = await self._read_resume_events(address, value, after_sequence)
-                            if opening.cancelled():
-                                continue
-                            for event in events:
-                                await self._frames.put({
-                                    "type": "session/event",
-                                    "payload": {"sessionId": session_id, "event": event},
-                                })
                         await self._frames.put({
                             "type": "session/assistant-stream-snapshot",
                             "payload": {"sessionId": session_id, "cursor": value["cursor"], "baseline": baseline},
@@ -288,24 +279,7 @@ class DshApiLink:
                 if not future.done():
                     future.set_exception(EngineStreamDetached(self._detached))
             self._openings.clear()
-            self._resume_sequences.clear()
             await self._frames.put(None)
-
-    async def _read_resume_events(
-        self, address: dict[str, Any], snapshot: dict[str, Any], after_sequence: int,
-    ) -> list[dict[str, Any]]:
-        """Read the immutable opening cut before consuming buffered live frames."""
-        cursor = snapshot.get("cursor")
-        if not isinstance(cursor, int) or isinstance(cursor, bool) or cursor < after_sequence:
-            raise EngineStreamDetached("deepseek_harness follow cursor precedes its resume sequence")
-        events = await read_history_events(
-            self.call, address=address, through_seq=cursor, after_seq=after_sequence,
-        )
-        if len(events) != cursor - after_sequence or any(
-            event["seq"] != seq for seq, event in enumerate(events, start=after_sequence + 1)
-        ):
-            raise EngineStreamDetached("deepseek_harness resume history is not a contiguous event suffix")
-        return events
 
     async def close(self) -> None:
         self._closed = True

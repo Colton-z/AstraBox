@@ -45,7 +45,7 @@ POST /api/v1/deployments/{deployment_id}/trigger
 
 AstraBox saves the inbound work before acknowledging it. If the adapter returns
 a stable `dedup_key`, repeated delivery resolves to the existing work instead
-of starting another turn.
+of running the message again.
 
 :::note
 
@@ -75,7 +75,7 @@ and receipt IDs must be unique within the Deployment: qualify a message
 number that the platform repeats across chats with the chat.
 `ack_extra` adds product-required fields to the callback response.
 `alias_link` records a platform message ID that becomes known after delivery.
-`ignore_reason` classifies an authenticated event that must not start a turn.
+`ignore_reason` classifies an authenticated event that must not reach the Agent.
 
 The Deployment's `attention_policy` decides whether an authenticated message
 needs a direct-message, mention, or reply signal. The adapter reports those
@@ -97,7 +97,7 @@ either order. Report both with `signal`, and give them the same `dedup_key`:
 | `observation` | A message delivered for context only | `dedup_key`, `participant`, `conversation_key`, `message_timestamp`, `retain_context=True`; no `reply_context` |
 | `authorization` | Permission to run the observed message with the same `dedup_key` | `dedup_key`, `participant`, an `attention` signal; no `content`, `reference`, `message_timestamp`, or `retain_context` |
 
-AstraBox keeps one record per `dedup_key` and starts at most one turn for it.
+AstraBox keeps one record per `dedup_key` and runs it at most once.
 An observation never runs, whatever the `attention_policy`. An authorization
 runs the observed message's text with its own `reply_context`; when it
 arrives first, AstraBox waits for the observation for one day and then tells
@@ -330,7 +330,7 @@ output read by Web, so delivery does not require another inbound message. A
 native background task or extension can wake the main Agent and produce a new
 reply for every attached destination. The adapter receives that reply through
 the ordinary delivery methods; it does not inspect native transcripts, poll
-child tasks, or initiate another Agent turn.
+child tasks, or send the Agent another message.
 
 Return a `ChannelDeliveryReceipt` with every platform message ID created or
 updated. AstraBox stores those IDs before marking delivery complete so inbound
@@ -346,12 +346,12 @@ For products that update a message while the Agent works, set
 attempt; update those messages instead of creating replacements.
 
 Use `ChannelEvent.response_id` to identify the main-Agent reply independently
-of what triggered it. `turn_id` names the Session turn that produced the reply
-and can be empty for native Session output; do not require an inbound message
-to deliver a reply. `progress`
-contains the reply's accumulated text, including its earlier text blocks.
-Treat it as replacement content when updating a message. Text-only delivery
-omits replies with no text; native tool cards remain available in Web.
+of what triggered it; do not require an inbound message to deliver a reply.
+`progress` contains the reply's accumulated text, including its earlier text
+blocks. Treat it as replacement content when updating a message. A reply with
+no text, no question and no failure is not delivered: text-only delivery omits
+it, and a streaming delivery receives no `turn_started` for it. Native tool
+cards remain available in Web.
 
 ### Questions and approvals {#questions-and-approvals}
 
@@ -368,9 +368,10 @@ render one button for each choice that has an `action`, and report a press as a
 `ChannelInbound` whose `action` is that string. AstraBox resolves the action to
 its question; the provider does not parse answers or track question state.
 
-AstraBox retains the subscription cursor and reconstructs partial replies
-from the Session journal after a restart. The durable outbox owns retries;
-the provider owns rendering and the destination API's idempotency behavior.
+AstraBox retains each subscription's position in the Session's output log and
+reads a partial reply from that log again after a restart. The durable outbox
+owns retries; the provider owns rendering and the destination API's
+idempotency behavior.
 
 Every optional capability flag must be implemented together with its matching
 method. Registration rejects partial capability shapes.
@@ -396,7 +397,7 @@ Then verify the complete path:
 
 1. The adapter appears in the channel setup page with the expected fields.
 2. A signed event creates or continues the expected conversation.
-3. A repeated event ID does not start another turn.
+3. A repeated event ID does not run the message again.
 4. Mentions and direct messages follow the Deployment's `attention_policy`.
 5. The Agent reply reaches the original conversation or thread.
 6. The service reports an explicit delivery error when the product API rejects

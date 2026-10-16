@@ -104,7 +104,7 @@ from astrabox.seams.sandbox import (
     SandboxNetworkPolicy,
 )
 from astrabox.core.service.orchestrator.engine import transcript_mirror
-from astrabox.core.service.orchestrator.session_kernel.workers.lifecycle.recovery_ownership import (
+from astrabox.core.service.orchestrator.session_lifecycle.ownership import (
     current_recovery,
 )
 from astrabox.seams.model import ResolvedModelAccess
@@ -113,13 +113,16 @@ from astrabox.seams.model import ResolvedModelAccess
 logger = get_logger(__name__)
 
 
-def sandbox_create_resources(*, shared: bool) -> tuple[dict[str, str], dict[str, str]]:
+def sandbox_create_resources(
+    *, shared: bool, assistant: bool = False,
+) -> tuple[dict[str, str], dict[str, str]]:
     """Return the deployment's ``(limits, requests)`` for one kind of box.
 
-    ``shared`` selects an Agent's shared box, otherwise a conversation's own
-    box. Limits are the ceiling; requests are only the Kubernetes scheduling
-    reservation. A deployment sets them with ``ASTRABOX_SANDBOX_*`` and
-    ``ASTRABOX_SHARED_SANDBOX_*`` (defaults in
+    ``shared`` selects an Agent's shared box and ``assistant`` an Assistant's
+    workspace box, otherwise a conversation's own box. Limits are the ceiling;
+    requests are only the Kubernetes scheduling reservation. A deployment sets
+    them with ``ASTRABOX_SANDBOX_*``, ``ASTRABOX_SHARED_SANDBOX_*`` and
+    ``ASTRABOX_ASSISTANT_SANDBOX_*`` (defaults in
     :class:`~astrabox.config.settings.AstraBoxSettings`). Every create passes
     them through its backend's ``fit_resources``, which refuses what that
     runtime cannot honour.
@@ -127,7 +130,7 @@ def sandbox_create_resources(*, shared: bool) -> tuple[dict[str, str], dict[str,
     from astrabox.config.settings import get_settings
 
     settings = get_settings()
-    prefix = "shared_sandbox" if shared else "sandbox"
+    prefix = "shared_sandbox" if shared else "assistant_sandbox" if assistant else "sandbox"
     return (
         {
             "cpu": getattr(settings, f"{prefix}_cpu_limit"),
@@ -1046,6 +1049,7 @@ def engine_create_spec(
     planned_mounts: tuple[tuple[str, str], ...],
     callback_url: str | None,
     shared: bool,
+    assistant: bool = False,
 ) -> SandboxCreateSpec:
     """What a box must BE, separate from where it comes from.
 
@@ -1058,7 +1062,7 @@ def engine_create_spec(
     """
 
     resource_limits, resource_requests = backend.fit_resources(
-        *sandbox_create_resources(shared=shared)
+        *sandbox_create_resources(shared=shared, assistant=assistant)
     )
     return SandboxCreateSpec(
         session_id=session_id,
@@ -1608,61 +1612,6 @@ async def connect_engine_sandbox(
         raise
 
 
-async def prepare_attached_mcp_vault(
-    manager: Any,
-    *,
-    session_id: str,
-    template: Any,
-    sandbox: Any,
-) -> Callable[[], Awaitable[None]] | None:
-    """Refresh direct MCP bindings on a box that outlived this host.
-
-    This is deliberately patch-only. A missing process-local Vault would also
-    be missing the model credential, and creating one from the MCP subset here
-    would turn a precise attach failure into an opaque model 401.
-    """
-
-    vault_enabled = bool(
-        getattr(load_astrabox_settings(), "sandbox_credential_vault_enabled", False)
-    )
-    mcp_vault_write = await resolve_mcp_credential_plan(
-        manager,
-        session_id=session_id,
-        template=template,
-        vault_enabled=vault_enabled,
-    )
-    if mcp_vault_write is None:
-        return None
-
-    from astrabox.seams.sandbox import sandbox_for_sandbox
-
-    backend_adapter = sandbox_for_sandbox(sandbox)
-    if backend_adapter is None:
-        raise APIError(
-            code="SANDBOX_CONFIG_INVALID",
-            message=(
-                f"sandbox for Session {session_id!r} has no registered backend "
-                "for MCP credential refresh"
-            ),
-            status_code=500,
-        )
-    if vault_enabled and not mcp_vault_write.is_empty:
-        await backend_adapter.apply_credential_vault(
-            sandbox,
-            vault_write=mcp_vault_write,
-            create_if_missing=False,
-        )
-    return mcp_credential_refresher(
-        manager,
-        session_id=session_id,
-        template=template,
-        backend_adapter=backend_adapter,
-        sandbox=sandbox,
-        initial_credential_plan=mcp_vault_write,
-        vault_enabled=vault_enabled,
-    )
-
-
 async def claim_prepared_engine_sandbox(
     manager: Any,
     *,
@@ -1888,8 +1837,14 @@ async def claim_prepared_engine_sandbox(
         )
         from astrabox.persistence.repository.agent_repository import AgentRepository
 
+        model_config = getattr(template, "model_config", None) or {}
         await record_gateway_entry(
             AgentRepository(), agent_id, slot_id=slot_id, session_id=session_id,
+            endpoint_provider=(
+                str(model_config.get("endpoint_provider") or "").strip() or None
+                if isinstance(model_config, dict)
+                else None
+            ),
         )
         schedule_gateway_entry_prune(agent_id)
 
@@ -2006,7 +1961,6 @@ async def _discard_failed_prepared_claim(
     from astrabox.core.service.orchestrator.agent.prepared_slots import (
         discard_prepared_slot,
         release_claimed_slot_allocation,
-        slot_manifests,
     )
     from astrabox.persistence.repository.agent_repository import AgentRepository
 
@@ -2016,7 +1970,7 @@ async def _discard_failed_prepared_claim(
     manifest = next(
         (
             item
-            for item in slot_manifests(await AgentRepository().get_agent(agent_id))
+            for item in await AgentRepository().list_slots(agent_id)
             if str(item.get("state") or "") == "claimed"
             and str(item.get("claimed_session_id") or "").strip() == session_id
         ),
@@ -2457,6 +2411,7 @@ async def provision_engine_sandbox(
         planned_mounts=planned_mounts,
         callback_url=callback_url,
         shared=False,
+        assistant=str(getattr(workspace_plan, "subject_kind", "") or "") == "assistant_runtime",
     )
     sandbox = await create_sandbox_with_storage(
         backend_adapter, create_spec, reason="conversation"

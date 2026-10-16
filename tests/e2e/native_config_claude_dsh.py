@@ -16,17 +16,18 @@ from tests.e2e._sandbox_helpers import (
     OPEN_SESSIONS,
     create_agent_variant_session,
     data,
+    deadline_after,
     engine_kind,
     environment_with_tenancy,
     get_admin_session_detail,
     get_session,
     poll_until_agent_ready,
-    stream_turn,
+    send_and_follow,
+    transcript_entries,
     wait_until_settled,
 )
 from tests.e2e._service_containers import SERVER_CONTAINER_HANDLE, require_service_container
 from tests.e2e.test_terminal import _run_terminal
-from tests.e2e.test_transcript_mirror import _query_mirror_docs
 
 
 def _create(
@@ -167,7 +168,7 @@ print(json.dumps(found))
 
 
 def verify_dsh_native_configuration(client: httpx.Client) -> None:
-    """Read the native preset and prove its selected model can answer a turn."""
+    """Read the native preset and prove its selected model can answer a message."""
 
     assert engine_kind() == "deepseek_harness"
     # Published 0.1.2-rc.1 agent-presets ships minimal and defaults to standard.
@@ -212,10 +213,10 @@ except Exception as exc:
     assert expected_modes, options
     capabilities = get_session(client, sid).get("engine_capabilities") or {}
     assert capabilities.get("permission_modes") == expected_modes, (capabilities, options)
-    deadline = time.monotonic() + 30
+    deadline = deadline_after(30)
     records: list[dict[str, Any]] = []
     while True:
-        records = [json.loads(row["entry_json"]) for row in _query_mirror_docs(sid)]
+        records = [row["entry"] for row in transcript_entries(sid)]
         headers = [row for row in records if row.get("type") == "session"]
         models = [row for row in records if row.get("type") == "model/selection"]
         if (headers and models) or time.monotonic() >= deadline:
@@ -236,10 +237,13 @@ except Exception as exc:
     assert models[-1]["data"]["provider"] == "deepseek-official", models
     # The selection record alone does not exercise the supplier's wire. Its
     # DeepSeek route uses Messages, including x-api-key credential delivery.
-    result = stream_turn(
+    result = send_and_follow(
         client, sid,
-        content="Explain in one sentence what year-over-year revenue growth measures. No tools are needed.",
+        "Explain in one sentence what year-over-year revenue growth measures. No tools are needed.",
+        until="end",
     )
     assert result.error is None, result.error
-    assert result.n_text_delta > 0 and result.text.strip(), result
-    wait_until_settled(client, sid)
+    assert result.n_text_delta > 0 and result.text.strip(), result.response
+    settled = wait_until_settled(client, sid)
+    assert settled["last_response"]["response_id"] == result.response_id, settled
+    assert settled["last_response"]["outcome"] == "completed", settled

@@ -1,15 +1,16 @@
 /**
- * E2E: a superseded runner link cannot strand the platform's next turn.
+ * E2E: a superseded runner link cannot strand the platform's next message.
  *
  * A sandbox id addresses one box, and the runner admits one host-link owner at
- * a time. This spec creates a second, short-lived `attach` to the same runner,
- * lets it become that sole owner, and disconnects it. The platform must then
- * deliver exactly one later turn on the same box with a durable terminal proof.
+ * a time: normally the session's reader. This spec creates a second,
+ * short-lived `attach` to the same runner, lets it take that ownership, and
+ * disconnects it. The platform must then answer exactly one later message on
+ * the same box, with the response recorded as ended on its own finish part.
  */
-import { expect, test } from '@playwright/test';
+import { expect, test, type Response } from '@playwright/test';
 
-import { AstraApi, messageText } from '../fixtures/astraApi';
-import { waitForTurnTerminalProof } from '../fixtures/dbOracle';
+import { AstraApi, messageText, type InputReceipt } from '../fixtures/astraApi';
+import { sessionOutputRows, sessionResponseRows, type SessionResponseRow } from '../fixtures/dbOracle';
 import {
   requireSandboxHandle,
   sandboxExec,
@@ -149,6 +150,13 @@ function launchAuxiliaryAttach(
   );
 }
 
+/** The input id the page's own send was accepted under. */
+async function receiptOf(response: Response): Promise<string> {
+  const receipt = ((await response.json()) as { data: InputReceipt }).data;
+  expect(receipt.input_id, 'the platform must accept the message with an input id').toBeTruthy();
+  return receipt.input_id;
+}
+
 test('platform can send after the superseding runner link disconnects', async ({ page, request }) => {
   const api = new AstraApi(request);
   const agent = await api.defaultAgent();
@@ -164,22 +172,16 @@ test('platform can send after the superseding runner link disconnects', async ({
   await api.waitForSessionReady(sessionId);
   await openSessionView(page, sessionId);
 
-  const firstAssistantCount = await api.assistantCount(sessionId);
-  await sendPrompt(
+  const firstInputId = await receiptOf(await sendPrompt(
     page,
     sessionId,
     `Do not use tools. Reply with exactly ${firstMarker}`,
-  );
-  const firstAssistant = await api.waitForAssistantMessageMatching(
-    sessionId,
-    firstAssistantCount,
-    (message) => messageText(message).includes(firstMarker),
-    TURN_BUDGET_MS,
-  );
-  expect(messageText(firstAssistant), 'the warm-up turn must finish on the real platform link')
+  ));
+  const firstAssistant = await api.waitForReplyTo(sessionId, firstInputId, { timeoutMs: TURN_BUDGET_MS });
+  expect(messageText(firstAssistant), 'the warm-up response must finish on the real platform link')
     .toContain(firstMarker);
-  const firstTurnId = String(firstAssistant.turn_id || '').trim();
-  expect(firstTurnId, 'the warm-up assistant message must name its turn').not.toEqual('');
+  const firstResponseId = String(firstAssistant.id || '').trim();
+  expect(firstResponseId, 'the warm-up assistant message must be its response').not.toEqual('');
 
   const warm = await api.waitForSessionReady(sessionId);
   const sandboxId = String(warm.sandbox_id || '').trim();
@@ -223,29 +225,24 @@ test('platform can send after the superseding runner link disconnects', async ({
   ).toBe(sandboxId);
 
   const secondAssistantCount = await api.assistantCount(sessionId);
-  await sendPrompt(
+  const secondInputId = await receiptOf(await sendPrompt(
     page,
     sessionId,
     `Do not use tools. Reply with exactly ${secondMarker}`,
-  );
+  ));
   await expect(
     page.getByTestId('user-message').filter({ hasText: secondMarker }),
     'the post-disconnect input must enter the visible transcript exactly once',
   ).toHaveCount(1);
 
-  const secondAssistant = await api.waitForAssistantMessageMatching(
-    sessionId,
-    secondAssistantCount,
-    (message) => messageText(message).includes(secondMarker),
-    TURN_BUDGET_MS,
-  );
+  const secondAssistant = await api.waitForReplyTo(sessionId, secondInputId, { timeoutMs: TURN_BUDGET_MS });
   expect(
     messageText(secondAssistant),
     'the surviving platform path must receive the post-disconnect reply',
   ).toContain(secondMarker);
-  const secondTurnId = String(secondAssistant.turn_id || '').trim();
-  expect(secondTurnId, 'the post-disconnect assistant message must name its turn').not.toEqual('');
-  expect(secondTurnId, 'the post-disconnect input must open a new turn').not.toBe(firstTurnId);
+  const secondResponseId = String(secondAssistant.id || '').trim();
+  expect(secondResponseId, 'the post-disconnect assistant message must be its response').not.toEqual('');
+  expect(secondResponseId, 'the post-disconnect input must open a new response').not.toBe(firstResponseId);
 
   let settleEvidence: Record<string, unknown> | null = null;
   await expect.poll(async () => {
@@ -253,8 +250,8 @@ test('platform can send after the superseding runner link disconnects', async ({
     const assistantCount = await api.assistantCount(sessionId);
     settleEvidence = {
       state: String(detail.state || ''),
-      current_turn_id: String(detail.current_turn_id || ''),
-      last_turn_status: String(detail.last_turn_status || ''),
+      open_responses: (detail.current_responses ?? []).length,
+      last_response: `${detail.last_response?.response_id ?? ''}/${detail.last_response?.outcome ?? ''}`,
       assistant_delta: assistantCount - secondAssistantCount,
       sandbox_id: String(detail.sandbox_id || ''),
     };
@@ -262,11 +259,11 @@ test('platform can send after the superseding runner link disconnects', async ({
   }, {
     timeout: TURN_BUDGET_MS,
     intervals: [500, 1_000],
-    message: 'the accepted post-disconnect turn must settle once on the same sandbox',
+    message: 'the accepted post-disconnect response must settle once on the same sandbox',
   }).toEqual({
     state: 'READY',
-    current_turn_id: '',
-    last_turn_status: 'COMPLETED',
+    open_responses: 0,
+    last_response: `${secondResponseId}/completed`,
     assistant_delta: 1,
     sandbox_id: sandboxId,
   });
@@ -280,37 +277,43 @@ test('platform can send after the superseding runner link disconnects', async ({
     'the user must see exactly one post-disconnect reply',
   ).toHaveCount(1);
 
-  const terminal = await waitForTurnTerminalProof(
-    sessionId,
-    secondTurnId,
-    'COMPLETED',
-    120_000,
-  );
-  const terminalFrame =
-    terminal.last_turn_terminal_frame && typeof terminal.last_turn_terminal_frame === 'object'
-      ? (terminal.last_turn_terminal_frame as Record<string, unknown>)
-      : {};
+  // The platform's own record of the response: ended, and the last part it
+  // relayed for it is the response's finish.
+  let recorded: SessionResponseRow | undefined;
+  await expect.poll(() => {
+    recorded = sessionResponseRows(sessionId).find((row) => row.response_id === secondResponseId);
+    return recorded ? `${recorded.status}/${recorded.outcome ?? ''}` : 'missing';
+  }, {
+    timeout: 120_000,
+    message: 'the post-disconnect response must be recorded as ended',
+  }).toBe('ended/completed');
+  expect(
+    recorded!.input_ids,
+    'the recorded response must answer exactly the message sent after the disconnect',
+  ).toEqual([secondInputId]);
+  const recordedParts = sessionOutputRows(sessionId, secondResponseId).map(({ part }) => part);
   const finalDetail = await api.getSession(sessionId);
   const verdict = staleWriterReconnectVerdict({
     expectedSandboxId: sandboxId,
     actualSandboxId: String(finalDetail.sandbox_id || '').trim(),
-    firstTurnId,
-    secondTurnId,
+    firstResponseId,
+    secondResponseId,
     secondMarker,
     secondReplyText: messageText(secondAssistant),
     state: String(finalDetail.state || ''),
-    currentTurnId: String(finalDetail.current_turn_id || ''),
-    lastTurnStatus: String(finalDetail.last_turn_status || ''),
+    openResponseCount: (finalDetail.current_responses ?? []).length,
+    lastResponseId: String(finalDetail.last_response?.response_id || ''),
+    lastResponseOutcome: String(finalDetail.last_response?.outcome || ''),
     assistantDelta: (await api.assistantCount(sessionId)) - secondAssistantCount,
     matchingAssistantCount: matchingAssistants.length,
-    terminalType: String(terminalFrame.type || ''),
+    terminalType: String(recordedParts.at(-1)?.type || ''),
   });
   expect(
     verdict,
-    'the superseding disconnect must preserve one complete turn on the addressed sandbox',
+    'the superseding disconnect must preserve one complete response on the addressed sandbox',
   ).toEqual({
     addressedSandboxSurvived: true,
-    openedDistinctTurn: true,
+    openedDistinctResponse: true,
     replyReachedPlatform: true,
     completedExactlyOnce: true,
     settledReady: true,
@@ -318,7 +321,7 @@ test('platform can send after the superseding runner link disconnects', async ({
   });
 
   const pill = page.getByTestId('run-view').getByTestId('status-pill').first();
-  await expect(pill, 'the post-disconnect turn must leave the page settled').toHaveAttribute(
+  await expect(pill, 'the post-disconnect response must leave the page settled').toHaveAttribute(
     'data-pulse',
     'false',
   );
@@ -332,8 +335,8 @@ test('platform can send after the superseding runner link disconnects', async ({
     description: JSON.stringify({
       sandbox_id: sandboxId,
       runner_port: runnerPort,
-      first_turn_id: firstTurnId,
-      second_turn_id: secondTurnId,
+      first_response_id: firstResponseId,
+      second_response_id: secondResponseId,
       settle: settleEvidence,
       auxiliary: probeStatus(handle, paths),
     }),

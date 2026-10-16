@@ -75,7 +75,7 @@ from astrabox.core.service.orchestrator.engine.child_runs import (
 from astrabox.core.service.orchestrator.engine.frame_scope import (
     session_scoped_engine_frame,
 )
-from astrabox.core.service.orchestrator.engine.input_delivery import (
+from astrabox.core.service.orchestrator.engine.input_ids import (
     input_response_message_id,
 )
 from astrabox.core.service.orchestrator.engine.claude_child_runs import (
@@ -1016,9 +1016,12 @@ def translate_claude_sdk_message(
         # carried as spelled — a deployment can point at any gateway, so a
         # platform-defined vocabulary here would rename the engine's verdict.
         code = subtype if subtype != _CLAUDE_RESULT_SUCCESS_SUBTYPE else ""
+        # A failed run reports why in ``errors`` (``ResultMessage.errors``);
+        # ``result`` holds the answer text, which a failed run often lacks.
+        errors = [str(item) for item in message.get("errors") or [] if str(item).strip()]
         result_frame["error"] = {
             "code": code or str(message.get("terminal_reason") or "") or "ENGINE_ERROR",
-            "message": result_text,
+            "message": "; ".join(errors) or result_text,
         }
     yield result_frame
 

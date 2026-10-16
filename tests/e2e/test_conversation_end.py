@@ -20,6 +20,10 @@ Two deployment-specific contracts are proven here:
   terminates one conversation without killing the shared box, then proves a new
   conversation on that same box owns a different engine session.
 
+* ``test_assistant_answers_a_second_message_in_the_same_conversation`` is
+  marked ``assistant_live``: two messages down one Assistant conversation, the
+  second answered from the first.
+
 Run its dedicated lane against the pinned Assistant Environment (deselected in
 the default unit run):
 
@@ -36,18 +40,28 @@ import httpx
 import pytest
 
 from tests.e2e._sandbox_helpers import (
+    answer_in_history,
     assert_kubernetes_runtime_image,
     create_session,
     data,
+    deadline_after,
     get_admin_session_detail,
     get_session,
+    history,
     poll_until_agent_ready,
     poll_until_ready,
+    psql,
     release_assistant,
     release_session,
-    stream_turn,
+    send_and_follow,
+    sql_literal,
+    user_messages,
     wait_until_settled,
 )
+from tests.e2e._service_containers import SERVER_CONTAINER_HANDLE, require_service_container
+from tests.e2e.runtime_preparation_test import _server_log
+from tests.e2e.test_interactions import _waiting_interaction
+from tests.e2e.test_prepared_runtime_activation import _run_json, _sandbox_exec
 
 pytestmark = pytest.mark.e2e
 
@@ -55,10 +69,10 @@ pytestmark = pytest.mark.e2e
 def test_conversation_end_rejects_chat_session_without_teardown(e2e_client: httpx.Client) -> None:
     """End on a plain chat conversation is rejected, and the reject tears nothing down.
 
-    create -> READY -> one real turn (a live conversation on a running sandbox) ->
-    ``POST /conversation/end`` -> ``409 INVALID_REQUEST`` (end is only defined for
-    assistant conversations) -> the session is still ``READY`` on the SAME sandbox.
-    The rejected call must be a no-op on session and sandbox lifecycle.
+    create -> READY -> one answered message (a live conversation on a running
+    sandbox) -> ``POST /conversation/end`` -> ``409 INVALID_REQUEST`` (end is only
+    defined for assistant conversations) -> the session is still ``READY`` on the
+    SAME sandbox. The rejected call must be a no-op on session and sandbox lifecycle.
     """
     created = create_session(e2e_client)
     sid = str(created.get("session_id") or "")
@@ -67,11 +81,13 @@ def test_conversation_end_rejects_chat_session_without_teardown(e2e_client: http
         poll_until_agent_ready(e2e_client, sid)
 
         # A live conversation with real context, running on a provisioned sandbox.
-        res = stream_turn(e2e_client, sid, content="Reply with exactly: OK")
-        assert res.error is None, f"turn errored before the end call: {res.error}"
+        res = send_and_follow(e2e_client, sid, "Reply with exactly: OK", until="end")
+        assert res.error is None and res.finish_reason == "stop", (
+            f"the response failed before the end call: {res.response}"
+        )
         before = wait_until_settled(e2e_client, sid)
         sandbox_before = str(before.get("sandbox_id") or "")
-        assert sandbox_before, f"session has no sandbox_id after a settled turn: {before}"
+        assert sandbox_before, f"session has no sandbox_id after an answered message: {before}"
 
         # No helper wraps this route — call it directly. conversation/end is defined
         # only for assistant conversations; this is a plain chat conversation, so the
@@ -145,7 +161,7 @@ def _assistant_runtime(
 
 
 def _wake_assistant(e2e_client: httpx.Client, assistant_id: str, timeout: float = 300.0) -> dict:
-    deadline = time.monotonic() + timeout
+    deadline = deadline_after(timeout)
     last: dict = {}
     while time.monotonic() < deadline:
         last = data(
@@ -157,29 +173,23 @@ def _wake_assistant(e2e_client: httpx.Client, assistant_id: str, timeout: float 
         if str(last.get("state") or "") == "READY" and last.get("current_sandbox_id"):
             return last
         time.sleep(3.0)
-    pytest.fail(
-        f"assistant {assistant_id} workspace did not become READY within {timeout:.0f}s: {last}"
-    )
+    pytest.fail(f"assistant {assistant_id} workspace did not become READY in time: {last}")
 
 
 @pytest.mark.assistant_live
 def test_assistant_answers_a_second_message_in_the_same_conversation(
     e2e_client: httpx.Client,
 ) -> None:
-    """Two turns in ONE conversation — the most basic thing a chat does.
+    """Two messages in ONE conversation — the most basic thing a chat does.
 
-    Nothing covered it. Every Assistant e2e here opens a fresh conversation per
-    turn, and so did every real-box probe, so a defect that only a SECOND
-    message can reach shipped: the engine client released its turn slot after
-    yielding the terminal frame, in code the consumer's break makes
-    unreachable, and the second message came back "already has an active
-    turn". The unit tests that drained the stream to exhaustion stayed green
-    throughout, because draining resumes the generator past that yield.
+    Every other Assistant case opens a fresh conversation per message, so a
+    defect that only a SECOND message reaches — the runtime refusing or
+    dropping it once it has answered the first — is caught only here.
 
     So this sends twice down one conversation and reads the answer, not just
-    the frame count: the second turn must answer, and it must answer FROM the
-    first — a reply that lost the context would pass an error-free check while
-    the conversation was, in the way that matters, broken.
+    the part count: the second message must be answered, and answered FROM
+    the first — a reply that lost the context would pass an error-free check
+    while the conversation was, in the way that matters, broken.
     """
 
     assistant_id = ""
@@ -215,45 +225,90 @@ def test_assistant_answers_a_second_message_in_the_same_conversation(
         assert session_id, f"Assistant conversation returned no session: {conversation}"
         poll_until_ready(e2e_client, session_id, expected_image=assistant_image)
 
-        first = stream_turn(
+        first = send_and_follow(
             e2e_client,
             session_id,
-            content=(
-                f"Remember this code: {token}. Reply with just the word OK. "
-                "Do not use any tool."
-            ),
+            f"Remember this code: {token}. Reply with just the word OK. Do not use any tool.",
+            until="end",
         )
-        assert first.error is None, f"first turn errored: {first.error}"
-        assert first.n_text_delta > 0, "first turn streamed no text"
+        assert first.error is None and first.finish_reason == "stop", (
+            f"the first message's response did not end normally: {first.response}"
+        )
+        assert first.n_text_delta > 0, "the first message's response streamed no text"
         wait_until_settled(e2e_client, session_id)
 
-        second = stream_turn(
+        second = send_and_follow(
             e2e_client,
             session_id,
-            content="What was the code I asked you to remember? Reply with just the code.",
+            "What was the code I asked you to remember? Reply with just the code.",
+            until="end",
         )
-        assert second.error is None, (
-            f"the second message in the same conversation errored: {second.error}"
+        assert second.error is None and second.finish_reason == "stop", (
+            f"the second message in the same conversation did not end normally: {second.response}"
         )
-        assert second.n_text_delta > 0, "second turn streamed no text"
+        assert second.n_text_delta > 0, "the second message's response streamed no text"
         assert token in second.text, (
-            "the second turn answered without the first turn's context: "
+            "the second message was answered without the first one's context: "
             f"{second.text[:200]!r}"
         )
-        wait_until_settled(e2e_client, session_id)
+        settled = wait_until_settled(e2e_client, session_id)
+        assert settled["last_response"]["response_id"] == second.response_id, settled
+        assert settled["last_response"]["outcome"] == "completed", settled
+        messages = history(e2e_client, session_id)
+        assert [m["id"] for m in user_messages(messages)] == [
+            first.client_message_id,
+            second.client_message_id,
+        ], [m["id"] for m in user_messages(messages)]
+        for sent in (first, second):
+            assert answer_in_history(messages, sent.input_id)["id"] == sent.response_id
     finally:
         release_session(session_id)
         release_assistant(assistant_id)
+
+
+def _assistant_native_sessions(sandbox_id: str, assistant_id: str) -> list[dict]:
+    """Read the supplier's live-session registry, without a platform runtime client."""
+    config = psql(
+        "SELECT runtime_identity->>'config_dir' FROM assistant_workspaces "
+        f"WHERE assistant_id={sql_literal(assistant_id)}"
+    )
+    assert len(config) == 1 and config[0], "The workspace has no native profile path"
+    program = """
+import asyncio, json, os
+import aiohttp
+async def main():
+    async with aiohttp.ClientSession() as client:
+        async with client.ws_connect('http://127.0.0.1:9118/api/ws', headers={
+            'X-AstraBox-Hermes-Token': os.environ['HERMES_DASHBOARD_SESSION_TOKEN'],
+        }) as socket:
+            await socket.send_json({'jsonrpc': '2.0', 'id': 'live-sessions', 'method': 'session.active_list', 'params': {}})
+            while True:
+                reply = await socket.receive_json(timeout=15)
+                if reply.get('id') == 'live-sessions':
+                    assert 'error' not in reply, 'Native active-list request failed'
+                    print(json.dumps([{'id': row['id'], 'session_key': row['session_key']}
+                                      for row in reply['result']['sessions']]))
+                    return
+asyncio.run(main())
+"""
+    result = _run_json([
+        *_sandbox_exec(sandbox_id), "bash", "-c",
+        'set -euo pipefail; source "$1"; exec "$HERMES_VENV/bin/python" -c "$2"',
+        "hermes-native-observation", f"{config[0]}/astrabox-hermes.env", program,
+    ])
+    assert isinstance(result, list)
+    return result
 
 
 @pytest.mark.assistant_live
 def test_assistant_conversation_end_starts_fresh_context_on_same_workspace(
     e2e_client: httpx.Client,
 ) -> None:
-    """End one Assistant conversation, then prove the next gets a new engine session."""
+    """End an evicted native conversation, keep its sibling, and start a fresh context."""
     assistant_id = ""
     first_id = ""
     second_id = ""
+    sibling_id = ""
     try:
         (
             assistant_environment,
@@ -291,23 +346,61 @@ def test_assistant_conversation_end_starts_fresh_context_on_same_workspace(
         first_id = str(first.get("session_id") or "")
         assert first_id, f"first Assistant conversation returned no session: {first}"
         poll_until_ready(e2e_client, first_id, expected_image=assistant_image)
-        planted = stream_turn(
+        planted = send_and_follow(
             e2e_client,
             first_id,
-            content="Start this conversation with a brief greeting. Do not use any tool.",
+            "Start this conversation with a brief greeting. Do not use any tool.",
+            until="end",
         )
-        assert planted.error is None, f"first Assistant turn errored: {planted.error}"
-        assert planted.n_text_delta > 0, "first Assistant turn streamed no text"
+        assert planted.error is None and planted.finish_reason == "stop", (
+            f"the first Assistant conversation's response did not end normally: {planted.response}"
+        )
+        assert planted.n_text_delta > 0, "the first Assistant conversation's response streamed no text"
         first_detail = wait_until_settled(e2e_client, first_id)
         first_admin_detail = get_admin_session_detail(e2e_client, first_id)
         first_engine_session = str(first_admin_detail.get("engine_session_key") or "").strip()
         assert first_engine_session, f"first conversation persisted no engine session: {first_detail}"
 
+        sibling_id = data(e2e_client.post(
+            f"/api/v1/assistants/{assistant_id}/conversations", json={},
+        ))["session_id"]
+        poll_until_ready(e2e_client, sibling_id, expected_image=assistant_image)
+        marker = f"SIBLING-{uuid.uuid4().hex[:8]}"
+        sibling = send_and_follow(e2e_client, sibling_id, (
+            f"Remember {marker}. Reply with exactly OK. Do not use tools."
+        ), until="end")
+        assert sibling.error is None and sibling.finish_reason == "stop", sibling.response
+        wait_until_settled(e2e_client, sibling_id)
+        sibling_key = get_admin_session_detail(e2e_client, sibling_id)["engine_session_key"]
+        waiting = send_and_follow(e2e_client, first_id, (
+            "Use the clarify tool to ask whether I prefer RED or BLUE, with those two options. "
+            "Wait for my answer before continuing. Do not answer the question yourself."
+        ), until="pause")
+        _waiting_interaction(e2e_client, waiting)
+        native = _assistant_native_sessions(workspace_sandbox, assistant_id)
+        target = [row for row in native if row["session_key"] == first_engine_session]
+        sibling_native = [row for row in native if row["session_key"] == sibling_key]
+        assert len(target) == len(sibling_native) == 1, native
+        dispose_started = time.time()
+        evicted = data(e2e_client.post(f"/api/v1/admin/sessions/{first_id}/evict-runtime"))
+        assert evicted["evicted"] == first_id, evicted
         ended = data(e2e_client.post(f"/api/v1/sessions/{first_id}/conversation/end"))
         assert ended.get("status") == "conversation-ended", ended
         assert ended.get("killed") is False, ended
         assert str(ended.get("sandbox_id") or "") == workspace_sandbox, ended
         assert str(get_session(e2e_client, first_id).get("state") or "") == "TERMINATED"
+        log = _server_log(require_service_container(SERVER_CONTAINER_HANDLE), dispose_started)
+        assert f"session={first_id} engine=assistant source=native-identity" in log, (
+            "The scene did not reach final disposal without a local client"
+        )
+        remaining = _assistant_native_sessions(workspace_sandbox, assistant_id)
+        assert all(row["id"] != target[0]["id"] and row["session_key"] != first_engine_session for row in remaining), remaining
+        assert sibling_native[0] in remaining, "Finalizing one native conversation closed its sibling"
+        recalled = send_and_follow(e2e_client, sibling_id, (
+            "Repeat the token I asked you to remember. Do not use tools."
+        ), until="end")
+        assert recalled.error is None and marker in recalled.text, recalled.error or recalled.text
+        assert get_admin_session_detail(e2e_client, sibling_id)["sandbox_id"] == workspace_sandbox
 
         second = data(
             e2e_client.post(f"/api/v1/assistants/{assistant_id}/conversations", json={})
@@ -321,13 +414,16 @@ def test_assistant_conversation_end_starts_fresh_context_on_same_workspace(
         assert str(second_before_admin.get("engine_session_key") or "").strip() != first_engine_session, (
             f"new conversation inherited the ended engine session: {second_before_admin}"
         )
-        second_turn = stream_turn(
+        greeted = send_and_follow(
             e2e_client,
             second_id,
-            content="Start this conversation with a brief greeting. Do not use any tool.",
+            "Start this conversation with a brief greeting. Do not use any tool.",
+            until="end",
         )
-        assert second_turn.error is None, f"second Assistant turn errored: {second_turn.error}"
-        assert second_turn.n_text_delta > 0, "second Assistant turn streamed no text"
+        assert greeted.error is None and greeted.finish_reason == "stop", (
+            f"the second Assistant conversation's response did not end normally: {greeted.response}"
+        )
+        assert greeted.n_text_delta > 0, "the second Assistant conversation's response streamed no text"
         second_detail = wait_until_settled(e2e_client, second_id)
         second_admin_detail = get_admin_session_detail(e2e_client, second_id)
         second_engine_session = str(second_admin_detail.get("engine_session_key") or "").strip()
@@ -341,4 +437,5 @@ def test_assistant_conversation_end_starts_fresh_context_on_same_workspace(
     finally:
         release_session(first_id)
         release_session(second_id)
+        release_session(sibling_id)
         release_assistant(assistant_id)

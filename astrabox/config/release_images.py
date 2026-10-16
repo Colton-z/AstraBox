@@ -30,7 +30,7 @@ IMAGE_PREFIX_ENV = "ASTRABOX_IMAGE_PREFIX"
 IMAGE_TAG_ENV = "ASTRABOX_IMAGE_TAG"
 
 #: Repository prefix of the published images. The Compose file repeats it as
-#: the server image's default; ``tests/release_images_test.py`` keeps the two
+#: the server image's default; ``scripts/check_release.py`` keeps the two
 #: equal.
 PUBLISHED_IMAGE_PREFIX = "ghcr.io/colton-z/astrabox-"
 

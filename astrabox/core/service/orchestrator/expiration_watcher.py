@@ -30,6 +30,7 @@ from astrabox.core.service.orchestrator.bootstrap_reconciler import (
     STARTUP_ALLOCATION_GRACE_SECONDS,
 )
 from astrabox.persistence.repository.keyset import KeysetCursor
+from astrabox.persistence.repository.session_repository import session_runtime_lock
 logger = get_logger(__name__)
 
 # Per-tick probe budget: bounds control-plane load when many sessions lapse at
@@ -41,10 +42,12 @@ _DEAD_BINDING_SCAN_LIMIT = 50
 # open for tens of seconds on the cluster, where a probe is one cheap read.
 _IDLE_SWEEP_SCAN_LIMIT = 10
 
-# Conversation states in which no turn is running, so nothing is lost by freeing
-# the compute. Anything else — PROCESSING, STREAMING, INTERRUPTING, or waiting on
-# a tool permission — is a turn whose processes a pause would kill.
-_IDLE_CONVERSATION_STATES = frozenset({"IDLE"})
+# The runtime statuses under which nothing runs in the box, so nothing is lost by
+# freeing the compute: the runtime's own ``idle``, and no status at all for a
+# conversation whose runtime has never reported one. ``working`` (a response, a
+# background task) and ``waiting`` (an approval or question the runtime holds in
+# memory) are processes a pause would kill.
+_IDLE_RUNTIME_STATUSES = frozenset({"", "idle"})
 
 
 async def sweep_each_inventory_backend(
@@ -114,6 +117,10 @@ class ExpirationWatcher:
         self._idle_cursor = KeysetCursor("session_id")
         # Where the Assistant liveness pass resumes among READY workspaces.
         self._assistant_liveness_cursor = KeysetCursor("assistant_id")
+        # Where lease renewal resumes. A workspace whose renewal keeps failing
+        # stays a candidate, so a pass that always started from the first row
+        # would never reach the ones behind it.
+        self._assistant_lease_cursor = KeysetCursor("assistant_id")
 
     # ── Lifecycle ───────────────────────────────────────────────────────
 
@@ -326,6 +333,20 @@ class ExpirationWatcher:
             if self._closed:
                 raise
             logger.exception("expiration_watcher: idle sweep failed")
+        if self._closed:
+            return summary
+        try:
+            from astrabox.persistence.repository.runtime_error_repository import (
+                RuntimeErrorRepository,
+            )
+
+            expired = await RuntimeErrorRepository().delete_expired()
+            if expired:
+                summary["runtime_errors_expired"] = expired
+        except Exception:
+            if self._closed:
+                raise
+            logger.exception("expiration_watcher: runtime-error retention failed")
         return summary
 
     async def _refresh_assistant_egress_credentials(self) -> dict[str, int]:
@@ -373,9 +394,13 @@ class ExpirationWatcher:
             return {}
         now = datetime.now(timezone.utc)
         workspaces = self._platform._assistant_workspace_service
-        candidates = await workspaces.list_lease_renewal_candidates(
-            now_iso=now.isoformat(),
-            renew_before_iso=(now + timedelta(seconds=horizon / 2)).isoformat(),
+        candidates = await self._assistant_lease_cursor.page(
+            lambda after, size: workspaces.list_lease_renewal_candidates(
+                now_iso=now.isoformat(),
+                renew_before_iso=(now + timedelta(seconds=horizon / 2)).isoformat(),
+                after_assistant_id=after,
+                limit=size,
+            ),
             limit=_DEAD_BINDING_SCAN_LIMIT,
         )
         if not candidates:
@@ -484,6 +509,11 @@ class ExpirationWatcher:
         binding and the workspace is woken as its owner, which restores
         Hermes' saved state into a new box. No turn is replayed: a reply in
         progress when the box died has already failed with its history kept.
+
+        A live workspace whose profile was prepared from an earlier revision of
+        its Assistant (an edit, a connector, its Environment or the inherited
+        defaults changed) is prepared again in place, so the next conversation
+        does not wait for it.
         """
         workspaces = self._platform._assistant_workspace_service
         now_iso = utcnow_iso()
@@ -511,6 +541,10 @@ class ExpirationWatcher:
                 continue
             summary["assistant_boxes_probed"] += 1
             if not runtime_manager._is_terminal_sandbox_lifecycle_probe(probe):
+                if await self._refresh_assistant_profile(row):
+                    summary["assistant_profiles_refreshed"] = (
+                        summary.get("assistant_profiles_refreshed", 0) + 1
+                    )
                 continue
             summary["assistant_boxes_dead"] += 1
             convergence = await lifecycle.converge_dead_sandbox_owners(
@@ -521,6 +555,26 @@ class ExpirationWatcher:
             )
             await self._wake_assistants(convergence.converged_assistant_workspaces)
         return summary
+
+    async def _refresh_assistant_profile(self, row: dict[str, Any]) -> bool:
+        from astrabox.common.utils.user_context import UserContext
+        from astrabox.core.service.orchestrator.service_registry import (
+            get_assistant_service,
+        )
+
+        assistant_id = str(row.get("assistant_id") or "")
+        owner_id = str(row.get("created_by_user_id") or "")
+        try:
+            return bool(await get_assistant_service().refresh_workspace_profile(
+                UserContext(user_id=owner_id), assistant_id,
+            ))
+        except Exception as exc:  # noqa: BLE001 — the next conversation prepares it
+            logger.warning(
+                "expiration_watcher: assistant profile refresh failed assistant=%s: %s",
+                assistant_id,
+                exc,
+            )
+            return False
 
     async def _wake_assistants(self, assistant_ids: tuple[str, ...]) -> None:
         """Wake each converged Assistant workspace through its owner's wake path."""
@@ -603,23 +657,12 @@ class ExpirationWatcher:
             if idle_after_seconds is None:
                 continue
             # Re-read at decision time because the candidate row predates this
-            # sweep's per-session work. The fresh row here and the snapshot read
-            # in _is_idle_past prevent a newly dispatched turn from being judged
-            # by stale idle evidence.
+            # sweep's per-session work, so a message sent meanwhile is not
+            # judged by stale idle evidence.
             fresh = await sessions_repo.get_session(session_id)
             if not isinstance(fresh, dict):
                 continue
-            if not await self._is_idle_past(
-                fresh, idle_after_seconds=idle_after_seconds
-            ):
-                summary["idle_active"] += 1
-                continue
-            # A quiet conversation may still be working: a background child
-            # launched from it runs in this box and reports through the
-            # journal, which moves neither the snapshot's state nor its clock.
-            # The same native-activity read that projects BACKGROUND_RUNNING to
-            # the page keeps the box off the sweep.
-            if await self._platform._session_kernel._get_background_task_state(session_id) is not None:
+            if not self._is_idle_past(fresh, idle_after_seconds=idle_after_seconds):
                 summary["idle_active"] += 1
                 continue
             try:
@@ -627,6 +670,7 @@ class ExpirationWatcher:
                     session_id=session_id,
                     sandbox_id=sandbox_id,
                     retention_seconds=retention_seconds,
+                    idle_after_seconds=idle_after_seconds,
                 )
             except Exception:
                 summary["idle_failed"] += 1
@@ -652,6 +696,7 @@ class ExpirationWatcher:
         session_id: str,
         sandbox_id: str,
         retention_seconds: int,
+        idle_after_seconds: int,
     ) -> bool:
         """Renew to the retention window, mark the binding parked, then pause.
 
@@ -669,51 +714,77 @@ class ExpirationWatcher:
         3. **Unmark on refusal.** A failed commit leaves the sandbox RUNNING, so a
            mark left behind would describe a box that is not parked at all.
         """
-        runtime_manager = self._platform._runtime_manager
-        sessions_repo = self._platform._sessions_repo
-        if not await self._box_is_this_session_s_alone(
-            session_id=session_id, sandbox_id=sandbox_id
-        ):
-            return False
-        renewed_until = await runtime_manager.renew_sandbox_by_id(
-            sandbox_id, retention_seconds
-        )
-        if renewed_until is None:
-            logger.warning(
-                "expiration_watcher: not parking — retention renew did not take "
-                "session=%s sandbox=%s retention_s=%d",
-                session_id, sandbox_id, retention_seconds,
+        # Acceptance uses this same lock only for its durable input/activity
+        # write. A message accepted first prevents parking; one arriving during
+        # pause is accepted after completion and wakes the parked box.
+        async with session_runtime_lock(session_id) as check_lock:
+            fresh = await self._platform._sessions_repo.get_session(session_id)
+            if not fresh or fresh.get("sandbox_id") != sandbox_id or not self._is_idle_past(
+                fresh, idle_after_seconds=idle_after_seconds,
+            ):
+                return False
+            if await self._platform._session_facts.open_input_ids(session_id):
+                logger.info(
+                    "expiration_watcher: not parking — inputs await admission session=%s sandbox=%s",
+                    session_id, sandbox_id,
+                )
+                return False
+            runtime_manager = self._platform._runtime_manager
+            sessions_repo = self._platform._sessions_repo
+            if not await self._box_is_this_session_s_alone(
+                session_id=session_id, sandbox_id=sandbox_id
+            ):
+                return False
+            renewed_until = await runtime_manager.renew_sandbox_by_id(
+                sandbox_id, retention_seconds
             )
-            return False
-        parked_at = utcnow_iso()
-        await sessions_repo.update_session(
-            session_id,
-            {
-                "sandbox_parked_at": parked_at,
-                "expires_at": renewed_until.isoformat(),
-            },
-            touch_updated_at=False,
-        )
-        try:
-            paused = await runtime_manager.pause_sandbox_by_id(sandbox_id)
-        except Exception:
-            await self._clear_parked_mark(session_id)
-            raise
-        # Pausing removes the sandbox compute, so every cached runtime for this
-        # session is stale: its WebSocket targets the stopped Pod. Eviction makes
-        # the next turn consult the parked mark and run the wake path instead of
-        # returning an in-memory runtime whose transport cannot serve the turn.
-        with contextlib.suppress(Exception):
-            await runtime_manager.evict_runtime(session_id)
-        if not paused:
-            await self._clear_parked_mark(session_id)
-            logger.warning(
-                "expiration_watcher: pause did not settle, sandbox left running "
-                "session=%s sandbox=%s",
-                session_id, sandbox_id,
+            if renewed_until is None:
+                logger.warning(
+                    "expiration_watcher: not parking — retention renew did not take "
+                    "session=%s sandbox=%s retention_s=%d",
+                    session_id, sandbox_id, retention_seconds,
+                )
+                return False
+            await check_lock()
+            parked_at = utcnow_iso()
+            marked = await sessions_repo.compare_and_update_session(
+                session_id,
+                expected={
+                    "sandbox_id": sandbox_id,
+                    "sandbox_parked_at": None,
+                    "exposed_sandbox_id": {"$ne": sandbox_id},
+                    **{key: fresh.get(key) for key in (
+                        "runtime_status", "last_output_at", "updated_at", "sandbox_resumed_at",
+                    )},
+                },
+                updates={
+                    "sandbox_parked_at": parked_at,
+                    "expires_at": renewed_until.isoformat(),
+                },
+                touch_updated_at=False,
             )
-            return False
-        return True
+            if not marked:
+                return False
+            try:
+                paused = await runtime_manager.pause_sandbox_by_id(sandbox_id)
+            except Exception:
+                await self._clear_parked_mark(session_id)
+                raise
+            # Pausing removes the sandbox compute, so every cached runtime for this
+            # session is stale: its WebSocket targets the stopped Pod. Eviction makes
+            # the next turn consult the parked mark and run the wake path instead of
+            # returning an in-memory runtime whose transport cannot serve the turn.
+            with contextlib.suppress(Exception):
+                await runtime_manager.evict_runtime(session_id)
+            if not paused:
+                await self._clear_parked_mark(session_id)
+                logger.warning(
+                    "expiration_watcher: pause did not settle, sandbox left running "
+                    "session=%s sandbox=%s",
+                    session_id, sandbox_id,
+                )
+                return False
+            return True
 
     async def _box_is_this_session_s_alone(
         self, *, session_id: str, sandbox_id: str
@@ -816,39 +887,35 @@ class ExpirationWatcher:
             return None
         return seconds if seconds > 0 else None
 
-    async def _is_idle_past(
-        self,
+    @staticmethod
+    def _is_idle_past(
         session: dict[str, Any],
         *,
         idle_after_seconds: int,
     ) -> bool:
-        """Whether this conversation is between turns and has been for long enough.
+        """Whether nothing runs in this conversation's box and nothing has for the window.
 
         Two readings, and both have to agree, because the cost of getting this
-        wrong is a turn killed mid-flight: a conversation state that is not
-        mid-turn, and no snapshot activity inside the window. Both come from the
-        snapshot — the single authority for "is a turn running".
+        wrong is work killed mid-flight: the runtime's own last reported status
+        says nothing runs (``runtime_status``, recorded by the session's
+        reader), and the conversation has been quiet for the window. Quiet is
+        measured from the latest of its last output, its last change of
+        activity (a message sent, a response ended) and a resume of its box.
         """
-        now = datetime.now(timezone.utc)
-        session_id = str((session or {}).get("session_id") or "").strip()
-        snapshot = await self._platform._session_snapshots_repo.get_snapshot(session_id)
-        if not isinstance(snapshot, dict):
-            # No snapshot means no evidence of quiet, not evidence of quiet.
+        status = str((session or {}).get("runtime_status") or "").strip()
+        if status not in _IDLE_RUNTIME_STATUSES:
             return False
-        if str(snapshot.get("conversation_state") or "").strip() not in _IDLE_CONVERSATION_STATES:
+        if session.get("sandbox_id") and session.get("exposed_sandbox_id") == session["sandbox_id"]:
             return False
-        last_activity = _parse_iso(snapshot.get("updated_at")) or _parse_iso(
-            session.get("updated_at")
-        )
-        if last_activity is None:
+        moments = [
+            _parse_iso((session or {}).get(key))
+            for key in ("last_output_at", "updated_at", "sandbox_resumed_at")
+        ]
+        observed = [moment for moment in moments if moment is not None]
+        if not observed:
             return False
-        # Opening Files can resume compute without starting a turn. Give that
-        # return the configured idle window rather than parking it again on the
-        # old transcript clock at the next sweep.
-        resumed_at = _parse_iso(session.get("sandbox_resumed_at"))
-        if resumed_at is not None:
-            last_activity = max(last_activity, resumed_at)
-        return (now - last_activity) >= timedelta(seconds=int(idle_after_seconds))
+        quiet_for = datetime.now(timezone.utc) - max(observed)
+        return quiet_for >= timedelta(seconds=int(idle_after_seconds))
 
     # ── Shared helpers ──────────────────────────────────────────────────
 

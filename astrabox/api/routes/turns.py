@@ -1,15 +1,10 @@
-"""The turn / streaming resource family — ``ai-stream``, ``interrupt``,
-``interaction-respond``, ``conversation/end``, and ``terminal/stream``.
+"""A conversation's runtime as the console and API clients use it.
 
-The queue/sentinel/producer locals in each handler are per-request closures,
-not module state. Route-registration order here is not pinned by the
-wire-contract tests (``tests/http_wire_contract_test.py``): they sort the
-route table and serialize the OpenAPI schema with ``sort_keys=True`` before
-comparing.
-
-The admin schema/dashboard/ops routes live in :mod:`astrabox.api.routes.admin`,
-and the sandbox-originated platform MCP surface lives in
-:mod:`astrabox.api.routes.platform_mcp`.
+Sending, answering and interrupting record the request and return a receipt;
+the session's reader hands it to the runtime. ``GET …/stream`` is the only
+way output reaches a client: what it missed after ``after_seq``, then live,
+one UI message per response. ``conversation/end`` and the session's web
+terminal (``terminal/stream``, ``terminal/interrupt``) are also mounted here.
 
 Mounted by :func:`astrabox.api.app.create_app` via ``include_router``.
 """
@@ -18,15 +13,16 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
+import time
+from collections.abc import AsyncIterator
 from typing import Any
 
 from fastapi import APIRouter, Body, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
 from astrabox.common.logger.logger_factory import get_logger
-from astrabox.common.utils.api_response import error_response, success_response
+from astrabox.common.utils.api_response import success_response
 from astrabox.common.utils.errors import APIError
 from astrabox.api.sse import (
     format_sse_done,
@@ -35,7 +31,6 @@ from astrabox.api.sse import (
 )
 from astrabox.api.routes._shared import (
     _resolve_user,
-    _stream_first_event_timeout_seconds,
     _svc,
 )
 from astrabox.core.service.orchestrator.engine.input_content import (
@@ -43,14 +38,15 @@ from astrabox.core.service.orchestrator.engine.input_content import (
     turn_input_is_empty,
 )
 from astrabox.api.routes.response_envelope import ApiEnvelope
-from astrabox.api.routes.stream_start import spawn_drain_cancelled_stream_start
 
 logger = get_logger(__name__)
 
 router = APIRouter()
 
-_UNEXPECTED_AI_STREAM_MESSAGE = "The session stream stopped unexpectedly."
+_UNEXPECTED_STREAM_MESSAGE = "The session stream stopped unexpectedly."
 _UNEXPECTED_TERMINAL_STREAM_MESSAGE = "The terminal stream stopped unexpectedly."
+#: Seconds of silence before the stream writes a keep-alive comment.
+_KEEPALIVE_S = 15.0
 
 
 def _public_stream_error_text(exc: BaseException, *, unexpected: str) -> str:
@@ -61,63 +57,51 @@ def _public_stream_error_text(exc: BaseException, *, unexpected: str) -> str:
     return unexpected
 
 
-# ── response payloads ───────────────────────────────────────────────────────
-#
-# The payload half of ``ApiEnvelope[...]``; the obligations that come with
-# declaring a response model are documented in
-# :mod:`astrabox.api.routes.response_envelope`.
-#
-# Only the JSON routes below carry one. The four streaming routes in this
-# module answer ``text/event-stream`` from a ``StreamingResponse`` — there is no
-# JSON body for a model to describe, and ``GET .../ai-stream`` additionally
-# answers a bare 204 when there is nothing to resume. Declaring a 200 model on
-# any of them would put a body into the generated client that the route never
-# sends.
+class InputReceipt(BaseModel):
+    """An accepted input. Its response arrives on the session's stream.
 
-
-class TurnReceipt(BaseModel):
-    """Acknowledgement that a turn was accepted. It carries no turn content.
-
-    Sending and receiving are separate channels: these identifiers are what
-    lets a caller recognise the turn's frames when they arrive on the session's
-    stream. ``client_message_id`` echoes the caller's own key and is ``null``
-    when the request did not supply one.
+    ``duplicate`` is true when the same ``client_message_id`` was accepted
+    before; the receipt then describes that earlier input, including its
+    recorded refusal in ``failure`` when it failed.
     """
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
-    turn_id: str | None = None
-    command_id: str | None = None
-    client_message_id: str | None = None
-    accepted: bool | None = None
+    session_id: str
+    input_id: str
+    client_message_id: str
+    accepted_at: str
+    state: str
+    failure: dict[str, Any] | None = None
+    duplicate: bool
 
 
 class InteractionAnswerReceipt(BaseModel):
-    """Acknowledgement that an answer was matched to the pending interaction.
+    """An answer stored for the runtime; the response continues on the stream."""
 
-    The turn continues on the session's stream; nothing of its continuation is
-    delivered on this response.
-    """
+    model_config = ConfigDict(extra="forbid")
 
-    model_config = ConfigDict(extra="allow")
-
-    interaction_id: str | None = None
-    answered: bool | None = None
-    turn_id: str | None = None
+    session_id: str
+    interaction_id: str
+    answered: bool
 
 
-class TurnControlResult(BaseModel):
-    """The outcome of an interrupt.
+class InterruptReceipt(BaseModel):
+    """``accepted`` when a reader will pass the interrupt on; ``idle`` when nothing runs."""
 
-    ``status`` distinguishes the two things an interrupt can reach: a running
-    terminal command (``completed``) or the conversation's turn (``accepted``,
-    which the engine settles asynchronously).
-    """
+    model_config = ConfigDict(extra="forbid")
 
-    model_config = ConfigDict(extra="allow")
+    session_id: str
+    status: str
 
-    session_id: str | None = None
-    status: str | None = None
+
+class TerminalInterruptResult(BaseModel):
+    """``completed`` once the terminal's running command has ended; ``idle`` when none ran."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    status: str
 
 
 class ConversationEndResult(BaseModel):
@@ -136,403 +120,116 @@ class ConversationEndResult(BaseModel):
 
 
 @router.post(
-    "/api/v1/sessions/{session_id}/turn-inputs",
-    response_model=ApiEnvelope[TurnReceipt],
-    response_model_exclude_unset=True,
+    "/api/v1/sessions/{session_id}/inputs",
+    response_model=ApiEnvelope[InputReceipt],
 )
-async def append_turn_input(
-    session_id: str,
-    request: Request,
-    payload: dict[str, Any] = Body(...),
-):
-    """Accept a turn. The receipt comes back here; the content does not.
-
-    Input and output are separate channels: this admits the message and
-    answers with the identifiers that let a caller recognise the turn on the
-    session's stream. Nothing is delivered on this response, so its lifetime
-    is not tied to how long the engine takes or where it pauses.
-    """
+async def send_input(session_id: str, request: Request, payload: dict[str, Any] = Body(...)):
+    """Accept a message for the conversation."""
+    # The inbound half of the platform's delay starts here (see the reader's "input delivered").
+    logger.info("input received session=%s at=%.3f", session_id, time.time())
     user = await _resolve_user(request)
-    await _svc().must_own_session(user, session_id)
     content, content_blocks = read_turn_input_content(payload.get("content") or "")
     if turn_input_is_empty(content, content_blocks):
-        raise APIError(
-            code="INVALID_REQUEST",
-            message="content is required",
-            status_code=400,
-        )
+        raise APIError(code="INVALID_REQUEST", message="content is required", status_code=400)
     client_message_id = payload.get("client_message_id")
     if client_message_id is not None and not isinstance(client_message_id, str):
-        raise APIError(
-            code="INVALID_REQUEST",
-            message="client_message_id must be a string",
-            status_code=400,
-        )
-    permission_mode = payload.get("permission_mode")
-    if permission_mode is not None and not isinstance(permission_mode, str):
-        raise APIError(
-            code="INVALID_REQUEST",
-            message="permission_mode must be a string",
-            status_code=400,
-        )
-    receipt = await _svc().dispatch_turn_input(
+        raise APIError(code="INVALID_REQUEST", message="client_message_id must be a string", status_code=400)
+    receipt = await _svc().session_runtime.send(
         user,
         session_id,
         content,
         content_blocks=content_blocks,
-        permission_mode=permission_mode,
-        client_message_id=str(client_message_id or "").strip() or None,
+        client_message_id=client_message_id,
     )
     return success_response(receipt)
 
 
 @router.post(
-    "/api/v1/sessions/{session_id}/interaction-respond",
+    "/api/v1/sessions/{session_id}/interactions/{interaction_id}/answer",
     response_model=ApiEnvelope[InteractionAnswerReceipt],
-    response_model_exclude_unset=True,
 )
-async def interaction_respond(
-    session_id: str,
-    request: Request,
-    payload: dict[str, Any] = Body(...),
+async def answer_interaction(
+    session_id: str, interaction_id: str, request: Request, payload: dict[str, Any] = Body(...)
 ):
     user = await _resolve_user(request)
-    await _svc().must_own_session(user, session_id)
-    interaction_id = str(payload.get("interaction_id") or "").strip()
-    if not interaction_id:
-        raise APIError(
-            code="INVALID_REQUEST",
-            message="interaction_id is required",
-            status_code=400,
-        )
     answer = payload.get("answer")
     if not isinstance(answer, dict):
-        raise APIError(
-            code="INVALID_REQUEST",
-            message="answer must be an object",
-            status_code=400,
-        )
-    result = await _svc().answer_pending_interaction(
-        user,
-        session_id,
-        interaction_id,
-        answer,
-    )
+        raise APIError(code="INVALID_REQUEST", message="answer must be an object", status_code=400)
+    result = await _svc().session_runtime.answer(user, session_id, interaction_id, answer)
     return success_response(result)
-
-
-# ── Data Stream Protocol endpoints (AI SDK v2) ──────────────────────
-
-
-@router.post("/api/v1/sessions/{session_id}/ai-stream")
-async def send_message_ai_stream(
-    session_id: str,
-    request: Request,
-    payload: dict[str, Any] = Body(...),
-):
-    """Data Stream Protocol endpoint for Vercel AI SDK useChat."""
-    service = _svc()
-    user = await _resolve_user(request)
-
-    # Authorize before reading any session data.
-    await service.must_own_session(user, session_id)
-
-    content = str(payload.get("content") or "")
-    interaction_response = payload.get("interaction_response")
-    permission_mode = payload.get("permission_mode")
-    client_message_id = payload.get("client_message_id")
-
-    if interaction_response is not None and not isinstance(interaction_response, dict):
-        raise APIError(
-            code="INVALID_REQUEST",
-            message="interaction_response must be an object",
-            status_code=400,
-        )
-    if client_message_id is not None and not isinstance(client_message_id, str):
-        raise APIError(
-            code="INVALID_REQUEST", message="client_message_id must be a string", status_code=400
-        )
-
-    # Auto-fill interaction_id from the session's pending interaction.
-    if isinstance(interaction_response, dict) and not interaction_response.get("interaction_id"):
-        try:
-            session_detail = await service.get_session(user, session_id)
-            pi = (session_detail or {}).get("pending_interaction")
-            if isinstance(pi, dict) and pi.get("interaction_id"):
-                interaction_response["interaction_id"] = pi["interaction_id"]
-        except Exception:
-            logger.debug("auto-fill interaction_id failed session=%s", session_id, exc_info=True)
-
-    agen = service.stream_message_events_ds(
-        user,
-        session_id,
-        content,
-        interaction_response=interaction_response,
-        permission_mode=permission_mode,
-        client_message_id=str(client_message_id or "").strip() or None,
-    )
-
-    first: dict[str, Any] | None = None
-    first_event_task = asyncio.create_task(anext(agen))
-    try:
-        first = await asyncio.wait_for(
-            asyncio.shield(first_event_task),
-            timeout=_stream_first_event_timeout_seconds(),
-        )
-    except asyncio.CancelledError:
-        # The client disconnected before the turn's first event arrived.
-        # first_event_task (shielded above) is not cancelled by this, and by
-        # this point the command may already be durably dispatched with its
-        # worker spawned -- both decoupled from this request's lifetime.
-        # Cancelling first_event_task and closing agen here would abandon
-        # that worker with nobody draining its output, wedging the session
-        # in PROCESSING until reconciliation's staleness timeout reclaims
-        # it, so draining of the same generator continues in the
-        # background until the turn finishes.
-        try:
-            spawn_drain_cancelled_stream_start(
-                session_id,
-                agen,
-                first_event_task,
-                spawn_background_task=service._spawn_background_task,
-            )
-        except Exception:
-            # Shutdown may have quiesced the platform before this cancelled
-            # request can hand off its shielded first-event task. If ownership
-            # is refused, the request must finish the structured cleanup itself.
-            if not first_event_task.done():
-                first_event_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await first_event_task
-            with contextlib.suppress(Exception):
-                await agen.aclose()
-            raise
-        return JSONResponse(
-            content=error_response("REQUEST_CANCELLED", "request cancelled"),
-            status_code=499,
-        )
-    except asyncio.TimeoutError:
-        logger.warning(
-            "ai stream first event wait timed out; keep stream open session=%s timeout_s=%.1f",
-            session_id,
-            _stream_first_event_timeout_seconds(),
-        )
-    except StopAsyncIteration:
-        with contextlib.suppress(Exception):
-            await agen.aclose()
-        return JSONResponse(
-            content=error_response("AGENT_RUNTIME_ERROR", "empty ai stream"),
-            status_code=500,
-        )
-    except APIError as exc:
-        with contextlib.suppress(Exception):
-            await agen.aclose()
-        return JSONResponse(
-            content=error_response(exc),
-            status_code=exc.status_code,
-        )
-    except Exception:
-        if not first_event_task.done():
-            first_event_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await first_event_task
-        with contextlib.suppress(Exception):
-            await agen.aclose()
-        raise
-
-    queue: asyncio.Queue = asyncio.Queue()
-    sentinel = object()
-    client_disconnected = False
-
-    async def _producer():
-        try:
-            if first is not None:
-                if not client_disconnected:
-                    await queue.put(first)
-            else:
-                with contextlib.suppress(StopAsyncIteration):
-                    first_late = await first_event_task
-                    if not client_disconnected:
-                        await queue.put(first_late)
-            async for event in agen:
-                if client_disconnected:
-                    continue
-                await queue.put(event)
-        except APIError as exc:
-            if not client_disconnected:
-                await queue.put(
-                    {
-                        "type": "error",
-                        "errorText": _public_stream_error_text(
-                            exc,
-                            unexpected=_UNEXPECTED_AI_STREAM_MESSAGE,
-                        ),
-                    }
-                )
-        except Exception as exc:
-            logger.exception("ai-stream producer failed session=%s", session_id)
-            if not client_disconnected:
-                await queue.put(
-                    {
-                        "type": "error",
-                        "errorText": _public_stream_error_text(
-                            exc,
-                            unexpected=_UNEXPECTED_AI_STREAM_MESSAGE,
-                        ),
-                    }
-                )
-        finally:
-            if not client_disconnected:
-                await queue.put(sentinel)
-            if not first_event_task.done():
-                first_event_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await first_event_task
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await agen.aclose()
-
-    producer_task = asyncio.create_task(_producer())
-
-    async def _generate():
-        nonlocal client_disconnected
-        try:
-            while True:
-                try:
-                    item = await asyncio.wait_for(queue.get(), timeout=15.0)
-                except asyncio.TimeoutError:
-                    yield format_sse_keepalive()
-                    continue
-                if item is sentinel:
-                    break
-                yield format_sse_event(item)
-            yield format_sse_done()
-        except asyncio.CancelledError:
-            client_disconnected = True
-        finally:
-            producer_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await producer_task
-
-    return StreamingResponse(
-        _generate(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-            "x-vercel-ai-ui-message-stream": "v1",
-        },
-    )
-
-
-@router.get("/api/v1/sessions/{session_id}/ai-stream")
-async def resume_ai_stream(session_id: str, request: Request):
-    """Resume endpoint for AI SDK useChat({ resume: true }).
-
-    Durable frames are stored in AI SDK stream format by the session
-    kernel. This handler replays them directly as SSE.
-    """
-    user = await _resolve_user(request)
-    raw_after_seq = str(request.query_params.get("after_seq", "-1") or "-1").strip() or "-1"
-    try:
-        after_seq = int(raw_after_seq)
-    except ValueError as exc:
-        raise APIError(
-            code="INVALID_REQUEST",
-            message="after_seq must be an integer",
-            status_code=400,
-        ) from exc
-    raw_follow = str(request.query_params.get("follow", "") or "").strip().lower()
-    if raw_follow not in {"", "session"}:
-        raise APIError(
-            code="INVALID_REQUEST",
-            message="follow must be 'session' when present",
-            status_code=400,
-        )
-    if raw_follow == "session":
-        # The session output subscription may start idle, so it never returns
-        # 204. Each response closes at one terminal turn and the client reopens
-        # from the emitted durable cursor.
-        agen: Any = _svc().follow_session_stream(user, session_id, after_seq=after_seq)
-    else:
-        agen = await _svc().stream_message_events_ds_resume(
-            user,
-            session_id,
-            after_seq=after_seq,
-        )
-        if agen is None:
-            return Response(status_code=204)
-    queue: asyncio.Queue = asyncio.Queue()
-    sentinel = object()
-    client_disconnected = False
-
-    async def _producer():
-        try:
-            async for item in agen:
-                if client_disconnected:
-                    continue
-                await queue.put(item)
-        except Exception as exc:
-            logger.warning("resume ai-stream producer failed session=%s: %s", session_id, exc)
-            if not client_disconnected:
-                await queue.put(
-                    {
-                        "type": "error",
-                        "errorText": _public_stream_error_text(
-                            exc,
-                            unexpected=_UNEXPECTED_AI_STREAM_MESSAGE,
-                        ),
-                    }
-                )
-        finally:
-            if not client_disconnected:
-                await queue.put(sentinel)
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await agen.aclose()
-
-    producer_task = asyncio.create_task(_producer())
-
-    async def _generate():
-        nonlocal client_disconnected
-        try:
-            while True:
-                try:
-                    item = await asyncio.wait_for(queue.get(), timeout=15.0)
-                except asyncio.TimeoutError:
-                    yield format_sse_keepalive()
-                    continue
-                if item is sentinel:
-                    break
-                yield format_sse_event(item)
-            yield format_sse_done()
-        except asyncio.CancelledError:
-            client_disconnected = True
-        finally:
-            producer_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await producer_task
-
-    return StreamingResponse(
-        _generate(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-            "x-vercel-ai-ui-message-stream": "v1",
-        },
-    )
 
 
 @router.post(
     "/api/v1/sessions/{session_id}/interrupt",
-    response_model=ApiEnvelope[TurnControlResult],
-    response_model_exclude_unset=True,
+    response_model=ApiEnvelope[InterruptReceipt],
 )
 async def interrupt_session(session_id: str, request: Request):
     user = await _resolve_user(request)
-    result = await _svc().interrupt(user, session_id)
+    result = await _svc().session_runtime.interrupt(user, session_id)
     return success_response(result)
+
+
+@router.get("/api/v1/sessions/{session_id}/stream")
+async def follow_stream(session_id: str, request: Request):
+    """The session's output after ``after_seq``, then live, through the end of one response.
+
+    Each part is an AI SDK UI message chunk; ``data-resume-cursor`` parts carry
+    the position to reconnect from.
+    """
+    user = await _resolve_user(request)
+    raw_after_seq = str(request.query_params.get("after_seq", "0") or "0").strip()
+    try:
+        after_seq = int(raw_after_seq)
+    except ValueError as exc:
+        raise APIError(code="INVALID_REQUEST", message="after_seq must be an integer", status_code=400) from exc
+    if after_seq < 0:
+        raise APIError(code="INVALID_REQUEST", message="after_seq must not be negative", status_code=400)
+    parts = await _svc().session_runtime.follow(user, session_id, after_seq=after_seq)
+    return StreamingResponse(
+        _sse(parts, session_id=session_id),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+            "x-vercel-ai-ui-message-stream": "v1",
+        },
+    )
+
+
+async def _sse(parts: AsyncIterator[dict[str, Any]], *, session_id: str) -> AsyncIterator[str]:
+    """Write parts as server-sent events, with keep-alives while the session is quiet."""
+    iterator = parts.__aiter__()
+    pending: asyncio.Task[dict[str, Any]] | None = None
+    try:
+        while True:
+            if pending is None:
+                pending = asyncio.ensure_future(iterator.__anext__())
+            done, _ = await asyncio.wait({pending}, timeout=_KEEPALIVE_S)
+            if not done:
+                yield format_sse_keepalive()
+                continue
+            task, pending = pending, None
+            try:
+                part = task.result()
+            except StopAsyncIteration:
+                break
+            except APIError as exc:
+                yield format_sse_event({"type": "error", "errorText": exc.user_message})
+                break
+            except Exception:
+                logger.exception("session stream failed session=%s", session_id)
+                yield format_sse_event({"type": "error", "errorText": _UNEXPECTED_STREAM_MESSAGE})
+                break
+            yield format_sse_event(part)
+        yield format_sse_done()
+    finally:
+        if pending is not None:
+            pending.cancel()
+            with contextlib.suppress(BaseException):
+                await pending
+        with contextlib.suppress(Exception):
+            await parts.aclose()  # type: ignore[attr-defined]
 
 
 @router.post(
@@ -546,7 +243,13 @@ async def end_conversation(session_id: str, request: Request):
     return success_response(result)
 
 
-# ── Terminal endpoint ────────────────────────────────────────────────
+# ── Terminal endpoints ───────────────────────────────────────────────
+
+_TERMINAL_STREAM_HEADERS = {
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+}
 
 
 @router.post("/api/v1/sessions/{session_id}/terminal/stream")
@@ -555,139 +258,94 @@ async def terminal_stream(
     request: Request,
     payload: dict[str, Any] = Body(...),
 ):
-    """Run a single terminal command and stream output as SSE events.
+    """Run one command in the session's terminal and stream its events as SSE.
 
-    WebSocket is intentionally avoided; Terminal uses HTTP SSE.
+    The events are ``ack`` (carrying the ``command_id``), ``stdout``,
+    ``stderr``, ``cwd`` and a final ``exit``. The command runs on when the
+    stream closes; ``GET`` on this path follows it again. WebSocket is
+    intentionally avoided; the terminal uses HTTP SSE.
     """
-    service = _svc()
     user = await _resolve_user(request)
     command = str(payload.get("command") or "").strip()
     cwd = payload.get("working_directory") or payload.get("cwd")
     if not command:
         raise APIError(code="INVALID_REQUEST", message="command is empty", status_code=400)
-
-    agen = service.run_terminal_command(user, session_id, command, cwd)
-
-    first: dict[str, Any] | None = None
-    first_event_task = asyncio.create_task(anext(agen))
-    try:
-        first = await asyncio.wait_for(
-            asyncio.shield(first_event_task),
-            timeout=_stream_first_event_timeout_seconds(),
-        )
-    except asyncio.CancelledError:
-        if not first_event_task.done():
-            first_event_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await first_event_task
-        with contextlib.suppress(Exception):
-            await agen.aclose()
-        return JSONResponse(
-            content=error_response("REQUEST_CANCELLED", "request cancelled"),
-            status_code=499,
-        )
-    except asyncio.TimeoutError:
-        logger.warning(
-            "terminal stream first event wait timed out; keep stream open session=%s timeout_s=%.1f",
-            session_id,
-            _stream_first_event_timeout_seconds(),
-        )
-    except StopAsyncIteration:
-        with contextlib.suppress(Exception):
-            await agen.aclose()
-        return JSONResponse(
-            content=error_response("AGENT_RUNTIME_ERROR", "empty terminal stream"),
-            status_code=500,
-        )
-    except APIError as exc:
-        with contextlib.suppress(Exception):
-            await agen.aclose()
-        return JSONResponse(
-            content=error_response(exc),
-            status_code=exc.status_code,
-        )
-    except Exception:  # pragma: no cover
-        if not first_event_task.done():
-            first_event_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await first_event_task
-        with contextlib.suppress(Exception):
-            await agen.aclose()
-        raise
-
-    queue: asyncio.Queue = asyncio.Queue()
-    sentinel = object()
-
-    async def _producer() -> None:
-        try:
-            if first is not None:
-                await queue.put(first)
-            else:
-                with contextlib.suppress(StopAsyncIteration):
-                    first_late = await first_event_task
-                    await queue.put(first_late)
-            async for event in agen:
-                await queue.put(event)
-        except asyncio.CancelledError:
-            raise
-        except APIError as exc:
-            logger.warning(
-                "terminal stream producer api error session=%s code=%s msg=%s",
-                session_id,
-                exc.code,
-                exc.message,
-            )
-            public_error = _public_stream_error_text(
-                exc,
-                unexpected=_UNEXPECTED_TERMINAL_STREAM_MESSAGE,
-            )
-            await queue.put({"type": "stderr", "text": f"{exc.code}: {public_error}\n"})
-            await queue.put({"type": "exit", "exit_code": 1})
-        except Exception as exc:  # pragma: no cover
-            logger.exception("terminal stream producer failed")
-            public_error = _public_stream_error_text(
-                exc,
-                unexpected=_UNEXPECTED_TERMINAL_STREAM_MESSAGE,
-            )
-            await queue.put({"type": "stderr", "text": f"{public_error}\n"})
-            await queue.put({"type": "exit", "exit_code": 1})
-        finally:
-            await queue.put(sentinel)
-            if not first_event_task.done():
-                first_event_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await first_event_task
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await agen.aclose()
-
-    producer_task = asyncio.create_task(_producer())
-
-    async def _generate():
-        try:
-            while True:
-                try:
-                    item = await asyncio.wait_for(queue.get(), timeout=15.0)
-                except asyncio.TimeoutError:
-                    yield ": keepalive\n\n"
-                    continue
-
-                if item is sentinel:
-                    break
-
-                yield f"data: {json.dumps(item, default=str)}\n\n"
-        except asyncio.CancelledError:
-            return
-        finally:
-            producer_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await producer_task
-
+    events = await _svc().terminal.run(user, session_id, command, cwd)
     return StreamingResponse(
-        _generate(),
+        _terminal_sse(events, session_id=session_id),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+        headers=_TERMINAL_STREAM_HEADERS,
     )
+
+
+@router.get("/api/v1/sessions/{session_id}/terminal/stream")
+async def follow_terminal_stream(session_id: str, request: Request):
+    """Follow a terminal command again: its recorded events after ``after_seq``, then live.
+
+    The stream ends with the command's ``exit``; each event carries its
+    ``seq``. Without ``command_id`` it follows the command the terminal runs
+    now and answers ``204`` when none runs.
+    """
+    user = await _resolve_user(request)
+    command_id = str(request.query_params.get("command_id") or "").strip() or None
+    raw_after_seq = str(request.query_params.get("after_seq", "-1") or "-1").strip()
+    try:
+        after_seq = int(raw_after_seq)
+    except ValueError as exc:
+        raise APIError(code="INVALID_REQUEST", message="after_seq must be an integer", status_code=400) from exc
+    events = await _svc().terminal.follow(user, session_id, command_id=command_id, after_seq=after_seq)
+    if events is None:
+        return Response(status_code=204)
+    return StreamingResponse(
+        _terminal_sse(events, session_id=session_id),
+        media_type="text/event-stream",
+        headers=_TERMINAL_STREAM_HEADERS,
+    )
+
+
+@router.post(
+    "/api/v1/sessions/{session_id}/terminal/interrupt",
+    response_model=ApiEnvelope[TerminalInterruptResult],
+)
+async def interrupt_terminal(session_id: str, request: Request):
+    """Stop the command the session's terminal runs; answers once the command has ended."""
+    user = await _resolve_user(request)
+    result = await _svc().terminal.interrupt(user, session_id)
+    return success_response(result)
+
+
+async def _terminal_sse(events: AsyncIterator[dict[str, Any]], *, session_id: str) -> AsyncIterator[str]:
+    """Write terminal events as server-sent events, with keep-alives while the command is quiet.
+
+    A failure after the stream started becomes a ``stderr`` event and ends the
+    stream. It carries no ``exit``: the command's status is the box's to report.
+    """
+    iterator = events.__aiter__()
+    pending: asyncio.Task[dict[str, Any]] | None = None
+    try:
+        while True:
+            if pending is None:
+                pending = asyncio.ensure_future(iterator.__anext__())
+            done, _ = await asyncio.wait({pending}, timeout=_KEEPALIVE_S)
+            if not done:
+                yield format_sse_keepalive()
+                continue
+            task, pending = pending, None
+            try:
+                event = task.result()
+            except StopAsyncIteration:
+                break
+            except Exception as exc:
+                if not isinstance(exc, APIError):
+                    logger.exception("terminal stream failed session=%s", session_id)
+                public_error = _public_stream_error_text(exc, unexpected=_UNEXPECTED_TERMINAL_STREAM_MESSAGE)
+                yield format_sse_event({"type": "stderr", "text": f"{public_error}\n"})
+                break
+            yield format_sse_event(event)
+    finally:
+        if pending is not None:
+            pending.cancel()
+            with contextlib.suppress(BaseException):
+                await pending
+        with contextlib.suppress(Exception):
+            await events.aclose()  # type: ignore[attr-defined]

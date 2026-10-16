@@ -3,13 +3,27 @@
  *
  * Claude emits `task_updated` with `patch.is_backgrounded=true` and no status
  * when a long foreground Bash call is automatically moved into the background.
- * The SDK declares that status optional; the update must remain non-terminal
- * until a fixture-controlled release lets the tool and root turn finish.
+ * The SDK declares that status optional; the update must remain non-terminal:
+ * the response that made the call ends completed, the command keeps running
+ * until a fixture-controlled release, and Claude's own report of its
+ * completion reaches the conversation without becoming a platform input.
+ *
+ * The SDK's lifecycle messages are diagnostics the platform does not keep, so
+ * the transition is read from Claude's own transcript: the Bash call has a
+ * successful result while its command is still blocked on the release, which
+ * only a call moved into the background can have, and the command's output
+ * appears only after the release.
  */
 import { test, expect } from '@playwright/test';
 
-import { AstraApi, type TurnResult } from '../fixtures/astraApi';
-import { documentsByField, sessionEvents } from '../fixtures/dbOracle';
+import { AstraApi, messageText, type TurnResult } from '../fixtures/astraApi';
+import { terminalOutput } from '../fixtures/nativeMcpServer';
+import {
+  nativeTranscriptRows,
+  sessionInputRows,
+  sessionOutputRows,
+  sessionResponseRows,
+} from '../fixtures/dbOracle';
 import { trackSessions } from '../fixtures/sessionCleanup';
 import { parseTimeoutEnv } from '../fixtures/env';
 
@@ -23,36 +37,38 @@ function object(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+/** Claude's root transcript, as the platform's SessionStore mirror holds it. */
 function nativeRows(sessionId: string) {
-  return documentsByField('transcript_entries', '$.platform_session_id', sessionId)
-    .filter((row) => row.subpath == null)
+  return nativeTranscriptRows(sessionId)
+    .filter((row) => row.subpath === null)
     .map((row) => ({ seq: Number(row.seq), entry: object(JSON.parse(String(row.entry_json))) }))
     .sort((left, right) => left.seq - right.seq);
 }
 
 function nativeBlocks(sessionId: string) {
-  return nativeRows(sessionId).flatMap(({ entry }) => {
+  return nativeRows(sessionId).flatMap(({ seq, entry }) => {
     if (!entry.message) return [];
     const content = object(entry.message).content;
-    return Array.isArray(content) ? content.map(object) : [];
+    return Array.isArray(content) ? content.map(object).map((block) => ({ seq, block })) : [];
   });
 }
 
-function taskDiagnostics(sessionId: string) {
-  return sessionEvents(sessionId)
-    .filter((event) => event.event_type === 'engine.diagnostic'
-      && object(event.payload).event_type === 'claude_code.sdk')
-    .map((event) => ({ event, raw: object(object(event.payload).raw) }));
+/** A native line's text: a string content, or its text blocks. */
+function entryTexts(entry: Record<string, unknown>): string[] {
+  if (entry.type === 'queue-operation') return typeof entry.content === 'string' ? [entry.content] : [];
+  if (entry.type !== 'user' || !entry.message) return [];
+  const content = object(entry.message).content;
+  if (typeof content === 'string') return [content];
+  return Array.isArray(content)
+    ? content.map(object).filter((block) => block.type === 'text').map((block) => String(block.text || ''))
+    : [];
 }
 
-function completedNotifications(sessionId: string, taskId: string) {
-  return nativeRows(sessionId).filter(({ entry }) => {
-    const content = entry.type === 'queue-operation' ? entry.content
-      : entry.type === 'user' && entry.message ? object(entry.message).content : null;
-    return typeof content === 'string' && content.trim().startsWith('<task-notification>')
-      && content.includes(`<task-id>${taskId}</task-id>`)
-      && content.includes('<status>completed</status>');
-  });
+/** Claude's own notices that a task completed, after native position `afterSeq`. */
+function completedNotifications(sessionId: string, afterSeq: number) {
+  return nativeRows(sessionId).filter(({ seq, entry }) => seq > afterSeq && entryTexts(entry).some((text) => (
+    text.trim().startsWith('<task-notification>') && text.includes('<status>completed</status>')
+  )));
 }
 
 test('non-terminal background Bash task_updated does not fail the turn', async ({ request }) => {
@@ -70,6 +86,16 @@ test('non-terminal background Bash task_updated does not fail the turn', async (
   const release = `${rendezvous}.release`;
   const output = `${rendezvous}.output`;
   const command = `touch ${started}; while [ ! -f ${release} ]; do sleep 0.2; done; printf ${childMarker} | tee ${output}`;
+  const prompt = [
+    `E2E automatic background Bash ${runId}. Follow these tool instructions literally.`,
+    'Call Bash exactly once as a foreground tool. Do not set run_in_background.',
+    `Set the Bash tool input timeout to ${FOREGROUND_TIMEOUT_MS} milliseconds. This is its foreground wait budget, not a shell timeout.`,
+    `Run exactly this command: ${command}`,
+    'Do not call Agent and do not replace the command with a fixed sleep.',
+    'If Claude moves that command to the background, do not call any tool again.',
+    `Do not create ${release}; the E2E harness owns it. Wait for the task completion notification.`,
+    `After Bash finishes, reply exactly ${parentMarker}.`,
+  ].join('\n');
   const evidence: Record<string, unknown> = { sessionId, started, release, output, command };
   let released = false;
   let failed = false;
@@ -79,16 +105,7 @@ test('non-terminal background Bash task_updated does not fail the turn', async (
   await api.waitForSessionReady(sessionId);
   // Attach both handlers immediately: a transport rejection while another
   // observer is polling must remain the original failure, never unhandled.
-  const turnPromise = api.sendTurn(sessionId, [
-    `E2E automatic background Bash ${runId}. Follow these tool instructions literally.`,
-    'Call Bash exactly once as a foreground tool. Do not set run_in_background.',
-    `Set the Bash tool input timeout to ${FOREGROUND_TIMEOUT_MS} milliseconds. This is its foreground wait budget, not a shell timeout.`,
-    `Run exactly this command: ${command}`,
-    'Do not call Agent and do not replace the command with a fixed sleep.',
-    'If Claude moves that command to the background, do not call any tool again.',
-    `Do not create ${release}; the E2E harness owns it. Wait for the task completion notification.`,
-    `After Bash finishes, reply exactly ${parentMarker}.`,
-  ].join('\n'), TURN_TIMEOUT_MS).then(
+  const turnPromise = api.sendTurn(sessionId, prompt, TURN_TIMEOUT_MS).then(
     (turn): Outcome => { outcome = { kind: 'result', turn }; return outcome; },
     (error: unknown): Outcome => { outcome = { kind: 'error', error }; return outcome; },
   );
@@ -98,13 +115,18 @@ test('non-terminal background Bash task_updated does not fail the turn', async (
       throw new Error(`the background transition failed the root turn: ${JSON.stringify(outcome.turn)}`);
     }
   };
+  const fileExists = async (path: string) => terminalOutput(await api.runTerminalCommand(
+    sessionId, `test -f ${path} && echo yes || echo no`, '/workspace', 30_000,
+  )).trim() === 'yes';
 
   try {
+    const bashCalls = () => nativeBlocks(sessionId)
+      .filter(({ block }) => block.type === 'tool_use' && block.name === 'Bash');
     await expect.poll(() => {
       assertTurnHealthy();
-      return nativeBlocks(sessionId).filter((block) => block.type === 'tool_use' && block.name === 'Bash').length;
+      return bashCalls().length;
     }, { timeout: 60_000, message: 'the actual native Bash input must be durable before waiting for its transition' }).toBe(1);
-    const call = nativeBlocks(sessionId).find((block) => block.type === 'tool_use' && block.name === 'Bash')!;
+    const { seq: callSeq, block: call } = bashCalls()[0]!;
     expect(object(call.input).command).toBe(command);
     expect(object(call.input).timeout).toBe(FOREGROUND_TIMEOUT_MS);
     expect(object(call.input)).not.toHaveProperty('run_in_background');
@@ -113,32 +135,24 @@ test('non-terminal background Bash task_updated does not fail the turn', async (
     await expect.poll(
       async () => {
         assertTurnHealthy();
-        return (await api.runTerminalCommand(
-          sessionId, `test -f ${started} && echo yes || echo no`, '/workspace', 30_000,
-        )).includes('yes');
+        return fileExists(started);
       },
       { message: 'the foreground Bash call must start', timeout: 60_000, intervals: [1_000, 2_000] },
     ).toBe(true);
 
-    const starts = () => taskDiagnostics(sessionId).filter(({ raw }) => raw.subtype === 'task_started'
-      && raw.task_type === 'local_bash' && raw.tool_use_id === call.id);
-    await expect.poll(() => { assertTurnHealthy(); return starts().length; },
-      { timeout: 30_000, message: 'the real Bash task must be consumed with its original tool lineage' }).toBe(1);
-    const startedTask = starts()[0];
-    expect(object(startedTask.raw.data).is_backgrounded,
-      'the supplier must start the real task in the foreground before its transition').toBe(false);
-    const taskId = String(startedTask.raw.task_id || '');
-    expect(taskId).not.toBe('');
-    const backgroundUpdates = () => taskDiagnostics(sessionId).filter(({ raw }) => (
-      raw.subtype === 'task_updated' && raw.task_id === taskId
-      && !raw.status && raw.patch && !object(raw.patch).status
-      && object(raw.patch).is_backgrounded === true
-    ));
-    await expect.poll(() => { assertTurnHealthy(); return backgroundUpdates().length; },
-      { timeout: 30_000, message: 'the same task statusless background update must reach the platform before release' }).toBe(1);
-    const update = backgroundUpdates()[0];
-    expect(Number(update.event.event_seq)).toBeGreaterThan(Number(startedTask.event.event_seq));
-    evidence.transition = { startedTask, update, taskId };
+    // The call returns while its command still waits for the release only if
+    // Claude moved it into the background; a call killed at its timeout
+    // returns an error and its command never writes the output below.
+    const callResults = () => nativeBlocks(sessionId)
+      .filter(({ block }) => block.type === 'tool_result' && block.tool_use_id === call.id);
+    await expect.poll(() => { assertTurnHealthy(); return callResults().length; }, {
+      timeout: 60_000,
+      message: 'the foreground Bash call must return once its timeout moves the running command to the background',
+    }).toBe(1);
+    const backgrounded = callResults()[0]!;
+    expect(backgrounded.block.is_error, 'the transition is not a failed call').not.toBe(true);
+    expect(await fileExists(output), 'the command is still running when its call returns').toBe(false);
+    evidence.transition = backgrounded;
 
     await api.runTerminalCommand(sessionId, `touch ${release}`, '/workspace', 30_000);
     released = true;
@@ -149,22 +163,25 @@ test('non-terminal background Bash task_updated does not fail the turn', async (
       turn.errorText,
       `the statusless background transition must not fail the root turn; frames=${turn.frameTypes.join(',')}`,
     ).toBeNull();
+    const inputs = sessionInputRows(sessionId);
+    expect(inputs.map((row) => row.input_id), 'the prompt is the one input of this conversation').toEqual([turn.inputId]);
+    const responseId = String(inputs[0]!.response_id || '');
+    expect(responseId, 'the runtime took the prompt into a response').not.toBe('');
+    await expect.poll(() => sessionResponseRows(sessionId).find((row) => row.response_id === responseId)?.status, {
+      timeout: 30_000, message: 'the response that made the call must end',
+    }).toBe('ended');
+    const ownParts = sessionOutputRows(sessionId, responseId).map((row) => row.part);
     expect(
-      turn.frameTypes.filter((type) => type === 'finish'),
+      ownParts.filter((part) => part.type === 'finish').map((part) => part.finishReason),
       'the released root turn must publish exactly one clean terminal frame',
-    ).toHaveLength(1);
+    ).toEqual(['stop']);
+    expect(ownParts.filter((part) => part.type === 'error')).toEqual([]);
 
-    // The SDK can complete its task after the public root stream closes. Its
-    // resident message/store remains authoritative without a new root request.
-    const completedTasks = () => sessionEvents(sessionId)
-      .filter((event) => event.event_type === 'engine.message')
-      .map((event) => ({ event, raw: object(object(event.payload).message) }))
-      .filter(({ raw }) => raw.task_id === taskId && (
-        (raw.subtype === 'task_notification' && raw.status === 'completed')
-        || (raw.subtype === 'task_updated' && raw.patch && object(raw.patch).status === 'completed')
-      ));
-    await expect.poll(() => completedTasks().length + completedNotifications(sessionId, taskId).length,
-      { timeout: 30_000, message: 'that same Bash task must really complete, through its SDK terminal or native notification' })
+    // The SDK can complete its task after the response that started it ended.
+    // Claude reports that completion in its own transcript, without a new
+    // request from anyone.
+    await expect.poll(() => completedNotifications(sessionId, callSeq).length,
+      { timeout: 30_000, message: 'that same Bash task must really complete, through its native notification' })
       .toBeGreaterThan(0);
     expect(await api.downloadFileText(sessionId, output), 'the actual released command must produce its complete stdout')
       .toBe(childMarker);
@@ -175,21 +192,31 @@ test('non-terminal background Bash task_updated does not fail the turn', async (
       }).filter((block) => block.type === 'text').map((block) => String(block.text || '')).join('\n'),
     { timeout: 30_000, message: 'the actual native parent reply must survive the task-notification continuation' })
       .toContain(parentMarker);
-    expect(nativeBlocks(sessionId).filter((block) => block.type === 'tool_use')).toEqual([call]);
+    expect(nativeBlocks(sessionId).filter(({ block }) => block.type === 'tool_use').map(({ block }) => block))
+      .toEqual([call]);
     expect((await api.listChildRuns(sessionId)).child_runs,
       'a Bash task is not an Agent and creates no child-Agent control').toEqual([]);
     const settled = await api.waitForSession(sessionId, (row) => (
-      row.state === 'READY' && !row.current_turn_id
+      row.state === 'READY' && (row.current_responses ?? []).length === 0 && !row.pending_interaction
     ), TURN_TIMEOUT_MS);
-    expect(settled.last_turn_status, 'automatic backgrounding must not rewrite the turn as failed').not.toBe('FAILED');
-    expect(settled.last_turn_status).toBe('COMPLETED');
-    expect((await api.getMessages(sessionId, 100)).messages.flatMap((message) => message.blocks || [])
-      .filter((block) => block.type === 'turn_failure')).toEqual([]);
-    expect(sessionEvents(sessionId).filter((event) => event.event_type === 'command.accepted'
-      && object(event.payload).command_type === 'StartTurn')
-      .map((event) => object(event.payload).command_type),
-    'the SDK task notification must not manufacture another platform conversation input').toEqual(['StartTurn']);
-    evidence.completed = { turn, settled, tasks: completedTasks(), notifications: completedNotifications(sessionId, taskId) };
+    expect(settled.last_response?.outcome, 'automatic backgrounding must not rewrite the turn as failed')
+      .toBe('completed');
+    const responses = sessionResponseRows(sessionId);
+    expect(
+      responses.filter((row) => row.status !== 'ended' || row.outcome !== 'completed'),
+      'every response of the conversation, including one Claude starts for the notification, completes',
+    ).toEqual([]);
+    expect(sessionOutputRows(sessionId).filter((row) => row.part.type === 'error'),
+      'no response of the conversation reports an error').toEqual([]);
+    const history = await api.getMessages(sessionId, 100);
+    expect(history.messages.filter((message) => message.role === 'assistant')
+      .some((message) => messageText(message).includes(parentMarker)),
+    'the conversation shows the reply Claude gave once the task completed').toBe(true);
+    expect(history.messages.filter((message) => message.role === 'user').map(messageText),
+      'the SDK task notification must not manufacture another platform conversation input').toEqual([prompt]);
+    expect(sessionInputRows(sessionId).map((row) => row.input_id),
+      'the platform accepted no input beyond the prompt').toEqual([turn.inputId]);
+    evidence.completed = { turn, settled, responses, notifications: completedNotifications(sessionId, callSeq) };
   } catch (error) {
     failed = true;
     throw error;
@@ -202,7 +229,13 @@ test('non-terminal background Bash task_updated does not fail the turn', async (
     }
     try {
       await test.info().attach('background-bash-native-evidence', {
-        body: JSON.stringify({ ...evidence, outcome, native: nativeRows(sessionId), journal: sessionEvents(sessionId) }),
+        body: JSON.stringify({
+          ...evidence,
+          outcome,
+          native: nativeRows(sessionId),
+          inputs: sessionInputRows(sessionId),
+          responses: sessionResponseRows(sessionId),
+        }),
         contentType: 'application/json',
       });
     } catch (error) {

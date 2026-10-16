@@ -127,12 +127,6 @@ test('assistant workspace profile survives hibernate and wake on a fresh box', a
     // blank conversation without the profile's state.db. Reusing this Session
     // makes the adapter resume its persisted native conversation key, so a pass
     // requires both the visible file tree and Hermes-owned profile state.
-    const resumedSessionReady = await api.waitForSessionReady(firstSessionId);
-    expect(
-      resumedSessionReady.terminal_cwd,
-      'a restored Hermes workspace must keep the common workspace root',
-    ).toEqual('/workspace');
-
     const secondTurn = await api.sendTurn(
       firstSessionId,
       '请继续简短回复一句话，不要使用工具。',
@@ -140,6 +134,12 @@ test('assistant workspace profile survives hibernate and wake on a fresh box', a
     );
     expect(secondTurn.errorText, 'the turn after a wake must not error').toBeNull();
     expect(secondTurn.text.trim(), 'the turn after a wake must produce a reply').not.toEqual('');
+
+    const resumedSessionReady = await api.waitForSessionReady(firstSessionId);
+    expect(
+      resumedSessionReady.terminal_cwd,
+      'a restored Hermes workspace must keep the common workspace root',
+    ).toEqual('/workspace');
 
     const afterWake = await api.downloadFileText(firstSessionId, MARKER_FILE);
     expect(

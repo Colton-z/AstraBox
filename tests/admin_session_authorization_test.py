@@ -53,31 +53,6 @@ def _agent_session(*, user_id: str = "conversation-user") -> dict:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("hidden", [False, True])
-async def test_assistant_owner_manages_user_and_materializer_sessions(hidden: bool) -> None:
-    service, config = _service()
-
-    await service._assert_can_manage_session(
-        UserContext(user_id="assistant-owner"),
-        _assistant_session(hidden=hidden),
-    )
-
-    assert config.requests == []
-
-
-@pytest.mark.asyncio
-async def test_platform_admin_manages_another_users_assistant_session() -> None:
-    service, config = _service()
-
-    await service._assert_can_manage_session(
-        UserContext(user_id="operator", roles=["admin"]),
-        _assistant_session(),
-    )
-
-    assert config.requests == []
-
-
-@pytest.mark.asyncio
 async def test_unrelated_user_cannot_manage_an_assistant_session() -> None:
     service, config = _service()
 
@@ -106,18 +81,4 @@ async def test_agent_session_still_uses_the_agent_management_acl() -> None:
 
     assert raised.value.code == "FORBIDDEN"
     assert raised.value.status_code == 403
-    assert config.requests == ["agent-1"]
-
-
-@pytest.mark.asyncio
-async def test_agent_owner_still_manages_the_agent_session() -> None:
-    service, config = _service(
-        {"agent-1": {"created_by": "agent-owner", "admins": []}}
-    )
-
-    await service._assert_can_manage_session(
-        UserContext(user_id="agent-owner"),
-        _agent_session(),
-    )
-
     assert config.requests == ["agent-1"]

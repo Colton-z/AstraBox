@@ -73,7 +73,7 @@ export async function startArtifactScene(
 }
 
 export async function sendArtifactPrompt(page: Page, scene: ArtifactScene, prompt: string) {
-  const previousTurn = (await scene.api.getSession(scene.sessionId)).last_turn_id;
+  const previousResponse = (await scene.api.getSession(scene.sessionId)).last_response?.response_id ?? null;
   await page.getByTestId('composer-prompt').fill(prompt);
   await page.getByTestId('composer-submit').click();
   const answered = new Set<string>();
@@ -93,10 +93,12 @@ export async function sendArtifactPrompt(page: Page, scene: ArtifactScene, promp
       }
       answered.add(pending.interaction_id);
     }
-    if (detail.last_turn_status === 'FAILED' || detail.last_error) {
-      throw new Error(`artifact turn failed: ${JSON.stringify(detail)}`);
+    const last = detail.last_response;
+    if ((last && last.response_id !== previousResponse && last.outcome === 'failed') || detail.last_error) {
+      throw new Error(`artifact response failed: ${JSON.stringify(detail)}`);
     }
-    return Boolean(detail.last_turn_id && detail.last_turn_id !== previousTurn && !detail.current_turn_id);
+    // Detail READY: nothing runs, nothing waits on the owner, nothing is held.
+    return Boolean(last && last.response_id !== previousResponse && detail.state === 'READY');
   }, { timeout: 90_000, intervals: [500, 1000] }).toBe(true);
 }
 

@@ -29,12 +29,14 @@ from tests.e2e._sandbox_helpers import (
     OPEN_SESSIONS,
     agent_id as matrix_agent_id,
     data,
+    deadline_after,
+    recorded_input,
     release_session,
 )
 
 pytestmark = pytest.mark.e2e
 
-TURN_TIMEOUT_S = float(os.getenv("ASTRABOX_E2E_MCP_TURN_TIMEOUT", "180"))
+REPLY_TIMEOUT_S = float(os.getenv("ASTRABOX_E2E_MCP_REPLY_TIMEOUT", "180"))
 
 _TOOLS = {
     "list_agents",
@@ -85,7 +87,7 @@ def _mcp_session(base_url: str, secret: str) -> Any:
         f"{base_url}/api/v1/mcp",
         http_client=httpx2.AsyncClient(
             base_url=base_url,
-            timeout=TURN_TIMEOUT_S,
+            timeout=REPLY_TIMEOUT_S,
             headers={"Authorization": f"Bearer {secret}"},
         ),
         terminate_on_close=False,
@@ -98,7 +100,7 @@ def _recent_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
     Missing and empty are different facts: a missing field means this client and
     the facade disagree about the wire contract, while an empty list means the
     facade successfully reported an empty transcript.  Collapsing both into
-    ``[]`` misreports the former as a stalled turn.
+    ``[]`` misreports the former as a stalled reply.
     """
 
     messages = payload.get("recent_messages")
@@ -162,16 +164,17 @@ async def test_a_converse_key_carries_a_client_through_a_whole_conversation(
                 },
             )
             assert sent.is_error is False, sent.structured_content
+            input_id = str((sent.structured_content or {}).get("input_id") or "")
+            assert input_id, (
+                f"send_message must name the input it accepted: {sent.structured_content}"
+            )
 
-            # `send_message` answers SUBMITTED while the engine is still working,
-            # so the conversation is polled rather than read once. Reading once
-            # raced persistence — at the instant the tool returns, not even the
-            # user's own message has been written yet — and a race that usually
-            # loses is worse than one that always does, because it fails as a
-            # flake instead of as a defect.
+            # `send_message` answers SUBMITTED once the platform holds the
+            # message, while the runtime is still working on it, so the
+            # conversation is polled until it is at rest rather than read once.
             payload: dict[str, Any] = {}
             seen_states: list[str] = []
-            deadline = time.monotonic() + TURN_TIMEOUT_S
+            deadline = deadline_after(REPLY_TIMEOUT_S)
             while time.monotonic() < deadline:
                 status = await session.call_tool(
                     "get_status",
@@ -191,9 +194,9 @@ async def test_a_converse_key_carries_a_client_through_a_whole_conversation(
             messages = _recent_messages(payload)
             roles = [str(message.get("role") or "") for message in messages]
             assert state == "READY", (
-                f"get_status never settled READY within {TURN_TIMEOUT_S:.0f}s; "
-                f"states={seen_states}, current_turn_id={payload.get('current_turn_id')!r}, "
-                f"roles={roles}"
+                f"get_status never settled READY in time; states={seen_states}, "
+                f"runtime_status={payload.get('runtime_status')!r}, "
+                f"last_response={payload.get('last_response')!r}, roles={roles}"
             )
             # The reply has to have reached the transcript through the facade,
             # not merely been accepted by it: a send that returned OK and stored
@@ -209,16 +212,31 @@ async def test_a_converse_key_carries_a_client_through_a_whole_conversation(
             ]
             assert assistant_messages, (
                 f"the conversation holds only {[m.get('role') for m in messages]} — the "
-                "instruction reached the transcript but no reply came back, which is a "
-                "turn that was dispatched and never concluded"
+                "instruction reached the conversation but no reply came back"
             )
-            assistant_text = "\n".join(
-                str(message.get("content") or "") for message in assistant_messages
+            # The facade's own account of how the reply ended, tied to the
+            # message that carries it and to the input this client sent.
+            last = payload.get("last_response")
+            assert isinstance(last, dict) and last.get("outcome") == "completed", (
+                f"get_status does not report the reply as completed: last_response={last!r}"
             )
-            assert "MCPOK" in assistant_text.upper(), (
-                "the turn settled but did not carry the requested model reply; an empty "
-                f"failure projection must not count as success (assistant={assistant_text!r})"
+            answers = [
+                message
+                for message in assistant_messages
+                if message.get("response_id") == last.get("response_id")
+            ]
+            assert len(answers) == 1, (
+                f"get_status lists {len(answers)} messages for the last response "
+                f"{last.get('response_id')!r}: {assistant_messages}"
             )
+            assert "MCPOK" in str(answers[0].get("content") or "").upper(), (
+                "the reply ended completed but did not carry the requested model reply; "
+                f"an empty answer must not count as success (assistant={answers[0]!r})"
+            )
+            record = recorded_input(session_id, input_id)
+            assert (record["state"], record["response_id"]) == (
+                "admitted", last.get("response_id"),
+            ), f"the platform did not record the sent input as answered by that reply: {record}"
 
 
 async def test_a_read_key_is_refused_the_moment_it_tries_to_spend(

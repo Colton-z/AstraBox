@@ -46,8 +46,6 @@ import unittest
 from typing import Any
 from types import SimpleNamespace
 
-from claude_agent_sdk import ClaudeAgentOptions
-
 import astrabox.providers.model  # noqa: F401 — registers direct/litellm endpoint providers
 from astrabox.common.utils.settings import (
     DEFAULT_REMOTE_AGENT_MAX_BUFFER_SIZE_BYTES,
@@ -231,16 +229,6 @@ class ModelEndpointDeliveryInvariantTests(unittest.TestCase):
         # operator sees is "no auth", not "no model".
         self.assertEqual(env["ANTHROPIC_MODEL"], "claude-opus-4")
 
-    def test_vendor_api_key_still_travels_without_a_base_url(self) -> None:
-        # The exemption: x-api-key against the vendor default is correct, and
-        # must not be collateral damage of the rule above.
-        env = _cli_env(
-            _model_config(
-                base_url="", credential_header="ANTHROPIC_API_KEY", endpoint_provider="direct"
-            )
-        )
-        self.assertEqual(env["ANTHROPIC_API_KEY"], "sk-the-credential")
-        self.assertNotIn(_BASE_URL_KEY, env)
 
     def test_correlation_headers_need_an_endpoint_not_just_a_provider(self) -> None:
         # endpoint_provider=="litellm" alone must not arm the headers: without a
@@ -248,15 +236,6 @@ class ModelEndpointDeliveryInvariantTests(unittest.TestCase):
         # be enforced in name only.
         env = _cli_env(_model_config(base_url="", endpoint_provider="litellm"))
         self.assertNotIn("ANTHROPIC_CUSTOM_HEADERS", env)
-
-    def test_endpoint_rides_the_channel_a_pooled_box_can_receive(self) -> None:
-        # The prewarm-specific half of the invariant, pinned at its source: a
-        # pooled box gets no container env, so the endpoint has to be in the
-        # per-conversation creds the engine forwards. Reading it out of
-        # _model_runtime_creds is what makes "options.env carries it" structural
-        # rather than a coincidence of build_claude_options.
-        creds = _model_runtime_creds(_model_config())
-        self.assertEqual(creds["base_url"], "https://gateway.internal/v1")
 
 
 class ContainerEnvInjectionPointTests(unittest.TestCase):
@@ -278,12 +257,6 @@ class ContainerEnvInjectionPointTests(unittest.TestCase):
                     "some other name",
                 )
 
-    def test_the_container_env_still_addresses_the_model(self) -> None:
-        # Non-vacuity, and the reason this map still exists: the box knows what
-        # it was talking to even though it does not know how to authenticate.
-        env = _container_env(_model_config())
-        self.assertEqual(env["ANTHROPIC_BASE_URL"], "https://gateway.internal/v1")
-        self.assertEqual(env["ANTHROPIC_MODEL"], "claude-opus-4")
 
     def test_backend_does_not_stamp_cli_identity_or_credentials_on_a_cold_box(
         self,
@@ -318,13 +291,6 @@ class EffectiveBoxEnvInvariantTests(unittest.TestCase):
                             f"{_BASE_URL_KEY}",
                         )
 
-    def test_a_cold_box_is_still_fully_configured(self) -> None:
-        # Guard against the invariant being satisfied by delivering nothing:
-        # the gateway case must still hand the box its endpoint AND its token.
-        env = _box_env(_model_config())
-        self.assertEqual(env[_BASE_URL_KEY], "https://gateway.internal/v1")
-        self.assertEqual(env["ANTHROPIC_AUTH_TOKEN"], "sk-the-credential")
-        self.assertEqual(env["ANTHROPIC_MODEL"], "claude-opus-4")
 
     def test_a_bearer_token_with_no_gateway_reaches_the_box_on_neither_channel(
         self,

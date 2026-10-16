@@ -13,52 +13,50 @@
  * `session-stream-disposal` departs BEFORE any stream opens;
  * `active-task-notification-cold-join` rejoins an active session cold;
  * `backend-restart-rehydrates-...` leaves a PARKED conversation. This is the
- * only case where the document, the un-keyed outer `SessionPage`, its persisted
- * refs and ANOTHER conversation's live stream all survive across the cut — and
- * the only place two turns are proven in flight at once from the browser's seat
- * (`tests/e2e/test_shared_box_cohabitation.py:152` proves it over the API).
+ * only case where the document, the outer `SessionPage` and ANOTHER
+ * conversation's live stream all survive across the cut — and the only place
+ * two responses are proven in flight at once from the browser's seat.
  *
- * WHY THE BARRIER. `hold_after_frame` on `text-delta` parks A's real turn worker
- * right after its first delta (`astrabox/testing/e2e_faults.py:340-367`), so "A
- * is still answering while I work in B" is true for a bounded window instead of
- * a race against model speed. Its release timeout is 120s
- * (`e2e_faults.py:44`) and that, not the suite wall, is the ceiling on
- * everything between arming and release: every wait inside the held window is
- * clamped to it by `heldBudget()` and the release runs in a `finally`, so a
- * failing assertion fails as itself instead of as a turn the barrier killed.
+ * WHY THE BARRIER. `hold_after_frame` on `text-delta` holds A's session
+ * reader right after it commits A's first text delta (the
+ * `response_part_read` barrier in `astrabox/testing/e2e_faults.py`), so the
+ * page already has that delta and "A is still answering while I work in B" is
+ * true for a bounded window instead of a race against model speed. Its
+ * release timeout is 120s (`_HOLD_RELEASE_TIMEOUT_SECONDS`) and that, not the
+ * suite wall, is the ceiling on everything between arming and release: every
+ * wait inside the held window is clamped to it by `heldBudget()` and the
+ * release runs in a `finally`, so a failing assertion fails as itself instead
+ * of as a response the barrier killed.
  *
- * ENGINE-INDEPENDENT. `text-delta` is the normalized frame type every engine's
- * translated frames carry, the first-turn title is written by the platform's
- * own `session_title_service`, both prompts ask for tool-free prose, and no
- * assertion reads engine-specific text or a localized string. It DOES require
- * the E2E fault stack (`ASTRABOX_E2E_FAULTS=1` and the shared fault-file path)
- * like the other barrier specs; without it the declaration is never consumed
- * and the anti-vacuity poll fails loudly rather than skipping.
+ * ENGINE-INDEPENDENT. `text-delta` is the AI SDK part type every engine's
+ * output carries, the first title is written by the platform's own title
+ * service, both prompts ask for tool-free prose, and no assertion reads
+ * engine-specific text or a localized string. It DOES require the E2E fault
+ * stack (`ASTRABOX_E2E_FAULTS=1` and the shared fault-file path) like the
+ * other barrier specs; without it the declaration is never consumed and the
+ * anti-vacuity poll fails loudly rather than skipping.
  *
  * THE LIST HALF, AND WHY IT IS READ HERE. The conversation rail is a
  * `useSWRInfinite` that refreshes every `RAIL_REFRESH_INTERVAL_MS`
- * (`frontend/src/App.tsx:52`, passed at `:122`), which SWR suspends while the
- * tab is hidden. That timer is the only producer that can reach a row the
- * reader is not standing on: `refreshOverview` (`App.tsx:154-156`) is called by
- * the in-tab conversation create (`:159`), by archive (`:177-183`) and by the
- * SessionPage route (`:401`), and the route fires it only when the CURRENTLY
- * ROUTED session's overview signature moves
- * (`useSessionBootstrapEffects.ts:32-51`). B's title invalidation is published
- * as a `data-session-changed` frame on B's OWN stream, which the console
- * handles only for the session it is streaming and otherwise throws on
- * (`useSessionChat.ts:574-583`), and nobody is reading B's stream. So the row
- * of the conversation the user walked away from has exactly one way to learn
- * its generated title, and this is the seat that isolates it.
+ * (`frontend/src/App.tsx`). That timer is the only producer that can reach a
+ * row the reader is not standing on: `refreshOverview` is called by the in-tab
+ * conversation create, by archive and by the SessionPage route, and the route
+ * fires it only for the CURRENTLY ROUTED session — when its overview signature
+ * moves (`useSessionBootstrapEffects.ts`) or when its own stream carries
+ * `data-session-changed`. B's generated title is announced as a
+ * `data-session-changed` part on B's OWN stream, and nobody is reading B's
+ * stream. So the row of the conversation the user walked away from has exactly
+ * one way to learn its new state, and this is the seat that isolates it.
  *
  * The reading is taken inside the held window because that is the only moment
- * it isolates anything: once A's turn ends, A's own terminal moves the routed
+ * it isolates anything: once A's response ends, A's own end moves the routed
  * session's signature, `onSessionChanged` refetches the list, and B's row heals
  * for a reason that has nothing to do with the cadence. `LIST_FRESHNESS_MS`
  * clears two whole cadences, so a red is a rail that did not refresh rather
  * than one that had not refreshed yet.
  *
  * It is JUDGED in the last lines of the test rather than where it is read: with
- * `maxFailures: 1` (`playwright.config.ts:57`), asserting at the point of
+ * `maxFailures: 1` (`playwright.config.ts`), asserting at the point of
  * reading would abort the run before the transcript spine — what this file
  * mostly exists for — had been collected. Reading is not asserting;
  * `expect.soft` appears nowhere in this suite and is not introduced here. The
@@ -79,10 +77,10 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 
 import { AstraApi, messageText, type MessageRecord } from '../fixtures/astraApi';
 import {
-  framesForTurn,
   oracleDbPath,
-  sessionEvents,
-  waitForTurnTerminalProof,
+  sessionOutputRows,
+  sessionResponseRows,
+  type SessionResponseRow,
 } from '../fixtures/dbOracle';
 import { apiPath, appPath, parseTimeoutEnv } from '../fixtures/env';
 import {
@@ -109,11 +107,11 @@ import {
 /**
  * The backend's own release ceiling, restated so this spec can respect it.
  *
- * `_HOLD_RELEASE_TIMEOUT_SECONDS = 120.0` (`e2e_faults.py:44`): a hold not
- * released inside it raises in the worker and FAILS A's turn, which would paint
- * this spec red for a reason that has nothing to do with the journey. The safety
- * margin covers the gap between the worker consuming the declaration and this
- * process observing that it did — the countdown starts at the former.
+ * `_HOLD_RELEASE_TIMEOUT_SECONDS = 120.0` (`e2e_faults.py`): a hold not
+ * released inside it raises where it holds and stops A's reader, which would
+ * paint this spec red for a reason that has nothing to do with the journey. The
+ * safety margin covers the gap between the backend consuming the declaration
+ * and this process observing that it did — the countdown starts at the former.
  */
 const HOLD_CEILING_MS = 120_000;
 const HOLD_SAFETY_MS = 15_000;
@@ -122,16 +120,16 @@ const HOLD_SAFETY_MS = 15_000;
 const FIRST_DELTA_MS = parseTimeoutEnv('ASTRABOX_E2E_SECOND_CONVERSATION_FIRST_DELTA_MS', 60_000);
 // Inside the held window. Each is additionally clamped to what the ceiling
 // leaves, so the fallbacks are ceilings on ONE step, not a budget to spend.
-const OVERLAY_MS = parseTimeoutEnv('ASTRABOX_E2E_SECOND_CONVERSATION_OVERLAY_MS', 20_000);
+const RUNNING_MARK_MS = parseTimeoutEnv('ASTRABOX_E2E_SECOND_CONVERSATION_RUNNING_MS', 20_000);
 const DEPARTURE_MS = parseTimeoutEnv('ASTRABOX_E2E_SECOND_CONVERSATION_DEPARTURE_MS', 20_000);
 const SECOND_TURN_MS = parseTimeoutEnv('ASTRABOX_E2E_SECOND_CONVERSATION_TURN_MS', 45_000);
 const LIST_FRESHNESS_MS = parseTimeoutEnv('ASTRABOX_E2E_SECOND_CONVERSATION_LIST_MS', 20_000);
 // After release: A tailing the rest of its answer in, and settling durably.
 const RESUME_MS = parseTimeoutEnv('ASTRABOX_E2E_SECOND_CONVERSATION_RESUME_MS', 60_000);
-const TERMINAL_PROOF_MS = parseTimeoutEnv('ASTRABOX_E2E_TURN_TERMINAL_TIMEOUT_MS', 90_000);
+const RESPONSE_END_MS = parseTimeoutEnv('ASTRABOX_E2E_TURN_TERMINAL_TIMEOUT_MS', 90_000);
 
 // One rendered character proves the first delta reached the browser; the
-// barrier, not an amount of prose, is what proves the turn is still owed.
+// barrier, not an amount of prose, is what proves the response is still owed.
 const LIVE_PREFIX_MIN_CHARS = 1;
 // A visible suffix after release, measured from rendered text parts only.
 const RESUMED_GROWTH_MIN_CHARS = 40;
@@ -139,9 +137,9 @@ const RESUMED_GROWTH_MIN_CHARS = 40;
 // replayed prefix. Compared over normalized text (see normalizeRendered).
 const DUPLICATE_WINDOW_CHARS = 48;
 
-// A FAILED turn renders its error INTO the transcript as an assistant message,
-// so "a reply bubble came back with content in it" is satisfied by exactly the
-// failure this spec must not pass on.
+// A FAILED response renders its error INTO the transcript as an assistant
+// message, so "a reply bubble came back with content in it" is satisfied by
+// exactly the failure this spec must not pass on.
 const TURN_ERROR = /API Error|AGENT_RUNTIME_ERROR|SANDBOX_GONE|Traceback/i;
 
 interface StreamChannel {
@@ -161,19 +159,19 @@ type ChannelWindow = Window & typeof globalThis & {
 };
 
 /**
- * Record every session channel the PAGE opens, and when each one ends.
+ * Record every session stream request the PAGE opens, and when each one ends.
  *
- * The console opens one `follow=session` subscription per conversation
- * (`buildSessionStreamUrl`, `frontend/src/session/utils/chatHelpers.ts:12-19`),
- * and it opens one even for an idle conversation
- * (`shouldOpenSessionSubscription`, `session/turnStream.ts:65-71`). Whether the
- * one belonging to the conversation the user LEFT ends is not observable from
- * the outside: the server keeps its side of a session stream open, so only the
+ * The console follows a conversation's stream from the moment the page opens
+ * it, idle or not (`sessionFollower.ts`), one request per response: each
+ * request ends after the part that finishes a response and the page opens the
+ * next one from the `data-resume-cursor` it was given. Whether the request
+ * belonging to the conversation the user LEFT ends is not observable from the
+ * outside: the server keeps its side of a quiet stream open, so only the
  * browser's own reader can say. Nothing here fabricates a response — the real
  * body is re-streamed byte for byte and only its lifetime is recorded.
  */
 async function recordSessionChannels(page: Page): Promise<void> {
-  await page.addInitScript(({ sessionsPrefix, streamSuffix }) => {
+  await page.addInitScript(({ sessionsPrefix }) => {
     const originalFetch = window.fetch.bind(window);
     const channels: StreamChannel[] = [];
     (window as ChannelWindow).__sessionChannels = channels;
@@ -181,12 +179,10 @@ async function recordSessionChannels(page: Page): Promise<void> {
       const request = input instanceof Request ? input : null;
       const method = String(init?.method ?? request?.method ?? 'GET').toUpperCase();
       const url = new URL(request?.url ?? String(input), window.location.href);
-      const inStreamPath = url.pathname.startsWith(`${sessionsPrefix}/`)
-        && url.pathname.endsWith(streamSuffix);
-      const owner = inStreamPath
-        ? url.pathname.slice(sessionsPrefix.length + 1, -streamSuffix.length)
-        : '';
-      if (method !== 'GET' || !owner || url.searchParams.get('follow') !== 'session') {
+      const prefix = `${sessionsPrefix}/`;
+      const rest = url.pathname.startsWith(prefix) ? url.pathname.slice(prefix.length) : '';
+      const owner = /^[^/]+\/stream$/.test(rest) ? decodeURIComponent(rest.slice(0, -'/stream'.length)) : '';
+      if (method !== 'GET' || !owner) {
         return originalFetch(input, init);
       }
       const response = await originalFetch(input, init);
@@ -241,7 +237,7 @@ async function recordSessionChannels(page: Page): Promise<void> {
         headers: response.headers,
       });
     };
-  }, { sessionsPrefix: apiPath('/sessions'), streamSuffix: '/ai-stream' });
+  }, { sessionsPrefix: apiPath('/sessions') });
 }
 
 async function sessionChannels(page: Page): Promise<StreamChannel[]> {
@@ -258,50 +254,62 @@ function describeChannels(channels: StreamChannel[]): string {
     .join('\n') || '<no session channel was opened at all>';
 }
 
-interface DurableOverlayCursor {
-  turnId: string;
-  frameSeq: number;
+/** A's running response, and the output position the session had reached while it was held. */
+interface RunningResponseMark {
+  responseId: string;
+  outputSeq: number;
 }
 
 /**
- * The cursor the console itself reads on mount, taken while the turn is held.
+ * The response A is running and the position the console follows from,
+ * taken from the session detail while the response is held.
  *
  * Returning null rather than throwing lets the caller name this as an unmet
  * precondition of the journey instead of reporting it as the journey failing.
  */
-async function waitForDurableOverlayCursor(
+async function waitForRunningResponse(
   api: AstraApi,
   sessionId: string,
   timeoutMs: number,
-): Promise<DurableOverlayCursor | null> {
+): Promise<RunningResponseMark | null> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const overlay = (await api.getMessages(sessionId, 50)).active_turn_overlay;
-    const turnId = String(overlay?.turn_id ?? overlay?.resume_cursor?.turn_id ?? '').trim();
-    const frameSeq = overlay?.resume_cursor?.frame_seq;
-    if (turnId && typeof frameSeq === 'number' && Number.isInteger(frameSeq) && frameSeq >= 0) {
-      return { turnId, frameSeq };
+    const detail = await api.getSession(sessionId);
+    const running = (detail.current_responses ?? []).filter((response) => response.status === 'running');
+    const outputSeq = detail.output_seq;
+    if (running.length === 1 && typeof outputSeq === 'number' && Number.isInteger(outputSeq) && outputSeq > 0) {
+      return { responseId: running[0].response_id, outputSeq };
     }
     if (Date.now() >= deadline) return null;
     await new Promise((resolve) => setTimeout(resolve, 1_000));
   }
 }
 
-/** Durable engine frames of one turn, reduced to (sequence, vocabulary type). */
-function turnFrameTypes(turnId: string): { seq: number; type: string }[] {
-  return framesForTurn(turnId).map((frame) => {
-    const payload = frame.payload && typeof frame.payload === 'object'
-      ? (frame.payload as { type?: unknown })
-      : {};
-    return { seq: Number(frame.event_seq), type: String(payload.type ?? '').trim() };
-  });
+/** The parts the session's reader stored for one response, reduced to (sequence, type). */
+function responsePartTypes(sessionId: string, responseId: string): { seq: number; type: string }[] {
+  return sessionOutputRows(sessionId, responseId).map((row) => ({
+    seq: row.seq,
+    type: String(row.part.type ?? '').trim(),
+  }));
 }
 
-function journalEventCount(sessionId: string, turnId: string, eventType: string): number {
-  return sessionEvents(sessionId).filter((event) => (
-    String(event.turn_id ?? '').trim() === turnId
-    && String(event.event_type ?? '').trim() === eventType
-  )).length;
+/** The platform's record of one response, waited for until it has ended. */
+async function waitForResponseEnded(
+  sessionId: string,
+  responseId: string,
+  timeoutMs: number,
+): Promise<SessionResponseRow> {
+  const deadline = Date.now() + timeoutMs;
+  let last: SessionResponseRow | null = null;
+  for (;;) {
+    last = sessionResponseRows(sessionId).find((row) => row.response_id === responseId) ?? null;
+    if (last?.status === 'ended') return last;
+    if (Date.now() >= deadline) break;
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+  throw new Error(
+    `response ${sessionId}/${responseId} did not end within ${timeoutMs}ms; last=${JSON.stringify(last)}`,
+  );
 }
 
 function persistedText(messages: MessageRecord[]): string {
@@ -311,21 +319,20 @@ function persistedText(messages: MessageRecord[]): string {
 /**
  * READ whether the sidebar row has caught up. Deliberately not an assertion.
  *
- * The observation can only be made inside the held window — once A's turn ends,
- * A's own title lands, the routed session's overview signature changes and the
- * list refetches, which heals B's row through `onSessionChanged` rather than
- * through the rail's own cadence. The VERDICT belongs at the end, after the rest
- * of the journey has been collected: with `maxFailures: 1`, asserting at the
- * point of reading would abort the run before anything is learned about the
- * transcript spine. This is the same separation
- * `an-expired-oauth-credential-...:41-52` sets out, and for the same reason it
- * does not reach for `expect.soft`, which appears nowhere in this suite.
+ * The observation can only be made inside the held window — once A's response
+ * ends, A's own title lands, the routed session's overview signature changes
+ * and the list refetches, which heals B's row through `onSessionChanged` rather
+ * than through the rail's own cadence. The VERDICT belongs at the end, after
+ * the rest of the journey has been collected: with `maxFailures: 1`, asserting
+ * at the point of reading would abort the run before anything is learned about
+ * the transcript spine. For the same reason it does not reach for
+ * `expect.soft`, which appears nowhere in this suite.
  */
 async function readRowCaughtUp(row: Locator, state: string, budgetMs: number): Promise<boolean> {
   const deadline = Date.now() + budgetMs;
   for (;;) {
-    // The state rides on the row's status pill (AstraConsole.tsx:122), not on
-    // the row element.
+    // The state rides on the row's status pill (`StatusPill` in
+    // AstraConsole.tsx), not on the row element.
     const pill = row.getByTestId('status-pill').first();
     if ((await pill.getAttribute('data-state').catch(() => null)) === state) return true;
     if (Date.now() >= deadline) return false;
@@ -334,12 +341,12 @@ async function readRowCaughtUp(row: Locator, state: string, budgetMs: number): P
 }
 
 // Teardown that changes state runs on the passing path only, and afterEach hooks
-// run in registration order — which is the old `finally` order. The interrupt
-// and the fault-file removal are registered BEFORE `trackSessions()` because a
-// DELETE against a still-STREAMING session answers SESSION_BUSY: without this
-// ordering a failure partway through the held window would leave two orphans.
-// Removing the declaration is itself a release (`_wait_for_hold_release`
-// returns on FileNotFoundError), so it must never outlive this test.
+// run in registration order. The interrupt and the fault-file removal are
+// registered BEFORE `trackSessions()` so a conversation is stopped before it is
+// deleted: without this ordering a failure partway through the held window
+// would leave two running conversations behind. Removing the declaration is
+// itself a release (`_wait_for_hold_release` returns on FileNotFoundError), so
+// it must never outlive this test.
 let heldSessionId = '';
 let secondSessionId = '';
 let frameHoldPath = '';
@@ -360,7 +367,7 @@ test('working in a second conversation keeps the first turn live and the convers
   const markerA = `CONV_A_${runId}`;
   const markerB = `CONV_B_${runId}`;
 
-  // Fail fast with the oracle's own descriptive error if the document store is
+  // Fail fast with the oracle's own descriptive error if the database is
   // unreachable — the durable half of this spec depends on it.
   test.info().annotations.push({ type: 'oracle-db', description: oracleDbPath() });
 
@@ -395,11 +402,14 @@ test('working in a second conversation keeps the first turn live and the convers
       sessionListFetches += 1;
       return;
     }
-    if (!url.pathname.startsWith(`${sessionListPath}/`) || !url.pathname.endsWith('/ai-stream')) return;
+    const rest = url.pathname.startsWith(`${sessionListPath}/`)
+      ? url.pathname.slice(sessionListPath.length + 1)
+      : '';
+    if (!/^[^/]+\/stream$/.test(rest)) return;
     const raw = url.searchParams.get('after_seq');
     const parsed = raw === null ? Number.NaN : Number(raw);
     streamOpens.push({
-      sessionId: url.pathname.slice(sessionListPath.length + 1, -'/ai-stream'.length),
+      sessionId: decodeURIComponent(rest.slice(0, -'/stream'.length)),
       afterSeq: Number.isFinite(parsed) ? parsed : null,
     });
   });
@@ -423,7 +433,7 @@ test('working in a second conversation keeps the first turn live and the convers
   // live outside the `try`. The definite-assignment assertions are safe because
   // a throw before either is set unwinds through the `finally` and never reaches
   // the post-release half.
-  let durableCursor!: DurableOverlayCursor;
+  let runningMark!: RunningResponseMark;
   let preReleaseRendered!: string;
   let listFreshness!: {
     caughtUp: boolean;
@@ -442,8 +452,8 @@ test('working in a second conversation keeps the first turn live and the convers
         + 'The held window is the budget for the whole middle of this journey — B\'s send, '
         + 'the return to A, B\'s terminal, B\'s generated title and the sidebar poll. Tune the '
         + 'ASTRABOX_E2E_SECOND_CONVERSATION_* budgets down, or raise the backend\'s '
-        + '_HOLD_RELEASE_TIMEOUT_SECONDS (astrabox/testing/e2e_faults.py:44) — do not '
-        + 'let the hold expire, which fails A\'s turn for a reason this spec is not about.',
+        + '_HOLD_RELEASE_TIMEOUT_SECONDS (astrabox/testing/e2e_faults.py) — do not '
+        + 'let the hold expire, which fails A\'s response for a reason this spec is not about.',
       );
     }
     return Math.min(wanted, remaining);
@@ -451,8 +461,8 @@ test('working in a second conversation keeps the first turn live and the convers
 
   try {
     // ── A: one long question, sent from the composer like a person sends it. ─
-    // The barrier parks the real worker after its first delta, so the rest of
-    // the answer stays owed for a bounded window. Tool-free prose keeps this
+    // The barrier holds A's output after its first delta, so the rest of the
+    // answer stays owed for a bounded window. Tool-free prose keeps this
     // engine-independent.
     await expectPromptDelivered(await startPromptDelivery(page, heldSessionId, [
       `E2E 第一会话 ${markerA}：请直接用中文回答，不要使用任何工具。`,
@@ -461,17 +471,17 @@ test('working in a second conversation keeps the first turn live and the convers
     ].join('\n')));
     await expect(
       page.getByTestId('user-message').last(),
-      'A\'s user bubble must render — proof the turn was dispatched from the page',
+      'A\'s user bubble must render — proof the message was sent from the page',
     ).toContainText(markerA, { timeout: 30_000 });
 
     // Anti-vacuity, and the moment the ceiling starts counting. Without this the
-    // whole spec could pass on an ordinary settled turn the barrier never
+    // whole spec could pass on an ordinary ended response the barrier never
     // touched — including on a deployment where ASTRABOX_E2E_FAULTS is not armed
     // and the hook is not installed at all.
     await expect
       .poll(() => frameHoldConsumed(frameHoldPath, heldSessionId, 'text-delta'), {
         timeout: FIRST_DELTA_MS,
-        message: 'A\'s real turn worker must consume the text-delta frame hold',
+        message: 'A\'s real response must consume the text-delta frame hold',
       })
       .toBe(true);
     // The ceiling is counted from HERE. The backend writes `consumed` in
@@ -492,22 +502,20 @@ test('working in a second conversation keeps the first turn live and the convers
     // came back" is only a claim about content if it is measured against this.
     const preSwitchText = (await assistantTranscript(page)).trim();
 
-    // ── A's durable watermark, read while the turn is genuinely mid-flight. ──
-    const cursor = await waitForDurableOverlayCursor(
+    // ── A's durable watermark, read while the response is genuinely mid-flight.
+    const mark = await waitForRunningResponse(
       api,
       heldSessionId,
-      heldBudget(OVERLAY_MS, 'A exposed a durable active-turn cursor'),
+      heldBudget(RUNNING_MARK_MS, 'A reported its running response'),
     );
     expect(
-      cursor,
-      'the held turn must expose a durable active_turn_overlay cursor before the user leaves',
+      mark,
+      'the held response must be running, with an output position, before the user leaves',
     ).not.toBeNull();
-    durableCursor = cursor as DurableOverlayCursor;
+    runningMark = mark as RunningResponseMark;
     expect(
-      turnFrameTypes(durableCursor.turnId)
-        .filter((frame) => frame.seq <= durableCursor.frameSeq)
-        .some((frame) => frame.type === 'finish'),
-      'the barrier must hold A before its durable terminal finish — the cut lands mid-turn',
+      responsePartTypes(heldSessionId, runningMark.responseId).some((part) => part.type === 'finish'),
+      'the barrier must hold A before its stored finish — the cut lands mid-response',
     ).toBe(false);
 
     // ── LEAVING, THE WAY A USER LEAVES: the sidebar row, inside the SPA. ─────
@@ -526,9 +534,9 @@ test('working in a second conversation keeps the first turn live and the convers
     // repaint of A's.
     //
     // `expectComposerEnabled` is not used inside the held window on purpose. Its
-    // fallback is 180s (sessionPage.ts:6-9), sized for a cold sandbox, and a
-    // single 180s wait inside a 120s ceiling would expire the barrier and fail
-    // A's turn instead of reporting whatever it was really waiting for. B is
+    // fallback is 180s (sessionPage.ts), sized for a cold sandbox, and a single
+    // 180s wait inside a 120s ceiling would expire the barrier and fail A's
+    // response instead of reporting whatever it was really waiting for. B is
     // already READY here, so the clamped wait costs nothing it should not.
     const composer = page.getByTestId('composer-prompt');
     await expect(composer, 'B\'s composer must be usable').toBeEnabled({
@@ -547,14 +555,14 @@ test('working in a second conversation keeps the first turn live and the convers
       'A\'s reply must not bleed into B\'s transcript',
     ).toHaveCount(0);
 
-    // And the channel the user walked away from is not still being read. The
-    // server holds its side of a session stream open, so an abandoned reader is
-    // invisible from outside the browser — and one leaked per conversation
-    // switch is exactly the kind of debt that later reads as "the product feels
-    // slow". This is the weakest-stated contract in the spec (one channel per
-    // conversation is implied by `follow=session`, not written down), so it is
-    // bounded rather than instantaneous: the handoff may overlap, it may not
-    // persist.
+    // And the stream the user walked away from is not still being read. The
+    // server holds its side of a quiet session stream open, so an abandoned
+    // reader is invisible from outside the browser — and one leaked per
+    // conversation switch is exactly the kind of debt that later reads as "the
+    // product feels slow". This is the weakest-stated contract in the spec (one
+    // open stream request per followed conversation is how `sessionFollower.ts`
+    // works, not a written contract), so it is bounded rather than
+    // instantaneous: the handoff may overlap, it may not persist.
     await expect
       .poll(async () => (await sessionChannels(page))
         .filter((channel) => channel.sessionId === heldSessionId && !channel.closed).length, {
@@ -576,7 +584,7 @@ test('working in a second conversation keeps the first turn live and the convers
     ).toEqual([]);
 
     // ── B: one short, topic-bearing question, so B settles fast and its
-    //    first-turn title actually generates. ──────────────────────────────────
+    //    first title actually generates. ───────────────────────────────────────
     await expectPromptDelivered(await startPromptDelivery(page, secondSessionId, [
       `E2E 第二会话 ${markerB}：请直接用中文回答，不要使用任何工具。`,
       '请用两三句话说明 PostgreSQL 的 B-tree 索引为什么能加速范围查询。',
@@ -586,21 +594,20 @@ test('working in a second conversation keeps the first turn live and the convers
       'B\'s own message must render in B',
     ).toHaveCount(1, { timeout: heldBudget(DEPARTURE_MS, 'B rendered its own message') });
 
-    // ── TWO TURNS IN FLIGHT AT ONCE, from the browser's seat. ────────────────
-    // The browser-side statement of what tests/e2e/test_shared_box_cohabitation.py:152
-    // establishes over the API. B's acceptance is polled because the turn id
-    // appears a moment after the input is taken; A's is read at that same instant
-    // and must still be the turn the barrier is holding.
+    // ── TWO RESPONSES IN FLIGHT AT ONCE, from the browser's seat. ────────────
+    // B's response is polled because it starts a moment after the input is
+    // taken; A's is read at that same instant and must still be the response
+    // the barrier is holding.
     await expect
-      .poll(async () => String((await api.getSession(secondSessionId)).current_turn_id || '').trim(), {
-        timeout: heldBudget(SECOND_TURN_MS, 'B\'s turn started'),
-        message: 'B must take a turn of its own while A is still answering',
+      .poll(async () => ((await api.getSession(secondSessionId)).current_responses ?? []).length, {
+        timeout: heldBudget(SECOND_TURN_MS, 'B\'s response started'),
+        message: 'B must start a response of its own while A is still answering',
       })
-      .not.toEqual('');
+      .toBeGreaterThan(0);
     expect(
-      String((await api.getSession(heldSessionId)).current_turn_id || '').trim(),
-      'A must still be on the held turn at the moment B starts — that overlap IS the journey',
-    ).toEqual(durableCursor.turnId);
+      ((await api.getSession(heldSessionId)).current_responses ?? []).map((response) => response.response_id),
+      'A must still be running the held response at the moment B starts — that overlap IS the journey',
+    ).toEqual([runningMark.responseId]);
 
     // ── RETURNING TO A, by the same SPA click, while B keeps running. ────────
     const rowA = page.locator(`[data-testid="session-row"][data-session-id="${heldSessionId}"]`);
@@ -616,7 +623,7 @@ test('working in a second conversation keeps the first turn live and the convers
       'the whole journey must happen inside ONE document — a reload would launder a lost tail',
     ).toBe(documentStartedAt);
 
-    // The prefix is back, exactly, and exactly once. The worker is held, so
+    // The prefix is back, exactly, and exactly once. A's output is held, so
     // nothing has been added: anything other than equality here is the seam
     // repainting, truncating or replaying what the user already read.
     await expect(
@@ -646,10 +653,9 @@ test('working in a second conversation keeps the first turn live and the convers
 
     // And it came back FROM THE CURSOR. `after_seq=0`, or an open with no
     // cursor at all, IS a restart from the head — which would replay the whole
-    // turn on top of the prefix just painted. The floor is the watermark taken
-    // mid-turn, because the console reads that same overlay on mount
-    // (`bootstrapStreamCursor` ← `active_turn_overlay.resume_cursor`) and it
-    // only advances within a turn.
+    // response on top of the prefix just painted. The floor is the watermark
+    // taken mid-response: the console follows from the `output_seq` its history
+    // read carries, and the output position only ever advances.
     await expect
       .poll(
         () => streamOpens.slice(streamOpensBeforeReturn)
@@ -672,9 +678,9 @@ test('working in a second conversation keeps the first turn live and the convers
     const returnCursor = Math.max(...returnCursors);
     expect(
       returnCursor,
-      'returning to A must resume AT OR PAST the watermark its turn had when the user left, '
+      'returning to A must resume AT OR PAST the watermark its response had when the user left, '
       + 'not restart the stream from the head',
-    ).toBeGreaterThanOrEqual(durableCursor.frameSeq);
+    ).toBeGreaterThanOrEqual(runningMark.outputSeq);
     test.info().annotations.push({
       type: 'e2e_return_after_seq',
       description: String(returnCursor),
@@ -687,10 +693,10 @@ test('working in a second conversation keeps the first turn live and the convers
     // got a title" send a reader to different places.
     await api.waitForSession(
       secondSessionId,
-      (session) => String(session.last_turn_status || '') === 'COMPLETED',
-      heldBudget(SECOND_TURN_MS, 'B\'s turn completed'),
+      (session) => session.state === 'READY' && session.last_response?.outcome === 'completed',
+      heldBudget(SECOND_TURN_MS, 'B\'s response completed'),
     );
-    // THE FRESHNESS OBSERVATION. No reload, no click, and A's turn has not
+    // THE FRESHNESS OBSERVATION. No reload, no click, and A's response has not
     // ended: the only thing that changed is a conversation the user is not
     // looking at. Read here because this is the only moment it means anything;
     // judged at the very end. See the header for the traced chain.
@@ -715,13 +721,13 @@ test('working in a second conversation keeps the first turn live and the convers
     preReleaseRendered = normalizeRendered(await assistantTranscript(page));
   } finally {
     // Unconditional, and before the ceiling: a failed assertion above must fail
-    // as itself, not as a turn the barrier killed 120s after it was armed.
+    // as itself, not as a response the barrier killed 120s after it was armed.
     releaseFrameHoldFault(frameHoldPath);
   }
 
   // ── AND IT KEEPS ARRIVING, WITHOUT THE USER DOING ANYTHING. ───────────────
-  // No reload, no click, no second send: the released worker's remaining frames
-  // reach the page over the channel it reopened on return.
+  // No reload, no click, no second send: the released response's remaining
+  // parts reach the page over the stream it followed again on return.
   await expect
     .poll(async () => normalizeRendered(await assistantTranscript(page)).length, {
       timeout: RESUME_MS,
@@ -730,11 +736,11 @@ test('working in a second conversation keeps the first turn live and the convers
     .toBeGreaterThan(preReleaseRendered.length + RESUMED_GROWTH_MIN_CHARS);
   await expect(
     page.getByTestId('run-view').getByTestId('status-pill').first(),
-    'A\'s header must settle once the resumed turn reaches its terminal frame',
+    'A\'s header must settle once the resumed response ends',
   ).toHaveAttribute('data-pulse', 'false', { timeout: RESUME_MS });
 
   const settledReply = page.getByTestId('assistant-message').last();
-  await expect(settledReply, 'A\'s resumed turn should have rendered assistant content').not.toBeEmpty();
+  await expect(settledReply, 'A\'s resumed response should have rendered assistant content').not.toBeEmpty();
   await expect(settledReply).not.toContainText(TURN_ERROR);
 
   // Not rendered twice. This is the seam: the page painted a durable prefix on
@@ -745,24 +751,26 @@ test('working in a second conversation keeps the first turn live and the convers
     'leaving and returning must not render the same stretch of A\'s answer twice',
   ).toBeNull();
 
-  // ── Durable half. A turn the live worker completed and one a recovery path
-  //    rebuilt render the same finished answer; that difference has no pixel,
-  //    and it is the difference between "the user's conversation survived them
-  //    walking away" and "the platform rebuilt it afterwards". ───────────────
-  await waitForTurnTerminalProof(heldSessionId, durableCursor.turnId, 'COMPLETED', TERMINAL_PROOF_MS);
-  const finalTypes = turnFrameTypes(durableCursor.turnId).map((frame) => frame.type);
+  // ── Durable half. A response the runtime completed and one the platform
+  //    ended for a lost runtime render the same text up to the loss; that
+  //    difference has no pixel, and it is the difference between "the user's
+  //    conversation survived them walking away" and "it broke behind them". ──
+  const endedA = await waitForResponseEnded(heldSessionId, runningMark.responseId, RESPONSE_END_MS);
+  expect(endedA.outcome, 'A\'s response must complete on the runtime that started it').toBe('completed');
+  expect(endedA.error, 'A\'s response must end without a reported failure').toBeNull();
+  const finalTypes = responsePartTypes(heldSessionId, runningMark.responseId).map((part) => part.type);
   expect(
     finalTypes.filter((type) => type === 'finish'),
-    'A\'s turn must commit exactly one durable finish frame',
+    'A\'s response must store exactly one finish',
   ).toHaveLength(1);
   expect(
-    journalEventCount(heldSessionId, durableCursor.turnId, 'turn.completed'),
-    'A\'s turn must write exactly one normal completed terminal event',
-  ).toBe(1);
+    finalTypes.filter((type) => type === 'data-result'),
+    'A\'s response must store exactly one supplier Result',
+  ).toHaveLength(1);
   expect(
-    journalEventCount(heldSessionId, durableCursor.turnId, 'turn.recovered'),
-    'working in another conversation must not push A\'s turn through a recovery path',
-  ).toBe(0);
+    finalTypes.filter((type) => type === 'error'),
+    'working in another conversation must not end A\'s response in an error',
+  ).toEqual([]);
 
   // ── Durable isolation, both directions. The rendered transcripts already
   //    said this; these are the rows that outlive the tab. ──────────────────
@@ -793,18 +801,17 @@ test('working in a second conversation keeps the first turn live and the convers
   // "eventually, once the user does something else" would be the defect.
   expect(
     listFreshness,
-    'the sidebar row for the conversation the user LEFT must read READY once its turn is '
-    + 'done, while the user sits in another conversation whose turn has not ended — no '
+    'the sidebar row for the conversation the user LEFT must read READY once its response is '
+    + 'done, while the user sits in another conversation whose response has not ended — no '
     + 'reload, no click. '
     + `It was given ${LIST_FRESHNESS_MS}ms and read ${JSON.stringify(listFreshness.rowText)}; `
     + `the list was fetched ${listFreshness.listFetches} time(s) during that wait. A count of 0 `
-    + 'means the tab never re-read the list at all, so the rail\'s cadence is gone — the '
-    + 'RAIL_REFRESH_INTERVAL_MS on frontend/src/App.tsx:52, passed at :122, is the only '
-    + 'producer that reaches a row the reader is not standing on. A non-zero count with a stale '
-    + 'row means the rail asked and the answer did not carry B\'s state. B\'s invalidation is '
-    + 'published on B\'s OWN stream (useSessionChat.ts:574-583), which nobody is reading, and '
-    + 'refreshOverview (App.tsx:154-156) fires from the SessionPage route only when the '
-    + 'CURRENTLY ROUTED session\'s signature moves (useSessionBootstrapEffects.ts:32-51) — A is '
-    + 'held, so it did not. Fix the refresh, do not relax this to "eventually".',
+    + 'means the tab never re-read the list at all, so the rail\'s cadence is gone — '
+    + 'RAIL_REFRESH_INTERVAL_MS in frontend/src/App.tsx is the only producer that reaches a row '
+    + 'the reader is not standing on. A non-zero count with a stale row means the rail asked and '
+    + 'the answer did not carry B\'s state. B\'s data-session-changed is published on B\'s OWN '
+    + 'stream, which nobody is reading, and refreshOverview fires from the SessionPage route only '
+    + 'for the CURRENTLY ROUTED session (useSessionBootstrapEffects.ts) — A is held, so it did '
+    + 'not. Fix the refresh, do not relax this to "eventually".',
   ).toMatchObject({ caughtUp: true });
 });

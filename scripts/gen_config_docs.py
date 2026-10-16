@@ -4,9 +4,9 @@
 The registry (:data:`astrabox.config.env_registry.ENV_REGISTRY`) is the
 canonical inventory of environment variables AstraBox reads. Run this script
 after editing the registry and commit the result —
-``tests/env_registry_test.py`` asserts the committed file is byte-identical to
-what :func:`render_markdown` produces from the CURRENT registry, so a registry
-change with no regenerate fails the suite instead of silently drifting.
+``scripts/check_env_registry.py`` asserts the committed file is byte-identical
+to what :func:`render_markdown` produces from the CURRENT registry, so a
+registry change with no regenerate fails the gate instead of silently drifting.
 
 Usage::
 

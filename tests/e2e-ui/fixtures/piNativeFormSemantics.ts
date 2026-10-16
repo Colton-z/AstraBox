@@ -1,14 +1,17 @@
-/** Real zero-model Pi dialogs, with supplier stdout and durable diagnostics as oracles. */
+/** Real zero-model Pi dialogs, with supplier stdout and the platform's records as oracles. */
 import { randomUUID } from 'node:crypto';
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
 
-import { AstraApi, type PendingInteraction } from './astraApi';
-import { framesForTurn, sessionEvents, snapshotDoc, waitForTurnTerminalProof } from './dbOracle';
+import { AstraApi, messageToolCalls, type PendingInteraction, type SessionRecord } from './astraApi';
+import {
+  sessionInputRows, sessionInteractionRows, sessionOutputRows, sessionResponseRows, type SessionInputRow,
+} from './dbOracle';
 import { engineProfiles } from './engineProfile';
-import { object } from './piChildFailure';
+import { apiPath } from './env';
+import { currentPiPipe, object } from './piChildFailure';
 import { requireSandboxHandle, sandboxExec, type SandboxHandle } from './sandboxOps';
 import { openSessionView, sendPrompt } from './sessionPage';
-import { aiStreamBodies, mirrorSseBodies } from './sseBodies';
+import { sessionStreamBodies, mirrorSseBodies } from './sseBodies';
 import { runnerPortFor } from './staleWriterReconnect';
 
 export interface PiFormStep {
@@ -52,34 +55,20 @@ export class PiNativeFormScene {
   readonly marker = `PI_FORM_${randomUUID().replaceAll('-', '')}`;
   sessionId = '';
   agentId = '';
-  turnId = '';
+  /** The response the command's dialogs pause, named by the first dialog. */
+  responseId = '';
   resultPath = '';
-  private reloadTurn = '';
   private handle?: SandboxHandle;
   private pipe?: string;
   private readonly observations: unknown[] = [];
   private readonly expectedResults: Record<string, unknown>[] = [];
+  /** Each dialog Pi opened, and the answer the page sent for it, in order. */
+  private readonly interactionIds: string[] = [];
+  private readonly answers: Record<string, unknown>[] = [];
 
   constructor(readonly api: AstraApi, readonly page: Page, readonly steps: PiFormStep[]) {}
 
   title(index: number): string { return `${this.marker}:${index}`; }
-
-  private pipeFor(turnId: string): string | null {
-    const anchors = [
-      object(snapshotDoc(this.sessionId)?.current_turn_engine_anchor).engine_turn_id,
-      ...framesForTurn(turnId).map((frame) => frame.engine_turn_id),
-      ...sessionEvents(this.sessionId).filter((event) => event.turn_id === turnId)
-        .map((event) => object(event.payload).engine_turn_id),
-    ].filter((value): value is string => typeof value === 'string' && value.startsWith('pi-rpc-v1.'));
-    const pipes = [...new Set(anchors.map((anchor) => object(JSON.parse(
-      Buffer.from(anchor.slice('pi-rpc-v1.'.length), 'base64url').toString(),
-    )).pty_session_id))];
-    if (pipes.length === 0) return null;
-    expect(pipes).toHaveLength(1);
-    expect(pipes[0]).toEqual(expect.any(String));
-    expect(String(pipes[0]).trim()).not.toBe('');
-    return String(pipes[0]);
-  }
 
   /** Execd viewer replays supplier stdout without taking the platform's holder or sending RPC. */
   nativeOutput(): Record<string, unknown>[] {
@@ -88,7 +77,7 @@ export class PiNativeFormScene {
   }
 
   async noFailure(phase: 'live' | 'idle' = 'live'): Promise<void> {
-    const bodies = await aiStreamBodies(this.page);
+    const bodies = await sessionStreamBodies(this.page);
     this.observations.push({ browserBodies: bodies });
     const frames = bodies.flatMap((body) => body.text.slice(0, body.text.lastIndexOf('\n') + 1)
       .split('\n').flatMap((line) => {
@@ -97,24 +86,42 @@ export class PiNativeFormScene {
         return data && data !== '[DONE]' ? [object(JSON.parse(data))] : [];
       }));
     if (phase === 'live') expect(frames.length).toBeGreaterThan(0);
-    expect(frames.filter((frame) => ['error', 'data-turn-failure'].includes(String(frame.type)))).toEqual([]);
+    expect(frames.filter((frame) => ['error', 'data-input-failed'].includes(String(frame.type)))).toEqual([]);
     expect(frames.filter((frame) => String(frame.type).startsWith('tool-'))).toEqual([]);
-    expect(sessionEvents(this.sessionId).filter((event) => event.event_type === 'turn.failed')).toEqual([]);
-    await expect(this.page.getByTestId('run-view').getByText(
-      /本轮执行失败|上一条消息已送达沙箱，但这一轮执行失败了|This turn failed/i,
-    )).toHaveCount(0);
+    expect(sessionResponseRows(this.sessionId).filter((row) => row.outcome === 'failed')).toEqual([]);
+    expect(sessionInputRows(this.sessionId).filter((row) => row.state === 'failed')).toEqual([]);
+    await expect(this.page.getByTestId('run-view').getByText(/本轮执行失败|This turn failed/i)).toHaveCount(0);
   }
 
-  private async completed(previous: string | null | undefined): Promise<string> {
-    const ended = await this.api.waitForSession(this.sessionId, (value) => {
-      if (value.last_turn_status === 'FAILED' || value.last_error) throw new Error(JSON.stringify(value));
-      return Boolean(value.last_turn_id && value.last_turn_id !== previous
-        && value.last_turn_status === 'COMPLETED' && value.state === 'READY'
-        && !value.current_turn_id && !value.pending_interaction);
+  /**
+   * Wait for Pi to take a command that writes no conversation, and return its input.
+   *
+   * Pi answers an extension command's prompt with a `handled` receipt once the
+   * handler returns; the session's reader admits the input at that receipt
+   * (`engine/pi_runtime_client.py`).
+   */
+  private async handled(content: string): Promise<SessionInputRow> {
+    const inputs = () => sessionInputRows(this.sessionId).filter((row) => row.content === content);
+    await expect.poll(() => inputs().map((row) => row.state), {
+      timeout: 30_000, message: `Pi must take ${content} with its own receipt`,
+    }).toEqual(['admitted']);
+    await this.api.waitForSession(this.sessionId, (value) => {
+      if (value.last_error) throw new Error(JSON.stringify(value));
+      return value.state === 'READY' && !(value.current_responses ?? []).length && !value.pending_interaction;
     }, 30_000);
-    const turnId = String(ended.last_turn_id);
-    await waitForTurnTerminalProof(this.sessionId, turnId, 'COMPLETED', 5_000);
-    return turnId;
+    const input = inputs()[0]!;
+    expect(sessionResponseRows(this.sessionId).filter((row) => row.input_ids.includes(input.input_id)),
+      'a command that writes no conversation is answered by no invented response').toEqual([]);
+    return input;
+  }
+
+  /** Wait until the response the dialogs paused has ended and nothing runs or waits. */
+  private async settled(): Promise<SessionRecord> {
+    return this.api.waitForSession(this.sessionId, (value) => {
+      if (value.last_response?.outcome === 'failed' || value.last_error) throw new Error(JSON.stringify(value));
+      return value.state === 'READY' && !(value.current_responses ?? []).length && !value.pending_interaction
+        && value.last_response?.response_id === this.responseId;
+    }, 30_000);
   }
 
   async start(trackedSessions: string[]): Promise<void> {
@@ -197,25 +204,26 @@ export class PiNativeFormScene {
     ].join('\n'), 10_000);
     await mirrorSseBodies(this.page);
     await openSessionView(this.page, this.sessionId);
-    const previous = (await this.api.getSession(this.sessionId)).last_turn_id;
     await sendPrompt(this.page, this.sessionId, '/reload-runtime');
-    this.reloadTurn = await this.completed(previous);
-    await expect.poll(() => this.pipeFor(this.reloadTurn), { timeout: 15_000 }).not.toBeNull();
-    this.pipe = this.pipeFor(this.reloadTurn)!;
+    const reload = await this.handled('/reload-runtime');
+    await expect.poll(() => currentPiPipe(this.sessionId), { timeout: 15_000 }).not.toBeNull();
+    this.pipe = currentPiPipe(this.sessionId)!;
     const wire = this.nativeOutput();
     expect(wire.filter((row) => row.type === 'response' && row.command === 'get_state')
       .some((row) => row.success === true && object(row.data).sessionId === nativeSessionId)).toBe(true);
     const acks = wire.filter((row) => row.type === 'response' && row.command === 'prompt');
-    expect(acks).toHaveLength(1);
-    expect(acks[0]).toMatchObject({ success: true });
+    expect(acks, 'the receipt Pi wrote for the reload names its platform input').toEqual([expect.objectContaining({
+      id: reload.input_id, success: true, data: expect.objectContaining({ disposition: 'handled' }),
+    })]);
     this.observations.push({ reloadWire: wire });
-    await this.noFailure();
+    // The reload writes no conversation, so the page's stream has nothing to carry yet.
+    await this.noFailure('idle');
     await sendPrompt(this.page, this.sessionId, '/astrabox-form-semantics');
   }
 
   async question(index: number): Promise<PendingInteraction> {
     const waiting = await this.api.waitForSession(this.sessionId, (value) => {
-      if (value.last_turn_status === 'FAILED' || value.last_error) throw new Error(JSON.stringify(value));
+      if (value.last_response?.outcome === 'failed' || value.last_error) throw new Error(JSON.stringify(value));
       return object(value.pending_interaction?.raw_input).title === this.title(index);
     }, 15_000);
     const pending = waiting.pending_interaction!;
@@ -226,9 +234,18 @@ export class PiNativeFormScene {
     expect(raw.id).toEqual(expect.any(String));
     expect(String(raw.id).trim()).not.toBe('');
     expect(pending.interaction_id).toBe(raw.id);
-    if (index === 0) this.turnId = String(pending.turn_id);
-    expect(this.turnId).not.toBe('');
-    expect(pending.turn_id).toBe(this.turnId);
+    if (index === 0) this.responseId = String(pending.response_id ?? '');
+    expect(this.responseId).not.toBe('');
+    expect(pending.response_id, 'every dialog of one command pauses the same response').toBe(this.responseId);
+    // The platform's records: the dialogs already answered, and this one open,
+    // all on the response the command's handler runs in.
+    expect(sessionInteractionRows(this.sessionId).map((row) => ({
+      interaction_id: row.interaction_id, response_id: row.response_id, status: row.status,
+    }))).toEqual([
+      ...this.interactionIds.map((id) => ({ interaction_id: id, response_id: this.responseId, status: 'answered' })),
+      { interaction_id: raw.id, response_id: this.responseId, status: 'open' },
+    ]);
+    this.interactionIds.push(String(raw.id));
     const wire = this.nativeOutput();
     expect(wire.filter((row) => row.type === 'extension_ui_request' && row.id === raw.id)).toEqual([raw]);
     expect(wire.filter((row) => row.type === 'response' && row.command === 'prompt')).toHaveLength(1);
@@ -240,7 +257,7 @@ export class PiNativeFormScene {
     await expect(panel).toContainText(this.title(index));
     expect((await this.api.getPendingInteraction(this.sessionId))?.interaction_id).toBe(raw.id);
     expect(object((await this.api.getMessages(this.sessionId, 100)).pending_interaction))
-      .toMatchObject({ interaction_id: raw.id, turn_id: this.turnId });
+      .toMatchObject({ interaction_id: raw.id, response_id: this.responseId });
     expect(JSON.parse(await this.api.downloadFileText(this.sessionId, this.resultPath, 10_000)))
       .toEqual(this.expectedResults);
     return pending;
@@ -251,17 +268,20 @@ export class PiNativeFormScene {
       .getByRole('button', { name: /Submit answer|提交回答/ });
     expect(await button.count(), 'the native answer, including an empty string, must offer Submit rather than Decline').toBe(1);
     await expect(button).toBeEnabled();
+    const answerPath = apiPath(
+      `/sessions/${this.sessionId}/interactions/${encodeURIComponent(pending.interaction_id)}/answer`,
+    );
     const response = this.page.waitForResponse((value) => value.request().method() === 'POST'
-      && value.url().includes(`/sessions/${this.sessionId}/interaction-respond`));
+      && new URL(value.url()).pathname === answerPath);
     await button.click();
     const received = await response;
     const sent = object(received.request().postDataJSON());
     this.observations.push({ submitted: sent, status: received.status() });
     expect(received.status()).toBe(200);
-    expect(sent.interaction_id).toBe(pending.interaction_id);
     const answer = object(sent.answer);
     expect(answer.decline).not.toBe(true);
     expect(answer.answers).toEqual([{ question_id: pending.interaction_id, [field]: exactValue }]);
+    this.answers.push(answer);
     const envelope = object(await received.json());
     expect(object(envelope.data ?? envelope)).toMatchObject({ interaction_id: pending.interaction_id, answered: true });
   }
@@ -285,7 +305,8 @@ export class PiNativeFormScene {
 
   async finish(): Promise<void> {
     expect(this.expectedResults).toHaveLength(this.steps.length);
-    expect(await this.completed(this.reloadTurn)).toBe(this.turnId);
+    const settled = await this.settled();
+    expect(settled.last_response).toMatchObject({ status: 'ended', outcome: 'completed' });
     const wire = this.nativeOutput();
     const acks = wire.filter((row) => row.type === 'response' && row.command === 'prompt');
     expect(acks).toHaveLength(2);
@@ -296,30 +317,36 @@ export class PiNativeFormScene {
     const appended = wire.filter((row) => row.type === 'entry_appended'
       && object(row.entry).customType === 'astrabox-form-result');
     expect(appended.map((row) => object(row.entry).data)).toEqual(this.expectedResults);
-    // Zero-model Pi defers its SessionStore file. The real entry_appended events
-    // belong in engine.diagnostic/sessionEvents, not framesForTurn or an invented file.
-    const events = sessionEvents(this.sessionId).filter((event) => event.turn_id === this.turnId
-      && event.event_type === 'engine.diagnostic' && object(event.payload).event_type === 'pi.rpc');
-    expect(events.filter((event) => object(event.payload).subtype === 'entry_appended')
-      .map((event) => object(event.payload).raw)).toEqual(appended);
-    const ackEvents = events.filter((event) => object(event.payload).subtype === 'prompt'
-      && object(object(event.payload).raw).id === acks[1]!.id);
-    expect(ackEvents).toHaveLength(1);
-    expect(object(ackEvents[0]!.payload).raw).toEqual(acks[1]);
-    const finishes = framesForTurn(this.turnId).filter((event) => object(event.payload).type === 'finish'
-      && object(event.payload).finishReason === 'stop');
-    expect(finishes).toHaveLength(1);
-    expect(Number(finishes[0]!.event_seq)).toBeGreaterThan(Number(ackEvents[0]!.event_seq));
+    // The platform's records of the same command: Pi took the person's input
+    // with its own receipt, the response its dialogs paused ended once with
+    // Pi's word for that receipt, and each dialog closed with the answer sent.
+    const disposition = object(acks[1]!.data).disposition;
+    expect(disposition).toBe('handled');
+    expect(sessionInputRows(this.sessionId).filter((row) => row.content === '/astrabox-form-semantics'))
+      .toEqual([expect.objectContaining({ input_id: acks[1]!.id, state: 'admitted' })]);
+    expect(sessionResponseRows(this.sessionId).filter((row) => row.response_id === this.responseId)).toEqual([
+      expect.objectContaining({ status: 'ended', outcome: 'completed', native_reason: disposition }),
+    ]);
+    expect(sessionInteractionRows(this.sessionId)).toEqual(this.interactionIds.map((id, index) => expect.objectContaining({
+      interaction_id: id, response_id: this.responseId, status: 'answered', answer: this.answers[index],
+    })));
+    const parts = sessionOutputRows(this.sessionId, this.responseId).map((row) => row.part);
+    expect(parts.filter((part) => part.type === 'data-interaction').map((part) => object(part.data).interaction_id))
+      .toEqual(this.interactionIds);
+    expect(parts.filter((part) => part.type === 'finish').map((part) => part.finishReason),
+      'the response pauses at each dialog and ends once, when the command returns')
+      .toEqual([...this.interactionIds.map(() => 'tool-calls'), 'other']);
+    expect(parts.filter((part) => part.type === 'error' || String(part.type).startsWith('tool-'))).toEqual([]);
     const history = await this.api.getMessages(this.sessionId, 100);
-    expect(history.messages.flatMap((message) => message.blocks ?? [])
-      .filter((block) => ['tool_use', 'tool_result'].includes(String(block.type)))).toEqual([]);
-    this.observations.push({ finalWire: wire, events });
+    expect(history.messages.flatMap(messageToolCalls), 'a native dialog is not shown as a tool call').toEqual([]);
+    this.observations.push({ finalWire: wire, parts });
     await expect(this.page.getByTestId('pending-interaction-panel')).toHaveCount(0);
     await this.noFailure();
     await this.page.reload({ waitUntil: 'domcontentloaded' });
     await expect(this.page.getByTestId('run-view')).toBeVisible();
     await expect(this.page.getByTestId('pending-interaction-panel')).toHaveCount(0);
-    expect((await this.api.getSession(this.sessionId)).last_turn_status).toBe('COMPLETED');
+    expect((await this.api.getSession(this.sessionId)).last_response)
+      .toMatchObject({ response_id: this.responseId, outcome: 'completed' });
     expect(JSON.parse(await this.api.downloadFileText(this.sessionId, this.resultPath, 10_000))).toEqual(this.expectedResults);
     await this.noFailure('idle');
   }
@@ -328,8 +355,10 @@ export class PiNativeFormScene {
     const reads = await Promise.allSettled([
       this.sessionId ? this.api.getSession(this.sessionId) : Promise.resolve(null),
       this.sessionId ? this.api.getMessages(this.sessionId, 100) : Promise.resolve(null),
-      aiStreamBodies(this.page),
-      Promise.resolve().then(() => this.sessionId ? sessionEvents(this.sessionId) : []),
+      sessionStreamBodies(this.page),
+      Promise.resolve().then(() => this.sessionId ? sessionInputRows(this.sessionId) : []),
+      Promise.resolve().then(() => this.sessionId ? sessionResponseRows(this.sessionId) : []),
+      Promise.resolve().then(() => this.sessionId ? sessionInteractionRows(this.sessionId) : []),
       Promise.resolve().then(() => this.handle && this.pipe ? this.nativeOutput() : []),
       this.resultPath ? this.api.downloadFileText(this.sessionId, this.resultPath, 10_000) : Promise.resolve(null),
     ]);

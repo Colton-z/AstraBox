@@ -21,8 +21,8 @@ outlive it; the package's completion events travel on ``pi.events``, which it
 documents as "in-process only", never reaching a separate host process.
 
 A foreground launch (``async: false``) is the other half, and it is the tool
-call's own business: it blocks the parent, and its ``details.results`` rows are
-settled by the time the call ends.
+call's own business: workflows publish live ``workflowChildren`` inventory
+before ``details.results`` contains their completed transcripts.
 """
 
 from __future__ import annotations
@@ -78,6 +78,10 @@ _SNAPSHOT_STATES = frozenset(
 #: state is what closes a child run.
 _OPEN_STATES = frozenset({"queued", "running", "paused"})
 
+_WORKFLOW_CHILD_STATES = frozenset(
+    {"pending", "running", "completed", "failed", "paused", "stopped", "rejected", "detached"}
+)
+
 #: The states the package will act on a stop request for: it "stops only
 #: pending or running children" and "the request is rejected for anything else
 #: instead of widening to a run-level stop".
@@ -119,8 +123,8 @@ _INSPECT_ERRORS_DROPPED = frozenset(
     {"not_found", "stale", "foreign_session", "no_active_session"}
 )
 
-#: The roles of what a child said. Pi's reply also carries `toolResult` and
-#: `toolCall` rows; those are working detail and stay out.
+#: Text summaries from the bounded inspection reply. Complete tool records
+#: come from the child's native sessionFile through the SessionStore mirror.
 _CHILD_MESSAGE_ROLES = frozenset({"assistant", "user"})
 
 
@@ -149,6 +153,8 @@ class _ChildState:
     inspect_reference: str | None = None
     reported_messages: set[str] = field(default_factory=set)
     final_output_reported: bool = False
+    native_state: dict[str, Any] = field(default_factory=dict)
+    control_reference: str | None = None
 
 
 def step_child_id(index: int) -> str:
@@ -375,7 +381,7 @@ def _label(node: dict[str, Any]) -> str | None:
 def _lifecycle_fact(
     state: _ChildState, *, source_id: str, event: str, engine_event: str, engine_status: str
 ) -> dict[str, Any]:
-    can_stop = event != "closed" and engine_status in _STOPPABLE_STATES
+    can_stop = event != "closed" and engine_status in _STOPPABLE_STATES and bool(state.control_reference)
     data: dict[str, Any] = {
         "kind": "lifecycle",
         "engineRef": state.reference,
@@ -384,6 +390,8 @@ def _lifecycle_fact(
         "engineStatus": engine_status,
         "operations": ["stop"] if can_stop else [],
     }
+    if state.native_state:
+        data["nativeState"] = dict(state.native_state)
     if state.parent_reference:
         data["parentEngineRef"] = state.parent_reference
     if state.label:
@@ -391,7 +399,7 @@ def _lifecycle_fact(
     if state.task_type:
         data["taskType"] = state.task_type
     if can_stop:
-        data["controlRef"] = state.reference
+        data["controlRef"] = state.control_reference
     canonical = canonical_child_run_data(data, engine_kind=PI_ENGINE_KIND)
     return session_scoped_engine_frame(
         {
@@ -449,14 +457,27 @@ def _native_record_ref(record: dict[str, Any]) -> str:
 class PiChildResources:
     """Fold Pi's async status snapshots and tool results into child facts."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, session_root: str) -> None:
+        self._session_root = session_root
         self._children: dict[str, _ChildState] = {}
+        self._workflow_references: dict[str, str] = {}
         #: Inspect requests in flight, by the request id the reply will quote.
         self._inspects: dict[str, str] = {}
         self._inspect_sequence = 0
 
     def contains(self, reference: str) -> bool:
         return str(reference or "").strip() in self._children
+
+    def canonical_child_frame(self, frame: dict[str, Any]) -> dict[str, Any]:
+        """Join materialized workers to their native workflow child identities."""
+        if frame.get("type") != "data-subagent":
+            return frame
+        data = dict(frame["data"])
+        for key in ("engineRef", "parentEngineRef"):
+            reference = data.get(key)
+            if reference in self._workflow_references:
+                data[key] = self._workflow_references[reference]
+        return {**frame, "data": data}
 
     def observe_ui_request(self, record: dict[str, Any]) -> list[dict[str, Any]]:
         """Child facts owed after one extension UI request.
@@ -579,6 +600,58 @@ class PiChildResources:
             owed.append((request_id, state.inspect_reference or state.reference))
         return owed
 
+    def native_session_requests(self) -> list[tuple[str, str]]:
+        """Background session links owed at the existing native activity boundary."""
+        return [
+            (state.reference, state.inspect_reference)
+            for state in self._children.values()
+            if state.inspect_pending and state.inspect_reference is not None
+            and state.task_type in {"subagent", "workflow", "step"}
+        ]
+
+    def observe_native_status(
+        self, reference: str, inspect_reference: str, status: dict[str, Any], *, source_id: str
+    ) -> list[dict[str, Any]]:
+        """Retain the exact sessionFile selected by the supplier's step address."""
+        state = self._children[reference]
+        run_id, child_id = split_child_reference(inspect_reference)
+        workflow_id = status.get("parentWorkflowRunId")
+        workflow_key = status.get("workflowKey")
+        if reference == run_id and workflow_id and workflow_key:
+            workflow_reference = child_reference(workflow_id, workflow_key)
+            previous = self._workflow_references.get(reference)
+            if previous is not None and previous != workflow_reference:
+                raise PiChildRunError("Pi materialized worker changed workflow child identity")
+            self._workflow_references[reference] = workflow_reference
+        if child_id is None and state.task_type == "workflow":
+            return []
+        steps = status.get("steps", [])
+        if not isinstance(steps, list) or any(not isinstance(step, dict) for step in steps):
+            raise PiChildRunError("Pi native child status has malformed steps")
+        matches = [
+            step for index, step in enumerate(steps)
+            if child_id in {step.get("childId"), step.get("workflowKey"), step.get("runId"), step_child_id(index)}
+        ] if child_id is not None else steps
+        if child_id is not None and not matches:
+            raise PiChildRunError("Pi native child address has no matching step")
+        if len(matches) > 1:
+            if child_id is None:
+                return []
+            raise PiChildRunError("Pi native child address names multiple sessions")
+        session_file = (matches[0].get("sessionFile") if matches else None) or status.get("sessionFile")
+        if not session_file:
+            return []
+        if not isinstance(session_file, str):
+            raise PiChildRunError("Pi native child sessionFile is not a path")
+        native_state = {"sessionFile": session_file, "sessionRoot": self._session_root}
+        if native_state == state.native_state:
+            return []
+        state.native_state = native_state
+        return [_lifecycle_fact(
+            state, source_id=source_id, event="closed" if state.closed else "updated",
+            engine_event="setWidget", engine_status=str(state.status),
+        )]
+
     def observe_persisted_inspect_reply(
         self, record: dict[str, Any]
     ) -> list[dict[str, Any]]:
@@ -620,10 +693,9 @@ class PiChildResources:
         The reply's ``messages`` are the child's own transcript window, and
         ``finalOutput`` is what it handed back. Both are re-read from the
         package's artifacts on every request, so what was already published
-        comes again and is not published twice. Tool rows are the child's
-        working detail and stay out, which is the line the codex projection
-        draws too: a reader of the parent conversation is owed what the child
-        said.
+        comes again and is not published twice. The reply's tool previews
+        carry no call ids; full tool records are read from the native
+        sessionFile retained with the child's lifecycle.
         """
 
         payload = inspect_reply(record)
@@ -661,10 +733,8 @@ class PiChildResources:
                     continue
                 text = row.get("text")
                 role = str(row.get("role") or "").strip()
-                # A tool result reaches the reply as a text row too, under
-                # pi's own `toolResult` role. It is the child's working detail,
-                # not what the child said, and the platform carries only the
-                # two roles a conversation has — the same line codex draws.
+                # A tool result can also be a text row, but this bounded
+                # preview lacks the call id needed to pair it with its tool.
                 if role not in _CHILD_MESSAGE_ROLES:
                     continue
                 if not isinstance(text, str) or not text:
@@ -750,6 +820,28 @@ class PiChildResources:
             return []
         source_id = _native_record_ref(event)
         frames: list[dict[str, Any]] = []
+        if details.get("mode") == "workflow":
+            summary = details.get("workflowChildren")
+            if not isinstance(summary, dict) or summary.get("version") != 1:
+                raise PiChildRunError("Pi workflow lacks its native child inventory")
+            children = summary.get("children")
+            if not isinstance(children, list):
+                raise PiChildRunError("Pi workflow child inventory is not a list")
+            for child in children:
+                if not isinstance(child, dict) or child.get("state") not in _WORKFLOW_CHILD_STATES:
+                    raise PiChildRunError("Pi workflow child inventory has an invalid state")
+                if not isinstance(child.get("childId"), str) or not child["childId"]:
+                    raise PiChildRunError("Pi workflow inventory child lacks its native key")
+                reference = child_reference(str(summary.get("workflowRunId") or ""), child["childId"])
+                worker = str(child.get("runId") or "")
+                frames.extend(self._publish(
+                    reference, source_id=f"{source_id}:inventory", parent=None, label=_label(child),
+                    status=child["state"], settled=child["state"] not in {"pending", "running"},
+                    engine_event=engine_event,
+                    mark_inspect=bool(worker), control_reference=worker,
+                ))
+                if worker:
+                    self._children[reference].inspect_reference = child_reference(worker)
         for row in rows:
             if not isinstance(row, dict):
                 continue
@@ -764,7 +856,10 @@ class PiChildResources:
                 worker_run = workflow_result_run_id(details, row)
                 siblings = [result for result in rows if isinstance(result, dict)
                             and result.get("workflowKey") == row.get("workflowKey")]
-                reference = child_reference(worker_run, step_child_id(index) if len(siblings) > 1 else None)
+                reference = (
+                    child_reference(worker_run, step_child_id(index)) if len(siblings) > 1
+                    else child_reference(str(details["workflowChildren"]["workflowRunId"]), row["workflowKey"])
+                )
             frames.extend(
                 self._publish(
                     reference,
@@ -778,6 +873,8 @@ class PiChildResources:
                     # IS its children ending, whatever the last row said.
                     settled=settled or engine_event == "tool_execution_end",
                     engine_event=engine_event,
+                    native_state={"sessionFile": row["sessionFile"], "sessionRoot": self._session_root}
+                    if row.get("sessionFile") else None,
                 )
             )
         return frames
@@ -794,19 +891,31 @@ class PiChildResources:
         engine_event: str,
         task_type: str | None = None,
         mark_inspect: bool = True,
+        native_state: dict[str, Any] | None = None,
+        control_reference: str | None = None,
     ) -> list[dict[str, Any]]:
         state = self._children.get(reference)
         if state is None:
-            state = _ChildState(reference=reference, parent_reference=parent)
+            state = _ChildState(reference=reference, parent_reference=parent, control_reference=reference)
             self._children[reference] = state
-        if state.closed:
-            return []
-        previous_metadata = (state.label, state.task_type)
+        previous_metadata = (state.label, state.task_type, state.native_state, state.control_reference)
+        if control_reference is not None:
+            state.control_reference = control_reference
+        if native_state is not None:
+            state.native_state = native_state
         if label:
             state.label = label
         if task_type:
             state.task_type = task_type
-        metadata_changed = previous_metadata != (state.label, state.task_type)
+        metadata_changed = previous_metadata != (state.label, state.task_type, state.native_state, state.control_reference)
+        if state.closed:
+            if not metadata_changed:
+                return []
+            # The workflow can settle before its result supplies sessionFile.
+            return [_lifecycle_fact(
+                state, source_id=source_id, event="closed", engine_event=engine_event,
+                engine_status=str(state.status),
+            )]
 
         frames: list[dict[str, Any]] = []
         if not state.opened:

@@ -3,19 +3,53 @@ import path from 'node:path';
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 
 import { AstraApi, messageText } from '../fixtures/astraApi';
-import { patchSessionDoc, sessionDoc, sessionEvents } from '../fixtures/dbOracle';
+import { postgresRows, postgresTextRows, sqlLiteral } from '../fixtures/dbOracle';
 import { repoRoot } from '../fixtures/env';
 import { PlatformApi } from '../fixtures/platformApi';
 import { killSandbox, requireSandboxHandle, waitForSandboxStopped } from '../fixtures/sandboxOps';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
-import { requireServiceContainer, SERVER_CONTAINER_HANDLE } from '../fixtures/serviceContainer';
+import {
+  POSTGRES_CONTAINER_HANDLE,
+  requireServiceContainer,
+  SERVER_CONTAINER_HANDLE,
+} from '../fixtures/serviceContainer';
 
 const sessions = trackSessions();
 const agents: string[] = [];
 onPassOnly(async ({ request }) => {
   for (const id of agents.splice(0)) await new AstraApi(request).deleteAgent(id);
 });
+
+/** The session row's box binding and the claim of the recovery driving it. */
+interface SessionBinding {
+  sandbox_id: string | null;
+  workspace_id: string | null;
+  runtime_recovery_owner: string | null;
+}
+
+function sessionBinding(sessionId: string): SessionBinding | null {
+  return postgresRows<SessionBinding>(
+    `SELECT sandbox_id, workspace_id, runtime_recovery_owner FROM sessions `
+      + `WHERE session_id = ${sqlLiteral(sessionId)}`,
+  )[0] ?? null;
+}
+
+/**
+ * Clear the session's binding to `sandboxId`, the shape a lost process leaves:
+ * the row names no box. Compare-and-set on the observed box, so a binding some
+ * other writer replaced is not cleared; the ids of the rows it changed.
+ */
+function clearBinding(sessionId: string, sandboxId: string): string[] {
+  return postgresTextRows(
+    requireServiceContainer(POSTGRES_CONTAINER_HANDLE),
+    process.env.ASTRABOX_E2E_POSTGRES_DB || 'astrabox',
+    process.env.ASTRABOX_E2E_POSTGRES_USER || 'astrabox',
+    `UPDATE sessions SET sandbox_id = NULL, expires_at = NULL `
+      + `WHERE session_id = ${sqlLiteral(sessionId)} AND sandbox_id = ${sqlLiteral(sandboxId)} `
+      + `RETURNING session_id`,
+  );
+}
 
 async function start(api: AstraApi) {
   return test.step('Create a cold Agent Session and reach READY before recovery', async () => {
@@ -33,9 +67,8 @@ async function clearAndKill(api: AstraApi, sessionId: string) {
   const sandboxId = String(ready.sandbox_id || '');
   expect(sandboxId).not.toBe('');
   const handle = await requireSandboxHandle(api, sandboxId);
-  const original = patchSessionDoc(sessionId, { sandbox_id: null, sandbox_endpoint: null, expires_at: null });
-  expect(original).toHaveLength(1);
-  expect(original[0].sandbox_id).toBe(sandboxId);
+  expect(clearBinding(sessionId, sandboxId), 'the fault must clear exactly the observed binding')
+    .toEqual([sessionId]);
   killSandbox(handle);
   await waitForSandboxStopped(handle, 30_000);
   return sandboxId;
@@ -80,7 +113,7 @@ async function explicitRecovery(page: Page, request: APIRequestContext, fault: '
   expect(recovered.sandbox_id).toBeTruthy();
   if (fault === 'live') expect(recovered.sandbox_id).toBe(original.sandbox_id);
   else expect(recovered.sandbox_id).not.toBe(original.sandbox_id);
-  expect(recovered).not.toHaveProperty('_runtime_recovery_owner');
+  expect(recovered).not.toHaveProperty('runtime_recovery_owner');
   await openSessionView(page, sessionId);
   await expect(page.getByTestId('assistant-message').first().getByTestId('assistant-text')).toHaveText(first);
   const before = await api.assistantCount(sessionId);
@@ -139,11 +172,7 @@ test('independent recovery replicas converge before the first created runtime pu
     children.push(item);
     return item;
   };
-  const startupCount = () => sessionEvents(sessionId).filter((event) => (
-    event.event_type === 'command.accepted'
-    && (event.payload as Record<string, unknown>)?.command_type === 'StartSessionStartup'
-  )).length;
-  const beforeStarts = startupCount();
+  const recoveryOwner = () => sessionBinding(sessionId)?.runtime_recovery_owner ?? null;
   try {
     const follower = replica('follower');
     await expect.poll(() => {
@@ -157,16 +186,18 @@ test('independent recovery replicas converge before the first created runtime pu
     }, { timeout: 90_000 }).not.toBe('');
     const winnerId = (JSON.parse(read('created.json')) as { sandbox_id: string }).sandbox_id;
     expect(winnerId).not.toBe(dead);
-    expect(sessionDoc(sessionId)?.sandbox_id || null, 'the gate must hold a genuinely unpublished binding').toBeNull();
+    expect(sessionBinding(sessionId)?.sandbox_id || null, 'the gate must hold a genuinely unpublished binding').toBeNull();
+    const claim = recoveryOwner();
+    expect(claim, 'the winner holds the recovery claim').toBeTruthy();
     release('recover');
     await expect.poll(() => read('follower.json'), { timeout: 60_000 }).not.toBe('');
     expect(await follower.done, follower.output.slice(-4000)).toBe(0);
     expect(JSON.parse(read('follower.json'))).toEqual({ created: [] });
-    expect(startupCount(), 'both admitted requests share one startup command').toBe(beforeStarts + 1);
+    expect(recoveryOwner(), 'both admitted requests share one recovery').toBe(claim);
     const concurrent = await api.recoverSession(sessionId);
-    expect(concurrent).not.toHaveProperty('_runtime_recovery_owner');
-    expect(concurrent).not.toHaveProperty('_retained_startup_allocations');
-    expect(startupCount()).toBe(beforeStarts + 1);
+    expect(concurrent).not.toHaveProperty('runtime_recovery_owner');
+    expect(concurrent).not.toHaveProperty('retained_startup_allocations');
+    expect(recoveryOwner(), 'a recovery in flight is not claimed again').toBe(claim);
     release('publish');
     await expect.poll(() => read('winner.json'), { timeout: 90_000 }).not.toBe('');
     expect(await winner.done, winner.output.slice(-4000)).toBe(0);
@@ -244,14 +275,14 @@ test('temporary-workspace recovery claims its own replenished pool and preserves
   const marker = `WARM_RECOVERY_${Date.now()}`;
   const first = await remember(api, page, sessionId, marker);
   const oldDetail = await api.adminSessionDetail(sessionId);
-  const oldWorkspace = sessionDoc(sessionId)?.workspace_id;
+  const oldWorkspace = sessionBinding(sessionId)?.workspace_id;
   expect(oldWorkspace).toBeTruthy();
   const replacement = await prepared(agent.agent_id, String(initial.sandbox_id));
   await clearAndKill(api, sessionId);
   await api.recoverSession(sessionId);
   const ready = await api.waitForSessionReady(sessionId);
   expect(ready.sandbox_id, 'recovery must consume the exact waiting box, not create cold compute').toBe(replacement.sandbox_id);
-  expect(sessionDoc(sessionId)?.workspace_id).toBe(oldWorkspace);
+  expect(sessionBinding(sessionId)?.workspace_id).toBe(oldWorkspace);
   const detail = await api.adminSessionDetail(sessionId);
   for (const field of ['linux_user', 'home_dir', 'workspace_dir']) {
     const previous = (oldDetail.runtime_identity as Record<string, unknown>)[field];

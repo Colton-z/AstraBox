@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { expect, type APIRequestContext, type Page } from '@playwright/test';
 
 import { apiPath } from './env';
-import { documentsByField } from './dbOracle';
+import { postgresRows, sqlLiteral } from './dbOracle';
 import { nativeCalls, nativeRows } from './nativeChildLifecycle';
 
 // These shapes follow docs/maintainers/artifacts.md §§3, 5.3 and 6. Keep
@@ -136,13 +136,24 @@ export class ArtifactsApi {
 }
 
 export function storedVersions(id: string): Record<string, unknown>[] {
-  return documentsByField('artifact_versions', '$.artifact_id', id);
+  return postgresRows(
+    'SELECT version, sha256, content FROM artifact_versions '
+    + 'JOIN artifact_version_contents USING (artifact_id, version) '
+    + `WHERE artifact_id = ${sqlLiteral(id)} ORDER BY version`,
+  );
 }
 export function storedArtifact(id: string): Record<string, unknown>[] {
-  return documentsByField('artifact_records', '$.artifact_id', id);
+  return postgresRows(
+    "SELECT owner_id, json_build_object('enabled', enabled, 'token', token) AS share "
+    + 'FROM artifacts LEFT JOIN artifact_shares USING (artifact_id) '
+    + `WHERE artifact_id = ${sqlLiteral(id)}`,
+  );
 }
 export function storedData(id: string, path: string): Record<string, unknown>[] {
-  return documentsByField('artifact_data', '$.artifact_id', id).filter((row) => row.path === path);
+  return postgresRows(
+    'SELECT path, data FROM artifact_documents '
+    + `WHERE artifact_id = ${sqlLiteral(id)} AND path = ${sqlLiteral(path)}`,
+  );
 }
 export function nativeArtifactCalls(sessionId: string) {
   return nativeRows(sessionId).filter((row) => row.subpath == null)

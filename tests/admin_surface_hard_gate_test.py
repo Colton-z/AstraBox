@@ -1,4 +1,4 @@
-"""Admin hard gate, admin API token, and owner-anchored webhook authorization."""
+"""The admin hard gate and the admin API token."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import pytest
 from astrabox.common.utils.admin_api_auth import require_admin_api_bearer
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
-from astrabox.providers.identity import LocalNoAuthWebIdentityResolver
 from astrabox.web.identity_middleware import WebIdentityMiddleware
 
 
@@ -48,18 +47,6 @@ async def _run(middleware: WebIdentityMiddleware, path: str) -> list[dict[str, A
     return sent
 
 
-async def test_default_resolver_keeps_single_user_admin_open() -> None:
-    reached: list[str] = []
-
-    async def app(scope: Any, receive: Any, send: Any) -> None:
-        reached.append(scope["path"])
-
-    middleware = WebIdentityMiddleware(app, LocalNoAuthWebIdentityResolver())
-    await _run(middleware, "/api/v1/admin/system/overview")
-
-    assert reached == ["/api/v1/admin/system/overview"]
-
-
 async def test_admin_gate_uses_the_fixed_internal_role(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -91,18 +78,6 @@ async def test_strict_resolver_none_result_cannot_reopen_admin() -> None:
     assert start["status"] == 401
 
 
-async def test_strict_resolver_none_result_keeps_non_admin_paths_working() -> None:
-    reached: list[str] = []
-
-    async def app(scope: Any, receive: Any, send: Any) -> None:
-        reached.append(scope["path"])
-
-    middleware = WebIdentityMiddleware(app, _StrictNoneResolver())
-    await _run(middleware, "/api/v1/sessions")
-
-    assert reached == ["/api/v1/sessions"]
-
-
 async def test_admin_api_token_enforced_when_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -120,10 +95,3 @@ async def test_admin_api_token_enforced_when_configured(
     await require_admin_api_bearer(
         SimpleNamespace(headers={"authorization": "Bearer s3cret"})
     )
-
-
-async def test_admin_api_stays_open_without_token(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("ASTRABOX_ADMIN_API_TOKEN", raising=False)
-    await require_admin_api_bearer(SimpleNamespace(headers={}))

@@ -1,10 +1,12 @@
-/** A normal control attachment retains an already-started native reply. */
+/** A DSH reply the harness started on its own keeps its output across a platform restart. */
 import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 
-import { AstraApi, messageText, visibleMessages } from '../fixtures/astraApi';
+import {
+  AstraApi, messageParts, messageText, messageToolCalls, visibleMessages,
+} from '../fixtures/astraApi';
 import { revealAssistantProcess } from '../fixtures/assistantProcess';
-import { documentsByField, framesForTurn, sessionEvents } from '../fixtures/dbOracle';
+import { sessionInputRows, sessionOutputRows, sessionResponseRows } from '../fixtures/dbOracle';
 import { events, messageProseBlocks, textBlockValues, textBlocks } from '../fixtures/dshOutput';
 import { engineProfileFor } from '../fixtures/engineProfile';
 import { absoluteBaseUrl } from '../fixtures/env';
@@ -21,10 +23,20 @@ onPassOnly(async ({ request }) => {
   if (agentId) await new AstraApi(request).deleteAgent(agentId);
 });
 
+/** Read evidence for an attachment without letting a broken read replace the test's own failure. */
+function observe(read: () => unknown): unknown {
+  try { return read(); } catch (error) { return { unavailable: String(error) }; }
+}
+
+// Each case restarts the server while the harness's own reply is held in a
+// foreground tool. Opening the conversation does not start a reader, so
+// without an input the reply is recorded to its end only because the
+// platform reads a live runtime by itself after the restart
+// (`session_runtime/host.py`); an input sent after the restart starts the
+// reader on its own path.
 const cases = [
-  { input: false, unobserved: false, title: 'a DSH control operation restores partial autonomous output before a Web subscription' },
-  { input: true, unobserved: false, title: 'a DSH input after restart preserves the unfinished autonomous reply and its own answer' },
-  { input: true, unobserved: true, title: 'a DSH input after restart preserves autonomous output not yet observed by the platform' },
+  { input: false, title: 'a DSH autonomous reply held across a platform restart keeps its partial output and completes without an input' },
+  { input: true, title: 'a DSH input after restart preserves the unfinished autonomous reply and its own answer' },
 ] as const;
 
 for (const scenario of cases) test(scenario.title, async ({ request, page }, info) => {
@@ -88,56 +100,50 @@ for (const scenario of cases) test(scenario.title, async ({ request, page }, inf
     expect(childrenBefore).toHaveLength(1);
     const native = () => nativeRows(sessionId).filter((row) => row.subpath === launch[0]!.subpath)
       .flatMap((row) => events(JSON.parse(String(row.entry_json)))).sort((a, b) => a.seq - b.seq);
-    let nextInput: Promise<{ raw: string } | { error: unknown }> | undefined;
-    async function submitNextInput(): Promise<void> {
-      nextInput = api.streamPrompt(sessionId, nextPrompt, profile.modes.unattended, 60_000)
-        .then((raw) => ({ raw }), (error: unknown) => ({ error }));
-      await expect.poll(() => sessionEvents(sessionId).filter((event) =>
-        event.event_type === 'command.accepted'
-        && (event.payload as Record<string, unknown>).content === nextPrompt)).toHaveLength(1);
-    }
-    // Files resolve the sandbox without acquiring an engine output reader.
-    // The native parent can start after restart while its journal is empty.
-    if (scenario.unobserved) await restartServerContainer(absoluteBaseUrl(), 60_000);
     const childReceipt = `CHILD_${randomUUID()}`;
     await api.uploadFileText(sessionId, root, gate.release.split('/').at(-1)!, childReceipt);
     await expect.poll(() => readFile(started), { timeout: 30_000 }).toBe(prefix);
-    if (scenario.unobserved) {
-      const unread = documentsByField('session_events', '$.session_id', sessionId)
-        .filter((row) => row.source_kind === 'resident_engine_output');
-      expect(unread).toEqual([]);
-      evidence.unobservedParentStarted = true;
-      await submitNextInput();
-    }
     const calls = () => native().filter((event) => event.type === 'tool/call'
       && event.data.name === 'bash' && String(event.data.arguments).includes(script));
     await expect.poll(calls).toHaveLength(1);
     const call = calls()[0]!;
     const partial = async () => visibleMessages(await api.getMessages(sessionId))
       .filter((message) => message.role === 'assistant' && messageText(message).includes(prefix));
-    await expect.poll(partial).toHaveLength(1);
+    // The held call is recorded with its input and without a result.
+    await expect.poll(async () => (await partial()).map((message) => messageToolCalls(message)
+      .filter((tool) => tool.toolCallId === String(call.data.callId)).map((tool) => tool.state)))
+      .toEqual([['input-available']]);
     const before = (await partial())[0]!;
-    expect(before.blocks).toContainEqual(expect.objectContaining({ type: 'tool_use', id: call.data.callId,
-      name: 'bash', input: JSON.parse(String(call.data.arguments)) }));
+    expect(messageToolCalls(before)).toContainEqual(expect.objectContaining({ toolCallId: call.data.callId,
+      toolName: 'bash', input: JSON.parse(String(call.data.arguments)) }));
+    // The harness started this reply for its child's settlement: no input asked for it.
+    expect(before.metadata).toMatchObject({ origin: 'engine', input_ids: [], status: 'running' });
+    expect(((await api.getSession(sessionId)).current_responses ?? []).map((response) => response.response_id))
+      .toEqual([before.id]);
     expect(native().some((event) => event.type === 'turn/end' && event.data.turn === call.data.turn)).toBe(false);
-    expect(documentsByField('channel_output_subscriptions', '$.session_id', sessionId)).toEqual([]);
     evidence.before = before;
     evidence.nativeCall = call;
     evidence.nativeBefore = native();
 
-    // No Web page or channel reader is connected: the selected operation is
-    // the first request that can acquire a runtime on this fresh backend.
-    if (!scenario.unobserved) await restartServerContainer(absoluteBaseUrl(), 60_000);
-    if (scenario.input && !scenario.unobserved) await submitNextInput();
-    if (!scenario.input) {
+    // Nothing reads this conversation from a page or a channel when the server restarts.
+    await restartServerContainer(absoluteBaseUrl(), 60_000);
+    let nextInput: Promise<{ raw: string } | { error: unknown }> | undefined;
+    if (scenario.input) {
+      nextInput = api.streamPrompt(sessionId, nextPrompt, profile.modes.unattended, 60_000)
+        .then((raw) => ({ raw }), (error: unknown) => ({ error }));
+      await expect.poll(() => sessionInputRows(sessionId).filter((row) => row.content === nextPrompt))
+        .toHaveLength(1);
+    } else {
       const childrenAfter = await api.listChildRuns(sessionId);
-      expect(childrenAfter.child_runs.map((child) => child.child_run_id))
+      expect(childrenAfter.child_runs.map((child) => child.child_run_id), 'the restart keeps the child it found')
         .toEqual(childrenBefore.map((child) => child.child_run_id));
-      evidence.control = childrenAfter;
+      evidence.childrenAfter = childrenAfter;
     }
-    await expect.poll(async () => (await partial()).map((message) => ({
-      id: message.message_id, turn: message.turn_id, blocks: message.blocks,
-    }))).toEqual([{ id: before.message_id, turn: before.turn_id, blocks: before.blocks }]);
+    // The restart neither ends the held reply nor writes its output a second time.
+    await expect.poll(async () => (await partial()).map((message) => ({ id: message.id, parts: message.parts })))
+      .toEqual([{ id: before.id, parts: before.parts }]);
+    expect(((await api.getSession(sessionId)).current_responses ?? []).map((response) => response.response_id))
+      .toEqual([before.id]);
     expect(native().some((event) => event.type === 'turn/end' && event.data.turn === call.data.turn)).toBe(false);
     await api.uploadFileText(sessionId, root, release.split('/').at(-1)!, parentReceipt);
     if (!scenario.input) await openSessionView(page, sessionId);
@@ -154,12 +160,16 @@ for (const scenario of cases) test(scenario.title, async ({ request, page }, inf
       const inputSequence = nativeInputs()[0]!.seq;
       expect(inputSequence).toBeGreaterThan(native().find((event) => event.type === 'turn/end'
         && event.data.turn === call.data.turn)!.seq);
-      await expect.poll(async () => (await api.getMessages(sessionId)).messages
-        .filter((message) => message.role === 'assistant' && messageText(message) === inputReceipt)).toHaveLength(1);
-      const ownAnswer = (await api.getMessages(sessionId)).messages.find((message) =>
-        message.role === 'assistant' && messageText(message) === inputReceipt)!;
-      expect(ownAnswer.message_id).not.toBe(before.message_id);
-      expect(ownAnswer.turn_id).not.toBe(before.turn_id);
+      const webInputs = sessionInputRows(sessionId).filter((row) => row.content === nextPrompt);
+      expect(webInputs, 'the input is accepted once').toHaveLength(1);
+      const ownAnswer = await api.waitForReplyTo(sessionId, webInputs[0]!.input_id);
+      expect(messageText(ownAnswer)).toBe(inputReceipt);
+      expect(ownAnswer.id).not.toBe(before.id);
+      expect(ownAnswer.metadata).toMatchObject({ origin: 'input', input_ids: [webInputs[0]!.input_id],
+        outcome: 'completed' });
+      expect(sessionInputRows(sessionId).filter((row) => row.content === nextPrompt)).toEqual([
+        expect.objectContaining({ state: 'admitted', response_id: ownAnswer.id }),
+      ]);
       evidence.ownAnswer = ownAnswer;
       // Native history is mirrored independently of the live reply stream.
       // Its terminal makes the whole reply available to the native oracle.
@@ -175,7 +185,7 @@ for (const scenario of cases) test(scenario.title, async ({ request, page }, inf
     expect(expectedBlocks.join('\n')).toContain(parentReceipt);
     evidence.expectedBlocks = expectedBlocks;
     const restored = async () => (await api.getMessages(sessionId)).messages
-      .filter((message) => message.message_id === before.message_id);
+      .filter((message) => message.id === before.id);
     await expect.poll(async () => (await restored()).map(messageProseBlocks), { timeout: 30_000 }).toEqual([expectedBlocks]);
     const history = await api.getMessages(sessionId);
     expect(history.messages.filter((message) => message.role === 'user').map(messageText))
@@ -187,25 +197,30 @@ for (const scenario of cases) test(scenario.title, async ({ request, page }, inf
     expect(results[0]!.isError ?? false).toBe(false);
     expect(textBlocks(results[0]!.content)).toContain(parentReceipt);
     const recovered = (await restored())[0]!;
-    expect(recovered.turn_id).toBe(before.turn_id);
-    expect(recovered.blocks?.filter((block) => block.type === 'tool_use')).toEqual([
-      expect.objectContaining({ id: call.data.callId, name: 'bash', input: JSON.parse(String(call.data.arguments)) }),
+    expect(recovered.metadata).toMatchObject({ origin: 'engine', input_ids: [], status: 'ended', outcome: 'completed' });
+    expect(messageToolCalls(recovered).filter((tool) => tool.toolCallId === String(call.data.callId))).toEqual([
+      expect.objectContaining({ toolName: 'bash', input: JSON.parse(String(call.data.arguments)),
+        state: 'output-available', output: { content: results[0]!.content, isError: false } }),
     ]);
-    expect(recovered.blocks?.filter((block) => block.type === 'tool_result')).toEqual([
-      expect.objectContaining({ tool_use_id: call.data.callId, is_error: false, content: expect.stringContaining(parentReceipt) }),
-    ]);
-    const output = framesForTurn(before.turn_id).map((row) => row.payload as Record<string, unknown>)
+    const output = sessionOutputRows(sessionId, before.id).map((row) => row.part)
       .filter((frame) => frame.type === 'tool-output-available' && frame.toolCallId === call.data.callId);
     expect(output).toEqual([expect.objectContaining({ output: { content: results[0]!.content, isError: false } })]);
+    // The platform's own records: the reply the harness started completed, and
+    // no response ended failed or cancelled across the restart.
+    const responses = sessionResponseRows(sessionId);
+    expect(responses.find((row) => row.response_id === before.id)).toMatchObject({
+      origin: 'engine', status: 'ended', outcome: 'completed', native_reason: 'completed', input_ids: [],
+    });
+    expect(responses.filter((row) => row.status === 'ended' && row.outcome !== 'completed')).toEqual([]);
     if (scenario.input) await openSessionView(page, sessionId);
     await expect(page.getByTestId('assistant-text').filter({ hasText: parentReceipt }).last()).toBeVisible();
-    const reply = page.locator(`[data-message-id="${before.message_id}"]`);
+    const reply = page.locator(`[data-message-id="${before.id}"]`);
     // Live completion delays its process fold until the blocks settle. Wait
     // for this reply's header before expanding its groups inside that fold.
     await expect(reply.getByTestId('assistant-turn-process')).toHaveCount(1);
     await revealAssistantProcess(page, { within: reply });
-    const originalText = before.blocks!.find((block) => block.type === 'text'
-      && String(block.text).includes(prefix))!.text as string;
+    const originalText = String(messageParts(before, 'text')
+      .find((part) => String(part.text).includes(prefix))!.text);
     const originalProse = reply.getByTestId('assistant-text').filter({ hasText: prefix }).first();
     await expect(originalProse).toBeVisible();
     await expect.poll(async () => normalizeRendered(await originalProse.innerText()))
@@ -222,7 +237,9 @@ for (const scenario of cases) test(scenario.title, async ({ request, page }, inf
     evidence.final = history;
   } finally {
     await info.attach('dsh-output-control-scene', { body: JSON.stringify({ ...evidence, sessionId, agentId,
-      native: sessionId ? nativeRows(sessionId) : [], events: sessionId ? sessionEvents(sessionId) : [] }),
+      native: sessionId ? observe(() => nativeRows(sessionId)) : [],
+      inputs: sessionId ? observe(() => sessionInputRows(sessionId)) : [],
+      responses: sessionId ? observe(() => sessionResponseRows(sessionId)) : [] }),
     contentType: 'application/json' });
   }
 });

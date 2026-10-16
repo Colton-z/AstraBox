@@ -26,6 +26,7 @@ export function textBlocks(value: unknown): string {
   return textBlockValues(value).join('\n');
 }
 
+/** The text parts of a history message, one entry per part. */
 export function messageProseBlocks(message: MessageRecord): string[] {
-  return textBlockValues(message.blocks);
+  return textBlockValues(message.parts);
 }

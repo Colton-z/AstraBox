@@ -1,9 +1,9 @@
 """Cross-cutting error-mapping machinery shared by the resource routers.
 
 Holds the lazy platform-service accessor (``_svc``), the request-identity
-accessor (``_resolve_user``), the JSON error-response helpers, the SSE
-first-event timeout helper, and the app-level exception-handler coroutines that
-:func:`astrabox.api.app.create_app` registers via ``app.add_exception_handler(...)``.
+accessor (``_resolve_user``), the JSON error-response helpers, and the app-level
+exception-handler coroutines that :func:`astrabox.api.app.create_app` registers
+via ``app.add_exception_handler(...)``.
 
 Trace binding + the ``traceparent`` response header ride one ASGI middleware
 (:class:`astrabox.web.traceparent_middleware.TraceparentMiddleware`), which
@@ -22,7 +22,6 @@ dependency graph acyclic.
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from fastapi import Request
@@ -114,19 +113,6 @@ def _json_unexpected_error_response(
     )
 
 
-def _stream_first_event_timeout_seconds() -> float:
-    raw = str(os.getenv("ASTRABOX_STREAM_START_TIMEOUT_SECONDS", "")).strip()
-    if not raw:
-        return 5.0
-    try:
-        value = float(raw)
-    except ValueError:
-        return 5.0
-    if value <= 0:
-        return 5.0
-    return value
-
-
 # --------------------------------------------------------------------------- #
 # Application-level exception handlers (registered on the app by create_app)    #
 # --------------------------------------------------------------------------- #
@@ -157,7 +143,7 @@ async def handle_request_validation_error(request: Request, exc: RequestValidati
     # No explicit traceparent header here: RequestValidationError is dispatched
     # by Starlette's ExceptionMiddleware, which sits inside every user
     # middleware, so TraceparentMiddleware's send wrapper stamps this response
-    # on the way out (verified in tests/traceparent_middleware_test.py).
+    # on the way out.
     return JSONResponse(
         content=error_response("INVALID_REQUEST", str(exc)),
         status_code=422,

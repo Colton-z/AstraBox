@@ -11,7 +11,7 @@ import { randomUUID } from 'node:crypto';
 import { expect, test, type APIRequestContext, type BrowserContext, type Page } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
-import { sessionDoc, snapshotDoc } from '../fixtures/dbOracle';
+import { postgresRows, sqlLiteral } from '../fixtures/dbOracle';
 import { apiPath, parseTimeoutEnv } from '../fixtures/env';
 import { PlatformApi } from '../fixtures/platformApi';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
@@ -41,7 +41,7 @@ const REDACTION_SENTINEL = '••••••••';
 const PAUSED_STATES = new Set(['PAUSED', 'SUCCEED']);
 
 // How long this Agent may sit quiet before the keeper may take its compute.
-// Really waited out on the snapshot clock, not simulated; short because the wall
+// Really waited out on the activity clock, not simulated; short because the wall
 // is 180s, and read back off the stored Agent rather than trusted from here.
 const IDLE_WINDOW_MS = parseTimeoutEnv('ASTRABOX_E2E_IDLE_PARK_WINDOW_MS', 5_000);
 const IDLE_WINDOW_SECONDS = Math.max(1, Math.ceil(IDLE_WINDOW_MS / 1_000));
@@ -49,7 +49,7 @@ const IDLE_WINDOW_SECONDS = Math.max(1, Math.ceil(IDLE_WINDOW_MS / 1_000));
 const READY_TIMEOUT_MS = parseTimeoutEnv('ASTRABOX_E2E_READY_TIMEOUT_MS', 90_000);
 // One model turn rendering in the browser, either side of the park.
 const REPLY_TIMEOUT_MS = parseTimeoutEnv('ASTRABOX_E2E_IDLE_PARK_REPLY_TIMEOUT_MS', 60_000);
-// The conversation settling to IDLE and staying there past its window. Its own
+// The conversation settling idle and staying there past its window. Its own
 // name rather than the sweep spec's `ASTRABOX_E2E_IDLE_QUIET_TIMEOUT_MS`: that
 // default is derived from a different window, so one override would be wrong for
 // whichever spec did not set it.
@@ -89,28 +89,63 @@ function sweepCounters(payload: Record<string, unknown>): Record<string, number>
 }
 
 /**
+ * What the keeper and its candidate query read off this conversation's
+ * `sessions` row. The quiet age is measured by the database from the latest of
+ * the last output, the last change of activity and the last resume of the box,
+ * which is the moment `_is_idle_past` (expiration_watcher.py) measures from.
+ */
+interface KeeperRow {
+  runtime_status: string | null;
+  open_responses: number;
+  quiet_ms: number | null;
+  sandbox_parked_at: string | null;
+  deleted: boolean;
+  runtime_unavailable: boolean;
+  sandbox_id: string | null;
+  state: string;
+  expires_at: string | null;
+  lease_live: boolean | null;
+}
+
+function keeperRow(sessionId: string): KeeperRow | null {
+  return postgresRows<KeeperRow>(
+    `SELECT s.runtime_status, `
+      + `(SELECT count(*) FROM session_responses r `
+      + `WHERE r.session_id = s.session_id AND r.status <> 'ended')::int AS open_responses, `
+      + `(extract(epoch FROM now() - GREATEST(s.last_output_at, s.updated_at, s.sandbox_resumed_at)) `
+      + `* 1000)::float8 AS quiet_ms, `
+      + `s.sandbox_parked_at, s.deleted, s.runtime_unavailable, s.sandbox_id, s.state, s.expires_at, `
+      + `s.expires_at > now() AS lease_live `
+      + `FROM sessions s WHERE s.session_id = ${sqlLiteral(sessionId)}`,
+  )[0] ?? null;
+}
+
+/**
  * The platform's own statement that this binding is parked.
  *
- * Read from the document store rather than over HTTP, because between the
- * walk-away and the return this spec must not touch the session through anything
- * that could ensure or attach a runtime — it would then be undoing the condition
- * it came to observe (the discipline
+ * Read from the database rather than over HTTP, because between the walk-away
+ * and the return this spec must not touch the session through anything that
+ * could ensure or attach a runtime — it would then be undoing the condition it
+ * came to observe (the discipline
  * reconcile-is-present-for-a-parked-session-without-recovering-it.exclusive.spec.ts
  * states). The keeper writes this before the asynchronous commit and clears it
  * on refusal. Completion also requires the supplier's paused state.
  */
 function parkedMark(sessionId: string): string {
-  return String(sessionDoc(sessionId)?.sandbox_parked_at || '').trim();
+  return String(keeperRow(sessionId)?.sandbox_parked_at || '').trim();
 }
 
-/** State and quiet age off the snapshot clock `_is_idle_past` reads, and only that one. */
-function quietForMs(sessionId: string): { state: string; quietMs: number | null } {
-  const snapshot = snapshotDoc(sessionId);
-  if (!snapshot) return { state: '<no snapshot>', quietMs: null };
-  const updatedAt = Date.parse(String(snapshot.updated_at || ''));
+/**
+ * The runtime's last reported status, whether a response is still open, and
+ * the milliseconds since the activity clock `_is_idle_past` reads last moved.
+ */
+function quietForMs(sessionId: string): { status: string; openResponses: number; quietMs: number | null } {
+  const row = keeperRow(sessionId);
+  if (!row) return { status: '<no session row>', openResponses: 0, quietMs: null };
   return {
-    state: String(snapshot.conversation_state || ''),
-    quietMs: Number.isFinite(updatedAt) ? Date.now() - updatedAt : null,
+    status: String(row.runtime_status ?? ''),
+    openResponses: Number(row.open_responses),
+    quietMs: row.quiet_ms === null ? null : Number(row.quiet_ms),
   };
 }
 
@@ -119,23 +154,23 @@ function quietForMs(sessionId: string): { state: string; quietMs: number | null 
  *
  * Without it, "it was never parked" is a failure with no direction: a row the
  * sweep could not have looked at reads exactly like a keeper that refused. This
- * mirrors `list_idle_reclaim_candidates` (session_repository.py:536-549) and
- * names the field that disqualified the row.
+ * mirrors `list_idle_reclaim_candidates` in session_repository.py and names the
+ * field that disqualified the row.
  */
 function disqualifiedFromTheSweep(sessionId: string): string {
-  const row = sessionDoc(sessionId);
+  const row = keeperRow(sessionId);
   if (!row) return 'the session row is gone';
-  if (row.deleted === true) return 'the row is marked deleted';
-  if (row.runtime_unavailable === true) return 'the row is marked runtime_unavailable';
+  if (row.deleted) return 'the row is marked deleted';
+  if (row.runtime_unavailable) return 'the row is marked runtime_unavailable';
   if (!String(row.sandbox_id || '').trim()) return 'the row no longer names a sandbox';
   const state = String(row.state || '');
   if (state === 'TERMINATED' || state === 'DELETED') return `the row reached ${state}`;
-  const expiresAt = Date.parse(String(row.expires_at || ''));
-  if (!Number.isFinite(expiresAt)) return `the row has no readable expires_at (${String(row.expires_at)})`;
-  if (expiresAt <= Date.now()) {
+  if (row.lease_live === null) return 'the row has no sandbox lease (expires_at is empty)';
+  if (!row.lease_live) {
     return `the sandbox lease lapsed at ${String(row.expires_at)} — the dead-binding sweep owns `
       + 'this row, not the idle sweep';
   }
+  if (String(row.sandbox_parked_at || '').trim()) return 'the row is already parked';
   return '';
 }
 
@@ -342,8 +377,8 @@ async function exerciseParkedConversation(
 
   // ── The user closes the tab ──────────────────────────────────────────────
   // From here until the return, nothing touches the session over an endpoint
-  // that could attach a runtime: every reading is the document store or the
-  // operator sandbox read.
+  // that could attach a runtime: every reading is the database or the operator
+  // sandbox read.
   await closePageAfterAssertions(page);
 
   if (disableEnvironment) {
@@ -360,13 +395,18 @@ async function exerciseParkedConversation(
   const quietDeadline = Date.now() + QUIET_TIMEOUT_MS + idleWindowMs - IDLE_WINDOW_MS;
   for (;;) {
     const quiet = quietForMs(sessionId);
-    if (quiet.state === 'IDLE' && (quiet.quietMs ?? -1) >= idleWindowMs) break;
+    if (
+      quiet.status === 'idle'
+      && quiet.openResponses === 0
+      && (quiet.quietMs ?? -1) >= idleWindowMs
+    ) break;
     if (Date.now() >= quietDeadline) {
       throw new Error(
-        `the conversation must be IDLE past its ${idleWindowSeconds}s window before the keeper `
+        `the conversation must be idle past its ${idleWindowSeconds}s window before the keeper `
           + `can be asked about it, and it was not within ${QUIET_TIMEOUT_MS}ms: `
-          + `${JSON.stringify(quiet)}. A conversation that never settles means the first turn is `
-          + `still running (session=${sessionId} sandbox=${boxBefore}).`,
+          + `${JSON.stringify(quiet)}. A conversation that never settles means the first response `
+          + `is still running or its runtime never reported idle (session=${sessionId} `
+          + `sandbox=${boxBefore}).`,
       );
     }
     await new Promise((resolve) => setTimeout(resolve, 2_000));
@@ -489,10 +529,10 @@ async function exerciseParkedConversation(
     'the Files panel must be the one the returning user lands on',
   ).toBeVisible({ timeout: FILE_PANEL_MS });
 
-  // THE ASSERTION THAT IS EXPECTED RED. One verdict function rather than a bare
-  // visibility wait, because the failure SHAPE is unknown from reading — a
-  // spinner to the control deadline, a fast refusal, or an unexpected answer —
-  // and a timeout on a locator would report none of them. The error strip is the
+  // The file listing wakes the parked box. One verdict function rather than a
+  // bare visibility wait, because a failure can take three shapes — a spinner to
+  // the control deadline, a fast refusal, or an unexpected answer — and a
+  // timeout on a locator would report none of them. The error strip is the
   // panel's `ErrorNote`, which is an `Alert` and so carries role="alert".
   const filesVerdict = async (): Promise<string> => {
     if ((await filesPanel.getByText(markerName, { exact: true }).count()) > 0) {
@@ -518,18 +558,11 @@ async function exerciseParkedConversation(
       timeout: FILE_PANEL_MS,
       intervals: [1_000, 2_000, 3_000],
       message:
-        'THE FINDING: the Files panel does not serve the workspace of a conversation whose box '
-        + `the platform parked. session=${sessionId} sandbox=${boxBefore} marker=${markerPath}. `
-        + 'The panel is ENABLED over this row — park writes only `sandbox_parked_at` and '
-        + '`expires_at` with touch_updated_at=False, so state stays READY, sandbox_id stays set '
-        + 'and runtime_unavailable stays false, which is all `isSandboxLiveForSession` '
-        + '(frontend/src/utils/format.ts:168-175) and `filesPanelEnabled` '
-        + '(useSessionRightPanelState.ts:61) ask for — and nothing on the file path wakes '
-        + 'anything: `_wake_parked_sandbox` (runtime_ensure.py:485) has one caller, the turn-prepare '
-        + 'path (:448), while `SessionFileService._resolve_session_context` '
-        + '(session_file_service.py:521-551) resolves the box by id and connects straight to freed '
-        + 'compute. A panel that cannot serve the box must at least say so; enabled and silent is '
-        + 'the defect either way.',
+        'the Files panel does not serve the workspace of a conversation whose box the platform '
+        + `parked. session=${sessionId} sandbox=${boxBefore} marker=${markerPath}. Parking leaves `
+        + 'the conversation READY with its box named, so the panel is enabled over this row; the '
+        + 'listing must wake the box and show the file, and a panel that cannot serve the box must '
+        + 'at least say so — enabled and silent is the defect either way.',
     })
     .toEqual('the workspace is listed');
 
@@ -563,8 +596,7 @@ async function exerciseParkedConversation(
   // ── It continued on the SAME box, not a fresh one ────────────────────────
   // The only assertion that can tell a resume from silent workspace loss: a
   // re-borrow after a resume that did not take produces an equally good-looking
-  // reply on a box that has none of these files (runtime_ensure.py:467-483,
-  // whose refusal to resume is logged at :524-529).
+  // reply on a box that has none of these files.
   const afterTurn = await api.getSession(sessionId);
   expect(
     String(afterTurn.sandbox_id || '').trim(),
@@ -583,9 +615,9 @@ async function exerciseParkedConversation(
   ).toBeVisible({ timeout: FILE_PANEL_MS });
 
   // ── And the conversation is parkable again ───────────────────────────────
-  // Both ways out of a parked row clear the mark — a resume that took
-  // (runtime_ensure.py:544-551) and the re-borrow that replaces the box
-  // (:700) — so this says nothing about which one happened; the same-box
+  // Both ways out of a parked row clear the mark — a resume that took and a
+  // re-borrow that replaced the box — so this says nothing about which one
+  // happened; the same-box
   // assertion above is what separates them. What it does say is that the row
   // did not keep a mark neither path cleared, which would exclude this
   // conversation from the sweep for good

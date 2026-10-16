@@ -22,13 +22,11 @@ What it does NOT carry, and the caller must know:
   that was once attributed to `isatty()` and the attribution was refuted here
   — the label arrives over this transport too, and its real cause was the
   adapter merging two vendor events (see `hermes_client.py`).
-* **No offset replay.** A box process replays its bytes from a cursor, which
-  is what turn recovery reconnects at. The pinned Hermes has no equivalent — its
-  seq-stamped `session.events.since` landed upstream on 2026-08-24 and was
-  fixed on 2026-08-25 to deliver events at all, so it is neither released to
-  PyPI nor proven. `current_output_offset` therefore answers 0 and a
-  reconnect resumes live. Recorded as a gap rather than hidden: turn recovery
-  over this transport re-attaches without the suffix it asked for.
+* **No byte cursor.** The offset handed to ``on_record`` counts frames on
+  this attachment and starts again on the next one. Resuming is Hermes'
+  own: every event of a session carries the ``seq`` its replay ring stamped,
+  and ``session.events.since`` returns the events after one
+  (``engine/hermes_runtime_client.py``).
 """
 
 from __future__ import annotations
@@ -54,10 +52,16 @@ logger = get_logger(__name__)
 #: enough that a wedged one is reported rather than waited on forever.
 CONNECT_TIMEOUT_SECONDS = 30.0
 
+#: The largest frame read. One ``session.events.since`` reply carries a
+#: session's whole replay ring, which Hermes bounds at 4 MiB of event JSON
+#: (``_REPLAY_BUFFER_BYTES_MAX`` in ``tui_gateway/event_replay.py``); the rest
+#: is the reply's own envelope. A frame over the limit closes the socket every
+#: conversation of the profile shares.
+MAX_FRAME_BYTES = 8 * 1024 * 1024
+
 #: ``(record, offset)`` — the same shape :class:`ProcessJsonLineChannel` calls,
 #: so one protocol reader serves both transports. The offset here is a frame
-#: counter for THIS attachment rather than a resumable cursor; see
-#: :meth:`HermesBackendChannel.current_output_offset`.
+#: counter for THIS attachment rather than a resumable cursor.
 RecordSink = Callable[[dict[str, Any], int], Awaitable[None]]
 FailureSink = Callable[[BaseException], Awaitable[None]]
 
@@ -170,8 +174,7 @@ class HermesBackendChannel:
         self._fatal: BaseException | None = None
         #: Monotonic within one attachment. It orders frames for subscribers
         #: that filter on it; it is NOT a cursor another attachment could
-        #: resume from, which is the difference recorded on
-        #: :meth:`current_output_offset`.
+        #: resume from.
         self._frame_offset = 0
 
     # ── state ────────────────────────────────────────────────────────────
@@ -182,18 +185,6 @@ class HermesBackendChannel:
     @property
     def fatal(self) -> BaseException | None:
         return self._fatal
-
-    async def current_output_offset(self) -> int:
-        """This attachment's frame count — not a cursor to resume from.
-
-        Answered rather than raised because the caller's recovery path asks
-        every transport the same question. For execd the answer is a byte
-        offset a NEW attachment can replay from; here it only orders frames
-        within the attachment that produced it, so reconnecting resumes live.
-        The module docstring records what that costs.
-        """
-
-        return self._frame_offset
 
     # ── connect ──────────────────────────────────────────────────────────
     async def connect(self) -> None:
@@ -217,7 +208,7 @@ class HermesBackendChannel:
             self._ws = await websockets.connect(
                 self.url,
                 open_timeout=CONNECT_TIMEOUT_SECONDS,
-                max_size=4 * 1024 * 1024,
+                max_size=MAX_FRAME_BYTES,
                 **websocket_header_kwargs(self.headers),
             )
             self._connected.set()
@@ -323,7 +314,7 @@ class HermesBackendChannel:
         await self._on_failure(exc)
 
     async def detach(self) -> None:
-        """Close this attachment, leaving the backend running."""
+        """Settle pending requests and close this attachment; keep the backend running."""
 
         task = self._reader_task
         self._reader_task = None
@@ -331,6 +322,7 @@ class HermesBackendChannel:
             task.cancel()
             with contextlib.suppress(BaseException):
                 await task
+        await self.fail(BackendDetached(f"{self.label} attachment detached"))
         with contextlib.suppress(BaseException):
             if self._ws is not None:
                 await self._ws.close()

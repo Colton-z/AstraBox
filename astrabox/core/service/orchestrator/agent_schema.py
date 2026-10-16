@@ -246,13 +246,8 @@ _AGENT_UPDATE_REQUEST_FIELDS = AGENT_EDITABLE_REQUEST_FIELDS | {"version"}
 #: only place the console can read what the Agent still selects.
 AGENT_PRIVATE_STORED_FIELDS = frozenset(
     {
-        "main_session_id",
-        "session_source_type",
         "credential_vault_ids",
-        "credentials_updated_by",
-        "credentials_updated_at",
-        "plugin_mcp_bridge_allowlist",
-        # Allocation state owned by conversation_identity's CAS.
+        # The counter conversation_identity draws conversation owners from.
         "conversation_uid_cursor",
         # Durable storage identity owned by the platform's mount planner.
         "workspace_id",

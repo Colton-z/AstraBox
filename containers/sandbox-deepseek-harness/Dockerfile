@@ -23,7 +23,7 @@
 # file transport.
 # Both ARGs precede the first FROM: an ARG between FROMs is scoped to the
 # stage above it, and the second FROM would then see its base name blank.
-ARG SANDBOX_EXECD_IMAGE=opensandbox/execd:v1.1.0
+ARG SANDBOX_EXECD_IMAGE=astrabox/execd:latest
 ARG SANDBOX_BASE_IMAGE=ghcr.io/agent-infra/sandbox:1.11.0
 FROM ${SANDBOX_EXECD_IMAGE} AS execd
 FROM ${SANDBOX_BASE_IMAGE}

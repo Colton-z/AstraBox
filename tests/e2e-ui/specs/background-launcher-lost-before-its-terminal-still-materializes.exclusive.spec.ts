@@ -1,24 +1,36 @@
 /**
- * E2E: a background Agent survives loss of its parent turn worker.
+ * E2E: a background Agent survives its conversation losing the platform's
+ * connection to the runtime before the reply that launched it ends.
  *
- * Hold the real bridge at its launch receipt, evict only the host runtime,
- * and release the worker while the child continues in the same live sandbox.
- * Require one durable opening, native child completion, one materialization,
- * and the completion marker in the conversation without further user input.
+ * Hold the session's reader at the launch receipt (the CLI's `async_launched`
+ * tool result), evict only the host's runtime connection, and release the
+ * reader while the child continues in the same live sandbox. The reader
+ * reconnects to the same runtime from the position it committed
+ * (`session_runtime/host.py`); the user does nothing.
  *
- * The adapter declares each successful launch before publishing its tool
- * receipt; live and recovered consumers persist it immediately. Native child
- * facts drive background status. Collection does not require a parent reply.
+ * Required, with nobody sending anything else: the launch reply completes once,
+ * as Claude wrote it; the platform tracks exactly one child, which finishes its
+ * work in the live box and closes with Claude's own completed status; Claude's
+ * own answer to the finished child reaches the conversation as one response of
+ * origin `engine` that no input started; and a cold open shows that answer, the
+ * child in the Agents panel at its exact status, and a settled header.
  *
  * Claude's run_in_background and async_launched vocabulary arrange the scene.
- * A per-session frame hold proves the worker disappeared before its terminal.
- * Failed sessions retain their sandboxes for diagnosis; the test does not
- * restart shared services or destroy another conversation's compute.
+ * A per-session reader hold proves the connection was lost before the launch
+ * reply's end. Failed sessions retain their sandboxes for diagnosis; the test
+ * does not restart shared services or destroy another conversation's compute.
  */
 import { expect, test } from '@playwright/test';
+import type { Response } from '@playwright/test';
 
-import { AstraApi, type ChildRunRecord, type SessionRecord } from '../fixtures/astraApi';
-import { oracleDbPath, sessionEvents } from '../fixtures/dbOracle';
+import { AstraApi, messageText, type ChildRunRecord } from '../fixtures/astraApi';
+import { revealAssistantProcess } from '../fixtures/assistantProcess';
+import {
+  nativeTranscriptRows,
+  oracleDbPath,
+  sessionInputRows,
+  sessionResponseRows,
+} from '../fixtures/dbOracle';
 import { parseTimeoutEnv, refuseIfNotTheDeployment } from '../fixtures/env';
 import {
   FRAME_HOLD_FAULT_BASE,
@@ -31,6 +43,7 @@ import {
 } from '../fixtures/frameHold';
 import { insist } from '../fixtures/insist';
 import { PlatformApi } from '../fixtures/platformApi';
+import { normalizeRendered } from '../fixtures/renderedTranscript';
 import { requireSandboxHandle, sandboxRunning } from '../fixtures/sandboxOps';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
@@ -39,78 +52,42 @@ import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
 // (suite-contract max_test_seconds), and a spec never states its own budget —
 // these only decide which named assertion reports a stall.
 const READY_MS = parseTimeoutEnv('ASTRABOX_E2E_BG_LOST_READY_MS', 90_000);
-// Reaching the launch: the barrier consuming this session's declaration AND the
+// Reaching the launch: the hold consuming this session's declaration AND the
 // child's own first write landing in the workspace.
 const LAUNCH_MS = parseTimeoutEnv('ASTRABOX_E2E_BG_LOST_LAUNCH_MS', 90_000);
-// The launcher turn settling after the eviction and the release — through
-// whichever lane the runtime picks.
+// The launch reply ending after the eviction and the release.
 const SETTLE_MS = parseTimeoutEnv('ASTRABOX_E2E_BG_LOST_SETTLE_MS', 90_000);
-// How long the platform may take to declare that it is tracking the child.
-const TRACK_MS = parseTimeoutEnv('ASTRABOX_E2E_BG_LOST_TRACK_MS', 90_000);
-// How long the child's completion may take to reach the conversation.
-const MATERIALIZE_MS = parseTimeoutEnv('ASTRABOX_E2E_BG_LOST_MATERIALIZE_MS', 120_000);
+// How long the child's completion, and Claude's answer to it, may take to reach
+// the conversation.
+const COMPLETION_MS = parseTimeoutEnv('ASTRABOX_E2E_BG_LOST_MATERIALIZE_MS', 120_000);
 
-// Long enough that the launcher turn is certainly lost while the child is still
-// working, short enough to leave the materialization room inside the wall.
+// Long enough that the launch reply is certainly cut off while the child is
+// still working, short enough to leave the completion room inside the wall.
 const CHILD_SLEEP_SECONDS = Number.parseInt(
   process.env.ASTRABOX_E2E_BG_LOST_CHILD_SLEEP_SECONDS || '20',
   10,
 );
 
-// The frame the barrier parks on. For a backgrounded Agent call this is the
-// CLI's own `async_launched` tool result — the first tool output the prompt
-// below permits the parent to produce.
+// The part the hold parks on. For a backgrounded Agent call this is the CLI's
+// own `async_launched` tool result — the first tool output the prompt below
+// permits the parent to produce.
 const HELD_FRAME_TYPE = 'tool-output-available';
 
-const TERMINAL_SESSION_STATES = new Set([
-  'RECOVERY_REQUIRED',
-  'TERMINATED',
-  'DELETED',
-  'FAILED',
-]);
+// The vendor's own marker for a finished background task in its SessionStore.
+const TASK_NOTIFICATION_MARKER = '<task-notification>';
+// Claude Code keeps each Agent's conversation in a transcript of its own
+// (`engine/claude_code_background.py`).
+const AGENT_TRANSCRIPT_PREFIX = 'subagents/agent-';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function eventPayload(event: Record<string, unknown>): Record<string, unknown> {
-  return event.payload && typeof event.payload === 'object' && !Array.isArray(event.payload)
-    ? (event.payload as Record<string, unknown>)
-    : {};
-}
-
-function eventTypes(events: Record<string, unknown>[]): string[] {
-  return events.map((event) => String(event.event_type || '')).filter(Boolean);
-}
-
-function openedManifests(events: Record<string, unknown>[]): Record<string, unknown>[] {
-  return events.filter(
-    (event) => String(event.event_type || '') === 'turn.background_tasks_opened',
-  );
-}
-
-function materializationsForOpenedEvent(
-  events: Record<string, unknown>[],
-  openedEventSeq: number,
-): Record<string, unknown>[] {
-  return events.filter((event) => (
-    String(event.event_type || '') === 'turn.background_tasks_materialized'
-    && Number(eventPayload(event).source_opened_event_seq) === openedEventSeq
-  ));
-}
-
-/** The session's background window as an object, or null when it holds none. */
-function backgroundWindow(session: SessionRecord): Record<string, unknown> | null {
-  const value = session.background_task_state;
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
 
 /**
  * Launch one detached child that leaves two marks in the workspace.
  *
- * STARTED proves the child is really running while the host loses the turn;
- * DONE proves it finished its work in the live box. Without the second one,
- * "the user never heard about it" would be a statement about nothing.
+ * STARTED proves the child is really running while the host loses its
+ * connection; DONE proves it finished its work in the live box. Without the
+ * second one, "the user never heard about it" would be a statement about
+ * nothing.
  */
 function backgroundAgentPrompt(
   runId: number,
@@ -133,52 +110,101 @@ function backgroundAgentPrompt(
     `After that Bash call succeeds, the background Agent's final answer must contain ${marker}_DONE.`,
     'The parent turn must not call Bash, TaskOutput, wait, or any other tool.',
     `As soon as the Agent tool returns its background task id, reply with one short sentence containing PARENT_LAUNCHED_${runId}.`,
+    `When you are notified that the background Agent finished, reply with one short sentence containing ${marker}_DONE and call no tool.`,
   ].join('\n');
 }
 
-interface TrackingObservation {
-  openedEvents: Record<string, unknown>[];
-  sawOpenWindow: boolean;
-  lastSession: SessionRecord | null;
-  lastEventTypes: string[];
+/** The input id the inputs route answered a composer send with. */
+async function acceptedInputId(response: Response): Promise<string> {
+  const body = (await response.json()) as { data?: { input_id?: unknown } };
+  const inputId = String(body.data?.input_id ?? '').trim();
+  expect(inputId, 'the inputs route must answer with the accepted input id').not.toBe('');
+  return inputId;
 }
 
-/**
- * Watch for the platform's own declaration that it is tracking the child.
- *
- * Records rather than asserts, so the anti-vacuity check (the child really
- * finished) can be asserted FIRST and a dead child cannot be reported as a
- * tracking failure. Returns as soon as both halves are seen — the journal
- * manifest and the OPEN window the console reads — so in the healthy case this
- * costs a poll interval rather than its ceiling.
- */
-async function observeBackgroundTracking(
-  api: AstraApi,
-  sessionId: string,
-  timeoutMs: number,
-): Promise<TrackingObservation> {
-  const deadline = Date.now() + timeoutMs;
-  const observation: TrackingObservation = {
-    openedEvents: [],
-    sawOpenWindow: false,
-    lastSession: null,
-    lastEventTypes: [],
-  };
-  while (Date.now() < deadline) {
-    const session = await api.getSession(sessionId);
-    const events = sessionEvents(sessionId);
-    observation.lastSession = session;
-    observation.lastEventTypes = eventTypes(events);
-    observation.openedEvents = openedManifests(events);
-    if (String(backgroundWindow(session)?.state || '') === 'OPEN') {
-      observation.sawOpenWindow = true;
-    }
-    if (observation.openedEvents.length > 0 && observation.sawOpenWindow) {
-      return observation;
-    }
-    await sleep(2_000);
-  }
-  return observation;
+// ── Claude's own transcript, as the SessionStore mirror holds it ───────────
+//
+// One row per CLI JSONL line (`transcript_entries`). The main transcript is the
+// parent's conversation; each Agent has its own `subagents/agent-<id>` file.
+
+interface NativeEntry {
+  seq: number;
+  entry: Record<string, unknown>;
+}
+
+function nativeEntries(sessionId: string, scope: 'main' | 'agents'): NativeEntry[] {
+  return nativeTranscriptRows(sessionId)
+    .filter((row) => (scope === 'main'
+      ? row.subpath === null
+      : String(row.subpath ?? '').startsWith(AGENT_TRANSCRIPT_PREFIX)))
+    .map((row) => ({ seq: Number(row.seq), entry: JSON.parse(String(row.entry_json)) as Record<string, unknown> }));
+}
+
+/** A line of the parent's own lane, not a sub-agent's line carried in its file. */
+function isParentLane(entry: Record<string, unknown>): boolean {
+  if (entry.isSidechain === true) return false;
+  return String(entry.parentToolUseId ?? entry.parent_tool_use_id ?? '').trim() === '';
+}
+
+function contentBlocks(entry: Record<string, unknown>): Record<string, unknown>[] {
+  const message = entry.message;
+  if (!message || typeof message !== 'object') return [];
+  const content = (message as Record<string, unknown>).content;
+  return Array.isArray(content)
+    ? content.filter((block): block is Record<string, unknown> => Boolean(block) && typeof block === 'object')
+    : [];
+}
+
+/** A line's visible text, block by block; a string `message.content` is one block. */
+function textBlocks(entry: Record<string, unknown>): string[] {
+  const message = entry.message;
+  if (!message || typeof message !== 'object') return [];
+  const content = (message as Record<string, unknown>).content;
+  if (typeof content === 'string') return [content];
+  return contentBlocks(entry)
+    .filter((block) => block.type === 'text' && typeof block.text === 'string')
+    .map((block) => String(block.text));
+}
+
+/** What the parent said, in order, in its main-lane assistant lines after `afterSeq` and before `beforeSeq`. */
+function parentSpeech(entries: NativeEntry[], afterSeq: number, beforeSeq = Number.POSITIVE_INFINITY): string {
+  return entries
+    .filter((item) => item.seq > afterSeq && item.seq < beforeSeq)
+    .filter((item) => isParentLane(item.entry) && item.entry.type === 'assistant')
+    .flatMap((item) => textBlocks(item.entry))
+    .join('');
+}
+
+/** The parent's main-lane user lines carrying `marker`, in order. */
+function parentUserLines(entries: NativeEntry[], marker: string): NativeEntry[] {
+  return entries.filter((item) => isParentLane(item.entry) && item.entry.type === 'user'
+    && textBlocks(item.entry).some((text) => text.includes(marker)));
+}
+
+/** The parent's backgrounded Agent calls for this run, with Claude's launch receipt for each. */
+function nativeLaunches(sessionId: string, marker: string): Array<{ toolUseId: string; agentId: string }> {
+  const entries = nativeEntries(sessionId, 'main').filter((item) => isParentLane(item.entry));
+  const calls = entries.flatMap((item) => contentBlocks(item.entry))
+    .filter((block) => block.type === 'tool_use' && ['Agent', 'Task'].includes(String(block.name))
+      && (block.input as Record<string, unknown> | undefined)?.run_in_background === true
+      && JSON.stringify(block.input).includes(marker));
+  return calls.map((call) => {
+    const receipt = entries.find((item) => {
+      const result = item.entry.toolUseResult as Record<string, unknown> | undefined;
+      return result?.status === 'async_launched'
+        && contentBlocks(item.entry).some((block) => block.type === 'tool_result' && block.tool_use_id === call.id);
+    });
+    const result = receipt?.entry.toolUseResult as Record<string, unknown> | undefined;
+    return { toolUseId: String(call.id ?? ''), agentId: String(result?.agentId ?? '') };
+  });
+}
+
+/** The tool results the child recorded for its own Bash calls. */
+function childBashResults(sessionId: string): Record<string, unknown>[] {
+  const blocks = nativeEntries(sessionId, 'agents').flatMap((item) => contentBlocks(item.entry));
+  const calls = new Set(blocks.filter((block) => block.type === 'tool_use' && block.name === 'Bash')
+    .map((block) => String(block.id ?? '')));
+  return blocks.filter((block) => block.type === 'tool_result' && calls.has(String(block.tool_use_id ?? '')));
 }
 
 /** Is this workspace file readable with this exact content? */
@@ -186,11 +212,12 @@ async function sentinelReadable(
   api: AstraApi,
   platform: PlatformApi,
   sessionId: string,
+  root: string,
   path: string,
   expected: string,
 ): Promise<boolean> {
   const name = path.split('/').at(-1);
-  const listing = await platform.listFiles(sessionId, '/workspace', 15_000);
+  const listing = await platform.listFiles(sessionId, root, 15_000);
   if (!listing.entries?.some((entry) => entry.name === name && entry.kind === 'file')) {
     return false;
   }
@@ -198,13 +225,13 @@ async function sentinelReadable(
 }
 
 // Sessions created here are deleted only when the test passes. A failure keeps
-// the scene — session, journal, sandbox Pod — and names it in the report tail.
+// the scene — session, its records, sandbox Pod — and names it in the report tail.
 const sessions = trackSessions();
 
 let openSessionId = '';
 onPassOnly(async ({ request }) => {
-  // A launcher whose worker was taken may leave the engine mid-flight; only a
-  // passing run may clear it, so a failure keeps every live handle.
+  // A conversation whose connection was taken may leave the engine mid-flight;
+  // only a passing run may clear it, so a failure keeps every live handle.
   if (openSessionId) await new AstraApi(request).interruptSession(openSessionId);
 });
 
@@ -222,16 +249,12 @@ test('a background launcher lost before its terminal still tracks and materializ
   const platform = new PlatformApi(request);
   const runId = Date.now();
   const marker = `BG_LOST_${runId}`;
-  const startedPath = `/workspace/.astrabox-e2e-bg-lost-${runId}.started`;
-  const donePath = `/workspace/.astrabox-e2e-bg-lost-${runId}.done`;
 
   expect(
     Number.isSafeInteger(CHILD_SLEEP_SECONDS) && CHILD_SLEEP_SECONDS > 0,
     'ASTRABOX_E2E_BG_LOST_CHILD_SLEEP_SECONDS must be a positive whole number of seconds',
   ).toBe(true);
 
-  // The journal pair (opened / materialized) is the durable half of the
-  // contract; name the oracle before creating anything.
   test.info().annotations.push({ type: 'oracle-db', description: oracleDbPath() });
   test.info().annotations.push({ type: 'e2e_fault_base', description: FRAME_HOLD_FAULT_BASE });
 
@@ -247,11 +270,10 @@ test('a background launcher lost before its terminal still tracks and materializ
   ).toBeTruthy();
   expect(
     String(environment?.engine_kind || ''),
-    'this journey exists only on the engine that emits background manifests: '
-      + '`build_background_task_manifest` lives in engine/claude_code_background.py and no '
-      + 'other adapter emits BackgroundTasksOpened. Select a Claude Code profile for this '
-      + 'lane (--research-agent / ASTRABOX_E2E_AGENT_NAME), or leave this file out of the '
-      + 'selection on a campaign that runs another engine.',
+    'this journey is written in Claude Code\'s background vocabulary (run_in_background, '
+      + 'async_launched, task-notification; engine/claude_code_background.py). Select a Claude '
+      + 'Code profile for this lane (--research-agent / ASTRABOX_E2E_AGENT_NAME), or leave this '
+      + 'file out of the selection on a campaign that runs another engine.',
   ).toEqual('claude_code');
 
   // ── The conversation the user is having. ─────────────────────────────────
@@ -268,21 +290,19 @@ test('a background launcher lost before its terminal still tracks and materializ
     'this journey needs the box the platform published: the eviction below must be '
       + 'provably narrower than losing the sandbox',
   ).not.toBe('');
+  const root = String((await platform.listFiles(sessionId)).root_path || '').trim();
+  expect(root, 'the files listing must name the workspace root the child writes into').not.toBe('');
+  const startedPath = `${root}/.astrabox-e2e-bg-lost-${runId}.started`;
+  const donePath = `${root}/.astrabox-e2e-bg-lost-${runId}.done`;
 
-  // Armed BEFORE the first prompt: the barrier parks the worker on the launch
+  // Armed BEFORE the first prompt: the hold parks the reader on the launch
   // receipt, and a declaration written after the send would race it.
   const frameHoldPath = frameHoldFaultPath(sessionId);
   armFrameHoldFault(frameHoldPath, sessionId, HELD_FRAME_TYPE);
   test.info().annotations.push({ type: 'e2e_turn_frame_hold_file', description: frameHoldPath });
 
-  let launcherTurnId = '';
-  let settledLastTurnStatus = '';
-  let tracking: TrackingObservation = {
-    openedEvents: [],
-    sawOpenWindow: false,
-    lastSession: null,
-    lastEventTypes: [],
-  };
+  const sentInputIds: string[] = [];
+  let launchResponseId = '';
 
   try {
     // The user watches their own conversation for the whole outage.
@@ -291,37 +311,40 @@ test('a background launcher lost before its terminal still tracks and materializ
 
     // ── The send is a real one, from the composer. ─────────────────────────
     const prompt = backgroundAgentPrompt(runId, marker, startedPath, donePath);
-    await sendPrompt(page, sessionId, prompt);
+    sentInputIds.push(await acceptedInputId(await sendPrompt(page, sessionId, prompt)));
     await expect(
       page.getByTestId('user-message').last(),
       'the user bubble must render — proof the launcher was dispatched from the page',
     ).toContainText(marker, { timeout: 30_000 });
 
-    // ── Reach the window: the worker parked on the launch receipt, and a
+    // ── Reach the window: the reader parked on the launch receipt, and a
     //    child already running behind it. Ask again rather than skip — a
     //    runtime skip ends the round exactly as a failure does, and decides
     //    coverage by the model's mood. ────────────────────────────────────────
     await insist<true>({
       ask: async (attempt) => {
-        if (attempt > 1) await api.postTurnInput(sessionId, prompt);
+        if (attempt > 1) sentInputIds.push((await api.postTurnInput(sessionId, prompt)).input_id);
       },
       probe: async () => {
         const deadline = Date.now() + LAUNCH_MS;
         while (Date.now() < deadline) {
           const session = await api.getSession(sessionId);
-          if (TERMINAL_SESSION_STATES.has(String(session.state || ''))) {
+          if (['TERMINATED', 'DELETED'].includes(String(session.state || ''))) {
             throw new Error(
               `session ${sessionId} reached ${session.state} while waiting for the launch; `
                 + `last_error=${session.last_error || '<none>'}`,
             );
           }
           const held = frameHoldConsumed(frameHoldPath, sessionId, HELD_FRAME_TYPE);
-          if (held && await sentinelReadable(api, platform, sessionId, startedPath, 'started')) {
+          if (held && await sentinelReadable(api, platform, sessionId, root, startedPath, 'started')) {
             return true;
           }
-          // A settled turn with nothing held and no child is a decline the
+          // A reply that ended with nothing held and no child is a decline the
           // second ask can fix; everything else waits out the probe.
-          if (!held && !session.current_turn_id) return null;
+          const latest = sentInputIds.at(-1)!;
+          const answered = sessionResponseRows(sessionId)
+            .some((row) => row.input_ids.includes(latest) && row.status === 'ended');
+          if (!held && answered) return null;
           await sleep(2_000);
         }
         throw new Error(
@@ -331,7 +354,7 @@ test('a background launcher lost before its terminal still tracks and materializ
             + 'If the declaration was never consumed, this deployment is not running with '
             + `ASTRABOX_E2E_FAULTS=1 or ${frameHoldPath} is not the path the backend reads. `
             + 'If it WAS consumed and no child started, the parent reached for another tool '
-            + 'first and the barrier parked ahead of the launch.',
+            + 'first and the hold parked ahead of the launch.',
         );
       },
       what: 'the model answered without launching a run_in_background Agent — this spec\'s '
@@ -339,30 +362,26 @@ test('a background launcher lost before its terminal still tracks and materializ
       budgetMs: LAUNCH_MS,
       probeMs: LAUNCH_MS,
     });
+    const launchInputId = sentInputIds.at(-1)!;
 
-    // The launch is durable while its receipt is held before the parent terminal.
+    // ── The launch reply is still running: the hold is inside it. ───────────
     const beforeLoss = await api.getSession(sessionId);
-    launcherTurnId = String(beforeLoss.current_turn_id || '').trim();
+    const launching = sessionResponseRows(sessionId).filter((row) => row.input_ids.includes(launchInputId));
     expect(
-      launcherTurnId,
-      'the launcher turn must still be the current turn — the barrier is inside it',
-    ).not.toBe('');
-    const beforeLossEvents = sessionEvents(sessionId);
+      launching.map((row) => ({ origin: row.origin, status: row.status })),
+      'the reply answering the launch must be one running response — the hold is inside it',
+    ).toEqual([{ origin: 'input', status: 'running' }]);
+    launchResponseId = launching[0]!.response_id;
     expect(
-      openedManifests(beforeLossEvents).map((event) => String(event.turn_id || '')),
-      'the child launch must be durable before the parent can lose its runtime',
-    ).toEqual([launcherTurnId]);
+      (beforeLoss.current_responses ?? []).map((response) => response.response_id),
+      'the session must report the launch reply as the response in progress',
+    ).toEqual([launchResponseId]);
     expect(
-      beforeLossEvents.filter((event) => event.turn_id === launcherTurnId
-        && ['turn.completed', 'turn.failed', 'turn.recovered'].includes(String(event.event_type || ''))),
-      'the held launch receipt must precede the parent terminal',
-    ).toHaveLength(0);
-    expect(
-      await sentinelReadable(api, platform, sessionId, donePath, 'done'),
-      'the child must still have work to finish after the parent runtime is evicted',
+      await sentinelReadable(api, platform, sessionId, root, donePath, 'done'),
+      'the child must still have work to finish after the runtime connection is evicted',
     ).toBe(false);
 
-    // ── THE LOSS: the host's handle on this session, and only that. ─────────
+    // ── THE LOSS: the host's connection to this session's runtime, and only that.
     const sandbox = await requireSandboxHandle(api, sandboxId);
     await api.adminEvictRuntime(sessionId);
     const afterEvict = await api.adminSessionDetail(sessionId);
@@ -380,87 +399,92 @@ test('a background launcher lost before its terminal still tracks and materializ
         + 'host and this is a different story',
     ).toBe(true);
 
-    // Let the parked worker go, into a link the eviction already closed.
-    // Completion must rely on the durable launch, regardless of how the parent settles.
+    // Let the parked reader go, into a connection the eviction already closed.
     releaseFrameHoldFault(frameHoldPath);
+    // Claude's own record of the launch the platform must keep tracking: one
+    // backgrounded Agent call with its async_launched receipt.
+    await expect.poll(() => nativeLaunches(sessionId, marker).filter((launch) => launch.agentId).length, {
+      timeout: 15_000,
+      message: 'Claude\'s own transcript must hold one backgrounded Agent call with its async_launched receipt',
+    }).toBe(1);
 
-    // ── The user sends nothing else. The launcher turn has to settle. ───────
-    const settled = await api.waitForSession(
-      sessionId,
-      (record) => !String(record.current_turn_id || '').trim()
-        && !TERMINAL_SESSION_STATES.has(String(record.state || '')),
-      SETTLE_MS,
-    );
-    settledLastTurnStatus = String(settled.last_turn_status || '');
-
-    // ── Record the platform's tracking claim while the child is still at
-    //    work. Recorded, not asserted: the anti-vacuity check comes first. ────
-    tracking = await observeBackgroundTracking(api, sessionId, TRACK_MS);
+    // ── The user sends nothing else. The launch reply has to end, as written.
+    const launchReply = await api.waitForReplyTo(sessionId, launchInputId, { timeoutMs: SETTLE_MS });
+    expect(launchReply.id).toBe(launchResponseId);
+    expect(
+      launchReply.metadata?.outcome,
+      'the launch reply finished in the runtime; losing the connection to it must not fail it',
+    ).toBe('completed');
+    // The task notification can quote the child's prompt, so it is not one of these.
+    const launchPrompts = parentUserLines(nativeEntries(sessionId, 'main'), `E2E background launcher loss ${runId}.`)
+      .filter((line) => !textBlocks(line.entry).some((text) => text.includes(TASK_NOTIFICATION_MARKER)));
+    expect(launchPrompts.length, 'Claude\'s transcript must hold each prompt this spec sent').toBe(sentInputIds.length);
+    await expect.poll(() => {
+      const main = nativeEntries(sessionId, 'main');
+      const notice = parentUserLines(main, TASK_NOTIFICATION_MARKER)[0];
+      return parentSpeech(main, launchPrompts.at(-1)!.seq, notice?.seq).trim();
+    }, {
+      timeout: 15_000,
+      message: 'the launch reply in history must be exactly what Claude wrote — none lost, none twice',
+    }).toBe(messageText(launchReply).trim());
 
     // ── ANTI-VACUITY, asserted before anything about tracking: the work
-    //    really happened, in the live box, after the host lost the turn. ──────
+    //    really happened, in the live box, after the host lost its connection.
     await expect
-      .poll(() => sentinelReadable(api, platform, sessionId, donePath, 'done'), {
-        timeout: MATERIALIZE_MS,
+      .poll(() => sentinelReadable(api, platform, sessionId, root, donePath, 'done'), {
+        timeout: COMPLETION_MS,
         intervals: [1_000, 2_000],
         message:
           `the background child must finish its work in the live box (${donePath}). `
-          + 'If it never does, the child died with the host runtime — a different defect '
+          + 'If it never does, the child died with the host connection — a different defect '
           + 'from the one this spec is about, and the assertions below would be reports '
           + 'about nothing.',
       })
       .toBe(true);
 
-    // ── (1) The platform tracked the child it launched. ────────────────────
-    const openedDiag = `journal_event_types=${JSON.stringify(tracking.lastEventTypes)}; `
-      + `background_task_state=${JSON.stringify(
-        tracking.lastSession ? tracking.lastSession.background_task_state ?? null : null,
-      )}`;
-    expect(
-      tracking.openedEvents.map((event) => String(event.turn_id || '')),
-      'exactly one turn.background_tasks_opened must still name the launcher turn '
-        + `after runtime loss and recovery. ${openedDiag}`,
-    ).toEqual([launcherTurnId]);
-    expect(
-      tracking.sawOpenWindow,
-      'the session must report an OPEN background window at least once — it is the only '
-        + 'source the console has for "background work is running" '
-        + `(background_continuation.py:89-134 -> SessionPage.tsx:503). ${openedDiag}`,
-    ).toBe(true);
-
-    const openedEventSeq = Number(tracking.openedEvents[0].event_seq);
-    expect(
-      Number.isSafeInteger(openedEventSeq) && openedEventSeq > 0,
-      'the open manifest must carry its journal sequence — materialization is claimed against it',
-    ).toBe(true);
-
-    // ── (2) The result reaches the user with nobody attached. ──────────────
+    // ── (1) The platform tracked the one child it launched, to its end. ─────
     const closed = await api.waitForChildRuns(
       sessionId,
-      (rows) => rows.some((row) => row.closed),
-      MATERIALIZE_MS,
+      (rows) => rows.length >= 1 && rows.every((row) => row.closed),
+      COMPLETION_MS,
     );
     expect(
-      closed.filter((row) => row.engine_kind === 'claude_code' && row.engine_status === 'completed'
-        && row.closed),
-      'the launched child must close with the engine\'s own completed status, carried '
-        + 'verbatim — the platform re-encodes no vendor vocabulary',
-    ).not.toHaveLength(0);
-
-    // Native completion and the periodic result collector publish separately.
-    // Wait for custody to settle before checking its exactly-once claim.
-    await expect
-      .poll(() => materializationsForOpenedEvent(sessionEvents(sessionId), openedEventSeq).length, {
-        timeout: MATERIALIZE_MS,
-        intervals: [1_000, 2_000],
-        message: 'the completed child must materialize its open manifest exactly once',
-      })
-      .toBe(1);
-    const finalEvents = sessionEvents(sessionId);
+      closed.map((row) => ({ engine_kind: row.engine_kind, closed: row.closed, engine_status: row.engine_status })),
+      'exactly one child run, closed with the engine\'s own completed status carried verbatim',
+    ).toEqual([{ engine_kind: 'claude_code', closed: true, engine_status: 'completed' }]);
     expect(
-      materializationsForOpenedEvent(finalEvents, openedEventSeq),
-      'the open manifest must be claimed exactly once — materialized, not replayed twice',
-    ).toHaveLength(1);
+      JSON.stringify(childBashResults(sessionId)),
+      'the child\'s own transcript must hold its Bash result with the receipt it printed',
+    ).toContain(`${marker}_DONE`);
+
+    // ── (2) Claude's answer to the finished child reaches the conversation,
+    //    with nobody attached: one response it started on its own. ──────────
+    await expect
+      .poll(
+        () => sessionResponseRows(sessionId)
+          .filter((row) => row.origin === 'engine')
+          .map((row) => ({ status: row.status, outcome: row.outcome, input_ids: row.input_ids })),
+        {
+          timeout: COMPLETION_MS,
+          intervals: [1_000, 2_000],
+          message: 'Claude must answer the finished child with exactly one response of its own',
+        },
+      )
+      .toEqual([{ status: 'ended', outcome: 'completed', input_ids: [] }]);
+    const engineResponseId = sessionResponseRows(sessionId).find((row) => row.origin === 'engine')!.response_id;
+    const history = await api.getMessages(sessionId, 50);
+    const answer = history.messages.find((message) => message.id === engineResponseId);
+    expect(answer?.metadata?.origin, 'history must show the runtime\'s own answer as its own message').toBe('engine');
+    const main = nativeEntries(sessionId, 'main');
+    const notices = parentUserLines(main, TASK_NOTIFICATION_MARKER);
+    expect(notices, 'Claude\'s transcript must hold the one task notification it answered').toHaveLength(1);
+    const nativeAnswer = parentSpeech(main, notices[0]!.seq).trim();
+    expect(nativeAnswer, 'Claude must have said something in answer to the finished child').not.toBe('');
+    expect(messageText(answer!).trim(), 'history must hold Claude\'s answer exactly as Claude wrote it').toBe(nativeAnswer);
+    expect(
+      sessionInputRows(sessionId).map((row) => row.input_id),
+      'the completion must arrive without a message from anyone',
+    ).toEqual(sentInputIds);
 
     // ── (3) The user comes back to the conversation and reads the result.
     //    A cold open: the page rebuilds its child-run registry from the
@@ -470,79 +494,77 @@ test('a background launcher lost before its terminal still tracks and materializ
     await expect(
       page.getByTestId('user-message').filter({ hasText: marker }),
       'the launcher message the user sent must still be in the transcript',
-    ).toHaveCount(1, { timeout: 30_000 });
+    ).toHaveCount(sentInputIds.length, { timeout: 30_000 });
+    const answerOnPage = page.locator(`[data-message-id="${engineResponseId}"]`);
+    await expect(answerOnPage, 'the runtime\'s own answer must be one message on the page').toHaveCount(1, {
+      timeout: 30_000,
+    });
+    if (await answerOnPage.getByTestId('assistant-turn-process').count() > 0) {
+      await revealAssistantProcess(page, { within: answerOnPage });
+    }
+    const rendered = answerOnPage.getByTestId('assistant-text');
     await expect
-      .poll(
-        () => page.getByTestId('assistant-message').filter({ hasText: `${marker}_DONE` }).count(),
-        {
-          timeout: MATERIALIZE_MS,
-          message:
-            `the child's completion marker ${marker}_DONE must surface in the rendered `
-            + 'transcript. Materialization is the only route that can put it there with '
-            + 'nobody attached; a conversation that lost its manifest never reports the '
-            + 'work it is still doing.',
-        },
-      )
-      .toBeGreaterThan(0);
+      .poll(async () => normalizeRendered((await rendered.allInnerTexts()).join('\n')), {
+        timeout: 30_000,
+        message: 'the transcript must show Claude\'s answer to the finished child',
+      })
+      .toBe(normalizeRendered(nativeAnswer));
 
     await page.getByRole('tab', { name: /^Agents/ }).click();
     const agentsPanel = page.getByTestId('subagent-agents-panel');
     await expect(agentsPanel).toBeVisible({ timeout: 15_000 });
-    await expect
-      .poll(() => agentsPanel.getByTestId('subagent-agent-row').count(), {
-        timeout: MATERIALIZE_MS,
-        message: 'the launched child must render a row in the Agents panel',
-      })
-      .toBeGreaterThanOrEqual(1);
+    const row = agentsPanel.locator(`[data-child-run-id="${closed[0]!.child_run_id}"]`);
+    await expect(row, 'the launched child must render a row in the Agents panel').toHaveCount(1, {
+      timeout: 30_000,
+    });
     // Exact match on the badge, not `hasText` on the row: a row's subtitle can
     // itself contain the word completed.
     await expect(
-      agentsPanel.getByText(/^completed$/).first(),
+      row.getByText(/^completed$/),
       'the Agents panel must close the child out at the engine\'s exact status',
-    ).toBeVisible({ timeout: MATERIALIZE_MS });
+    ).toBeVisible({ timeout: 30_000 });
 
-    // And the header settles. A conversation that recovered its child but is
-    // left pulsing tells the user work is still running.
+    // And the header settles. A conversation that kept its child but is left
+    // pulsing tells the user work is still running.
     await expect(
       page.getByTestId('run-view').getByTestId('status-pill').first(),
-      'a conversation that lost its launcher must not be left pulsing',
-    ).toHaveAttribute('data-pulse', 'false', { timeout: MATERIALIZE_MS });
+      'a conversation that lost its connection must not be left pulsing',
+    ).toHaveAttribute('data-pulse', 'false', { timeout: 30_000 });
     expect(
-      materializationsForOpenedEvent(sessionEvents(sessionId), openedEventSeq),
-      'reading the settled result must not materialize the manifest again',
-    ).toHaveLength(1);
+      sessionResponseRows(sessionId).filter((row) => row.origin === 'engine').map((row) => row.response_id),
+      'reading the settled result must not start another answer',
+    ).toEqual([engineResponseId]);
 
     console.log('BACKGROUND_LAUNCH_LOSS_E2E_EVIDENCE', JSON.stringify({
       session_id: sessionId,
       sandbox_id: sandboxId,
-      launcher_turn_id: launcherTurnId,
-      // Diagnostic only, never the verdict: the transcript-recovery lane
-      // settles provisionally and projects from the mirror, so a pinned value
-      // here would assert an implementation route.
-      last_turn_status: settledLastTurnStatus,
+      launch_response_id: launchResponseId,
+      engine_response_id: engineResponseId,
       held_frame_type: HELD_FRAME_TYPE,
       child_sentinels: { started: startedPath, done: donePath },
-      journal_event_types: eventTypes(finalEvents),
-      child_runs: closed.map((row: ChildRunRecord) => ({
-        child_run_id: row.child_run_id,
-        engine_kind: row.engine_kind,
-        engine_event: row.engine_event,
-        engine_status: row.engine_status,
-        closed: row.closed,
+      child_runs: closed.map((childRun: ChildRunRecord) => ({
+        child_run_id: childRun.child_run_id,
+        engine_kind: childRun.engine_kind,
+        engine_event: childRun.engine_event,
+        engine_status: childRun.engine_status,
+        closed: childRun.closed,
       })),
-      opened_event_seq: openedEventSeq,
     }));
   } finally {
     // The declaration goes first and unconditionally. A hold nobody releases
-    // raises on the backend after its own 120s timeout and fails the turn for a
-    // reason unrelated to this spec, and a file left behind would park the next
-    // turn in this deployment. `trackSessions()` still decides whether the
-    // session itself survives for diagnosis.
+    // raises on the backend after its own 120s timeout and stops the reader for
+    // a reason unrelated to this spec, and a file left behind would park the
+    // next response in this deployment. `trackSessions()` still decides whether
+    // the session itself survives for diagnosis.
     releaseFrameHoldFault(frameHoldPath);
     clearFrameHoldFault(frameHoldPath);
-    test.info().annotations.push({
-      type: 'e2e_launcher_last_turn_status',
-      description: settledLastTurnStatus || '<unsettled>',
-    });
+    let responses: unknown;
+    try {
+      responses = sessionResponseRows(sessionId);
+    } catch (error) {
+      // A broken read must not replace the failure this run is unwinding from.
+      responses = { unavailable: String(error) };
+    }
+    test.info().annotations.push({ type: 'e2e_session_responses', description: JSON.stringify(responses) });
   }
 });

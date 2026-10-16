@@ -1,7 +1,8 @@
 import i18n from '@/i18n';
 import { readUserAction } from './session/userAction';
 
-import type { paths } from './api/schema';
+import type { components, paths } from './api/schema';
+import type { UIMessage } from 'ai';
 import createClient from 'openapi-fetch';
 
 import {
@@ -611,6 +612,8 @@ async function send<R extends { response: Response }>(
 }
 
 const client = createClient<paths>({ baseUrl: CLIENT_BASE_URL, credentials: 'include' });
+
+type Schemas = components['schemas'];
 
 /**
  * The console's own reading of a payload the document leaves open.
@@ -1297,18 +1300,23 @@ export async function adminGetSessionDetail(sessionId: string): Promise<AdminSes
   })));
 }
 
+/**
+ * A session's latest messages beside one response's stored parts: the newest
+ * response still running, else the newest on the page, unless `responseId`
+ * names another.
+ */
 export async function adminGetSessionTrace(
   sessionId: string,
-  opts: { turnId?: string; messageLimit?: number; frameLimit?: number } = {}
+  opts: { responseId?: string; messageLimit?: number; partLimit?: number } = {}
 ): Promise<AdminSessionTrace> {
   return asDeclared<AdminSessionTrace>(await send((wire) => client.GET('/api/v1/admin/sessions/{session_id}/trace', {
     ...wire,
     params: {
       path: { session_id: sessionId },
       query: undeclaredQuery({
-        turn_id: opts.turnId,
+        response_id: opts.responseId,
         message_limit: opts.messageLimit,
-        frame_limit: opts.frameLimit,
+        part_limit: opts.partLimit,
       }),
     },
   })));
@@ -1957,19 +1965,32 @@ export async function getSession(sessionId: string, init?: RequestInit): Promise
   })) as Promise<SessionRecord>;
 }
 
-export interface ActiveTurnOverlay {
-  turn_id: string;
-  message: import('./types').MessageRecord;
-  messages?: import('./types').MessageRecord[];
-  resume_cursor: { turn_id: string; frame_seq: number };
+/**
+ * One page of a session's history as AI SDK UI messages, oldest first.
+ *
+ * A user message is an accepted input (id = its `client_message_id`); an
+ * assistant message is one response (id = the response id), its parts folded
+ * the way the AI SDK folds them live. Ended responses carry their work folded
+ * behind `data-process-block` parts. `next_cursor` asks for the next older
+ * page and pins it to the output position of the first one. The first page
+ * also carries `output_seq`, the position its parts were read through and the
+ * one the session's stream is followed from, and the interaction waiting on
+ * the owner.
+ */
+export interface HistoryBlockPage {
+  messages: UIMessage[];
+  has_more: boolean;
+  output_seq?: number | null;
+  pending_interaction?: PendingInteraction | null;
+  paging_mode: 'blocks';
+  next_cursor?: string | null;
+  block_count: number;
 }
 
-export interface MessagePage {
-  messages: import('./types').MessageRecord[];
+/** The parts one folded header stands for, as one assistant message. */
+export interface HistoryBlockDetails {
+  messages: UIMessage[];
   has_more: boolean;
-  active_turn_overlay: ActiveTurnOverlay | null;
-  session_frame_seq: number | null;
-  pending_interaction: PendingInteraction | null;
 }
 
 export interface SessionChildRun {
@@ -2009,17 +2030,16 @@ export interface ChildRunMessagePage {
   messages: ChildRunTranscriptMessage[];
 }
 
-export interface SessionFileChangeTurn {
-  turn_id: string;
-  messages: Array<{
-    message_id: string;
-    parts: Array<{ type: 'data-file-changes'; id?: string; data: import('./types').FileChangesResult }>;
-  }>;
+/** One ended response and every `data-file-changes` part it recorded. */
+export interface SessionFileChangeResponse {
+  response_id: string;
+  parts: Array<{ type: 'data-file-changes'; id?: string; data: import('./types').FileChangesResult }>;
 }
 
+/** The responses that ended after `after_seq`, through `through_seq` (the next `after_seq`). */
 export interface SessionFileChanges {
   through_seq: number;
-  turns: SessionFileChangeTurn[];
+  responses: SessionFileChangeResponse[];
 }
 
 export async function getSessionFileChanges(
@@ -2032,41 +2052,12 @@ export async function getSessionFileChanges(
   })));
 }
 
-export async function getMessages(
-  sessionId: string,
-  before?: string,
-  limit = 20,
-  init?: RequestInit,
-): Promise<MessagePage> {
-  return asDeclared<MessagePage>(await send((wire) => client.GET('/api/v1/sessions/{session_id}/messages', {
-    ...wire,
-    params: {
-      path: { session_id: sessionId },
-      query: undeclaredQuery({ limit, before }),
-    },
-    signal: init?.signal ?? undefined,
-  })));
-}
-
 /**
- * One page of the transcript with each settled response's tool work folded.
+ * One page of the conversation with each ended response's work folded.
  *
- * Same records as `getMessages`, paginated by record rather than by timestamp:
- * `next_cursor` is what to send back as `before`, and it pins every later page
- * to the history this page saw. `getMessages` stays the raw read, for callers
- * that want the whole record rather than the page's view of it.
+ * Omitting `before` reads the newest page; `next_cursor` from a page is the
+ * `before` for the one older than it.
  */
-export interface HistoryBlockPage extends MessagePage {
-  paging_mode?: 'blocks';
-  next_cursor?: string | null;
-  block_count?: number;
-}
-
-export interface HistoryBlockDetails {
-  messages: import('./types').MessageRecord[];
-  has_more: boolean;
-}
-
 export async function getHistoryBlocks(
   sessionId: string,
   before?: string,
@@ -2084,7 +2075,7 @@ export async function getHistoryBlocks(
 }
 
 /**
- * The blocks one folded header stands for, read at the header's own cursor.
+ * The parts one folded header stands for, read at the header's own cursor.
  */
 export async function getHistoryBlockDetails(
   sessionId: string,
@@ -2106,21 +2097,21 @@ export async function getHistoryBlockDetails(
  * Ask for the label of one response's folded work.
  *
  * The server answers with the stored label when there is one, so a reader who
- * arrives after the turn settled gets the label the turn already wrote rather
- * than a second one. `retry` reopens a label whose generation failed.
+ * arrives after the response ended gets the label it already has rather than
+ * a second one. `retry` reopens a label whose generation failed.
  */
 export async function generateProcessSummary(
   sessionId: string,
-  messageId: string,
+  responseId: string,
   retry = false,
 ): Promise<ProcessSummaryState> {
-  return asDeclared<ProcessSummaryState>(await send((wire) => client.POST('/api/v1/sessions/{session_id}/messages/{message_id}/process-summary', {
+  return send((wire) => client.POST('/api/v1/sessions/{session_id}/messages/{message_id}/process-summary', {
     ...wire,
     params: {
-      path: { session_id: sessionId, message_id: messageId },
+      path: { session_id: sessionId, message_id: responseId },
       query: undeclaredQuery({ retry: retry ? 'true' : '' }),
     },
-  })));
+  }));
 }
 
 export async function listSessionChildRuns(
@@ -2180,18 +2171,22 @@ export async function revokeSessionShare(sessionId: string): Promise<{ enabled: 
   })) as Promise<{ enabled: boolean }>;
 }
 
-// Viewer side: the share token grants read-only access without a login.
-export async function getSharedSession(token: string): Promise<SessionRecord & { share_allow_download?: boolean }> {
-  return asDeclared<SessionRecord & { share_allow_download?: boolean }>(await send((wire) => client.GET('/api/v1/share/{token}', {
-    ...wire,
-    params: { path: { token } },
-  })));
+/**
+ * What a share link shows around its transcript: the title, the interaction
+ * the conversation waits on (without the tool input it asks about), and
+ * whether files may be downloaded.
+ */
+export interface SharedSession {
+  title?: string | null;
+  pending_interaction?: PendingInteraction | null;
+  share_allow_download: boolean;
 }
 
-export async function getSharedMessages(token: string, before?: string, limit = 20): Promise<MessagePage> {
-  return asDeclared<MessagePage>(await send((wire) => client.GET('/api/v1/share/{token}/messages', {
+// Viewer side: the share token grants read-only access without a login.
+export async function getSharedSession(token: string): Promise<SharedSession> {
+  return asDeclared<SharedSession>(await send((wire) => client.GET('/api/v1/share/{token}', {
     ...wire,
-    params: { path: { token }, query: undeclaredQuery({ limit, before }) },
+    params: { path: { token } },
   })));
 }
 
@@ -2205,16 +2200,15 @@ export async function listSharedFiles(
   })) as Promise<SessionFilesListResponse>;
 }
 
+/** The shared conversation's history; a share link has no stream, so its first page carries no `output_seq`. */
 export async function getSharedHistoryBlocks(
   token: string, before?: string, limit = 50, init?: RequestInit,
 ): Promise<HistoryBlockPage> {
-  const page = asDeclared<HistoryBlockPage>(await send((wire) => client.GET('/api/v1/share/{token}/history-blocks', {
+  return asDeclared<HistoryBlockPage>(await send((wire) => client.GET('/api/v1/share/{token}/history-blocks', {
     ...wire,
     params: { path: { token }, query: { limit, before } },
     signal: init?.signal ?? undefined,
   })));
-  // A read-only share has no output-stream subscription cursor.
-  return { ...page, session_frame_seq: null };
 }
 
 export async function getSharedHistoryBlockDetails(
@@ -2243,20 +2237,29 @@ export async function setSessionPermissionMode(
   })) as Promise<{ session_id: string; permission_mode: PermissionMode; applied: boolean }>;
 }
 
-export async function answerPendingInteraction(
+export type InteractionAnswerReceipt = Schemas['InteractionAnswerReceipt'];
+
+/**
+ * Answer an interaction the runtime opened. The answer is stored for the
+ * runtime and the response continues on the session's stream.
+ *
+ * The outcome of a request that outlives its deadline is unknown, so the
+ * deadline is reported as that rather than as a refusal.
+ */
+export async function answerInteraction(
   sessionId: string,
   interactionId: string,
   answer: InteractionResponse,
-): Promise<{ interaction_id: string; answered: boolean; permission_mode?: PermissionMode }> {
+): Promise<InteractionAnswerReceipt> {
   const controller = new AbortController();
   const timeoutId = globalThis.setTimeout(() => controller.abort(), 15_000);
   try {
-    return await (send((wire) => client.POST('/api/v1/sessions/{session_id}/interaction-respond', {
+    return await send((wire) => client.POST('/api/v1/sessions/{session_id}/interactions/{interaction_id}/answer', {
       ...wire,
-      params: { path: { session_id: sessionId } },
-      body: { interaction_id: interactionId, answer },
+      params: { path: { session_id: sessionId, interaction_id: interactionId } },
+      body: undeclared({ answer }),
       signal: controller.signal,
-    })) as Promise<{ interaction_id: string; answered: boolean; permission_mode?: PermissionMode }>);
+    }));
   } catch (error) {
     // Headers can arrive before an aborted body read is shaped by send(). The
     // caller's deadline, not the resulting error class, owns this unknown outcome.
@@ -2264,34 +2267,19 @@ export async function answerPendingInteraction(
       throw new Error(`INTERACTION_RESPONSE_TIMEOUT: ${i18n.t('chat:interaction.response_timeout')}`);
     }
     throw error;
-  } finally {
+  }
+  finally {
     globalThis.clearTimeout(timeoutId);
   }
 }
 
-export interface NativeTurnInputReceipt {
-  session_id: string;
-  command_id: string;
-  client_message_id: string;
-  input_id: string;
-  status: 'delivered';
-}
+export type InputReceipt = Schemas['InputReceipt'];
 
-export interface TurnReceipt {
-  turn_id: string;
-  command_id: string;
-  client_message_id: string | null;
-  accepted: boolean;
-}
-
-export type TurnInputReceipt = NativeTurnInputReceipt | TurnReceipt;
-
-/** Send a message. The receipt comes back here; the content arrives on the session stream. */
 /**
- * One turn input's content: its text, or the engine's content blocks when the
+ * One input's content: its text, or the engine's content blocks when the
  * message carries more than text.
  */
-export type TurnInputContent =
+export type InputContent =
   | string
   | Array<
       | { type: 'text'; text: string }
@@ -2301,31 +2289,38 @@ export type TurnInputContent =
         }
     >;
 
-export async function appendTurnInput(
+/**
+ * Send a message. The receipt says the session accepted it; its response
+ * arrives on the session's stream.
+ *
+ * `client_message_id` is the message's identity: the server answers a repeat
+ * of the same id with the earlier receipt (`duplicate`), so replaying a
+ * request whose answer was lost cannot accept the message twice.
+ */
+export async function sendInput(
   sessionId: string,
   body: {
-    content: TurnInputContent;
+    content: InputContent;
     client_message_id: string;
-    permission_mode?: string | null;
   },
-): Promise<TurnInputReceipt> {
+): Promise<InputReceipt> {
   return send(
-    (wire) => client.POST('/api/v1/sessions/{session_id}/turn-inputs', {
+    (wire) => client.POST('/api/v1/sessions/{session_id}/inputs', {
       ...wire,
       params: { path: { session_id: sessionId } },
-      body: {
+      body: undeclared({
         content: body.content,
         client_message_id: body.client_message_id,
-        ...(body.permission_mode ? { permission_mode: body.permission_mode } : {}),
-      },
+      }),
     }),
-    {
-      // client_message_id is the durable command identity. The server returns
-      // the same receipt when a lost-response retry repeats the same payload,
-      // so replay cannot create a second user input or a second turn.
-      mutationReplay: 'idempotent',
-    },
-  ) as Promise<TurnInputReceipt>;
+    { mutationReplay: 'idempotent' },
+  );
+}
+
+/** The session's stream after `afterSeq`: what it missed, then live, through the end of one response. */
+export function buildSessionStreamUrl(sessionId: string, afterSeq: number): string {
+  const params = new URLSearchParams({ after_seq: String(afterSeq) });
+  return buildApiUrl(`/api/v1/sessions/${encodeURIComponent(sessionId)}/stream?${params}`);
 }
 
 function isEventStream(response: Response): boolean {
@@ -2415,11 +2410,17 @@ async function streamSseBody<T>(response: Response, onEvent: (event: T) => void)
   }
 }
 
-export async function interruptSession(sessionId: string): Promise<{ status: string }> {
+export type InterruptReceipt = Schemas['InterruptReceipt'];
+
+/**
+ * Ask the conversation's runtime to stop the response it is producing.
+ * `accepted` means a reader will pass the interrupt on; `idle` that nothing ran.
+ */
+export async function interruptSession(sessionId: string): Promise<InterruptReceipt> {
   return send((wire) => client.POST('/api/v1/sessions/{session_id}/interrupt', {
     ...wire,
     params: { path: { session_id: sessionId } },
-  })) as Promise<{ status: string }>;
+  }));
 }
 
 export async function recoverSession(sessionId: string): Promise<SessionRecord> {
@@ -2620,19 +2621,30 @@ export async function readSessionFile(
   return new Blob(chunks);
 }
 
+/**
+ * One event of a terminal command: its `ack` (with the `command_id`), output,
+ * the directory the shell ended in, and a final `exit`. Events read back from
+ * the command's record carry their `seq`.
+ */
 export interface TerminalEvent {
   type: 'ack' | 'stdout' | 'stderr' | 'cwd' | 'exit';
+  seq?: number;
+  command_id?: string;
   text?: string;
   path?: string;
   command?: string;
   working_directory?: string | null;
-  exit_code?: number;
+  /** `null` when the platform could not observe the command's status. */
+  exit_code?: number | null;
 }
 
 /**
+ * Run one command in the session's terminal, its events read as they happen.
+ *
  * Read on a raw fetch, not the generated client: the client parses a response
  * body before handing it back, and this one is an event stream that has to be
- * consumed frame by frame while the command is still running.
+ * consumed frame by frame while the command is still running. Closing the
+ * stream leaves the command running; `followTerminalCommand` reads it again.
  */
 export async function runTerminalCommandStream(
   sessionId: string,
@@ -2657,6 +2669,48 @@ export async function runTerminalCommandStream(
   }
 
   await streamSseBody<TerminalEvent>(response, onEvent);
+}
+
+/**
+ * Follow a terminal command again: its recorded events after `afterSeq`, then
+ * live, through its `exit`. `afterSeq` -1 reads it from its first event.
+ *
+ * Without `commandId` it follows the command the terminal runs now, and
+ * answers `false` when none runs.
+ */
+export async function followTerminalCommand(
+  sessionId: string,
+  target: { commandId?: string; afterSeq: number },
+  onEvent: (event: TerminalEvent) => void,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const params = new URLSearchParams({ after_seq: String(target.afterSeq) });
+  if (target.commandId) params.set('command_id', target.commandId);
+  const response = await fetch(buildApiUrl(`/api/v1/sessions/${sessionId}/terminal/stream?${params}`), {
+    method: 'GET',
+    credentials: 'include',
+    headers: { Accept: 'text/event-stream' },
+    signal,
+  });
+  if (response.status === 204) return false;
+  if (!isEventStream(response)) {
+    await parseErrorFromResponse(response);
+  }
+  await streamSseBody<TerminalEvent>(response, onEvent);
+  return true;
+}
+
+export type TerminalInterruptResult = Schemas['TerminalInterruptResult'];
+
+/**
+ * Stop the command the session's terminal runs. Answers once the command has
+ * ended (`completed`), or `idle` when none ran.
+ */
+export async function interruptTerminal(sessionId: string): Promise<TerminalInterruptResult> {
+  return send((wire) => client.POST('/api/v1/sessions/{session_id}/terminal/interrupt', {
+    ...wire,
+    params: { path: { session_id: sessionId } },
+  }));
 }
 
 // The assistant module speaks to the same routes, through the same success

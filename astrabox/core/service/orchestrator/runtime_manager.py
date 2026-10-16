@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from astrabox.core.service.orchestrator.session_kernel.workers.lifecycle.recovery_ownership import current_recovery
+from astrabox.core.service.orchestrator.session_lifecycle.ownership import current_recovery
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.settings import load_astrabox_settings
@@ -39,9 +39,6 @@ from astrabox.core.service.orchestrator.runtime.sandbox_client import (
     get_underlying_sandbox,
     reset_server_session,
     resolve_enhanced_server_endpoint,
-)
-from astrabox.core.service.orchestrator.runtime.terminal_execution import (
-    is_isolated_terminal_execution_id,
 )
 from astrabox.seams.sandbox import (
     SANDBOX_INSTALLATION_METADATA_KEY,
@@ -83,7 +80,7 @@ from astrabox.persistence.repository.keyset import (
     iter_keyset_pages,
 )
 from astrabox.persistence.repository.session_repository import SessionRepository
-from astrabox.persistence.repository.session_snapshot_repository import SessionSnapshotRepository
+from astrabox.persistence.repository.session_runtime_repository import SessionRuntimeRepository
 from astrabox.core.service.orchestrator.runtime.storage import (
     clone_default_repo,
 )
@@ -256,7 +253,6 @@ class RemoteAgentRuntimeManager:
         *,
         sessions_repo: Any = None,
         agent_service_getter: Callable[[], Any] | None = None,
-        event_broker: Any = None,
     ) -> None:
         self._agent_service_getter = agent_service_getter
         #: sandbox_id → monotonic time of the prewarm sweep's last lease renew.
@@ -267,10 +263,6 @@ class RemoteAgentRuntimeManager:
         # Where the budgeted sweeps resume (see KeysetCursor).
         self._agent_box_reap_cursor = KeysetCursor("agent_id")
         self._startup_allocation_cursor = KeysetCursor("session_id")
-        #: The process-wide Session event broker, handed to the platform sinks
-        #: an engine publishes resident output through. Absent only in
-        #: harnesses that build the manager alone; those sinks warn loudly.
-        self.event_broker = event_broker
         self._settings = load_astrabox_settings()
         self._config = RuntimeConfigResolver(self._settings)
         self._runtimes: dict[str, SessionRuntime] = {}
@@ -287,12 +279,6 @@ class RemoteAgentRuntimeManager:
         # sandbox_id -> persisted backend name; immutable per box, so cache to avoid
         # a session lookup on every by-id control-plane op (e.g. per-turn probe).
         self._sandbox_backend_cache: dict[str, str] = {}
-        # An OpenSandbox isolated terminal is interrupted by cancelling the
-        # worker that owns its SSE request. TerminalService then deletes that
-        # disposable terminal session and persists a replacement; retain the
-        # owner task under the durable execution id so the journal-driven
-        # interrupt path can start that sequence.
-        self._terminal_execution_tasks: dict[str, asyncio.Task[Any]] = {}
 
     def schedule_agent_runtime_reconciliation(self, agent_id: str) -> bool:
         """Send capacity demand to the Agent's configuration reconciliation.
@@ -327,20 +313,11 @@ class RemoteAgentRuntimeManager:
         self._quiesced_reason = str(reason or "shutdown").strip() or "shutdown"
         runtimes = list(self._runtimes.items())
         self._runtimes.clear()
-        terminal_tasks = list(self._terminal_execution_tasks.values())
-        self._terminal_execution_tasks.clear()
         logger.warning(
             "closing runtime manager for shutdown: reason=%s runtimes=%d",
             reason,
             len(runtimes),
         )
-        for _session_id, runtime in runtimes:
-            with contextlib.suppress(BaseException):
-                if runtime.current_task and not runtime.current_task.done():
-                    runtime.current_task.cancel("shutdown")
-        for task in terminal_tasks:
-            if not task.done():
-                task.cancel("shutdown")
         if not runtimes:
             return
         coro = self._disconnect_runtimes_for_quiesce(runtimes, reason=reason)
@@ -454,7 +431,7 @@ class RemoteAgentRuntimeManager:
         Engines with a resident per-conversation process expose ``dispose``
         for delete/archive/end. ``True`` means the resident process was
         identified and terminated; ``False`` lets the caller fall back to a
-        durable engine turn anchor after a backend restart.
+        recorded native identity after a client was evicted.
         """
         engine_client = getattr(runtime, "engine_client", None)
         dispose_engine = getattr(engine_client, "dispose", None)
@@ -475,9 +452,6 @@ class RemoteAgentRuntimeManager:
         session_id: str,
         reason: str,
     ) -> None:
-        with contextlib.suppress(BaseException):
-            if runtime.current_task and not runtime.current_task.done():
-                runtime.current_task.cancel(reason)
         try:
             await RemoteAgentRuntimeManager._close_runtime_turn_client(runtime)
         except BaseException as exc:
@@ -710,8 +684,6 @@ class RemoteAgentRuntimeManager:
     def _resolve_model_access(self, mc: dict[str, Any]) -> ResolvedModelAccess:
         return self._config.resolve_model_access(mc)
 
-    def _resolve_sandbox_api_key(self) -> str | None:
-        return self._config.resolve_sandbox_api_key()
 
     def _resolve_sandbox_backend_secret(
         self,
@@ -726,19 +698,6 @@ class RemoteAgentRuntimeManager:
         )
         return provider.secret_material(settings=self._settings)
 
-    def _build_sandbox_connection_config(
-        self, template: Any, connection_config_cls: Any
-    ) -> Any | None:
-        adapter = sandbox_for_template(template)
-        secret_material = None
-        if adapter.connection_secret_uses_legacy_sandbox_api_key:
-            secret_material = self._resolve_sandbox_api_key()
-        return adapter.connection_config(
-            connection_config_cls=connection_config_cls,
-            settings=self._settings,
-            request_timeout_seconds=self._settings.sandbox_request_timeout_seconds,
-            secret_material=secret_material,
-        )
 
     def _resolve_remote_cwd(self) -> str | None:
         return self._config.resolve_remote_cwd()
@@ -1011,11 +970,12 @@ class RemoteAgentRuntimeManager:
         return resumed
 
     async def wake_parked_session(self, session: dict[str, Any]) -> None:
-        """Wake a parked binding and discard its pre-pause transport address.
+        """Resume a parked box under its id and announce it to the reader hosts.
 
         File requests and turns share the session lock in this process. The
         durable comparison protects a binding replaced by another worker while
-        the provider resumes compute; it never clears a newer parked mark.
+        the provider resumes compute; it never clears a newer parked mark. The
+        write that clears the mark sends the session's ``reader`` notice.
         """
         if not session.get("sandbox_parked_at"):
             return
@@ -1032,7 +992,6 @@ class RemoteAgentRuntimeManager:
             parked_at = current.get("sandbox_parked_at")
             if not parked_at:
                 session["sandbox_parked_at"] = None
-                session["sandbox_endpoint"] = current.get("sandbox_endpoint")
                 return
             if not await self.resume_sandbox_by_id(sandbox_id):
                 raise APIError(
@@ -1042,14 +1001,15 @@ class RemoteAgentRuntimeManager:
                 )
             updates = {
                 "sandbox_parked_at": None,
-                "sandbox_endpoint": None,
                 "sandbox_resumed_at": utcnow_iso(),
             }
+            # The box runs again: a reader host anywhere may connect to it.
             if not await self._sessions_repo.compare_and_update_session(
                 session_id,
                 expected={"sandbox_id": sandbox_id, "sandbox_parked_at": parked_at},
                 updates=updates,
                 touch_updated_at=False,
+                notify="reader",
             ):
                 raise APIError(
                     code="AGENT_RUNTIME_ERROR",
@@ -1063,11 +1023,6 @@ class RemoteAgentRuntimeManager:
         normalized = str(value or "").strip()
         return normalized or None
 
-    @classmethod
-    def _sandbox_ids_conflict(cls, left: Any, right: Any) -> bool:
-        left_id = cls._normalize_sandbox_id(left)
-        right_id = cls._normalize_sandbox_id(right)
-        return bool(left_id and right_id and left_id.lower() != right_id.lower())
 
     @classmethod
     def _runtime_sandbox_id(cls, runtime: SessionRuntime | None) -> str | None:
@@ -1099,15 +1054,6 @@ class RemoteAgentRuntimeManager:
             return None
         return runtime_id, expected_id
 
-    @staticmethod
-    def _task_done(task: Any) -> bool:
-        done = getattr(task, "done", None)
-        if not callable(done):
-            return False
-        try:
-            return bool(done())
-        except Exception:
-            return False
 
     @classmethod
     def _runtime_client_unusable_reason(cls, runtime: SessionRuntime | None) -> str | None:
@@ -1134,9 +1080,6 @@ class RemoteAgentRuntimeManager:
         session_id: str,
         reason: str,
     ) -> None:
-        with contextlib.suppress(BaseException):
-            if runtime.current_task and not runtime.current_task.done():
-                runtime.current_task.cancel()
         with contextlib.suppress(Exception):
             await RemoteAgentRuntimeManager._close_runtime_turn_client(runtime)
         logger.info("evicted runtime session=%s reason=%s", session_id, reason)
@@ -1208,235 +1151,6 @@ class RemoteAgentRuntimeManager:
             sandbox_obj, sandbox_id=eff_id or None, port=port, connect_fn=self.connect_sandbox_only
         )
 
-    async def resolve_sandbox_endpoint_by_id(
-        self, sandbox_id: str, *, port: int = 8000
-    ) -> str | None:
-        backend = await self._resolve_sandbox_backend(sandbox_id)
-        return await sandbox_for_name(backend).resolve_endpoint(sandbox_id, port)
-
-    async def _check_server_health(self, sandbox, port: int, timeout: float = 5.0) -> bool:
-        return await check_server_health(sandbox, port, timeout)
-
-    async def _reset_server_session(
-        self, sandbox, port: int, session_id: str, timeout: float = 5.0
-    ) -> None:
-        return await reset_server_session(sandbox, port, session_id, timeout)
-
-    @staticmethod
-    def _extract_sandbox_id_from_endpoint(endpoint: str | None) -> str | None:
-        """The sandbox an endpoint names, by the enabled backend whose address it is.
-
-        How an address encodes a box is a backend's knowledge
-        (:meth:`SandboxProvider.endpoint_names_sandbox`). ``None`` when no
-        enabled backend can tell.
-        """
-        value = str(endpoint or "").strip()
-        if not value:
-            return None
-        for name in enabled_sandbox_names():
-            named = sandbox_for_name(name).endpoint_names_sandbox(value)
-            if named:
-                return named
-        return None
-
-    async def _resolve_validated_sandbox_endpoint(
-        self,
-        *,
-        session_id: str | None = None,
-        sandbox_endpoint: str | None = None,
-        sandbox_id: str | None = None,
-        port: int = 8000,
-        reason: str = "sandbox_endpoint",
-    ) -> str | None:
-        endpoint = str(sandbox_endpoint or "").strip()
-        requested_sandbox_id = self._normalize_sandbox_id(sandbox_id)
-        # Some backends' presign endpoints are TTL-bound full URLs; prefer re-minting via
-        # sandbox_id when available.  Other backends' endpoints are also full URLs
-        # but are themselves the authoritative data-plane address — clearing them
-        # forces an unnecessary resolve round-trip (30s timeout).  Keep the URL when
-        # the sandbox backend provides authoritative endpoints.
-        if endpoint.startswith(("http://", "https://")) and requested_sandbox_id:
-            rt = self._runtimes.get(session_id) if session_id else None
-            backend = (
-                sandbox_for_sandbox(rt.sandbox) if rt and getattr(rt, "sandbox", None) else None
-            )
-            # Resolve the backend from the live sandbox via the seam; if there is none, leave it
-            # unresolved — a pluggable framework must not guess which backend owns an id. The
-            # ``getattr`` below then treats an unresolved backend as not-authoritative.
-            if not getattr(backend, "endpoint_is_authoritative", False):
-                endpoint = ""
-        endpoint_sandbox_id = self._extract_sandbox_id_from_endpoint(endpoint)
-        runtime = self._runtimes.get(session_id) if session_id else None
-        expected_sandbox_id = requested_sandbox_id or endpoint_sandbox_id
-
-        if session_id and expected_sandbox_id:
-            runtime = await self._drop_runtime_for_sandbox_mismatch(
-                session_id,
-                runtime,
-                expected_sandbox_id,
-                reason=reason,
-            )
-        runtime_sandbox_id = self._runtime_sandbox_id(runtime)
-        expected_sandbox_id = requested_sandbox_id or endpoint_sandbox_id or runtime_sandbox_id
-
-        if endpoint and expected_sandbox_id:
-            # An endpoint is used only when its backend says it names the
-            # expected sandbox. One that says nothing is resolved again by id.
-            if endpoint_sandbox_id is None:
-                endpoint = ""
-            elif endpoint_sandbox_id.lower() != expected_sandbox_id.lower():
-                logger.warning(
-                    "discard stale sandbox endpoint session=%s endpoint_sandbox=%s expected_sandbox=%s reason=%s endpoint=%s",
-                    session_id or "<none>",
-                    endpoint_sandbox_id,
-                    expected_sandbox_id,
-                    reason,
-                    endpoint,
-                )
-                endpoint = ""
-
-        if endpoint:
-            return endpoint
-
-        if expected_sandbox_id:
-            return (
-                await self.resolve_enhanced_server_endpoint(
-                    session_id=session_id,
-                    sandbox_id=expected_sandbox_id,
-                    port=port,
-                )
-                or ""
-            ).strip() or None
-        if session_id:
-            return (
-                await self.resolve_enhanced_server_endpoint(
-                    session_id=session_id,
-                    port=port,
-                )
-                or ""
-            ).strip() or None
-        return None
-
-    async def resolve_sandbox_dataplane(
-        self,
-        *,
-        session_id: str | None = None,
-        sandbox_endpoint: str | None = None,
-        sandbox_id: str | None = None,
-        port: int = 8000,
-        reason: str = "sandbox_dataplane",
-        require_ws: bool = False,
-        persisted_backend: str | None = None,
-    ) -> SandboxDataPlane | None:
-        """Resolve a backend-agnostic ``SandboxDataPlane`` for in-box HTTP/ws.
-
-        The single chokepoint the platform uses instead of building
-        ``https://{host}{path}`` + ``httpx`` by hand. It pairs the validated
-        endpoint string (a bare host for some backends, a presign URL for gateway backends)
-        with the in-memory sandbox object (when present — needed by gateway
-        backends for header-authed HTTP and ws routing) and lets the dataplane
-        registry pick the implementation. Returns ``None`` only when neither an
-        endpoint nor a sandbox object can be resolved.
-        """
-        authoritative_backend = str(persisted_backend or "").strip().lower()
-        authoritative_provider = (
-            sandbox_for_name(authoritative_backend) if authoritative_backend else None
-        )
-        endpoint = await self._resolve_validated_sandbox_endpoint(
-            session_id=session_id,
-            sandbox_endpoint=sandbox_endpoint,
-            sandbox_id=sandbox_id,
-            port=port,
-            reason=reason,
-        )
-        sandbox_obj = None
-        runtime = self._runtimes.get(session_id) if session_id else None
-        if runtime is not None:
-            sandbox_obj = get_underlying_sandbox(getattr(runtime, "sandbox", None))
-        target_sandbox_id = self._normalize_sandbox_id(sandbox_id)
-        if sandbox_obj is None and require_ws and target_sandbox_id:
-            ws_provider = authoritative_provider
-            if ws_provider is None:
-                backend = await self._resolve_sandbox_backend(target_sandbox_id)
-                ws_provider = sandbox_for_name(backend)
-            if ws_provider.requires_sandbox_object_for_ws:
-                sandbox_obj = await ws_provider.connect(target_sandbox_id)
-        if not endpoint and sandbox_obj is None:
-            return None
-        if sandbox_obj is not None:
-            # Live object in scope: its owning provider builds the transport
-            # (and carries whatever the ws path needs).
-            if authoritative_provider is not None:
-                if not authoritative_provider.owns_sandbox(sandbox_obj):
-                    raise RuntimeError(
-                        "persisted sandbox backend does not own the live sandbox "
-                        f"object: backend={authoritative_backend!r} "
-                        f"sandbox_id={target_sandbox_id!r}"
-                    )
-                return authoritative_provider.build_dataplane(
-                    sandbox=sandbox_obj, endpoint=endpoint, port=port
-                )
-            return sandbox_for_sandbox(sandbox_obj).build_dataplane(
-                sandbox=sandbox_obj, endpoint=endpoint, port=port
-            )
-        # Endpoint-only reach: no live object, so the backend name must be
-        # threaded explicitly (no registry to guess from). Resolve it from the
-        # sandbox id the endpoint was validated against — or, failing that, the
-        # session row that owns this conversation. There is no default backend.
-        resolved_backend = authoritative_backend or await self._resolve_dataplane_backend(
-            session_id=session_id,
-            sandbox_id=target_sandbox_id,
-            endpoint=endpoint,
-        )
-        return sandbox_for_name(resolved_backend).build_dataplane(endpoint=endpoint, port=port)
-
-    async def _resolve_dataplane_backend(
-        self,
-        *,
-        session_id: str | None,
-        sandbox_id: str | None,
-        endpoint: str | None,
-    ) -> str:
-        """Resolve the backend name for an endpoint-only dataplane build, fail loud.
-
-        Tries, in order: the explicit/normalized sandbox id, the id embedded in the
-        endpoint, then the owning session row's persisted ``sandbox_backend``.
-        Raises if none yields a backend — a pluggable framework never guesses.
-        """
-        for candidate in (
-            self._normalize_sandbox_id(sandbox_id),
-            self._extract_sandbox_id_from_endpoint(endpoint),
-        ):
-            if candidate:
-                return await self._resolve_sandbox_backend(candidate)
-        normalized_session_id = str(session_id or "").strip()
-        if normalized_session_id:
-            session = await SessionRepository().get_session(normalized_session_id)
-            backend = str((session or {}).get("sandbox_backend") or "").strip().lower()
-            if backend:
-                return backend
-        raise RuntimeError(
-            "cannot resolve sandbox backend for endpoint-only dataplane: "
-            f"session_id={session_id!r} sandbox_id={sandbox_id!r} endpoint={endpoint!r}"
-        )
-
-    @staticmethod
-    def _is_terminal_interaction_broker_sandbox_state(state: str | None) -> bool:
-        return str(state or "").strip().lower() in _INTERACTION_BROKER_TERMINAL_SANDBOX_STATES
-
-    def _is_terminal_turn_sandbox_lifecycle_probe(
-        self,
-        probe: SandboxLifecycleProbeResult,
-    ) -> bool:
-        """Whether a lifecycle probe proves that turn execution has ended."""
-        if (
-            str(getattr(probe, "probe_status", "") or "").strip()
-            == SANDBOX_LIFECYCLE_PROBE_NOT_FOUND
-        ):
-            return True
-        return self._is_terminal_interaction_broker_sandbox_state(
-            getattr(probe, "sandbox_state", None)
-        )
 
     async def _clone_default_repo(
         self,
@@ -1760,16 +1474,11 @@ class RemoteAgentRuntimeManager:
         session_kind: str,
         workspace_plan: RuntimeWorkspacePlan | None = None,
         runtime_identity: dict[str, Any] | None = None,
-        observe_only: bool = False,
     ) -> "SessionRuntime":
-        """Return an existing in-memory runtime or create a lightweight one.
+        """Return an existing in-memory runtime or attach a lightweight one.
 
-        Unlike ``ensure_runtime``, this skips full workspace preparation. It is
-        the turn-prepare attach path for
-        agent_chat conversations and the resume attach path for existing
-        sessions.  It still gates ``connect_only`` on sidecar revision, because
-        a stale sidecar can expose a compatible protocol surface while missing
-        newer initialization metadata.
+        Unlike ``ensure_runtime``, this skips full workspace preparation: it
+        reattaches to the box a session is already bound to.
         """
         self._raise_if_quiesced()
         existing = self.get_runtime(session_id, sandbox_id=sandbox_id)
@@ -1824,7 +1533,7 @@ class RemoteAgentRuntimeManager:
                 engine_session_key=engine_session_key,
                 permission_mode=permission_mode,
                 runtime_identity=runtime_identity,
-                attach_mode="observe" if observe_only else "lightweight",
+                attach_mode="lightweight",
             )
             try:
                 self._raise_if_quiesced()
@@ -1876,15 +1585,17 @@ class RemoteAgentRuntimeManager:
         *,
         sandbox_id: str | None = None,
         engine_kind: str | None = None,
-        engine_turn_id: str | None = None,
+        engine_session_key: str | None = None,
+        runtime_cursor: dict[str, Any] | None = None,
+        workspace_ref: dict[str, Any] | None = None,
     ) -> None:
         """Permanently dispose one conversation's resident engine process.
 
         This is deliberately separate from :meth:`evict_runtime`. Eviction
         only releases reconnectable client resources; this method is for
         lifecycle operations where the conversation is ending for good.
-        When the in-memory client is gone, an engine may use the durable turn
-        anchor to find and terminate its process in the shared sandbox.
+        Without a local client, an adapter with a finalizer can close the
+        recorded native conversation in its shared backend.
         """
         async with self._get_session_lock(session_id):
             runtime = self._runtimes.pop(session_id, None)
@@ -1894,9 +1605,6 @@ class RemoteAgentRuntimeManager:
             resolved_kind = (
                 str(getattr(runtime, "engine_kind", "") or "").strip().lower() or resolved_kind
             )
-            with contextlib.suppress(BaseException):
-                if runtime.current_task and not runtime.current_task.done():
-                    runtime.current_task.cancel()
             disposed = await self._dispose_runtime_turn_client(runtime)
             if disposed:
                 logger.info(
@@ -1907,31 +1615,21 @@ class RemoteAgentRuntimeManager:
                 return
 
         normalized_sandbox_id = str(sandbox_id or "").strip()
-        normalized_engine_turn_id = str(engine_turn_id or "").strip()
-        if not (resolved_kind and normalized_sandbox_id and normalized_engine_turn_id):
-            logger.info(
-                "conversation runtime disposed without a durable resident process "
-                "anchor session=%s engine=%s sandbox=%s",
-                session_id,
-                resolved_kind or "<unknown>",
-                normalized_sandbox_id or "<unknown>",
-            )
+        native_key = str(engine_session_key or "").strip()
+        if not (normalized_sandbox_id and resolved_kind):
             return
 
         disposal = get_engine_adapter(resolved_kind).process_disposal()
         if not isinstance(disposal, EngineProcessDisposalCapability):
-            logger.info(
-                "engine has no durable resident process disposal capability session=%s engine=%s",
-                session_id,
-                resolved_kind,
-            )
             return
         await disposal.dispose_process(
             sandbox_id=normalized_sandbox_id,
-            engine_turn_id=normalized_engine_turn_id,
+            engine_session_key=native_key,
+            runtime_cursor=runtime_cursor,
+            workspace_ref=dict(workspace_ref or {}),
         )
         logger.info(
-            "disposed resident engine process session=%s engine=%s source=durable-anchor",
+            "finished native disposal request session=%s engine=%s source=native-identity",
             session_id,
             resolved_kind,
         )
@@ -2060,9 +1758,6 @@ class RemoteAgentRuntimeManager:
                     )
             return await self._destroy_and_forget_pending(session_id, expected_id)
 
-        with contextlib.suppress(BaseException):
-            if runtime.current_task and not runtime.current_task.done():
-                runtime.current_task.cancel()
 
         T = self._TERMINATE_OP_TIMEOUT_SECONDS
         with contextlib.suppress(BaseException):
@@ -2135,19 +1830,13 @@ class RemoteAgentRuntimeManager:
     async def _release_closed_admission(self, session_id: str, sandbox_id: str) -> None:
         """Withdraw a closed placement even after its Agent prefers another box."""
 
-        from astrabox.core.service.orchestrator.runtime.shared_sandbox_lease import (
-            release_box_admission,
-        )
         from astrabox.persistence.repository.agent_repository import AgentRepository
 
         session = await self._sessions_repo.get_session_including_deleted(session_id)
         agent_id = str((session or {}).get("agent_id") or "").strip()
         if agent_id:
-            await release_box_admission(
-                agent_repo=AgentRepository(),
-                agent_id=agent_id,
-                sandbox_id=sandbox_id,
-                session_id=session_id,
+            await AgentRepository().release_box_admission(
+                agent_id, sandbox_id=sandbox_id, session_id=session_id
             )
 
     async def _release_persisted_placement(
@@ -2277,124 +1966,6 @@ class RemoteAgentRuntimeManager:
             {item.sandbox_id for item in self._pending_startup_allocations.get(session_id, ())}
         )
 
-    # ── Interrupt ──────────────────────────────────────────────────
-
-    async def _interrupt_sandbox_execution(
-        self,
-        sandbox_obj: Any,
-        *,
-        execution_id: str,
-    ) -> None:
-        """Interrupt the command running in a box-level terminal shell.
-
-        ``execution_id`` is the id of the box process running the shell, so
-        the interrupt is that process's own ``SIGINT``.
-        """
-        if sandbox_obj is None:
-            raise APIError(
-                code="AGENT_RUNTIME_ERROR",
-                message="interrupt failed: terminal execution handle unavailable",
-                status_code=502,
-            )
-        try:
-            await sandbox_obj.processes.signal(execution_id, "SIGINT")
-        except APIError:
-            raise
-        except Exception as exc:
-            raise APIError(
-                code="AGENT_RUNTIME_ERROR",
-                message=f"interrupt failed: {exc}",
-                status_code=502,
-            ) from exc
-
-    async def _interrupt_runtime_execution(
-        self,
-        runtime: SessionRuntime,
-        *,
-        execution_id: str,
-    ) -> None:
-        if is_isolated_terminal_execution_id(execution_id):
-            await self._interrupt_isolated_terminal_execution(execution_id)
-            return
-        sandbox_obj = get_underlying_sandbox(runtime.sandbox) or runtime.sandbox
-        await self._interrupt_sandbox_execution(
-            sandbox_obj,
-            execution_id=execution_id,
-        )
-
-    async def interrupt_terminal_execution(
-        self,
-        session_id: str,
-        *,
-        execution_id: str,
-        sandbox_id: str | None = None,
-    ) -> None:
-        eff_execution_id = str(execution_id or "").strip()
-        if not eff_execution_id:
-            raise APIError(
-                code="AGENT_RUNTIME_ERROR",
-                message="interrupt failed: terminal execution handle unavailable",
-                status_code=502,
-            )
-        if is_isolated_terminal_execution_id(eff_execution_id):
-            await self._interrupt_isolated_terminal_execution(eff_execution_id)
-            runtime = self._runtimes.get(session_id)
-            if (
-                runtime is not None
-                and str(getattr(runtime, "current_execution_id", "") or "").strip()
-                == eff_execution_id
-            ):
-                runtime.current_execution_id = None
-            return
-
-        runtime = self._runtimes.get(session_id)
-        runtime = await self._drop_runtime_for_sandbox_mismatch(
-            session_id,
-            runtime,
-            sandbox_id or _RUNTIME_SANDBOX_BINDING_UNSPECIFIED,
-            reason="interrupt_terminal_execution",
-        )
-        if runtime is not None and runtime.sandbox is not None:
-            await self._interrupt_runtime_execution(
-                runtime,
-                execution_id=eff_execution_id,
-            )
-            if str(getattr(runtime, "current_execution_id", "") or "").strip() == eff_execution_id:
-                runtime.current_execution_id = None
-            return
-
-        eff_sandbox_id = (
-            str(sandbox_id or "").strip()
-            or str(getattr(runtime, "sandbox_id", "") or "").strip()
-            or None
-        )
-        if not eff_sandbox_id:
-            raise APIError(
-                code="AGENT_RUNTIME_ERROR",
-                message="interrupt failed: terminal sandbox unavailable",
-                status_code=502,
-            )
-
-        sandbox_obj = await self.connect_sandbox_only(eff_sandbox_id)
-        try:
-            await self._interrupt_sandbox_execution(
-                sandbox_obj,
-                execution_id=eff_execution_id,
-            )
-        finally:
-            disconnect_fn = getattr(sandbox_obj, "disconnect", None)
-            close_fn = getattr(sandbox_obj, "close", None)
-            with contextlib.suppress(Exception):
-                if callable(disconnect_fn):
-                    maybe_awaitable = disconnect_fn()
-                    if asyncio.iscoroutine(maybe_awaitable):
-                        await maybe_awaitable
-            with contextlib.suppress(Exception):
-                if callable(close_fn):
-                    maybe_awaitable = close_fn()
-                    if asyncio.iscoroutine(maybe_awaitable):
-                        await maybe_awaitable
-
     def _is_terminal_sandbox_lifecycle_probe(
         self,
         probe: SandboxLifecycleProbeResult,
@@ -2418,15 +1989,9 @@ class RemoteAgentRuntimeManager:
             in _SANDBOX_RESOURCE_GONE_STATES
         )
 
-    def clear_interrupting(self, session_id: str) -> None:
-        rt = self._runtimes.get(session_id)
-        if rt is not None:
-            rt.interrupting = False
 
     # ── Agent startup orchestration ────────────────────────────────
 
-    def _sandbox_ready_timeout_seconds(self) -> int:
-        return max(1, int(self._settings.sandbox_ready_timeout_seconds))
 
     async def _record_startup_allocation(
         self,
@@ -3344,8 +2909,9 @@ class RemoteAgentRuntimeManager:
         Candidate rows are hints. Each row is re-read before acting so a worker
         that publishes READY after the scan cannot have its live sandbox reaped
         by this reconciler. Recent CREATING rows remain owned by their worker.
-        A READY Session can also allocate a replacement during an accepted turn;
-        its durable turn slot protects that allocation across backend processes.
+        A READY Session can also allocate a replacement while its reader
+        reconnects it; the reader lease protects that allocation across backend
+        processes.
         Other unadopted allocations use the ordinary scope-aware failure cleanup.
 
         A call reads at most ``limit`` candidates, the ones after where the
@@ -3373,7 +2939,7 @@ class RemoteAgentRuntimeManager:
                 summary["startup_allocation_failures"] += 1
                 continue
             current = await self._sessions_repo.get_session_including_deleted(session_id)
-            for retained in (current or {}).get("_retained_startup_allocations", ()):
+            for retained in (current or {}).get("retained_startup_allocations", ()):
                 try:
                     allocation = SandboxAllocation.from_record(retained["allocation"])
                     # A rejected owner can have handed shared compute to a
@@ -3436,20 +3002,21 @@ class RemoteAgentRuntimeManager:
                 continue
 
             if not bool(current.get("deleted")) and state == SessionState.READY.value:
-                # Reborrowing keeps READY and the in-flight turn checkpoint until
-                # the new binding is published. The Session row's turn id is only
-                # a terminal-time mirror; the snapshot owns the live turn slot.
+                # A READY session replaces its box in place only from the
+                # process that holds its reader lease, which connects the
+                # session to its runtime. While that lease lives, the
+                # replacement is in flight, not abandoned.
                 try:
-                    snapshot = await SessionSnapshotRepository().get_snapshot(session_id)
+                    reader = await SessionRuntimeRepository().reader_owner(session_id)
                 except Exception:
                     summary["startup_allocation_failures"] += 1
                     logger.exception(
-                        "startup allocation turn ownership read failed session=%s sandbox=%s",
+                        "startup allocation reader lease read failed session=%s sandbox=%s",
                         session_id,
                         allocation.sandbox_id,
                     )
                     continue
-                if str((snapshot or {}).get("current_turn_id") or "").strip():
+                if reader is not None:
                     summary["startup_allocations_deferred"] += 1
                     continue
 
@@ -3505,7 +3072,7 @@ class RemoteAgentRuntimeManager:
         return summary
 
     async def agent_box_has_other_recorded_occupants(
-        self, sandbox_id: str, *, excluding: str, agent_id: str = "",
+        self, sandbox_id: str, *, excluding: str,
     ) -> bool:
         """Check durable ownership before pausing or destroying a shared box.
 
@@ -3535,67 +3102,26 @@ class RemoteAgentRuntimeManager:
                 continue
             if str(allocation.get("sandbox_id") or "").strip() == target:
                 return True
-        # A prepared slot occupies the box without being a session at all:
-        # its whole purpose is to exist BEFORE a conversation claims it, so
-        # it is recorded on the Agent row and no session query can see it.
+        # A prepared slot occupies the box without being a session at all: its
+        # whole purpose is to exist BEFORE a conversation claims it, so it is
+        # recorded in its Agent's ledger and no session query can see it.
         # Destroying the box under one throws away the prepared unit the next
         # conversation was going to claim, and the loss shows up as a claim
-        # miss with nothing pointing back here.
-        from astrabox.core.service.orchestrator.agent.prepared_slots import (
-            slot_manifests,
+        # miss with nothing pointing back here. place_in_agent_box records an
+        # admission before placement completes and startup_allocation is
+        # written, so a joiner is still counted while it is absent from the
+        # allocation records. Every live Agent's ledger is asked, so a box that
+        # stopped being its Agent's preferred one is still found.
+        from astrabox.core.service.orchestrator.runtime.shared_sandbox_lease import (
+            admissions_young_since,
         )
         from astrabox.persistence.repository.agent_repository import (
             AgentRepository,
         )
 
-        # place_in_agent_box records admission before placement completes
-        # and startup_allocation is written. Consult that ledger to retain
-        # a box while a joiner is absent from the allocation records.
-        # young_admissions excludes entries past the ledger's grace period.
-        from astrabox.core.service.orchestrator.runtime.shared_sandbox_lease import (
-            young_admissions,
+        return await AgentRepository().box_has_recorded_occupants(
+            target, excluding=excluding, young_since=admissions_young_since()
         )
-
-        agent_repo = AgentRepository()
-        agent_rows: dict[str, dict[str, Any]] = {}
-        # A box that is not the Agent's resident one can still hold its
-        # slots; a caller disposing of it names the Agent it belongs to.
-        if agent_id:
-            named = await agent_repo.get_agent(agent_id)
-            if isinstance(named, dict):
-                agent_rows[agent_id] = named
-        # A full box can stop being the Agent's preferred destination while
-        # a prepared slot still lives in it. The Session being released is
-        # the durable link back to that Agent; reading it directly avoids
-        # mistaking "not the current preferred box" for "not owned".
-        read_departing = getattr(
-            self._sessions_repo, "get_session_including_deleted", None
-        )
-        if excluding and callable(read_departing):
-            departing = await read_departing(excluding)
-            departing_agent_id = str(
-                (departing or {}).get("agent_id") or ""
-            ).strip()
-            if departing_agent_id:
-                departing_agent = await agent_repo.get_agent(departing_agent_id)
-                if isinstance(departing_agent, dict):
-                    agent_rows[departing_agent_id] = departing_agent
-        for agent in await agent_repo.list_agents_by_sandbox_id(target):
-            agent_id = str((agent or {}).get("agent_id") or "").strip()
-            if agent_id:
-                agent_rows[agent_id] = agent
-        for agent in agent_rows.values():
-            for manifest in slot_manifests(agent):
-                if (
-                    str(manifest.get("sandbox_id") or "").strip() == target
-                    and str(manifest.get("slot_id") or "") != excluding
-                ):
-                    return True
-            for admission in young_admissions(agent, target):
-                admitted = str(admission.get("session_id") or "").strip()
-                if admitted != excluding:
-                    return True
-        return False
 
     async def agent_box_has_other_occupants(
         self,
@@ -3603,7 +3129,6 @@ class RemoteAgentRuntimeManager:
         *,
         excluding: str,
         provider: SandboxProvider | None = None,
-        agent_id: str = "",
     ) -> bool:
         """Check for occupants other than ``excluding`` before destroying a box.
 
@@ -3621,9 +3146,7 @@ class RemoteAgentRuntimeManager:
         if not target:
             return True
         try:
-            if await self.agent_box_has_other_recorded_occupants(
-                target, excluding=excluding, agent_id=agent_id,
-            ):
+            if await self.agent_box_has_other_recorded_occupants(target, excluding=excluding):
                 return True
             # The provider census checks live isolated sessions directly,
             # including a prepared-slot claimant whose ownership records have
@@ -4056,66 +3579,6 @@ class RemoteAgentRuntimeManager:
 
         self._forget_pending_sandbox(session_id, sandbox_id)
 
-    async def adopt_bound_startup_allocation(
-        self,
-        session_id: str,
-        *,
-        sandbox_id: str,
-    ) -> None:
-        """Clear the startup name of a box this Session's row now binds.
-
-        A create names its box on the Session (``startup_allocation``) until an
-        owner publishes it; the startup worker clears the name in the same write
-        that settles READY. A turn that replaces a lost box publishes the binding
-        itself, so it adopts the name here. Left in place, the name outlived the
-        box it named, and the next replacement's create was refused: "session
-        already names a different startup allocation". Only this process's own
-        record of the create is adopted; one it does not hold is the startup
-        reconciler's to judge.
-        """
-
-        for allocation in list(self._pending_startup_allocations.get(session_id, ())):
-            if allocation.sandbox_id == sandbox_id:
-                await self._complete_startup_allocation(session_id, allocation)
-
-    def register_terminal_execution(
-        self,
-        execution_id: str,
-        task: asyncio.Task[Any],
-    ) -> None:
-        """Bind an in-process streamed terminal execution for interruption."""
-
-        target = str(execution_id or "").strip()
-        if not target or not is_isolated_terminal_execution_id(target):
-            return
-        self._terminal_execution_tasks[target] = task
-
-    def unregister_terminal_execution(
-        self,
-        execution_id: str,
-        task: asyncio.Task[Any] | None,
-    ) -> None:
-        """Drop a binding only when it still points at this exact run."""
-
-        target = str(execution_id or "").strip()
-        current = self._terminal_execution_tasks.get(target)
-        if current is not None and (task is None or current is task):
-            self._terminal_execution_tasks.pop(target, None)
-
-    async def _interrupt_isolated_terminal_execution(self, execution_id: str) -> None:
-        task = self._terminal_execution_tasks.get(execution_id)
-        if task is None or task.done():
-            raise APIError(
-                code="AGENT_RUNTIME_ERROR",
-                message="interrupt failed: isolated terminal stream is not owned by this worker",
-                status_code=409,
-            )
-        task.cancel("terminal interrupted")
-        # Hand control to the cancelled task so it can close the HTTP stream,
-        # delete its disposable terminal session and create the replacement.
-        # Do not await the owner here: its supervising worker settles it and
-        # waiting from this control path would create a cycle.
-        await asyncio.sleep(0)
 
     async def clone_default_repo(
         self,
@@ -4170,18 +3633,14 @@ class RemoteAgentRuntimeManager:
         subject_kind = str(getattr(workspace_plan, "subject_kind", "") or "").strip()
         if subject_kind == "assistant_runtime":
             assistant_id = str(getattr(workspace_plan, "assistant_id", "") or "").strip()
-            lookup_user_id = str(getattr(workspace_plan, "user_id", "") or "").strip()
-            if not assistant_id or not lookup_user_id:
+            if not assistant_id:
                 raise APIError(
                     code="AGENT_RUNTIME_ERROR",
                     message="sandbox backend resolution failed",
                     status_code=502,
                     debug_message="assistant runtime authority is incomplete",
                 )
-            row = await AssistantWorkspaceRepository().get_workspace(
-                lookup_user_id,
-                assistant_id,
-            )
+            row = await AssistantWorkspaceRepository().get_workspace(assistant_id)
             if not isinstance(row, dict):
                 raise APIError(
                     code="AGENT_RUNTIME_ERROR",
@@ -4189,14 +3648,12 @@ class RemoteAgentRuntimeManager:
                     status_code=502,
                     debug_message="assistant runtime authority is unavailable",
                 )
-            backend = str(row.get("sandbox_backend") or "").strip().lower()
-            if not backend:
-                # The materialized workspace intentionally starts unbound. Its
-                # first hidden bootstrap session already carries the persisted
-                # backend selected at admission; workspace claim atomically
-                # installs that value. No template/request value participates.
-                bootstrap = await SessionRepository().get_session(session_id)
-                backend = str((bootstrap or {}).get("sandbox_backend") or "").strip().lower()
+            # The workspace records which box it runs in, not the backend that
+            # holds it: the Session that builds or attaches the box carries the
+            # persisted backend selected at its admission. No template or
+            # request value participates.
+            session = await SessionRepository().get_session(session_id)
+            backend = str((session or {}).get("sandbox_backend") or "").strip().lower()
             if not backend:
                 raise APIError(
                     code="AGENT_RUNTIME_ERROR",

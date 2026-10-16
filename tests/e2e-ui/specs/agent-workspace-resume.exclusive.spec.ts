@@ -3,7 +3,14 @@ import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { expect, test, type Page, type Response } from '@playwright/test';
 
-import { AstraApi, messageText, visibleMessages } from '../fixtures/astraApi';
+import {
+  AstraApi,
+  messageText,
+  messageToolCalls,
+  visibleMessages,
+  type InputReceipt,
+  type MessageRecord,
+} from '../fixtures/astraApi';
 import { engineCases, engineProfileFor, type EngineProfile } from '../fixtures/engineProfile';
 import { apiPath, appPath } from '../fixtures/env';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
@@ -92,24 +99,26 @@ async function createFixture(api: AstraApi, profile: EngineProfile): Promise<str
 }
 
 async function browserTurn(api: AstraApi, page: Page, sessionId: string, prompt: string) {
-  const previous = (await api.getSession(sessionId)).last_turn_id;
-  await sendPrompt(page, sessionId, prompt);
-  const completed = await api.waitForSession(sessionId, (session) => session.last_turn_id !== previous
-    && !session.current_turn_id && ['COMPLETED', 'FAILED', 'INTERRUPTED'].includes(String(session.last_turn_status)), 90_000);
-  expect(completed.last_turn_status, String(completed.last_error || '')).toBe('COMPLETED');
-  expect(completed.state).toBe('READY');
+  const accepted = await sendPrompt(page, sessionId, prompt);
+  const receipt = ((await accepted.json()) as { data: InputReceipt }).data;
+  // The response that answers this message, once it ended; how it ended is judged here.
+  const answer = await api.waitForReplyTo(sessionId, receipt.input_id, { timeoutMs: 90_000 });
+  expect(answer.metadata?.outcome, JSON.stringify(answer.metadata?.error ?? null)).toBe('completed');
+  const completed = await api.waitForSession(sessionId, (session) => session.state === 'READY', 30_000);
+  expect(completed.last_response?.response_id, 'the message settles on the response answering it').toBe(answer.id);
   expect(completed.last_error || null).toBeNull();
   const history = visibleMessages(await api.getMessages(sessionId, 100));
-  const turn = history.filter((row) => row.turn_id === completed.last_turn_id);
-  const blocks = turn.flatMap((row) => row.blocks || []);
-  const tools = blocks.filter((block) => block.type === 'tool_use');
+  const userMessages = history.filter((row) => row.role === 'user' && row.metadata?.input_id === receipt.input_id);
+  expect(userMessages, 'history holds the message once').toHaveLength(1);
+  // The exchange as history records it: the message and the response answering it.
+  const turn: MessageRecord[] = [userMessages[0], answer];
+  const tools = messageToolCalls(answer);
   expect(tools, 'the real Agent must operate on the file, not merely describe the command').not.toHaveLength(0);
-  const outputs = blocks.filter((block) => block.type === 'tool_result');
   for (const tool of tools) {
-    expect(outputs.some((output) => output.tool_use_id === tool.id && output.is_error !== true),
-      `the native tool ${String(tool.id)} must have a successful paired result`).toBe(true);
+    expect(tool.state, `the native tool ${tool.toolCallId} must have a successful paired result`)
+      .toBe('output-available');
   }
-  const reply = turn.filter((row) => row.role === 'assistant').map(messageText).join('\n');
+  const reply = messageText(answer);
   expect(reply.trim()).not.toBe('');
   await expect(page.getByTestId('user-message').filter({ hasText: prompt })).toHaveCount(1);
   const textParts = page.getByTestId('assistant-message').last().getByTestId('assistant-text');
@@ -350,7 +359,7 @@ else:
     const originalBytes = await api.downloadFileText(sessionId, filename);
     expect(originalBytes).toMatch(/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\n$/);
     const marker = originalBytes.trim();
-    expect(JSON.stringify(written.turn), 'the original file value must not be available in native turn history').not.toContain(marker);
+    expect(JSON.stringify(written.turn), 'the original file value must not be available in the written exchange\'s history').not.toContain(marker);
     evidence.originalFile = originalBytes;
     const originalMount = await workspaceMountEvidence(api, oldSandbox, original.runtime_identity, filename);
     evidence.originalMount = originalMount;

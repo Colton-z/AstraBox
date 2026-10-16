@@ -1,24 +1,25 @@
 /**
- * A live turn must survive a real sandbox-to-platform transcript outage.
+ * A live response must survive a real sandbox-to-platform transcript outage.
  *
- * The turn blocks in one Bash call after publishing its user prefix. The spec
- * denies only the transcript destination through the gated platform seam,
+ * The response blocks in one Bash call after publishing its user prefix. The
+ * spec denies only the transcript destination through the gated platform seam,
  * releases the suffix, and proves one fsync'd append stays in the runner spool
- * across a retry interval. The turn still completes and its durable frames can
- * replay. Restoring the exact old rule drains those same append ids into one
- * dense, duplicate-free mirror sequence.
+ * across a retry interval. The response still completes, and the output the
+ * platform recorded for it replays. Restoring the exact old rule drains those
+ * same append ids into one dense, duplicate-free mirror sequence.
  */
 import { expect, test } from '@playwright/test';
 
 import { insist } from '../fixtures/insist';
-import { AstraApi } from '../fixtures/astraApi';
+import { AstraApi, sseFrames, type InputReceipt } from '../fixtures/astraApi';
 import {
-  documentsByField,
-  framesForTurn,
   oracleDbPath,
-  waitForTurnTerminalProof,
+  postgresRows,
+  sessionOutputRows,
+  sessionResponseRows,
+  sqlLiteral,
 } from '../fixtures/dbOracle';
-import { absoluteBaseUrl, appPath, parseTimeoutEnv } from '../fixtures/env';
+import { absoluteBaseUrl, apiPath, appPath, parseTimeoutEnv } from '../fixtures/env';
 import {
   requireSandboxHandle,
   sandboxExec,
@@ -31,14 +32,14 @@ import { trackSessions } from '../fixtures/sessionCleanup';
 const TURN_BUDGET_MS = parseTimeoutEnv('ASTRABOX_E2E_TURN_TIMEOUT_MS', 180_000);
 const RETRY_WITNESS_MS = 2_500;
 
-interface MirrorDoc extends Record<string, unknown> {
-  _id?: string;
-  append_id?: string;
-  batch_index?: number;
-  entry_json?: string;
-  platform_session_id?: string;
-  scope_id?: string;
-  seq?: number;
+/** One stored SessionStore entry (`transcript_entries`) with the session whose store holds it. */
+interface MirrorDoc {
+  append_id: string;
+  batch_index: number;
+  entry_json: string;
+  platform_session_id: string;
+  scope_id: number;
+  seq: number;
 }
 
 interface SpoolBatch {
@@ -49,28 +50,30 @@ interface SpoolBatch {
 
 const sessions = trackSessions();
 
-function sortedMirrorDocs(docs: Record<string, unknown>[]): MirrorDoc[] {
-  return docs
-    .map((doc) => doc as MirrorDoc)
-    .sort((left, right) => Number(left.seq || 0) - Number(right.seq || 0));
+/** The stored entries `where` selects, by their place in their transcript. */
+function mirrorDocs(where: string): MirrorDoc[] {
+  return postgresRows<MirrorDoc>(
+    `SELECT e.append_id, e.batch_index, e.entry_json, s.platform_session_id, e.scope_id, e.seq `
+      + `FROM transcript_entries e JOIN transcript_scopes s ON s.scope_id = e.scope_id `
+      + `WHERE ${where} ORDER BY e.seq, e.scope_id`,
+  );
 }
 
 function platformMirrorDocs(sessionId: string): MirrorDoc[] {
-  return sortedMirrorDocs(
-    documentsByField('transcript_entries', '$.platform_session_id', sessionId),
-  );
+  return mirrorDocs(`s.platform_session_id = ${sqlLiteral(sessionId)}`);
 }
 
 function scopeMirrorDocs(scopeId: string): MirrorDoc[] {
-  return sortedMirrorDocs(
-    documentsByField('transcript_entries', '$.scope_id', scopeId),
-  );
+  return mirrorDocs(`e.scope_id = ${Number(scopeId)}`);
 }
 
 function appendMirrorDocs(appendId: string): MirrorDoc[] {
-  return sortedMirrorDocs(
-    documentsByField('transcript_entries', '$.append_id', appendId),
-  );
+  return mirrorDocs(`e.append_id = ${sqlLiteral(appendId)}`);
+}
+
+/** A stored entry's identity: its place in its transcript. */
+function mirrorIdentity(doc: MirrorDoc): string {
+  return `${doc.scope_id}:${doc.seq}`;
 }
 
 function mirrorEntry(doc: MirrorDoc): Record<string, unknown> {
@@ -153,8 +156,10 @@ async function waitForWorkspaceFile(
       30_000,
     );
     if (output.includes('READY')) return true;
+    // READY on the detail: nothing runs and no message is held, so the
+    // command this waits for was never started.
     const session = await api.getSession(sessionId);
-    if (session.state === 'READY' && !String(session.current_turn_id || '').trim()) return false;
+    if (session.state === 'READY') return false;
     await new Promise((resolve) => setTimeout(resolve, 1_000));
   }
   return false;
@@ -303,24 +308,25 @@ test('transcript egress outage retries its spooled suffix and preserves replay f
       startedPath,
       releasePath,
     );
+    const inputPath = apiPath(`/sessions/${sessionId}/inputs`);
+    const sent = page.waitForResponse((response) => (
+      response.request().method() === 'POST' && new URL(response.url()).pathname === inputPath
+    ), { timeout: 30_000 });
     await page.getByTestId('composer-prompt').fill(outagePrompt);
     await page.getByTestId('composer-submit').click();
+    const receiptResponse = await sent;
+    expect(receiptResponse.status(), 'the platform must accept the message').toBe(200);
+    const receipts = [((await receiptResponse.json()) as { data: InputReceipt }).data];
     await expect(page.getByTestId('user-message').last()).toContainText(userMarker, {
       timeout: 30_000,
     });
 
-    const running = await api.waitForSession(
-      sessionId,
-      (session) => Boolean(String(session.current_turn_id || '').trim()),
-      60_000,
-    );
-    const turnId = String(running.current_turn_id || '').trim();
     // Ask again rather than skip: a skip ends the round exactly as a
     // failure does, so the model's choice decided it instead of the
     // platform. A declined ask re-sends the same prompt once, then fails.
     const toolStarted = await insist<true>({
       ask: async (attempt) => {
-        if (attempt > 1) await api.postTurnInput(sessionId, outagePrompt);
+        if (attempt > 1) receipts.push(await api.postTurnInput(sessionId, outagePrompt));
       },
       probe: async () =>
         (await waitForWorkspaceFile(api, sessionId, startedPath)) ? true : null,
@@ -328,6 +334,18 @@ test('transcript egress outage retries its spooled suffix and preserves replay f
       budgetMs: 60_000 * 2,
       probeMs: 60_000,
     });
+
+    // The response under test is the one running the blocked command: the
+    // only response open now, answering one of the messages sent for it.
+    const running = await api.getSession(sessionId);
+    const open = (running.current_responses ?? []).map((response) => response.response_id);
+    expect(open, 'exactly one response must be running the blocked command').toHaveLength(1);
+    const responseId = open[0];
+    const answered = sessionResponseRows(sessionId).find((row) => row.response_id === responseId);
+    expect(
+      receipts.some((receipt) => answered?.input_ids.includes(receipt.input_id)),
+      `the running response must answer the message sent for it; response=${JSON.stringify(answered)}`,
+    ).toBe(true);
 
     const prefixRows = await waitForMirror(
       () => platformMirrorDocs(sessionId),
@@ -340,9 +358,12 @@ test('transcript egress outage retries its spooled suffix and preserves replay f
     );
     const prefix = scopeMirrorDocs(scopeId);
     const live = await api.getSession(sessionId);
-    expect(String(live.current_turn_id || '').trim()).toBe(turnId);
+    expect(
+      (live.current_responses ?? []).map((response) => response.response_id),
+      'the same response must still be running when the transcript destination is denied',
+    ).toEqual([responseId]);
     const sandboxId = String(live.sandbox_id || '').trim();
-    expect(sandboxId, 'the active turn must publish its sandbox_id').not.toEqual('');
+    expect(sandboxId, 'the session must name its sandbox while the response runs').not.toEqual('');
     const sandbox = await requireSandboxHandle(api, sandboxId);
     await waitForSpool(
       sandbox,
@@ -381,12 +402,11 @@ test('transcript egress outage retries its spooled suffix and preserves replay f
       sessionId,
       (session) => (
         session.state === 'READY'
-        && !String(session.current_turn_id || '').trim()
-        && String(session.last_turn_id || '').trim() === turnId
+        && session.last_response?.response_id === responseId
       ),
       TURN_BUDGET_MS,
     );
-    expect(settled.last_turn_status).toBe('COMPLETED');
+    expect(settled.last_response?.outcome).toBe('completed');
     expect(String(settled.last_error || '').trim()).toEqual('');
     await expect
       .poll(() => page.getByTestId('assistant-message').count(), { timeout: 60_000 })
@@ -416,7 +436,7 @@ test('transcript egress outage retries its spooled suffix and preserves replay f
       expect(landed.map((doc) => Number(doc.batch_index))).toEqual(
         Array.from({ length: batch.entryCount }, (_unused, index) => index),
       );
-      expect(new Set(landed.map((doc) => doc._id)).size).toBe(batch.entryCount);
+      expect(new Set(landed.map(mirrorIdentity)).size).toBe(batch.entryCount);
       expect(onlyScopeId(landed, `spooled append ${batch.appendId}`)).toBe(scopeId);
     }
 
@@ -432,19 +452,28 @@ test('transcript egress outage retries its spooled suffix and preserves replay f
     expect(entriesWithMarker(complete, 'user', userMarker)).toHaveLength(1);
     expect(assistantTextEntriesWithMarker(complete, assistantMarker)).toHaveLength(1);
 
-    await waitForTurnTerminalProof(sessionId, turnId, 'COMPLETED', TURN_BUDGET_MS);
-    const durableFrames = framesForTurn(turnId);
-    const frameSeqs = durableFrames.map((frame) => Number(frame.event_seq));
+    const recorded = sessionResponseRows(sessionId).find((row) => row.response_id === responseId);
+    expect(
+      recorded ? `${recorded.status}/${recorded.outcome ?? ''}` : 'missing',
+      'the platform must record the response as completed',
+    ).toBe('ended/completed');
+    const durableFrames = sessionOutputRows(sessionId, responseId);
+    const frameSeqs = durableFrames.map((frame) => Number(frame.seq));
+    expect(frameSeqs.length, 'the platform must have recorded the response\'s output').toBeGreaterThan(0);
     expect(frameSeqs.every(Number.isFinite)).toBe(true);
     expect(frameSeqs).toEqual([...frameSeqs].sort((left, right) => left - right));
     expect(new Set(frameSeqs).size).toBe(frameSeqs.length);
-    const frameTypes = durableFrames.map((frame) =>
-      String((frame.payload as { type?: unknown } | undefined)?.type || ''),
-    );
+    const frameTypes = durableFrames.map((frame) => String(frame.part.type || ''));
     expect(frameTypes.filter((type) => type === 'finish')).toHaveLength(1);
 
-    const replay = await api.resumeStream(sessionId, 0);
-    expect(replay.replayed, 'durable frame replay must survive the egress outage').toBe(true);
+    // Replayed from just before the response's first recorded part: the
+    // stream serves what was recorded after that position through this
+    // response's end.
+    const replay = await api.resumeStream(sessionId, frameSeqs[0] - 1);
+    expect(
+      sseFrames(replay.raw).filter((frame) => frame.type === 'start').map((frame) => frame.messageId),
+      'the replay must carry the response that ran through the outage',
+    ).toEqual([responseId]);
     expect(replay.frameTypes).toContain('finish');
     expect(replay.text.split(assistantMarker).length - 1).toBe(1);
   } finally {

@@ -132,7 +132,6 @@ ENV PYTHONUNBUFFERED=1 \
     ASTRABOX_PORT=8000 \
     ASTRABOX_SANDBOX_BACKEND=open_sandbox \
     ASTRABOX_STATE_DIR=/data \
-    ASTRABOX_DB_BACKEND=postgresql \
     ASTRABOX_FRONTEND_DIST=/app/frontend/dist
 
 # NOTE ON ASTRABOX_HOST=0.0.0.0: the server binds all interfaces INSIDE its own

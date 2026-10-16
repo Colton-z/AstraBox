@@ -14,26 +14,27 @@ with. A paused box whose backend released it
 (:meth:`SandboxProvider.paused_box_releases_resources`) holds nothing, and its
 resume is reserved here like a create.
 
-Reservations are written by compare-and-set on the backend's ledger, so two
-replicas that each see room for one more box cannot both take it. A refused
-create reconciles the ledger against the backend once before it is refused,
-so a box destroyed since the last sweep frees its room at once.
+A reservation is admitted under the backend's ledger lock
+(:class:`~astrabox.persistence.repository.sandbox_quota_repository.SandboxQuotaRepository`),
+so two replicas that each see room for one more box cannot both take it. A
+refused create reconciles the ledger against the backend once before it is
+refused, so a box destroyed since the last sweep frees its room at once.
 """
 
 from __future__ import annotations
 
-import asyncio
-import random
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import Any, Mapping
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
-from astrabox.common.utils.time_utils import utcnow_iso
 from astrabox.config.settings import cpu_quantity, get_settings, memory_quantity
-from astrabox.persistence.repository.sandbox_quota_repository import SandboxQuotaRepository
+from astrabox.persistence.repository.sandbox_quota_repository import (
+    InventoryNotTaken,
+    SandboxQuotaRepository,
+)
 
 logger = get_logger(__name__)
 
@@ -46,7 +47,6 @@ _HOST_RESERVE_BYTES = 4 * 2**30
 #: A reservation whose create never answered is released when its box has not
 #: appeared in an inventory taken this long after it was made.
 _CREATE_GRACE = timedelta(minutes=15)
-_CAS_ATTEMPTS = 20
 _GIB = 2**30
 
 
@@ -57,9 +57,13 @@ class SandboxCharge:
     cpu: float
     memory: int
 
+    @property
+    def cpu_millicores(self) -> int:
+        return round(self.cpu * 1000)
+
     def metadata(self) -> dict[str, str]:
         return {
-            QUOTA_CPU_METADATA_KEY: str(round(self.cpu * 1000)),
+            QUOTA_CPU_METADATA_KEY: str(self.cpu_millicores),
             QUOTA_MEMORY_METADATA_KEY: str(self.memory),
         }
 
@@ -82,6 +86,15 @@ class SandboxUsage:
     memory: int
     cpu: float
     creating: int
+
+    @classmethod
+    def from_ledger(cls, ledger: Mapping[str, Any]) -> SandboxUsage:
+        return cls(
+            boxes=int(ledger["boxes"]),
+            memory=int(ledger["memory_bytes"]),
+            cpu=int(ledger["cpu_millicores"]) / 1000,
+            creating=int(ledger["creating"]),
+        )
 
 
 class SandboxCapacityExhausted(APIError):
@@ -214,29 +227,6 @@ def _format_memory(value: float) -> str:
     return f"{value / _GIB:.2f}Gi"
 
 
-def _held(inventory: Mapping[str, Any], sandbox_id: Any) -> bool:
-    """Whether the inventory charges this box: listed, and not paused and released."""
-    box = inventory.get(str(sandbox_id)) if sandbox_id else None
-    return box is not None and "released_charge" not in box
-
-
-def _usage(ledger: Mapping[str, Any]) -> SandboxUsage:
-    inventory = dict(ledger.get("inventory") or {})
-    boxes = sum(1 for sandbox_id in inventory if _held(inventory, sandbox_id))
-    memory = sum(int(box.get("memory") or 0) for box in inventory.values())
-    cpu = sum(float(box.get("cpu") or 0) for box in inventory.values())
-    creating = 0
-    for reservation in ledger.get("reservations") or []:
-        if _held(inventory, reservation.get("sandbox_id")):
-            continue
-        boxes += 1
-        memory += int(reservation.get("memory") or 0)
-        cpu += float(reservation.get("cpu") or 0)
-        if reservation.get("state") == "creating":
-            creating += 1
-    return SandboxUsage(boxes=boxes, memory=memory, cpu=cpu, creating=creating)
-
-
 def _refusal(backend: str, quota: SandboxQuota, usage: SandboxUsage, charge: SandboxCharge) -> SandboxCapacityExhausted | None:
     if quota.boxes is not None and usage.boxes + 1 > quota.boxes:
         return SandboxCapacityExhausted(
@@ -269,19 +259,11 @@ def _refusal(backend: str, quota: SandboxQuota, usage: SandboxUsage, charge: San
     return None
 
 
-async def _update(backend: str, change: Any) -> Any:
-    """Apply ``change(ledger) -> (reservations, result)`` by compare-and-set."""
-    for _ in range(_CAS_ATTEMPTS):
-        ledger = await _repo().read(backend)
-        reservations, result = change(ledger)
-        if reservations is None:
-            return result
-        if await _repo().compare_and_set(
-            backend, version=int(ledger.get("version") or 0), reservations=reservations
-        ):
-            return result
-        await asyncio.sleep(random.uniform(0.01, 0.05))
-    raise RuntimeError(f"sandbox quota ledger for {backend!r} stayed contended")
+def _has_ceiling(quota: SandboxQuota) -> bool:
+    return any(
+        ceiling is not None
+        for ceiling in (quota.boxes, quota.memory, quota.cpu, quota.concurrent_creates)
+    )
 
 
 async def reserve(
@@ -296,34 +278,35 @@ async def reserve(
     backend = str(provider.name)
     quota = quota_for(backend)
     key = uuid.uuid4().hex
+    reservation = {
+        "reservation_key": key,
+        "state": "creating",
+        "cpu_millicores": charge.cpu_millicores,
+        "memory_bytes": charge.memory,
+        "reason": reason,
+        "session_id": session_id or None,
+        "assignment_id": assignment_id,
+    }
 
-    def take(ledger: Mapping[str, Any]) -> tuple[list[dict[str, Any]] | None, Any]:
-        refusal = _refusal(backend, quota, _usage(ledger), charge)
-        if refusal is not None:
-            return None, refusal
-        reservations = list(ledger.get("reservations") or [])
-        reservations.append({
-            "key": key,
-            "state": "creating",
-            "cpu": charge.cpu,
-            "memory": charge.memory,
-            "reason": reason,
-            "session_id": session_id,
-            "assignment_id": assignment_id,
-            "sandbox_id": None,
-            "reserved_at": utcnow_iso(),
-        })
-        return reservations, None
+    def refuse(ledger: dict[str, int]) -> SandboxCapacityExhausted | None:
+        return _refusal(backend, quota, SandboxUsage.from_ledger(ledger), charge)
 
-    if (await _repo().read(backend)).get("inventory_at") is None:
+    async def admit() -> SandboxCapacityExhausted | None:
+        return await _repo().admit(
+            backend, reservation, refuse if _has_ceiling(quota) else None
+        )
+
+    try:
+        refusal = await admit()
+    except InventoryNotTaken:
         # A ledger no inventory has filled yet would count every running box as
         # absent.
         await reconcile_sandbox_quota(provider)
-    refusal = await _update(backend, take)
+        refusal = await admit()
     if refusal is not None:
         # The ledger may still charge a box destroyed since the last sweep.
         await reconcile_sandbox_quota(provider)
-        refusal = await _update(backend, take)
+        refusal = await admit()
         if refusal is not None:
             logger.warning("sandbox quota refused a %s box: %s", reason, refusal.message)
             raise refusal
@@ -340,38 +323,22 @@ async def reserve_resume(provider: Any, sandbox_id: str) -> str | None:
         getattr(provider, "supports_inventory_listing", False)
     ):
         return None
-    inventory = dict((await _repo().read(str(provider.name))).get("inventory") or {})
-    box = inventory.get(sandbox_id)
-    if box is not None and "released_charge" not in box:
+    box = await _repo().inventory_box(str(provider.name), sandbox_id)
+    if box is not None and not box["released"]:
         return None
     if box is not None:
-        released = box["released_charge"]
-        charge = SandboxCharge(cpu=float(released["cpu"]), memory=int(released["memory"]))
+        charge = SandboxCharge(cpu=box["cpu_millicores"] / 1000, memory=box["memory_bytes"])
     else:
         charge = box_charge(provider, _shared_limits())
     return await reserve(provider, charge, reason="resume", session_id="", assignment_id=sandbox_id)
 
 
 async def mark_created(backend: str, key: str, sandbox_id: str) -> None:
-    def created(ledger: Mapping[str, Any]) -> tuple[list[dict[str, Any]] | None, None]:
-        reservations = [dict(r) for r in ledger.get("reservations") or []]
-        for reservation in reservations:
-            if reservation.get("key") == key:
-                reservation.update(state="created", sandbox_id=sandbox_id, created_at=utcnow_iso())
-                return reservations, None
-        return None, None
-
-    await _update(backend, created)
+    await _repo().mark_created(backend, key, sandbox_id)
 
 
 async def release(backend: str, key: str) -> None:
-    def drop(ledger: Mapping[str, Any]) -> tuple[list[dict[str, Any]] | None, None]:
-        reservations = [r for r in ledger.get("reservations") or [] if r.get("key") != key]
-        if len(reservations) == len(ledger.get("reservations") or []):
-            return None, None
-        return reservations, None
-
-    await _update(backend, drop)
+    await _repo().release(backend, key)
 
 
 async def settle_failed_create(provider: Any, key: str, *, assignment_id: str) -> None:
@@ -405,23 +372,21 @@ async def _inventory(provider: Any) -> dict[str, dict[str, Any]]:
         for item in listing.items:
             metadata = dict(item.metadata or {})
             try:
-                cpu = int(metadata[QUOTA_CPU_METADATA_KEY]) / 1000
+                cpu = int(metadata[QUOTA_CPU_METADATA_KEY])
                 memory = int(metadata[QUOTA_MEMORY_METADATA_KEY])
             except (KeyError, ValueError):
                 # Created before this deployment recorded charges: charge the
                 # larger kind of box, so the quota never counts it short.
-                cpu, memory = unknown.cpu, unknown.memory
-            box: dict[str, Any] = {
-                "cpu": cpu,
-                "memory": memory,
+                cpu, memory = unknown.cpu_millicores, unknown.memory
+            boxes[str(item.sandbox_id)] = {
+                "cpu_millicores": cpu,
+                "memory_bytes": memory,
+                # Saved and released: it holds nothing until reserve_resume
+                # takes its charge back.
+                "released": releases_when_paused and str(item.state or "").upper() == "PAUSED",
                 "state": str(item.state or ""),
                 "session_id": item.session_id,
             }
-            if releases_when_paused and str(item.state or "").upper() == "PAUSED":
-                # Saved and released: it holds nothing until reserve_resume
-                # takes its charge back.
-                box.update(cpu=0.0, memory=0, released_charge={"cpu": cpu, "memory": memory})
-            boxes[str(item.sandbox_id)] = box
         if not listing.has_next_page:
             return boxes
         page += 1
@@ -439,40 +404,19 @@ async def reconcile_sandbox_quota(provider: Any) -> dict[str, int]:
     A reservation leaves the ledger when the inventory charges its box from
     then on, when its box was created (or resumed) before the inventory was
     taken and the inventory does not charge it, or when its create has gone
-    unanswered past the grace with no box to show for it.
+    unanswered past the grace with no box to show for it. An inventory taken
+    before the one the ledger already holds changes nothing.
     """
     backend = str(provider.name)
-    taken_at = datetime.now(timezone.utc)
+    taken_at = await _repo().clock()
     inventory = await _inventory(provider)
-    released = 0
-    for _ in range(_CAS_ATTEMPTS):
-        ledger = await _repo().read(backend)
-        kept: list[dict[str, Any]] = []
-        released = 0
-        for reservation in ledger.get("reservations") or []:
-            sandbox_id = reservation.get("sandbox_id")
-            if _held(inventory, sandbox_id):
-                continue
-            stamp = reservation.get("created_at") or reservation.get("reserved_at")
-            at = datetime.fromisoformat(str(stamp)) if stamp else taken_at
-            if sandbox_id and at < taken_at:
-                released += 1
-                continue
-            if not sandbox_id and at + _CREATE_GRACE < taken_at:
-                released += 1
-                continue
-            kept.append(reservation)
-        if await _repo().compare_and_set(
-            backend,
-            version=int(ledger.get("version") or 0),
-            reservations=kept,
-            inventory=inventory,
-            inventory_at=taken_at.isoformat(),
-        ):
-            break
-    else:
-        raise RuntimeError(f"sandbox quota ledger for {backend!r} stayed contended")
-    return {f"{backend}.quota_boxes": len(inventory), f"{backend}.quota_released": released}
+    released = await _repo().fold_inventory(
+        backend,
+        taken_at=taken_at,
+        boxes=[{"sandbox_id": sandbox_id, **box} for sandbox_id, box in inventory.items()],
+        create_grace=_CREATE_GRACE,
+    )
+    return {f"{backend}.quota_boxes": len(inventory), f"{backend}.quota_released": released or 0}
 
 
 async def reconcile_at_startup(providers: Mapping[str, Any]) -> None:
@@ -501,10 +445,9 @@ async def quota_report(providers: Mapping[str, Any]) -> list[dict[str, Any]]:
     for name, provider in providers.items():
         if not bool(getattr(provider, "supports_inventory_listing", False)):
             continue
-        ledger = await _repo().read(name)
+        ledger = await _repo().ledger(name)
         quota = quota_for(name)
-        usage = _usage(ledger)
-        inventory = dict(ledger.get("inventory") or {})
+        usage = SandboxUsage.from_ledger(ledger)
         report.append({
             "backend": name,
             "quota": {
@@ -520,17 +463,29 @@ async def quota_report(providers: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "cpu": usage.cpu,
                 "creating": usage.creating,
             },
-            "inventory_at": ledger.get("inventory_at"),
+            "inventory_at": ledger["inventory_at"],
             "boxes": [
-                {"sandbox_id": sandbox_id, **{k: box.get(k) for k in ("cpu", "memory", "state", "session_id")}}
-                for sandbox_id, box in sorted(inventory.items())
+                {
+                    "sandbox_id": box["sandbox_id"],
+                    # A released box holds none of its charge.
+                    "cpu": 0.0 if box["released"] else box["cpu_millicores"] / 1000,
+                    "memory": 0 if box["released"] else box["memory_bytes"],
+                    "state": box["state"],
+                    "session_id": box["session_id"],
+                }
+                for box in await _repo().list_inventory(name)
             ],
             "reservations": [
-                {k: r.get(k) for k in (
-                    "state", "reason", "session_id", "sandbox_id", "cpu", "memory", "reserved_at",
-                )}
-                for r in ledger.get("reservations") or []
-                if not _held(inventory, r.get("sandbox_id"))
+                {
+                    "state": reservation["state"],
+                    "reason": reservation["reason"],
+                    "session_id": reservation["session_id"],
+                    "sandbox_id": reservation["sandbox_id"],
+                    "cpu": reservation["cpu_millicores"] / 1000,
+                    "memory": reservation["memory_bytes"],
+                    "reserved_at": reservation["reserved_at"],
+                }
+                for reservation in await _repo().list_pending_reservations(name)
             ],
         })
     return report

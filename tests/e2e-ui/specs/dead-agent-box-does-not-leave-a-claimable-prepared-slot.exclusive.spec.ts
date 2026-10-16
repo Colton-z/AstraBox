@@ -8,8 +8,8 @@ import { execFileSync } from 'node:child_process';
 import { expect, test } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
-import { documentsByField } from '../fixtures/dbOracle';
-import { oldestPrepared, seatsInRow } from '../fixtures/preparedSeats';
+import { postgresRows, sqlLiteral } from '../fixtures/dbOracle';
+import { ledgerSeats, oldestPrepared } from '../fixtures/preparedSeats';
 import { appPath, parseTimeoutEnv } from '../fixtures/env';
 import { PlatformApi } from '../fixtures/platformApi';
 import {
@@ -48,11 +48,11 @@ const PREPARED_INVALIDATION_MS = parseTimeoutEnv(
 );
 
 /**
- * A seat's PUBLIC coordinates, plus the row pointer the sweeps key on.
+ * A seat's PUBLIC coordinates, plus the resident-box pointer the sweeps key on.
  *
  * A seat also carries the activation token and the model credential. A failed
  * `expect()` retains and prints both sides of its comparison, so only the
- * named coordinates are ever lifted out of the document.
+ * named coordinates are ever read out of the database.
  */
 interface SlotFacts {
   slotId: string;
@@ -65,12 +65,17 @@ interface SlotFacts {
   residentSandboxId: string | null;
 }
 
-/** The seat named by `slotId`, else the one the next conversation claims. */
+/**
+ * The seat named by `slotId`, else the one the next conversation claims, with
+ * the Agent's resident box as its runtime record (`agent_runtimes`) names it.
+ */
 function preparedSlotFacts(agentId: string, slotId?: string): SlotFacts {
-  const rows = documentsByField('agents', '$.agent_id', agentId);
-  expect(rows, 'the preparation under test must belong to exactly one Agent row').toHaveLength(1);
-  const row = rows[0];
-  const seats = seatsInRow(row);
+  const runtimes = postgresRows<{ sandbox_id: string | null }>(
+    `SELECT sandbox_id FROM agent_runtimes WHERE agent_id = ${sqlLiteral(agentId)}`,
+  );
+  expect(runtimes, 'the preparation under test must belong to exactly one Agent runtime record').toHaveLength(1);
+  const row = runtimes[0];
+  const seats = ledgerSeats(agentId);
   const manifest: Record<string, unknown> = (
     slotId ? seats.find((seat) => seat.slot_id === slotId) : oldestPrepared(seats)
   ) || {};
@@ -152,7 +157,7 @@ test('an out-of-band Agent box death withdraws its prepared slot and the next co
     name: agentName,
     model: await api.configuredAgentModel(RESEARCH_AGENT, SHARED_ENVIRONMENT),
     environment_name: SHARED_ENVIRONMENT,
-    prepared_capacity: 1,
+    prepared_capacity: 2,
   });
   agentId = String(created.agent_id || '').trim();
   expect(agentId, 'the probe Agent must have an id').not.toEqual('');
@@ -163,7 +168,7 @@ test('an out-of-band Agent box death withdraws its prepared slot and the next co
     status = await platform.preparedRuntime(agentId);
     return Boolean(
       status.ready === true
-      && Number(status.prepared_count || 0) > 0
+      && Number(status.prepared_count || 0) >= 2
       && String(status.sandbox_id || '').trim(),
     );
   }, {
@@ -208,7 +213,9 @@ test('an out-of-band Agent box death withdraws its prepared slot and the next co
     "a shared slot lives in the Agent's own resident box",
   ).toBe(deadBox);
   expect(
-    documentsByField('sessions', '$.agent_id', agentId).map((row) => row.session_id),
+    postgresRows<{ session_id: string }>(
+      `SELECT session_id FROM sessions WHERE agent_id = ${sqlLiteral(agentId)}`,
+    ).map((row) => row.session_id),
     'only this test\'s own conversation may be in this box: the kill must not land on somebody else',
   ).toEqual([firstSessionId]);
 

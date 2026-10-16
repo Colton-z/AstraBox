@@ -9,17 +9,22 @@
  * message from a record that only kept prose.
  *
  * This walks both a mixed clipboard and a caption-free image on real boxes:
- *   the clipboard  →  the composer  →  the turn input  →  the engine
- *                  →  the durable message  →  a fresh page
+ *   the clipboard  →  the composer  →  the input  →  the engine
+ *                  →  the session's history  →  another open page, a fresh page
  *
  * The image is a solid red square rather than a placeholder byte string so
  * that the engine receives a valid image. The reply is recorded, not used as
  * a colour-recognition oracle: this journey proves delivery and persistence,
  * not the deployment's vision capability.
  */
+import { execFileSync } from 'node:child_process';
+
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 
 import { AstraApi, messageText } from '../fixtures/astraApi';
+import { apiPath } from '../fixtures/env';
+import { SERVER_CONTAINER_HANDLE, requireServiceContainer } from '../fixtures/serviceContainer';
+import { mirrorSseBodies, sessionStreamBodies } from '../fixtures/sseBodies';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView } from '../fixtures/sessionPage';
 
@@ -72,7 +77,7 @@ async function dispatchClipboard(page: Page, options: { text?: string; includeIm
   }, { ...options, base64: RED_SQUARE_PNG_BASE64 });
 }
 
-async function provePastedImage(page: Page, request: APIRequestContext, withCaption: boolean) {
+async function provePastedImage(page: Page, request: APIRequestContext, withCaption: boolean, refuseAndResend = false) {
   const api = new AstraApi(request);
   const runId = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
   const agent = await api.createColdTestAgent(`__e2e_paste_image_${runId}`);
@@ -80,7 +85,21 @@ async function provePastedImage(page: Page, request: APIRequestContext, withCapt
   const session = await api.startConversation(agentId);
   const sessionId = String(session.session_id || '').trim();
   sessions.push(sessionId);
+  const server = refuseAndResend ? requireServiceContainer(SERVER_CONTAINER_HANDLE) : '';
+  const control = (enabled: boolean) => execFileSync('docker', [
+    'exec', server, 'python', '-c',
+    'import json,sys; from pathlib import Path; '
+      + "p=Path('/data/runtime-preparation-user-actions.json'); "
+      + 'ids=json.loads(p.read_text()) if p.exists() else []; '
+      + 'ids=[sid for sid in ids if sid!=sys.argv[1]]; '
+      + "p.write_text(json.dumps(ids+[sys.argv[1]] if sys.argv[2]=='yes' else ids))",
+    sessionId, enabled ? 'yes' : 'no',
+  ], { timeout: 30_000, stdio: 'pipe' });
   await api.waitForSessionReady(sessionId);
+  if (refuseAndResend) {
+    test.info().annotations.push({ type: 'deployment_shape', description: 'runtime-preparation provider' });
+    await mirrorSseBodies(page);
+  }
   await openSessionView(page, sessionId);
 
   const composer = page.getByTestId('composer-prompt');
@@ -92,7 +111,7 @@ async function provePastedImage(page: Page, request: APIRequestContext, withCapt
     if (outbound.method() !== 'POST') return;
     const path = new URL(outbound.url()).pathname;
     if (path.endsWith(`/sessions/${sessionId}/files/upload`)) uploadRequests += 1;
-    if (path.endsWith(`/sessions/${sessionId}/turn-inputs`)) inputRequests += 1;
+    if (path.endsWith(`/sessions/${sessionId}/inputs`)) inputRequests += 1;
   });
 
   const caption = withCaption
@@ -123,19 +142,19 @@ async function provePastedImage(page: Page, request: APIRequestContext, withCapt
     type: 'image',
     source: { type: 'base64', media_type: 'image/png', data: RED_SQUARE_PNG_BASE64 },
   };
+  // The picture as an AI SDK file part: what the page renders, live and from history.
+  const imagePart = {
+    type: 'file',
+    mediaType: 'image/png',
+    url: `data:image/png;base64,${RED_SQUARE_PNG_BASE64}`,
+  };
   const expectedContent = [...(withCaption ? [{ type: 'text', text: caption }] : []), imageBlock];
   const assistantsBefore = await api.assistantCount(sessionId);
+  // A second page on the same conversation, opened before the send: it never
+  // sends this message, and still shows it once the runtime answers it.
   const observer = withCaption ? null : await page.context().newPage();
-  let releaseFirstStream = () => {};
-  let releaseHistory = () => {};
-  const firstStreamHold = new Promise<void>((resolve) => { releaseFirstStream = resolve; });
-  const historyHold = new Promise<void>((resolve) => { releaseHistory = resolve; });
   let inputId = '';
-  let historyRequests = 0;
-  let deliveredHistoryResponses = 0;
-  let firstHistory: Record<string, unknown> | null = null;
-  let streamRequests = 0;
-  let firstStreamUrl = '';
+  let clientMessageId = '';
   let observerInputRequests = 0;
   let observerUploadRequests = 0;
   try {
@@ -143,106 +162,98 @@ async function provePastedImage(page: Page, request: APIRequestContext, withCapt
       observer.on('request', (outbound) => {
         if (outbound.method() !== 'POST') return;
         const path = new URL(outbound.url()).pathname;
-        if (path.endsWith(`/sessions/${sessionId}/turn-inputs`)
-          || path.endsWith(`/sessions/${sessionId}/ai-stream`)) observerInputRequests += 1;
+        if (path.endsWith(`/sessions/${sessionId}/inputs`)) observerInputRequests += 1;
         if (path.endsWith(`/sessions/${sessionId}/files/upload`)) observerUploadRequests += 1;
       });
-      await observer.route((url) => url.pathname.endsWith(`/sessions/${sessionId}/history-blocks`), async (route) => {
-        const requestIndex = ++historyRequests;
-        const response = await route.fetch();
-        if (requestIndex === 1) {
-          const body = await response.json();
-          firstHistory = body.data ?? body;
-        } else {
-          // A later real history response must not repair the live-only oracle.
-          await historyHold;
-        }
-        await route.fulfill({ response });
-        deliveredHistoryResponses += 1;
-      });
-      await observer.route((url) => url.pathname.endsWith(`/sessions/${sessionId}/ai-stream`), async (route) => {
-        streamRequests += 1;
-        if (streamRequests === 1) {
-          firstStreamUrl = route.request().url();
-          await firstStreamHold;
-        }
-        // Forward the real stream rather than buffering its unbounded body.
-        await route.continue();
-      });
       await openSessionView(observer, sessionId);
-      await expect.poll(() => streamRequests, { message: 'the cold reader must request its first live subscription' }).toBe(1);
-      expect(firstHistory).toMatchObject({ messages: [], active_turn_overlay: null });
-      expect(deliveredHistoryResponses).toBe(1);
-      const streamUrl = new URL(firstStreamUrl);
-      expect(streamUrl.searchParams.get('follow')).toBe('session');
-      const frameSeq = (firstHistory as Record<string, unknown> | null)?.session_frame_seq;
-      expect(streamUrl.searchParams.get('after_seq')).toBe(
-        typeof frameSeq === 'number' && frameSeq >= 0 ? String(frameSeq) : null,
-      );
       await expect(observer.getByTestId('user-message')).toHaveCount(0);
       await expect(observer.getByTestId('composer-attachment')).toHaveCount(0);
     }
 
+    if (refuseAndResend) control(true);
     await expect(page.getByTestId('composer-submit')).toBeEnabled();
     const [receiptResponse] = await Promise.all([
       page.waitForResponse((response) => response.request().method() === 'POST'
-        && new URL(response.url()).pathname.endsWith(`/sessions/${sessionId}/turn-inputs`)),
+        && new URL(response.url()).pathname.endsWith(`/sessions/${sessionId}/inputs`)),
       page.getByTestId('composer-submit').click(),
     ]);
     expect(receiptResponse.ok()).toBe(true);
-    expect(receiptResponse.request().postDataJSON().content).toEqual(expectedContent);
+    const sentBody = receiptResponse.request().postDataJSON();
+    expect(sentBody.content).toEqual(expectedContent);
     const receiptBody = await receiptResponse.json();
     const receipt = receiptBody.data ?? receiptBody;
     inputId = String(receipt.input_id ?? '');
+    clientMessageId = String(receipt.client_message_id ?? '');
     expect(inputId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(clientMessageId, 'the receipt names the message the page sent').toBe(String(sentBody.client_message_id));
 
-    // The attachment leaves the composer when the send takes it, not before.
+    // The attachment leaves the composer when the send takes it, not before,
+    // and the picture is in the transcript from the moment it is sent.
     await expect(page.getByTestId('composer-attachment')).toHaveCount(0);
+    const sentImage = page.locator(`[data-message-id="${clientMessageId}"]`).getByTestId('message-image');
+    await expect(sentImage).toHaveCount(1);
+    await expect(sentImage).toHaveAttribute('src', imagePart.url);
+
+    if (refuseAndResend) {
+      const refusedClientId = clientMessageId;
+      const refusedInputId = inputId;
+      const refusedRow = page.locator(`[data-message-id="${refusedClientId}"]`);
+      const refusal = refusedRow.getByTestId('user-message-failure');
+      await expect(refusal).toContainText('Authorize this Agent to continue', { timeout: 120_000 });
+      const failedHistory = (await api.getMessages(sessionId)).messages;
+      expect(failedHistory).toHaveLength(1);
+      expect(failedHistory[0].metadata?.state).toBe('failed');
+      expect(failedHistory[0].metadata?.failure?.code).toBe('TURN_PREPARATION_USER_ACTION_REQUIRED');
+      expect(failedHistory[0].parts.filter((part) => part.type === 'file')).toEqual([imagePart]);
+      const authorization = page.waitForResponse((response) => response.request().method() === 'POST'
+        && new URL(response.url()).pathname === apiPath(`/sessions/${sessionId}/user-action`));
+      await page.getByRole('button', { name: 'I have authorized', exact: true }).click();
+      const authorized = await authorization;
+      expect(authorized.ok()).toBe(true);
+      expect(authorized.request().postDataJSON()).toEqual({ action_id: 'authorize' });
+      expect((await authorized.json()).data.ready).toBe(true);
+      const resentResponse = page.waitForResponse((response) => response.request().method() === 'POST'
+        && new URL(response.url()).pathname === apiPath(`/sessions/${sessionId}/inputs`));
+      await refusal.getByRole('button', { name: /^(Send again|重新发送)$/ }).click();
+      const resent = await resentResponse;
+      expect(resent.status()).toBe(200);
+      const resentBody = resent.request().postDataJSON();
+      expect(resentBody.content, 'Send again keeps every original image byte and its media type').toEqual(expectedContent);
+      expect(resentBody.client_message_id).not.toBe(refusedClientId);
+      const secondReceipt = (await resent.json()).data;
+      expect(secondReceipt.duplicate).toBe(false);
+      expect(secondReceipt.input_id).not.toBe(refusedInputId);
+      inputId = String(secondReceipt.input_id);
+      clientMessageId = String(secondReceipt.client_message_id);
+      expect(clientMessageId).toBe(resentBody.client_message_id);
+      await expect(refusedRow.getByTestId('message-image')).toHaveAttribute('src', imagePart.url);
+      await expect(page.locator(`[data-message-id="${clientMessageId}"]`).getByTestId('message-image'))
+        .toHaveAttribute('src', imagePart.url);
+      await test.info().attach('refused-image-resend', {
+        body: JSON.stringify({ failedHistory, original: receipt, resentBody, secondReceipt }),
+        contentType: 'application/json',
+      });
+    }
 
     if (observer) {
-      // A durable user projection is not proof that the bridge is healthy.
-      // Check its actual failure verdict before opening the observer stream.
-      await expect.poll(async () => {
-        const history = await api.getMessages(sessionId, 50);
-        const detail = await api.getSession(sessionId);
-        if (detail.last_turn_status === 'FAILED') {
-          throw new Error(`image-only input ${inputId} failed before the cold reader stream opened: ${JSON.stringify({
-            session_id: sessionId,
-            command_id: receipt.command_id,
-            last_turn_id: detail.last_turn_id,
-            last_turn_command_id: detail.last_turn_command_id,
-            last_turn_status: detail.last_turn_status,
-            last_turn_failure_phase: detail.last_turn_failure_phase,
-            last_turn_error: detail.last_turn_error,
-          })}`);
-        }
-        return history.messages.filter((message) => message.role === 'user'
-          && message.message_id === `${inputId}:user`)
-          .map((message) => ({ text: messageText(message), blocks: message.blocks }));
-      }, { message: 'the image-only user projection must be durable without a platform failure before the first reader stream opens' })
-        .toEqual([{ text: '', blocks: [imageBlock] }]);
-      releaseFirstStream();
-      const consumedUserMessage = observer.locator(`[data-message-id="${inputId}:user"]`);
-      await expect(consumedUserMessage).toHaveCount(1);
-      const liveImage = consumedUserMessage.getByTestId('message-image');
-      await expect(liveImage, 'the first live subscription must render the image without a history refresh').toHaveCount(1);
-      await expect(liveImage).toHaveAttribute('data-media-type', 'image/png');
-      await expect(liveImage).toHaveAttribute('src', `data:image/png;base64,${RED_SQUARE_PNG_BASE64}`);
-      expect(deliveredHistoryResponses, 'only the empty pre-input history may reach the cold reader').toBe(1);
-      expect(observerInputRequests, 'the cold reader must not have submitted or optimistically rendered this input').toBe(0);
+      const observedMessage = observer.locator(`[data-message-id="${clientMessageId}"]`);
+      await expect(observedMessage, 'the other page shows the message once its response starts').toHaveCount(1, { timeout: 120_000 });
+      const observedImage = observedMessage.getByTestId('message-image');
+      await expect(observedImage, 'with its picture').toHaveCount(1);
+      await expect(observedImage).toHaveAttribute('data-media-type', 'image/png');
+      await expect(observedImage).toHaveAttribute('src', imagePart.url);
+      expect(observerInputRequests, 'the other page did not send this input').toBe(0);
       expect(observerUploadRequests).toBe(0);
       await expect(observer.getByTestId('composer-attachment')).toHaveCount(0);
     }
   } finally {
-    releaseFirstStream();
-    releaseHistory();
-    if (observer) {
-      try {
-        await observer.unrouteAll({ behavior: 'wait' });
-      } finally {
-        await observer.close({ runBeforeUnload: false });
-      }
+    if (refuseAndResend) {
+      control(false);
+      await test.info().attach('image-resend-browser-stream', {
+        body: JSON.stringify(await sessionStreamBodies(page)), contentType: 'application/json',
+      });
     }
+    if (observer) await observer.close({ runBeforeUnload: false });
   }
 
   const answer = await api.waitForAssistantMessageCount(sessionId, assistantsBefore);
@@ -257,25 +268,26 @@ async function provePastedImage(page: Page, request: APIRequestContext, withCapt
   });
   const settled = await api.waitForSession(sessionId, (session) => (
     session.state === 'READY'
-    && !session.current_turn_id
-    && session.last_turn_status === 'COMPLETED'
+    && !session.current_responses?.length
+    && session.last_response?.status === 'ended'
   ));
   expect(
-    settled.last_turn_status,
-    'the engine must finish the turn it was handed an image on',
-  ).toBe('COMPLETED');
+    settled.last_response?.outcome,
+    'the engine must finish the response it was handed an image on',
+  ).toBe('completed');
 
   const history = await api.getMessages(sessionId, 50);
   const sentMessages = history.messages.filter((message) => (
-    message.role === 'user' && message.message_id === `${inputId}:user`
+    message.role === 'user' && message.id === clientMessageId
   ));
-  expect(sentMessages, 'the exact consumed input must be durable once').toHaveLength(1);
+  expect(sentMessages, 'the input is in history once, under the id the page sent it with').toHaveLength(1);
   const sent = sentMessages[0];
+  expect(sent.metadata?.input_id).toBe(inputId);
   expect(messageText(sent)).toBe(caption);
   expect(
-    (sent?.blocks || []).filter((block) => block.type === 'image'),
-    'the record keeps the picture, not just the caption that came with it',
-  ).toEqual([imageBlock]);
+    sent.parts.filter((part) => part.type === 'file'),
+    'history keeps the picture, not just the caption that came with it',
+  ).toEqual([imagePart]);
 
   const nativeEntries = (await api.adminSessionTranscript(sessionId))
     .split('\n').filter((line) => line.trim()).map((line) => JSON.parse(line));
@@ -294,13 +306,12 @@ async function provePastedImage(page: Page, request: APIRequestContext, withCapt
   await page.reload({ waitUntil: 'domcontentloaded' });
   const rendered = page.getByTestId('message-image');
   await expect(rendered, 'a fresh page rebuilds the picture from that record')
-    .toHaveCount(1);
-  await expect(rendered).toHaveAttribute('data-media-type', 'image/png');
-  await expect(rendered).toHaveAttribute(
-    'src',
-    `data:image/png;base64,${RED_SQUARE_PNG_BASE64}`,
-  );
-  expect(inputRequests, 'one click must submit exactly one input').toBe(1);
+    .toHaveCount(refuseAndResend ? 2 : 1);
+  for (const image of await rendered.all()) {
+    await expect(image).toHaveAttribute('data-media-type', 'image/png');
+    await expect(image).toHaveAttribute('src', `data:image/png;base64,${RED_SQUARE_PNG_BASE64}`);
+  }
+  expect(inputRequests, 'each click submits exactly one input').toBe(refuseAndResend ? 2 : 1);
   expect(uploadRequests, 'native image inputs do not upload workspace files').toBe(0);
 }
 
@@ -310,4 +321,8 @@ test('a pasted image is sent with its text, seen by the model, and kept across r
 
 test('an image-only clipboard sends a native image without a caption and survives reload', async ({ page, request }) => {
   await provePastedImage(page, request, false);
+});
+
+test('a refused image-only input sends its original bytes again after authorization', async ({ page, request }) => {
+  await provePastedImage(page, request, false, true);
 });

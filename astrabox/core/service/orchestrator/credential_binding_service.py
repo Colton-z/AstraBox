@@ -11,9 +11,11 @@ from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.time_utils import utcnow_iso
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.service.orchestrator.vault_service import VaultService
-from astrabox.persistence.repository import AgentRepository
+from astrabox.persistence.repository.agent_repository import AgentRepository
+from astrabox.persistence.repository.agent_repository import AgentReferenceMissing
 from astrabox.persistence.repository.assistant_catalog_repository import (
     AssistantCatalogRepository,
+    AssistantVaultMissing,
 )
 from astrabox.persistence.repository.assistant_defaults_repository import AssistantDefaultsRepository
 
@@ -26,31 +28,11 @@ _ACTION_GERUNDS = {"archive": "archiving", "delete": "deleting"}
 #: set is always in ``data.holders``; this only keeps the sentence readable.
 _HOLDERS_NAMED = 3
 
+#: How many times an Agent binding re-reads after another edit moved the
+#: Agent's version before it gives up.
+_BINDING_WRITE_ATTEMPTS = 3
+
 logger = get_logger(__name__)
-
-
-def _binding_updates(
-    row: dict[str, Any], vault_ids: list[str], user_id: str, *, records_editor: bool
-) -> dict[str, Any]:
-    """The fields a credential-binding write sets on an Agent or Assistant.
-
-    The binding is authored, so a changed vault list is a changed definition
-    and moves ``updated_at`` with it, and ``updated_by`` on a record that keeps
-    its editor (an Agent). Saving the same list records the save in
-    ``credentials_updated_*`` and leaves the definition's timestamp alone.
-    """
-
-    now = utcnow_iso()
-    updates: dict[str, Any] = {
-        "credential_vault_ids": vault_ids,
-        "credentials_updated_by": user_id,
-        "credentials_updated_at": now,
-    }
-    if list(row.get("credential_vault_ids") or []) != vault_ids:
-        updates["updated_at"] = now
-        if records_editor:
-            updates["updated_by"] = user_id
-    return updates
 
 
 class CredentialBindingService:
@@ -89,6 +71,12 @@ class CredentialBindingService:
     async def set_agent_binding(
         self, user: UserContext, agent_id: str, vault_ids: list[str]
     ) -> dict[str, Any]:
+        """Bind exactly ``vault_ids``, in order, to an Agent.
+
+        The binding is part of the Agent's definition, so a changed list moves
+        its version. The request replaces the list whole, so a write that loses
+        the version race to another edit re-reads and applies it again.
+        """
         agent = await self._agents.get_agent(agent_id)
         if agent is None:
             raise APIError(
@@ -97,9 +85,35 @@ class CredentialBindingService:
         cleaned = await self._vaults.validate_binding_ids(
             user, vault_ids, target_type="agent"
         )
-        await self._agents.update_agent(
-            agent_id, _binding_updates(agent, cleaned, user.user_id, records_editor=True)
-        )
+        for _ in range(_BINDING_WRITE_ATTEMPTS):
+            if self._ids(agent) == cleaned:
+                break
+            try:
+                written = await self._agents.update_definition(
+                    agent_id,
+                    expected_version=int(agent["version"]),
+                    changes={"credential_vault_ids": cleaned},
+                    updated_by=user.user_id,
+                )
+            except AgentReferenceMissing:
+                raise APIError(
+                    code="VAULT_NOT_FOUND",
+                    message="a vault this binding names does not exist",
+                    status_code=404,
+                ) from None
+            if written is not None:
+                break
+            agent = await self._agents.get_agent(agent_id)
+            if agent is None:
+                raise APIError(
+                    code="AGENT_NOT_FOUND", message="agent not found", status_code=404
+                )
+        else:
+            raise APIError(
+                code="AGENT_VERSION_CONFLICT",
+                message="agent was modified concurrently; retry the vault binding",
+                status_code=409,
+            )
         # Binding writes use the same preparation entry as Agent and extension
         # writes. The supplier's existing pool still holds its original recipe.
         try:
@@ -151,10 +165,31 @@ class CredentialBindingService:
         cleaned = await self._vaults.validate_binding_ids(
             user, vault_ids, target_type="assistant"
         )
-        await self._assistants.update_assistant(
-            assistant_id,
-            _binding_updates(assistant, cleaned, user.user_id, records_editor=False),
-        )
+        # The binding is authored: a compare-and-set on the version read above,
+        # and a changed list moves the Assistant's updated_at.
+        try:
+            bound = await self._assistants.set_vault_bindings(
+                assistant_id,
+                expected_version=int(assistant["version"]),
+                vault_ids=cleaned,
+                updated_by=user.user_id,
+                touch=self._ids(assistant) != cleaned,
+            )
+        except AssistantVaultMissing:
+            raise APIError(
+                code="VAULT_NOT_FOUND",
+                message="a Credential Vault in the binding was deleted while it was saved",
+                status_code=404,
+            ) from None
+        if not bound:
+            raise APIError(
+                code="ASSISTANT_VERSION_CONFLICT",
+                message=(
+                    f"assistant={assistant_id} was modified concurrently; retry with "
+                    "the latest version"
+                ),
+                status_code=409,
+            )
         return await self._view(
             user,
             target_type="assistant",
@@ -202,6 +237,30 @@ class CredentialBindingService:
             {**self._defaults_holder(layer), "vault_ids": self._ids(layer)} for layer in layers
         )
         return bindings
+
+    async def archive_vault(self, user: UserContext, vault_id: str) -> dict[str, Any]:
+        """Archive a Vault that no managed runtime uses.
+
+        The use check (:meth:`ensure_vault_unbound`) runs inside the archive's
+        transaction while the Vault's row is locked, after the Vault is found
+        in the caller's organization, so a cross-organization id never reveals
+        whether another organization's runtime uses it.
+        """
+        target = str(vault_id or "").strip()
+        return await self._vaults.archive_vault(
+            user,
+            target,
+            ensure_unbound=lambda: self.ensure_vault_unbound(target, action="archive"),
+        )
+
+    async def delete_vault(self, user: UserContext, vault_id: str) -> None:
+        """Delete a Vault that no managed runtime uses; checked as in :meth:`archive_vault`."""
+        target = str(vault_id or "").strip()
+        await self._vaults.delete_vault(
+            user,
+            target,
+            ensure_unbound=lambda: self.ensure_vault_unbound(target, action="delete"),
+        )
 
     @staticmethod
     def _defaults_holder(layer: dict[str, Any]) -> dict[str, str]:

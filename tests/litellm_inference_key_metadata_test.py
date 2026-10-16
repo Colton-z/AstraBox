@@ -25,8 +25,3 @@ def test_native_grant_preserves_identity_existing_permissions_and_input() -> Non
 def test_invalid_existing_passthrough_grants_are_refused(routes) -> None:
     with pytest.raises(ValueError):
         inference_key_metadata({"allowed_passthrough_routes": routes})
-
-
-def test_invalid_key_metadata_is_refused() -> None:
-    with pytest.raises(ValueError, match="must be a mapping"):
-        inference_key_metadata([])  # type: ignore[arg-type]

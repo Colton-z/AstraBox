@@ -8,20 +8,21 @@
  * data and a marker file in the workspace; the spec then terminates the
  * runner and relaunches it through the image's own launcher, proving a
  * different PID for the same interpreter, command line, account, working
- * directory and runner file digest. The next message is the first thing to
- * touch the dead link: the fresh process refuses `attach`, the host configures
- * it with the engine's native resume, and the reply must carry the planted
- * token while the session stays on the same physical sandbox with no error.
- * The native SessionStore rows the platform holds for the conversation keep
- * their identity and payload and gain the resumed turn under the same native
- * session key.
+ * directory and runner file digest. The session's reader loses its link with
+ * the old process and connects again: the fresh process refuses `attach`, the
+ * host configures it with the engine's native resume
+ * (`engine/claude_code_runtime.py`, `_attach_runner_engine_client`), and the
+ * reply to the next message must carry the planted token while the session
+ * stays on the same physical sandbox with no error. The native SessionStore
+ * rows the platform holds for the conversation keep their identity and payload
+ * and gain the resumed response under the same native session key.
  */
 import { randomBytes } from 'node:crypto';
 
 import { expect, test } from '@playwright/test';
 
-import { AstraApi, messageText } from '../fixtures/astraApi';
-import { documentsByField } from '../fixtures/dbOracle';
+import { AstraApi, answersInput, messageText } from '../fixtures/astraApi';
+import { nativeTranscriptRows, sessionResponseRows, type NativeTranscriptRow } from '../fixtures/dbOracle';
 import { appPath } from '../fixtures/env';
 import {
   IMAGE_RUNNER_LAUNCHER,
@@ -41,12 +42,6 @@ onPassOnly(async ({ request }) => {
 
 const RUNNER_RESTART_LOG = '/tmp/astrabox-runner-restart-resume.log';
 
-interface TranscriptEntryDoc extends Record<string, unknown> {
-  session_id?: string;
-  uuid?: string | null;
-  entry_json?: string;
-}
-
 interface RunnerProcessIdentity {
   pid: number;
   uid: string;
@@ -59,25 +54,24 @@ interface RunnerProcessIdentity {
 }
 
 /** Every native SessionStore row the platform holds for this conversation. */
-function nativeEntries(sessionId: string): TranscriptEntryDoc[] {
-  return documentsByField('transcript_entries', '$.platform_session_id', sessionId)
-    .map((row) => row as TranscriptEntryDoc);
+function nativeEntries(sessionId: string): NativeTranscriptRow[] {
+  return nativeTranscriptRows(sessionId);
+}
+
+/** The SDK's own identity of a native record, from the record itself. */
+function nativeUuid(row: NativeTranscriptRow): string {
+  return String((JSON.parse(row.entry_json) as Record<string, unknown>).uuid ?? '');
 }
 
 /** Native rows of one SDK record type whose payload mentions `marker`. */
 function nativeEntriesMentioning(
-  rows: TranscriptEntryDoc[],
+  rows: NativeTranscriptRow[],
   type: 'user' | 'assistant',
   marker: string,
-): TranscriptEntryDoc[] {
+): NativeTranscriptRow[] {
   return rows.filter((row) => {
-    if (typeof row.entry_json !== 'string') return false;
-    try {
-      const entry = JSON.parse(row.entry_json) as Record<string, unknown>;
-      return String(entry.type || '') === type && row.entry_json.includes(marker);
-    } catch {
-      return false;
-    }
+    const entry = JSON.parse(row.entry_json) as Record<string, unknown>;
+    return String(entry.type || '') === type && row.entry_json.includes(marker);
   });
 }
 
@@ -173,16 +167,18 @@ test('the original conversation resumes on the same sandbox after its image-bake
   //    across the process loss. Its wording is not the oracle. ───────────────
   const planted = await api.sendTurn(sessionId, plantPrompt);
   expect(planted.errorText, 'the planting turn must complete without an error frame').toBeNull();
+  const plantReply = await api.waitForReplyTo(sessionId, planted.inputId);
+  expect(plantReply.metadata?.outcome, 'the planting turn must complete').toBe('completed');
+  const plantResponseId = plantReply.id;
   const provisioned = await api.waitForSession(
     sessionId,
-    (session) => session.state === 'READY' && !String(session.current_turn_id || '').trim(),
+    (session) => session.state === 'READY' && (session.current_responses ?? []).length === 0,
   );
   const sandboxId = String(provisioned.sandbox_id || '').trim();
   expect(sandboxId, 'the planting turn must own a sandbox').not.toEqual('');
   expect(Boolean(provisioned.runtime_unavailable), 'the warm conversation must not be unavailable').toBe(false);
-  const plantTurnId = String(provisioned.last_turn_id || '').trim();
-  expect(plantTurnId, 'the planting turn must settle as the session last turn').not.toEqual('');
-  expect(String(provisioned.last_turn_status || ''), 'the planting turn must complete').toBe('COMPLETED');
+  expect(provisioned.last_response?.response_id, 'the planting turn must settle as the session last response')
+    .toBe(plantResponseId);
 
   // ── Ownership: whole-box conversation tenancy with a resident host runtime
   //    holding a live link to the process this spec is about to kill. ────────
@@ -224,10 +220,10 @@ test('the original conversation resumes on the same sandbox after its image-bake
   const entriesBefore = nativeEntries(sessionId);
   expect(entriesBefore.length, 'the warm turn must leave native records').toBeGreaterThan(0);
   for (const row of entriesBefore) {
-    expect(row.session_id, 'every native record must belong to the session native key').toBe(nativeSessionKey);
+    expect(row.native_session_id, 'every native record must belong to the session native key').toBe(nativeSessionKey);
   }
   const plantedEntry = nativeEntriesMentioning(entriesBefore, 'user', memoryToken)[0];
-  expect(plantedEntry.uuid, 'the planted record must have its native identity').toBeTruthy();
+  expect(nativeUuid(plantedEntry), 'the planted record must have its native identity').toBeTruthy();
 
   // ── File data: a marker only this box's workspace holds. ──────────────────
   await api.uploadFileText(sessionId, workspaceDir, fileName, fileContent);
@@ -249,8 +245,8 @@ test('the original conversation resumes on the same sandbox after its image-bake
   });
 
   // ── Fault: terminate the runner and relaunch it through the image's own
-  //    launcher. No host eviction: the host still holds its link to the dead
-  //    process, and nothing reads the session before the next message. ──────
+  //    launcher. No host eviction: what notices the dead process is the
+  //    session's own reader, whose link to it breaks. ───────────────────────
   const restartEvidence = sandboxExec(
     sandbox,
     imageRunnerRestartScript({
@@ -280,9 +276,10 @@ test('the original conversation resumes on the same sandbox after its image-bake
   expect(recalled.errorText, 'the first message after the runner restart must complete without an error frame').toBeNull();
   expect(recalled.text, 'the relaunched runner must resume the original conversation, not start a new one').toContain(memoryToken);
 
+  const recallReply = await api.waitForReplyTo(sessionId, recalled.inputId);
   const settled = await api.waitForSession(
     sessionId,
-    (session) => session.state === 'READY' && !String(session.current_turn_id || '').trim(),
+    (session) => session.state === 'READY' && (session.current_responses ?? []).length === 0,
   );
   expect(
     String(settled.sandbox_id || '').trim(),
@@ -296,10 +293,18 @@ test('the original conversation resumes on the same sandbox after its image-bake
     String(settled.last_error || '').trim(),
     'runner restart recovery should not leave a user-visible error',
   ).toBe('');
-  const recallTurnId = String(settled.last_turn_id || '').trim();
-  expect(recallTurnId, 'the resumed turn must settle as the session last turn').not.toEqual('');
-  expect(recallTurnId, 'the resumed turn must be a new turn').not.toBe(plantTurnId);
-  expect(String(settled.last_turn_status || ''), 'the resumed turn must complete').toBe('COMPLETED');
+  const recallResponseId = recallReply.id;
+  expect(settled.last_response?.response_id, 'the resumed turn must settle as the session last response')
+    .toBe(recallResponseId);
+  expect(recallResponseId, 'the resumed turn must be a new response').not.toBe(plantResponseId);
+  expect(settled.last_response?.outcome, 'the resumed turn must complete').toBe('completed');
+  expect(
+    sessionResponseRows(sessionId).map((row) => ({ response_id: row.response_id, outcome: row.outcome })),
+    'the platform recorded exactly the two responses, each completed',
+  ).toEqual([
+    { response_id: plantResponseId, outcome: 'completed' },
+    { response_id: recallResponseId, outcome: 'completed' },
+  ]);
 
   // ── Same physical box, served by the relaunched process. ─────────────────
   const sandboxAfter = await requireSandboxHandle(api, sandboxId);
@@ -330,14 +335,23 @@ test('the original conversation resumes on the same sandbox after its image-bake
   expect(detailAfter.has_local_runtime, 'the host must hold a resident runtime after the resumed turn').toBe(true);
   const entriesAfter = nativeEntries(sessionId);
   for (const original of entriesBefore) {
+    // UUID-less SDK metadata can repeat; its scope and append position identify
+    // the original record independently of later identical appends.
     const retained = entriesAfter.filter(
-      (row) => row.uuid === original.uuid && row.entry_json === original.entry_json,
+      (row) => nativeUuid(row) === nativeUuid(original)
+        && row.entry_json === original.entry_json
+        && (nativeUuid(original) !== '' || (
+          row.project_key === original.project_key
+          && row.native_session_id === original.native_session_id
+          && row.subpath === original.subpath
+          && row.seq === original.seq
+        )),
     );
-    expect(retained, `native record ${String(original.uuid)} must survive exactly once`).toHaveLength(1);
+    expect(retained, `native record ${nativeUuid(original) || original.seq} must survive exactly once`).toHaveLength(1);
   }
   expect(entriesAfter.length, 'the resumed turn must append native records').toBeGreaterThan(entriesBefore.length);
   for (const row of entriesAfter) {
-    expect(row.session_id, 'every native record must still belong to the session native key').toBe(nativeSessionKey);
+    expect(row.native_session_id, 'every native record must still belong to the session native key').toBe(nativeSessionKey);
   }
   expect(
     nativeEntriesMentioning(entriesAfter, 'user', recallPrompt).length,
@@ -356,14 +370,12 @@ test('the original conversation resumes on the same sandbox after its image-bake
     history.messages.filter((message) => message.role === 'user').map(messageText),
     'durable history must hold exactly the two submitted inputs in order',
   ).toEqual([plantPrompt, recallPrompt]);
-  const plantReplies = history.messages.filter(
-    (message) => message.role === 'assistant' && message.turn_id === plantTurnId,
-  );
-  expect(plantReplies, 'the planting turn must hold one durable reply').toHaveLength(1);
-  const recallReplies = history.messages.filter(
-    (message) => message.role === 'assistant' && message.turn_id === recallTurnId,
-  );
-  expect(recallReplies, 'the resumed turn must hold one durable reply').toHaveLength(1);
+  const plantReplies = history.messages.filter((message) => answersInput(message, planted.inputId));
+  expect(plantReplies.map((message) => message.id), 'the planting turn must hold one durable reply')
+    .toEqual([plantResponseId]);
+  const recallReplies = history.messages.filter((message) => answersInput(message, recalled.inputId));
+  expect(recallReplies.map((message) => message.id), 'the resumed turn must hold one durable reply')
+    .toEqual([recallResponseId]);
   expect(messageText(recallReplies[0]), 'the durable resumed reply must carry the planted token').toContain(memoryToken);
   const durableAssistantCount = history.messages.filter((message) => message.role === 'assistant').length;
 

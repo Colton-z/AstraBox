@@ -29,17 +29,6 @@ export function shouldShowSessionLastError(
   return (isTerminated || !!session.runtime_unavailable) && !!String(session.last_error ?? '').trim();
 }
 
-export function shouldShowRecoverButton(
-  lifecycleState: string,
-  session: Pick<SessionRecord, 'recovery_policy'>,
-  isTerminated: boolean,
-): boolean {
-  if (isTerminated) {
-    return true;
-  }
-  return lifecycleState === 'recovery' && session.recovery_policy !== 'auto';
-}
-
 export function shouldShowSessionErrorBanner(
   options: {
     showRetryBanner: boolean;

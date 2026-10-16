@@ -12,7 +12,7 @@
 import { test, expect, type Page } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
-import { documentsByField } from '../fixtures/dbOracle';
+import { postgresRows, sqlLiteral } from '../fixtures/dbOracle';
 import { nextPreparedSeat } from '../fixtures/preparedSeats';
 import { onPassOnly } from '../fixtures/sessionCleanup';
 import { appPath, parseTimeoutEnv } from '../fixtures/env';
@@ -42,10 +42,25 @@ interface PoolStatus {
   runtimeGeneration: string;
 }
 
+/** The client pool the Agent's runtime record names (`agent_runtimes`). */
+function recordedPoolNames(agentId: string): Array<string | null> {
+  return postgresRows<{ client_pool_name: string | null }>(
+    `SELECT client_pool_name FROM agent_runtimes WHERE agent_id = ${sqlLiteral(agentId)}`,
+  ).map((row) => row.client_pool_name);
+}
+
+/** The conversations the Agent has, deleted or not (`sessions`). */
+function agentSessionIds(agentId: string): string[] {
+  return postgresRows<{ session_id: string }>(
+    `SELECT session_id FROM sessions WHERE agent_id = ${sqlLiteral(agentId)} ORDER BY session_id`,
+  ).map((row) => row.session_id);
+}
+
 function preparedSlot(agentId: string, pool: PoolStatus): Record<string, unknown> {
-  const rows = documentsByField('agents', '$.agent_id', agentId);
-  expect(rows, 'preparation must belong to the test Agent').toHaveLength(1);
-  expect(rows[0]._client_pool_name).toBe(pool.poolName);
+  expect(
+    recordedPoolNames(agentId),
+    'preparation must belong to the test Agent, whose runtime record names the ready pool',
+  ).toEqual([pool.poolName]);
   const slot = nextPreparedSeat(agentId, pool.sandboxId);
   expect(slot, 'the READY shared preparation must have a prepared seat').toBeTruthy();
   if (!slot) throw new Error('unreachable: asserted above');
@@ -224,7 +239,7 @@ test.describe.serial('console saves and the Agent prewarm pool', () => {
     const before = await waitForReadyPool(platform, agentId);
     const oldSlot = preparedSlot(agentId, before);
     expect(
-      documentsByField('sessions', '$.agent_id', agentId),
+      agentSessionIds(agentId),
       'this retirement scene has not handed a placement to any user Session',
     ).toHaveLength(0);
     const oldSandbox = await requireSandboxHandle(api, before.sandboxId);
@@ -235,13 +250,15 @@ test.describe.serial('console saves and the Agent prewarm pool', () => {
     });
 
     await openAgentPage(page, agentId);
-    // Custom Skills owns Add; the LiteLLM catalog owns selection.
-    const skillsGroup = page
+    // Custom Skills is the Agent's own JSON array of sources; the LiteLLM
+    // catalog owns selection. The descriptor joins whatever is already there.
+    const customSkills = page
       .getByRole('group', { name: 'Skill configuration', exact: true })
-      .getByRole('group', { name: 'Custom Skills', exact: true })
-      .filter({ has: page.getByRole('button', { name: 'Add' }) });
-    await skillsGroup.getByRole('button', { name: 'Add' }).click();
-    await skillsGroup.getByRole('textbox').last().fill(SKILL_DESCRIPTOR);
+      .getByRole('textbox', { name: 'Custom Skills', exact: true });
+    const current = (await customSkills.inputValue()).trim();
+    const existing: unknown[] = current ? JSON.parse(current) : [];
+    await customSkills.fill(JSON.stringify([...existing, SKILL_DESCRIPTOR]));
+    await customSkills.blur();
     // The runtime card renders one Save once its direct configuration is dirty.
     const saved = page.waitForResponse(
       (response) =>

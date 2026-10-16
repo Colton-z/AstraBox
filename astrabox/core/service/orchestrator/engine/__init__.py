@@ -26,9 +26,8 @@ from __future__ import annotations
 from astrabox.core.service.orchestrator.engine.base import (
     EngineAdapter,
     EngineCapabilityManifest,
-    EngineClient,
-    EngineTurnReceipt,
 )
+from astrabox.core.service.orchestrator.engine.runtime import RuntimeClient
 from astrabox.core.service.orchestrator.engine.registry import (
     get_engine_adapter,
     register_engine_adapter,
@@ -44,8 +43,7 @@ from astrabox.core.service.orchestrator.engine.registry import (
 __all__ = [
     "EngineAdapter",
     "EngineCapabilityManifest",
-    "EngineClient",
-    "EngineTurnReceipt",
+    "RuntimeClient",
     "get_engine_adapter",
     "register_engine_adapter",
 ]

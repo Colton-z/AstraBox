@@ -6,7 +6,7 @@ import type { AdminSessionTrace, AdminTraceMessage } from '@/types';
 
 import { formatDateTime } from './agentConfig';
 
-/** The persisted message document, or `''` when the server sent no raw. */
+/** The history message itself, or `''` when the server sent no raw. */
 function rawOf(message: AdminTraceMessage): string {
   if (message.raw == null) return '';
   try {
@@ -32,7 +32,7 @@ function rawOf(message: AdminTraceMessage): string {
  */
 export function TraceDigest({ trace }: { trace: AdminSessionTrace }) {
   const { t } = useTranslation();
-  const recent = (trace.messages ?? []).slice(-6);
+  const recent = trace.messages.slice(-6);
   if (recent.length === 0) {
     return <span className="text-muted-foreground">{t('manage:sessions.trace_no_messages')}</span>;
   }
@@ -52,7 +52,7 @@ export function TraceDigest({ trace }: { trace: AdminSessionTrace }) {
             )}
           </>
         );
-        const key = `${m.turn_id || 'no-turn'}-${i}`;
+        const key = `${m.message_id || 'message'}-${i}`;
         if (!raw) {
           return (
             <div key={key} className="min-w-0">

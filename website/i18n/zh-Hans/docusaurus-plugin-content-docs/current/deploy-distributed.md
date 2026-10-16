@@ -5,6 +5,11 @@
 OpenSandbox 生命周期 API、LiteLLM 和消息网关。沙箱由 Kubernetes 调度，AstraBox 不为
 每个用户请求指定机器。
 
+任一副本都可以处理任意请求。同一时间只有一个副本持有某个 Session 与其 Agent 程序的
+连接：接收到该 Session 的消息、回答或中断请求的副本把它记录到数据库，再由 PostgreSQL
+通知唤醒持有连接的副本。跟随 Session 事件流的客户端无论连到哪个副本，都能收到它的
+输出。持有连接的副本停止后，由另一个副本接管该 Session。
+
 这个叠加配置负责连接应用与共享服务，不创建这些服务，不迁移已有部署、不安装负载
 均衡器，也不会让单个服务自动获得高可用能力。
 
@@ -13,9 +18,11 @@ OpenSandbox 生命周期 API、LiteLLM 和消息网关。沙箱由 Kubernetes �
 
 ## 准备共享服务
 
-- 使用同一个 AstraBox 数据库，包括 SessionStore 和加密的 Vault 记录。所有 API 主机
-  必须能通过私网访问 PostgreSQL 和 Redis；只绑定首台主机 loopback 的端口无法被另一台
-  访问。仅允许参与部署的主机连接，不向公网开放。
+- 使用同一个 AstraBox PostgreSQL 数据库，包括 SessionStore 和加密的 Vault 记录。所有
+  API 主机必须能通过私网访问 PostgreSQL 和 Redis；只绑定首台主机 loopback 的端口无法被
+  另一台访问。仅允许参与部署的主机连接，不向公网开放。请让副本直接连接 PostgreSQL，
+  或通过 session 模式的连接池连接，并按全部副本的需要设置其连接数上限；参见
+  [AstraBox 数据库](deploy.md#the-astrabox-database)。
 - 使用一个经过认证的外部 OpenSandbox 服务，连接同一个 Kubernetes 集群和命名空间。
   所有 API 主机都必须能访问生命周期接口及其返回的沙箱端点。
 - 叠加配置会替换基础 Compose 的环境变量，因此要把已有工作区配置写入环境文件。持久化
@@ -97,9 +104,9 @@ OIDC 配置；这个叠加配置不负责设置身份提供商，也不会安装
 已有回调凭证。显式 transcript 配置接收文本密钥，不导入任意二进制派生密钥；不要把
 派生结果 base64 编码后当成等价配置。
 
-没有显式 transcript key 的已有部署需要协调轮换：停止接收新任务、排空在途任务、退役
+没有显式 transcript key 的已有部署，在使用这个叠加配置之前需要协调轮换：停止接收新任务、排空在途任务、退役
 携带旧回调凭证的预热及常驻运行时，在所有副本配置同一个显式 transcript key，再准备
-替代运行时。保留产品数据库、SessionStore 和工作区存储，在新凭证验收通过后恢复流量。
+替代运行时。保留产品数据库、SessionStore 和工作区存储，先用新的回调凭证验收替代运行时，再恢复流量。
 叠加配置不会自动轮换，也不会更新已有沙箱的 token。不要整体复制 `/data`；每个副本
 使用独立本地数据卷，不复制数据库。
 
@@ -142,6 +149,9 @@ docker compose --env-file /etc/astrabox/replica.env \
 `local-data-only` 或 `docker-runtime-only` profile。叠加配置移除了本地服务依赖，不挂载
 Docker socket 或本地数据库密钥。入口程序识别外部服务 URL 后，不会启动内置的
 OpenSandbox、LiteLLM 或消息网关进程。
+
+每个副本启动时都会把数据库结构更新到它所运行版本的结构；同时启动的副本通过
+PostgreSQL advisory lock 轮流执行，因此每项结构变更只运行一次。
 
 先通过各副本私网地址检查 `/healthz` 和 `/readyz`，再将健康副本加入统一入口。部署验证
 应覆盖两个副本并发领取、沙箱唯一分配、任一副本访问同一 Session 的历史和消息流，以及

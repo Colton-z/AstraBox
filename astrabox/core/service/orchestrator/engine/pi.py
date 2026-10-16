@@ -37,19 +37,12 @@ from typing import Any
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.config.release_images import release_image
 from astrabox.common.utils.errors import APIError
-from astrabox.core.service.orchestrator.engine.emissions import (
-    ChildResourceFact,
-    emission_from_translated_frame,
-)
+from astrabox.core.service.orchestrator.engine.emissions import ChildResourceFact
 from astrabox.core.service.orchestrator.engine.base import (
     EngineAdapter,
-    EngineClient,
-    EngineConversationBinding,
     EngineKind,
     EnginePreparationContext,
     EngineStartupContext,
-    EngineStreamDetached,
-    initialize_engine_client,
 )
 from astrabox.core.service.orchestrator.engine.capabilities import (
     CONVERSATION_PLACEMENT_PER_ACCOUNT,
@@ -61,11 +54,11 @@ from astrabox.core.service.orchestrator.engine.extensions import (
     AGENTS_HOME_SKILLS_TARGET,
     EngineExtensions,
 )
-from astrabox.core.service.orchestrator.engine.pi_client import (
+from astrabox.core.service.orchestrator.engine.pi_runtime_client import (
     ENGINE_KIND,
-    PiEngineClient,
-    decode_turn_anchor,
+    PiRuntimeClient,
 )
+from astrabox.core.service.orchestrator.engine.runtime import initialize_runtime_client
 from astrabox.core.service.orchestrator.engine.provisioning import (
     ENGINE_ENV_FILE_NAME,
     EngineSandboxRequest,
@@ -418,19 +411,16 @@ async def _park_pi_child(
     slot's spawn fingerprint.
 
     A parked child that cannot answer is not parked: the caller destroys the
-    box rather than publishing a unit whose engine is already unusable.
+    box rather than publishing a unit whose engine is already unusable. The
+    pipe outlives the attachment that proved it, so the child keeps running
+    for the claim to adopt.
     """
 
-    from astrabox.core.service.orchestrator.engine.pi_client import (
-        connect_pi_client,
-    )
+    from astrabox.core.service.orchestrator.engine.pi_runtime_client import park_pi_process
 
-    client = await connect_pi_client(
+    return await park_pi_process(
         sandbox,
-        platform_session_id="",
         cwd=cwd,
-        session_root=PI_SESSION_DIR_TEMPLATE.format(home=home or SANDBOX_IMAGE_WORKLOAD_HOME),
-        subagent_temp_root=_subagent_temp_root(home or SANDBOX_IMAGE_WORKLOAD_HOME),
         port=_conversation_execd_port(runtime_identity),
         service_credential=service_credential,
         command=build_pi_rpc_command(
@@ -445,18 +435,7 @@ async def _park_pi_child(
             isolated=(runtime_identity or {}).get("sandbox_tenancy") == "agent",
             platform_mcp_servers=platform_mcp_servers,
         ),
-        resume_session_key=None,
     )
-    try:
-        pty_session_id = await client.park_process()
-    except BaseException:
-        with contextlib.suppress(BaseException):
-            await client.close()
-        raise
-    # The pipe outlives this client object; closing the client here would take
-    # the child with it. Only the transport is released.
-    await client.release_without_stopping()
-    return pty_session_id
 
 
 async def _install_agent_instructions(
@@ -669,7 +648,7 @@ async def _publish_runtime(
     *,
     session_id: str,
     sandbox: Any,
-    client: PiEngineClient,
+    client: PiRuntimeClient,
     engine_session_key: str | None,
     terminal_cwd: str,
     runtime_identity: dict[str, Any] | None = None,
@@ -677,13 +656,8 @@ async def _publish_runtime(
 ) -> SessionRuntime:
     """One live client → one conversation-bound, published SessionRuntime."""
 
-    engine_manifest = await initialize_engine_client(
-        client,
-        expected_engine_kind=ENGINE_KIND,
-        conversation_binding=EngineConversationBinding(
-            platform_session_id=session_id,
-            engine_session_key=engine_session_key,
-        ),
+    engine_manifest = await initialize_runtime_client(
+        client, engine_kind=ENGINE_KIND, resume_session_key=engine_session_key
     )
     return SessionRuntime(
         session_id=session_id,
@@ -691,12 +665,10 @@ async def _publish_runtime(
         engine_kind=ENGINE_KIND,
         engine_client=client,
         engine_manifest=engine_manifest,
-        conversation_bound=True,
         sandbox=sandbox,
         sandbox_id=extract_sandbox_id(sandbox),
         # Under the Agent-shared tenancy the box is shared; the isolated
-        # session is what teardown closes, what a reattach rebuilds from, and
-        # half of the consumption receipts' carrier identity.
+        # session is what teardown closes and what a reattach rebuilds from.
         isolated_session_id=(
             str((runtime_identity or {}).get("isolated_session_id") or "")
             or None
@@ -721,71 +693,34 @@ class PiEngineAdapter(EngineAdapter):
         )
         from astrabox.core.service.orchestrator.engine.pi_child_runs import (
             _SNAPSHOT_STATES,
+            _WORKFLOW_CHILD_STATES,
         )
 
         if child_run.get("closed") is True:
             return False
         state = child_run.get("engine_status")
-        if state not in _SNAPSHOT_STATES:
+        if state not in _SNAPSHOT_STATES | _WORKFLOW_CHILD_STATES:
             raise ChildRunProjectionError(f"Pi child has unknown state {state!r}")
         # pi-subagents' isActiveAsyncState excludes paused, retained runs.
-        return state in {"queued", "running"}
+        return state in {"pending", "queued", "running"}
+
+    def stored_child_transcript_facts(
+        self, *, engine_ref: str, closed: bool, native_state: dict[str, Any],
+        raw_scopes: list[dict[str, Any]],
+    ) -> list[ChildResourceFact]:
+        from astrabox.core.service.orchestrator.engine.pi_child_transcript import stored_child_transcript_facts
+
+        return stored_child_transcript_facts(
+            engine_ref=engine_ref, closed=closed, native_state=native_state, raw_scopes=raw_scopes,
+        )
 
     @property
     def engine_kind(self) -> EngineKind:
         return ENGINE_KIND
 
     @property
-    def engine_client_type(self) -> type[EngineClient]:
-        return PiEngineClient
-
-    def durable_child_resource_facts(
-        self,
-        raw_messages: list[dict[str, Any]],
-    ) -> list[tuple[int, ChildResourceFact]]:
-        """Child facts from pi's native records the platform persisted.
-
-        These are the records the relay journals while no run is open: a
-        sub-agent status push and the replies to the reads it owed. Folded
-        in journal order by a fresh projector, so a child that changed state
-        while nothing was running is visible on the next read.
-        """
-
-        from astrabox.core.service.orchestrator.engine.pi_child_runs import (
-            PiChildResources,
-            is_async_status_widget,
-            is_inspect_widget,
-        )
-
-        resources = PiChildResources()
-        facts: list[tuple[int, ChildResourceFact]] = []
-        for index, record in enumerate(raw_messages):
-            if not isinstance(record, dict):
-                continue
-            if is_async_status_widget(record):
-                frames = resources.observe_ui_request(record)
-            elif is_inspect_widget(record):
-                frames = resources.observe_persisted_inspect_reply(record)
-            else:
-                frames = resources.observe_tool_event(record)
-            for frame in frames:
-                emission = emission_from_translated_frame(frame)
-                if isinstance(emission, ChildResourceFact):
-                    facts.append((index, emission))
-        return facts
-
-    def stored_child_transcript_facts(
-        self, *, engine_ref: str, closed: bool,
-        raw_scopes: list[dict[str, Any]], raw_messages: list[dict[str, Any]],
-    ) -> list[ChildResourceFact]:
-        from astrabox.core.service.orchestrator.engine.pi_child_transcript import (
-            stored_child_transcript_facts,
-        )
-
-        return stored_child_transcript_facts(
-            engine_ref=engine_ref, closed=closed,
-            raw_scopes=raw_scopes, raw_messages=raw_messages,
-        )
+    def engine_client_type(self) -> type[PiRuntimeClient]:
+        return PiRuntimeClient
 
     @property
     def capabilities(self) -> EngineRuntimeCapabilities:
@@ -814,7 +749,8 @@ class PiEngineAdapter(EngineAdapter):
             # conversation's own box that pipe is a box process.
             requires_process_sessions=True,
             # Pi writes each conversation to one append-only JSONL file under
-            # its session directory and offers none of it over the RPC surface,
+            # its session directory and resumes only from that file (its RPC
+            # `get_entries` reads the open session, it does not restore one),
             # so the box is the only place that conversation exists and a
             # replacement one exits with `No session found matching '<id>'`.
             # Declaring the directory is the whole of this adapter's part: the
@@ -966,14 +902,16 @@ class PiEngineAdapter(EngineAdapter):
         model = _model_reference(model_access)
         return _engine_sandbox_request(model_access, model=model)
 
-    def supports_unowned_output_attach(self) -> bool:
-        return True
-
     async def activate_runtime(
         self,
         context: EngineStartupContext,
     ) -> SessionRuntime:
-        """Start or adopt pi's RPC child inside an assigned runtime."""
+        """Start or adopt pi's RPC child inside an assigned runtime.
+
+        A reattach rejoins the pi the conversation already runs, so a response
+        in progress keeps its process; a prepared claim adopts the parked
+        child; anything else starts pi on a new pipe.
+        """
 
         if context.attach_mode is not None and not str(
             context.resume_session_key or ""
@@ -1018,27 +956,7 @@ class PiEngineAdapter(EngineAdapter):
                 status_code=409,
             )
         sandbox = context.sandbox
-        output_checkpoint = None
-        if context.attach_mode == "observe":
-            if context.resident_output_sink is None:
-                raise RuntimeError("pi output attachment requires the Session journal")
-            output_checkpoint = await context.resident_output_sink.restore_resident_output(
-                engine_kind=ENGINE_KIND,
-                sandbox_id=context.sandbox_id,
-                engine_session_key=context.resume_session_key,
-            )
-            if (
-                not output_checkpoint.engine_turn_id
-                or output_checkpoint.replay_after_sequence is None
-            ):
-                raise EngineStreamDetached(
-                    "pi output connection has no committed terminal cursor to resume"
-                )
-            anchor = decode_turn_anchor(output_checkpoint.engine_turn_id)
-            if anchor["pi_session_id"] != context.resume_session_key:
-                raise RuntimeError("pi output connection belongs to another native Session")
-            parked_pty_session_id = anchor["pty_session_id"]
-        client: PiEngineClient | None = None
+        client: PiRuntimeClient | None = None
         try:
             instructions = str(getattr(template, "system", None) or "").strip()
             if instructions and not is_prepared:
@@ -1047,6 +965,7 @@ class PiEngineAdapter(EngineAdapter):
                     runtime_identity=context.runtime_identity,
                 )
             identity = context.runtime_identity or {}
+            home = str(identity.get("home_dir") or SANDBOX_IMAGE_WORKLOAD_HOME)
             # The key the PLATFORM honoured, not the one the plan asked for:
             # it dropped the plan's key when the transcript store had nothing to
             # restore, and naming it anyway would make pi exit with
@@ -1058,7 +977,7 @@ class PiEngineAdapter(EngineAdapter):
 
             command = build_pi_rpc_command(
                 linux_user=str(identity.get("linux_user") or SANDBOX_IMAGE_WORKLOAD_USER),
-                home=str(identity.get("home_dir") or SANDBOX_IMAGE_WORKLOAD_HOME),
+                home=home,
                 workspace=context.cwd,
                 model=model,
                 settings=_settings(template),
@@ -1071,31 +990,22 @@ class PiEngineAdapter(EngineAdapter):
                     deployment_id=startup_mcp_deployment_id(context),
                 ),
             )
-            from astrabox.core.service.orchestrator.engine.pi_client import (
-                connect_pi_client,
+            from astrabox.core.service.orchestrator.engine.pi_runtime_client import (
+                connect_pi_runtime,
             )
 
-            client = await connect_pi_client(
+            client = await connect_pi_runtime(
                 sandbox,
-                platform_session_id=context.session_id,
                 cwd=context.cwd,
-                session_root=PI_SESSION_DIR_TEMPLATE.format(
-                    home=identity.get("home_dir") or SANDBOX_IMAGE_WORKLOAD_HOME
-                ),
-                subagent_temp_root=_subagent_temp_root(
-                    str(identity.get("home_dir") or SANDBOX_IMAGE_WORKLOAD_HOME)
-                ),
+                command=command,
+                home=home,
+                session_root=PI_SESSION_DIR_TEMPLATE.format(home=home),
+                subagent_temp_root=_subagent_temp_root(home),
+                resume_session_key=resume_key or None,
+                reattach=context.attach_mode is not None,
+                parked_pipe=parked_pty_session_id or None,
                 port=_conversation_execd_port(identity),
                 service_credential=context.service_credential,
-                pty_session_id=(
-                    parked_pty_session_id or None
-                ),
-                command=command,
-                resume_session_key=resume_key or None,
-                switch_prepared_session=is_prepared and bool(resume_key),
-                output_checkpoint=output_checkpoint,
-                resident_output_sink=context.resident_output_sink,
-                event_sink=context.event_sink,
             )
             return await _publish_runtime(
                 session_id=context.session_id,

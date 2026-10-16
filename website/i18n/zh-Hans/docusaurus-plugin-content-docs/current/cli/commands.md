@@ -575,7 +575,7 @@ astrabox apply -f astrabox.yaml --output json
 
 ## `astrabox run`
 
-`astrabox run` 会通过 Agent 创建对话、发送一项任务，并持续输出回复，直到 Session 数据流关闭。也可以用它继续已有的 Session。
+`astrabox run` 会通过 Agent 创建对话、发送一项任务，并持续输出回复，直到回复结束或 Agent 提出问题。也可以用它继续已有的 Session。
 
 ### 使用方法
 
@@ -590,7 +590,7 @@ astrabox run <agent> <task> [options]
 | `agent` | Agent 名称或 Agent ID。使用 `--session` 时仍需保留这个位置参数。 | 是 | — |
 | `task` | 发送给 Agent 的任务。 | 是 | — |
 | `--session` | 继续已有的 Session，不创建新对话。 | 否 | 创建新对话 |
-| `--timeout` | 整次运行的超时时间，包括等待沙箱就绪和执行任务。 | 否 | `900` 秒 |
+| `--timeout` | 整次运行的超时时间，包括沙箱启动和回复。 | 否 | `900` 秒 |
 | `--endpoint` | 部署地址。 | 否 | 官方维护的本地地址 |
 | `--token` | Bearer Token。 | 否 | 环境变量或 OAuth 客户端凭证 |
 | `--output`、`-o` | 输出格式：`table` 或 `json`。 | 否 | `table` |
@@ -603,7 +603,7 @@ astrabox run <agent> <task> [options]
 astrabox run researcher "总结本周的代码变更"
 ```
 
-命令会按名称或 ID 查找 `researcher`，创建对话，等待沙箱可以接收任务，然后流式输出回复。
+命令会按名称或 ID 查找 `researcher`，创建对话，发送任务，然后流式输出回复。对话的沙箱启动前，任务会先暂存。
 
 #### 示例 2：发送较长的任务
 
@@ -634,7 +634,7 @@ astrabox run researcher "继续上一次任务" \
   --session <session-id>
 ```
 
-命令格式仍要求提供 `agent` 位置参数，但任务会发送到 `--session` 指定的现有对话。
+命令格式仍要求提供 `agent` 位置参数，但任务会发送到 `--session` 指定的现有对话。如果 Agent 仍在回答之前的消息，任务会排在后面，命令只输出对这项任务的回复。
 
 #### 示例 6：返回一份 JSON 结果
 
@@ -652,7 +652,7 @@ astrabox run researcher "执行冒烟检查" --timeout 120
 
 ### 运行效果
 
-使用默认输出时，回复文本会边生成边显示。数据流关闭后，命令会报告 Session ID，以及 Agent 是否正在等待回答。
+使用默认输出时，回复文本会边生成边显示。回复结束或 Agent 提出问题后，命令会报告 Session ID，以及 Agent 是否正在等待回答。
 
 ```text
 正在检查代码仓库……
@@ -660,16 +660,16 @@ astrabox run researcher "执行冒烟检查" --timeout 120
 session <session-id>
 ```
 
-使用 `--output json` 时，结果包含 `text`、`frames`、`errors`、`session_id` 和 `pending_interaction` 字段。
+使用 `--output json` 时，结果包含累积的 `text`、已读取的回复 part 数量 `parts`、`errors`、`session_id` 和 `pending_interaction` 字段。
 
 ### 注意事项
 
-1. **等待沙箱就绪**：新对话创建后，沙箱可能还没有准备好。命令会等待 Session 进入 `READY` 再发送任务。
-2. **整次运行共用一个超时**：`--timeout` 同时限制沙箱等待和任务执行。
-3. **数据流关闭不一定代表任务结束**：命令会再次读取 Session；Agent 正在等待回答时，会返回 `pending_interaction`。
+1. **无需等待就绪**：新对话在沙箱就绪之前就已存在。部署会先暂存任务，直到沙箱启动，因此命令会立即发送任务。
+2. **整次运行共用一个超时**：`--timeout` 同时限制沙箱启动和流式输出的回复。
+3. **提问会结束本次运行**：回复因问题或审批暂停时，命令会将其报告为 `pending_interaction`。
 4. **通过其他入口回答问题**：请在 Web 控制台或通过 [HTTP API](../api.md) 回答。
 5. **两种输出方式不同**：默认输出会实时显示文本；JSON 输出会缓存文本，确保结果可以解析。
-6. **Agent 错误会改变退出码**：数据流结果包含错误时，命令以退出码 1 结束。
+6. **Agent 错误会改变退出码**：回复包含错误，或部署无法把任务交给 Agent 时，命令以退出码 1 结束。
 
 ---
 

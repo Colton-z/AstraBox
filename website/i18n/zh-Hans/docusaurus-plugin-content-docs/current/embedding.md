@@ -152,8 +152,8 @@ Lifespan 成功进入之前，上层应用不应接受请求。
 
 ```python
 from astrabox.bootstrap import bootstrap
-from astrabox.persistence.migrations import run_pending_migrations
 from astrabox.persistence.repository import backend
+from astrabox.persistence.sql.migrate import upgrade_to_head
 from astrabox.core.service.orchestrator.service_registry import (
     get_platform_service,
     run_lifecycle_shutdown,
@@ -162,7 +162,7 @@ from astrabox.core.service.orchestrator.service_registry import (
 
 bootstrap()
 await backend.create_all()
-await run_pending_migrations()
+await upgrade_to_head()
 await run_lifecycle_startup()
 
 platform = get_platform_service()

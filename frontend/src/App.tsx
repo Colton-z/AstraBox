@@ -3,6 +3,7 @@ import { ConnectionsPage } from './connections/ConnectionsPage';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, Navigate, Route, Routes, useNavigate, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import i18n from '@/i18n';
 import { useTheme } from 'next-themes';
 import type { TFunction } from 'i18next';
 import useSWR from 'swr';
@@ -65,8 +66,9 @@ function sourceIcon(s: SessionRecord) {
   return Hammer;
 }
 
+// An untitled conversation is named the way its own header names it.
 function sessionDisplayName(s: SessionRecord): string {
-  return s.title || s.template_name;
+  return s.title || i18n.t('chat:page.session_title_fallback', { id: s.session_id.slice(0, 8) });
 }
 
 function sessionStatusLabel(s: SessionRecord, t: TFunction): string {
@@ -77,7 +79,7 @@ function sessionStatusLabel(s: SessionRecord, t: TFunction): string {
   return sessionOperationalStatusLabel(s);
 }
 
-function formatShortTime(iso: string | undefined, t: TFunction): string {
+function formatShortTime(iso: string | null | undefined, t: TFunction): string {
   if (!iso) return '';
   try {
     const d = new Date(iso);

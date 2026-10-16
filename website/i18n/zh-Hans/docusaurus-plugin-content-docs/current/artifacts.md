@@ -6,10 +6,6 @@ Artifact 是 Agent 或 Assistant 发布的独立页面、应用、图表、文�
 
 Artifact 默认私有，属于创建会话所代表的用户。管理员不会因此获得其他用户的 Artifact 访问权。
 
-Artifact 写入需要支持事务的存储。PostgreSQL（默认）和 SQLite 均支持。
-MongoDB 必须使用副本集或分片集群；在独立 MongoDB 实例上写入 Artifact 会报
-`ARTIFACT_STORE_UNAVAILABLE`。
-
 ## 创建 Artifact {#create-an-artifact}
 
 让 Agent 或 Assistant 将可重复使用的完整输出发布为 Artifact，例如：

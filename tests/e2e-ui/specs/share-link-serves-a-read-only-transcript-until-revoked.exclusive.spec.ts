@@ -164,6 +164,19 @@ test('a share link serves a read-only transcript until it is revoked', async ({ 
       (sharedMessages.messages || []).length,
       'the shared transcript should not be empty',
     ).toBeGreaterThan(0);
+    // The share reads the same history without what only the owner may see:
+    // who wrote a message and how it reached the session, and the output
+    // position the owner's page follows the live stream from
+    // (`public_message` and `_first_page` in `session_runtime/views.py`). The
+    // owner's own read is the control that these facts exist to be withheld.
+    const ownerInput = (await api.getMessages(sessionId)).messages.find((message) => message.role === 'user');
+    expect(ownerInput?.metadata?.author_user_id, 'the owner reads who wrote the message').toBeTruthy();
+    const sharedInput = (sharedMessages.messages || []).find((message) => message.role === 'user');
+    expect(sharedInput, 'the shared transcript carries the message the owner sent').toBeTruthy();
+    const sharedInputFacts = (sharedInput?.metadata ?? {}) as Record<string, unknown>;
+    expect(sharedInputFacts, 'a share does not say who wrote a message').not.toHaveProperty('author_user_id');
+    expect(sharedInputFacts, 'nor how the message reached the session').not.toHaveProperty('source');
+    expect(sharedMessages, 'a share has no live stream to follow').not.toHaveProperty('output_seq');
 
     // ── A token that was never minted opens nothing ─────────────────────────
     const forged = await platform.refusal('GET', `/share/${'0'.repeat(token.length)}`);

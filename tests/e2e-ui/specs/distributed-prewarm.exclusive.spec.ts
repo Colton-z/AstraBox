@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto';
 
 import { expect, test, type BrowserContext } from '@playwright/test';
 
-import { AstraApi, messageText, visibleMessages, type SessionRecord } from '../fixtures/astraApi';
+import {
+  AstraApi, answersInput, messageText, visibleMessages, type InputReceipt, type SessionRecord,
+} from '../fixtures/astraApi';
 import { DistributedBackend } from '../fixtures/distributedBackend';
 import { backendBrowserFlow, data, responseFor } from '../fixtures/crossHostBackend';
 import { apiPath } from '../fixtures/env';
@@ -81,15 +83,15 @@ test('two live backends share prepared capacity without crossing conversation fi
     ]);
     evidence.files = { filename, first: marker1, second: marker2 };
 
-    const subscription = responseFor(a, `/sessions/${session1.session_id}/ai-stream`);
+    const subscription = responseFor(a, `/sessions/${session1.session_id}/stream`);
     const subscribed = a.waitForRequest((request) => request.method() === 'GET'
-      && new URL(request.url()).pathname === apiPath(`/sessions/${session1.session_id}/ai-stream`));
+      && new URL(request.url()).pathname === apiPath(`/sessions/${session1.session_id}/stream`));
     await ui.history(a, origins[0], session1.session_id);
     expect(new URL((await subscribed).url()).origin).toBe(origins[0]);
     await ui.history(b, origins[1], session1.session_id);
     await expect(a.getByTestId('assistant-message')).toHaveCount(0);
     const prompt = `Research project ${marker1}: explain in one short sentence why diversification reduces concentration risk. Do not use tools.`;
-    await sendPrompt(b, session1.session_id, prompt);
+    const receipt = await data<InputReceipt>(await sendPrompt(b, session1.session_id, prompt));
     const stream = await subscription;
     expect(stream.status()).toBe(200);
     expect(stream.headers()['content-type']).toContain('text/event-stream');
@@ -105,10 +107,15 @@ test('two live backends share prepared capacity without crossing conversation fi
     const settledRead = responseFor(b, `/sessions/${session1.session_id}`);
     const transcriptB = visibleMessages(await ui.history(b, origins[1], session1.session_id));
     const settled = await data<SessionRecord>(await settledRead);
-    expect(settled.last_turn_status, String(settled.last_error || '')).toBe('COMPLETED');
-    expect(settled.current_turn_id || null).toBeNull();
-    evidence.settledTurn = { sessionId: settled.session_id, turnId: settled.last_turn_id,
-      status: settled.last_turn_status, currentTurnId: settled.current_turn_id };
+    const answer = transcriptB.filter((row) => answersInput(row, receipt.input_id));
+    expect(answer, 'history must hold one reply to the prompt B accepted').toHaveLength(1);
+    expect(
+      { response: settled.last_response?.response_id, outcome: settled.last_response?.outcome },
+      String(settled.last_error || ''),
+    ).toEqual({ response: answer[0].id, outcome: 'completed' });
+    expect(settled.current_responses ?? []).toEqual([]);
+    evidence.settledResponse = { sessionId: settled.session_id, inputId: receipt.input_id,
+      last: settled.last_response, current: settled.current_responses };
     expect(transcriptB).toEqual(transcriptA);
     expect(transcriptA.filter((row) => row.role === 'user').map(messageText)).toEqual([prompt]);
     await expect(b.getByTestId('assistant-message').last().getByTestId('assistant-text')).toHaveText(rendered);

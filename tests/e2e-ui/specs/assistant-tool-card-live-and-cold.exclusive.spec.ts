@@ -6,7 +6,7 @@ import { AstraApi } from '../fixtures/astraApi';
 import { revealAssistantProcess } from '../fixtures/assistantProcess';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
-import { aiStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
+import { sessionStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
 
 const sessions = trackSessions();
 let assistantId = '';
@@ -16,7 +16,7 @@ onPassOnly(async ({ request }) => {
 });
 test.afterEach(async ({ page }, info) => {
   await info.attach('assistant-tool-card-stream', {
-    body: JSON.stringify({ assistantId, sessionId, stream: await aiStreamBodies(page) }),
+    body: JSON.stringify({ assistantId, sessionId, stream: await sessionStreamBodies(page) }),
     contentType: 'application/json',
   });
 });
@@ -103,7 +103,7 @@ test('an Assistant tool call and its result are visible live and after reload', 
     await expect(page.getByTestId('assistant-text').filter({ hasText: marker })).toBeVisible({ timeout: 60_000 });
     const liveHeader = await readCompletedCard(page);
     await test.info().attach('assistant-tool-live-stream', {
-      body: JSON.stringify(await aiStreamBodies(page)), contentType: 'application/json',
+      body: JSON.stringify(await sessionStreamBodies(page)), contentType: 'application/json',
     });
     holdHistory = false;
     releaseHistory();

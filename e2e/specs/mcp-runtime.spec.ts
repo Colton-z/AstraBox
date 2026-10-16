@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext } from "@playwright/test";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import {
   directMcpCallCommand,
@@ -57,35 +57,78 @@ async function terminalCommand(
   return { status: response.status(), body: await response.text() };
 }
 
-async function completeRootTurn(
-  request: APIRequestContext,
-  sessionId: string,
-  operation: string,
-): Promise<void> {
-  const response = await request.post(`/api/v1/sessions/${sessionId}/ai-stream`, {
-    data: { content: "Do not use tools. Reply with OK only." },
-    headers: { Accept: "text/event-stream" },
-    timeout: 120_000,
-  });
-  const body = await response.text();
-  expect(
-    response.status(),
-    `${operation} returned ${response.status()}: ${body.slice(0, 1_000)}`,
-  ).toBe(200);
-  const frames = body
+function sseFrames(body: string): Array<Record<string, unknown>> {
+  return body
     .split(/\r?\n/)
     .filter((line) => line.startsWith("data:"))
     .map((line) => line.slice(5).trim())
     .filter((line) => line && line !== "[DONE]")
     .map((line) => JSON.parse(line) as Record<string, unknown>);
-  expect(
-    frames.filter((frame) => frame.type === "error"),
-    `${operation} emitted an error frame: ${body.slice(0, 1_000)}`,
-  ).toEqual([]);
-  expect(
-    frames.some((frame) => frame.type === "finish"),
-    `${operation} did not complete: ${body.slice(0, 1_000)}`,
-  ).toBe(true);
+}
+
+/**
+ * Send one message and read the response to it off the session's stream.
+ *
+ * The stream is followed from the output position the session reported
+ * before the send; each request ends after one response's end, and the next
+ * continues at the `data-resume-cursor` the last carried. The response to
+ * this message is the one whose `start` names its input.
+ */
+async function completeRootTurn(
+  request: APIRequestContext,
+  sessionId: string,
+  operation: string,
+): Promise<void> {
+  const detail = await responseData<{ output_seq?: number | null }>(
+    await request.get(`/api/v1/sessions/${sessionId}`),
+    `${operation}: read the session`,
+  );
+  let cursor = Number(detail.output_seq ?? 0);
+  const receipt = await responseData<{ input_id: string }>(
+    await request.post(`/api/v1/sessions/${sessionId}/inputs`, {
+      data: { content: "Do not use tools. Reply with OK only.", client_message_id: randomUUID() },
+    }),
+    `${operation}: send`,
+  );
+  const deadline = Date.now() + 120_000;
+  const frames: Array<Record<string, unknown>> = [];
+  let answering = false;
+  while (Date.now() < deadline) {
+    const response = await request.get(
+      `/api/v1/sessions/${sessionId}/stream?after_seq=${cursor}`,
+      { headers: { Accept: "text/event-stream" }, timeout: Math.max(1_000, deadline - Date.now()) },
+    );
+    const body = await response.text();
+    expect(
+      response.status(),
+      `${operation} stream returned ${response.status()}: ${body.slice(0, 1_000)}`,
+    ).toBe(200);
+    for (const frame of sseFrames(body)) {
+      if (frame.type === "data-resume-cursor") {
+        cursor = Number((frame.data as { seq?: unknown } | undefined)?.seq ?? cursor);
+        continue;
+      }
+      if (frame.type === "start") {
+        const inputIds = (frame.messageMetadata as { input_ids?: unknown } | undefined)?.input_ids;
+        answering = Array.isArray(inputIds) && inputIds.map(String).includes(receipt.input_id);
+      }
+      if (!answering) continue;
+      frames.push(frame);
+      if (frame.type !== "finish") continue;
+      expect(
+        frames.filter((item) => item.type === "error"),
+        `${operation} emitted an error part: ${JSON.stringify(frames).slice(0, 1_000)}`,
+      ).toEqual([]);
+      expect(
+        frame.finishReason,
+        `${operation} paused instead of completing: ${JSON.stringify(frames).slice(0, 1_000)}`,
+      ).not.toBe("tool-calls");
+      return;
+    }
+  }
+  throw new Error(
+    `${operation} did not complete within 120s; parts=${JSON.stringify(frames.map((frame) => frame.type))}`,
+  );
 }
 
 function mcpVaultDestinationPrefix(serverUrl: string): string {

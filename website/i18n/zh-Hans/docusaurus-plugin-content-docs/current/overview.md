@@ -1,5 +1,7 @@
 # 概览
 
+> 在自托管的云端沙箱中运行已安装的 Agent 程序。
+
 AstraBox 是开源、自托管的 Agent 运行平台，可将已安装的 Agent 程序变成随时可用的云端 Agent。你无需自建 agent loop、管理工具执行沙箱或处理长连接——只需在管理台或通过 API 定义 Agent、启动 Session，即可在云端运行复杂任务并实时接收结果。
 
 ## 核心概念
@@ -25,15 +27,15 @@ AstraBox 是开源、自托管的 Agent 运行平台，可将已安装的 Agent 
 一次部署就带齐团队通常要自己拼装的几块：
 
 - **模型网关。** 默认内置 [LiteLLM](https://github.com/BerriAI/litellm) 网关。Agent 只选路由名；上游密钥、路由、预算和请求日志都留在服务端，后面可以接 Anthropic、OpenAI 兼容服务或本地模型。参见[连接模型服务](models.md)。
-- **团队登录。** 预集成 [Casdoor](https://github.com/casdoor/casdoor) 作为身份提供方，支持 OIDC、组织与角色；管理员在 Casdoor 中添加身份提供方后，可用 Google、Microsoft、Okta、GitHub、SAML、LDAP 等方式登录，也支持钉钉、飞书、企业微信。安装脚本设置一项即可开启，参见[设置团队登录](team-login.md)。
-- **隔离沙箱。** 基于 [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox)，单台 Docker 主机或 Kubernetes 集群都能运行，并预留热容量，对话秒级拉起、秒级恢复。
+- **团队登录。** 预集成 [Casdoor](https://github.com/casdoor/casdoor) 作为身份提供方，支持 OIDC、组织与角色；管理员在 Casdoor 中添加身份提供方后，可用 Google、Microsoft Entra ID、Okta、GitHub、SAML、LDAP 等方式登录，也支持钉钉、飞书、企业微信。安装脚本设置一项即可开启，参见[设置团队登录](team-login.md)。
+- **隔离沙箱。** 基于 [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox)，单台 Docker 主机或 Kubernetes 集群都能运行，并通过预热容量让对话在数秒内启动和恢复。
 - **凭证不进沙箱。** Vault 凭证在沙箱的出站边界注入，Agent 只看得到占位符。参见[保护 Agent 使用的凭证](egress-credential-injection.md)。
 - **触发器与消息通道。** 定时任务、签名 Webhook 和消息平台可以在无人值守时启动 Agent。参见[让 Agent 自动运行](deployments.md)。
 
 ## 管理与扩展 AstraBox
 
 - **命令行与 MCP。** [AstraBox CLI](cli/overview.md) 在 `astrabox.yaml` 中声明 Environment 和 Agent，应用修改，并给 Agent 发送任务。命令结果可以输出为 JSON，每类失败都有各自的退出码，因此脚本和编程助手可以用它管理部署；`astrabox mcp serve` 还把同样的操作提供为 MCP 工具。
-- **Python 插件。** 安装的 Python 包可以接入 Agent 程序、沙箱后端、模型服务、消息平台、身份提供方、Secret Store、数据存储、工作区存储、调度器和远程 MCP 服务来源。详见[扩展接口](architecture.md#plugin-interfaces)。
+- **Python 插件。** 安装的 Python 包可以接入 Agent 程序、沙箱后端、模型服务、消息平台、身份提供方、Secret Store、工作区存储、调度器和远程 MCP 服务来源。详见[扩展接口](architecture.md#plugin-interfaces)。
 
 ## 快速验证连通性
 
@@ -94,4 +96,4 @@ A: 默认情况下，每个 Session 运行在隔离沙箱中；Environment 也�
 - [快速开始](quickstart.md) — 运行第一个 Agent
 - [定义 Agent](authoring-agents.md) — 深入了解 Agent 配置
 - [Environment](environments.md) — 配置运行环境
-- [启动 Session](sessions.md) — 管理会话生命周期
+- [Session](sessions.md) — 管理 Session 生命周期

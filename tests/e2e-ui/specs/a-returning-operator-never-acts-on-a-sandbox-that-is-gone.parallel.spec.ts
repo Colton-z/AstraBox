@@ -133,6 +133,7 @@ const RECLAIM_VISIBLE_MS = parseTimeoutEnv('ASTRABOX_E2E_SANDBOX_RECLAIM_VISIBLE
  */
 const RETURN_FRESH_ROUTES = [
   '/manage/agents',
+  '/manage/agent-categories',
   '/manage/assistants',
   '/manage/environments',
   '/manage/credentials',

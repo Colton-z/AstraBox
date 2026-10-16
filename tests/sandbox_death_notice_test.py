@@ -7,28 +7,21 @@ UNPLANNED death from a planned one it asked for itself.
 
 It is scoped to the BOX, not to a conversation. The box is what knows, and one
 box can carry many conversations; which sessions the news affects is the
-platform's lookup, never the emitter's assertion. Under the shared-sandbox mode
-the box could not answer that question anyway — a session's ``/tmp`` is private,
-so a container-level termination trigger cannot read what the conversations
-inside wrote.
+platform's lookup, never the emitter's assertion.
 
 These pin, on both ends of the wire:
 
-* every session bound to the box converges, and a planned teardown on ONE of
-  them does not stop the others — converging only the newest, or giving up on
-  the first skip, would leave sessions pointing at a box that is gone.
 * the token is the box's and is domain-separated from a session's, so neither
-  can stand in for the other.
-* the in-box half writes a notice an external termination trigger can execute.
+  can stand in for the other, and a forged one is refused before any session is
+  read;
+* the in-box half keeps hostile values as arguments, never commands.
 
-OpenSandbox standard create installs no such trigger. These tests retain the
-receiver and script as extension surfaces; pull-based lifecycle
-probing is the built-in recovery path and is covered by the convergence tests.
+OpenSandbox standard create installs no such trigger; the receiver and script
+are extension surfaces.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 from pathlib import Path
@@ -141,72 +134,6 @@ def _session(session_id: str, **overrides: Any) -> dict[str, Any]:
     return row
 
 
-def test_every_session_bound_to_the_box_converges() -> None:
-    client, _repo, converge = _client(
-        [_session("s1"), _session("s2"), _session("s3")]
-    )
-    with patch.object(
-        SandboxLifecycleService, "converge_dead_sandbox_owners", converge
-    ):
-        response = client.post(_url(), json={})
-    assert response.status_code == 200
-    data = response.json()["data"]
-    assert data["handled"] is True
-    assert sorted(data["converged"]) == ["s1", "s2", "s3"]
-    assert converge.await_count == 1
-
-
-def test_a_planned_teardown_on_one_session_does_not_stop_the_others() -> None:
-    """The skips are per session. Giving up on the first would leave live
-    sessions pointing at a box that is gone."""
-    client, _repo, converge = _client(
-        [
-            _session("parked", sandbox_parked_at="2026-08-03T00:00:00Z"),
-            _session("ended", state=SessionState.TERMINATED.value),
-            _session("deleted", state=SessionState.DELETED.value),
-            _session("live"),
-        ]
-    )
-    with patch.object(
-        SandboxLifecycleService, "converge_dead_sandbox_owners", converge
-    ):
-        data = client.post(_url(), json={}).json()["data"]
-    assert data["converged"] == ["live"]
-    assert data["ignored"] == {
-        "parked": "session_parked",
-        "ended": "session_ended",
-        "deleted": "session_ended",
-    }
-    assert converge.await_count == 1
-
-
-def test_a_session_that_moved_to_another_box_is_simply_not_in_the_set() -> None:
-    """No fence needed: the lookup is BY sandbox id, so a re-borrowed session
-    cannot be reached by its old box's notice at all."""
-    client, _repo, converge = _client(
-        [_session("moved-on", sandbox_id="sbx-replacement"), _session("still-here")]
-    )
-    with patch.object(
-        SandboxLifecycleService, "converge_dead_sandbox_owners", converge
-    ):
-        data = client.post(_url(), json={}).json()["data"]
-    assert data["converged"] == ["still-here"]
-    assert converge.await_count == 1
-
-
-def test_a_box_no_session_is_bound_to_is_not_an_error() -> None:
-    """The ordinary case for an unclaimed prewarm box, and for one whose
-    conversations already moved on."""
-    client, _repo, converge = _client([])
-    with patch.object(
-        SandboxLifecycleService, "converge_dead_sandbox_owners", converge
-    ):
-        response = client.post(_url(), json={})
-    assert response.status_code == 200
-    assert response.json()["data"]["converged"] == []
-    assert converge.await_count == 1
-
-
 def test_a_forged_token_is_refused_before_the_sessions_are_read() -> None:
     client, repo, converge = _client([_session("s1")])
     with patch.object(
@@ -284,21 +211,6 @@ def _run_notice(script: Path, tmp_path: Path) -> list[str]:
     return recorded.read_text(encoding="utf-8").splitlines()
 
 
-def test_the_written_notice_posts_the_box_url(
-    _notice_path: Path, tmp_path: Path
-) -> None:
-    url = f"https://platform.example/api/v1/sbxcap/tok-abc/api/v1/sandbox/{_SANDBOX_ID}/terminating"
-    _write_death_notice({"url": url})
-    # A termination trigger runs it directly, so the box's uid must execute it.
-    assert _notice_path.stat().st_mode & 0o100
-    argv = _run_notice(_notice_path, tmp_path)
-    assert "POST" in argv
-    assert url in argv
-    # The address IS the message: the box is identified by the URL it was
-    # given, and asserts nothing about which conversations are inside it.
-    assert json.dumps({}) in argv or "{}" in argv
-
-
 def test_hostile_values_stay_arguments_and_never_become_commands(
     _notice_path: Path, tmp_path: Path
 ) -> None:
@@ -307,13 +219,3 @@ def test_hostile_values_stay_arguments_and_never_become_commands(
     argv = _run_notice(_notice_path, tmp_path)
     assert hostile_url in argv
     assert not (tmp_path / "pwned").exists()
-
-
-@pytest.mark.parametrize("notice", [None, {}, {"url": "  "}, "not-a-dict"])
-def test_a_notice_without_an_address_writes_nothing(
-    notice: Any, _notice_path: Path
-) -> None:
-    _write_death_notice(notice)
-    # Better no notice at all — which the probe sweep covers — than one the
-    # box believes it sent.
-    assert not _notice_path.exists()

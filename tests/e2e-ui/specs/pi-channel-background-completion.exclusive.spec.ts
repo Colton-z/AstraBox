@@ -5,10 +5,13 @@ import { expect, test } from '@playwright/test';
 
 import { AstraApi, messageText } from '../fixtures/astraApi';
 import { channelCallback } from '../fixtures/channelCallback';
-import { documentsByField, framesForTurn, replaceDocs, sessionEvents } from '../fixtures/dbOracle';
+import { sessionOutputRows, sessionResponseRows } from '../fixtures/dbOracle';
 import { messageProseBlocks, textBlockValues } from '../fixtures/dshOutput';
 import { engineProfileFor } from '../fixtures/engineProfile';
 import { absoluteBaseUrl, apiPath } from '../fixtures/env';
+import {
+  channelInboundRows, channelOutboxRows, channelOutputSubscriptions, rewindOutputSubscriptions,
+} from '../fixtures/ingressRecords';
 import { InstalledChannelBackend } from '../fixtures/installedChannelBackend';
 import { childPrompt, expectNativeMode, launchEvidence, nativeRows } from '../fixtures/nativeChildLifecycle';
 import { finalReplies, nativeEntries, nativeText, object } from '../fixtures/piChildFailure';
@@ -90,7 +93,7 @@ for (const scenario of cases) test(scenario.title, async ({ request, page }, inf
         data: { utterance: 'unauthenticated input must not execute', event_id: id, room_id: id, callback_url: recipient.url },
       });
       expect(denied.status()).toBe(401);
-      expect(documentsByField('channel_inbound', '$.deployment_id', deploymentId)).toEqual([]);
+      expect(channelInboundRows(deploymentId)).toEqual([]);
     }
     const greeting = `Reply exactly READY_${id}. Do not use tools.`;
     sessionId = await send(greeting, `${id}-greeting`);
@@ -139,7 +142,8 @@ for (const scenario of cases) test(scenario.title, async ({ request, page }, inf
     });
     evidence.runningChildren = runningChildren;
     await expect.poll(() => readGate(gate.started)).toBe(gate.marker);
-    expect((await api.getSession(sessionId)).current_turn_id).toBeFalsy();
+    expect((await api.getSession(sessionId)).current_responses ?? [], 'the parent replied and is not working')
+      .toEqual([]);
     const initialHistory = await api.getMessages(sessionId, 50);
     evidence.initialHistory = initialHistory;
     evidence.launches = launches;
@@ -179,47 +183,54 @@ for (const scenario of cases) test(scenario.title, async ({ request, page }, inf
     evidence.notices = notices().map((row) => ({ seq: row.seq, text: nativeText(row.entry.content) }));
     const completionReplies = async () => (await api.getMessages(sessionId, 50)).messages
       .filter((message) => message.role === 'assistant'
-        && !initialHistory.messages.some((old) => old.message_id === message.message_id));
+        && !initialHistory.messages.some((old) => old.id === message.id));
     await expect.poll(async () => (await completionReplies()).map(messageProseBlocks), {
       timeout: 30_000,
     }).toEqual(expectedBlocks);
     await expect.poll(deliveries, { timeout: 30_000 }).toEqual([...initialDeliveries, ...expectedReplies]);
+    // The runtime answered the child's notice on its own: each reply is a
+    // response no input started.
+    const responses = sessionResponseRows(sessionId);
+    for (const completion of await completionReplies()) {
+      expect(responses.find((row) => row.response_id === completion.id)).toMatchObject({
+        origin: 'engine', input_ids: [], status: 'ended', outcome: 'completed',
+      });
+    }
     const final = await api.getMessages(sessionId, 50);
     expect(final.messages.filter((message) => message.role === 'user').map(messageText)).toEqual([greeting, prompt]);
-    expect(documentsByField('channel_inbound', '$.deployment_id', deploymentId)).toHaveLength(2);
-    await expect.poll(() => documentsByField('channel_outbox', '$.session_id', sessionId)
+    expect(channelInboundRows(deploymentId)).toHaveLength(2);
+    await expect.poll(() => channelOutboxRows(sessionId)
       .filter((row) => row.state === 'DELIVERED').length).toBe(initialDeliveries.length + expectedReplies.length);
     expect(final.messages.filter((message) => message.role === 'assistant')
       .map((message) => messageProseBlocks(message).filter(Boolean).join('\n\n').trim())).toEqual(deliveries());
     await openSessionView(page, sessionId);
     await expect(page.getByTestId('assistant-text').filter({ hasText: receipt })).toBeVisible();
     if (scenario.restart) {
-      const subscription = () => documentsByField('channel_output_subscriptions', '$.session_id', sessionId)[0];
+      const subscription = () => channelOutputSubscriptions(sessionId)[0];
       const completionCursor = Math.max(...(await completionReplies())
-        .flatMap((message) => framesForTurn(String(message.turn_id)))
-        .map((row) => Number(row.event_seq)));
+        .flatMap((message) => sessionOutputRows(sessionId, message.id))
+        .map((row) => row.seq));
       expect(Number.isFinite(completionCursor)).toBe(true);
       await expect.poll(() => Number(subscription()?.after_seq), { timeout: 30_000 })
         .toBeGreaterThanOrEqual(completionCursor);
-      const deliveredRows = documentsByField('channel_outbox', '$.session_id', sessionId);
+      const deliveredRows = channelOutboxRows(sessionId);
       const server = installed?.container ?? requireServiceContainer(SERVER_CONTAINER_HANDLE);
       await page.goto('about:blank');
       stoppedServer = server;
       execFileSync('docker', ['stop', '--time', '10', server], { timeout: 30_000 });
       const saved = subscription();
-      // Force durable delivery replay while the reader is stopped. The same
+      // Force durable delivery replay while the platform is stopped. The same
       // replies must keep their identities after the second cold attachment.
-      expect(replaceDocs('channel_output_subscriptions', { '$.session_id': sessionId }, { ...saved, after_seq: 0 }))
-        .toEqual([saved]);
+      expect(rewindOutputSubscriptions(sessionId, 0)).toEqual([{ ...saved, after_seq: 0 }]);
       await restartServerContainer(absoluteBaseUrl(), 60_000, server);
       stoppedServer = '';
       await expect.poll(() => Number(subscription()?.after_seq), { timeout: 30_000 })
         .toBeGreaterThanOrEqual(Number(saved.after_seq));
       expect(deliveries()).toEqual([...initialDeliveries, ...expectedReplies]);
-      expect(documentsByField('channel_outbox', '$.session_id', sessionId)).toEqual(deliveredRows);
+      expect(channelOutboxRows(sessionId)).toEqual(deliveredRows);
       const reloaded = await api.getMessages(sessionId, 50);
-      expect(reloaded.messages.map((message) => message.message_id))
-        .toEqual(final.messages.map((message) => message.message_id));
+      expect(reloaded.messages.map((message) => message.id))
+        .toEqual(final.messages.map((message) => message.id));
       await openSessionView(page, sessionId);
       await expect(page.getByTestId('assistant-text').filter({ hasText: receipt })).toBeVisible();
       evidence.completedReplyRestart = { completionCursor, afterSeq: subscription()?.after_seq };
@@ -233,7 +244,7 @@ for (const scenario of cases) test(scenario.title, async ({ request, page }, inf
       await expect.poll(deliveries, { timeout: 30_000 })
         .toEqual([...initialDeliveries, ...expectedReplies, ...webReplies()]);
       await expect(page.getByTestId('assistant-text').filter({ hasText: webReceipt })).toBeVisible();
-      expect(documentsByField('channel_inbound', '$.deployment_id', deploymentId)).toHaveLength(2);
+      expect(channelInboundRows(deploymentId)).toHaveLength(2);
       evidence.webReplies = webReplies();
     }
     evidence.native = native();
@@ -245,8 +256,8 @@ for (const scenario of cases) test(scenario.title, async ({ request, page }, inf
         body: JSON.stringify({ ...evidence, sessionId, agentId, deploymentId, deliveries: recipient.deliveries,
           recipientErrors: recipient.errors,
           native: sessionId ? nativeRows(sessionId) : [],
-          events: sessionId ? sessionEvents(sessionId) : [],
-          outbox: sessionId ? documentsByField('channel_outbox', '$.session_id', sessionId) : [],
+          responses: sessionId ? sessionResponseRows(sessionId) : [],
+          outbox: sessionId ? channelOutboxRows(sessionId) : [],
         }), contentType: 'application/json',
       });
     } finally {

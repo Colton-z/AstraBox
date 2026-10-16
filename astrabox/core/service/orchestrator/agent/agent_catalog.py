@@ -11,11 +11,14 @@ each user's own, one record per user and Agent.
 from __future__ import annotations
 
 import re
-from typing import Any, Iterable
+from typing import Any
 
 from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator.schema_validation import invalid_request
-from astrabox.persistence.repository.agent_category_repository import AgentCategoryRepository
+from astrabox.persistence.repository.agent_category_repository import (
+    AgentCategoryRepository,
+    CategoryNameTaken,
+)
 from astrabox.persistence.repository.agent_favorite_repository import AgentFavoriteRepository
 
 #: The most tags one Agent carries.
@@ -102,12 +105,10 @@ async def list_categories() -> list[dict[str, Any]]:
 
 async def create_category(name: Any) -> dict[str, Any]:
     shown, key = _category_name(name)
-    repo = category_repository()
-    if await repo.get_by_name_key(key) is not None:
-        raise _name_taken(shown)
-    existing = await repo.list_all()
-    position = max((int(row.get("position") or 0) for row in existing), default=-1) + 1
-    return _public(await repo.create(name=shown, name_key=key, position=position))
+    try:
+        return _public(await category_repository().create(name=shown, name_key=key))
+    except CategoryNameTaken:
+        raise _name_taken(shown) from None
 
 
 def _name_taken(name: str) -> APIError:
@@ -120,39 +121,35 @@ def _name_taken(name: str) -> APIError:
 
 async def rename_category(category_id: str, name: Any) -> dict[str, Any]:
     shown, key = _category_name(name)
-    repo = category_repository()
-    current = await repo.get(category_id)
-    if current is None:
+    try:
+        renamed = await category_repository().rename(category_id, name=shown, name_key=key)
+    except CategoryNameTaken:
+        raise _name_taken(shown) from None
+    if renamed is None:
         raise _not_found(category_id)
-    other = await repo.get_by_name_key(key)
-    if other is not None and other["category_id"] != category_id:
-        raise _name_taken(shown)
-    await repo.update(category_id, {"name": shown, "name_key": key})
-    return _public({**current, "name": shown})
+    return _public(renamed)
 
 
 async def reorder_categories(category_ids: Any) -> list[dict[str, Any]]:
     """Put every category in the given order; the list must name each once."""
-    repo = category_repository()
-    current = await repo.list_all()
-    known = [row["category_id"] for row in current]
-    if not isinstance(category_ids, list) or sorted(map(str, category_ids)) != sorted(known):
+    if not isinstance(category_ids, list) or not await category_repository().reorder(
+        [str(category_id) for category_id in category_ids]
+    ):
         raise invalid_request("category_ids must list every Agent category exactly once")
-    for position, category_id in enumerate(category_ids):
-        await repo.update(str(category_id), {"position": position})
     return await list_categories()
 
 
-async def require_category(category_id: str) -> dict[str, Any]:
-    category = await category_repository().get(category_id)
-    if category is None:
+async def delete_category(category_id: str) -> int:
+    """Delete a category, taking it off every Agent; how many Agents it was on."""
+    unbound = await category_repository().delete(category_id)
+    if unbound is None:
         raise _not_found(category_id)
-    return _public(category)
+    return unbound
 
 
-async def delete_category(category_id: str) -> None:
-    if not await category_repository().delete(category_id):
-        raise _not_found(category_id)
+async def category_agent_counts() -> dict[str, int]:
+    """How many Agents each category holds, for the administrator."""
+    return await category_repository().agent_counts()
 
 
 async def checked_category_ids(raw: Any) -> list[str]:
@@ -186,17 +183,3 @@ async def normalize_catalog_fields(editable: dict[str, Any]) -> dict[str, Any]:
             "tags": normalize_tags(display_meta.get("tags")),
         }
     return editable
-
-
-def tag_counts(agents: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The tags these Agents carry, most used first, for completing a tag."""
-    counts: dict[str, int] = {}
-    for agent in agents:
-        for tag in (agent.get("display_meta") or {}).get("tags") or []:
-            normalized = normalize_tag(tag)
-            if normalized:
-                counts[normalized] = counts.get(normalized, 0) + 1
-    return [
-        {"tag": tag, "agents": count}
-        for tag, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
-    ]

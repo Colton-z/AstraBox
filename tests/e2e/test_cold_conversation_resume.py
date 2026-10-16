@@ -1,4 +1,11 @@
-"""A dedicated cold replacement restores the conversation and its mounted files."""
+"""A dedicated cold replacement restores the conversation and its mounted files.
+
+The conversation's own box is reclaimed while the conversation is at rest. Its
+next message borrows a new box that is not prepared ahead of time; that box
+resumes the engine's own session (the same native session key) from the
+transcript the platform kept, and mounts the same persistent workspace, so the
+file written before the reclaim is still there.
+"""
 
 from __future__ import annotations
 
@@ -10,8 +17,8 @@ import uuid
 import httpx
 import pytest
 
-from astrabox.bootstrap import bootstrap
 from astrabox.core.service.orchestrator.engine.capabilities import capabilities_for_engine_kind
+from astrabox.providers import register_builtin_providers
 from tests.e2e._engine_profile import current_profile
 from tests.e2e._sandbox_helpers import (
     data,
@@ -21,7 +28,7 @@ from tests.e2e._sandbox_helpers import (
     release_agent,
     release_session,
     run_terminal,
-    stream_turn,
+    send_and_follow,
     wait_until_settled,
 )
 
@@ -30,7 +37,7 @@ pytestmark = pytest.mark.e2e
 
 def test_cold_rebuild_restores_existing_conversation(e2e_client: httpx.Client) -> None:
     profile = current_profile()
-    bootstrap()
+    register_builtin_providers()
     supports_skills = capabilities_for_engine_kind(
         profile["engine_kind"]
     ).extensions.skills_target is not None
@@ -53,10 +60,13 @@ def test_cold_rebuild_restores_existing_conversation(e2e_client: httpx.Client) -
     release_session(sid)
     poll_until_agent_ready(e2e_client, sid)
     marker = "PROJECT-" + uuid.uuid4().hex
-    initial = stream_turn(e2e_client, sid, content=(
-        f"Our research project label is {marker}. Acknowledge the label briefly. Do not use tools."
-    ))
-    assert initial.error is None and marker in initial.text, initial
+    initial = send_and_follow(
+        e2e_client,
+        sid,
+        f"Our research project label is {marker}. Acknowledge the label briefly. Do not use tools.",
+        until="end",
+    )
+    assert initial.error is None and marker in initial.text, initial.response
     wait_until_settled(e2e_client, sid)
     out, err, rc, _ = run_terminal(e2e_client, sid,
         f"printf %s {shlex.quote(marker)} > /workspace/resume-proof.txt; "
@@ -69,12 +79,17 @@ def test_cold_rebuild_restores_existing_conversation(e2e_client: httpx.Client) -
     removed = data(e2e_client.post(f"/api/v1/sessions/{sid}/sandbox/terminate", timeout=60))
     assert removed["killed"] is True and removed["sandbox_id"] == old["sandbox_id"]
     start = time.monotonic()
-    reply = stream_turn(e2e_client, sid, content=(
-        "What is our research project label? Reply with the label only. Do not use tools."
-    ))
+    reply = send_and_follow(
+        e2e_client,
+        sid,
+        "What is our research project label? Reply with the label only. Do not use tools.",
+        until="end",
+    )
     elapsed = time.monotonic() - start
-    assert reply.error is None and marker in reply.text, reply
-    wait_until_settled(e2e_client, sid)
+    assert reply.error is None and marker in reply.text, reply.response
+    settled = wait_until_settled(e2e_client, sid)
+    assert settled["last_response"]["response_id"] == reply.response_id, settled
+    assert settled["last_response"]["outcome"] == "completed", settled
     new = get_admin_session_detail(e2e_client, sid)
     assert new["sandbox_id"] != old["sandbox_id"]
     assert new["engine_session_key"] == old["engine_session_key"]

@@ -1,9 +1,24 @@
 /** Every engine's approval reaches a person through the browser, in that engine's own words. */
 import { expect, test, type Page } from '@playwright/test';
 
-import { AstraApi, messageText, visibleMessages, type PendingInteraction } from '../fixtures/astraApi';
+import {
+  AstraApi,
+  messageText,
+  messageToolCalls,
+  toolCallSettled,
+  visibleMessages,
+  type MessageRecord,
+  type PendingInteraction,
+  type ToolCallPart,
+} from '../fixtures/astraApi';
 import { revealAssistantProcess } from '../fixtures/assistantProcess';
-import { framesForTurn, sessionEvents, waitForTurnTerminalProof } from '../fixtures/dbOracle';
+import {
+  sessionInputRows,
+  sessionInteractionRows,
+  sessionOutputRows,
+  sessionResponseRows,
+  type SessionResponseRow,
+} from '../fixtures/dbOracle';
 import { dshApprovalCompleted, dshApprovalPanel, dshApprovalSource, dshPendingApproval, savedOutput } from '../fixtures/dshNativeApproval';
 import type { DshApprovalEvidence } from '../fixtures/dshNativeApproval';
 import { messageProseBlocks, textBlockValues, textBlocks } from '../fixtures/dshOutput';
@@ -20,7 +35,7 @@ import {
 import { trackSessions } from '../fixtures/sessionCleanup';
 import { childToolEvidence, launchEvidence, nativeCalls, nativeRows } from '../fixtures/nativeChildLifecycle';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
-import { aiStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
+import { sessionStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
 
 const sessions = trackSessions();
 let sessionId = '';
@@ -41,16 +56,20 @@ test.afterEach(async ({ request, page }, info) => {
   if (!sessionId) return;
   if (!['failed', 'timedOut', 'interrupted'].includes(String(info.status))) return;
   const api = new AstraApi(request);
-  const [session, pending, history, stream, events, native] = await Promise.all([
+  const [session, pending, history, stream, inputs, responses, interactions, native] = await Promise.all([
     observe(() => api.getSession(sessionId)),
     observe(() => api.getPendingInteraction(sessionId)),
     observe(() => api.getMessages(sessionId, 50)),
-    observe(() => aiStreamBodies(page)),
-    observe(() => sessionEvents(sessionId)),
+    observe(() => sessionStreamBodies(page)),
+    observe(() => sessionInputRows(sessionId)),
+    observe(() => sessionResponseRows(sessionId)),
+    observe(() => sessionInteractionRows(sessionId)),
     observe(() => nativeRows(sessionId)),
   ]);
   await info.attach('engine-approval-scene', {
-    body: JSON.stringify({ sessionId, observations, session, pending, history, stream, events, native }),
+    body: JSON.stringify({
+      sessionId, observations, session, pending, history, stream, inputs, responses, interactions, native,
+    }),
     contentType: 'application/json',
   });
 });
@@ -73,8 +92,12 @@ async function workspacePath(api: AstraApi, session: string, name: string): Prom
   return `${root}/${name}`;
 }
 
-async function expectNoTurnFailure(page: Page, turnId: string, phase: 'live' | 'idle' = 'live'): Promise<void> {
-  const bodies = await aiStreamBodies(page);
+async function expectNoResponseFailure(
+  page: Page,
+  responseId: string,
+  phase: 'live' | 'idle' = 'live',
+): Promise<void> {
+  const bodies = await sessionStreamBodies(page);
   observations.push({ browserBodies: bodies });
   const browserFrames = bodies.flatMap((body) => body.text
     .slice(0, body.text.lastIndexOf('\n') + 1).split('\n').flatMap((line) => {
@@ -85,14 +108,73 @@ async function expectNoTurnFailure(page: Page, turnId: string, phase: 'live' | '
   if (phase === 'live') {
     expect(browserFrames.length, 'the real browser must receive the Session stream').toBeGreaterThan(0);
   }
-  expect(browserFrames.filter((frame) => ['error', 'data-turn-failure'].includes(String(frame.type))),
+  expect(browserFrames.filter((frame) => frame.type === 'error'),
     'a failure must not flash and disappear before the final DOM assertion').toEqual([]);
-  expect(sessionEvents(sessionId).filter((event) => event.event_type === 'turn.failed')).toEqual([]);
-  expect(framesForTurn(turnId).filter((event) =>
-    ['error', 'data-turn-failure'].includes(String(record(event.payload).type)))).toEqual([]);
-  await expect(page.getByTestId('run-view').getByText(
-    /本轮执行失败|上一条消息已送达沙箱，但这一轮执行失败了|This turn failed/i,
-  )).toHaveCount(0);
+  expect(sessionResponseRows(sessionId).filter((row) => row.outcome === 'failed'),
+    'no response of this conversation may be recorded as failed').toEqual([]);
+  expect(sessionOutputRows(sessionId, responseId).map(({ part }) => part).filter((part) => part.type === 'error'),
+    'the response must not record an error part').toEqual([]);
+  await expect(page.getByTestId('run-view').getByText(/本轮执行失败|This turn failed/i)).toHaveCount(0);
+}
+
+/**
+ * The response as the session's reader recorded its end: ended with
+ * `outcome`, its last relayed part a `finish`, and no `error` part on the way.
+ */
+async function expectRecordedEnd(
+  responseId: string,
+  outcome: string,
+  timeoutMs: number,
+): Promise<SessionResponseRow> {
+  let row: SessionResponseRow | undefined;
+  await expect.poll(() => {
+    row = sessionResponseRows(sessionId).find((candidate) => candidate.response_id === responseId);
+    return row?.status;
+  }, { timeout: timeoutMs, message: `response ${responseId} must be recorded as ended` }).toBe('ended');
+  expect(row!.outcome, `response ${responseId} must end ${outcome}`).toBe(outcome);
+  const parts = sessionOutputRows(sessionId, responseId).map(({ part }) => part);
+  expect(parts.filter((part) => part.type === 'error'), 'the recorded end carries no error part').toEqual([]);
+  expect(parts.at(-1)?.type, 'the recorded response ends on its own finish part').toBe('finish');
+  return row!;
+}
+
+/** One tool call and the results it got, read off history or a child transcript. */
+interface CommandCall {
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+  results: Array<{ isError: boolean; text: string }>;
+}
+
+/** Whether a tool part settled as a failure: an error or denied state, or an output the engine marked as an error. */
+function callFailed(call: ToolCallPart): boolean {
+  return call.state === 'output-error' || call.state === 'output-denied' || record(call.output).isError === true;
+}
+
+/** A response's tool calls, from the tool parts of its history message. */
+function uiCommandCalls(message: MessageRecord | undefined): CommandCall[] {
+  return (message ? messageToolCalls(message) : []).map((call) => ({
+    id: call.toolCallId,
+    name: call.toolName,
+    input: record(call.input),
+    results: toolCallSettled(call)
+      ? [{ isError: callFailed(call), text: JSON.stringify(call.output ?? call.errorText ?? null) }]
+      : [],
+  }));
+}
+
+/** A child run's tool calls, from the content blocks of its transcript. */
+function blockCommandCalls(blocks: Array<Record<string, unknown>>): CommandCall[] {
+  return blocks.filter((block) => block.type === 'tool_use').map((block) => ({
+    id: String(block.id ?? ''),
+    name: String(block.name ?? ''),
+    input: record(block.input),
+    results: blocks.filter((result) => result.type === 'tool_result' && result.tool_use_id === block.id)
+      .map((result) => ({
+        isError: result.is_error === true,
+        text: typeof result.content === 'string' ? result.content : JSON.stringify(result.content),
+      })),
+  }));
 }
 
 const commandCases = [
@@ -148,14 +230,14 @@ for (const { profile: declared, delegated } of commandCases) {
     const delivery = await sendPrompt(page, sessionId, prompt);
     let dshHeld: DshApprovalEvidence | undefined;
     const first = await api.waitForSession(sessionId, (detail) => {
-      if (detail.last_turn_status === 'FAILED' || detail.last_error) {
+      if (detail.last_response?.outcome === 'failed' || detail.last_error) {
         throw new Error(`first command failed before approval: ${JSON.stringify(detail)}`);
       }
-      return Boolean(detail.pending_interaction || detail.last_turn_id);
+      return Boolean(detail.pending_interaction || detail.last_response);
     }, 60_000);
     const pending = first.pending_interaction;
-    const turnId = String(pending?.turn_id || first.last_turn_id || '');
-    expect(turnId).not.toBe('');
+    const responseId = String(pending?.response_id || first.last_response?.response_id || '');
+    expect(responseId).not.toBe('');
     observations.push({ engine, command, first });
     const panel = page.getByTestId('pending-interaction-panel');
     if (approval) {
@@ -191,27 +273,22 @@ for (const { profile: declared, delegated } of commandCases) {
         .toHaveAttribute('data-pending-tool-call-id', String(interaction.tool_call_id));
       const before = await api.getMessages(sessionId, 100);
       expect(record(before.pending_interaction)).toMatchObject({
-        interaction_id: interaction.interaction_id, tool_call_id: interaction.tool_call_id, turn_id: turnId,
+        interaction_id: interaction.interaction_id, tool_call_id: interaction.tool_call_id, response_id: responseId,
       });
       if (engine === 'deepseek_harness') {
         // The supplier requires a real sandbox denial before escalation.
-        const beforeBlocks = visibleMessages(before).filter((message) => message.turn_id === turnId)
-          .flatMap((message) => message.blocks || []);
-        const attempts = beforeBlocks.filter((block) => block.type === 'tool_use');
+        const attempts = uiCommandCalls(visibleMessages(before).find((message) => message.id === responseId));
         expect(attempts).toHaveLength(2);
         expect(attempts[0]!.id).not.toBe(attempts[1]!.id);
-        expect(record(attempts[0]!.input).command).toBe(command);
-        expect(record(attempts[0]!.input).sandbox_permissions).toBeUndefined();
-        expect(record(attempts[1]!.input)).toMatchObject({ command, sandbox_permissions: 'workspace-write' });
-        expect(String(record(attempts[1]!.input).justification || '')).not.toBe('');
+        expect(attempts[0]!.input.command).toBe(command);
+        expect(attempts[0]!.input.sandbox_permissions).toBeUndefined();
+        expect(attempts[1]!.input).toMatchObject({ command, sandbox_permissions: 'workspace-write' });
+        expect(String(attempts[1]!.input.justification || '')).not.toBe('');
         expect(interaction.tool_call_id).toBe(attempts[1]!.id);
         expect(record(interaction.raw_input).callId).toBe(attempts[1]!.id);
-        const denial = beforeBlocks.filter((block) =>
-          block.type === 'tool_result' && block.tool_use_id === attempts[0]!.id);
-        expect(denial).toHaveLength(1);
-        expect(String(denial[0]!.content)).toContain('[sandbox: file access denied under read-only mode]');
-        expect(beforeBlocks.filter((block) =>
-          block.type === 'tool_result' && block.tool_use_id === attempts[1]!.id)).toEqual([]);
+        expect(attempts[0]!.results).toHaveLength(1);
+        expect(attempts[0]!.results[0]!.text).toContain('[sandbox: file access denied under read-only mode]');
+        expect(attempts[1]!.results, 'the held escalation has no result before the decision').toEqual([]);
         dshHeld = await dshPendingApproval(sessionId, interaction, prompt,
           String(delivery.request().postDataJSON().client_message_id || ''));
         observations.push({ dshHeld });
@@ -219,11 +296,11 @@ for (const { profile: declared, delegated } of commandCases) {
       }
       expect(await api.downloadFileText(sessionId, filename), 'approval must precede the command side effect')
         .toBe('NOT_EXECUTED');
-      await expectNoTurnFailure(page, turnId);
+      await expectNoResponseFailure(page, responseId);
       await page.reload({ waitUntil: 'domcontentloaded' });
       await expect(panel).toBeVisible();
       expect(await api.getPendingInteraction(sessionId)).toMatchObject({
-        interaction_id: interaction.interaction_id, tool_call_id: interaction.tool_call_id, turn_id: turnId,
+        interaction_id: interaction.interaction_id, tool_call_id: interaction.tool_call_id, response_id: responseId,
       });
       await expect(page.getByTestId('session-conversation-shell'))
         .toHaveAttribute('data-pending-tool-call-id', String(interaction.tool_call_id));
@@ -246,32 +323,30 @@ for (const { profile: declared, delegated } of commandCases) {
       await expect(panel).toHaveCount(0);
     }
     const settled = await api.waitForSession(sessionId, (detail) => {
-      if (detail.last_turn_status === 'FAILED' || detail.last_error) {
+      if (detail.last_response?.outcome === 'failed' || detail.last_error) {
         throw new Error(`first command failed after approval: ${JSON.stringify(detail)}`);
       }
-      return detail.last_turn_id === turnId && detail.last_turn_status === 'COMPLETED'
-        && detail.state === 'READY' && !detail.current_turn_id && !detail.pending_interaction;
+      return detail.last_response?.response_id === responseId && detail.last_response.outcome === 'completed'
+        && detail.state === 'READY' && (detail.current_responses ?? []).length === 0 && !detail.pending_interaction;
     }, 60_000);
-    expect(settled.last_turn_status).toBe('COMPLETED');
-    await waitForTurnTerminalProof(sessionId, turnId, 'COMPLETED', 15_000);
+    expect(settled.last_response?.outcome).toBe('completed');
+    await expectRecordedEnd(responseId, 'completed', 15_000);
     expect(await api.downloadFileText(sessionId, filename)).toBe(marker);
     const history = await api.getMessages(sessionId, 100);
-    let blocks = visibleMessages(history).filter((message) => message.turn_id === turnId)
-      .flatMap((message) => message.blocks || []);
+    let calls = uiCommandCalls(visibleMessages(history).find((message) => message.id === responseId));
     if (delegated) {
-      expect(blocks.filter((block) => block.type === 'tool_use' && block.name === 'commandExecution'),
+      expect(calls.filter((call) => call.name === 'commandExecution'),
         'the parent must not execute a command that could supply the child approval ID').toEqual([]);
       const children = (await api.listChildRuns(sessionId)).child_runs;
       expect(children).toHaveLength(1);
-      blocks = (await api.getChildRunMessages(sessionId, children[0]!.child_run_id)).messages
-        .flatMap((message) => message.content);
+      calls = blockCommandCalls((await api.getChildRunMessages(sessionId, children[0]!.child_run_id)).messages
+        .flatMap((message) => message.content));
       const launches = launchEvidence(sessionId, profile, gate);
       const native = childToolEvidence(sessionId, profile, gate, launches[0]!.subpath);
       expect(native).toHaveLength(1);
       expect(native[0]!.id).toBe(pending!.tool_call_id);
       expect(native[0]!.result?.isError, 'the approved native child command must succeed').toBe(false);
     }
-    const calls = blocks.filter((block) => block.type === 'tool_use');
     const expectedCalls = engine === 'deepseek_harness' ? 2 : 1;
     expect(calls, 'only the supplier-required command attempts may precede completion').toHaveLength(expectedCalls);
     for (const call of calls) expect(call.name).toBe(toolName(profile, 'command'));
@@ -296,25 +371,27 @@ for (const { profile: declared, delegated } of commandCases) {
       }
     }
     if (engine === 'deepseek_harness') {
-      const denial = blocks.filter((block) => block.type === 'tool_result' && block.tool_use_id === calls[0]!.id);
+      const denial = calls[0]!.results;
       expect(denial).toHaveLength(1);
-      expect(String(denial[0]!.content)).toContain('[sandbox: file access denied under read-only mode]');
+      expect(denial[0]!.text).toContain('[sandbox: file access denied under read-only mode]');
     }
-    const results = blocks.filter((block) => block.type === 'tool_result' && block.tool_use_id === approvedCall.id);
+    const results = approvedCall.results;
     expect(results).toHaveLength(1);
-    expect(results[0]!.is_error).not.toBe(true);
+    expect(results[0]!.isError, 'the approved command must succeed').not.toBe(true);
     if (engine === 'deepseek_harness') {
       expect(dshHeld).toBeDefined();
       observations.push(await dshApprovalCompleted(api, sessionId, pending!, dshHeld!, 'allowed-once'));
     }
     await expect(panel).toHaveCount(0);
-    await expectNoTurnFailure(page, turnId);
+    await expectNoResponseFailure(page, responseId);
     await page.reload({ waitUntil: 'domcontentloaded' });
     await expect(page.getByTestId('run-view')).toBeVisible();
     await expect(panel).toHaveCount(0);
-    expect((await api.getSession(sessionId)).last_turn_status).toBe('COMPLETED');
+    expect((await api.getSession(sessionId)).last_response).toMatchObject({
+      response_id: responseId, outcome: 'completed',
+    });
     expect(await api.downloadFileText(sessionId, filename)).toBe(marker);
-    await expectNoTurnFailure(page, turnId, 'idle');
+    await expectNoResponseFailure(page, responseId, 'idle');
   });
 }
 
@@ -344,8 +421,8 @@ test('DSH rejects native command escalation without a write and remains usable',
   const pending = await api.waitForPendingInteractionOrSettledTurn(sessionId, 60_000);
   expect(pending, 'the real escalation must wait for a decision').not.toBeNull();
   const interaction = pending!;
-  const turnId = String(interaction.turn_id || '');
-  expect(turnId).not.toBe('');
+  const responseId = String(interaction.response_id || '');
+  expect(responseId).not.toBe('');
   const held = await dshPendingApproval(sessionId, interaction, prompt,
     String(delivery.request().postDataJSON().client_message_id || ''));
   const nativeCalls = dshApprovalSource(sessionId).filter((event) => event.type === 'tool/call');
@@ -362,7 +439,7 @@ test('DSH rejects native command escalation without a write and remains usable',
   for (const reload of [false, true]) {
     if (reload) await page.reload();
     expect(await api.getPendingInteraction(sessionId)).toMatchObject({
-      interaction_id: interaction.interaction_id, turn_id: turnId,
+      interaction_id: interaction.interaction_id, response_id: responseId,
       tool_call_id: held.call.data.callId, raw_input: interaction.raw_input,
     });
     await dshApprovalPanel(page, interaction);
@@ -372,14 +449,14 @@ test('DSH rejects native command escalation without a write and remains usable',
     name: /Reject this action|拒绝此次操作/,
   }).click());
   const settled = await api.waitForSession(sessionId, (session) => {
-    if (session.last_turn_status === 'FAILED' || session.last_error) {
+    if (session.last_response?.outcome === 'failed' || session.last_error) {
       throw new Error(`rejected command poisoned its conversation: ${JSON.stringify(session)}`);
     }
-    return session.last_turn_id === turnId && session.state === 'READY'
-      && !session.current_turn_id && !session.pending_interaction;
+    return session.last_response?.response_id === responseId && session.state === 'READY'
+      && (session.current_responses ?? []).length === 0 && !session.pending_interaction;
   }, 60_000);
-  expect(settled.last_turn_status).toBe('COMPLETED');
-  await waitForTurnTerminalProof(sessionId, turnId, 'COMPLETED', 15_000);
+  expect(settled.last_response?.outcome, 'a rejection is answered, and the response completes').toBe('completed');
+  await expectRecordedEnd(responseId, 'completed', 15_000);
   const completed = await dshApprovalCompleted(api, sessionId, interaction, held, 'rejected');
   const source = dshApprovalSource(sessionId);
   expect(source.filter((event) => event.type === 'tool/call')).toEqual(nativeCalls);
@@ -390,13 +467,13 @@ test('DSH rejects native command escalation without a write and remains usable',
   expect(textBlocks(record(result.data.message).content)).toBe(rejection);
   expect(await api.downloadFileText(sessionId, filename)).toBe('NOT_EXECUTED');
   observations.push({ completed });
-  const stored = (await api.getMessages(sessionId)).messages.find((message) => message.message_id === held.responseMessageId)!;
+  const stored = (await api.getMessages(sessionId)).messages.find((message) => message.id === responseId)!;
   expect(messageText(stored)).toContain(receipt);
-  const blocks = JSON.stringify(stored.blocks);
+  const parts = JSON.stringify(stored.parts);
   for (const reload of [false, true]) {
     if (reload) await page.reload();
     await expect(panel).toHaveCount(0);
-    const reply = page.locator(`[data-message-id="${held.responseMessageId}"]`);
+    const reply = page.locator(`[data-message-id="${responseId}"]`);
     await expect(reply).toContainText(receipt);
     await expect(reply.getByTestId('assistant-turn-process')).toHaveCount(1);
     await revealAssistantProcess(page, { within: reply });
@@ -411,9 +488,9 @@ test('DSH rejects native command escalation without a write and remains usable',
     expect(savedOutput(await output.innerText())).toEqual({
       content: record(result.data.message).content, isError: true,
     });
-    await expectNoTurnFailure(page, turnId, reload ? 'idle' : 'live');
+    await expectNoResponseFailure(page, responseId, reload ? 'idle' : 'live');
     expect(JSON.stringify((await api.getMessages(sessionId)).messages
-      .find((message) => message.message_id === held.responseMessageId)!.blocks)).toBe(blocks);
+      .find((message) => message.id === responseId)!.parts)).toBe(parts);
     expect(await api.downloadFileText(sessionId, filename)).toBe('NOT_EXECUTED');
   }
   const nextReceipt = `AFTER_${marker}`;
@@ -421,15 +498,14 @@ test('DSH rejects native command escalation without a write and remains usable',
   await sendPrompt(page, sessionId, nextPrompt);
   const next = await api.waitForAssistantMessageMatching(sessionId, 0, (message) => messageText(message) === nextReceipt);
   await api.waitForSessionReady(sessionId);
-  expect(next.turn_id).not.toBe(turnId);
-  expect(next.message_id).not.toBe(held.responseMessageId);
+  expect(next.id, 'the next message gets a response of its own').not.toBe(responseId);
   await expect.poll(() => dshApprovalSource(sessionId).filter((event) => event.type === 'turn/end')).toHaveLength(2);
   expect(dshApprovalSource(sessionId).filter((event) => event.type === 'tool/call')).toEqual(nativeCalls);
   expect(JSON.stringify((await api.getMessages(sessionId)).messages
-    .find((message) => message.message_id === held.responseMessageId)!.blocks)).toBe(blocks);
-  await expect(page.locator(`[data-message-id="${next.message_id}"]`)).toContainText(nextReceipt);
+    .find((message) => message.id === responseId)!.parts)).toBe(parts);
+  await expect(page.locator(`[data-message-id="${next.id}"]`)).toContainText(nextReceipt);
   await page.reload();
-  await expect(page.locator(`[data-message-id="${next.message_id}"]`)).toContainText(nextReceipt);
+  await expect(page.locator(`[data-message-id="${next.id}"]`)).toContainText(nextReceipt);
   await expect(page.getByTestId('composer-prompt')).toBeEnabled();
   expect(await api.downloadFileText(sessionId, filename)).toBe('NOT_EXECUTED');
   observations.push({ next, native: dshApprovalSource(sessionId), history: await api.getMessages(sessionId) });
@@ -459,8 +535,8 @@ test('DSH stops a parked native approval and answers the next message on its own
   const pending = await api.waitForPendingInteractionOrSettledTurn(sessionId, 60_000);
   expect(pending, 'the real escalation must park before the user stops it').not.toBeNull();
   const interaction = pending!;
-  const turnId = String(interaction.turn_id || '');
-  expect(turnId).not.toBe('');
+  const responseId = String(interaction.response_id || '');
+  expect(responseId).not.toBe('');
   const held = await dshPendingApproval(sessionId, interaction, prompt,
     String(delivery.request().postDataJSON().client_message_id || ''));
   const calls = dshApprovalSource(sessionId).filter((event) => event.type === 'tool/call');
@@ -482,14 +558,22 @@ test('DSH stops a parked native approval and answers the next message on its own
   expect(interrupted.status()).toBe(200);
   expect((await interrupted.json()).data).toMatchObject({ session_id: sessionId, status: 'accepted' });
   const settled = await api.waitForSession(sessionId, (session) => {
-    if (session.last_turn_status === 'FAILED' || session.last_error) {
+    if (session.last_response?.outcome === 'failed' || session.last_error) {
       throw new Error(`stopping an approval poisoned its conversation: ${JSON.stringify(session)}`);
     }
-    return session.last_turn_id === turnId && session.state === 'READY'
-      && !session.current_turn_id && !session.pending_interaction;
+    return session.last_response?.response_id === responseId && session.state === 'READY'
+      && (session.current_responses ?? []).length === 0 && !session.pending_interaction;
   }, 60_000);
-  expect(settled.last_turn_status).toBe('COMPLETED');
-  await waitForTurnTerminalProof(sessionId, turnId, 'COMPLETED', 15_000);
+  expect(settled.last_response?.outcome, 'a user stop ends the response as cancelled, never failed').toBe('cancelled');
+  const ended = await expectRecordedEnd(responseId, 'cancelled', 15_000);
+  // The harness's own word for how its turn ended, carried as it said it.
+  expect(ended.native_reason).toBe('aborted');
+  // Stop is not an answer: the approval closes with the response, unanswered.
+  const stoppedApproval = sessionInteractionRows(sessionId)
+    .filter((row) => row.interaction_id === interaction.interaction_id);
+  expect(stoppedApproval, 'the approval the response waited on is recorded once').toHaveLength(1);
+  expect(stoppedApproval[0]!.status, 'the stopped response leaves no approval open').not.toBe('open');
+  expect(stoppedApproval[0]!.answer, 'a stop records no answer on the approval').toBeNull();
   await expect(panel).toHaveCount(0);
   await expect.poll(() => dshApprovalSource(sessionId).filter((event) => event.type === 'turn/end')).toHaveLength(1);
   const stoppedNative = dshApprovalSource(sessionId);
@@ -505,25 +589,21 @@ test('DSH stops a parked native approval and answers the next message on its own
     && record(event.data.source).kind === 'user')).toEqual([held.input]);
   const nativeResults = stoppedNative.filter((event) => event.type === 'tool/result');
   expect(nativeResults).toHaveLength(calls.length);
-  const stoppedFrames = framesForTurn(turnId).map((row) => record(row.payload));
-  expect(stoppedFrames.filter((frame) => frame.type === 'error')).toEqual([]);
-  expect(stoppedFrames.filter((frame) => frame.type === 'data-result')).toEqual([
-    expect.objectContaining({ data: expect.objectContaining({ finish_reason: 'cancelled' }) }),
-  ]);
-  expect(stoppedFrames.filter((frame) => frame.type === 'finish')).toEqual([
-    expect.objectContaining({ finishReason: 'tool-calls' }),
-    expect.objectContaining({ finishReason: 'stop' }),
-  ]);
-  const stopped = (await api.getMessages(sessionId)).messages
-    .filter((message) => message.role === 'assistant' && message.turn_id === turnId);
-  expect(stopped).toHaveLength(1);
-  expect(stopped[0]!.message_id).toBe(held.responseMessageId);
+  const stoppedOutput = sessionOutputRows(sessionId, responseId).map(({ part }) => part);
+  expect(stoppedOutput.filter((part) => part.type === 'error')).toEqual([]);
+  const finishReasons = stoppedOutput.filter((part) => part.type === 'finish').map((part) => part.finishReason);
+  expect(finishReasons, 'the response paused once at the approval and ended once at the stop').toHaveLength(2);
+  expect(finishReasons[0]).toBe('tool-calls');
+  expect(finishReasons[1], 'the stop ends the response rather than pausing it again').not.toBe('tool-calls');
+  const stopped = (await api.getMessages(sessionId)).messages.filter((message) => message.role === 'assistant');
+  expect(stopped.map((message) => message.id), 'the stopped response is the one assistant message').toEqual([responseId]);
+  expect(stopped[0]!.metadata?.outcome).toBe('cancelled');
   expect(messageProseBlocks(stopped[0]!)).toEqual(stoppedNative.filter((event) => event.type === 'assistant/message')
     .flatMap((event) => textBlockValues(record(event.data.message).content)));
-  const blocks = stopped[0]!.blocks ?? [];
-  expect(blocks.filter((block) => block.type === 'tool_use').map((block) => block.id))
+  const stoppedCalls = messageToolCalls(stopped[0]!);
+  expect(stoppedCalls.map((call) => call.toolCallId))
     .toEqual(calls.map((event) => event.data.callId));
-  expect(blocks.filter((block) => block.type === 'tool_result').map((block) => block.tool_use_id))
+  expect(stoppedCalls.filter(toolCallSettled).map((call) => call.toolCallId))
     .toEqual(calls.map((event) => event.data.callId));
   for (const call of calls) {
     const results = nativeResults.filter((event) => record(event.data.message).toolCallId === call.data.callId);
@@ -535,26 +615,23 @@ test('DSH stops a parked native approval and answers the next message on its own
     const cancelledCall = call.data.callId === held.call.data.callId;
     expect(record(result.data.message)).toMatchObject({ role: 'tool', isError: cancelledCall });
     expect(textBlocks(record(result.data.message).content)).not.toBe('');
-    expect(blocks.filter((block) => block.type === 'tool_use' && block.id === call.data.callId)).toEqual([
-      expect.objectContaining({ name: call.data.name, input: JSON.parse(String(call.data.arguments)) }),
+    expect(stoppedCalls.filter((stored) => stored.toolCallId === call.data.callId)).toEqual([
+      expect.objectContaining({ toolName: call.data.name, input: JSON.parse(String(call.data.arguments)) }),
     ]);
-    const stored = blocks.find((block) => block.type === 'tool_result' && block.tool_use_id === call.data.callId)!;
-    if (cancelledCall) {
-      expect(stored).toMatchObject({ is_error: true, tool_result_state: 'output-denied' });
-    } else {
+    const stored = stoppedCalls.find((part) => part.toolCallId === call.data.callId)!;
+    // The part carries the harness result as the harness recorded it: the
+    // stopped call as an error, the sandbox denial before it as an ordinary result.
+    expect(stored.output).toEqual({ content: record(result.data.message).content, isError: cancelledCall });
+    if (!cancelledCall) {
       expect(textBlocks(record(result.data.message).content))
         .toContain('[sandbox: file access denied under read-only mode]');
-      expect(savedOutput(stored.content)).toEqual({ content: record(result.data.message).content, isError: false });
     }
   }
-  expect(blocks.filter((block) => block.type === 'result')).toEqual([
-    expect.objectContaining({ finish_reason: 'cancelled' }),
-  ]);
-  const savedBlocks = JSON.stringify(blocks);
-  observations.push({ stoppedNative, stoppedFrames, stopped });
+  const savedParts = JSON.stringify(stopped[0]!.parts);
+  observations.push({ stoppedNative, stoppedOutput, stopped });
   for (const reload of [false, true]) {
     if (reload) await page.reload();
-    const reply = page.locator(`[data-message-id="${held.responseMessageId}"]`);
+    const reply = page.locator(`[data-message-id="${responseId}"]`);
     await expect(reply.getByText(/^(This response stopped early\.|本次回复提前结束。)$/)).toBeVisible();
     await expect(reply.getByTestId('assistant-turn-process')).toHaveCount(1);
     await revealAssistantProcess(page, { within: reply });
@@ -565,10 +642,10 @@ test('DSH stops a parked native approval and answers the next message on its own
       if (await trigger.getAttribute('aria-expanded') !== 'true') await trigger.click();
       await expect(card).toContainText(command);
     }
-    await expectNoTurnFailure(page, turnId, reload ? 'idle' : 'live');
+    await expectNoResponseFailure(page, responseId, reload ? 'idle' : 'live');
     await expect(page.getByTestId('composer-prompt')).toBeEnabled();
     expect(JSON.stringify((await api.getMessages(sessionId)).messages
-      .find((message) => message.message_id === held.responseMessageId)!.blocks)).toBe(savedBlocks);
+      .find((message) => message.id === responseId)!.parts)).toBe(savedParts);
     expect(await api.downloadFileText(sessionId, filename)).toBe('NOT_EXECUTED');
   }
   const nextReceipt = `AFTER_${marker}`;
@@ -578,8 +655,7 @@ test('DSH stops a parked native approval and answers the next message on its own
   expect(nextClientMessageId).not.toBe('');
   const next = await api.waitForAssistantMessageMatching(sessionId, 0, (message) => messageText(message) === nextReceipt);
   await api.waitForSessionReady(sessionId);
-  expect(next.turn_id).not.toBe(turnId);
-  expect(next.message_id).not.toBe(held.responseMessageId);
+  expect(next.id, 'the next message gets a response of its own').not.toBe(responseId);
   await expect.poll(() => dshApprovalSource(sessionId).filter((event) => event.type === 'turn/end')).toHaveLength(2);
   const source = dshApprovalSource(sessionId);
   expect(source.filter((event) => event.seq <= stoppedEnd.seq)).toEqual(stoppedNative);
@@ -602,47 +678,39 @@ test('DSH stops a parked native approval and answers the next message on its own
   expect(textBlocks(record(messages.at(-1)!.data.message).content)).toBe(nextReceipt);
   expect(messages.at(-1)!.data.usage).toEqual(expect.any(Object));
   expect(messageProseBlocks(next)).toEqual(messages.flatMap((event) => textBlockValues(record(event.data.message).content)));
-  const accepted = sessionEvents(sessionId).filter((row) => row.event_type === 'command.accepted'
-    && record(row.payload).client_message_id === nextClientMessageId);
-  expect(accepted).toEqual([expect.objectContaining({ turn_id: next.turn_id,
-    payload: expect.objectContaining({ content: nextPrompt }),
+  // The platform's own record of the next message: one input, admitted, and
+  // answered by the response the page shows.
+  const nextInputs = sessionInputRows(sessionId).filter((row) => row.client_message_id === nextClientMessageId);
+  expect(nextInputs).toEqual([expect.objectContaining({
+    content: nextPrompt, state: 'admitted', response_id: next.id,
   })]);
-  const nextInputId = String(record(accepted[0]!.payload).input_id || '');
-  expect(nextInputId).not.toBe('');
-  const consumed = sessionEvents(sessionId).filter((row) => row.event_type === 'input.consumed'
-    && record(row.payload).input_id === nextInputId);
-  expect(consumed).toEqual([expect.objectContaining({ turn_id: next.turn_id,
-    payload: expect.objectContaining({ response_message_id: next.message_id, content: nextPrompt }),
-  })]);
-  const frames = framesForTurn(String(next.turn_id)).map((row) => record(row.payload));
-  expect(frames.filter((frame) => frame.type === 'data-input-consumed')).toEqual([
-    expect.objectContaining({ data: expect.objectContaining({ inputId: nextInputId,
-      responseMessageId: next.message_id, content: nextPrompt }) }),
-  ]);
-  expect(framesForTurn(String(next.turn_id)).filter((row) => record(row.payload).type === 'data-result')).toEqual([
+  const nextInputId = nextInputs[0]!.input_id;
+  expect(sessionResponseRows(sessionId).filter((row) => row.response_id === next.id)).toEqual([
     expect.objectContaining({
-      engine_kind: 'deepseek_harness', engine_turn_id: nextNativeRpcId,
-      engine_output_cursor: expect.objectContaining({ sessionId: held.nativeSessionId, seq: terminal.seq }),
-      payload: expect.objectContaining({ data: expect.objectContaining({ finish_reason: 'stop', usage: messages.at(-1)!.data.usage }) }),
+      origin: 'input', input_ids: [nextInputId], status: 'ended', outcome: 'completed',
+      native_reason: 'completed', usage: messages.at(-1)!.data.usage,
     }),
   ]);
-  expect(frames.filter((frame) => frame.type === 'finish')).toEqual([expect.objectContaining({ finishReason: 'stop' })]);
-  expect(frames.filter((frame) => frame.type === 'error' || String(frame.type).startsWith('tool-'))).toEqual([]);
+  const nextOutput = sessionOutputRows(sessionId, next.id).map(({ part }) => part);
+  expect(nextOutput.filter((part) => part.type === 'start').map((part) => record(part.messageMetadata).input_ids))
+    .toEqual([[nextInputId]]);
+  expect(nextOutput.filter((part) => part.type === 'finish')).toEqual([expect.objectContaining({ finishReason: 'stop' })]);
+  expect(nextOutput.filter((part) => part.type === 'error' || String(part.type).startsWith('tool-'))).toEqual([]);
   for (const reload of [false, true]) {
     if (reload) await page.reload();
-    await expect(page.locator(`[data-message-id="${next.message_id}"]`)).toContainText(nextReceipt);
-    await expect(page.locator(`[data-message-id="${held.responseMessageId}"]`)
+    await expect(page.locator(`[data-message-id="${next.id}"]`)).toContainText(nextReceipt);
+    await expect(page.locator(`[data-message-id="${responseId}"]`)
       .getByText(/^(This response stopped early\.|本次回复提前结束。)$/)).toBeVisible();
     await expect(page.getByTestId('composer-prompt')).toBeEnabled();
     const history = (await api.getMessages(sessionId)).messages;
     expect(history.filter((message) => message.role === 'user').map(messageText)).toEqual([prompt, nextPrompt]);
-    expect(history.filter((message) => message.role === 'assistant').map((message) => message.message_id))
-      .toEqual([held.responseMessageId, next.message_id]);
+    expect(history.filter((message) => message.role === 'assistant').map((message) => message.id))
+      .toEqual([responseId, next.id]);
     expect(JSON.stringify(history
-      .find((message) => message.message_id === held.responseMessageId)!.blocks)).toBe(savedBlocks);
+      .find((message) => message.id === responseId)!.parts)).toBe(savedParts);
     expect(await api.downloadFileText(sessionId, filename)).toBe('NOT_EXECUTED');
   }
-  observations.push({ next, native: source, frames, history: await api.getMessages(sessionId) });
+  observations.push({ next, native: source, nextOutput, history: await api.getMessages(sessionId) });
 });
 
 async function browserAnswer(
@@ -651,23 +719,23 @@ async function browserAnswer(
   expectedDecision: string,
   click: () => Promise<void>,
 ): Promise<void> {
+  // The path names the interaction, so matching it is what proves the browser
+  // answered the exact pending native request.
+  const answerPath = `/sessions/${sessionId}/interactions/${encodeURIComponent(String(pending.interaction_id))}/answer`;
   const response = page.waitForResponse((candidate) => (
     candidate.request().method() === 'POST'
-    && candidate.url().includes(`/sessions/${sessionId}/interaction-respond`)
+    && new URL(candidate.url()).pathname.endsWith(answerPath)
   ));
   await click();
   const received = await response;
   // The id the engine will be answered with is the engine's own. A console that
   // sends a word the engine does not have is not a refusal it reports — the
-  // tool simply never runs and the turn ends with nothing said about why.
+  // tool simply never runs and the response ends with nothing said about why.
   // Read the shape the console actually sends rather than a shape this test
-  // imagines: `answerPendingInteraction` posts the answer nested under
-  // `answer`, beside a top-level `interaction_id`. Asserting the flat shape
-  // read `undefined` and would have passed for any value at all had the
-  // comparison been written the other way round.
+  // imagines: `answerInteraction` posts the answer nested under `answer`.
+  // Asserting a flat shape would read `undefined` and pass for any value at
+  // all had the comparison been written the other way round.
   const sent = record(JSON.parse(String(received.request().postData() || '{}')));
-  expect(sent.interaction_id, 'the browser must answer the exact pending native request')
-    .toBe(pending.interaction_id);
   const answered = record(sent.answer);
   expect(answered.decision, 'the browser must answer with the engine-declared id')
     .toBe(expectedDecision);
@@ -788,7 +856,7 @@ for (const declared of approving) {
         }).last().click());
     }
 
-    // Answering from the browser releases the turn the approval was holding.
+    // Answering from the browser releases the response the approval was holding.
     await expect(panel).toHaveCount(0);
     // The platform's session vocabulary is upper case, as every sibling spec
     // reads it. A lower-case expectation here spent a whole testbed round

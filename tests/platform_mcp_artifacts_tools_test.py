@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import update
 
 from astrabox.core.service.artifacts.service import ArtifactService
 from astrabox.core.service.orchestrator.platform_mcp_service import PlatformMCPService
+from astrabox.persistence.sql import execute
+from astrabox.persistence.sql.models.artifacts import ArtifactShare
 from tests.artifact_service_test import (
     OWNER,
     VIEWER,
@@ -29,12 +33,11 @@ def mcp_service(
         "session_id": "session",
         "user_id": user_id,
         "scope_kind": "session",
-        "artifact_grant": grant,
     }
     session = {**binding, "agent_id": agent_id, "source_type": source_type,
         "workspace_ref": {"kind": "assistant", "assistant_id": assistant_id} if assistant_id else {"kind": "agent", "agent_id": agent_id},
-        "session_kind": "assistant_chat" if assistant_id else "agent_chat"}
-    session.pop("artifact_grant", None)
+        "session_kind": "assistant_chat" if assistant_id else "agent_chat",
+        "artifact_grant": grant}
     return PlatformMCPService(
         sessions_repo=SimpleNamespace(get_session=AsyncMock(return_value=session)),
         binding_repo=SimpleNamespace(get_binding=AsyncMock(return_value=binding)),
@@ -65,63 +68,6 @@ def result(response: dict) -> dict:
     text = json.loads(response["result"]["content"][0]["text"])
     assert text == response["result"]["structuredContent"]
     return text
-
-
-@pytest.mark.asyncio
-async def test_tools_list_and_create_update_get_round_trip(
-    artifact_service: ArtifactService,
-) -> None:
-    mcp = mcp_service(artifact_service)
-    listing = await mcp.handle_jsonrpc("session", "artifacts", {"id": 1, "method": "tools/list"})
-    assert [t["name"] for t in listing["result"]["tools"]] == [
-        "create_artifact",
-        "update_artifact",
-        "get_artifact",
-        "list_artifacts",
-        "artifact_data",
-        "artifact_guide",
-    ]
-    created = result(
-        await tool(mcp, "create_artifact", {"title": "Panel", "kind": "html", "content": "first"})
-    )
-    marker = created["astrabox_artifact"]
-    aid = marker["id"]
-    assert marker == {"id": aid, "version": 1, "title": "Panel", "kind": "html"}
-    assert created["url"] == f"/artifacts/{aid}"
-    assert set(created) == {"astrabox_artifact", "url", "card"}
-    share = await artifact_service.enable_share(OWNER, aid)
-    updated = result(
-        await tool(
-            mcp,
-            "update_artifact",
-            {
-                "artifact_id": aid,
-                "edits": [{"old_string": "first", "new_string": "second"}],
-                "base_version": 1,
-            },
-        )
-    )
-    assert updated["astrabox_artifact"]["version"] == 2
-    assert set(updated) == {"astrabox_artifact", "url", "card"}
-    fetched = result(await tool(mcp, "get_artifact", {"artifact_id": aid}))
-    assert (
-        fetched["content"] == "second"
-        and fetched["astrabox_artifact"] == updated["astrabox_artifact"]
-    )
-    assert set(fetched) == {"astrabox_artifact", "url", "content", "description", "manifest", "viewer", "card"}
-    assert fetched["manifest"] == {}
-    assert fetched["viewer"]["level"] == "owner"
-    record = await artifact_service.records.get(aid)
-    assert record is not None and record["origin"]["session_id"] == "session"
-    listed = result(await tool(mcp, "list_artifacts", {}))["items"]
-    # A listing's card is on the listing; each item is the artifact alone.
-    assert listed == [{key: value for key, value in updated.items() if key != "card"}]
-    for output in (created, updated, fetched, listed):
-        serialized = json.dumps(output)
-        assert "owner_id" not in serialized and '"share"' not in serialized
-        assert share["token"] not in serialized
-    guide = result(await tool(mcp, "artifact_guide", {}))["guide"]
-    assert "agent.run" in guide and "localStorage" in guide and "signed_in" in guide
 
 
 @pytest.mark.asyncio
@@ -183,36 +129,6 @@ async def test_viewer_grant_reads_only_that_foreign_artifact_and_uses_viewer_db_
 
 
 @pytest.mark.asyncio
-async def test_grant_is_attached_for_both_already_bound_and_later_claimed_slots(
-    artifact_service: ArtifactService,
-) -> None:
-    from astrabox.persistence.repository.platform_mcp_binding_repository import (
-        PlatformMCPBindingRepository,
-    )
-    from astrabox.persistence.repository.session_repository import SessionRepository
-
-    sessions, bindings = SessionRepository(), PlatformMCPBindingRepository()
-    aid = await create_page(artifact_service)
-    grant = {"artifact_id": aid, "source": "share", "token": "admitting-share"}
-    await sessions.create_session(
-        {"session_id": "run", "user_id": "viewer", "agent_id": "agent", "artifact_grant": grant}
-    )
-    await bindings.upsert_binding(
-        {"deployment_id": "earlier", "session_id": "run", "user_id": "viewer"}
-    )
-    await bindings.upsert_binding(
-        {"deployment_id": "later", "scope_kind": "session", "slot_id": "slot"}
-    )
-    await bindings.attach_session_grant("run", grant)
-    assert (await bindings.get_binding("earlier"))["artifact_grant"] == grant
-    assert "artifact_grant" not in await bindings.get_binding("later")
-    await bindings.upsert_binding(
-        {"deployment_id": "later", "session_id": "run", "user_id": "viewer"}
-    )
-    assert (await bindings.get_binding("later"))["artifact_grant"] == grant
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["revoke", "expire", "replace-token", "downgrade"])
 async def test_share_grant_rechecks_admission_and_current_access(artifact_service, change) -> None:
     service = artifact_service
@@ -226,13 +142,12 @@ async def test_share_grant_rechecks_admission_and_current_access(artifact_servic
     if change == "revoke":
         await service.disable_share(OWNER, aid)
     else:
-        row = await service.records.get(aid)
-        row["share"] = {**row["share"], **{
-            "expire": {"expires_at": "2000-01-01T00:00:00+00:00"},
+        shares = ArtifactShare.__table__
+        await execute(update(shares).where(shares.c.artifact_id == aid).values(**{
+            "expire": {"expires_at": datetime(2000, 1, 1, tzinfo=timezone.utc)},
             "replace-token": {"token": "replacement"},
             "downgrade": {"access": "view"},
-        }[change]}
-        await service.records.put(row)
+        }[change]))
     refused = await tool(mcp, "artifact_data", {"artifact_id": aid, "action": "set", "path": "items/b", "data": {}})
     assert ("ARTIFACT_DATA_DENIED" if change == "downgrade" else "ARTIFACT_SHARE_NOT_FOUND") in refused["error"]["message"]
     from astrabox.common.utils.errors import APIError

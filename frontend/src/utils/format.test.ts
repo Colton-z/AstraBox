@@ -1,15 +1,8 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 
 import i18n from '@/i18n';
-import type {
-  PendingPlanConfirmationInteraction,
-  PendingToolPermissionInteraction,
-} from '../types';
 import {
-  getInteractionPermissionMode,
   getNextPermissionMode,
-  normalizePermissionMode,
-  stateTone,
   localizeDisplayText,
   isAssistantConversationSession,
 } from './format';
@@ -39,103 +32,6 @@ describe('getNextPermissionMode', () => {
       mode = getNextPermissionMode(mode, CLAUDE_MODES);
     }
     expect(mode).toBe(CLAUDE_MODES[0]);
-  });
-});
-
-describe('normalizePermissionMode', () => {
-  it('passes valid modes through unchanged', () => {
-    expect(normalizePermissionMode('default')).toBe('default');
-    expect(normalizePermissionMode('acceptEdits')).toBe('acceptEdits');
-    expect(normalizePermissionMode('plan')).toBe('plan');
-    expect(normalizePermissionMode('bypassPermissions')).toBe('bypassPermissions');
-  });
-
-  it('carries an engine-owned name verbatim and maps nullish values to empty', () => {
-    expect(normalizePermissionMode('observe-only')).toBe('observe-only');
-    expect(normalizePermissionMode('')).toBe('');
-    expect(normalizePermissionMode(undefined)).toBe('');
-    expect(normalizePermissionMode(null)).toBe('');
-  });
-});
-
-describe('getInteractionPermissionMode', () => {
-  // The record an adapter declares for a plan decision: the approving option
-  // carries the modes it may transition into, the denying ones carry the mode
-  // they fall back to.
-  const decision: PendingPlanConfirmationInteraction = {
-    interaction_id: 'interaction-1',
-    turn_id: 'turn-1',
-    tool_name: 'ExitPlanMode',
-    presentation: 'decision',
-    options: [
-      {
-        id: 'approve',
-        denial: false,
-        permission_mode_choices: ['bypassPermissions', 'acceptEdits', 'default'],
-        default_permission_mode: 'default',
-      },
-      { id: 'reject', denial: true, applies_permission_mode: 'plan' },
-    ],
-  };
-
-  it('returns the mode the answer chose among the option', () => {
-    expect(getInteractionPermissionMode(decision, {
-      interaction_id: 'interaction-1',
-      decision: 'approve',
-      permission_mode: 'acceptEdits',
-    })).toBe('acceptEdits');
-  });
-
-  it('falls back to the mode the option declared as its default, not to a UI guess', () => {
-    expect(getInteractionPermissionMode(decision, {
-      interaction_id: 'interaction-1',
-      decision: 'approve',
-    })).toBe('default');
-  });
-
-  it('returns the mode a denying option applies', () => {
-    expect(getInteractionPermissionMode(decision, {
-      interaction_id: 'interaction-1',
-      decision: 'reject',
-    })).toBe('plan');
-  });
-
-  it('returns null for an option the record never declared', () => {
-    expect(getInteractionPermissionMode(decision, {
-      interaction_id: 'interaction-1',
-      decision: 'revise',
-    })).toBeNull();
-  });
-
-  it('reads the declared contract, not the native tool name', () => {
-    // Same vendor name, presented as a plain approval: with no decision
-    // options there is no declared transition, so none is predicted.
-    const approval: PendingToolPermissionInteraction = {
-      interaction_id: 'interaction-2',
-      turn_id: 'turn-1',
-      tool_name: 'ExitPlanMode',
-      presentation: 'tool_approval',
-    };
-    expect(getInteractionPermissionMode(approval, {
-      interaction_id: 'interaction-2',
-      decision: 'approve',
-    })).toBeNull();
-  });
-});
-
-describe('stateTone', () => {
-  it('maps representative states to their expected tone class', () => {
-    expect(stateTone('READY')).toBe('state-ready');
-    expect(stateTone('WAITING_INPUT')).toBe('state-ready');
-    expect(stateTone('BUSY')).toBe('state-busy');
-    expect(stateTone('SENDING')).toBe('state-busy');
-    expect(stateTone('RECOVERY_REQUIRED')).toBe('state-alert');
-    expect(stateTone('TERMINATED')).toBe('state-alert');
-  });
-
-  it('returns the neutral tone for undefined / unknown states', () => {
-    expect(stateTone(undefined)).toBe('state-neutral');
-    expect(stateTone('CREATING')).toBe('state-neutral');
   });
 });
 

@@ -2,13 +2,13 @@
 
 AstraBox streams public Session output over **Server-Sent Events (SSE)** using
 the [AI SDK UI Message Stream
-protocol](https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol). A single
-connection delivers every frame as it happens — no polling required.
+protocol](https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol). A connection
+delivers every part as the Agent program produces it — no polling required.
 
 ## Connection URL
 
 ```text
-GET /api/v1/sessions/{session_id}/ai-stream?follow=session
+GET /api/v1/sessions/{session_id}/stream?after_seq=42
 ```
 
 Request headers:
@@ -18,30 +18,31 @@ Authorization: Bearer $ACCESS_TOKEN
 Accept: text/event-stream
 ```
 
-The `follow=session` connection may open while the Session is idle. It waits
-for output, delivers one assistant reply, and then closes. Open the next
-connection with the last `after_seq` cursor to wait for the following reply.
-Several queued inputs can produce separate replies within one platform turn;
-closing a reply's connection does not stop that turn or its engine.
+The stream first sends the Session's recorded parts after `after_seq`, then
+waits and sends new parts live. Each part is sent once. One connection ends
+after the part that finishes a response (`finish`, or `error`), so each
+connection carries one assistant reply; open the next connection with the last
+cursor to wait for the following reply. Closing a connection does not stop the
+response or the Agent program.
 
-You can also send a message and receive that turn on one request:
+`after_seq` defaults to `0`, the start of the Session's output. To wait for the
+next reply rather than read the Session's first one, start from the
+`output_seq` that `GET /api/v1/sessions/{session_id}` and the first page of
+`GET /api/v1/sessions/{session_id}/messages` return.
 
-```text
-POST /api/v1/sessions/{session_id}/ai-stream
-```
-
-The response declares `x-vercel-ai-ui-message-stream: v1`. Replayable semantic
-frames are persisted while output streams, so a client can reconnect after a
-network interruption. Live delta chunks may be coalesced in durable history.
+Send messages separately, with `POST /api/v1/sessions/{session_id}/inputs`; see
+[Sessions](sessions.md). The response declares
+`x-vercel-ai-ui-message-stream: v1`. AstraBox records every part it streams, so
+a client can reconnect after a network interruption without losing output.
 AstraBox does not use the SSE `Last-Event-ID` header; resume with `after_seq` as
 described below.
 
 ## SSE Format
 
-Each frame is a JSON object in the SSE `data` field:
+Each part is a JSON object in the SSE `data` field:
 
 ```text
-data: {"type":"start","messageId":"RESPONSE_MESSAGE_ID","messageMetadata":{"turn_id":"TURN_ID"}}
+data: {"type":"start","messageId":"RESPONSE_ID","messageMetadata":{"response_id":"RESPONSE_ID","input_ids":["INPUT_ID"],"origin":"input"}}
 
 data: {"type":"text-start","id":"text-1"}
 
@@ -51,7 +52,7 @@ data: {"type":"text-end","id":"text-1"}
 
 data: {"type":"finish","finishReason":"stop"}
 
-data: {"type":"data-resume-cursor","transient":true,"data":{"frameSeq":42,"turnId":"TURN_ID"}}
+data: {"type":"data-resume-cursor","transient":true,"data":{"seq":42}}
 
 data: [DONE]
 ```
@@ -59,15 +60,30 @@ data: [DONE]
 | Field | Description |
 | --- | --- |
 | `type` | AI SDK message-part type; it determines the rest of the JSON shape. |
-| `id` or `toolCallId` | Identifier shared by the related start, delta, and end frames. |
+| `id` or `toolCallId` | Identifier shared by the related start, delta, and end parts. |
 | `data` | Payload of an AstraBox `data-*` part. |
 
-Heartbeat comments may be sent to keep the connection alive.
+Keep-alive comments are sent after 15 seconds without output.
+
+## Responses
+
+A response is the Agent program's reply from the moment it starts until it
+ends, as the program reports both. Its parts begin with a `start` part whose
+`messageId` is the response ID and whose `messageMetadata` carries:
+
+| Field | Meaning |
+| --- | --- |
+| `response_id` | The response's ID. |
+| `input_ids` | The messages this response answers. One response can answer several queued messages. |
+| `origin` | `input` when the response answers messages; `engine` when the Agent program started it on its own, such as after a background task finished or a scheduled job ran. No user message precedes an `engine` response. |
+
+The response ends with a `finish` part. A response that fails sends an `error`
+part before its `finish`.
 
 ## Message Deltas
 
 Incremental text output begins with `text-start`, followed by one or more
-`text-delta` frames and `text-end`:
+`text-delta` parts and `text-end`:
 
 ```text
 data: {"type":"text-start","id":"text-1"}
@@ -88,49 +104,42 @@ data: {"type":"reasoning-delta","id":"reasoning-1","delta":"Inspecting the repos
 data: {"type":"reasoning-end","id":"reasoning-1"}
 ```
 
-The `id` is identical for all frames in the same text or reasoning block.
+The `id` is identical for all parts in the same text or reasoning block.
 Tool input uses a corresponding `tool-input-start`, `tool-input-delta`, and
 `tool-input-available` sequence linked by `toolCallId`.
 
 ## Reconnecting During Message Deltas
 
-Use the last `frameSeq` received in a `data-resume-cursor` part as `after_seq`
-when reconnecting. Behavior depends on the cursor and the message structure:
+Use the last `seq` received in a `data-resume-cursor` part as `after_seq` when
+reconnecting. The stream continues with the first part after that position, so
+a client that keeps its parser state for the open reply continues it exactly
+where it stopped, without repeated or missing parts.
 
-1. **The cursor is within a reply.** The stream replays that reply from its
-   input-consumption boundary, including its stable message ID and all text
-   and tool parts, then continues with new deltas. The AI SDK creates fresh
-   parser state on resume; a cursor alone cannot reconstruct earlier parts.
-2. **The cursor is at a completed reply boundary.** That reply stays outside
-   the next response. The stream waits for or replays the following reply.
-3. **The turn has completed but its tail was not received.** The stream rebuilds
-   the last unfinished reply through its terminal frame and cursor, then
-   closes with `[DONE]`.
-
-Text and reasoning resumes synthesize a missing `*-start` frame when necessary
-so the next delta remains valid AI SDK input. Clients should still process
-parts by their IDs and treat replayed parts idempotently.
-
-Reply-content replay does not repeat a `data-session-store-reload` notification
-at or before the requested `after_seq`. That cursor acknowledges the notification
-even when the content reader rewinds to reconstruct the SDK message. A newer
-reload notification still requires a SessionStore rebuild before continuation.
+A client that has lost its parser state, such as a page that reloads, reads the
+conversation from `GET /api/v1/sessions/{session_id}/messages` instead. The
+first page folds every recorded part of an open reply into its message and
+returns `output_seq`; following the stream from `output_seq` adds the rest of
+that reply exactly once.
 
 ## Event Catalog
 
 The stream follows the AI SDK protocol rather than defining an AstraBox event
-vocabulary. These are the frame families an integration normally handles:
+vocabulary. These are the part families an integration normally handles:
 
-| Frame family | Meaning | Examples |
+| Part family | Meaning | Examples |
 | --- | --- | --- |
-| Message and step lifecycle | An assistant message or model step started or finished. | `start`, `start-step`, `finish-step`, `finish` |
+| Message and step lifecycle | A response started or finished, or a model step started or finished. | `start`, `start-step`, `finish-step`, `finish` |
 | Text and reasoning | Incremental Agent output. | `text-*`, `reasoning-*` |
-| Tool calls | Tool input, approval, and result. | `tool-input-*`, `tool-approval-*`, `tool-output-*` |
+| Tool calls | Tool input, approval, and result. | `tool-input-*`, `tool-approval-request`, `tool-output-*` |
 | Interaction | A question, decision, or approval that requires a response. | `data-interaction` |
-| Turn correlation | Associates accepted input and result data with the turn. | `data-turn-accepted`, `data-input-consumed`, `data-result`, `data-turn-failure` |
-| Child-run change | Signals that the Session's child-run view should be refreshed. | `data-child-runs-changed` |
-| Resume | Provides a safe durable cursor. | `data-resume-cursor` |
-| Error | Reports a stream failure. | `error` |
+| Failed message | A message that will not be answered; it starts no response. | `data-input-failed` |
+| Tool cards | A card a platform tool recorded for the conversation, such as an artifact, bound to that tool call. | `data-tool-card` |
+| Session change | Transient: the Session record changed, such as its generated title; read the Session again. | `data-session-changed` |
+| Child runs | A child run's lifecycle or messages; read the Session child-run endpoint for their current state. | `data-subagent` |
+| File changes | The files a tool call changed. | `data-file-changes` |
+| Results | Usage or cost an Agent program reports for a response, when its adapter reports them. | `data-result` |
+| Resume | Provides the cursor to reconnect from. | `data-resume-cursor` |
+| Error | Reports a failed response or a stream failure. | `error` |
 
 Standard AI SDK parts retain their documented shapes. `data-*` parts carry an
 object in `data`; treat fields not documented by your integration as additive.
@@ -138,30 +147,27 @@ object in `data`; treat fields not documented by your integration as additive.
 ## Common Event Flow
 
 ```text
-data-turn-accepted
 start
-data-input-consumed
 start-step
 reasoning-start / reasoning-delta / reasoning-end  (optional)
 text-start / text-delta / text-end
 tool-input-* / tool-output-*                       (optional)
 finish-step
-data-result
+data-result                                        (optional)
 finish
 data-resume-cursor
 [DONE]
 ```
 
-Not every turn contains every frame. An Agent program can emit multiple model
-steps and tool calls. Child tasks can also produce a transient
-`data-child-runs-changed` notification; read the Session child-run endpoint for
-their current state.
+Not every response contains every part. An Agent program can emit multiple
+model steps and tool calls. Parts that belong to no response, such as a child
+run's status, can arrive between responses; they do not end the connection.
 
 ### Model results
 
-`data-result` contains the usage or cost values reported by the Agent program
-for the completed turn. Available fields differ by Agent program and model
-service. For example:
+`data-result` contains the usage or cost values the Agent program reported for
+the response. Available fields differ by Agent program and model service; the
+Claude Code adapter reports them, for example:
 
 ```json
 {
@@ -179,17 +185,45 @@ service. For example:
 Treat the `data` object as additive and do not assume every Agent program
 reports every metric.
 
+### Failed messages
+
+A message that will not be answered is reported on the stream instead of a
+response: the Agent program or the deployment's preparation refused it, the
+conversation ended before it was taken, or its runtime cannot start until the
+person acts.
+
+```json
+{
+  "type": "data-input-failed",
+  "data": {
+    "input_id": "INPUT_ID",
+    "code": "TURN_PREPARATION_FAILED",
+    "message": "sandbox turn preparation failed"
+  }
+}
+```
+
+`data` can also carry `status_code` and, when the user must act first
+(`TURN_PREPARATION_USER_ACTION_REQUIRED`), `user_action` with a message and an
+optional URL. A message that failed is not sent again; send its text as a new
+message.
+
 ## Connection lifecycle
 
-- A `finish` frame with `finishReason: "stop"` ends the current reply. When its
-  `messageMetadata.response_boundary` is `true`, the platform turn continues
-  across a FIFO response boundary. Use Session state to judge turn completion.
-  The response includes a durable resume cursor and `[DONE]` before closing.
-- An `error` frame terminates the current response. Save any resume cursor sent
-  before it and inspect the Session before deciding whether to retry.
-- A `finish` frame with `finishReason: "tool-calls"` can mark an interaction
-  point inside the same turn; after the interaction is answered, that turn
-  continues on the Session stream.
+- A `finish` part ends the current reply and the connection, after a
+  `data-resume-cursor` part and `[DONE]`.
+- An `error` part reports a failed response and ends the connection. Its
+  `data-resume-cursor` part arrives before the `error` part, because an AI SDK
+  reader stops at an error. The response's own `finish` part follows the
+  `error` part in the Session's output, so the next connection starts with it.
+  A response lost with its sandbox ends this way, and its `finish` part carries
+  `messageMetadata.outcome: "failed"`. Inspect the Session before deciding
+  whether to send the message again.
+- A `finish` part with `finishReason: "tool-calls"` after a
+  `data-interaction` part marks an interaction point: the response is paused,
+  not ended. After the interaction is answered, the response continues under
+  the same `messageId`, starting with a new `start` part, on the next
+  connection.
 - For network drops, reconnect with `after_seq`. A deleted or inaccessible
   Session is reported as an HTTP error when the next connection is opened.
 
@@ -197,7 +231,7 @@ reports every metric.
 
 Every completed tool invocation is linked by `toolCallId`.
 
-Key tool-input frames:
+Key tool-input parts:
 
 ```json
 {
@@ -219,17 +253,17 @@ The matching output uses the same `toolCallId`:
 ```
 
 Failed or rejected calls use `tool-output-error` or `tool-output-denied`.
-Process frames in stream order; do not sort tool calls by their identifier.
+Process parts in stream order; do not sort tool calls by their identifier.
 
 ## Tool Responses
 
 When the stream emits a `data-interaction` part or `tool-approval-request`,
 send the response to `POST
-/api/v1/sessions/{session_id}/interaction-respond` with the interaction ID:
+/api/v1/sessions/{session_id}/interactions/{interaction_id}/answer` with the
+interaction ID from the part:
 
 ```json
 {
-  "interaction_id": "INTERACTION_ID",
   "answer": {
     "decision": "approve"
   }
@@ -252,44 +286,41 @@ The terminal `finish` part names the AI SDK finish reason:
 }
 ```
 
-On a `follow=session` connection, AstraBox follows it with a transient durable
-cursor:
+AstraBox follows it with a transient cursor:
 
 ```json
 {
   "type": "data-resume-cursor",
   "transient": true,
   "data": {
-    "frameSeq": 42,
-    "turnId": "TURN_ID"
+    "seq": 42
   }
 }
 ```
 
-The transport then sends `data: [DONE]` and closes the response. Save
-`frameSeq`; do not derive a cursor from a message, block, or tool identifier.
+The transport then sends `data: [DONE]` and closes the response. Save `seq`;
+do not derive a cursor from a message, block, or tool identifier.
 
 ## Reconnect with `after_seq`
 
-A new Session-follow connection replays durable frames from the beginning by
-default. To continue from a received cursor, pass `after_seq`:
+A new connection sends the Session's output from the beginning by default. To
+continue from a received cursor, pass `after_seq`:
 
 ```text
-GET /api/v1/sessions/{session_id}/ai-stream?follow=session&after_seq=42
+GET /api/v1/sessions/{session_id}/stream?after_seq=42
 ```
 
-AstraBox emits `data-resume-cursor` only at a structurally safe replay point.
-The server also rewinds within an active reply to include its identity and
-complete content. Replace that reply by message ID; do not append its replay
-as another assistant message.
+AstraBox sends a `data-resume-cursor` part after each burst of parts. Each
+cursor names the last part sent, so reconnecting with it continues with the
+next part.
 
 > For long-running connections, update the saved cursor whenever a
-> `data-resume-cursor` part arrives and use its `frameSeq` for the next request.
+> `data-resume-cursor` part arrives and use its `seq` for the next request.
 
 ## Frame delivery cadence
 
 AstraBox does not expose `delta_flush_interval_ms`. Text, reasoning, and tool
-input frames are forwarded as the selected Agent program produces them. The
+input parts are forwarded as the selected Agent program produces them. The
 transport may send keepalive comments while no output is available.
 
 ## Event History
@@ -302,8 +333,9 @@ curl --silent --show-error \
   --header "Authorization: Bearer $ACCESS_TOKEN"
 ```
 
-The response contains saved messages rather than raw transport frames. Use
-`before` to page backwards. To resume raw streamed output, use the
+The response contains AI SDK UI messages: one for each message sent to the
+Session, and one for each response, folded from the same parts the stream
+sends. Use `before` to page backwards. To continue streamed output, use the
 `data-resume-cursor` and `after_seq` flow above.
 
 ## curl Examples
@@ -312,7 +344,7 @@ The response contains saved messages rather than raw transport frames. Use
 curl --no-buffer --silent --show-error \
   --header "Authorization: Bearer $ACCESS_TOKEN" \
   --header 'Accept: text/event-stream' \
-  "$SERVICE_URL/api/v1/sessions/$SESSION_ID/ai-stream?follow=session"
+  "$SERVICE_URL/api/v1/sessions/$SESSION_ID/stream"
 ```
 
 Resuming with `after_seq`:
@@ -321,7 +353,7 @@ Resuming with `after_seq`:
 curl --no-buffer --silent --show-error \
   --header "Authorization: Bearer $ACCESS_TOKEN" \
   --header 'Accept: text/event-stream' \
-  "$SERVICE_URL/api/v1/sessions/$SESSION_ID/ai-stream?follow=session&after_seq=42"
+  "$SERVICE_URL/api/v1/sessions/$SESSION_ID/stream?after_seq=42"
 ```
 
 ## JavaScript EventSource Example
@@ -331,12 +363,11 @@ cannot add an `Authorization` header; bearer-token clients should use `fetch`
 with an SSE parser instead.
 
 ```javascript
-let afterSeq = -1;
+let afterSeq = 0;
 
 function followSession(sessionId) {
-  const url = new URL(`/api/v1/sessions/${sessionId}/ai-stream`, window.location.origin);
-  url.searchParams.set('follow', 'session');
-  if (afterSeq >= 0) url.searchParams.set('after_seq', String(afterSeq));
+  const url = new URL(`/api/v1/sessions/${sessionId}/stream`, window.location.origin);
+  url.searchParams.set('after_seq', String(afterSeq));
 
   const stream = new EventSource(url, {withCredentials: true});
 
@@ -352,7 +383,7 @@ function followSession(sessionId) {
       console.log('Agent:', part.delta);
     }
     if (part.type === 'data-resume-cursor') {
-      afterSeq = part.data.frameSeq;
+      afterSeq = part.data.seq;
     }
     if (part.type === 'error') {
       console.error('Error:', part.errorText);
@@ -368,13 +399,13 @@ function followSession(sessionId) {
 
 ## Client Implementation Tips
 
-1. <b>Track the last safe cursor</b> — save `data-resume-cursor.data.frameSeq`
-   and use it as `after_seq` after disconnects.
+1. <b>Track the last cursor</b> — save `data-resume-cursor.data.seq` and use it
+   as `after_seq` after disconnects.
 2. <b>Use an AI SDK parser</b> — preserve the start/delta/end order and IDs for
    text, reasoning, and tool parts.
-3. <b>Watch reply completion</b> — after clean response EOF, open a new
-   `follow=session` response for the next reply. Inspect Session state on error.
-4. <b>Reconnect on transport loss</b> — reopen from the last safe cursor; do not
+3. <b>Watch reply completion</b> — after a clean end of the response, open a new
+   connection for the next reply. Inspect the Session on error.
+4. <b>Reconnect on transport loss</b> — reopen from the last cursor; do not
    guess from the last text delta you rendered.
 5. <b>Handle documented data parts</b> — process the `data-*` types your client
    needs and ignore additive fields it does not understand.
@@ -383,22 +414,21 @@ function followSession(sessionId) {
 
 <b>Q: I'm getting a flood of historical events on connect. How do I avoid this?</b>
 
-A: Pass `after_seq` set to the last `frameSeq` from a `data-resume-cursor` part.
-Completed replies before that cursor are omitted. An active reply is replayed
-with its full content and stable identity so the SDK can replace it.
+A: Pass `after_seq` set to the last `seq` from a `data-resume-cursor` part, or
+to the Session's `output_seq`. Parts at or before that position are not sent.
 
 <b>Q: Will the SSE connection close on its own?</b>
 
-A: A `follow=session` response closes at one assistant reply's boundary.
-Open the next response with `after_seq` to wait for the following reply. While
-the Session is idle, the current response stays open and receives keepalives.
+A: A connection closes after one reply ends. Open the next connection with
+`after_seq` to wait for the following reply. While the Session is idle, the
+current connection stays open and receives keepalives.
 
 <b>Q: Can I use WebSockets instead?</b>
 
 A: The Session message stream uses SSE. SSE fits the one-way output stream and
-supports reconnection through AstraBox's durable cursor.
+supports reconnection through AstraBox's recorded cursor.
 
 <b>Q: Can I set `delta_flush_interval_ms`?</b>
 
-A: No. AstraBox forwards frames at the cadence produced by the selected Agent
+A: No. AstraBox forwards parts at the cadence produced by the selected Agent
 program and does not expose a separate flush interval.

@@ -1,8 +1,22 @@
 /** A browser answer can launch a durable child without another user submission. */
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page, type Response } from '@playwright/test';
 
-import { AstraApi, type ChildRunRecord, type MessageRecord } from '../fixtures/astraApi';
-import { documentsByField, sessionEvents } from '../fixtures/dbOracle';
+import {
+  AstraApi,
+  answersInput,
+  messageText,
+  messageToolCalls,
+  toolCallSettled,
+  type ChildRunRecord,
+  type InputReceipt,
+  type MessageRecord,
+} from '../fixtures/astraApi';
+import {
+  nativeTranscriptRows,
+  sessionInputRows,
+  sessionInteractionRows,
+  sessionResponseRows,
+} from '../fixtures/dbOracle';
 import { trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
 
@@ -18,9 +32,10 @@ function object(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+/** Claude's root transcript, as the platform's SessionStore mirror holds it. */
 function nativeRoot(session: string) {
-  return documentsByField('transcript_entries', '$.platform_session_id', session)
-    .filter((row) => row.subpath == null)
+  return nativeTranscriptRows(session)
+    .filter((row) => row.subpath === null)
     .map((row) => ({ seq: Number(row.seq), entry: object(JSON.parse(String(row.entry_json))) }))
     .sort((a, b) => a.seq - b.seq);
 }
@@ -33,8 +48,17 @@ function nativeTools(session: string) {
   });
 }
 
-function replyTextBlocks(message: MessageRecord) {
-  return (message.blocks || []).filter((block) => block.type === 'text');
+/** A message's prose, one entry per text part. */
+function replyTextBlocks(message: MessageRecord): string[] {
+  return message.parts.filter((part) => part.type === 'text').map((part) => String(part.text ?? ''));
+}
+
+/** The receipt of a message the page sent, checked against the id the page minted for it. */
+async function receiptOf(response: Response): Promise<InputReceipt> {
+  const receipt = (await response.json() as { data: InputReceipt }).data;
+  const sent = response.request().postDataJSON() as { client_message_id?: string };
+  expect(receipt.client_message_id, 'the receipt names the message the page sent').toBe(sent.client_message_id);
+  return receipt;
 }
 
 async function observe(read: () => unknown | Promise<unknown>) {
@@ -45,16 +69,20 @@ async function observe(read: () => unknown | Promise<unknown>) {
 test.afterEach(async ({ request }, info) => {
   if (!['failed', 'timedOut', 'interrupted'].includes(String(info.status))) return;
   const api = new AstraApi(request);
-  const [session, history, children, transcript, events, native] = await Promise.all([
+  const [session, history, children, transcript, inputs, responses, interactions, native] = await Promise.all([
     observe(() => api.getSession(sessionId)),
     observe(() => api.getMessages(sessionId, 100)),
     observe(() => api.listChildRuns(sessionId)),
     observe(() => api.getChildRunMessages(sessionId, childId)),
-    observe(() => sessionEvents(sessionId)),
-    observe(() => documentsByField('transcript_entries', '$.platform_session_id', sessionId)),
+    observe(() => sessionInputRows(sessionId)),
+    observe(() => sessionResponseRows(sessionId)),
+    observe(() => sessionInteractionRows(sessionId)),
+    observe(() => nativeTranscriptRows(sessionId)),
   ]);
   await info.attach('answered-question-background-scene', {
-    body: JSON.stringify({ sessionId, childId, observations, session, history, children, transcript, events, native }),
+    body: JSON.stringify({
+      sessionId, childId, observations, session, history, children, transcript, inputs, responses, interactions, native,
+    }),
     contentType: 'application/json',
   });
 });
@@ -106,20 +134,24 @@ test('answering a question launches one background Agent which survives live and
   await api.setPermissionMode(sessionId, 'bypassPermissions');
   await page.setViewportSize({ width: 1280, height: 720 });
   await openSessionView(page, sessionId);
-  await sendPrompt(page, sessionId, prompt);
+  const { input_id: inputId } = await receiptOf(await sendPrompt(page, sessionId, prompt));
 
   const pending = await api.waitForPendingInteraction(sessionId);
   expect(pending.tool_name).toBe('AskUserQuestion');
-  const turnId = String(pending.turn_id || '');
+  const responseId = String(pending.response_id || '');
   const questionId = String(pending.tool_call_id || '');
-  expect(turnId).not.toBe('');
+  expect(responseId, 'the question pauses the response to the prompt').not.toBe('');
   expect(questionId).not.toBe('');
+  expect(sessionResponseRows(sessionId).filter((row) => row.response_id === responseId), 'the paused response answers the prompt')
+    .toEqual([expect.objectContaining({ status: 'waiting', input_ids: [inputId] })]);
   expect((await api.listChildRuns(sessionId)).child_runs, 'no child may start before the answer').toEqual([]);
   const panel = page.getByTestId('pending-interaction-panel');
   await expect(panel).toContainText(questionMarker);
   await panel.getByRole('radio', { name: /YES/ }).first().click();
   const answerResponse = page.waitForResponse((response) => response.request().method() === 'POST'
-    && response.url().includes(`/sessions/${sessionId}/interaction-respond`));
+    && new URL(response.url()).pathname.endsWith(
+      `/sessions/${sessionId}/interactions/${encodeURIComponent(pending.interaction_id)}/answer`,
+    ));
   await panel.getByRole('button', { name: /Submit answer|提交回答/ }).click();
   const response = await answerResponse;
   expect(response.status()).toBe(200);
@@ -127,11 +159,10 @@ test('answering a question launches one background Agent which survives live and
   expect(object(envelope.data ?? envelope)).toMatchObject({ interaction_id: pending.interaction_id, answered: true });
 
   const parent = await api.waitForAssistantMessageMatching(sessionId, 0,
-    (message) => replyTextBlocks(message).some((block) => typeof block.text === 'string'
-      && block.text.includes(parentMarker)));
-  const originalReplyText = replyTextBlocks(parent);
-  expect(originalReplyText.length, 'the parent reply has actual speech before the child completes').toBeGreaterThan(0);
-  expect(parent.turn_id, 'the answer continues the original foreground turn').toBe(turnId);
+    (message) => replyTextBlocks(message).some((text) => text.includes(parentMarker)));
+  expect(replyTextBlocks(parent).length, 'the parent reply has actual speech before the child completes').toBeGreaterThan(0);
+  expect(parent.id, 'the answer continues the original foreground response').toBe(responseId);
+  expect(answersInput(parent, inputId), 'and that response answers the prompt').toBe(true);
   const open = await api.waitForChildRuns(sessionId, (rows) => rows.length === 1 && !rows[0].closed);
   childId = open[0].child_run_id;
   await expect.poll(async () => {
@@ -155,17 +186,28 @@ test('answering a question launches one background Agent which survives live and
   expect(JSON.stringify(bash[0].input)).toContain(release);
   expect(object(bash[0].input).run_in_background, 'the child waits for Bash; only its parent Agent launch is backgrounded').not.toBe(true);
   expect(runningBlocks.filter((block) => block.type === 'tool_result' && block.tool_use_id === bashId)).toEqual([]);
-  const foreground = await api.waitForSession(sessionId, (session) => !session.current_turn_id
-    && !session.pending_interaction && session.last_turn_id === turnId && session.last_turn_status === 'COMPLETED');
+  const foreground = await api.waitForSession(sessionId, (session) => (session.current_responses ?? []).length === 0
+    && !session.pending_interaction && session.last_response?.response_id === responseId
+    && session.last_response.outcome === 'completed');
   expect(foreground.last_error).toBeFalsy();
-  observations.push({ pending, parent, open, running, foreground });
+  // The reply as it stands once its response ended: what the child's
+  // completion must leave untouched.
+  const ended = (await api.getMessages(sessionId, 100)).messages.filter((message) => message.id === responseId);
+  expect(ended, 'the ended reply is one message').toHaveLength(1);
+  const originalReply = ended[0]!;
+  const originalReplyText = replyTextBlocks(originalReply);
+  expect(originalReplyText.join('\n')).toContain(parentMarker);
+  expect(sessionInteractionRows(sessionId).filter((row) => row.interaction_id === pending.interaction_id),
+    'the browser answer is recorded once, on the response it paused')
+    .toEqual([expect.objectContaining({ response_id: responseId, status: 'answered' })]);
+  observations.push({ pending, parent, open, running, foreground, originalReply });
 
   await page.reload({ waitUntil: 'domcontentloaded' });
   const stillOpen = await api.waitForChildRuns(sessionId, (rows) => rows.length === 1 && !rows[0].closed);
   expect(stillOpen[0].child_run_id).toBe(childId);
   const openRow = await showChild(page, stillOpen[0]);
-  await expect(page.getByTestId('run-view').locator('header').getByTestId('status-pill'))
-    .toHaveText(/Running in background|后台任务运行中/);
+  await expect(openRow.locator('svg.animate-spin'), 'the Agents panel shows the background Agent still working')
+    .toHaveCount(1);
   await expect(page.getByTestId('composer-prompt')).toBeEnabled();
   await openRow.click();
   const drawer = page.getByTestId('subagent-transcript-drawer');
@@ -189,20 +231,23 @@ test('answering a question launches one background Agent which survives live and
     };
   }, { timeout: 30_000 }).toEqual({ calls: [bashId], results: 1, finals: 1 });
   const settled = await api.waitForSession(sessionId, (session) => session.state === 'READY'
-    && !session.current_turn_id && !session.pending_interaction && session.last_turn_status === 'COMPLETED');
+    && (session.current_responses ?? []).length === 0 && !session.pending_interaction
+    && session.last_response?.outcome === 'completed');
   expect(settled.last_error).toBeFalsy();
   const history = await api.getMessages(sessionId, 100);
-  expect(history.messages.filter((message) => message.role === 'user').map((message) => message.content)).toEqual([prompt]);
-  const parentReplies = history.messages.filter((message) => message.message_id === parent.message_id);
+  expect(history.messages.filter((message) => message.role === 'user').map(messageText)).toEqual([prompt]);
+  expect(sessionInputRows(sessionId).map((row) => row.input_id),
+    'the answer launched the child without another user submission').toEqual([inputId]);
+  const parentReplies = history.messages.filter((message) => message.id === parent.id);
   expect(parentReplies).toHaveLength(1);
-  expect(parentReplies[0].turn_id).toBe(turnId);
-  expect(parentReplies[0].content).toBe(parent.content);
+  expect(answersInput(parentReplies[0], inputId)).toBe(true);
+  expect(messageText(parentReplies[0])).toBe(messageText(originalReply));
   expect(replyTextBlocks(parentReplies[0]), 'child completion preserves the entire original parent speech')
     .toEqual(originalReplyText);
-  const rootBlocks = history.messages.flatMap((message) => message.blocks || []);
-  expect(rootBlocks.filter((block) => block.type === 'tool_use' && block.name === 'AskUserQuestion')
-    .map((block) => block.id)).toEqual([questionId]);
-  expect(rootBlocks.filter((block) => block.type === 'tool_result' && block.tool_use_id === questionId)).toHaveLength(1);
+  const rootCalls = history.messages.flatMap((message) => messageToolCalls(message));
+  const questions = rootCalls.filter((call) => call.toolName === 'AskUserQuestion');
+  expect(questions.map((call) => call.toolCallId)).toEqual([questionId]);
+  expect(toolCallSettled(questions[0]!), 'the question carries its answer as its result').toBe(true);
   await expect.poll(() => {
     const tools = nativeTools(sessionId);
     const answer = tools.filter(({ block }) => block.type === 'tool_result' && block.tool_use_id === questionId);

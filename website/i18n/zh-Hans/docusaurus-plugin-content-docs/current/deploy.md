@@ -29,7 +29,7 @@ Kubernetes 和已有 OpenSandbox 服务的配置方法见 [OpenSandbox 部署指
 | OpenSandbox | 创建和管理本地沙箱容器 |
 | Casdoor（启用团队登录时） | 让用户登录控制台 |
 
-AstraBox 容器能够控制挂载的 Docker 守护进程。请把它作为主机上的高权限服务管理，不要将本地部署直接暴露到不可信网络。
+请把服务端容器作为主机上的高权限服务管理：它能够控制挂载的 Docker 守护进程。
 
 ### Docker 版本要求 {#docker-requirements}
 
@@ -39,7 +39,7 @@ AstraBox 容器能够控制挂载的 Docker 守护进程。请把它作为主机
 | Docker Compose 插件 2.17.0 或更高版本 | 沙箱边缘容器重建时，`containers/compose.yaml` 会重启服务端（`depends_on` 中的 `restart: true`），这是 Compose 2.17.0 引入的。 |
 
 安装脚本和服务端都会检查 Docker 守护进程，版本过旧时拒绝继续并给出实际版本；服务端每次启动
-都会检查，因此主机升级或降级后不会在不支持的版本上运行。
+都会检查，因此升级主机后，服务端也不会在不支持的 Docker 版本上运行。
 
 ### 沙箱网络边界 {#sandbox-network-boundary}
 
@@ -52,7 +52,7 @@ AstraBox 容器能够控制挂载的 Docker 守护进程。请把它作为主机
   通往主机之外的路由，沙箱也从不加入。
 - 生命周期服务把每个沙箱的 execd、文件/终端和出站 API 端口发布在 Docker bridge 网关上
   （`ASTRABOX_PUBLISH_HOST_IP`，安装脚本从 `docker network inspect bridge` 读取），不发布到
-  主机的其他网卡。这些箱内服务没有认证：除非前面有对每个请求做认证的服务，否则不要把
+  主机的其他网卡。沙箱内的这些服务没有认证：除非前面有对每个请求做认证的服务，否则不要把
   `ASTRABOX_PUBLISH_HOST_IP` 设为 `0.0.0.0`。
 - 无论 `受限` 还是 `不受限`，每个沙箱的出站策略都拒绝 Docker 默认 bridge 上除
   `sandbox-edge` 以外的地址，即其他沙箱，以及发布沙箱端口的 bridge 网关。这些拒绝规则先于所有
@@ -70,10 +70,10 @@ bridge 容器以及主机上的进程可以访问发布出来的沙箱端口；�
 两个边缘容器的 bridge 地址由 Docker 在它们启动时分配，重启后的边缘容器可能拿到不同的地址。
 每个沙箱都保留创建时的地址（DNS 上游、拒绝规则和回调地址），所以平台会把这些地址记录在沙箱上。
 服务端以不同的地址启动时，会移除用旧地址创建的沙箱；服务端运行期间发现边缘容器换了地址时会退出，
-由 Docker 重新启动它。沙箱被移除的会话在下一条消息时换用新沙箱，与其他沙箱丢失的情况一样；
-被移除沙箱工作区里的文件只有在启用可选的持久化工作区卷时才会保留。AstraBox 0.1.0
-创建的沙箱没有这项记录，不会以这种方式移除。如果边缘容器重启后这些会话收不到回答，
-请移除主机上的所有沙箱，每个会话随后会换到新沙箱继续：
+由 Docker 重新启动它。沙箱被移除的对话在下一条消息时换用新沙箱，与其他沙箱丢失的情况一样；
+被移除沙箱工作区里的文件只有在启用可选的持久工作区卷时才会保留。AstraBox 0.1.0
+创建的沙箱没有这项记录，不会以这种方式移除。如果边缘容器重启后这些对话收不到回复，
+请移除主机上的所有沙箱，每个对话随后会换到新沙箱继续：
 
 ```bash
 docker ps -aq --filter label=opensandbox.io/id | xargs -r docker rm -f
@@ -105,6 +105,48 @@ curl -fsSL https://raw.githubusercontent.com/Colton-z/AstraBox/main/scripts/inst
 文件中的其他所有行。需要更换模型服务时，在它再次询问时重新选择，或设置
 `ASTRABOX_INSTALL_MODEL_PROVIDER` 后运行；它为原有服务写入的设置会被删除。
 
+### 从 AstraBox 0.1.8 升级 {#upgrade-from-0-1-8}
+
+AstraBox 0.1.9 使用新的数据库结构保存记录，不读取 0.1.8 的记录。从 0.1.8 升级的安装会
+从空的 AstraBox 数据库开始：原有的 Agent、Environment、Assistant、Session 及其历史、
+Deployment 和 Vault 都不会带过来。新版本会像全新安装一样创建默认的 Environment 和
+Agent；其余内容请在升级后重新创建。
+
+新数据库还会让这个安装获得新的标识。AstraBox 只删除、复用和计入本安装自己创建的沙箱，
+因此 0.1.8 安装的沙箱会一直运行，直到你删除它们。运行新版本的安装脚本之前：
+
+1. 停止服务端。在 `~/astrabox/containers` 中运行：
+
+   ```bash
+   docker compose stop server
+   ```
+
+2. 删除 Docker 主机上的沙箱。以下命令会删除该主机上的所有 OpenSandbox 沙箱，包括
+   主机上其他 AstraBox 安装的沙箱：
+
+   ```bash
+   docker ps -aq --filter label=opensandbox.io/id | xargs -r docker rm -f
+   docker ps -aq --filter label=opensandbox.io/egress-sidecar-for | xargs -r docker rm -f
+   ```
+
+   沙箱运行在 Kubernetes 或已有的 OpenSandbox 服务上时，请改为在那里删除 0.1.8 安装的
+   沙箱。
+
+3. 清空 AstraBox 数据库。在仓库维护的 Compose 部署中，它是 `postgres` 服务的 `astrabox`
+   数据库；LiteLLM 和 Casdoor 使用各自独立的数据库，数据会保留：
+
+   ```bash
+   docker compose exec postgres psql -U postgres \
+     -c 'DROP DATABASE astrabox WITH (FORCE)' \
+     -c 'CREATE DATABASE astrabox OWNER astrabox' \
+     -c 'REVOKE ALL ON DATABASE astrabox FROM PUBLIC' \
+     -c 'GRANT CONNECT, TEMPORARY ON DATABASE astrabox TO astrabox'
+   ```
+
+   使用外部 PostgreSQL 服务时，请改为把 `ASTRABOX_DB_URL` 指向一个新的空数据库。
+
+4. 运行新版本的安装脚本。
+
 ### 安装脚本可配置的模型服务 {#model-services-the-installer-configures}
 
 下列模型服务都由内置的 LiteLLM 网关提供。安装完成后，可以按
@@ -123,7 +165,7 @@ curl -fsSL https://raw.githubusercontent.com/Colton-z/AstraBox/main/scripts/inst
 不会改变已有 Agent 的模型；请在各 Agent 的页面中选择新模型。设置了
 `ANTHROPIC_BASE_URL` 时，部署通过网关的
 `anthropic/` 路由提供默认模型。选择 DeepSeek 时，部署还会识别该端点，并把同一个凭证
-提供给网关中 DeepSeek 的 OpenAI 协议路由，供其他 Agent 程序使用。
+提供给网关中原生的 DeepSeek 路由，这些路由为其他 Agent 程序提供 Messages 和 OpenAI 协议。
 
 `openai-compatible/*` 路由通过 Chat Completions 把 `<模型 ID>` 发送到
 `OPENAI_COMPATIBLE_BASE_URL`。全新安装内置的 Agent 程序是 Claude Code，它使用
@@ -254,7 +296,7 @@ named volume 接口挂载这些视图。在交给用户之前，平台将视图�
 `ASTRABOX_WORKSPACE_MOUNTER_IMAGE` 指定辅助程序镜像；未设置时使用本版本发布的
 `ghcr.io/colton-z/astrabox-workspace-mounter:<version>`。修改辅助程序时，用
 `make build-workspace-mounter-image` 构建并发布不可变镜像，再把该变量指向它。这是独立
-的主机侧辅助程序，不是 Agent 程序的一部分。
+的主机侧辅助程序，不是 Agent 运行平台额外的组件。
 
 只有一个可运行沙箱的主机时，可以设置 `ASTRABOX_WORKSPACE_STORAGE_TOPOLOGY=local`，
 使用本地 ext4 等文件系统。多个沙箱主机必须使用 `shared`，且每台候选主机都能访问同一
@@ -263,10 +305,9 @@ named volume 接口挂载这些视图。在交给用户之前，平台将视图�
 `ASTRABOX_WORKSPACE_MOUNT_ROOT` 指定主机上的分配视图目录，默认值为
 `/var/lib/astrabox/workspace-mounts`，应与工作区数据分开。每个辅助程序只接收自己的
 视图目录，使用双向挂载传播。Docker 部署需先把所在主机挂载设为 shared，否则 Docker
-会拒绝从非共享源传播 `rshared` 挂载。
-
-辅助程序要求 amd64、Linux 6.9+、root、`/dev/fuse` 和特权挂载权限；这些权限不会授予
-用户沙箱。它要求原生 mergerfs I/O passthrough 和兼容的缓存模式，不会静默关闭 passthrough。
+会拒绝从非共享源传播 `rshared` 挂载。辅助程序要求 amd64、Linux 6.9+、root、`/dev/fuse`
+和特权挂载权限；这些权限不会授予用户沙箱。它要求原生 mergerfs I/O passthrough 和兼容的
+缓存模式，不会静默关闭 passthrough。
 
 Kubernetes 中的平台身份需要管理辅助 Pod 及其 exec 接口、分配视图 PVC/PV，并能列出
 Node；命名空间必须允许这些特权基础设施 Pod。底层 PVC 仍由部署方管理。Kubernetes
@@ -287,13 +328,15 @@ Node；命名空间必须允许这些特权基础设施 Pod。底层 PVC 仍由�
 ### 存储介质必须支持的操作
 
 AWS EFS 使用 [`aws_efs` 存储适配器](providers/aws-efs.md)，它检查实际的 EFS CSI
-claim，OpenSandbox 后端的工作区挂载路径保持不变。工作区是常规工作目录，不是文档存储。存储介质必须支持
-以下操作：
+claim，OpenSandbox 后端的工作区挂载路径保持不变。
+
+工作区是常规工作目录，不是文档存储，准备工作区的代码会用到以下操作。缺少其中任何一项的
+存储介质都不能使用，无论它的容量多么方便：
 
 | 操作 | 用途 |
 |---|---|
 | 覆盖已有路径的 `rename` | 逐个发布 Plugin 仓库缓存文件，避免其他对话读取未完成的版本 |
-| `chmod`（保留 mode） | 保留仓库中标记为 `100755` 的可执行 Plugin 脚本 |
+| `chmod`（保留 mode） | 仓库中以 `100755` 提交的 Plugin 脚本；缺少它时，对话运行时拿到的可执行文件既不能运行也不能 `chmod`，因为缓存属于 root |
 | `flock` | 串行处理同一 Agent 共享缓存的并发 clone |
 | 符号链接 | 将对话可见的 `/workspace` 指向实际工作目录，并在挂载检查中解析该路径 |
 | `ReadWriteMany` | 允许多个沙箱同时挂载数据卷，并让一个 Agent 的沙箱承载多个对话 |
@@ -316,15 +359,15 @@ Mountpoint for Amazon S3 说明：通用 bucket 不支持文件 rename，任何 
 需要文件系统语义。
 
 OpenSandbox 还定义了 `ossfs` volume 类型，但 AstraBox 不会选择它。配置工作区持久化后，
-所有沙箱创建路径（包括准备容量）都使用平台的固定视图挂载方案，底层文件系统由所选
-存储 provider 提供。AstraBox 只接受为部署配置的存储 provider。
+所有沙箱创建路径（包括预备容量）都使用平台的固定视图挂载方案，底层文件系统由所选
+存储适配器提供。AstraBox 只接受为本部署配置的存储适配器。
 
 ### 部署前检查
 
 在 Kubernetes 中启用工作区持久化时，应准备名称与
 `ASTRABOX_SANDBOX_WORKSPACE_VOLUME` 一致、已绑定且支持 `ReadWriteMany` 的
 PersistentVolumeClaim。存储辅助程序挂载这个底层数据卷，OpenSandbox 挂载分配给沙箱的
-已就绪视图数据卷。配置的存储 provider 无法确认所需挂载时，AstraBox 会拒绝准备运行环境。
+已就绪视图数据卷。所配置的存储适配器无法确认所需挂载时，AstraBox 会拒绝运行准备。
 
 ## 连接消息平台
 
@@ -356,14 +399,33 @@ scripts/compose.sh -f containers/compose.connectors.yaml \
 
 - **浏览器** 只在控制台同源的 `/connector-hub/oauth/callback` 访问 hub，每个厂商在用户授权后把浏览器送回这里；在每个厂商的 OAuth 应用中把这个地址登记为回调地址。厂商只接受 HTTPS 地址，或 `localhost`。
 - **沙箱** 不直接访问 hub。agent 通过 AstraBox server 的平台 MCP 路由调用 connector，server 以这段对话所代表的那个人的身份把请求转给 hub，所以沙箱里既没有 hub 的地址也没有任何人的 token，hub 也不需要接入沙箱网络。
+- **限流** 在 hub 中关闭。ContextForge 按客户端统计请求，而它唯一的客户端是 AstraBox server，所以它的限额会一次性作用于整个部署：默认所有人合计每分钟 30 次 OAuth 请求和 100 次工具调用，多次超限后锁定 15 分钟。不使用这个叠加文件运行的 hub 也需要设置 `RATE_LIMITING_ENABLED=false`。
 - **管理员邮箱** 的域名必须是 hub 接受的邮箱域名，不能是 `.local` 这类保留域名；每个 AstraBox 用户的 hub 账号都以这个域名命名。
 
 hub 把每个人的厂商 token 保存在它自己的加密数据库中（`contextforge-data` 卷），请和平台数据一起备份。
 
+## AstraBox 数据库 {#the-astrabox-database}
+
+AstraBox 把记录保存在 PostgreSQL 中，不支持其他数据库：`ASTRABOX_DB_URL` 不是
+`postgresql://` URL 时，服务端不会启动。仓库维护的 Compose 部署和单容器部署会运行
+PostgreSQL，并用生成的凭证拼出该 URL；其他部署需要把 `ASTRABOX_DB_URL` 设为自己的
+PostgreSQL 服务。所有平台副本使用同一个数据库。
+
+服务端启动时、开始处理请求之前，会把数据库结构更新到它所运行版本的结构。同时启动的副本
+通过 PostgreSQL advisory lock 轮流执行，因此每项结构变更只运行一次。结构变更失败时，
+服务端停止，数据库结构保持原样。较旧的版本无法在已被较新版本升级过的数据库上启动。
+
+每个服务端进程最多保持 30 个连接池连接，另有一个监听 PostgreSQL 通知的连接，以及内置
+调度器使用的连接。请按全部副本的需要设置数据库的连接数上限。服务端会在连接上监听通知并
+缓存 prepared statement，因此请直接连接 PostgreSQL，或通过 session 模式的连接池连接。
+
 ## 运行多个平台副本
 
 [平台多副本部署指南](deploy-distributed.md)说明如何让多个 API 主机连接共享服务并使用
-相同的签名密钥。请求可以到达任一 API 副本，沙箱由 Kubernetes 独立调度。增加 API
+相同的签名密钥。请求可以到达任一 API 副本，沙箱由 Kubernetes 独立调度。同一时间只有
+一个副本持有某个 Session 与其 Agent 程序的连接。接收到该 Session 消息或回答的副本会把它
+记录下来，再由 PostgreSQL 通知告知持有连接的副本。该副本停止后，另一个副本接管这个
+Session：正常关闭时在几秒内完成，否则在停止副本的 30 秒租约到期后完成。增加 API
 副本不会让本地工作区磁盘变成共享存储，也不会让单个 OpenSandbox 生命周期服务自动获得高可用能力。
 
 ## 构建沙箱镜像
@@ -387,10 +449,10 @@ Environment（运行环境）把 Agent 与 Agent 程序及兼容的沙箱镜像�
 | `.astrabox/database-secrets` | 生成的数据库凭证和可选的内置 SSO 凭证，位于安装目录（`~/astrabox`）或源码检出目录下 |
 | 可选工作区数据卷 | 独立于沙箱的 Agent 和 Assistant 工作区文件 |
 
-Session 消息和原生会话状态保存在 AstraBox 数据库中。配置工作区数据卷后，文件独立保存，
-终止或替换沙箱不会删除它们，替代沙箱会挂载原工作区。没有工作区数据卷时，文件依赖原
-沙箱或保留的文件系统快照。OpenSandbox 普通暂停保留根文件系统，不恢复进程内存；它
-不是卷上工作区文件或数据库原生会话状态的持久化机制。
+Session 消息、Agent 程序报告的回复与输出，以及原生会话状态都保存在 AstraBox 数据库中。
+配置工作区数据卷后，文件独立保存，终止或替换沙箱不会删除它们，替代沙箱会挂载原工作区。
+没有工作区数据卷时，文件依赖原沙箱或保留的文件系统快照。OpenSandbox 普通暂停保留根文件
+系统，不恢复进程内存；它不是卷上工作区文件或数据库原生会话状态的持久化机制。
 
 请把以下内容作为一组恢复数据一起备份：
 
@@ -568,8 +630,8 @@ in use, and this box needs 1`。不会排队等待。以这种方式被拒绝的
 
 ## 为已准备沙箱规划容量 {#plan-capacity-for-prepared-sandboxes}
 
-每个 Agent 会按它的[预备容量](authoring-agents.md#prewarming)保留空闲的已准备运行时，
-这样这么多个新对话可以同时在一秒内开始，而不必先启动沙箱。只要设置了
+每个 Agent 会按它的[预备容量](authoring-agents.md#prewarming)保留相应数量的空闲已准备运行时，
+使同样多的新对话可以同时在一秒内开始，而不必先启动沙箱。只要设置了
 `ASTRABOX_AGENT_PREWARM_REDIS_URL`，新建 Agent 的预备容量就默认为 1；所有随附的 Compose
 部署和[单容器部署](all-in-one.md)都会设置它，在这些部署上，全新安装时创建的两个 Agent
 同样如此。只要预备容量大于 0、Agent 及其运行环境处于启用状态，这些运行时就一直保留；
@@ -618,7 +680,7 @@ GET /healthz
 GET /readyz
 ```
 
-服务开始排空并准备关闭后，`/readyz` 会返回 `503`。平台的终止宽限时间应大于 `ASTRABOX_SHUTDOWN_DRAIN_SECONDS`，让正在执行的 Agent 任务有时间完成。
+服务开始排空并准备关闭后，`/readyz` 会返回 `503`。平台的终止宽限时间应大于 `ASTRABOX_SHUTDOWN_DRAIN_SECONDS`，让该副本上正在处理的请求有时间完成。副本停止期间，Agent 程序在沙箱中继续运行，由另一个副本接管它们的 Session。
 
 CPU、内存、磁盘和沙箱超时由所选 OpenSandbox 运行时及其配置决定。依赖暂停沙箱之前，请在实际部署的后端上验证每个使用暂停功能的 Environment：
 

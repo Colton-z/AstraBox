@@ -96,62 +96,6 @@ def test_conversation_routes_refuse_user_supplied_vault_ids(
         assert platform_service_calls == 0
 
 
-@pytest.mark.parametrize("routes", [agent_routes, assistant_routes])
-def test_conversation_routes_forward_a_valid_idempotency_key(
-    routes: Any,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service = _RouteConversationService(
-        {"agent_id": "agent-1"} if routes is agent_routes else None
-    )
-    monkeypatch.setattr(routes, "_registered_on", None)
-    if routes is agent_routes:
-        monkeypatch.setattr(routes, "get_agent_service", lambda: service)
-        monkeypatch.setattr(routes, "get_current_user_context", _current_user)
-        monkeypatch.setattr(routes, "get_platform_service", lambda: object())
-        path = "/api/v1/agents/agent-1/conversations"
-        subject_id = "agent-1"
-    else:
-        monkeypatch.setattr(routes, "get_assistant_service", lambda: service)
-        monkeypatch.setattr(routes, "get_current_user_context", _current_user)
-        path = "/api/v1/assistants/assistant-1/conversations"
-        subject_id = "assistant-1"
-
-    app = FastAPI()
-    routes.register_agent_routes(app) if routes is agent_routes else routes.register_assistant_routes(app)
-    with TestClient(app) as client:
-        response = client.post(path, headers={"Idempotency-Key": "create.1:test"})
-
-    assert response.status_code == 200
-    assert service.calls == [{
-        "user": _USER,
-        "subject_id": subject_id,
-        "idempotency_key": "create.1:test",
-    }]
-
-
-def test_conversation_route_rejects_an_unsafe_idempotency_key(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    service = _RouteConversationService()
-    monkeypatch.setattr(agent_routes, "_registered_on", None)
-    monkeypatch.setattr(agent_routes, "get_agent_service", lambda: service)
-    monkeypatch.setattr(agent_routes, "get_current_user_context", _current_user)
-    monkeypatch.setattr(agent_routes, "get_platform_service", lambda: object())
-    app = FastAPI()
-    agent_routes.register_agent_routes(app)
-
-    with TestClient(app) as client, pytest.raises(Exception) as caught:
-        client.post(
-            "/api/v1/agents/agent-1/conversations",
-            headers={"Idempotency-Key": "contains a space"},
-        )
-
-    assert getattr(caught.value, "status_code", None) == 400
-    assert getattr(caught.value, "code", None) == "INVALID_IDEMPOTENCY_KEY"
-    assert service.calls == []
-
-
 class _CapturingSessions:
     def __init__(self) -> None:
         self.payload: dict[str, Any] | None = None
@@ -217,11 +161,8 @@ async def test_session_inherits_managed_binding_without_using_user_identity(
     )
     service = SessionService(
         sessions_repo=sessions,  # type: ignore[arg-type]
-        messages_repo=None,  # type: ignore[arg-type]
         agent_config=_SessionAgentConfig(),  # type: ignore[arg-type]
         runtime_manager=_SessionRuntime(),  # type: ignore[arg-type]
-        # type: ignore[arg-type]
-        broker=None,  # type: ignore[arg-type]
         ttl_seconds=3600,
         spawn_background_task=lambda *args, **kwargs: None,
         vault_service=vaults,  # type: ignore[arg-type]
@@ -229,7 +170,6 @@ async def test_session_inherits_managed_binding_without_using_user_identity(
 
     created = await service.create_session_record(
         _USER,
-        "agent-1",
         workspace_ref={"kind": "agent", "agent_id": "agent-1"},
         agent_id="agent-1",
     )
@@ -249,87 +189,3 @@ async def test_session_inherits_managed_binding_without_using_user_identity(
     assert sessions.payload is not None
     assert sessions.payload["vault_ids"] == ["vault-managed-b", "vault-managed-a"]
     assert "vault_ids" not in created
-
-
-async def test_assistant_resolution_does_not_claim_shared_workspace_env_injection(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sessions = _CapturingSessions()
-    vaults = _ValidatingManagedVaults()
-    monkeypatch.setattr(
-        "astrabox.core.service.orchestrator.session_service.sandbox_for_name",
-        lambda name: SimpleNamespace(
-            name=name,
-            supports_egress_credential_injection=True,
-        ),
-    )
-    service = SessionService(
-        sessions_repo=sessions,  # type: ignore[arg-type]
-        messages_repo=None,  # type: ignore[arg-type]
-        agent_config=_SessionAgentConfig(),  # type: ignore[arg-type]
-        runtime_manager=_SessionRuntime(),  # type: ignore[arg-type]
-        # type: ignore[arg-type]
-        broker=None,  # type: ignore[arg-type]
-        ttl_seconds=3600,
-        spawn_background_task=lambda *args, **kwargs: None,
-        vault_service=vaults,  # type: ignore[arg-type]
-    )
-
-    await service.create_session_record(
-        _USER,
-        "assistant-env",
-        session_kind="assistant_chat",
-        workspace_ref={
-            "kind": "assistant",
-            "assistant_id": "assistant-1",
-            "sandbox_id": "sandbox-1",
-        },
-    )
-
-    assert vaults.calls[0]["backend_supports_egress_injection"] is False
-    assert "long-running workspace" in str(
-        vaults.calls[0]["egress_injection_unsupported_reason"]
-    )
-
-
-async def test_hidden_workspace_bootstrap_inherits_managed_credentials(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sessions = _CapturingSessions()
-    vaults = _ValidatingManagedVaults()
-    monkeypatch.setattr(
-        "astrabox.core.service.orchestrator.session_service.sandbox_for_name",
-        lambda name: SimpleNamespace(
-            name=name,
-            supports_egress_credential_injection=True,
-        ),
-    )
-    service = SessionService(
-        sessions_repo=sessions,  # type: ignore[arg-type]
-        messages_repo=None,  # type: ignore[arg-type]
-        agent_config=_SessionAgentConfig(),  # type: ignore[arg-type]
-        runtime_manager=_SessionRuntime(),  # type: ignore[arg-type]
-        # type: ignore[arg-type]
-        broker=None,  # type: ignore[arg-type]
-        ttl_seconds=3600,
-        spawn_background_task=lambda *args, **kwargs: None,
-        vault_service=vaults,  # type: ignore[arg-type]
-    )
-
-    await service.create_session_record(
-        _USER,
-        "assistant-env",
-        hidden=True,
-        session_kind="assistant_chat",
-        owner_type="assistant_workspace",
-        owner_id="assistant-1",
-        workspace_ref={"kind": "assistant", "assistant_id": "assistant-1"},
-    )
-
-    assert vaults.calls[0]["vault_ids"] == [
-        " vault-managed-b ",
-        "vault-managed-a",
-        "vault-managed-b",
-    ]
-    assert sessions.payload is not None
-    assert sessions.payload["vault_ids"] == ["vault-managed-b", "vault-managed-a"]

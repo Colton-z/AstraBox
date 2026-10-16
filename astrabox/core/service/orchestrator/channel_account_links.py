@@ -7,7 +7,7 @@ resolver reads them (:mod:`astrabox.providers.channel_account_links`).
 
 The links live beside the Deployment rather than in it, so a replacement
 deployment service keeps its contract; the caller hands in the binding it
-already authorized.
+already authorized. A deleted binding's links are deleted with it.
 """
 
 from __future__ import annotations
@@ -109,7 +109,3 @@ class ChannelAccountLinkService:
             deployment_id=deployment_id, participant=name,
         )
         return {"participant": name, "deleted": deleted}
-
-    async def purge(self, deployment_id: str) -> None:
-        """Remove every link of a deleted trigger."""
-        await self._repository.delete_account_links(deployment_id)

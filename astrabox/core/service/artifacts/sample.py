@@ -5,17 +5,19 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from datetime import timedelta
 from typing import Any, AsyncGenerator, AsyncIterator, Callable
 
 import httpx
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.settings import load_astrabox_settings
 from astrabox.core.service.orchestrator.runtime.config_resolver import RuntimeConfigResolver
 from astrabox.seams.model import ModelRequestContext, model_endpoint_for_name
-from astrabox.common.utils.time_utils import parse_iso, utcnow, utcnow_iso, plus_seconds_iso
-from astrabox.persistence.repository.backend import DuplicateKeyError
+from astrabox.common.utils.time_utils import utcnow
+from astrabox.persistence.sql import transaction
 
 from . import limits
 from .origin import OriginAccess
@@ -120,43 +122,41 @@ class ArtifactSampleService:
     def _limited() -> APIError:
         return APIError(code="ARTIFACT_SAMPLE_RATE_LIMITED", message="sample request limit reached", status_code=429)
 
-    async def _reserve(self, user_id: str, reservation: str) -> str:
-        key = "sample_budget:" + opaque_viewer_id("sample-budget", user_id)
+    async def _reserve(self, user_id: str, reservation: str) -> None:
+        """Admit one model round for the viewer, across artifacts and replicas.
 
-        async def write(tx: Any) -> None:
-            budget = await self._artifacts.viewers.lock(key, transaction=tx)
+        A round holds one of the viewer's concurrent slots until released or
+        expired, and counts toward the per-minute limit for a minute after it
+        started, released or not.
+        """
+        key = "sample_budget:" + opaque_viewer_id("sample-budget", user_id)
+        budgets = self._artifacts.budgets
+
+        async def write(conn: AsyncConnection) -> None:
+            await budgets.lock(key, "sample", conn=conn)
             now = utcnow()
-            entries = [e for e in (budget or {}).get("samples", []) if
-                (now - parse_iso(e["created_at"])).total_seconds() < limits.SAMPLE_WINDOW_SECONDS
-                or (e["active"] and now < parse_iso(e["expires_at"]))]
-            active = sum(e["active"] and now < parse_iso(e["expires_at"]) for e in entries)
-            recent = sum((now - parse_iso(e["created_at"])).total_seconds() < limits.SAMPLE_WINDOW_SECONDS for e in entries)
+            window_start = now - timedelta(seconds=limits.SAMPLE_WINDOW_SECONDS)
+            await budgets.prune_samples(key, now=now, window_start=window_start, conn=conn)
+            active, recent = await budgets.sample_counts(
+                key, now=now, window_start=window_start, conn=conn
+            )
             if active >= limits.SAMPLE_CONCURRENT or recent >= limits.SAMPLE_PER_MINUTE:
                 raise self._limited()
-            entries.append({"reservation": reservation, "created_at": utcnow_iso(), "active": True,
-                "expires_at": plus_seconds_iso(limits.SAMPLE_REQUEST_TIMEOUT_SECONDS + limits.LIVE_HEARTBEAT_SECONDS)})
-            row = {"doc_id": key, "samples": entries}
-            if budget:
-                await self._artifacts.viewers.put(row, transaction=tx)
-            else:
-                await self._artifacts.viewers.insert(row, transaction=tx)
+            await budgets.add_sample(
+                key,
+                reservation,
+                created_at=now,
+                expires_at=now
+                + timedelta(
+                    seconds=limits.SAMPLE_REQUEST_TIMEOUT_SECONDS + limits.LIVE_HEARTBEAT_SECONDS
+                ),
+                conn=conn,
+            )
 
-        try:
-            await self._artifacts.transaction(write)
-        except DuplicateKeyError as exc:
-            raise self._limited() from exc
-        return key
+        await transaction(write)
 
-    async def _release(self, key: str, reservation: str) -> None:
-        async def write(tx: Any) -> None:
-            budget = await self._artifacts.viewers.lock(key, transaction=tx)
-            if budget is None:
-                raise APIError(code="ARTIFACT_STORE_UNAVAILABLE", message="sample reservation budget is missing", status_code=503)
-            for entry in budget["samples"]:
-                if entry["reservation"] == reservation:
-                    entry["active"] = False
-            await self._artifacts.viewers.put(budget, transaction=tx)
-        await self._artifacts.transaction(write)
+    async def _release(self, reservation: str) -> None:
+        await self._artifacts.budgets.release_sample(reservation, now=utcnow())
 
     async def prepare(self, viewer: ArtifactViewer, body: dict[str, Any]) -> SampleStream:
         request = validate_sample_request(body)
@@ -190,10 +190,10 @@ class ArtifactSampleService:
         headers.update({"authorization": f"Bearer {endpoint.api_key}", "content-type": "application/json"})
         reservation = uuid.uuid4().hex
         deadline = asyncio.get_running_loop().time() + limits.SAMPLE_REQUEST_TIMEOUT_SECONDS
-        key = await self._reserve(viewer.user.user_id, reservation)
+        await self._reserve(viewer.user.user_id, reservation)
 
         async def release() -> None:
-            await self._release(key, reservation)
+            await self._release(reservation)
 
         return SampleStream(self._stream(endpoint, request, headers, deadline, release), release)
 

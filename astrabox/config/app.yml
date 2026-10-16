@@ -42,13 +42,6 @@ astrabox:
     api_key_secret_name: ""
     # HTTPX network inactivity timeout, not a total turn deadline.
     request_timeout_seconds: 60
-  # MongoDB collection names. The backend's connection URI and fallback database
-  # come from ASTRABOX_DB_URL / ASTRABOX_MONGODB_URI and ASTRABOX_DB_NAME.
-  mongodb:
-    template_whitelist_collection: "template_whitelist"
-    sessions_collection: "sessions"
-    messages_collection: "messages"
-    deployments_collection: "deployments"
   remote_agent:
     include_partial_messages: true
     # Claude CLI stdout JSON can include large tool results; the SDK aborts

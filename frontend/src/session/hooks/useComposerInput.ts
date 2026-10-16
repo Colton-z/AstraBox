@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { UIMessage as SDKUIMessage } from 'ai';
 import { normalizeSessionSlashCommands } from '../slashCommands';
-import { createClientMessageId } from '../utils/chatHelpers';
 import type { TurnInputImage } from '../composerAttachments';
 import { readSessionDraft, writeSessionDraft } from '../sessionDraft';
 
@@ -14,7 +13,7 @@ export function useComposerInput({
   messages,
   slashCommandDetails,
   canSend,
-  sendClientMessageNow,
+  sendMessage,
   canChangePermissionMode,
   cyclePermissionMode,
 }: {
@@ -22,7 +21,7 @@ export function useComposerInput({
   messages: SDKUIMessage[];
   slashCommandDetails: unknown;
   canSend: boolean;
-  sendClientMessageNow: (clientMessageId: string, text: string, images?: TurnInputImage[]) => void;
+  sendMessage: (text: string, images?: TurnInputImage[]) => void;
   canChangePermissionMode: boolean;
   cyclePermissionMode: () => Promise<void>;
 }) {
@@ -60,10 +59,9 @@ export function useComposerInput({
     // An image is a message on its own, so emptiness is judged on the whole
     // input rather than on its prose.
     if ((!text && images.length === 0) || !canSend) return;
-    const clientMessageId = createClientMessageId();
     setDraft('');
-    sendClientMessageNow(clientMessageId, text, images);
-  }, [canSend, sendClientMessageNow, setDraft]);
+    sendMessage(text, images);
+  }, [canSend, sendMessage, setDraft]);
 
   const acceptSlashCommand = useCallback((cmd: string) => {
     const commandText = String(cmd || '').trim();

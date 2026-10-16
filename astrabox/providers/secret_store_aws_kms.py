@@ -1,6 +1,6 @@
 """AWS KMS-backed credential storage using the AWS Encryption SDK.
 
-The provider keeps ciphertext in AstraBox's normal persistence collection and
+The provider keeps ciphertext in the platform database's ``secrets`` table and
 uses an AWS KMS keyring for envelope encryption. AWS KMS protects a fresh data
 key for each value; plaintext data keys and secret values are never persisted.
 The SDK message carries the encrypted data key, so stateless replicas need only

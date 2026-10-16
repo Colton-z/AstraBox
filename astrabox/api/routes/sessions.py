@@ -1,14 +1,14 @@
 """Session CRUD/lifecycle — the ``/api/v1/sessions`` resource family.
 
-Covers list/create/get/delete/archive/recover, message history,
-permission-mode, and the two sandbox/shell routes (``sandbox/terminate``,
-``webshell``). Handler bodies rely on shared trace/error machinery from
+Covers list/create/get/delete/archive/recover, message history and history
+blocks, child runs, file changes, the read marker, the permission mode, and
+the two sandbox/shell routes (``sandbox/terminate``, ``webshell``). Handler
+bodies rely on shared trace/error machinery from
 :mod:`astrabox.api.routes._shared`.
 
-The streaming/turn family (``ai-stream`` POST/GET, ``interrupt``,
-``interaction-respond``, ``conversation/end``, ``terminal/stream``) lives in
-:mod:`astrabox.api.routes.turns`. ``permission-mode`` is served from this
-module rather than with that family, despite its turn-flavored semantics.
+Sending (``inputs``), following (``stream``), answering an interaction,
+interrupting, ending the conversation and the web terminal live in
+:mod:`astrabox.api.routes.turns`.
 
 Mounted by :func:`astrabox.api.app.create_app` via ``include_router``.
 """
@@ -27,7 +27,6 @@ from astrabox.api.routes._shared import (
     _svc,
 )
 from astrabox.api.routes.response_envelope import ApiEnvelope
-from astrabox.api.routes.session_user_actions import UserActionView
 
 router = APIRouter()
 
@@ -44,104 +43,71 @@ router = APIRouter()
 # * Platform vocabulary — sandbox lifecycle, transport and orchestration state
 #   — is named, because this package owns it.
 # * Engine vocabulary is carried as ``dict``/``list`` of open values.
-#   ``pending_interaction``, ``engine_capabilities``, message content blocks and
-#   slash-command declarations are defined by the agent SDK and cross this
-#   boundary verbatim; re-declaring them here would create the parallel
+#   ``pending_interaction``, ``engine_capabilities``, the parts of a UI message
+#   and slash-command declarations are defined by the agent SDK or its adapter
+#   and cross this boundary verbatim; re-declaring them here would create the parallel
 #   platform-owned copy that CLAUDE.md's "Engine semantics belong to the engine"
 #   forbids, and it would drift the moment the vendor adds a member.
 #
-# Only ``session_id`` is required on a session payload. Session reads are
-# projections assembled from a stored document, a snapshot and several
-# overlays, and every other member is conditional on which of those a given
-# read had. Pydantic answers 500 for a required field the payload lacks, so
-# each one declared required narrows the set of reads a route can serve.
+# Only ``session_id`` is required on a session payload. The list answers a
+# summary of each row and the detail adds what the runtime is doing, so a field
+# declared required would narrow the reads a route can serve; Pydantic answers
+# 500 for a required field the payload lacks.
 
 
-class AgentRuntimeView(BaseModel):
-    """The owning Agent's runtime posture, overlaid onto an ``agent_chat`` session.
+class ResponseView(BaseModel):
+    """A response the runtime produced, as its reader recorded it.
 
-    Present only for ``session_kind="agent_chat"``. An Agent whose catalog row
-    is gone still gets a view, reporting ``state="DELETED"``, so the console can
-    distinguish a deleted Agent from one that never resolved.
+    ``status`` is ``running``, ``waiting`` or ``ended``; ``outcome`` is
+    ``completed``, ``failed`` or ``cancelled`` once ended, and
+    ``native_reason`` is the engine's own word for the ending, carried
+    verbatim.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    agent_id: str
-    state: str | None = None
-    sandbox_id: str | None = None
-    expires_at: str | None = None
-    startup_progress: str | None = None
-    last_error: str | None = None
-    runtime_unavailable: bool | None = None
+    response_id: str
+    origin: str | None = None
+    status: str | None = None
+    outcome: str | None = None
+    native_reason: str | None = None
+    # The engine's report of a failure, carried as it said it.
+    error: dict[str, Any] | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
 
 
-class BackgroundTaskState(BaseModel):
-    """Active native child tasks and their pending result-collection metadata.
-
-    Absent (``null``) when no child has engine-declared active work. Engines
-    without detached-result manifests report zero pending manifests.
-    """
+class HeldInputView(BaseModel):
+    """An input the platform still holds: accepted, not yet durably taken by the runtime."""
 
     model_config = ConfigDict(extra="forbid")
 
-    state: str
-    pending_manifest_count: int
-    pending_task_count: int
-    opened_event_seq: int | None = None
-    source_turn_id: str | None = None
-
-
-class DeliveryFailure(BaseModel):
-    """The last turn's input, when the sandbox never acknowledged receiving it.
-
-    Synthesized only while ``delivery_state`` is ``NOT_RECEIVED``; the text is
-    returned so the console can offer the message back for resending.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    turn_id: str | None = None
+    input_id: str
     client_message_id: str | None = None
-    text: str | None = None
-    summary: str | None = None
-    content_blocks: list[dict[str, Any]] = Field(default_factory=list)
-    user_action: UserActionView | None = None
-    resend_as_new: bool = False
-
-
-class RuntimeBindingView(BaseModel):
-    """Dispatch availability without its internal owner or sandbox locators."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    state: str
-    can_dispatch: bool
-    reason_code: str | None = None
-    reason_message: str | None = None
+    content: str | None = None
+    state: str | None = None
+    created_at: str | None = None
 
 
 class SessionRecord(BaseModel):
     """One session, as the read paths project it.
 
-    The stored session document is not an API DTO. The platform facade builds
-    this closed projection field by field; runtime identity, engine resume
-    handles, ownership wiring and share capabilities never cross this model.
-
-    Which members are populated depends on the read. The paged list summarizes
-    each row to the fields in ``_SESSION_LIST_SUMMARY_FIELDS``
-    (``astrabox/core/service/orchestrator/session_kernel/service_mixins/session_read.py``);
-    detail adds the per-session reads that are too expensive to run per row —
-    ``pending_interaction``, ``delivery_failure``, ``pending_inputs`` and
-    ``engine_capabilities``.
+    The list summarizes each row (``session_runtime/views.py``
+    ``session_summary``): its state there comes from the row's lifecycle and
+    the runtime status the reader last cached. The detail adds what the
+    runtime is doing from its recorded facts: the responses in progress, the
+    last one that ended, the interaction waiting on the owner, the inputs the
+    platform still holds, and ``output_seq``, the output position to follow the
+    session's stream from.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     session_id: str
     user_id: str | None = None
-    template_name: str | None = None
     state: str | None = None
+    #: ``idle``, ``working`` or ``waiting``, as the runtime last reported.
+    runtime_status: str | None = None
     permission_mode: str | None = None
     model_name: str | None = None
     sandbox_id: str | None = None
@@ -149,9 +115,10 @@ class SessionRecord(BaseModel):
     title: str | None = None
     source_type: str | None = None
     agent_id: str | None = None
+    #: The referenced Agent's lifecycle, independent of the Session's runtime.
+    agent_state: str | None = None
     assistant_id: str | None = None
     deployment_name: str | None = None
-    agent_runtime: AgentRuntimeView | None = None
     session_kind: str | None = None
     engine_kind: str | None = None
     expires_at: str | None = None
@@ -161,24 +128,11 @@ class SessionRecord(BaseModel):
     #: read it: newer output than ``read_at`` is unread.
     last_output_at: str | None = None
     read_at: str | None = None
-    deleted: bool | None = None
     runtime_unavailable: bool | None = None
-    runtime_warning: bool | None = None
     engine_available: bool | None = None
     last_error: str | None = None
     startup_progress: str | None = None
-    current_turn_id: str | None = None
-    last_turn_id: str | None = None
-    last_turn_status: str | None = None
-    last_turn_error: str | None = None
-    last_turn_command_id: str | None = None
-    delivery_state: str | None = None
-    last_turn_failure_phase: str | None = None
-    last_turn_terminal_reason: str | None = None
-    recovery_policy: str | None = None
     recovery_reason: str | None = None
-    background_task_state: BackgroundTaskState | None = None
-    delivery_failure: DeliveryFailure | None = None
     # Platform vocabulary, not the engine's: which workspace surfaces this
     # session's Agent declares. Kept beside `engine_capabilities` and outside
     # it, because an engine has no opinion about what a console shows.
@@ -188,11 +142,10 @@ class SessionRecord(BaseModel):
     pending_interaction: dict[str, Any] | None = None
     slash_commands: list[Any] | None = None
     slash_command_details: list[dict[str, Any]] | None = None
-    # Turn inputs accepted but not yet delivered to the engine. Claude Code
-    # only: the field is added where the session's engine resolves to
-    # ``claude_code``.
-    pending_inputs: list[dict[str, Any]] | None = None
-    runtime_binding: RuntimeBindingView | None = None
+    current_responses: list[ResponseView] | None = None
+    last_response: ResponseView | None = None
+    held_inputs: list[HeldInputView] | None = None
+    output_seq: int | None = None
 
 
 class SessionListPage(BaseModel):
@@ -210,41 +163,43 @@ class SessionListPage(BaseModel):
 
 
 class SessionMessagePage(BaseModel):
-    """One page of a session's durable messages, plus the live-turn overlay.
+    """One page of a session's conversation as AI SDK UI messages, oldest first.
 
-    ``messages`` is durable-only. A turn still in flight is reported separately
-    through ``active_turn_overlay``, and both it and ``session_frame_seq``
-    accompany the first page alone — a caller paging backwards with ``before``
-    receives ``null`` for them.
+    A user message is an input the session accepted; an assistant message is
+    one response, its stored parts folded the way the AI SDK folds them live.
+    ``before`` is the cursor for the next older page. The first page also
+    carries ``output_seq``, the output position its parts were read through,
+    to follow the stream from, and the interaction waiting on the owner. A
+    share link's page carries neither ``output_seq`` nor the tool input of an
+    interaction.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    # Message bodies are engine content blocks — see the boundary note above.
+    # UI message parts are the engine adapter's translation — see the
+    # boundary note above.
     messages: list[dict[str, Any]]
     has_more: bool
-    active_turn_overlay: dict[str, Any] | None = None
-    session_frame_seq: int | None = None
+    before: str | None = None
+    output_seq: int | None = None
     pending_interaction: dict[str, Any] | None = None
 
 
 class SessionHistoryBlockPage(BaseModel):
-    """One page of the transcript with each settled response's work folded.
+    """One page of the conversation with each ended response's work folded.
 
-    Same records as :class:`SessionMessagePage`, paginated by record instead of
-    by timestamp: ``next_cursor`` is what to send back as ``before``, and it
-    pins every later page to the history this page saw. A response that ran
-    tools and then answered carries one ``process_block`` in place of that
-    work, which :class:`SessionHistoryBlockDetails` reopens.
+    The messages of :class:`SessionMessagePage`, where the work of a response
+    that had ended is replaced by ``data-process-block`` parts that
+    :class:`SessionHistoryBlockDetails` reopens. ``next_cursor`` is what to send
+    back as ``before``; it pins every older page to the output position the
+    first page was read at (``output_seq``).
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    # Message bodies are engine content blocks — see the boundary note above.
     messages: list[dict[str, Any]]
     has_more: bool
-    active_turn_overlay: dict[str, Any] | None = None
-    session_frame_seq: int | None = None
+    output_seq: int | None = None
     pending_interaction: dict[str, Any] | None = None
     paging_mode: Literal["blocks"]
     next_cursor: str | None = None
@@ -252,9 +207,9 @@ class SessionHistoryBlockPage(BaseModel):
 
 
 class SessionHistoryBlockDetails(BaseModel):
-    """The blocks one folded ``process_block`` header stands for.
+    """The parts one folded ``data-process-block`` header stands for.
 
-    One message carrying the folded blocks in their original order.
+    One message carrying the folded parts in their original order.
     ``has_more`` is always ``false``: a header's contents are whole, and there
     is nothing further to page through.
     """
@@ -272,8 +227,8 @@ class ProcessSummaryState(BaseModel):
     once the label exists, and ``failed`` when the model call did not produce
     one — a failed label can be asked for again with ``retry=true``.
     ``disabled`` means label generation is switched off, not a failed request.
-    ``turn_completed`` distinguishes work that ran to an answer from work an
-    interruption cut short.
+    ``response_completed`` distinguishes work that ran to an answer from work
+    that stopped short.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -281,7 +236,7 @@ class ProcessSummaryState(BaseModel):
     status: str
     summary: str | None = None
     error: str | None = None
-    turn_completed: bool | None = None
+    response_completed: bool | None = None
 
 
 class ChildRunRecord(BaseModel):
@@ -419,25 +374,26 @@ class WebshellAccess(BaseModel):
     url: str
 
 
-class SessionFileChangeMessage(BaseModel):
+class SessionFileChangeResponse(BaseModel):
+    """One ended response and every file change it made; empty when it changed none."""
+
     model_config = ConfigDict(extra="forbid")
 
-    message_id: str
+    response_id: str
     parts: list[dict[str, Any]]
 
 
-class SessionFileChangeTurn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    turn_id: str
-    messages: list[SessionFileChangeMessage]
-
-
 class SessionFileChanges(BaseModel):
+    """The responses that ended after ``after_seq``, through ``through_seq``.
+
+    ``through_seq`` is the next ``after_seq``. Each response replaces what a
+    reader held for it.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     through_seq: int
-    turns: list[SessionFileChangeTurn]
+    responses: list[SessionFileChangeResponse]
 
 
 @router.get(
@@ -500,10 +456,10 @@ async def get_session_file_changes(
     response_model_exclude_unset=True,
 )
 async def get_session_history_blocks(session_id: str, request: Request):
-    """Read the transcript with each settled response's tool work folded away.
+    """Read the conversation with each ended response's work folded away.
 
     ``before`` is a ``next_cursor`` from an earlier page; omitting it starts at
-    the newest records and pins the checkpoint every later page reuses.
+    the newest entries and pins the output position every later page reuses.
     """
 
     user = await _resolve_user(request)
@@ -528,11 +484,10 @@ async def get_session_history_block_details(
     block_id: str,
     request: Request,
 ):
-    """Reopen one folded ``process_block`` and return the blocks it replaced.
+    """Reopen one folded ``data-process-block`` and return the parts it replaced.
 
-    ``cursor`` is the checkpoint the header carried, and is required: without
-    it the blocks would be read from the record as it stands now rather than as
-    the page that folded them saw it.
+    ``cursor`` is the one the header carried, and is required: it pins the read
+    to the output position of the page that folded the parts.
     """
 
     user = await _resolve_user(request)

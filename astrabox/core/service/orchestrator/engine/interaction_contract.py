@@ -56,7 +56,7 @@ _DECISION_OPTION_KEYS = frozenset(
 _PUBLIC_INTERACTION_COMMON_KEYS = frozenset(
     {
         "interaction_id",
-        "turn_id",
+        "response_id",
         "tool_call_id",
         "tool_name",
         "presentation",
@@ -250,34 +250,6 @@ def validate_interaction_contract(contract: dict[str, Any]) -> str:
     elif presentation == PRESENTATION_DECISION:
         _validate_decision_contract(contract)
     return presentation
-
-
-def build_pending_interaction_record(
-    *,
-    contract: dict[str, Any],
-    session_id: str,
-    turn_id: str,
-    interaction_id: str,
-    tool_call_id: str | None,
-) -> dict[str, Any]:
-    """Wrap a validated contract in the platform envelope.
-
-    The contract fields are carried verbatim; the platform adds only identity
-    and timing it owns. Callers validate first — this function trusts its
-    input exactly because :func:`validate_interaction_contract` already
-    refused every malformed shape.
-    """
-    record: dict[str, Any] = {
-        "interaction_id": interaction_id,
-        "session_id": session_id,
-        "turn_id": turn_id,
-        "created_at": utcnow_iso(),
-        **deepcopy(contract),
-    }
-    normalized_tool_call_id = str(tool_call_id or "").strip() or None
-    if normalized_tool_call_id:
-        record["tool_call_id"] = normalized_tool_call_id
-    return record
 
 
 def public_interaction_view(
@@ -622,30 +594,3 @@ def build_tool_approval_request_frame(pending: dict[str, Any]) -> dict[str, Any]
         "approvalId": approval_id,
         "toolCallId": tool_call_id,
     }
-
-
-def build_tool_approval_response_frame(
-    pending: dict[str, Any],
-    interaction_response: dict[str, Any],
-) -> dict[str, Any] | None:
-    """Map an answered tool-approval interaction onto the AI SDK
-    ``tool-approval-response`` stream frame.
-
-    The approval id mirrors :func:`build_tool_approval_request_frame` so the
-    client resolves the response against the request it already holds. The
-    operator comment travels as the approval ``reason`` when present. The
-    tool call itself still settles through a later ``tool-output-*`` frame;
-    this frame only records the approval decision.
-    """
-    request_frame = build_tool_approval_request_frame(pending)
-    if request_frame is None:
-        return None
-    frame: dict[str, Any] = {
-        "type": "tool-approval-response",
-        "approvalId": request_frame["approvalId"],
-        "approved": not is_denied_interaction_response(pending, interaction_response),
-    }
-    comment = str(interaction_response.get("comment") or "").strip()
-    if comment:
-        frame["reason"] = comment
-    return frame

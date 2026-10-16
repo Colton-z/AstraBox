@@ -1,140 +1,139 @@
+"""The platform MCP server's routes from a box's address to the subject it serves.
+
+A row exists for two kinds of address (see
+:class:`~astrabox.persistence.sql.models.sessions.PlatformMCPBinding`): an
+Assistant workspace's, and a prepared unit's, which a session claims. A
+session started without a prepared unit is addressed by its own id and has no
+row; the platform MCP service reads such a session directly.
+
+Rows end with what they route to. A deleted Assistant takes its workspace's
+row through the workspace's foreign key; a deleted session takes the rows it
+claimed (:meth:`~astrabox.persistence.repository.session_repository.SessionRepository.soft_delete`);
+a discarded unit's row is deleted by the code that discards it, and an
+abandoned unit's by :meth:`PlatformMCPBindingRepository.delete_unclaimed_prepared_bindings`.
+"""
+
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
-from astrabox.persistence.repository.backend import (
-    get_async_collection,
-    run_mongo_with_retry,
-)
-from astrabox.persistence.repository.index_verification import ensure_unique_index
-from astrabox.persistence.repository.session_repository import _safe_create_index
-from astrabox.common.logger.logger_factory import get_logger
-from astrabox.common.utils.time_utils import utcnow_iso
+from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-logger = get_logger(__name__)
+from astrabox.persistence.sql import execute, fetch_one, from_iso, to_iso
+from astrabox.persistence.sql.models.sessions import PlatformMCPBinding
 
-COLLECTION_NAME = "platform_mcp_bindings"
+_BINDINGS = PlatformMCPBinding.__table__
+
+#: What a publish may set; the times are the table's own.
+_WRITABLE = frozenset(_BINDINGS.columns.keys()) - {"created_at", "updated_at"}
+
+
+def _view(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    return {
+        key: (to_iso(value) if isinstance(value, datetime) else value) for key, value in row.items()
+    }
 
 
 class PlatformMCPBindingRepository:
-    def __init__(self) -> None:
-        self._index_ready = False
-
-    async def ensure_indexes(self) -> None:
-        if self._index_ready:
-            return
-        collection = await get_async_collection(COLLECTION_NAME)
-        if collection is not None:
-            await ensure_unique_index(
-                collection,
-                "deployment_id",
-                collection_name=COLLECTION_NAME,
-            )
-            try:
-                await _safe_create_index(collection, [("scope_kind", 1), ("updated_at", -1)])
-            except Exception as exc:
-                logger.warning("platform MCP binding index creation failed: %s", exc)
-        self._index_ready = True
+    """Platform MCP routes, one row per address."""
 
     async def upsert_binding(self, binding: dict[str, Any]) -> dict[str, Any]:
-        await self.ensure_indexes()
+        """Publish an address's route; the stored row.
+
+        Keys name columns, and a key that is not a writable column raises
+        ``KeyError``. Publishing an address again replaces the columns it
+        names and keeps the others, including when the row was created.
+        """
+        unknown = set(binding) - _WRITABLE
+        if unknown:
+            raise KeyError(f"platform_mcp_bindings has no writable column {sorted(unknown)!r}")
         deployment_id = str(binding.get("deployment_id") or "").strip()
         if not deployment_id:
             raise ValueError("deployment_id is required")
-        payload = {
-            **dict(binding),
-            "deployment_id": deployment_id,
-            "created_at": str(binding.get("created_at") or utcnow_iso()),
-            "updated_at": utcnow_iso(),
+        values = {
+            key: (str(value).strip() or None if isinstance(value, str) else value)
+            for key, value in binding.items()
         }
-        collection = await get_async_collection(COLLECTION_NAME)
-        await run_mongo_with_retry(
-            "platform_mcp_bindings.upsert",
-            lambda: collection.update_one(
-                {"deployment_id": deployment_id},
-                {"$set": payload},
-                upsert=True,
-            ),
+        values["deployment_id"] = deployment_id
+        statement = pg_insert(_BINDINGS).values(**values)
+        row = await fetch_one(
+            statement.on_conflict_do_update(
+                index_elements=[_BINDINGS.c.deployment_id],
+                set_={
+                    **{key: statement.excluded[key] for key in values if key != "deployment_id"},
+                    "updated_at": func.now(),
+                },
+            ).returning(_BINDINGS)
         )
-        if payload.get("session_id"):
-            from astrabox.persistence.repository.session_repository import SessionRepository
-            session = await SessionRepository().get_session(payload["session_id"])
-            if session and session.get("artifact_grant"):
-                await run_mongo_with_retry(
-                    "platform_mcp_bindings.grant",
-                    lambda: collection.update_one({"deployment_id": deployment_id}, {"$set": {"artifact_grant": session["artifact_grant"]}}),
-                )
-        stored = await run_mongo_with_retry(
-            "platform_mcp_bindings.read_after_upsert",
-            lambda: collection.find_one({"deployment_id": deployment_id}),
+        stored = _view(row)
+        assert stored is not None
+        return stored
+
+    async def claim_prepared_binding(
+        self, deployment_id: str, *, session_id: str, user_id: str | None
+    ) -> bool:
+        """Route a prepared unit's address to the session that claimed the unit.
+
+        A session runs one runtime, so the addresses its earlier runtimes
+        claimed are deleted in the same statement. ``False`` when the address
+        has no route left to claim: the unit's row was deleted, or another
+        session holds it.
+        """
+        target = str(deployment_id or "").strip()
+        session = str(session_id or "").strip()
+        if not target or not session:
+            raise ValueError("claiming a prepared binding requires its address and a session")
+        superseded = (
+            delete(_BINDINGS)
+            .where(_BINDINGS.c.session_id == session, _BINDINGS.c.deployment_id != target)
+            .cte("superseded")
         )
-        return stored or payload
+        claimed = (
+            update(_BINDINGS)
+            .where(
+                _BINDINGS.c.deployment_id == target,
+                _BINDINGS.c.source == "prepared_slot",
+                or_(_BINDINGS.c.session_id.is_(None), _BINDINGS.c.session_id == session),
+            )
+            .values(
+                session_id=session,
+                user_id=str(user_id or "").strip() or None,
+                updated_at=func.now(),
+            )
+            .returning(_BINDINGS.c.deployment_id)
+            .add_cte(superseded)
+        )
+        return await fetch_one(claimed) is not None
 
     async def get_binding(self, deployment_id: str) -> dict[str, Any] | None:
-        await self.ensure_indexes()
         normalized = str(deployment_id or "").strip()
         if not normalized:
             return None
-        collection = await get_async_collection(COLLECTION_NAME)
-        return await run_mongo_with_retry(
-            "platform_mcp_bindings.get",
-            lambda: collection.find_one({"deployment_id": normalized}),
+        return _view(
+            await fetch_one(select(_BINDINGS).where(_BINDINGS.c.deployment_id == normalized))
         )
-
-    async def delete_unclaimed_prepared_bindings(self, *, created_before: str) -> int:
-        """Remove prepared-unit rows no Session claimed, created before a time."""
-
-        await self.ensure_indexes()
-        collection = await get_async_collection(COLLECTION_NAME)
-        result = await run_mongo_with_retry(
-            "platform_mcp_bindings.delete_unclaimed_prepared",
-            lambda: collection.delete_many(
-                {
-                    "source": "prepared_slot",
-                    "session_id": {"$exists": False},
-                    "created_at": {"$lt": created_before},
-                }
-            ),
-        )
-        return int(getattr(result, "deleted_count", 0) or 0)
 
     async def delete_binding(self, deployment_id: str) -> bool:
-        """Remove one binding row; True when a row existed.
+        """Remove one address's route; whether a row existed.
 
-        Rows are only ever fetched by exact deployment id, so a leaked row is
-        inert — but a discarded prepared slot's row is still debris, and the
-        discard path owns removing it.
+        Discarding a prepared unit deletes its route here, claimed or not:
+        the unit's box is gone with it.
         """
-        await self.ensure_indexes()
         normalized = str(deployment_id or "").strip()
         if not normalized:
             return False
-        collection = await get_async_collection(COLLECTION_NAME)
-        result = await run_mongo_with_retry(
-            "platform_mcp_bindings.delete",
-            lambda: collection.delete_one({"deployment_id": normalized}),
-        )
-        return bool(getattr(result, "deleted_count", 0))
+        return await execute(delete(_BINDINGS).where(_BINDINGS.c.deployment_id == normalized)) > 0
 
-
-    async def attach_session_grant(self, session_id: str, grant: dict[str, Any]) -> None:
-        """Attach after creation; slot upserts also hydrate the Session's grant."""
-        await self.ensure_indexes()
-        collection = await get_async_collection(COLLECTION_NAME)
-        await run_mongo_with_retry(
-            "platform_mcp_bindings.attach_grant",
-            lambda: collection.update_many({"session_id": session_id}, {"$set": {"artifact_grant": grant}}),
-        )
-        from astrabox.persistence.repository.session_repository import SessionRepository
-        session = await SessionRepository().get_session(session_id)
-        if not session:
-            raise ValueError("artifact grant requires a Session")
-        await self.upsert_binding({"deployment_id": session_id, "scope_kind": "session", "session_id": session_id,
-                                   "template_name": session.get("agent_id") or session.get("template_name"),
-                                   "user_id": session["user_id"], "artifact_grant": grant})
-        ref = session.get("workspace_ref", {})
-        if ref.get("assistant_id"):
-            await run_mongo_with_retry(
-                "platform_mcp_bindings.attach_assistant_grant",
-                lambda: collection.update_many({"assistant_id": ref["assistant_id"], "user_id": session["user_id"]}, {"$set": {"artifact_grant": grant}}),
+    async def delete_unclaimed_prepared_bindings(self, *, created_before: str) -> int:
+        """Remove the routes of prepared units no session claimed, published before a time."""
+        return await execute(
+            delete(_BINDINGS).where(
+                _BINDINGS.c.source == "prepared_slot",
+                _BINDINGS.c.session_id.is_(None),
+                _BINDINGS.c.created_at < from_iso(created_before),
             )
+        )

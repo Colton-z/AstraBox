@@ -48,16 +48,16 @@ export async function startPromptDelivery(
   await composer.fill(prompt);
   const response = page.waitForResponse((candidate) => (
     candidate.request().method() === 'POST'
-    && candidate.url().includes(apiPath(`/sessions/${sessionId}/turn-inputs`))
+    && candidate.url().includes(apiPath(`/sessions/${sessionId}/inputs`))
   ), { timeout: turnInputTimeoutMs() });
   const request = page.waitForRequest((candidate) => (
     candidate.method() === 'POST'
-    && candidate.url().includes(apiPath(`/sessions/${sessionId}/turn-inputs`))
+    && candidate.url().includes(apiPath(`/sessions/${sessionId}/inputs`))
   ), { timeout: turnInputTimeoutMs() });
   await page.getByTestId('composer-submit').click();
   const body = (await request).postDataJSON() as Record<string, unknown>;
   const clientMessageId = String(body.client_message_id || '').trim();
-  expect(clientMessageId, `turn-inputs client_message_id for ${sessionId}`).not.toEqual('');
+  expect(clientMessageId, `inputs client_message_id for ${sessionId}`).not.toEqual('');
   return { sessionId, clientMessageId, response };
 }
 
@@ -65,7 +65,7 @@ export async function expectPromptDelivered(
   pending: PendingPromptDelivery,
 ): Promise<Response> {
   const response = await pending.response;
-  expect(response.status(), `turn-inputs response status for ${pending.sessionId}`).toBe(200);
+  expect(response.status(), `inputs response status for ${pending.sessionId}`).toBe(200);
   return response;
 }
 

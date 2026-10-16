@@ -1,11 +1,4 @@
-"""Concurrent shared placement keeps the winner and disposes of the surplus.
-
-The platform owns the Agent-row claim. OpenSandbox may supply a ready client-
-pool member or create a box, but once handed over that candidate follows the
-same platform placement recipe. If another Session wins the claim, the unused
-candidate is destroyed by provider identity; the supplier's pool scheduler
-independently replenishes its inventory.
-"""
+"""A shared-placement candidate that cannot supply isolation is refused and destroyed."""
 
 from __future__ import annotations
 
@@ -22,28 +15,11 @@ from astrabox.core.service.orchestrator.engine.provisioning import (
     EngineSandboxRequest,
     ModelCredentialRequest,
 )
-from astrabox.core.service.orchestrator.runtime.shared_sandbox_lease import (
-    SharedSandboxLease,
-)
 from astrabox.core.service.orchestrator.runtime_manager import RemoteAgentRuntimeManager
 from astrabox.seams.sandbox import SandboxAllocation
 from astrabox.seams.sandbox_disposal import SandboxDestruction
 
-AGENT_BOX = "box-agent"
 SURPLUS_BOX = "box-surplus"
-
-
-def _binding(sandbox_id: str) -> SimpleNamespace:
-    return SimpleNamespace(
-        sandbox_id=sandbox_id,
-        isolated_session_id="iso-1",
-        terminal_isolated_session_id="iso-terminal-1",
-        uid=2001,
-        gid=2001,
-        home_dir="/home/conversations/conv_x",
-        workspace_dir="/workspace",
-        workspace_source_dir="/home/conversations/conv_x/workspace",
-    )
 
 
 class _Files:
@@ -246,23 +222,6 @@ def _harness(
         create=create,
         run=run,
     )
-
-
-async def test_winning_the_claim_gives_nothing_back(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    harness = _harness(
-        monkeypatch,
-        placements=(None, _binding(SURPLUS_BOX)),
-        pool_candidate=True,
-    )
-
-    sandbox, sandbox_id, _identity, _runner = await harness.run()
-
-    assert sandbox_id == SURPLUS_BOX
-    assert sandbox.sandbox_id == SURPLUS_BOX
-    assert not any(event.startswith("destroy:") for event in harness.events)
-    assert not any(event.startswith("connect:") for event in harness.events)
 
 
 async def test_a_candidate_that_cannot_supply_isolation_is_refused_and_destroyed(

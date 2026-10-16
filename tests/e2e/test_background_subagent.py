@@ -1,26 +1,23 @@
-"""Child-run e2e — transient invalidation, durable projection, and control.
-
-This is the API/SSE proof of the "Agents panel" behavior: a turn that launches a
-subagent through the ``Task`` tool must notify the live ``ai-stream`` that the
-Session child-run resource changed, and the session must remain usable afterwards.
+"""Child-run e2e — the stream's child-run parts, the durable projection, control,
+and the response a runtime starts on its own when background work finishes.
 
 Contract proven here:
 
-* A turn that launches a subagent emits transient
-  ``data-child-runs-changed`` invalidations. The durable
-  ``/sessions/{id}/child-runs`` resource owns identity and lifecycle for every
-  engine; the stream carries no child or provider identity.
-* Once the turn settles the session returns to ``READY`` and stays **sendable** —
-  a short follow-up turn runs to completion and produces assistant text.
-* A live child run that declares the ``stop`` operation can be stopped by its public
-  ``child_run_id``. Vendor task or thread ids never cross this API.
+* A response that launches a subagent carries the engine's ``data-subagent``
+  parts on the session's stream. They are transient (the console refreshes the
+  Session child-run resource on them) and carry no engine-private reference;
+  ``/sessions/{id}/child-runs`` owns identity and lifecycle for every engine.
+* Once the work is done the session settles and answers its next message.
+* A live child run that declares the ``stop`` operation can be stopped by its
+  public ``child_run_id``. Vendor task or thread ids never cross this API.
+* When the supplier declares completion-triggered responses, background work
+  finishing after the reply makes the runtime answer on its own: a response
+  of origin ``engine``, answering no input, delivered by the console stream
+  and retained in history, with no user message invented for it.
 
-The prompts pin ``Task`` and background execution. If the model or adapter does
-not exercise that contract, the test fails instead of turning a missing tool call
-into a skip.
-
-The ``StreamResult`` reader in ``_sandbox_helpers`` does not retain child-run
-invalidations, so this file reads the raw SSE the same way ``stream_turn`` does.
+The prompts pin the subagent tool and background execution. If the model or
+adapter does not exercise that contract, the test fails instead of turning a
+missing tool call into a skip.
 
 Run it explicitly (it is deselected in the default unit run):
 
@@ -29,110 +26,57 @@ Run it explicitly (it is deselected in the default unit run):
 
 from __future__ import annotations
 
-import json
 import time
 import uuid
-from dataclasses import dataclass, field
 
 import httpx
 import pytest
 
 from tests.e2e._sandbox_helpers import (
-    STREAM_TIMEOUT_S,
+    Reply,
+    SessionStream,
     assert_child_run_control_unavailable,
     child_completion,
     contract_supported,
     create_session,
+    data,
+    deadline_after,
     engine_kind,
+    follow_stream,
+    history,
     instruction,
+    message_text,
     permission_mode,
     poll_until_agent_ready,
+    psql,
+    recorded_response,
     release_session,
-    stream_turn,
+    send_and_follow,
+    sql_literal,
     tool_name,
+    user_messages,
     wait_until_settled,
+    workspace_path,
 )
 
 pytestmark = pytest.mark.e2e
 
-@dataclass
-class _SubagentStream:
-    """The subset of one ``ai-stream`` POST needed to observe child invalidation.
-
-    ``child_run_signals`` holds transient ``data-child-runs-changed`` frames;
-    the Session resource is authoritative.
-    ``tool_names`` are the ``tool-input-available`` tool names
-    (used only for diagnostics — to show whether the parent invoked ``Task``).
-    ``finish_reason`` / ``error`` / ``saw_ui_header`` mirror the base SSE reader.
-    """
-
-    child_run_signals: list[dict] = field(default_factory=list)
-    tool_names: list[str] = field(default_factory=list)
-    finish_reason: str | None = None
-    error: str | None = None
-    saw_ui_header: bool = False
+#: Child-run fields that name the engine's own objects. The public projection
+#: and the stream carry the platform's ``child_run_id`` instead.
+_PRIVATE_CHILD_FIELDS = {
+    "engine_ref",
+    "parent_engine_ref",
+    "control_ref",
+    "engineRef",
+    "parentEngineRef",
+    "controlRef",
+}
 
 
-def _stream_turn_capturing_child_run_signals(
-    client: httpx.Client,
-    sid: str,
-    *,
-    content: str,
-    timeout: float = STREAM_TIMEOUT_S,
-) -> _SubagentStream:
-    """POST ``ai-stream`` and retain transient child-run invalidations.
-
-    Mirrors ``_sandbox_helpers.stream_turn`` exactly (same endpoint, headers, ``data:``
-    line handling, JSON decode, timeout) but keeps the invalidations the base reader
-    drops. Fails loud if
-    the endpoint does not return an event stream.
-    """
-    res = _SubagentStream()
-    start = time.monotonic()
-    with client.stream(
-        "POST",
-        f"/api/v1/sessions/{sid}/ai-stream",
-        json={"content": content, "client_message_id": str(uuid.uuid4())},
-        headers={"Accept": "text/event-stream"},
-        timeout=httpx.Timeout(timeout, connect=30.0),
-    ) as resp:
-        content_type = resp.headers.get("content-type", "")
-        assert "text/event-stream" in content_type, (
-            f"ai-stream did not return SSE (content-type={content_type!r}); "
-            f"body={resp.read()[:400]!r}"
-        )
-        res.saw_ui_header = resp.headers.get("x-vercel-ai-ui-message-stream") == "v1"
-        for raw in resp.iter_lines():
-            # Wall-clock guard. The server keeps the SSE open with a 15s keepalive
-            # comment, which resets the per-read timeout — so a wedged/quiet turn
-            # would otherwise loop here forever. Stop reading after `timeout`
-            # wall-seconds; the caller treats a frame-less capture as a failure.
-            if time.monotonic() - start > timeout:
-                break
-            line = raw.strip() if isinstance(raw, str) else raw.decode("utf-8", "replace").strip()
-            if not line or not line.startswith("data:"):
-                continue
-            payload = line[len("data:") :].strip()
-            if not payload or payload == "[DONE]":
-                continue
-            try:
-                ev = json.loads(payload)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(ev, dict):
-                continue
-            etype = ev.get("type")
-            if etype == "data-child-runs-changed":
-                res.child_run_signals.append(ev)
-            elif etype == "tool-input-available":
-                name = ev.get("toolName")
-                if name:
-                    res.tool_names.append(str(name))
-            elif etype == "finish":
-                res.finish_reason = str(ev.get("finishReason") or "")
-            elif etype == "error":
-                res.error = str(ev.get("errorText") or "unknown error")
-    return res
+def _subagent_parts(stream: SessionStream) -> list[dict]:
+    """Every ``data-subagent`` part the stream delivered, inside a response or not."""
+    parts = [part for response in stream.responses.values() for part in response.parts]
+    return [part for part in [*parts, *stream.outside] if part.get("type") == "data-subagent"]
 
 
 def _list_child_runs(client: httpx.Client, sid: str) -> list[dict]:
@@ -153,7 +97,7 @@ def _wait_for_child_runs(
     *,
     timeout: float,
 ) -> list[dict]:
-    deadline = time.monotonic() + timeout
+    deadline = deadline_after(timeout)
     last: list[dict] = []
     while time.monotonic() < deadline:
         last = _list_child_runs(client, sid)
@@ -161,7 +105,7 @@ def _wait_for_child_runs(
             return last
         time.sleep(1.0)
     raise AssertionError(
-        f"child-run projection did not reach the required state within {timeout:.0f}s: {last}"
+        f"child-run projection did not reach the required state in time: {last}"
     )
 
 
@@ -178,26 +122,27 @@ def _launch_background_subagent(
     sid: str,
     *,
     content: str,
-) -> _SubagentStream:
+) -> Reply:
     """Ask for a background subagent until the ENGINE reports launching one.
 
-    The child-run signals the stream carries are what says a launch happened,
-    and an empty child-run projection has two causes that need telling apart:
-    the platform never projected a live child, which is a defect worth a red
-    build, or no child was ever launched, which is a model declining a tool
-    call and points nowhere near the platform. Asking the stream first makes
-    the refusal name which one it is.
+    The ``data-subagent`` parts the stream carries are what says a launch
+    happened, and an empty child-run projection has two causes that need
+    telling apart: the platform never projected a live child, which is a
+    defect worth a red build, or no child was ever launched, which is a model
+    declining a tool call and points nowhere near the platform. Asking the
+    stream first makes the refusal name which one it is.
     """
 
     attempts: list[str] = []
     for attempt in range(1, _LAUNCH_ATTEMPTS + 1):
-        res = _stream_turn_capturing_child_run_signals(client, sid, content=content)
-        assert res.error is None, (
-            f"turn errored before the background subagent surfaced: {res.error}"
+        reply = send_and_follow(client, sid, content, until="end")
+        assert reply.error is None, (
+            f"the response failed before the background subagent surfaced: {reply.error}"
         )
-        if res.child_run_signals:
-            return res
-        attempts.append(f"attempt {attempt}: parent tool calls={res.tool_names}")
+        if _subagent_parts(reply.stream):
+            return reply
+        attempts.append(f"attempt {attempt}: parent tool calls={reply.tool_names}")
+        wait_until_settled(client, sid)
     raise AssertionError(
         "the engine never reported launching a subagent, so there is nothing for "
         "the platform to project — the model answered without calling the tool. "
@@ -205,13 +150,25 @@ def _launch_background_subagent(
     )
 
 
+def _assert_subagent_parts_are_signals(stream: SessionStream) -> None:
+    parts = _subagent_parts(stream)
+    assert all(part.get("transient") is True for part in parts), (
+        f"child-run stream parts must be transient: {parts}"
+    )
+    leaked = [
+        part for part in parts
+        if _PRIVATE_CHILD_FIELDS.intersection(part) or _PRIVATE_CHILD_FIELDS.intersection(part.get("data") or {})
+    ]
+    assert not leaked, f"child-run stream parts carry engine-private references: {leaked}"
+
+
 def test_background_subagent_surfaces_on_stream_and_stays_sendable(
     e2e_client: httpx.Client,
 ) -> None:
-    """create -> child resource changes -> root session stays sendable."""
+    """A launched subagent reaches the stream and the projection; the session answers on."""
     suffix = uuid.uuid4().hex[:8]
     marker = f"SUBAGENT_LAUNCHED_{suffix}"
-    # bypassPermissions so neither the Task tool nor any tool the subagent runs is
+    # bypassPermissions so neither the subagent tool nor any tool the subagent runs is
     # held on a permission prompt — the subagent lifecycle is the behavior under test.
     created = create_session(e2e_client, permission_mode=permission_mode("unattended"))
     sid = str(created.get("session_id") or "")
@@ -221,20 +178,21 @@ def test_background_subagent_surfaces_on_stream_and_stays_sendable(
 
         if not contract_supported("background_subagent"):
             assert_child_run_control_unavailable(e2e_client, sid)
-            ordinary = _stream_turn_capturing_child_run_signals(
+            ordinary = send_and_follow(
                 e2e_client,
                 sid,
-                content="Reply with only the number 42. Do not use any tool.",
+                "Reply with only the number 42. Do not use any tool.",
+                until="end",
             )
             assert ordinary.error is None, ordinary.error
-            assert ordinary.child_run_signals == [], (
-                "an engine without child runs emitted a child invalidation: "
-                f"{ordinary.child_run_signals}"
+            assert _subagent_parts(ordinary.stream) == [], (
+                "an engine without child runs emitted a child-run part: "
+                f"{_subagent_parts(ordinary.stream)}"
             )
             assert _list_child_runs(e2e_client, sid) == []
             return
 
-        res = _launch_background_subagent(
+        reply = _launch_background_subagent(
             e2e_client,
             sid,
             content=(
@@ -243,16 +201,8 @@ def test_background_subagent_surfaces_on_stream_and_stays_sendable(
                 f"finish, then reply to me with only this line: {marker}"
             ),
         )
-        assert res.saw_ui_header, "missing x-vercel-ai-ui-message-stream: v1 header"
-        assert all(signal.get("transient") is True for signal in res.child_run_signals), (
-            f"child-run stream signals must be transient invalidations: {res.child_run_signals}"
-        )
-        assert all(
-            set(signal) == {"type", "transient", "data"}
-            and set(dict(signal.get("data") or {})) == {"frameSeq"}
-            and isinstance(dict(signal.get("data") or {}).get("frameSeq"), int)
-            for signal in res.child_run_signals
-        ), f"child-run invalidation leaked projection or provider fields: {res.child_run_signals}"
+        assert reply.saw_ui_header, "the session stream is not an AI SDK UI message stream"
+        _assert_subagent_parts_are_signals(reply.stream)
         child_runs = _wait_for_child_runs(
             e2e_client,
             sid,
@@ -282,36 +232,28 @@ def test_background_subagent_surfaces_on_stream_and_stays_sendable(
             "the engine child did not close with a successful native outcome: "
             f"{child_runs}"
         )
-        private_names = {
-            "engine_ref",
-            "parent_engine_ref",
-            "control_ref",
-            "engineRef",
-            "parentEngineRef",
-            "controlRef",
-        }
-        assert all(private_names.isdisjoint(row) for row in child_runs), (
+        assert all(_PRIVATE_CHILD_FIELDS.isdisjoint(row) for row in child_runs), (
             f"child-run projection leaked engine-native references: {child_runs}"
         )
 
-        # The turn settles back to a usable session (READY, no pending interaction).
         settled = wait_until_settled(e2e_client, sid)
         assert str(settled.get("state")) == "READY", (
-            f"session not READY after the subagent turn: {settled.get('state')!r}"
+            f"session not READY after the subagent's work: {settled.get('state')!r}"
         )
 
-        # Sendable: a short follow-up turn runs to completion and produces text.
-        follow = stream_turn(
+        # The conversation answers its next message.
+        follow = send_and_follow(
             e2e_client,
             sid,
-            content="Reply with a one-word greeting. Do not use any tool.",
+            "Reply with a one-word greeting. Do not use any tool.",
+            until="end",
         )
         assert follow.error is None, (
-            f"follow-up turn errored (session not sendable): {follow.error}"
+            f"the next message's response failed (session not sendable): {follow.error}"
         )
-        assert follow.text.strip(), "follow-up produced no assistant text — session not sendable"
-        assert follow.finish_reason in ("stop", None), (
-            f"follow-up did not finish cleanly (session not sendable): {follow.finish_reason!r}"
+        assert follow.text.strip(), "the next message produced no assistant text"
+        assert follow.finish_reason == "stop", (
+            f"the next message's response did not end normally: {follow.finish_reason!r}"
         )
     finally:
         release_session(sid)
@@ -332,7 +274,7 @@ def test_background_subagent_stop_is_accepted(e2e_client: httpx.Client) -> None:
             assert _list_child_runs(e2e_client, sid) == []
             return
 
-        res = _launch_background_subagent(
+        _launch_background_subagent(
             e2e_client,
             sid,
             content=(
@@ -376,5 +318,126 @@ def test_background_subagent_stop_is_accepted(e2e_client: httpx.Client) -> None:
         assert str((body.get("data") or {}).get("child_run_id") or "") == child_run_id, (
             f"stop route answered for a different child run: {body}"
         )
+    finally:
+        release_session(sid)
+
+
+def test_a_background_task_finishing_after_the_reply_starts_an_engine_response(
+    e2e_client: httpx.Client,
+) -> None:
+    """Work that finishes after the reply ended arrives as the runtime's own response.
+
+    One message launches a background subagent whose command waits on a
+    release file, and the reply ends while that child is held. Releasing the
+    child lets it finish; the runtime is told and answers on its own. That
+    answer is a response of origin ``engine`` naming no input: the console's
+    open stream delivers it, history shows it after the reply, and no user
+    message is invented for the runtime's own notification.
+    """
+    if not contract_supported("background_completion_response"):
+        pytest.skip(
+            "The selected supplier does not start a parent turn on child completion; "
+            "Codex 0.160.0 records that notification without scheduling a turn."
+        )
+    created = create_session(e2e_client, permission_mode=permission_mode("unattended"))
+    sid = str(created.get("session_id") or "")
+    assert sid, f"no session_id in create response: {created}"
+    try:
+        poll_until_agent_ready(e2e_client, sid)
+        if not contract_supported("background_subagent"):
+            assert_child_run_control_unavailable(e2e_client, sid)
+            return
+
+        token = uuid.uuid4().hex[:10].upper()
+        launched, completed = f"LAUNCHED_{token}", f"COMPLETED_{token}"
+        release_name = f"engine-response-{token}.release"
+        release_path = workspace_path(e2e_client, sid, release_name)
+        gate = "\n".join([
+            "python3 - <<'PY'",
+            "from pathlib import Path",
+            "import time",
+            f"release = Path({release_path!r})",
+            "deadline = time.monotonic() + 120",
+            "while not release.exists():",
+            "    if time.monotonic() >= deadline:",
+            "        raise TimeoutError('the test did not release the task')",
+            "    time.sleep(0.2)",
+            f"print({completed!r})",
+            "PY",
+        ])
+        prompt = "\n".join([
+            f"Use the {tool_name('subagent')} tool {instruction('controllable_child')} "
+            "to launch exactly one subagent.",
+            f"The subagent must use the {tool_name('command')} tool to run this exact command "
+            "in the foreground, wait for it, and report its output:",
+            gate,
+            f"Immediately after launching it, reply only {launched} verbatim and end your reply.",
+            "Do not wait for the subagent and do not run any command yourself.",
+            f"When the subagent's completion notice arrives, send a new reply containing {completed} verbatim.",
+            "Do not mention the completion token before that notice.",
+        ])
+        launch = send_and_follow(e2e_client, sid, prompt, until="end")
+        assert launch.error is None and launch.finish_reason == "stop", (
+            f"the launching reply did not end normally: {launch.error!r} {launch.finish_reason!r}"
+        )
+        assert launched in launch.text and completed not in launch.text, launch.text
+        _wait_for_child_runs(
+            e2e_client,
+            sid,
+            lambda rows: any(row.get("closed") is False for row in rows),
+            timeout=60.0,
+        )
+        assert not launch.stream.from_engine(), (
+            "the runtime answered on its own before the held child could finish: "
+            f"{[r.summary() for r in launch.stream.from_engine()]}"
+        )
+
+        # The console's stream stays open from the end of the reply; the
+        # runtime's own answer must arrive on it once the child finishes.
+        released = data(
+            e2e_client.post(
+                f"/api/v1/sessions/{sid}/files/upload",
+                data={"path": ""},
+                files={"files": (release_name, b"release", "text/plain")},
+            )
+        )
+        assert released.get("uploaded_count") == 1, released
+
+        def answered_on_its_own(stream: SessionStream) -> bool:
+            return any(
+                r.ended and completed in r.text.upper() for r in stream.from_engine()
+            )
+
+        follow_stream(
+            e2e_client,
+            launch.stream,
+            answered_on_its_own,
+            describe=f"a response of origin 'engine' carrying {completed}",
+        )
+        own = next(r for r in launch.stream.from_engine() if completed in r.text.upper())
+        assert own.input_ids == () and own.error is None and own.finish_reason == "stop", own.summary()
+        assert own.metadata.get("origin") == "engine", own.metadata
+
+        wait_until_settled(e2e_client, sid)
+        record = recorded_response(sid, own.response_id)
+        assert (record["origin"], record["input_ids"], record["outcome"]) == ("engine", [], "completed"), record
+        inputs = psql(f"SELECT count(*) FROM session_inputs WHERE session_id = {sql_literal(sid)}")
+        assert inputs == ["1"], f"an input was recorded for the runtime's own response: {inputs}"
+
+        messages = history(e2e_client, sid)
+        assert [m["id"] for m in user_messages(messages)] == [launch.client_message_id], (
+            "history holds a user message the person never sent: "
+            f"{[(m['id'], message_text(m)[:80]) for m in user_messages(messages)]}"
+        )
+        ids = [m["id"] for m in messages]
+        assert own.response_id in ids and launch.response_id in ids, ids
+        assert ids.index(own.response_id) > ids.index(launch.response_id), (
+            f"history shows the runtime's own response before the reply it followed: {ids}"
+        )
+        shown = messages[ids.index(own.response_id)]
+        assert shown["metadata"].get("origin") == "engine", shown["metadata"]
+        assert shown["metadata"].get("input_ids") == [], shown["metadata"]
+        assert shown["metadata"].get("outcome") == "completed", shown["metadata"]
+        assert completed in message_text(shown).upper(), message_text(shown)
     finally:
         release_session(sid)

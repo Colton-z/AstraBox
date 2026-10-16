@@ -12,15 +12,16 @@ The entry point targets a subclass of `astrabox.seams.RuntimePreparationProvider
 with a stable `name`. Conflicting providers fail startup. With no provider, the
 platform prepares Agents and Sessions without callbacks.
 
-One provider answers every point at which a deployment prepares an Agent or a
-Session. Each method has a default, so implement only the points you need:
+One provider answers every point at which a deployment prepares an Agent, an
+Assistant or a Session. Each method has a default, so implement only the points
+you need:
 
 | Method | When the platform calls it |
 | --- | --- |
 | `plan` | Whenever it plans an Agent's runtime; synchronous, no I/O |
-| `synchronize`, `recover` | Once per prepared box, before it becomes waiting inventory |
+| `synchronize`, `recover` | Once per prepared Agent box, before it becomes waiting inventory; for an Assistant, whenever its workspace prepares a revision |
 | `prepare_session` | Before the engine initializes: cold start, claim, reattachment, sandbox replacement |
-| `prepare_turn` | Before every engine write, under the turn guard |
+| `prepare_turn` | Before each input is handed to the engine |
 | `read_user_actions`, `perform_user_action` | When the Session's owner reads or acts on its prerequisites |
 
 The platform owns ordering, placement, fencing, file delivery and failure
@@ -53,36 +54,52 @@ This controls initialization performed by the engine adapter. Required system
 services and wrappers must already be baked into the selected image. The provider
 cannot retrofit a wrapper into a box or defer an image's own entrypoint.
 
-## Synchronize Agent resources
+## Synchronize prepared resources
 
-`async synchronize(*, context: AgentPreparationContext) -> None` runs after the
-actual Plugin and Skills caches exist, before waiting inventory is published.
-It runs once for each prepared box, so an Agent without prepared capacity is
-never synchronized; claim, cold start, reattachment and input refresh do not
-call it. Per-conversation declarations belong in `prepare_turn`.
+`async synchronize(*, context: ResourcePreparationContext) -> None` runs after
+the actual Plugin and Skills caches exist in a box and before any engine runs
+from them. `context.operation.subject` says what the resources belong to:
+
+- **An Agent** (`kind="agent"`): once for each prepared box, before it becomes
+  waiting inventory. An Agent without prepared capacity is never synchronized;
+  claim, cold start, reattachment and input refresh do not call it.
+- **An Assistant** (`kind="assistant"`): whenever its workspace prepares a
+  revision of the Assistant — when the workspace is materialized, and when a
+  conversation or the platform prepares an edited Assistant on the running box —
+  before Hermes runs that revision. A conversation that attaches to a workspace
+  already prepared for the current revision does not call it.
+
+Per-conversation declarations belong in `prepare_turn`.
 
 | Context | Meaning |
 | --- | --- |
-| `operation.agent_id` | Complete stable Agent ID; the external identity key |
+| `operation.subject` | `PreparationSubject(kind, id)`: the Agent or Assistant ID, the external identity key |
 | `operation.operation_id` | Durable invocation identity for idempotency and recovery |
-| `creator_user_id` | Persisted Agent creator |
-| `config_version`, `preparation_id`, `runtime_generation` | Authored version, pool lifetime and resolved recipe |
-| `config` | Detached resolved Agent configuration |
+| `owner_user_id` | The Agent's persisted creator, or the user whose Assistant workspace this is |
+| `revision` | The Agent's authored version, or the Assistant's configuration revision |
+| `preparation_id`, `runtime_generation` | The Agent's pool lifetime, or the Assistant's box; the resolved recipe |
+| `config` | Detached resolved configuration |
 | `sandbox` | Standard `SandboxHandle`, including its file interface |
 | `packages` | Ordered source declarations and actual cache checkout paths |
 | `skills_path` | Actual prepared Skills directory, or `None` |
 
 Read actual prepared files and merge the deployment's declarations. Keep the
-external identity keyed by Agent ID across versions and pool members. Skip
+external identity keyed by the subject across revisions and boxes. Skip
 unchanged external writes in the provider. Do not log trusted configuration.
 
-The existing Agent repository's compare-and-set serializes external updates
-across replicas, members and generations. The host checks the version, refresh
-revision, pool lifetime and generations before and after synchronization and
-before publishing inventory. A superseded result is refused.
+A compare-and-set on the subject's row serializes external updates across
+replicas and boxes: the Agent's row, or the Assistant's workspace row. For an
+Agent the host checks the version, refresh revision, pool lifetime and
+generations before and after synchronization and before publishing inventory;
+for an Assistant it checks that the revision is still current. A superseded
+result is refused with `AGENT_RUNTIME_GENERATION_CONFLICT` or
+`ASSISTANT_REVISION_CONFLICT`. While another synchronization of the same subject
+runs, an Agent's preparation fails with `RESOURCE_SYNC_BUSY` and retries; an
+Assistant's waits for it.
 
-An exception, timeout, cancellation or host loss leaves an unresolved operation.
-Its deadline permits `async recover(*, operation: AgentPreparationOperation)`;
+An exception, timeout, cancellation or host loss leaves an unresolved operation
+(`RESOURCE_SYNC_FAILED`, then `RESOURCE_SYNC_UNRESOLVED`).
+Its deadline permits `async recover(*, operation: ResourcePreparationOperation)`;
 it does not permit a new uncertain write. Return `True` only after that exact
 operation can never write again, including delayed requests. Recovery must be
 idempotent and must not fence newer operations. The default returns `False`.
@@ -94,8 +111,11 @@ lease or absent remote result alone does not prove quiescence.
 `async prepare_session(*, context: SessionPreparationContext) -> RuntimeMaterials`
 runs before engine activation on cold start, claim, reattachment and sandbox
 replacement. Its `principal_id` comes from the persisted Session owner. The context
-includes Session/Agent IDs, resolved configuration, runtime generation, sandbox ID
-and workload identity. No fake Session is supplied during Agent prewarming.
+includes the Session ID, its `subject` and `revision`, resolved configuration,
+runtime generation, sandbox ID and workload identity. For an Assistant
+conversation it runs after the Assistant's resources are synchronized. No Session
+is supplied while an Agent's inventory or an Assistant's workspace is prepared
+without a conversation.
 
 Return `RuntimeFile(name, content: bytes)` entries and an environment mapping.
 Use `context.file_path(name)` when an environment value names a returned file.
@@ -120,33 +140,53 @@ should pass `-v` and `--version` through unchanged.
 ## Prepare each engine write
 
 `async prepare_turn(*, context: TurnPreparationContext) -> RuntimeMaterials` runs
-immediately before every engine write, after the platform reloads the Session,
-confirms that the turn still holds its slot and claims a durable per-Session
-guard. It must be idempotent for `context.dispatch_attempt_id`, which identifies
-one write attempt including reconnect retries. Return refreshed files only; the
-platform writes them to the same path `prepare_session` used, so
-`context.file_path(name)` names the same file. A non-empty environment fails the
-write. Provider-owned state may also be renewed here through
-`context.sandbox_handle`.
+immediately before each input is handed to the engine. The Session's reader
+calls it: the one process that holds the Session's connection to its runtime,
+so a Session's inputs are prepared one at a time, in the order they were
+accepted. The reader reloads the Session first. `context.turn_id` and
+`context.dispatch_attempt_id` both carry the input's id. An input handed over
+again, because the runtime that received it was replaced before it admitted
+the input, is prepared again with the same id, so the hook must be idempotent
+for it. Return refreshed files only; the platform writes them to the same path
+`prepare_session` used, so `context.file_path(name)` names the same file. A
+non-empty environment fails the input. Provider-owned state may also be renewed
+here through `context.sandbox_handle`.
 
-The hook runs under a host-clock deadline. A timeout, exception or self-cancel
-refuses the write with `TURN_PREPARATION_FAILED` and the input never reaches the
-engine. Set `turn_validity_seconds` when prepared state expires: the host calls
-`prepare_turn` again for the same attempt before the validity lapses while the
-write is live, and a failed refresh quarantines the guard. Turn preparation
-requires a sandbox backend that declares `sandbox_is_profile_exclusive` and
-implements `owns_sandbox`, so that the live handle is proven to belong to the
-persisted binding.
+The hook runs under a 30-second deadline. A timeout or an exception refuses the
+input with `TURN_PREPARATION_FAILED`: it never reaches the engine, the input is
+recorded as failed, and the Session's stream reports it as a
+`data-input-failed` part. The platform calls the hook once for each handover
+and does not call it again while the engine works on the input. Because the hook runs before every
+input, reuse a credential that is still valid and return at once; call the
+deployment's service only when the credential is close to expiry. Turn
+preparation requires a sandbox backend that declares
+`sandbox_is_profile_exclusive`.
 
 ## Require a user action
 
 Raise `PreparationUserActionRequired(message=..., url=...)` from `prepare_session`
 or `prepare_turn` when the user must act first. The host validates the message,
-status and optional HTTP(S) URL and returns a non-retryable
-`TURN_PREPARATION_USER_ACTION_REQUIRED` (409) with that payload. Any other
-exception stays generic, because provider text can carry secrets. The console
-keeps the refused input and its images for an explicit retry; nothing is
-resent automatically.
+status and optional HTTP(S) URL; any other exception stays generic, because
+provider text can carry secrets. Raised from `prepare_turn`, it refuses that
+input with `TURN_PREPARATION_USER_ACTION_REQUIRED`: the input is recorded as
+failed with the validated action, and the Session's stream reports it as a
+`data-input-failed` part carrying `user_action`. Nothing is resent
+automatically.
+
+A user action raised while a conversation starts does not end it. The
+conversation stays open (`READY`, with its runtime unavailable) and the
+platform records the action. Before the platform starts the runtime again for
+a message, it reads `read_user_actions`. While that reports the requirement
+pending, the runtime is not started and no box is taken: the message fails with
+`TURN_PREPARATION_USER_ACTION_REQUIRED` and the action, which the Session's
+stream reports as a `data-input-failed` part carrying `user_action`. Once it
+reports ready, the next message starts the runtime and is delivered after
+`prepare_session` succeeds. An explicit recovery
+(`POST /api/v1/sessions/{session_id}/recover`) is refused at once with
+`TURN_PREPARATION_USER_ACTION_REQUIRED` (409) and the action while the
+requirement is pending. An Agent conversation's box is released when its
+startup stops, and the next start takes a box again. An Assistant's workspace
+keeps running.
 
 `read_user_actions(context=...)` returns `SessionUserActionState`, which the
 console reads through `GET /api/v1/sessions/{session_id}/user-action`.
@@ -154,7 +194,7 @@ console reads through `GET /api/v1/sessions/{session_id}/user-action`.
 chose from the state's `actions` through `POST` at the same path. The host
 checks that the operation is currently offered; operations must be idempotent
 for their current pending requirement across replicas. The context carries the
-persisted Session ID, its authenticated owner and Agent ID. Reads require read
+persisted Session ID, its authenticated owner and its `subject`. Reads require read
 scope, operations write scope. Provider errors fail the request with
 `SESSION_USER_ACTION_FAILED` rather than grant readiness, and the console blocks
 sending while a prerequisite is unknown or pending. A status read is advisory:

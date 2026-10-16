@@ -20,6 +20,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from tests.e2e import _sandbox_helpers
 from tests.e2e._sandbox_helpers import (
     OPEN_AGENTS,
     OPEN_ASSISTANTS,
@@ -62,14 +63,22 @@ def _live_test_budget(nodeid: str) -> int:
     return E2E_TEST_BUDGETS.get(nodeid, MAX_E2E_TEST_SECONDS)
 
 
-@pytest.fixture
-def live_test_deadline(request: pytest.FixtureRequest) -> float:
+@pytest.fixture(autouse=True)
+def live_test_deadline(request: pytest.FixtureRequest) -> Iterator[float]:
     """The monotonic time by which a polling helper must have given its verdict.
 
     Helpers share the centrally assigned test budget. An absolute deadline
-    accounts for work already spent and stops short of the hard ceiling.
+    accounts for work already spent and stops short of the hard ceiling. The
+    shared helpers read it too (``_sandbox_helpers.TEST_DEADLINE``), so a test
+    that never asks for it still hears a helper's own refusal rather than the
+    timeout's.
     """
-    return time.monotonic() + _live_test_budget(request.node.nodeid) - LIVE_TEST_REPORTING_MARGIN_S
+    deadline = time.monotonic() + _live_test_budget(request.node.nodeid) - LIVE_TEST_REPORTING_MARGIN_S
+    _sandbox_helpers.TEST_DEADLINE = deadline
+    try:
+        yield deadline
+    finally:
+        _sandbox_helpers.TEST_DEADLINE = None
 
 
 def _wait_health(base_url: str) -> None:
