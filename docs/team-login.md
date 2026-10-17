@@ -216,7 +216,7 @@ identity provider's own browser session.
 An external identity deployment registers its session, login and logout routes
 through `astrabox.api.routers` or
 `astrabox.api.extensions.register_extension_router`. Its resolver still uses
-the `astrabox.web.identity` seam. A provider that requires browser navigation
+the `astrabox.web.identity` interface. A provider that requires browser navigation
 returns an unwrapped JSON object, for example:
 
 ```json
