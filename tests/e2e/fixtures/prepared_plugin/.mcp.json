@@ -1,0 +1,1 @@
+{"mcpServers":{"fixture_one":{"command":"python3","args":["${CLAUDE_PLUGIN_ROOT}/server.py","fixture_one","${CLAUDE_PLUGIN_DATA}"]},"fixture_two":{"command":"python3","args":["${CLAUDE_PLUGIN_ROOT}/server.py","fixture_two","${CLAUDE_PLUGIN_DATA}"]}}}

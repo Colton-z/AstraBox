@@ -32,7 +32,6 @@ from astrabox.core.service.orchestrator.runtime.mcp_servers import (
     validate_direct_mcp_servers,
 )
 from astrabox.core.service.orchestrator.runtime.packages import (
-    build_package_checkout_dir,
     template_packages,
 )
 from astrabox.core.service.orchestrator.schema_validation import (
@@ -382,23 +381,8 @@ def build_claude_options_kwargs(
     )
     generated_plugins: list[dict[str, str]] = []
     if plugins:
-        plugin_scope = str(session_id or "").strip() or slot_scope
-        if not plugin_scope:
-            raise APIError(
-                code="PACKAGE_INVALID",
-                message=(
-                    "a session or prepared-slot id is required to resolve "
-                    "the Agent's Claude plugins"
-                ),
-                status_code=500,
-            )
-        plugin_base_dir = (
-            f"{identity['config_dir'].rstrip('/')}/plugins" if identity else None
-        )
         generated_plugins = _claude_plugin_options(
-            plugin_scope,
-            plugins,
-            base_dir=plugin_base_dir,
+            plugins, (identity or {}).get("capability_plan"),
         )
     if generated_plugins or options_kwargs.get("plugins") is not None:
         options_kwargs["plugins"] = _merge_plugin_options(
@@ -737,14 +721,30 @@ CLAUDE_PLUGIN_KIND = "claude-plugin"
 
 
 def _claude_plugin_options(
-    session_id: str,
     repos: list[dict[str, Any]],
-    *,
-    base_dir: str | None = None,
+    capability_plan: Any,
 ) -> list[dict[str, str]]:
+    plan = capability_plan.get("plugin_repo_plan") if isinstance(capability_plan, dict) else None
+    if not isinstance(plan, list) or len(plan) != len(repos):
+        raise APIError(
+            code="PACKAGE_INVALID",
+            message="the runtime capability plan must name every Claude plugin checkout",
+            status_code=500,
+        )
     options: list[dict[str, str]] = []
     for index, repo in enumerate(repos):
-        checkout_dir = build_package_checkout_dir(session_id, index, repo, base_dir=base_dir)
+        item = plan[index]
+        checkout_dir = _safe_norm_path(item.get("target_path")) if isinstance(item, dict) else ""
+        if (
+            not checkout_dir
+            or item.get("index") != index
+            or item.get("url") != repo["url"]
+        ):
+            raise APIError(
+                code="PACKAGE_INVALID",
+                message=f"the runtime capability plan has no matching Claude plugin checkout at index {index}",
+                status_code=500,
+            )
         for plugin_path in repo.get("paths") or ["."]:
             if plugin_path == ".":
                 path = checkout_dir
