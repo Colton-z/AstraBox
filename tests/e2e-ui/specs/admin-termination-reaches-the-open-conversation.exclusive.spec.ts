@@ -54,7 +54,7 @@ test('administrator termination reaches an idle open header and preserves readab
     expect(response.status()).toBe(200);
     expect((await response.json()).data.killed).toBe(true);
     await expect.poll(noticeCount).toBeGreaterThan(noticesBefore);
-    // No focus event, page reload, detail refresh or recovery is used to heal the reader.
+    // The idle reader must update from the session notice without a focus event or reload.
     await expect(header.getByText('Terminated', { exact: true })).toBeVisible();
     await expect(header).toContainText('Terminated by admin');
     await expect(page.getByTestId('session-recover')).toBeVisible();
