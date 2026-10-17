@@ -67,8 +67,11 @@ test('expired, withdrawn and answered native forms remain read-only after reload
       if (visit) await page.reload({ waitUntil: 'domcontentloaded' });
       await expect(card).toHaveAttribute('data-interaction-status', record.status);
       await expect(card).toContainText('This questionnaire is closed and can no longer be submitted.');
-      await expect(card).toContainText('Choose one colour');
-      await expect(card).toContainText('Choose features');
+      await expect(card.getByText('Choose one colour', { exact: true })).toBeVisible();
+      await expect(card.getByText('Choose features', { exact: true })).toBeVisible();
+      for (const option of ['Red', 'Blue', 'Fast', 'Quiet']) {
+        await expect(card.getByText(option, { exact: true })).toBeVisible();
+      }
       await expect(card.getByRole('radio')).toHaveCount(counts.radios);
       await expect(card.getByRole('checkbox')).toHaveCount(counts.checks);
       for (const control of await card.locator('input, textarea').all()) await expect(control).toBeDisabled();
@@ -82,7 +85,7 @@ test('expired, withdrawn and answered native forms remain read-only after reload
       }
     }
     const refused = await request.post(apiPath(`/sessions/${sid}/interactions/${encodeURIComponent(record.interaction_id)}/answer`), {
-      data: { decline: true },
+      data: { answer: { decline: true } },
     });
     expect(refused.status()).toBe(409);
     expect((await refused.json()).code).toBe('INTERACTION_NOT_OPEN');

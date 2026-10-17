@@ -26,7 +26,7 @@ export function QuestionnaireHistoryCard({ interaction }: { interaction: Histori
           const selected = answer?.option_labels ?? (answer?.option_label ? [answer.option_label] : []);
           return (
             <Questionnaire key={question.id} item={question.id} onSubmit={(event) => event.preventDefault()}>
-              <QuestionnaireItem name={question.id} multiple={question.multi_select === true} disabled>
+              <QuestionnaireItem name={question.id} multiple={question.multi_select === true}>
                 <QuestionnaireTitle>{question.header || question.question}</QuestionnaireTitle>
                 {question.question && question.question !== question.header && (
                   <QuestionnaireDescription>{question.question}</QuestionnaireDescription>
