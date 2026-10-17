@@ -23,7 +23,7 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.model import SessionState
-from astrabox.core.service.orchestrator.runtime.preparation import preparation_subject
+from astrabox.core.service.orchestrator.runtime.preparation import require_session_user_prerequisites
 from astrabox.core.service.orchestrator.engine_kind_utils import resolve_session_engine_kind
 from astrabox.core.service.orchestrator.runtime_binding import (
     is_assistant_user_conversation,
@@ -47,9 +47,6 @@ from astrabox.seams.admission import (
     enforce_admission,
 )
 from astrabox.seams.runtime_preparation import (
-    TURN_PREPARATION_USER_ACTION_REQUIRED,
-    SessionUserActionContext,
-    runtime_preparation_provider,
     validated_user_action,
 )
 from astrabox.seams.sandbox_disposal import (
@@ -302,36 +299,9 @@ class SessionLifecycleService:
         after the user acted starts the runtime, and one requested before
         does not take and release a box for a startup bound to stop again.
         """
-        action = validated_user_action(session.get("startup_user_action"))
-        if action is None:
+        if validated_user_action(session.get("startup_user_action")) is None:
             return
-        provider = runtime_preparation_provider()
-        if provider is None:
-            # Without a provider nothing can be required of the user.
-            return
-        session_id = str(session["session_id"])
-        context = SessionUserActionContext(
-            session_id=session_id,
-            principal_id=str(session.get("user_id") or ""),
-            subject=preparation_subject(session),
-        )
-        try:
-            state = await provider.read_user_actions(context=context)
-        except Exception:
-            raise APIError(
-                code="SESSION_USER_ACTION_FAILED",
-                status_code=502,
-                message="Unable to determine the session requirements; refresh to try again",
-            ) from None
-        if state.ready:
-            return
-        action = validated_user_action(state.user_action) or action
-        raise APIError(
-            code=TURN_PREPARATION_USER_ACTION_REQUIRED,
-            message=action["message"],
-            status_code=409,
-            evidence={"reason": "user_action_required", "user_action": action, "session_id": session_id},
-        )
+        await require_session_user_prerequisites(session)
 
     # -- take offline and end -----------------------------------------------
 
@@ -494,6 +464,7 @@ class SessionLifecycleService:
                 "runtime_unavailable": True,
                 "last_error": "killed by admin",
             },
+            notify="session",
         )
         return {
             "session_id": session_id,

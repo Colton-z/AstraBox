@@ -179,14 +179,18 @@ def _provenance(record: Mapping[str, Any]) -> dict[str, Any]:
 def history_messages(
     page: Mapping[str, Any],
     outputs: Iterable[Mapping[str, Any]],
-    answers: Iterable[Mapping[str, Any]],
+    interactions: Iterable[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
     """The page's messages for one history page, in conversation order.
 
-    ``answers`` are the page's answered interactions
-    (:meth:`SessionRuntimeRepository.approval_answers`).
+    Interaction settlement comes from the durable rows, independently of
+    whether the tool returned output before its response ended.
     """
-    decisions = {str(row["interaction_id"]): row["answer"] for row in answers}
+    settlements = {str(row["interaction_id"]): row for row in interactions}
+    decisions = {
+        key: row["answer"] for key, row in settlements.items()
+        if row.get("answer") is not None and row["status"] in {"open", "answered"}
+    }
     by_response: dict[str, list[dict[str, Any]]] = {}
     for row in outputs:
         response_id = row.get("response_id")
@@ -205,6 +209,17 @@ def history_messages(
         chunks = record["parts"] if record else by_response.get(str(response["response_id"]), ())
         message = fold_message(str(response["response_id"]), chunks)
         _apply_approval_decisions(message, decisions)
+        for part in message["parts"]:
+            if part["type"] != "data-interaction":
+                continue
+            data = part["data"]
+            interaction_id = str(data["interaction_id"])
+            row = settlements.get(interaction_id)
+            if row is None:
+                raise RuntimeError(f"History interaction has no durable record: {interaction_id}")
+            data["status"] = row["status"]
+            if row["status"] == "answered" and row.get("answer") is not None:
+                data["answer"] = deepcopy(row["answer"])
         if record:
             message["metadata"]["history_import"] = _provenance(record)
         message["metadata"].update(

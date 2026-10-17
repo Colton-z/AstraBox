@@ -262,13 +262,25 @@ class SessionRuntimeService:
         return {"session_id": session_id, "interaction_id": interaction_id, "answered": True}
 
     async def interrupt(self, user: UserContext, session_id: str) -> dict[str, Any]:
-        """Ask the running runtime to stop; ``idle`` when no response is running.
+        """Ask the runtime to stop a response, without withdrawing accepted inputs.
 
         A response that is running but whose runtime has no connected reader
-        cannot be reached, which is a conflict, not idleness.
+        cannot be reached. Held inputs without an open response also refuse
+        the operation; ``idle`` means neither was observed.
         """
         await self._require_owner(user, session_id)
         if not await self._repo.open_response_ids(session_id):
+            held = await self._repo.open_input_ids(session_id)
+            if held:
+                raise APIError(
+                    code="PENDING_INPUTS_NOT_CANCELLED",
+                    message=(
+                        "No response is running to interrupt. Accepted messages were not withdrawn "
+                        "and may still run; archive the conversation to take it offline."
+                    ),
+                    status_code=409,
+                    data={"input_ids": held},
+                )
             return {"session_id": session_id, "status": "idle"}
         control = await self._repo.request_control(
             session_id, kind="interrupt", target=None, requested_by=str(user.user_id)
@@ -321,9 +333,9 @@ class SessionRuntimeService:
         )
         response_ids = [str(r["response_id"]) for r in page["responses"]]
         outputs = await self._repo.output_for_responses(session_id, response_ids, through_seq=output_seq)
-        answers = await self._repo.approval_answers(session_id, response_ids)
+        interactions = await self._repo.response_interactions(session_id, response_ids)
         return {
-            "messages": history_messages(page, outputs, answers),
+            "messages": history_messages(page, outputs, interactions),
             "has_more": page["has_more"],
             "before": _encode_before(page["before"]),
             "output_seq": output_seq,

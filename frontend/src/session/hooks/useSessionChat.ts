@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Chat, useChat } from '@ai-sdk/react';
 import { isToolUIPart, type UIMessage } from 'ai';
 import { toast } from 'sonner';
+import i18n from '@/i18n';
 import { ApiError, answerInteraction, interruptSession, sendInput } from '../../api';
 import type {
   InteractionResponse,
@@ -126,10 +127,16 @@ export function useSessionChat({
   const onSessionChangedRef = useRef(onSessionChanged);
   onSessionChangedRef.current = onSessionChanged;
   const mountedRef = useRef(true);
+  const historyControllerRef = useRef<AbortController | null>(null);
   const historyReadEpochRef = useRef(0);
   useEffect(() => {
+    const controller = new AbortController();
+    historyControllerRef.current = controller;
     mountedRef.current = true;
-    return () => { mountedRef.current = false; };
+    return () => {
+      mountedRef.current = false;
+      controller.abort();
+    };
   }, []);
 
   const refreshDetail = useCallback(() => {
@@ -152,6 +159,8 @@ export function useSessionChat({
    * messages someone sent from another tab, a channel or a schedule.
    */
   const readHistoryAgain = useCallback(async ({ restart }: { restart: boolean }) => {
+    const signal = historyControllerRef.current?.signal;
+    if (!signal || signal.aborted) return;
     // Restarting follows from the history's position, so nothing the old
     // follower would still write may land on top of what history says.
     if (restart) {
@@ -162,8 +171,8 @@ export function useSessionChat({
     const shown = new Map(chat.messages.map((message) => [message.id, message]));
     const writingAtRead = followerRef.current?.writing();
     try {
-      const window = await readLatestWindow(readHistory, sessionId, chat.messages);
-      if (!mountedRef.current || epoch !== historyReadEpochRef.current) return;
+      const window = await readLatestWindow(readHistory, sessionId, chat.messages, signal);
+      if (signal.aborted || !mountedRef.current || epoch !== historyReadEpochRef.current) return;
       if (restart && window.outputSeq === null) {
         throw new Error('SESSION_HISTORY_POSITION_MISSING: the history page carried no output_seq');
       }
@@ -194,6 +203,7 @@ export function useSessionChat({
         setFollowFrom({ seq: window.outputSeq });
       }
     } catch (error) {
+      if (signal.aborted) return;
       console.error('[useSessionChat] history read failed:', error);
       if (restart && mountedRef.current && epoch === historyReadEpochRef.current) {
         setStreamTrouble(true);
@@ -209,14 +219,15 @@ export function useSessionChat({
   readHistoryAgainRef.current = readHistoryAgain;
 
   const loadOlder = useCallback(async () => {
+    const signal = historyControllerRef.current?.signal;
     const current = pagingRef.current;
     const before = current.nextCursor;
-    if (!current.hasMore || !before || current.loadingMore) return;
+    if (!signal || signal.aborted || !current.hasMore || !before || current.loadingMore) return;
     setPaging((state) => ({ ...state, loadingMore: true, loadMoreError: null }));
     try {
-      const page = await readHistoryPage(readHistory, sessionId, before);
+      const page = await readHistoryPage(readHistory, sessionId, before, signal);
       const nextCursor = nextHistoryCursor(page, before);
-      if (!mountedRef.current) return;
+      if (signal.aborted || !mountedRef.current) return;
       let added = 0;
       setMessages((shown) => {
         const next = prependOlderMessages(shown, page.messages);
@@ -231,7 +242,7 @@ export function useSessionChat({
         loadingMore: false,
       }));
     } catch (error) {
-      if (!mountedRef.current) return;
+      if (signal.aborted || !mountedRef.current) return;
       setPaging((state) => ({
         ...state,
         loadingMore: false,
@@ -575,7 +586,9 @@ export function useSessionChat({
     } catch (error) {
       setStopping(false);
       console.error('[useSessionChat] interrupt failed:', error);
-      toast.error(error instanceof Error ? error.message : String(error));
+      toast.error(error instanceof ApiError && error.code === 'PENDING_INPUTS_NOT_CANCELLED'
+        ? i18n.t('chat:page.pending_inputs_not_cancelled')
+        : error instanceof Error ? error.message : String(error));
     } finally {
       refreshDetail();
     }

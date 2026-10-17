@@ -1,5 +1,6 @@
 import { runtimeDataPath, runtimeSegment } from '../../artifact-runtime/paths';
 import { ApiError } from '@/api';
+import { consoleFetch } from '../consoleTransport';
 import {
   CHANNEL,
   CONTRACT,
@@ -347,7 +348,7 @@ export class BridgeHost {
       if (!(await this.sampleConsent)) denied();
       if (signal.aborted)
         throw new DOMException('Request cancelled.', 'AbortError');
-      const response = await fetch(artifactUrl(runtimePath(this.target, 'sample')), {
+      const response = await consoleFetch(artifactUrl(runtimePath(this.target, 'sample')), {
         method: 'POST',
         credentials: 'include',
         signal,
@@ -550,7 +551,7 @@ export class BridgeHost {
       clearTimeout(watch.timer);
     });
     for (const room of this.pendingPresence) {
-      void fetch(artifactUrl(runtimePath(this.target, 'presence', room)), {
+      void consoleFetch(artifactUrl(runtimePath(this.target, 'presence', room)), {
         method: 'POST',
         credentials: 'include',
         keepalive: true,

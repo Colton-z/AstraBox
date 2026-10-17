@@ -1,5 +1,6 @@
 import { runtimeDataPath, runtimeSegment } from '../../artifact-runtime/paths';
 import { ApiError, MODULE_BASE, currentAppPath } from '@/api';
+import { consoleFetch } from '../consoleTransport';
 import type { components, paths } from '@/api/schema';
 import type {
   ArtifactPage,
@@ -112,7 +113,7 @@ export async function artifactRequest<T>(
   body?: unknown,
   signal?: AbortSignal,
 ): Promise<T> {
-  const response = await fetch(artifactUrl(path), {
+  const response = await consoleFetch(artifactUrl(path), {
     method,
     credentials: 'include',
     signal,
@@ -270,7 +271,7 @@ export function subscribeArtifactLive(
   let backoff = 1000;
   const live = async () => {
     try {
-      const response = await fetch(
+      const response = await consoleFetch(
         artifactUrl(runtimePath(target, 'live', '', { after_seq: String(seq) })),
         {
           credentials: 'include',

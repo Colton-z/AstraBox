@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { CalendarClock, LogOut, Monitor, Moon, Settings2, Sun } from 'lucide-react';
+import { toast } from 'sonner';
 
 import {
   DropdownMenu,
@@ -12,7 +13,7 @@ import {
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { SidebarMenuButton } from '@/components/ui/sidebar';
 import { LanguageSwitcher, Segmented } from '@/components/LanguageSwitcher';
-import { MODULE_BASE, endAuthSession, probeAuthSession } from '@/api';
+import { endAuthSession, probeAuthSession } from '@/api';
 import type { UserInfo } from '@/types';
 import { PersonalSchedulesDialog } from '@/schedules/PersonalSchedulesDialog';
 
@@ -41,6 +42,7 @@ export function UserMenu({
   // probe the route gate asks, so the menu and the gate can never disagree
   // about whether this deployment authenticates.
   const [hasAuthSession, setHasAuthSession] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
   const [schedulesOpen, setSchedulesOpen] = useState(false);
   useEffect(() => {
     const controller = new AbortController();
@@ -50,13 +52,16 @@ export function UserMenu({
     return () => controller.abort();
   }, []);
   const signOut = async () => {
+    if (signingOut) return;
+    setSigningOut(true);
     try {
-      await endAuthSession();
-    } finally {
+      const destination = await endAuthSession();
       window.sessionStorage.removeItem('astrabox:signin-redirect');
-      // Back to the console root, where the gate sends an ended session to the
-      // sign-in page rather than leaving the reader on a blank shell.
-      window.location.assign(`${MODULE_BASE}/`);
+      window.location.assign(destination);
+    } catch (error) {
+      toast.error(t('shell:sign_out_failed', { error: error instanceof Error ? error.message : String(error) }));
+    } finally {
+      setSigningOut(false);
     }
   };
 
@@ -150,7 +155,7 @@ export function UserMenu({
                 keys reach nothing. Base UI items activate through `onClick`;
                 `onSelect` on one is the DOM text-selection event and never
                 fires when the item is chosen. */}
-            <DropdownMenuItem onClick={() => { void signOut(); }}>
+            <DropdownMenuItem disabled={signingOut} onClick={() => { void signOut(); }}>
               <LogOut className="size-3.5" strokeWidth={1.7} />
               {t('shell:sign_out')}
             </DropdownMenuItem>

@@ -4,6 +4,7 @@ import { buildSessionStreamUrl } from '../api';
 import type { PendingInteraction } from '../types';
 import { lastOpenResponse, responseMetadata, type InputFailure, type ResponseMetadata } from './sessionMessages';
 import { withStreamLiveness } from './streamLiveness';
+import { consoleFetch } from '../consoleTransport';
 
 /**
  * Follow one session's stream (`GET /sessions/{id}/stream?after_seq=`).
@@ -139,7 +140,7 @@ export class SessionFollower {
       // A socket that dies under the browser stays pending forever; ending
       // the body on silence turns it into a request this loop repeats.
       fetch: async (input, init) => {
-        const response = await globalThis.fetch(input, init);
+        const response = await consoleFetch(input, init);
         return response.ok ? withStreamLiveness(response) : response;
       },
     });

@@ -32,6 +32,7 @@ from tests.e2e._sandbox_helpers import (
     get_admin_session_detail,
     get_session,
     history,
+    message_text,
     output_position,
     poll_until_ready,
     psql,
@@ -653,7 +654,7 @@ def test_a_shared_box_burst_starts_each_conversation_on_its_own_material(
 def test_a_startup_user_action_keeps_the_conversation_until_the_user_acts(
     e2e_client: httpx.Client, live_test_deadline: float,
 ) -> None:
-    """A prerequisite met only by the user leaves the conversation open, not ended.
+    """A user prerequisite blocks allocation while history stays readable.
 
     Its first message is refused with the action at once, without waiting for
     a runtime: the console receives ``data-input-failed`` carrying the action,
@@ -676,6 +677,25 @@ def test_a_startup_user_action_keeps_the_conversation_until_the_user_acts(
     release_agent(aid)
     _hold(server, "startup-user-actions", aid, True)
     try:
+        namespace = os.environ["ASTRABOX_E2E_KUBE_NAMESPACE"]
+        kubectl = ["kubectl", "--kubeconfig", os.environ["ASTRABOX_E2E_KUBECONFIG"]]
+        inventory = _run_json([*kubectl, "get", "batchsandbox", "-n", namespace, "-o", "json"])
+        assert isinstance(inventory, dict) and "/" in inventory["apiVersion"], "Native sandbox list unavailable"
+        resource = f"/apis/{inventory['apiVersion']}/namespaces/{namespace}/batchsandboxes"
+        version = inventory["metadata"]["resourceVersion"]
+
+        def native_events() -> list[str]:
+            # Replay from before startup, including boxes already deleted.
+            # A failed/expired watch is an observation failure, never a pass.
+            observed = subprocess.run([
+                *kubectl, "get", "--raw",
+                f"{resource}?watch=1&resourceVersion={version}&timeoutSeconds=1",
+            ], check=True, capture_output=True, text=True, timeout=30)
+            events = [json.loads(line) for line in observed.stdout.splitlines() if line.strip()]
+            assert all(event["type"] != "ERROR" for event in events), "Native sandbox watch failed"
+            return [event["type"] for event in events
+                    if event["object"].get("metadata", {}).get("labels", {}).get("astrabox.session-id") == sid]
+
         sid = data(e2e_client.post(f"/api/v1/agents/{aid}/conversations", json={}))["session_id"]
         release_session(sid)
         session = get_session(e2e_client, sid)
@@ -684,8 +704,21 @@ def test_a_startup_user_action_keeps_the_conversation_until_the_user_acts(
             time.sleep(0.5)
             session = get_session(e2e_client, sid)
         assert session.get("state") == "READY", f"a startup prerequisite ended the conversation: {session}"
+        assert not session.get("sandbox_id") and session.get("runtime_unavailable"), session
+        assert (session.get("startup_user_action") or {}).get("url") == "https://example.com/authorize", session
         state = data(e2e_client.get(f"/api/v1/sessions/{sid}/user-action"))
         assert state["ready"] is False and state["user_action"]["url"] == "https://example.com/authorize", state
+
+        imported_text = "IMPORTED_WHILE_BLOCKED_" + uuid.uuid4().hex
+        imported = data(e2e_client.post(f"/api/v1/admin/sessions/{sid}/history-import", json={"messages": [{
+            "source_id": "blocked-history", "role": "user", "created_at": "2026-01-05T09:00:00Z",
+            "blocks": [{"type": "text", "text": imported_text}],
+        }]}))
+        assert imported["imported"] == 1, imported
+        assert imported_text in [message_text(message) for message in history(e2e_client, sid)]
+        refused_recovery = e2e_client.post(f"/api/v1/sessions/{sid}/recover", json={})
+        assert refused_recovery.status_code == 409, refused_recovery.text
+        assert refused_recovery.json()["error"]["code"] == "TURN_PREPARATION_USER_ACTION_REQUIRED"
 
         started = time.monotonic()
         failure = _refused(
@@ -695,6 +728,7 @@ def test_a_startup_user_action_keeps_the_conversation_until_the_user_acts(
         assert (failure.get("user_action") or {}).get("url") == "https://example.com/authorize", failure
         assert time.monotonic() - started < 45, "the refused message waited for a runtime"
         assert get_session(e2e_client, sid)["state"] == "READY"
+        assert native_events() == [], "A blocked startup created, changed or deleted a native sandbox"
 
         cleared = data(e2e_client.post(f"/api/v1/sessions/{sid}/user-action", json={"action_id": "authorize"}))
         assert cleared == {"ready": True, "user_action": None, "actions": []}, cleared
@@ -709,6 +743,7 @@ def test_a_startup_user_action_keeps_the_conversation_until_the_user_acts(
     native = _native(_sandbox_exec(detail["sandbox_id"]), detail["runtime_identity"])
     assert native["receipts"] and not any(item.get("denied") for item in native["receipts"]), native
     assert native["receipts"][-1]["session_id"] == sid and native["receipts"][-1]["phase"] == "startup"
+    assert native_events(), "Native watch did not observe the authorized allocation"
 
 
 def _assistant_workspace(client: httpx.Client, assistant_id: str, deadline: float) -> dict:

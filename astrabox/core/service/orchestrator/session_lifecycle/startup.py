@@ -28,6 +28,7 @@ from astrabox.common.utils.time_utils import utcnow_iso
 from astrabox.core.model import SessionState
 from astrabox.core.service.orchestrator.chunk_processing import extract_agent_session_metadata
 from astrabox.core.service.orchestrator.engine.base import bound_engine_client_manifest
+from astrabox.core.service.orchestrator.runtime.preparation import require_session_user_prerequisites
 from astrabox.core.service.orchestrator.runtime_binding import is_assistant_workspace_bootstrap
 from astrabox.core.service.orchestrator.runtime_subject import (
     RuntimeStartupCleanup,
@@ -176,6 +177,8 @@ class SessionStartup:
             return latest or {"session_id": session_id}
 
         try:
+            session = await ownership.require_current()
+            await require_session_user_prerequisites(session)
             await ownership.require_current()
             target = await self._runtime_subjects.acquire_startup(
                 session_id=session_id,

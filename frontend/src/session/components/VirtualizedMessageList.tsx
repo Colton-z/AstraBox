@@ -123,13 +123,25 @@ export function VirtualizedMessageList({
     const clearTouch = () => {
       previousTouchY = null;
     };
-    // The keyboard is the third way a reader moves through the transcript:
-    // the scroller is in the tab order, and the browser scrolls a focused
-    // scroll container on these keys before the scroll event that asks.
+    // Home targets the first loaded item through Virtuoso so its measured
+    // heights participate in the jump. Relative keys keep native scrolling.
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.target !== element) return;
-      if (
-        event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home'
+      if (event.key === 'Home') {
+        event.preventDefault();
+        clearOlderIntent();
+        virtuosoRef.current?.scrollIntoView({
+          index: 0,
+          align: 'start',
+          behavior: 'auto',
+          done: () => {
+            if (!element.isConnected) return;
+            markOlderIntent();
+            if (atOlderBoundary()) requestOlder();
+          },
+        });
+      } else if (
+        event.key === 'ArrowUp' || event.key === 'PageUp'
         || (event.key === ' ' && event.shiftKey)
       ) {
         markOlderIntent();

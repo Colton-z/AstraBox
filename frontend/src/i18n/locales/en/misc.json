@@ -202,7 +202,10 @@
     "link_invalid": "This share link doesn't exist, was revoked, or has expired.",
     "readonly_badge": "Read-only",
     "readonly_notice": "You're viewing a shared conversation (read-only).",
-    "no_messages": "This conversation has no messages yet."
+    "no_messages": "This conversation has no messages yet.",
+    "files_loading": "Loading shared files…",
+    "files_failed": "Couldn't load shared files",
+    "no_files": "No files available to download."
   },
   "agent_form": {
     "groups": {

@@ -3,6 +3,14 @@
     "loading": "Loading file changes…",
     "load_failed": "Could not load file changes."
   },
+  "interaction_history": {
+    "open": "Waiting for an answer",
+    "answered": "Answered",
+    "withdrawn": "Withdrawn",
+    "expired": "Expired",
+    "closed": "This questionnaire is closed and can no longer be submitted.",
+    "declined": "The user declined to answer."
+  },
   "history": {
     "loading_older": "Loading earlier messages…",
     "load_older_failed": "Could not load earlier messages",
@@ -18,7 +26,8 @@
     "messages_transient": "Messages are temporarily unavailable. Retrying automatically.",
     "syncing_messages": "Syncing messages…",
     "messages_load_failed": "Failed to load messages.",
-    "session_title_fallback": "Session {{id}}"
+    "session_title_fallback": "Session {{id}}",
+    "pending_inputs_not_cancelled": "No response is running to stop. Accepted messages were not withdrawn and may still run. To take the conversation offline, use Archive in the conversation list."
   },
   "header": {
     "end_conversation": "End conversation",
@@ -129,11 +138,6 @@
     "todo_item": "Task {{index}}",
     "in_progress": "In progress",
     "user_questionnaire": "Questionnaire",
-    "question_n": "Question {{index}}",
-    "multi_select": "Multi-select",
-    "single_select": "Single choice",
-    "option_n": "Option {{index}}",
-    "output": "Output",
     "execution_plan": "Plan"
   },
   "result": {

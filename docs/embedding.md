@@ -144,6 +144,10 @@ Sandboxes call AstraBox back at `ASTRABOX_MCP_PROXY_BASE_URL`. When they reach
 it through the parent application, that address includes the mount path, such
 as `http://<host-address>:8088/astrabox`.
 
+For browser authentication response handling, a custom console can install a
+[console HTTP transport](console-transport.md). Python identity and middleware
+extensions do not automatically register browser recovery behavior.
+
 ## What the lifespan starts
 
 The AstraBox lifespan owns the complete service lifecycle:

@@ -18,7 +18,8 @@ import { Reasoning, ReasoningTrigger } from '@/components/ai-elements/reasoning'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { cn } from '@/lib/utils';
 import { useTranscriptAccess } from '../TranscriptAccess';
-import type { ProcessDetails, ProcessSummaryState } from '../../types';
+import type { HistoricalQuestionnaireInteraction, ProcessDetails, ProcessSummaryState } from '../../types';
+import { QuestionnaireHistoryCard } from '@/components/composer/QuestionnaireHistoryCard';
 import { localizeDisplayText, toolPreview } from '../../utils/format';
 import { filterSupersededSingletonInteractionParts } from '../toolState';
 import { isOpenResponse, responseMetadata } from '../sessionMessages';
@@ -122,7 +123,14 @@ export function groupAssistantProcess(
   settled = false,
 ): PartGroup[] {
   const groups: PartGroup[] = [];
+  const formToolIds = new Set(parts.flatMap((part) => {
+    if (part.type !== 'data-interaction') return [];
+    const interaction = part.data as HistoricalQuestionnaireInteraction | undefined;
+    return interaction?.presentation === 'form' && interaction.status && interaction.tool_call_id ? [interaction.tool_call_id] : [];
+  }));
   parts.forEach((part, index) => {
+    // The structured form is this tool call's presentation, not a second card.
+    if (part.type === 'dynamic-tool' && formToolIds.has(part.toolCallId)) return;
     if (
       part.type === 'step-start'
       || (part.type.startsWith('data-') && !STANDALONE_DATA_PARTS.has(part.type))
@@ -710,6 +718,10 @@ export function PartRenderer({
     }
     default: {
       const anyPart = part as Record<string, unknown>;
+      if (anyPart.type === 'data-interaction' && anyPart.data) {
+        const interaction = anyPart.data as HistoricalQuestionnaireInteraction;
+        return interaction.presentation === 'form' && interaction.status ? <QuestionnaireHistoryCard interaction={interaction} /> : null;
+      }
       if (typeof anyPart.type === 'string' && anyPart.type === 'data-process-block' && anyPart.data) {
         return (
           <LazyProcessBlock

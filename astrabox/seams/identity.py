@@ -38,6 +38,13 @@ class WebIdentityResolver(Protocol):
     Browser entry points that need to initiate authentication call
     :meth:`login_url`. An OIDC resolver returns its same-origin login route;
     resolvers whose ingress owns login return ``None``.
+
+    Browser session routes belong to the identity deployment. A deployment
+    serving ``/api/v1/auth/session`` and ``/api/v1/auth/login`` also serves
+    ``POST /api/v1/auth/logout`` through ``astrabox.api.routers``: return 204
+    after ending its session, or 200 JSON with ``redirect_url`` when the
+    browser must visit the provider to finish logout. See
+    ``docs/team-login.md`` for the navigation and confirmation contract.
     """
 
     async def resolve(self, headers: Mapping[str, str]) -> "UserContext | None":
