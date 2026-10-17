@@ -30,7 +30,7 @@
       }
     },
     "tests": {
-      "no_volume_core": 592,
+      "no_volume_core": 593,
       "persistent_files": 19
     }
   },
@@ -42,7 +42,7 @@
   ],
   "playwright": {
     "exclusive": {
-      "files": 174,
+      "files": 175,
       "parallel_files": 111,
       "parallel_tests": 204,
       "serial_files": [
@@ -93,6 +93,7 @@
         "specs/native-diff-failure-and-recovery.exclusive.spec.ts",
         "specs/non-terminal-background-bash-task-update.exclusive.spec.ts",
         "specs/opensandbox-agent-prewarm-real-extensions.exclusive.spec.ts",
+        "specs/ordinary-process-opens-once.exclusive.spec.ts",
         "specs/ownerless-sandbox-reaping-preserves-prepared-capacity.exclusive.spec.ts",
         "specs/people-find-an-agent-by-category-tag-search-and-favorite.exclusive.spec.ts",
         "specs/personal-schedule-runs-as-its-owner.exclusive.spec.ts",
@@ -110,9 +111,9 @@
         "specs/subagent-replay-recovery.exclusive.spec.ts",
         "specs/untouched-tab-catches-up-after-backend-restart.exclusive.spec.ts"
       ],
-      "serial_tests": 104,
+      "serial_tests": 105,
       "serial_workers": 1,
-      "tests": 308,
+      "tests": 309,
       "workers": 5
     },
     "parallel": {

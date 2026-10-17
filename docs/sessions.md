@@ -404,9 +404,10 @@ The console's display contract is:
 - On an abnormal ending, failed, denied and unfinished tool calls stay outside
   the whole-response fold. Interaction and result parts also stay outside it;
   a tool awaiting approval prevents that fold.
-- Expanding a header restores the folded body text and process groups. Tool
-  cards keep their own disclosures for input and output. Folding changes the
-  initial presentation, without discarding the recorded steps.
+- Expanding a whole-response header restores its body text and process groups.
+  Expanding an ordinary process group shows its tool and reasoning entries
+  directly. Tool cards keep their own disclosures for input and output. Folding
+  changes the initial presentation, without discarding the recorded steps.
 - Reloading reads the same recorded response outcome and content through the
   history endpoints. A failed response does not become successful because its
   work has a generated label.

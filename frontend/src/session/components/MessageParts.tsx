@@ -222,6 +222,7 @@ function useOpenGroups(): [Record<number, boolean>, (key: number, open: boolean)
 export function AssistantMessageParts({
   parts,
   partOwnerId,
+  foldProcess,
   pendingToolCallId,
   isActiveTurn = false,
   isStreaming,
@@ -229,6 +230,7 @@ export function AssistantMessageParts({
 }: {
   parts: MessagePart[];
   partOwnerId: string;
+  foldProcess: boolean;
   pendingToolCallId?: string;
   isActiveTurn?: boolean;
   isStreaming?: boolean;
@@ -244,7 +246,7 @@ export function AssistantMessageParts({
       {groups.map((group, index) => (
         <PartGroupRenderer
           key={`${partOwnerId}-group-${group.key}`}
-          group={group}
+          group={foldProcess ? group : { ...group, process: false }}
           running={Boolean(isStreaming && index === groups.length - 1 && !pendingToolCallId)}
           context={{
             groupOwnerId: partOwnerId,
@@ -723,15 +725,17 @@ export function PartRenderer({
         return interaction.presentation === 'form' && interaction.status ? <QuestionnaireHistoryCard interaction={interaction} /> : null;
       }
       if (typeof anyPart.type === 'string' && anyPart.type === 'data-process-block' && anyPart.data) {
+        const details = anyPart.data as ProcessDetails;
         return (
           <LazyProcessBlock
-            details={anyPart.data as ProcessDetails}
+            details={details}
             sessionId={sessionId}
             renderDetails={(messages) => messages.map((message) => (
               <AssistantMessageParts
                 key={message.id}
                 parts={message.parts}
                 partOwnerId={message.id}
+                foldProcess={details.summarize}
               />
             ))}
           />
