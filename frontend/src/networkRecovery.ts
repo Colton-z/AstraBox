@@ -1,3 +1,5 @@
+import { consoleFetch } from './consoleTransport';
+
 const SAFE_METHODS = new Set(['GET', 'HEAD']);
 const SAFE_RETRY_DELAYS_MS = [100, 300] as const;
 const IDEMPOTENT_MUTATION_RETRY_DELAYS_MS = [100, 300, 1_000, 2_000, 5_000] as const;
@@ -68,7 +70,7 @@ export async function fetchWithNetworkRecovery(
 
   for (let attempt = 0; ; attempt += 1) {
     try {
-      return await fetch(input, init);
+      return await consoleFetch(input, init);
     } catch (error) {
       if (isAbortError(error)) throw error;
       if (init.signal?.aborted) throw abortReason(init.signal);

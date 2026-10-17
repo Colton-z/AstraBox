@@ -287,6 +287,13 @@ sending while a prerequisite is unknown or pending. A status read is advisory:
 `prepare_turn` remains the authority for every caller, including those that do
 not use the console.
 
+The console re-reads prerequisites when startup or runtime recovery changes
+the Session binding, when the page regains focus or visibility, and when the
+browser comes back online. Return reads use the console's shared throttling
+and in-flight deduplication; there is no prerequisite polling timer. A stale
+operation refused with `409 INVALID_REQUEST` triggers a status read, without
+replaying the operation. These reads initiate no consent or registration.
+
 ```python
 from astrabox.seams import SessionUserActionCommand, SessionUserActionState
 

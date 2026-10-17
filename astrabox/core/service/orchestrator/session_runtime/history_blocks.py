@@ -292,7 +292,7 @@ async def load_history_page(
     page = await facts.history_page(session_id, before=before, limit=limit)
     response_ids = [str(row["response_id"]) for row in page["responses"]]
     outputs = await facts.output_for_responses(session_id, response_ids, through_seq=through_seq)
-    answers = await facts.approval_answers(session_id, response_ids)
+    interactions = await facts.response_interactions(session_id, response_ids)
     last_seqs = await reads.last_output_seqs(session_id, response_ids)
     ended = {
         str(row["response_id"])
@@ -302,7 +302,7 @@ async def load_history_page(
     checkpoint = encode_cursor(through_seq)
     messages: list[dict[str, Any]] = []
     labelled: dict[str, dict[str, Any]] = {}
-    for message in history_messages(page, outputs, answers):
+    for message in history_messages(page, outputs, interactions):
         response_id = str(message["metadata"].get("response_id") or "")
         if message["role"] == "assistant" and response_id in ended:
             fold = fold_parts(
@@ -353,10 +353,10 @@ async def load_response(
     if row is None:
         return None
     outputs = await facts.output_for_responses(session_id, [response_id], through_seq=through_seq)
-    answers = await facts.approval_answers(session_id, [response_id])
+    interactions = await facts.response_interactions(session_id, [response_id])
     last_seq = (await reads.last_output_seqs(session_id, [response_id])).get(response_id, 0)
     single = {"entries": [{"kind": "response", "seq": int(row["seq"])}], "inputs": [], "responses": [row]}
-    message = history_messages(single, outputs, answers)[0]
+    message = history_messages(single, outputs, interactions)[0]
     fold = None
     if row["status"] == "ended" and (through_seq is None or last_seq <= through_seq):
         fold = fold_parts(

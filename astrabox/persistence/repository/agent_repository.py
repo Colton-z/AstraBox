@@ -38,6 +38,7 @@ from sqlalchemy import (
     any_,
     cast,
     case,
+    column as sql_column,
     delete,
     false,
     func,
@@ -54,6 +55,7 @@ from sqlalchemy.sql.functions import FunctionElement
 from sqlalchemy.sql import ColumnElement, Select
 
 from astrabox.persistence.repository.assistant_catalog_repository import _ChildObject, _OrderedChildren
+from astrabox.persistence.sql.runtime_expressions import string_array_items
 from astrabox.persistence.sql import (
     ForeignKeyViolation,
     execute,
@@ -893,9 +895,10 @@ class AgentRepository:
         self, viewer: str, *, platform_admin: bool
     ) -> list[dict[str, Any]]:
         """The tags of the live Agents ``viewer`` may see, most used first."""
-        tag = func.unnest(_AGENTS.c.tags).label("tag")
+        items = string_array_items(_AGENTS.c.tags).table_valued(sql_column("value", Text))
         tags = (
-            select(_AGENTS.c.agent_id, tag)
+            select(_AGENTS.c.agent_id, items.c.value.label("tag"))
+            .select_from(_AGENTS.join(items, true()))
             .where(_LIVE, visible_to(viewer, platform_admin=platform_admin))
             .subquery()
         )

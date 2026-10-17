@@ -222,7 +222,7 @@ class SessionReader(Base):
 class SessionInput(Base):
     """One input, held by the platform until the runtime durably admits it.
 
-    ``state``: ``pending`` (accepted, not yet with the runtime), ``delivered``
+    ``state``: ``pending`` (awaiting the delivery receipt), ``delivered``
     (the runtime received it), ``admitted`` (the runtime durably holds it) or
     ``failed`` (refused; ``failure`` says why). A runtime replaced before it
     admitted an input gets the input again; one replaced after does not.

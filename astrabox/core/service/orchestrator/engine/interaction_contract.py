@@ -257,7 +257,7 @@ def public_interaction_view(
     *,
     include_tool_input: bool = True,
 ) -> dict[str, Any] | None:
-    """Project the browser-facing half of a durable interaction record.
+    """Project the browser-facing contract and its recorded history settlement.
 
     Adapter-authored transcript replies, native answer keys and settlement
     watermarks are control data. The owner UI may see the tool input it is
@@ -276,6 +276,10 @@ def public_interaction_view(
     }
     if include_tool_input and "raw_input" in value:
         public["raw_input"] = deepcopy(value.get("raw_input"))
+    if "status" in value:
+        if value["status"] not in {"open", "answered", "withdrawn", "expired"}:
+            raise InteractionContractError("interaction history carries an invalid status")
+        public["status"] = value["status"]
 
     if presentation == PRESENTATION_FORM:
         questions: list[dict[str, Any]] = []
@@ -305,6 +309,16 @@ def public_interaction_view(
         public["questions"] = questions
         if "preset_answers" in value:
             public["preset_answers"] = deepcopy(value.get("preset_answers"))
+        if value.get("status") == "answered" and isinstance(value.get("answer"), dict):
+            answer = value["answer"]
+            public["answer"] = {"decline": True} if answer.get("decline") is True else {
+                "answers": [
+                    {key: deepcopy(row["answer"][key]) for key in (
+                        "question_id", "option_label", "option_labels", "free_text"
+                    ) if key in row["answer"]}
+                    for row in validated_question_answer_rows(value, answer)
+                ]
+            }
     elif presentation == PRESENTATION_DECISION:
         if "body" in value:
             public["body"] = deepcopy(value.get("body"))

@@ -1016,6 +1016,13 @@ export function ConsoleJsonField({
   // already is. Held here rather than passed back down: the buffer is this
   // component's, and so is the answer to whether it parses.
   const [parses, setParses] = useState(true);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const serializedValue = value == null ? '' : JSON.stringify(value, null, 2);
+  // Keep local typing across unrelated renders; a committed value replaces
+  // the buffer when a save masks credentials or the reader reverts a field.
+  useEffect(() => {
+    if (inputRef.current) inputRef.current.value = serializedValue;
+  }, [serializedValue]);
   const report = (ok: boolean) => {
     setParses(ok);
     onValidityChange?.(ok);
@@ -1024,11 +1031,12 @@ export function ConsoleJsonField({
   // stomped by a re-render of the parsed value.
   return (
     <Textarea
+      ref={inputRef}
       {...aria}
       id={id}
       rows={rows}
       className="field-sizing-fixed resize-y font-mono text-11 leading-5"
-      defaultValue={value == null ? '' : JSON.stringify(value, null, 2)}
+      defaultValue={serializedValue}
       placeholder={example ?? placeholder}
       spellCheck={false}
       disabled={disabled}

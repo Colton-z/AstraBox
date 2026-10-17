@@ -1,4 +1,4 @@
-"""Native SQL expressions shared by Session transaction recipes."""
+"""Native SQL expressions shared by relational repository recipes."""
 
 from __future__ import annotations
 
@@ -12,6 +12,28 @@ from sqlalchemy.sql.functions import FunctionElement
 
 
 _DOCUMENT = JSON().with_variant(JSONB(), "postgresql")
+
+
+class string_array_items(FunctionElement[Any]):
+    """String-array elements as a table with one text ``value`` column."""
+
+    inherit_cache = True
+
+
+@compiles(string_array_items, "postgresql")
+def _pg_string_array_items(element: Any, compiler: Any, **kw: Any) -> str:
+    array, = element.clauses
+    return f"LATERAL (SELECT unnest({compiler.process(array, **kw)}) AS value)"
+
+
+@compiles(string_array_items, "mysql")
+def _mysql_string_array_items(element: Any, compiler: Any, **kw: Any) -> str:
+    array, = element.clauses
+    return (
+        f"JSON_TABLE({compiler.process(array, **kw)}, '$[*]' "
+        "COLUMNS (value LONGTEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin "
+        "PATH '$' ERROR ON ERROR))"
+    )
 
 
 def json_literal(value: Any) -> ColumnElement[Any]:

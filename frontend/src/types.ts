@@ -969,6 +969,12 @@ export interface PendingPlanPrompt {
   tool?: string | null;
 }
 
+/** History adds the recorded interaction settlement and answer. */
+export type HistoricalQuestionnaireInteraction = PendingQuestionnaireInteraction & {
+  status: 'open' | 'answered' | 'withdrawn' | 'expired';
+  answer?: Omit<QuestionnaireInteractionResponse, 'interaction_id'> | null;
+};
+
 // The decision-option fields the browser reads. An option also carries the
 // model-facing reply copy the adapter authored; that half settles the
 // transcript on the backend and never reaches the UI.

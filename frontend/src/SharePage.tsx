@@ -2,8 +2,11 @@ import { ArtifactNavigationProvider } from '@/artifacts/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import useSWR from 'swr';
 import { Download, FileText, Lock } from 'lucide-react';
 
+import { Button } from '@/components/ui/button';
+import { ErrorNote } from '@/components/shell/ErrorNote';
 import { VirtualizedMessageList } from '@/session/components/VirtualizedMessageList';
 import { useSessionHistory } from '@/session/hooks/useSessionHistory';
 import { TranscriptAccessContext, sharedTranscriptAccess } from '@/session/TranscriptAccess';
@@ -13,7 +16,6 @@ import {
   listSharedFiles,
   type SharedSession,
 } from '@/api';
-import type { SessionFileEntry } from '@/types';
 
 // Read-only conversation view reached through /share/:token. The token is the
 // viewer credential; owner authentication is required only to create or revoke
@@ -32,9 +34,14 @@ function SharedConversation({ token }: { token: string }) {
   const { t } = useTranslation();
   const history = useSessionHistory(token);
   const [session, setSession] = useState<SharedSession | null>(null);
-  const [files, setFiles] = useState<SessionFileEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const sharedFiles = useSWR(
+    session?.share_allow_download ? ['shared-files', token] : null,
+    () => listSharedFiles(token),
+    { shouldRetryOnError: false, revalidateOnFocus: false, revalidateOnReconnect: false },
+  );
+  const files = sharedFiles.data?.entries.filter((file) => file.kind === 'file') ?? [];
 
   useEffect(() => {
     let alive = true;
@@ -44,15 +51,6 @@ function SharedConversation({ token }: { token: string }) {
         const sess = await getSharedSession(token);
         if (!alive) return;
         setSession(sess);
-        // Files are best-effort: only when the share allows download.
-        if (sess.share_allow_download) {
-          try {
-            const fl = await listSharedFiles(token);
-            if (alive) setFiles(fl.entries || []);
-          } catch {
-            /* file listing optional; ignore */
-          }
-        }
         setError('');
       } catch (e) {
         if (alive) setError((e as Error).message);
@@ -101,7 +99,7 @@ function SharedConversation({ token }: { token: string }) {
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1">
+      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         <main className="flex min-h-0 min-w-0 flex-1 flex-col">
           {messages.length === 0 ? (
             <div className="py-20 text-center text-sm text-muted-foreground">{t('misc:share.no_messages')}</div>
@@ -119,16 +117,27 @@ function SharedConversation({ token }: { token: string }) {
           )}
         </main>
 
-        {downloadable && files.length > 0 && (
-          <aside className="hidden w-72 shrink-0 overflow-y-auto border-l p-4 lg:block">
+        {downloadable && (
+          <aside aria-label={t('common:files')} className="max-h-48 shrink-0 overflow-y-auto border-t p-4 lg:max-h-none lg:w-72 lg:border-l lg:border-t-0">
             <div className="mb-3 flex items-center gap-2 text-sm font-medium">
               <FileText className="size-4" />
               {t('common:files')}
             </div>
-            <ul className="space-y-1">
-              {files
-                .filter((f) => f.kind === 'file')
-                .map((f) => (
+            {sharedFiles.error ? (
+              <div className="space-y-3">
+                <ErrorNote title={t('misc:share.files_failed')}>{sharedFiles.error.message}</ErrorNote>
+                <Button variant="outline" size="sm" disabled={sharedFiles.isValidating}
+                  onClick={() => { void sharedFiles.mutate(); }}>
+                  {t('common:retry')}
+                </Button>
+              </div>
+            ) : sharedFiles.isValidating || !sharedFiles.data ? (
+              <p role="status" className="text-sm text-muted-foreground">{t('misc:share.files_loading')}</p>
+            ) : files.length === 0 ? (
+              <p className="text-sm text-muted-foreground">{t('misc:share.no_files')}</p>
+            ) : (
+              <ul className="space-y-1">
+                {files.map((f) => (
                   <li key={f.path}>
                     <a
                       href={buildSharedFileDownloadUrl(token, f.path)}
@@ -139,7 +148,8 @@ function SharedConversation({ token }: { token: string }) {
                     </a>
                   </li>
                 ))}
-            </ul>
+              </ul>
+            )}
           </aside>
         )}
       </div>

@@ -1,5 +1,6 @@
 import i18n from '@/i18n';
 import { readUserAction } from './session/userAction';
+import { consoleFetch } from './consoleTransport';
 
 import type { components, paths } from './api/schema';
 import type { UIMessage } from 'ai';
@@ -335,6 +336,7 @@ export async function probeAuthSession(signal?: AbortSignal): Promise<AuthProbe>
   try {
     const response = await fetchWithNetworkRecovery(buildApiUrl('/api/v1/auth/session'), {
       credentials: 'include',
+      cache: 'no-store',
       signal,
     });
     if (response.status === 404) return { mode: 'no-auth' };
@@ -373,9 +375,29 @@ export function signInHref(next: string): string {
   return buildApiUrl(`/api/v1/auth/login?next=${encodeURIComponent(next)}`);
 }
 
-/** End this browser's session: `POST /api/v1/auth/logout` clears its cookie. */
-export async function endAuthSession(): Promise<void> {
-  await fetch(buildApiUrl('/api/v1/auth/logout'), { method: 'POST', credentials: 'include' });
+/** End the session or obtain the provider's browser navigation; never retry the POST. */
+export async function endAuthSession(): Promise<string> {
+  const response = await consoleFetch(buildApiUrl('/api/v1/auth/logout'), {
+    method: 'POST', credentials: 'include', redirect: 'error',
+    headers: { Accept: 'application/json' },
+  });
+  if (!response.ok) throw new Error(`LOGOUT_FAILED: HTTP ${response.status}`);
+  if (response.status === 204) {
+    const probe = await probeAuthSession();
+    if (probe.mode !== 'signed-out') throw new Error('LOGOUT_NOT_CONFIRMED');
+    return `${MODULE_BASE}/`;
+  }
+  if (response.status !== 200) throw new Error(`LOGOUT_RESPONSE_INVALID: HTTP ${response.status}`);
+  const payload: unknown = await response.json();
+  if (!payload || typeof payload !== 'object' || !('redirect_url' in payload)
+    || typeof payload.redirect_url !== 'string' || !payload.redirect_url.trim()) {
+    throw new Error('LOGOUT_RESPONSE_INVALID: redirect_url is required');
+  }
+  const destination = new URL(payload.redirect_url, window.location.href);
+  if (!['http:', 'https:'].includes(destination.protocol) || destination.username || destination.password) {
+    throw new Error('LOGOUT_RESPONSE_INVALID: redirect_url must be an HTTP(S) navigation');
+  }
+  return destination.href;
 }
 
 /**
@@ -2667,7 +2689,7 @@ export async function runTerminalCommandStream(
   signal?: AbortSignal,
   cwd?: string
 ): Promise<void> {
-  const response = await fetch(buildApiUrl(`/api/v1/sessions/${sessionId}/terminal/stream`), {
+  const response = await consoleFetch(buildApiUrl(`/api/v1/sessions/${sessionId}/terminal/stream`), {
     method: 'POST',
     credentials: 'include',
     headers: {
@@ -2700,7 +2722,7 @@ export async function followTerminalCommand(
 ): Promise<boolean> {
   const params = new URLSearchParams({ after_seq: String(target.afterSeq) });
   if (target.commandId) params.set('command_id', target.commandId);
-  const response = await fetch(buildApiUrl(`/api/v1/sessions/${sessionId}/terminal/stream?${params}`), {
+  const response = await consoleFetch(buildApiUrl(`/api/v1/sessions/${sessionId}/terminal/stream?${params}`), {
     method: 'GET',
     credentials: 'include',
     headers: { Accept: 'text/event-stream' },

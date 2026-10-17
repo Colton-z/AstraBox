@@ -7,7 +7,6 @@ import { CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Plan, PlanHeader, PlanTitle, PlanContent, PlanTrigger } from '@/components/ai-elements/plan';
 import { Queue, QueueList, QueueItem, QueueItemIndicator, QueueItemContent } from '@/components/ai-elements/queue';
 import { Task, TaskTrigger, TaskContent, TaskItem, TaskItemFile } from '@/components/ai-elements/task';
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -132,9 +131,6 @@ export function ToolPartCard({
   }
   if (dp.toolName === 'TodoWrite') {
     return <TodoWritePartCard dp={dp} isPending={isPending} isActiveTurn={isActiveTurn} />;
-  }
-  if (dp.toolName === 'AskUserQuestion') {
-    return <AskUserQuestionPartCard dp={dp} isPending={isPending} isActiveTurn={isActiveTurn} />;
   }
   if (dp.toolName === 'ExitPlanMode') {
     return <ExitPlanModePartCard dp={dp} isPending={isPending} isActiveTurn={isActiveTurn} />;
@@ -327,73 +323,6 @@ function TodoWritePartCard({
         })}
       </QueueList>
     </Queue>
-  );
-}
-
-function AskUserQuestionPartCard({
-  dp,
-  isPending,
-  isActiveTurn,
-}: {
-  dp: DynamicToolUIPart;
-  isPending: boolean;
-  isActiveTurn: boolean;
-}) {
-  const { t } = useTranslation();
-  const input = getToolInput(dp);
-  const questions = Array.isArray(input.questions) ? (input.questions as Array<Record<string, unknown>>) : [];
-  const label = t(getToolDisplayLabelKey(dp, isPending, isActiveTurn));
-
-  return (
-    <Card data-tool-call-id={dp.toolCallId} size="sm" className={isPending ? 'border-citrine/50' : undefined}>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0">
-        <CardTitle className="flex items-center gap-2">
-          <span>{toolIcon('AskUserQuestion')}</span>
-          <span>{t('chat:tool.user_questionnaire')}</span>
-        </CardTitle>
-        <ToolStateBadge label={label} />
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {questions.length > 0 ? (
-          questions.map((question, index) => {
-            const options = Array.isArray(question.options) ? (question.options as Array<Record<string, unknown>>) : [];
-            const multiSelect = question.multiSelect === true || question.multi_select === true;
-            return (
-              <div key={`q-${index}`} className="space-y-1.5">
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <span>{t('chat:tool.question_n', { index: index + 1 })}</span>
-                  <span className="rounded-full bg-muted px-1.5 py-0.5">{multiSelect ? t('chat:tool.multi_select') : t('chat:tool.single_select')}</span>
-                </div>
-                {/* Header, prompt, and options are the engine's
-                    AskUserQuestion strings quoted into the transcript — the
-                    verbatim slot marks their casing and wording as the
-                    model's, not the console's. */}
-                {summarizeInlineValue(question.header) && <h4 data-slot="verbatim" className="text-sm font-medium">{summarizeInlineValue(question.header)}</h4>}
-                {summarizeInlineValue(question.question) && <p data-slot="verbatim" className="text-sm text-muted-foreground">{summarizeInlineValue(question.question)}</p>}
-                {options.length > 0 && (
-                  <div data-slot="verbatim" className="flex flex-wrap gap-1.5 mt-1">
-                    {options.map((option, oi) => (
-                      <span key={`o-${oi}`} className="inline-flex flex-col rounded-md border border-border bg-muted/50 px-2 py-1 text-xs">
-                        <strong className="text-foreground">{summarizeInlineValue(option.label) || t('chat:tool.option_n', { index: oi + 1 })}</strong>
-                        {summarizeInlineValue(option.description) && <small className="text-xs text-muted-foreground">{summarizeInlineValue(option.description)}</small>}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })
-        ) : (
-          <pre className="whitespace-pre-wrap break-words text-xs font-mono text-muted-foreground bg-muted/50 rounded-md p-2">{formatToolInputBody('AskUserQuestion', input)}</pre>
-        )}
-        {dp.state === 'output-available' && dp.output !== undefined && (
-          <div className="border-t border-border pt-2 mt-2">
-            <div className="text-xs font-medium text-muted-foreground mb-1">{t('chat:tool.output')}</div>
-            <pre className="whitespace-pre-wrap break-words text-xs font-mono text-muted-foreground bg-muted/50 rounded-md p-2">{localizeDisplayText(formatOutput(dp.output))}</pre>
-          </div>
-        )}
-      </CardContent>
-    </Card>
   );
 }
 

@@ -77,7 +77,10 @@ _INTERACTIONS = SessionInteraction.__table__
 #: messages. They have nothing for a reader: one would only attach to the
 #: workspace's box behind the workspace's lifecycle, as when a pause is
 #: releasing it.
-_WORKSPACE_OWN = and_(_SESSIONS.c.hidden.is_(True), _SESSIONS.c.owner_type == "assistant_workspace")
+_WORKSPACE_OWN = and_(
+    _SESSIONS.c.hidden.is_(True),
+    _SESSIONS.c.owner_type.is_not_distinct_from("assistant_workspace"),
+)
 _OUTPUT = SessionOutput.__table__
 _READERS = SessionReader.__table__
 _CONTROLS = SessionControl.__table__
@@ -662,6 +665,17 @@ class SessionRuntimeRepository:
                 select(_OUTPUT.c.seq, _OUTPUT.c.response_id, _OUTPUT.c.part).where(*conditions).order_by(_OUTPUT.c.seq)
             )
         )
+
+    async def response_interactions(self, session_id: str, response_ids: Sequence[str]) -> list[dict[str, Any]]:
+        """Current interaction settlements for the responses on a history page."""
+        if not response_ids:
+            return []
+        return _views(await fetch_all(
+            select(_INTERACTIONS.c.interaction_id, _INTERACTIONS.c.status, _INTERACTIONS.c.answer).where(
+                _INTERACTIONS.c.session_id == session_id,
+                _INTERACTIONS.c.response_id.in_(list(response_ids)),
+            )
+        ))
 
     async def approval_answers(self, session_id: str, response_ids: Sequence[str]) -> list[dict[str, Any]]:
         """The answers people gave to these responses' interactions, by interaction.

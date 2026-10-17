@@ -422,6 +422,7 @@ for _code, _status, _category, _retryable, _owner in (
     # A running response whose runtime has no connected reader; retrying once
     # the reader reconnects can succeed.
     ("INTERRUPT_UNAVAILABLE", 409, "state", True, "session"),
+    ("PENDING_INPUTS_NOT_CANCELLED", 409, "state", False, "session"),
     # The conversation's Agent was deleted; its history stays readable.
     ("AGENT_DELETED", 409, "state", False, "session"),
     # An engine with a permission-mode vocabulary but no product default needs
