@@ -73,16 +73,23 @@ test('ordinary process groups open once while whole-response summaries retain th
     (entries) => entries.map((entry) => entry.getAttribute('data-tool-call-id') || 'thinking'),
   )).toEqual(['thinking', 'first', 'second']);
   expect(Math.abs((await first.boundingBox())!.width - closedWidth)).toBeLessThanOrEqual(1);
+  const firstOutput = first.getByText('FIRST_OUTPUT', { exact: true });
+  const thinking = first.getByText('PROCESS_THINKING', { exact: true });
   await first.locator('[data-tool-call-id="first"]').getByRole('button').first().click();
-  await expect(first).toContainText('FIRST_OUTPUT');
+  await expect(firstOutput).toBeVisible();
   await first.getByTestId('reasoning-part').getByRole('button').first().click();
-  await expect(first).toContainText('PROCESS_THINKING');
+  await expect(thinking).toBeVisible();
   await trigger.focus();
   await expect(trigger).toBeFocused();
   await trigger.press('Enter');
   await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+  await expect(firstOutput).toBeHidden();
+  await expect(thinking).toBeHidden();
   await trigger.press('Enter');
   await expect(first.locator('[data-tool-call-id="first"]')).toBeVisible();
+  await expect(firstOutput).toBeVisible();
+  await expect(thinking).toBeVisible();
+  await expect(blocks.nth(1).getByTestId('assistant-turn-process-trigger')).toHaveAttribute('aria-expanded', 'false');
   expect(reads).toBe(2);
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(trigger).toHaveAttribute('aria-expanded', 'false');
@@ -90,6 +97,8 @@ test('ordinary process groups open once while whole-response summaries retain th
   await expect(page.locator('[data-tool-call-id="failed"]')).toBeVisible();
   await trigger.click();
   await expect(first.locator('[data-tool-call-id="first"]')).toBeVisible();
+  await expect(firstOutput).toBeHidden();
+  await expect(thinking).toBeHidden();
   expect(reads).toBe(3);
 
   await openSessionView(page, ids.summary);
