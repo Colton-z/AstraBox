@@ -19,13 +19,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import traceback
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
+from astrabox.common.logger.logger_factory import get_logger
+from astrabox.common.utils.time_utils import utcnow_iso
 from astrabox.persistence.provider import get_persistence
 from astrabox.seams.persistence_coordination import Notice, Resync, SessionNotice
+
+logger = get_logger(__name__)
 
 #: Live parts a subscriber may have queued before further ones are dropped;
 #: the subscriber reads dropped parts back from the output log.
@@ -88,21 +94,70 @@ class SessionFeed:
         self._task: asyncio.Task[None] | None = None
         self._ready = asyncio.Event()
         self._reader_needed: Callable[[str], None] | None = None
+        self._last_notice_at: str | None = None
+        self._last_notice_seq: int | None = None
 
     # -- lifecycle ---------------------------------------------------------
 
     async def start(self) -> None:
         """Start listening; returns once the first connection is listening."""
         if self._task is None:
+            self._ready.clear()
             self._task = asyncio.create_task(self._listen_forever(), name="session-feed-listener")
-        await self._ready.wait()
+            self._task.add_done_callback(self._listener_done)
+        task = self._task
+        ready = asyncio.create_task(self._ready.wait())
+        try:
+            await asyncio.wait((task, ready), return_when=asyncio.FIRST_COMPLETED)
+            if task.done():
+                await task
+                raise RuntimeError("session feed listener returned before startup completed")
+        finally:
+            ready.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await ready
 
     async def stop(self) -> None:
         task, self._task = self._task, None
+        self._ready.clear()
         if task is not None:
             task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
+
+    def diagnostics(self) -> dict[str, Any]:
+        """The owned task's state, without provider exception text or local values."""
+        task = self._task
+        state = "not_started"
+        error = None
+        if task is not None:
+            state = "running"
+            if task.cancelled():
+                state = "cancelled"
+            elif task.done():
+                exception = task.exception()
+                state = "failed" if exception is not None else "returned"
+                if exception is not None:
+                    error = {
+                        "type": type(exception).__name__,
+                        "stack": [
+                            f"{Path(frame.filename).name}:{frame.lineno} in {frame.name}"
+                            for frame in traceback.extract_tb(exception.__traceback__)
+                        ],
+                    }
+        return {
+            "started": task is not None,
+            "ready": self._ready.is_set() and state == "running",
+            "task_state": state,
+            "last_error": error,
+            "last_notice_at": self._last_notice_at,
+            "last_notice_seq": self._last_notice_seq,
+        }
+
+    def _listener_done(self, task: asyncio.Task[None]) -> None:
+        if task is self._task:
+            self._ready.clear()
+            logger.error("session feed listener ended unexpectedly: %s", self.diagnostics())
 
     async def _listen_forever(self) -> None:
         await get_persistence().coordination.listen(
@@ -141,6 +196,8 @@ class SessionFeed:
             subscription._put_live(item)
 
     def _on_notice(self, notice: SessionNotice) -> None:
+        self._last_notice_at = utcnow_iso()
+        self._last_notice_seq = notice.seq
         kind, seq, session_id = notice.kind, notice.seq, notice.session_id
         if kind == "reader" and self._reader_needed is not None:
             self._reader_needed(session_id)

@@ -319,6 +319,7 @@ class AgentPlatformService:
             hooks=reader_hooks(
                 sessions=self._sessions_repo,
                 runtime_manager=self._runtime_manager,
+                realign_live_sandbox_owners=self._sandbox_lifecycle_service.realign_live_sandbox_owners,
                 committed=committed_facts(self.session_fact_consumers),
             ),
             committed=committed_facts(self.session_fact_consumers),
@@ -388,9 +389,9 @@ class AgentPlatformService:
     async def _start_session_runtime(self) -> None:
         if self._session_runtime_started:
             return
-        self._session_runtime_started = True
         await self._session_feed.start()
         self._reader_host.start()
+        self._session_runtime_started = True
 
     def _build_admin_and_deployments(
         self, assistant_lifecycle_getter: Callable[[], Any] | None

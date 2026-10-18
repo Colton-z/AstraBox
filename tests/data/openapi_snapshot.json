@@ -617,6 +617,9 @@
           "runtimes": {
             "$ref": "#/components/schemas/AdminRuntimes"
           },
+          "session_feed": {
+            "$ref": "#/components/schemas/AdminSessionFeedHealth"
+          },
           "severity": {
             "title": "Severity",
             "type": "string"
@@ -635,7 +638,8 @@
           "asyncio",
           "memory",
           "load_avg",
-          "runtimes"
+          "runtimes",
+          "session_feed"
         ],
         "title": "AdminProcessHealth",
         "type": "object"
@@ -1389,6 +1393,67 @@
           "endpoint"
         ],
         "title": "AdminSandboxSummary",
+        "type": "object"
+      },
+      "AdminSessionFeedHealth": {
+        "description": "The core notification task's lifecycle, with exception values excluded.",
+        "properties": {
+          "last_error": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "last_notice_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Notice At"
+          },
+          "last_notice_seq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Notice Seq"
+          },
+          "ready": {
+            "title": "Ready",
+            "type": "boolean"
+          },
+          "started": {
+            "title": "Started",
+            "type": "boolean"
+          },
+          "task_state": {
+            "title": "Task State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "started",
+          "ready",
+          "task_state",
+          "last_error",
+          "last_notice_at",
+          "last_notice_seq"
+        ],
+        "title": "AdminSessionFeedHealth",
         "type": "object"
       },
       "AdminSessionPage": {
@@ -22997,7 +23062,7 @@
     },
     "/readyz": {
       "get": {
-        "description": "Readiness endpoint for rolling deploys.\n\n200 when this replica should receive new traffic; 503 once shutdown\nbegins (drain / quiesce), so the load balancer stops routing here while\nin-flight turns finish. See ``astrabox/api/readiness.py``.",
+        "description": "Readiness endpoint for rolling deploys.\n\n200 when this replica should receive new traffic; 503 during shutdown\nor after its core notification listener ends unexpectedly. In-flight\nturns are not killed by this probe. See ``astrabox/api/readiness.py``.",
         "operationId": "readyz_readyz_get",
         "responses": {
           "200": {

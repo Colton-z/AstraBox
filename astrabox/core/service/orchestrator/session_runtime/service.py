@@ -104,6 +104,10 @@ class SessionRuntimeService:
 
     # -- requests ----------------------------------------------------------
 
+    def notification_health(self) -> dict[str, Any]:
+        """The notification listener owned by this service, including its terminal state."""
+        return self._feed.diagnostics()
+
     async def send(
         self,
         user: UserContext,

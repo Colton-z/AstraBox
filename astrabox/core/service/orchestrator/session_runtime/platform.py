@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
 from typing import Any
 
 from astrabox.common.logger.logger_factory import get_logger
@@ -146,6 +147,7 @@ def reader_hooks(
     *,
     sessions: SessionRepository,
     runtime_manager: Any,
+    realign_live_sandbox_owners: Callable[[str], Awaitable[object]],
     committed: Callable[[str, FactBatch], Awaitable[None]],
 ) -> Callable[[str, ConnectedRuntime], ReaderHooks]:
     def build(session_id: str, connected: ConnectedRuntime) -> ReaderHooks:
@@ -156,6 +158,18 @@ def reader_hooks(
             await prepare_input(session, connected, item)
             if connected.refresh is not None:
                 await connected.refresh()
+            expiry = session.get("expires_at")
+            if (
+                expiry
+                and str(session.get("sandbox_id") or "") == connected.sandbox_id
+                and parse_iso(str(expiry)) <= datetime.now(timezone.utc)
+            ):
+                # A connected box can outlive its stored lease projection.
+                # Reuse lifecycle realignment without renewing a healthy lease.
+                try:
+                    await realign_live_sandbox_owners(connected.sandbox_id)
+                except Exception:
+                    logger.exception("live lease realignment failed session=%s", session_id)
 
         recorded_key: list[str | None] = [None]
 

@@ -252,6 +252,17 @@ class AdminRuntimes(BaseModel):
     items: list[AdminRuntimeRow]
 
 
+class AdminSessionFeedHealth(BaseModel):
+    """The core notification task's lifecycle, with exception values excluded."""
+
+    started: bool
+    ready: bool
+    task_state: str
+    last_error: dict[str, Any] | None
+    last_notice_at: str | None
+    last_notice_seq: int | None
+
+
 class AdminProcessHealth(BaseModel):
     """A live reading of the process answering the request.
 
@@ -273,6 +284,7 @@ class AdminProcessHealth(BaseModel):
     memory: AdminMemory
     load_avg: list[float]
     runtimes: AdminRuntimes
+    session_feed: AdminSessionFeedHealth
 
 
 class AdminSessionTrace(BaseModel):

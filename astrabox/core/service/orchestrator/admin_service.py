@@ -289,12 +289,16 @@ class AdminService:
             fd_soft_limit=fd_soft_limit if isinstance(fd_soft_limit, int) else None,
             pending_task_count=len(pending_tasks),
         )
+        session_feed = self._session_runtime.notification_health()
+        if session_feed["started"] and not session_feed["ready"]:
+            severity = "error"
         try:
             load_avg = list(os.getloadavg())
         except Exception:
             load_avg = []
         return {
             "severity": severity,
+            "session_feed": session_feed,
             "machine_id": socket.gethostname(),
             "pid": os.getpid(),
             "captured_at": utcnow_iso(),

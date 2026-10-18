@@ -12,12 +12,13 @@
  * watcher's realignment of a lapsed lease over a live box, whichever lands
  * first.
  */
+import { execFileSync } from 'node:child_process';
 import { expect, test } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
 import { postgresRows, postgresTextRows, sqlLiteral } from '../fixtures/dbOracle';
 import { parseTimeoutEnv } from '../fixtures/env';
-import { POSTGRES_CONTAINER_HANDLE, requireServiceContainer } from '../fixtures/serviceContainer';
+import { POSTGRES_CONTAINER_HANDLE, SERVER_CONTAINER_HANDLE, requireServiceContainer } from '../fixtures/serviceContainer';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 
 const TURN_BUDGET_MS = parseTimeoutEnv('ASTRABOX_E2E_TURN_TIMEOUT_MS', 180_000);
@@ -49,7 +50,7 @@ interface LeaseRow {
   expires_at_ms: number | null;
 }
 
-const LEASE_COLUMNS = `session_id, sandbox_id, (extract(epoch FROM expires_at) * 1000)::bigint AS expires_at_ms`;
+const LEASE_COLUMNS = `session_id, sandbox_id, floor(extract(epoch FROM expires_at) * 1000)::bigint AS expires_at_ms`;
 
 function leaseRow(sessionId: string): LeaseRow | null {
   return postgresRows<LeaseRow>(
@@ -71,13 +72,18 @@ function lapseLease(sessionId: string, sandboxId: string, expiredAt: string): Le
     `UPDATE sessions SET expires_at = TIMESTAMPTZ ${sqlLiteral(expiredAt)} `
       + `WHERE session_id = ${sqlLiteral(sessionId)} AND sandbox_id = ${sqlLiteral(sandboxId)} `
       + `RETURNING json_build_object('session_id', session_id, 'sandbox_id', sandbox_id, `
-      + `'expires_at_ms', (extract(epoch FROM expires_at) * 1000)::bigint)::text`,
+      + `'expires_at_ms', floor(extract(epoch FROM expires_at) * 1000)::bigint)::text`,
   ).map((line) => JSON.parse(line) as LeaseRow);
 }
 
 test('a reattached runtime renews its live box lease and the lapsed database lease follows it', async ({
   request,
 }) => {
+  const watcherEnabled = execFileSync('docker', [
+    'exec', requireServiceContainer(SERVER_CONTAINER_HANDLE), 'python', '-c',
+    'from astrabox.common.utils.settings import load_astrabox_settings; print(load_astrabox_settings().expiration_watcher_enabled)',
+  ], { encoding: 'utf8' }).trim();
+  expect(watcherEnabled, 'the background watcher must not repair this activity-path fault').toBe('False');
   const api = new AstraApi(request);
   const base = await api.defaultAgent();
   expect(base.environment_name, 'retain the proven shared Environment').toBeTruthy();
@@ -111,6 +117,24 @@ test('a reattached runtime renews its live box lease and the lapsed database lea
   const baselineProvider = await api.getSandbox(sandboxId);
   const baselineExpiry = expiryMillis(baselineProvider, 'provider baseline');
   expect(baselineExpiry, 'the baseline lease must still be live').toBeGreaterThan(Date.now());
+
+  const warmExpiredAt = new Date(Date.now() - 3_600_000).toISOString();
+  expect(lapseLease(sessionId, sandboxId, warmExpiredAt)).toEqual([
+    { session_id: sessionId, sandbox_id: sandboxId, expires_at_ms: Date.parse(warmExpiredAt) },
+  ]);
+  const warmTurn = await api.sendTurn(
+    sessionId, 'E2E live lease projection: do not use tools; reply briefly.', TURN_BUDGET_MS,
+  );
+  expect(warmTurn.errorText).toBeNull();
+  expect(warmTurn.text.trim()).not.toEqual('');
+  const warmSettled = await api.waitForSessionReady(sessionId);
+  const warmProvider = await api.getSandbox(sandboxId);
+  expect(warmSettled.sandbox_id).toBe(sandboxId);
+  expect(warmSettled.last_response?.outcome).toBe('completed');
+  expect(leaseRow(sessionId)?.expires_at_ms, 'warm activity repairs the durable projection')
+    .toBe(expiryMillis(warmProvider, 'live provider after warm input'));
+  expect(expiryMillis(warmProvider, 'healthy lease'), 'projection repair must not renew a healthy lease')
+    .toBe(baselineExpiry);
 
   // The provider renews to `now + fixed TTL`, so a healthy cold attach that
   // follows the baseline read immediately can advance expiry by only a few

@@ -736,6 +736,14 @@ export interface AdminProcessHealth {
     locked_count?: number;
     items?: AdminProcessRuntimeRow[];
   };
+  session_feed?: {
+    started: boolean;
+    ready: boolean;
+    task_state: string;
+    last_error: { type: string; stack: string[] } | null;
+    last_notice_at: string | null;
+    last_notice_seq: number | null;
+  };
 }
 
 export interface AdminSystemOverview {

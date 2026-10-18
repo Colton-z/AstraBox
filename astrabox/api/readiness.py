@@ -6,13 +6,16 @@ probe — should the load balancer route new traffic here — and flips to
 not-ready the moment shutdown begins, so a rolling deploy stops sending new
 requests to a replica that is draining its in-flight turns.
 
-Two signals make a replica not-ready:
+Three signals make a replica not-ready:
 
 * an explicit drain (``begin_drain``) — set at the start of the lifespan
   shutdown, before in-flight work is cancelled, so the LB's next readiness
   probe removes this replica while existing turns finish;
 * the platform having quiesced (``AgentPlatformService.quiesced_reason``) —
-  a belt-and-braces reflection of a shutdown already underway.
+  a belt-and-braces reflection of a shutdown already underway;
+* the core SessionFeed listener having ended after startup. Its terminal state
+  is available from the administrator's process health endpoint; provider-owned
+  subscription recovery remains inside the provider's running listener.
 
 The drain window itself (how long to keep serving in-flight turns after the
 LB is told to stop) is ``ASTRABOX_SHUTDOWN_DRAIN_SECONDS`` (default 0 —
@@ -42,7 +45,7 @@ def reset_drain_for_tests() -> None:  # pragma: no cover - test hygiene
 
 
 def readiness_status() -> tuple[bool, str]:
-    """``(ready, reason)``. Not-ready while draining or once quiesced."""
+    """``(ready, reason)``. Drain, quiesce or a lost notification task refuses traffic."""
     if _draining:
         return False, "draining"
     try:
@@ -50,11 +53,15 @@ def readiness_status() -> tuple[bool, str]:
             get_platform_service,
         )
 
-        reason = get_platform_service().quiesced_reason
-        if reason:
-            return False, f"quiesced:{reason}"
+        platform = get_platform_service()
     except Exception:
         # No platform yet (early boot) is not a reason to fail readiness — the
         # lifespan startup gates traffic; a construction error surfaces there.
-        pass
+        return True, "ready"
+    reason = platform.quiesced_reason
+    if reason:
+        return False, f"quiesced:{reason}"
+    feed = platform.session_runtime.notification_health()
+    if feed["started"] and not feed["ready"]:
+        return False, "session_feed_unavailable"
     return True, "ready"
