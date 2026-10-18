@@ -46,6 +46,7 @@ SEAMS_API_VERSION = 7
 from astrabox.seams.extensions import ExtensionProvider
 from astrabox.seams.skills import SkillContentProvider, SkillSource, ResolvedSkillSource
 from astrabox.seams.identity import WebIdentityResolver
+from astrabox.seams.deployment_execution import DeploymentExecutionContext, DeploymentExecutionValidator
 from astrabox.seams.model import ModelEndpoint, ModelEndpointProvider
 from astrabox.seams.secrets import SecretStore
 from astrabox.seams.sandbox import (
@@ -116,4 +117,6 @@ __all__ = [
     "StorageProvider",
     # identity for every HTTP surface
     "WebIdentityResolver",
+    "DeploymentExecutionContext",
+    "DeploymentExecutionValidator",
 ]
