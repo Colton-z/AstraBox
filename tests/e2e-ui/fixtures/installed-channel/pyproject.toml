@@ -10,6 +10,7 @@ dependencies = ["astrabox>=0.1.1"]
 
 [project.entry-points."astrabox.providers.channel"]
 installed_probe = "astrabox_test_channel:InstalledChannel"
+installed_stream_probe = "astrabox_test_channel:InstalledStreamingChannel"
 
 [tool.hatch.build.targets.wheel]
 packages = ["astrabox_test_channel"]

@@ -269,13 +269,14 @@ class _Translation:
         ]
         if self.response_id is not None:
             return self._reopen() + [ResponseOutput(None, self.response_id, part) for part in parts]
-        events = self._start(event_id, "engine", (), interrupt_target=event_id)
+        events = self._start(event_id, "engine", (), interrupt_target=event_id, channel_delivery=False)
         return events + self._end("completed", "session_start", usage=None, error=None, parts=[*parts, _finish("stop")])
 
     # -- response boundaries -----------------------------------------------
 
     def _start(
-        self, response_id: str, origin: Any, input_ids: tuple[str, ...], *, interrupt_target: str
+        self, response_id: str, origin: Any, input_ids: tuple[str, ...], *, interrupt_target: str,
+        channel_delivery: bool = True,
     ) -> list[RuntimeEvent]:
         if not response_id:
             raise ValueError("a Claude response needs an id")
@@ -295,7 +296,7 @@ class _Translation:
         }
         return [
             ResponseStarted(None, response_id, origin, input_ids),
-            ResponseOutput(None, response_id, start),
+            ResponseOutput(None, response_id, start, channel_delivery=channel_delivery),
         ]
 
     def _end(
@@ -483,8 +484,11 @@ class ClaudeRuntimeClient:
         pending = tuple(pending_items)
         status: RuntimeStatus = "waiting" if pending else ("working" if snapshot.get("busy") else "idle")
         run_start = snapshot.get("run_start_seq")
-        # Events resume where the open response began, so its parts are read whole.
+        # Replay the open response and any earlier SDK events still awaiting custody.
         through = int(run_start) - 1 if isinstance(run_start, int) else int(snapshot.get("last_seq") or 0)
+        unpersisted = snapshot["first_unpersisted_event_seq"]
+        if unpersisted is not None:
+            through = min(through, int(unpersisted) - 1)
         return RuntimeState(
             status=status,
             open_responses=open_responses,

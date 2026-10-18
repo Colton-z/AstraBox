@@ -153,7 +153,15 @@ renders its tool cards and other supported parts.
 A channel subscription keeps its position in the Session's output log, and the
 reply outbox keeps delivery attempts and platform message IDs. A delivery reads
 its reply whole from the output log, so a delivery resumed after a restart
-sends the same reply. There is no second conversation store. See
+sends the same reply. An adapter marks an informational message's start with
+`channel_delivery=False` through the runtime output contract. That message
+stays in Session history; channel subscriptions advance past it without creating
+an outbox entry, for streaming and final-text destinations alike. Claude's
+SessionStart hook messages use this policy; native background replies remain
+deliverable. On runtime replacement, replay includes SDK events that still
+await the host's persistence receipt, even when they precede the active reply.
+The server and Claude runtime images must carry this snapshot contract together.
+There is no second conversation store. See
 [Add a messaging platform](writing-a-channel-provider.md).
 
 ### Data and credentials

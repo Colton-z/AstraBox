@@ -1889,7 +1889,7 @@ class ChannelIngressService:
                     continue
                 seq = int(row["seq"])
                 reply = await self._reply_through(session_id, response_id, seq)
-                if reply is None:
+                if reply is None or not reply.channel_delivery:
                     continue
                 if kind == "start" and reply.first_seq == seq:
                     entry = await self._channel_repo.create_outbox_entry(

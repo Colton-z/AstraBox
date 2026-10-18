@@ -181,14 +181,21 @@ class ResponseOutput(RuntimeEvent):
 
     ``frame`` is the adapter's translation and passes to the browser as is.
     ``response_id`` is ``None`` only for session-level output that belongs to
-    no response.
+    no response. On a message's ``start``, ``channel_delivery=False`` keeps
+    informational output in the Session without broadcasting it to channels.
     """
 
     response_id: str | None
     frame: dict[str, Any]
+    channel_delivery: bool = True
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "frame", public_ui_frame(self.frame))
+        frame = public_ui_frame(self.frame)
+        if not self.channel_delivery:
+            if frame["type"] != "start":
+                raise ValueError("channel delivery is declared on a message start")
+            frame["messageMetadata"] = {**frame.get("messageMetadata", {}), "channel_delivery": False}
+        object.__setattr__(self, "frame", frame)
 
 
 @dataclass(frozen=True, slots=True)

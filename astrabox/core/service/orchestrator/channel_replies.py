@@ -56,6 +56,8 @@ class ChannelReply:
     interaction_id: str | None
     #: What the response's ``error`` part says, when it failed in this segment.
     error: str | None
+    #: Informational messages remain in the Session but are not channel replies.
+    channel_delivery: bool
 
 
 def segment_reply(
@@ -66,6 +68,9 @@ def segment_reply(
         raise ValueError(f"reply {reply_id} has no recorded parts")
     parts = [row["part"] for row in rows]
     folded = fold_message(reply_id, parts)
+    channel_delivery = (parts[0].get("messageMetadata") or {}).get("channel_delivery", True)
+    if not isinstance(channel_delivery, bool):
+        raise ValueError("channel delivery metadata must be a boolean")
     text = "\n\n".join(
         str(part["text"])
         for part in folded["parts"]
@@ -96,6 +101,7 @@ def segment_reply(
         text=text,
         interaction_id=interaction_id,
         error=error,
+        channel_delivery=channel_delivery,
     )
 
 

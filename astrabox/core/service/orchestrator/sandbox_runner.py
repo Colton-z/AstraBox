@@ -494,6 +494,11 @@ class EnvelopeSender:
         return int(self._journal[0]["seq"]) if self._journal else None
 
     @property
+    def first_unpersisted_event_seq(self) -> int | None:
+        """The first durable SDK event the host has not committed."""
+        return min(self._events_requiring_persistence - self._persisted_event_sequences, default=None)
+
+    @property
     def journal_count(self) -> int:
         return len(self._journal)
 
@@ -1940,6 +1945,7 @@ class RunnerSession:
             "busy": self._busy or bool(self._open_tasks),
             "last_delivery_sequence": self._last_delivery_sequence,
             "run_start_seq": self._run_start_seq,
+            "first_unpersisted_event_seq": self.sender.first_unpersisted_event_seq,
             "engine_response_id": self._engine_response_id,
             "running_input_ids": sorted(self._consumed_commands_since_result),
             "consumed_input_ids": sorted(self._consumed_commands_since_result | self._produced_commands),
