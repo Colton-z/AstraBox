@@ -28,6 +28,7 @@ from websockets.exceptions import ConnectionClosed
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.core.service.orchestrator.engine.base import EngineStreamDetached
+from astrabox.core.service.orchestrator.engine.runtime import RuntimeControlRefused
 
 logger = get_logger(__name__)
 
@@ -902,7 +903,7 @@ class RunnerLink:
             if self._hello is not None and not self._hello.done():
                 self._hello.set_result(frame)
             return
-        if op == "error":
+        if op == "error" and "seq" not in frame:
             detail = str(frame.get("detail") or "runner error")
             if self._prepared is not None and not self._prepared.done():
                 self._prepared.set_exception(RunnerLinkError(detail))
@@ -942,6 +943,17 @@ class RunnerLink:
                 raise RunnerLinkError(
                     f"unexpected permission-mode acknowledgement for {request_id!r}"
                 )
+            if "error_class" in frame:
+                code = frame.get("error_class")
+                detail = frame.get("detail")
+                if not isinstance(code, str) or not code.strip() or not isinstance(detail, str) or "mode" in frame:
+                    error = RunnerLinkError(
+                        f"malformed permission-mode refusal for {request_id!r}"
+                    )
+                    future.set_exception(error)
+                    raise error
+                future.set_exception(RuntimeControlRefused(code, detail))
+                return
             mode = str(frame.get("mode") or "").strip()
             if not mode:
                 error = RunnerLinkError(
@@ -1047,8 +1059,8 @@ class RunnerLink:
         """
         if frame.get("requires_persistence") is None:
             return
-        if frame.get("requires_persistence") is not True or frame.get("op") not in {"event", "interaction_closed"}:
-            raise RunnerLinkError("only runner events and interaction closures may require persistence, as true")
+        if frame.get("requires_persistence") is not True or frame.get("op") not in {"event", "interaction_closed", "error"}:
+            raise RunnerLinkError("only runner events, errors and interaction closures may require persistence, as true")
         self._durable_unacked.add(int(frame["seq"]))
 
 

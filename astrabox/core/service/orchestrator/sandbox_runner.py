@@ -649,9 +649,9 @@ class EnvelopeSender:
                 raise RunnerProtocolError(
                     "requires_persistence must be true when present"
                 )
-            if requires_persistence is True and op not in {"event", "interaction_closed"}:
+            if requires_persistence is True and op not in {"event", "interaction_closed", "error"}:
                 raise RunnerProtocolError(
-                    "only SDK events and interaction closures can require host persistence"
+                    "only SDK events, errors and interaction closures can require host persistence"
                 )
             frame = {"op": op, "seq": seq, "session_id": self._session_id, **fields}
             if result_store_sequence is not None:
@@ -1329,6 +1329,7 @@ class RunnerSession:
         self.session_id = session_id
         self.sender = EnvelopeSender(link, session_id)
         self._answered_interactions: set[str] = set()
+        self._expired_interactions: set[str] = set()
         self.broker = InteractionBroker(
             self.sender,
             wait_budget_s=interaction_wait_s,
@@ -1341,6 +1342,7 @@ class RunnerSession:
         self._activation_callback = activation_callback
         self._permission_mode = str(permission_mode or "default")
         self._client: SdkSession | None = None
+        self._stream_error: Exception | None = None
         self._store_bound_to: str | None = None
         self._prepared = False
         self._active = False
@@ -1944,6 +1946,7 @@ class RunnerSession:
             "queued_input_ids": queued,
             "pending_interactions": self.broker.pending_requests(),
             "answered_interaction_ids": sorted(self._answered_interactions),
+            "expired_interaction_ids": sorted(self._expired_interactions),
         }
 
     async def submit(self, command: DeliveryCommand) -> str:
@@ -2088,10 +2091,13 @@ class RunnerSession:
     async def set_permission_mode(self, mode: str) -> None:
         if self._client is None:
             raise RunnerProtocolError("set_permission_mode before session start")
+        if self._stream_error is not None:
+            raise self._stream_error
         await self._client.set_permission_mode(mode)
         # Only after the SDK accepted it: the broker's gate short-circuits on
         # this mode, and gating on a mode the CLI refused would split the two.
         self.broker.set_permission_mode(mode)
+        self._permission_mode = mode
 
     async def get_server_info(self) -> dict[str, Any] | None:
         if self._client is None:
@@ -2126,23 +2132,34 @@ class RunnerSession:
         assert self._client is not None
         try:
             await self._pump_events_inner()
+            raise EOFError("Claude SDK message stream ended")
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 — the pump's death is the message
-            # A dying pump dies silently without this handler: the SDK raises
-            # (ProcessError — the CLI died; CLIJSONDecodeError — unparseable
-            # output), the task ends, and the host sees a turn go quiet with
-            # nothing to act on. The SDK's own class name is the taxonomy —
-            # "CLI not installed", "CLI died" and "output unparseable" are
-            # three different operator actions, and a bare string would
-            # collapse them into one.
-            with contextlib.suppress(Exception):
+            self._stream_error = exc
+            pending = self.broker.pending_ids()
+            self.broker.cancel_all(message=str(exc))
+            self._expired_interactions.update(pending)
+            self._engine_response_id = None
+            self._run_start_seq = None
+            self._interrupts_awaiting_prompt_boundary.difference_update(
+                self._consumed_commands_since_result
+            )
+            self._produced_commands.update(self._consumed_commands_since_result)
+            self._consumed_commands_since_result.clear()
+            self._open_tasks.clear()
+            self._busy = False
+            for interaction_id in pending:
                 await self.sender.send(
-                    "error",
-                    error_class=type(exc).__name__,
-                    detail=str(exc),
+                    "interaction_closed", interaction_id=interaction_id,
+                    reason="expired", requires_persistence=True,
                 )
-            raise
+            await self.sender.send(
+                "error", error_class=type(exc).__name__, detail=str(exc),
+                exit_code=getattr(exc, "exit_code", None), requires_persistence=True,
+            )
+            await self._report_status()
+            logger.exception("Claude SDK message stream failed")
 
     async def _pump_events_inner(self) -> None:
         assert self._client is not None
@@ -2700,12 +2717,19 @@ class RunnerWsServer:
                 raise RunnerProtocolError(
                     "set_permission_mode requires request_id and mode"
                 )
-            await session.set_permission_mode(mode)
-            await link.send({
-                "op": "permission_mode_ack",
-                "request_id": request_id,
-                "mode": mode,
-            })
+            try:
+                await session.set_permission_mode(mode)
+            except Exception as exc:  # noqa: BLE001 — RPC refusal leaves the event journal connected
+                await link.send({
+                    "op": "permission_mode_ack", "request_id": request_id,
+                    "error_class": type(exc).__name__, "detail": str(exc),
+                })
+            else:
+                await link.send({
+                    "op": "permission_mode_ack",
+                    "request_id": request_id,
+                    "mode": mode,
+                })
         elif op == "state":
             await link.send({
                 "op": "state",

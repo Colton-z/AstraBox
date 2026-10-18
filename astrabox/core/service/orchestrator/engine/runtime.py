@@ -102,6 +102,14 @@ class RuntimeInputRefused(RuntimeError):
         self.status_code = status_code
 
 
+class RuntimeControlRefused(RuntimeError):
+    """A native control failed without ending the runtime's event transport."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 class InteractionNotOpen(RuntimeError):
     """The runtime holds no open interaction with this id (answered, withdrawn
     or lost with a restarted runtime process)."""

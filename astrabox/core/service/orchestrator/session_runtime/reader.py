@@ -44,6 +44,7 @@ from astrabox.core.service.orchestrator.engine.runtime import (
     ResponseOutput,
     ResponseStarted,
     RuntimeClient,
+    RuntimeControlRefused,
     RuntimeCursor,
     RuntimeCursorExpired,
     RuntimeDiagnostic,
@@ -166,6 +167,7 @@ class SessionReader:
         self._repo = repo
         self._feed = feed
         self._hooks = hooks
+        self._permission_failure: dict[str, Any] | None = None
         self._sid = lease.session_id
         self._seq = 0
         self._batch = FactBatch()
@@ -409,7 +411,7 @@ class SessionReader:
         # Requests for an earlier reader were about what ran then.
         await self._repo.expire_controls(self._sid, before_generation=self._lease.generation)
         # The mode may have changed while no reader was connected.
-        await self._hooks.permission_mode()
+        await self._sync_permission_mode()
         # Controls accepted between connections may have no notice left to read.
         await self._apply_controls()
         await self._deliver_pending()
@@ -427,7 +429,17 @@ class SessionReader:
             elif isinstance(item, Notice) and item.kind == "control":
                 await self._apply_controls()
             elif isinstance(item, Notice) and item.kind == "permission":
-                await self._hooks.permission_mode()
+                await self._sync_permission_mode()
+
+    async def _sync_permission_mode(self) -> None:
+        try:
+            await self._hooks.permission_mode()
+        except RuntimeControlRefused as exc:
+            # The native failure still arrives through the independent event stream.
+            self._permission_failure = {"code": exc.code, "message": str(exc), "status_code": 409}
+            logger.warning("session %s permission mode refused: %s", self._sid, exc.code)
+        else:
+            self._permission_failure = None
 
     async def _apply_controls(self) -> None:
         for row in await self._repo.pending_controls(self._lease):
@@ -450,6 +462,9 @@ class SessionReader:
 
     async def _deliver_pending(self) -> None:
         for row in await self._repo.undelivered_inputs(self._sid):
+            if self._permission_failure is not None:
+                await self._refuse(str(row["input_id"]), self._permission_failure)
+                continue
             item = RuntimeInput(
                 input_id=str(row["input_id"]),
                 content=str(row["content"] or ""),
