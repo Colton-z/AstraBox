@@ -39,6 +39,8 @@ interface PartGroup {
   key: number;
   process: boolean;
   parts: MessagePart[];
+  /** Adjacent text shares one Markdown document; source parts remain intact. */
+  text?: string;
 }
 
 // What a reader acts on or reads as the turn's outcome. These never join a
@@ -138,13 +140,18 @@ export function groupAssistantProcess(
       groups[groups.length - 1]?.parts.push(part);
       return;
     }
-    // Blank text renders nothing, so ending a process run on one would break
-    // the run at a part the reader never sees.
+    const previous = groups[groups.length - 1];
+    if (part.type === 'text' && previous?.text !== undefined && previous.parts.at(-1)?.type === 'text') {
+      previous.parts.push(part);
+      previous.text += part.text;
+      return;
+    }
+    // Blank text does not start a visible group, but prefixes inside a text
+    // run above retain their whitespace and Markdown syntax.
     if (part.type === 'text' && !part.text.trim()) return;
     const process = isProcessPart(part, pendingToolCallId, settled);
-    const previous = groups[groups.length - 1];
     if (process && previous?.process) previous.parts.push(part);
-    else groups.push({ key: index, process, parts: [part] });
+    else groups.push({ key: index, process, parts: [part], ...(!process && part.type === 'text' ? { text: part.text } : {}) });
   });
   return groups;
 }
@@ -177,6 +184,9 @@ function PartGroupRenderer({
   running: boolean;
   context: PartGroupRenderContext;
 }) {
+  if (group.text !== undefined) {
+    return <MarkdownContent text={group.text} testid={context.isUser ? undefined : 'assistant-text'} />;
+  }
   const rendered = group.parts.map((part, index) => (
     <PartRenderer
       key={`${context.groupOwnerId}-${group.key}-part-${index}`}
@@ -790,15 +800,20 @@ function MessageImage({ mediaType, base64 }: { mediaType: string; base64: string
 
 const EMPTY_IMAGE_BYTES = new Uint8Array();
 
-export function MarkdownContent({ text, testid }: { text: string; testid?: string }) {
+// The plugin registers every language when constructed. Share its synchronous
+// transformer across markdown processors instead of rebuilding it per fragment.
+const highlightMarkdown = rehypeHighlight();
+const sharedHighlight = () => highlightMarkdown;
+
+export const MarkdownContent = React.memo(function MarkdownContent({ text, testid }: { text: string; testid?: string }) {
   return (
     <div className="markdown" data-testid={testid}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[sharedHighlight]}>
         {localizeDisplayText(text)}
       </ReactMarkdown>
     </div>
   );
-}
+});
 
 /**
  * A thinking block, on the kit's `Reasoning`.

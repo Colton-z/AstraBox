@@ -1034,8 +1034,10 @@ class InteractionBroker:
         wait_budget_s: float = DEFAULT_INTERACTION_WAIT_S,
         hook_timeout_s: float = INTERACTION_HOOK_TIMEOUT_S,
         permission_mode: str = "default",
+        on_request: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self._sender = sender
+        self._on_request = on_request
         self._wait_budget_s = wait_budget_s
         self._hook_ceiling_s = max(hook_timeout_s - _INTERACTION_HOOK_MARGIN_S, 1.0)
         self._pending: dict[str, asyncio.Future[InteractionAnswer]] = {}
@@ -1072,7 +1074,10 @@ class InteractionBroker:
     async def _ask(self, interaction_id: str, *, tool_use_id: str, tool_name: str, tool_input: Any) -> None:
         request = {"tool_use_id": tool_use_id, "tool_name": tool_name, "tool_input": tool_input}
         self._requests[interaction_id] = request
-        await self._sender.send("interaction", interaction_id=interaction_id, **request)
+        if self._on_request is not None:
+            await self._on_request(interaction_id, request)
+        else:
+            await self._sender.send("interaction", interaction_id=interaction_id, **request)
 
     def cancel_all(self, *, message: str) -> int:
         """Resolve every pending gate as a deny (interrupt path).
@@ -1326,6 +1331,7 @@ class RunnerSession:
             self.sender,
             wait_budget_s=interaction_wait_s,
             permission_mode=permission_mode,
+            on_request=self._request_interaction,
         )
         self._client_factory = client_factory
         self._resume_client_factory = resume_client_factory
@@ -1485,6 +1491,8 @@ class RunnerSession:
         requested_mode = str(permission_mode or self._permission_mode).strip()
         if not requested_mode:
             raise RunnerProtocolError("activate permission_mode is empty")
+        self.sender.bind_prepared_session(link, target)
+        self.session_id = target
         resume = str(resume_session_key or "").strip()
         if resume:
             if self._resume_client_factory is None:
@@ -1534,8 +1542,6 @@ class RunnerSession:
                     "required MCP servers are not connected after activation: "
                     f"{unusable!r}"
                 )
-        self.sender.bind_prepared_session(link, target)
-        self.session_id = target
         self._active = True
         if self._store is not None and not self._store_bound:
             self._store.start_flusher()
@@ -1859,6 +1865,35 @@ class RunnerSession:
             and left.session_id == right.session_id
             and left.sdk_input == right.sdk_input
         )
+
+    async def _request_interaction(self, interaction_id: str, request: dict[str, Any]) -> None:
+        """Observe a resumed native tool before exposing its gate to the host.
+
+        Resume may fire PreToolUse during connect, before a root assistant
+        message or any newly admitted platform input. That native execution
+        is engine-owned; it must not borrow the id of an unconsumed input.
+        Its identity combines this runner incarnation and the native tool id,
+        so replay is stable and a later recovery is a distinct interval.
+        """
+        boundary = self._engine_response_id is None and not self._consumed_commands_since_result
+        fields: dict[str, Any] = {}
+        if boundary:
+            tool_use_id = str(request.get("tool_use_id") or "").strip()
+            if not tool_use_id:
+                raise RunnerProtocolError("an engine-owned tool gate has no native tool_use_id")
+            response_id = str(uuid_mod.uuid5(uuid_mod.UUID(RUNNER_BOOT_ID), tool_use_id))
+            self._engine_response_id = response_id
+            self._engine_response_ids.add(response_id)
+            self._busy = True
+            # A snapshot during publication must replay the boundary as well.
+            self._run_start_seq = self.sender.last_seq + 1
+            fields = {"engine_boundary": True, "response_id": response_id}
+            await self._report_status()
+        sequence = await self.sender.send(
+            "interaction", interaction_id=interaction_id, **request, **fields
+        )
+        if boundary:
+            self._run_start_seq = sequence
 
     async def _report_status(self) -> None:
         """Send ``busy`` while an input or a background task runs, else ``idle``, on change."""

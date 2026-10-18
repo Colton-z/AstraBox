@@ -1,4 +1,5 @@
-import { DefaultChatTransport, JSONParseError, TypeValidationError, readUIMessageStream } from 'ai';
+import { Chat } from '@ai-sdk/react';
+import { DefaultChatTransport, JSONParseError, TypeValidationError } from 'ai';
 import type { UIMessage, UIMessageChunk } from 'ai';
 import { buildSessionStreamUrl } from '../api';
 import type { PendingInteraction } from '../types';
@@ -15,8 +16,9 @@ import { consoleFetch } from '../consoleTransport';
  * the next request resumes from; this follower reconnects for as long as it
  * runs.
  *
- * Chunks are folded into messages by the AI SDK's own `readUIMessageStream`,
- * one call per response segment. A segment opens at a response's `start`
+ * Chunks are folded by the AI SDK's Chat state, one instance per response
+ * segment. Its UI snapshots share nested tool results instead of deep-copying
+ * the complete message on every fragment. A segment opens at a response's `start`
  * (which also reopens a response an interaction paused, under the same id) and
  * closes at its `finish`; a connection that drops in between does not close
  * it, so a reply resumes exactly where it was cut. A segment that continues a
@@ -24,10 +26,9 @@ import { consoleFetch } from '../consoleTransport';
  * starts from that message. History names unfinished text/reasoning parts,
  * whose prefixes are seeded through the SDK so later deltas continue them.
  *
- * `useChat`'s request lifecycle is not used: it streams the reply to a request
- * the page made into the last message. Here the page makes no request for a
- * reply; responses pause and continue, run while the person's next message
- * waits after them, and start without any message at all.
+ * A segment's Chat uses a local transport over the already-open stream; it
+ * sends no request or user message. Responses can pause and continue, run
+ * while the person's next message waits, or start without a user message.
  */
 
 /** What the follower tells the page, and what it reads from it. */
@@ -446,6 +447,7 @@ export class SessionFollower {
     }) ?? [];
     let input!: ReadableStreamDefaultController<UIMessageChunk>;
     let open = true;
+    let chat: Chat<UIMessage> | undefined;
     const stream = new ReadableStream<UIMessageChunk>({
       start(controller) { input = controller; },
       cancel() { open = false; },
@@ -459,6 +461,7 @@ export class SessionFollower {
         try { input.enqueue(chunk); } catch { open = false; }
       },
       close: () => {
+        if (this.stopped) void chat?.stop();
         if (!open) return;
         open = false;
         try { input.close(); } catch { /* the reader already stopped */ }
@@ -468,11 +471,39 @@ export class SessionFollower {
       written: Promise.resolve(),
     };
     segment.written = (async () => {
-      const messages = readUIMessageStream<UIMessage>({
-        message: seed,
-        stream,
+      chat = new Chat<UIMessage>({
+        messages: seed ? [seed] : [],
+        transport: {
+          sendMessages: async () => stream,
+          reconnectToStream: async () => {
+            throw new Error('SESSION_SEGMENT_RECONNECT: reconnect belongs to the session follower');
+          },
+        },
         onError: (error) => this.fail(error),
       });
+      let seeded = continuation.length === 0;
+      let publishing = true;
+      const publish = () => {
+        if (!publishing || this.stopped) return;
+        const message = chat!.lastMessage;
+        if (!message?.id) return;
+        if (!seeded) {
+          seeded = continuation.every(({ index }, offset) => {
+            const part = message.parts[retainedCount + offset];
+            const prefix = base!.parts[index];
+            return part?.type === prefix.type && 'text' in part && 'text' in prefix && part.text.startsWith(prefix.text);
+          });
+          if (!seeded) return;
+        }
+        // Seeded prefixes are appended by the SDK. Publish them in their
+        // original positions after all prefixes have been restored.
+        const parts = continuation.length === 0 ? message.parts : [
+          ...partOrder.map((index, original) => message.parts[index] ?? base!.parts[original]),
+          ...message.parts.slice(partOrder.length),
+        ];
+        this.host.write({ ...message, parts });
+      };
+      const unsubscribe = chat['~registerMessagesCallback'](publish, 50);
       for (const { index, id } of continuation) {
         const part = base!.parts[index];
         if (!part || (part.type !== 'text' && part.type !== 'reasoning')) {
@@ -482,25 +513,12 @@ export class SessionFollower {
         segment.put({ type: `${part.type}-start`, id, providerMetadata: part.providerMetadata });
         segment.put({ type: `${part.type}-delta`, id, delta: part.text });
       }
-      let seeded = continuation.length === 0;
-      for await (const message of messages) {
-        if (this.stopped) break;
-        if (!message.id) continue;
-        if (!seeded) {
-          seeded = continuation.every(({ index }, offset) => {
-            const part = message.parts[retainedCount + offset];
-            const prefix = base!.parts[index];
-            return part?.type === prefix.type && 'text' in part && 'text' in prefix && part.text === prefix.text;
-          });
-          if (!seeded) continue;
-        }
-        // Seeded prefixes are appended by the SDK. Publish them in their
-        // original positions after all prefixes have been restored.
-        const parts = continuation.length === 0 ? message.parts : [
-          ...partOrder.map((index, original) => message.parts[index] ?? base!.parts[original]),
-          ...message.parts.slice(partOrder.length),
-        ];
-        this.host.write({ ...message, parts });
+      try {
+        await chat.sendMessage();
+        publish();
+      } finally {
+        publishing = false;
+        unsubscribe();
       }
     })().catch((error: unknown) => this.fail(error));
     this.segment = segment;

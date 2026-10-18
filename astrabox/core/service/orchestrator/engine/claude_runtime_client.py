@@ -180,6 +180,13 @@ class _Translation:
 
     def _interaction(self, frame: dict[str, Any]) -> list[RuntimeEvent]:
         interaction_id = str(frame.get("interaction_id") or "").strip()
+        events: list[RuntimeEvent] = []
+        boundary = frame.get("engine_boundary") is True
+        if boundary:
+            resumed_id = str(frame.get("response_id") or "").strip()
+            if not resumed_id or self.response_id is not None:
+                raise ValueError(f"resumed tool boundary conflicts with the open response: {frame!r}")
+            events += self._start(resumed_id, "engine", (), interrupt_target=resumed_id)
         response_id = self.response_id
         if not interaction_id or response_id is None:
             raise ValueError(f"runner interaction outside a response: {frame!r}")
@@ -192,13 +199,21 @@ class _Translation:
         )
         self.interactions[interaction_id] = record
         parts = []
+        if boundary:
+            # The SDK can reissue this intent before assistant output on resume.
+            parts.append({
+                "type": "tool-input-available",
+                "toolCallId": str(frame.get("tool_use_id") or ""),
+                "toolName": str(frame.get("tool_name") or ""),
+                "input": frame.get("tool_input"),
+            })
         approval = build_tool_approval_request_frame(record)
         if approval is not None:
             parts.append(approval)
         parts += [{"type": "data-interaction", "data": dict(record)}, _finish("tool-calls")]
         # A second request while the first still waits arrives in a message
         # the first one closed.
-        events = self._reopen()
+        events += self._reopen()
         events.append(InteractionOpened(None, response_id, interaction_id, record))
         events += [ResponseOutput(None, response_id, part) for part in parts]
         events.append(StatusChanged(None, "waiting"))
@@ -441,20 +456,24 @@ class ClaudeRuntimeClient:
         elif running:
             response_id = input_response_message_id(running[0])
             open_responses = (OpenResponse(response_id, "input", tuple(running)),)
-        pending = tuple(
-            PendingInteraction(
-                response_id or "",
-                str(item["interaction_id"]),
-                interaction_record(
-                    interaction_id=str(item["interaction_id"]),
-                    response_id=response_id or "",
-                    tool_use_id=str(item.get("tool_use_id") or ""),
-                    tool_name=str(item.get("tool_name") or ""),
-                    tool_input=item.get("tool_input"),
-                ),
+        pending_items: list[PendingInteraction] = []
+        for item in snapshot.get("pending_interactions") or []:
+            if response_id is None:
+                raise ValueError("runner snapshot has a pending interaction without an open response")
+            pending_items.append(
+                PendingInteraction(
+                    response_id,
+                    str(item["interaction_id"]),
+                    interaction_record(
+                        interaction_id=str(item["interaction_id"]),
+                        response_id=response_id,
+                        tool_use_id=str(item.get("tool_use_id") or ""),
+                        tool_name=str(item.get("tool_name") or ""),
+                        tool_input=item.get("tool_input"),
+                    ),
+                )
             )
-            for item in snapshot.get("pending_interactions") or []
-        )
+        pending = tuple(pending_items)
         status: RuntimeStatus = "waiting" if pending else ("working" if snapshot.get("busy") else "idle")
         run_start = snapshot.get("run_start_seq")
         # Events resume where the open response began, so its parts are read whole.
