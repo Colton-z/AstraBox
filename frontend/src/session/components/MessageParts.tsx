@@ -805,7 +805,7 @@ const EMPTY_IMAGE_BYTES = new Uint8Array();
 const highlightMarkdown = rehypeHighlight();
 const sharedHighlight = () => highlightMarkdown;
 
-export const MarkdownContent = React.memo(function MarkdownContent({ text, testid }: { text: string; testid?: string }) {
+export function MarkdownContent({ text, testid }: { text: string; testid?: string }) {
   return (
     <div className="markdown" data-testid={testid}>
       <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[sharedHighlight]}>
@@ -813,7 +813,7 @@ export const MarkdownContent = React.memo(function MarkdownContent({ text, testi
       </ReactMarkdown>
     </div>
   );
-});
+}
 
 /**
  * A thinking block, on the kit's `Reasoning`.
