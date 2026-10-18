@@ -268,7 +268,9 @@ class RuntimeState:
     ``admitted_input_ids`` are the inputs the runtime durably holds, so a reader
     that missed :class:`InputAdmitted` events can still close the platform's
     custody of them. ``cursor`` is where :meth:`RuntimeClient.events` continues
-    so that nothing after this snapshot is missed.
+    so that nothing after this snapshot is missed. ``closed_interactions``
+    carries closure receipts the runtime retains; a saved platform answer is
+    not evidence that the runtime accepted it.
     """
 
     status: RuntimeStatus
@@ -277,6 +279,8 @@ class RuntimeState:
     queued_input_ids: tuple[str, ...] = ()
     admitted_input_ids: tuple[str, ...] = ()
     cursor: RuntimeCursor | None = None
+    #: Native closure receipts retained by the runtime for reader recovery.
+    closed_interactions: tuple[InteractionClosed, ...] = ()
 
 
 # --------------------------------------------------------------------------
@@ -328,7 +332,7 @@ class RuntimeClient(Protocol):
         """Pass a person's answer to an open interaction.
 
         Raises :class:`InteractionNotOpen` when the runtime holds no such open
-        interaction.
+        interaction and no receipt that it already accepted this answer.
         """
         ...
 

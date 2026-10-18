@@ -512,10 +512,11 @@ class EnvelopeSender:
         return self._link
 
     def set_link(self, link: HostLink) -> None:
-        """Reattach: the newest connection wins, unconditionally. There is no
-        arbitration between an old and a new consumer — the old link is simply
-        never written to again. A stale writer can only race a live one where
-        two consumers are allowed at once; this sender never has two."""
+        """Switch output to the newest connection before its handshake.
+
+        The websocket endpoint retires the displaced connection after replay;
+        this sender never writes to both consumers.
+        """
         # Logged because a pending approval's budget runs on the host's absence:
         # when one expires, the diagnosis turns on whether a host came back and
         # when. Without this line the box's own log ends at "host link closed"
@@ -648,9 +649,9 @@ class EnvelopeSender:
                 raise RunnerProtocolError(
                     "requires_persistence must be true when present"
                 )
-            if requires_persistence is True and op != "event":
+            if requires_persistence is True and op not in {"event", "interaction_closed"}:
                 raise RunnerProtocolError(
-                    "only SDK event frames can require host persistence"
+                    "only SDK events and interaction closures can require host persistence"
                 )
             frame = {"op": op, "seq": seq, "session_id": self._session_id, **fields}
             if result_store_sequence is not None:
@@ -1327,6 +1328,7 @@ class RunnerSession:
         self.slot_id = session_id
         self.session_id = session_id
         self.sender = EnvelopeSender(link, session_id)
+        self._answered_interactions: set[str] = set()
         self.broker = InteractionBroker(
             self.sender,
             wait_budget_s=interaction_wait_s,
@@ -1941,6 +1943,7 @@ class RunnerSession:
             "consumed_input_ids": sorted(self._consumed_commands_since_result | self._produced_commands),
             "queued_input_ids": queued,
             "pending_interactions": self.broker.pending_requests(),
+            "answered_interaction_ids": sorted(self._answered_interactions),
         }
 
     async def submit(self, command: DeliveryCommand) -> str:
@@ -1977,10 +1980,21 @@ class RunnerSession:
             raise
         return "accepted"
 
-    def answer_interaction(
+    async def answer_interaction(
         self, interaction_id: str, answer: InteractionAnswer
     ) -> bool:
-        return self.broker.answer(interaction_id, answer)
+        if interaction_id in self._answered_interactions:
+            return True
+        if not self.broker.answer(interaction_id, answer):
+            return False
+        self._answered_interactions.add(interaction_id)
+        # Queue the closure before yielding to the SDK callback this answer
+        # released, so its tool output and Result cannot overtake the fact.
+        await self.sender.send(
+            "interaction_closed", interaction_id=interaction_id,
+            reason="answered", requires_persistence=True,
+        )
+        return True
 
     def attach_link(self, link: HostLink) -> None:
         self.sender.set_link(link)
@@ -2295,6 +2309,10 @@ class _WsHostLink:
     def mark_closed(self) -> None:
         self._open = False
 
+    async def close(self) -> None:
+        self.mark_closed()
+        await self._ws.close(code=1001, reason="host link superseded")
+
     async def send(self, frame: dict[str, Any]) -> bool:
         try:
             await self._ws.send(json.dumps(frame, ensure_ascii=False))
@@ -2424,6 +2442,7 @@ class RunnerWsServer:
             link.mark_closed()
 
     async def _open_session(self, opening: dict[str, Any], link: _WsHostLink, ws: Any) -> None:
+        previous_link: _WsHostLink | None = None
         op = opening.get("op")
         after_sequence = 0
         engine_contract = _runner_engine_contract()
@@ -2555,6 +2574,10 @@ class RunnerWsServer:
             self.session.sender.cursor_window(after_sequence)
             # No await between the ownership check and replacement. A link
             # still handshaking owns output too, before replay makes it ready.
+            previous = self.session.sender.link
+            if not isinstance(previous, _WsHostLink):
+                raise RunnerProtocolError("runner host link is not a websocket link")
+            previous_link = previous
             self.session.attach_link(link)
             logger.info("attached to session %s", self.session.session_id)
         else:
@@ -2578,11 +2601,15 @@ class RunnerWsServer:
         # Gap + retained suffix stay under the sender's lock so compaction
         # cannot move the advertised boundary between them.
         await self.session.sender.replay_after(after_sequence, emit_gap=True)
+        if previous_link is not None:
+            await previous_link.close()
 
     async def _dispatch(self, frame: dict[str, Any], link: _WsHostLink) -> None:
         session = self.session
         if session is None:
             raise RunnerProtocolError("frame before activation")
+        if session.sender.link is not link:
+            raise RunnerProtocolError("host link superseded")
         op = frame.get("op")
         if op == "input":
             sequence = frame.get("sequence")
@@ -2620,7 +2647,7 @@ class RunnerWsServer:
             )
         elif op == "answer":
             interaction_id = str(frame.get("interaction_id") or "")
-            answered = session.answer_interaction(
+            answered = await session.answer_interaction(
                 interaction_id,
                 InteractionAnswer(
                     decision=str(frame.get("decision") or "deny"),

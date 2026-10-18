@@ -314,8 +314,11 @@ class SessionReader:
         runtime_open = {response.response_id: response for response in state.open_responses}
         recorded_interactions = set(await self._repo.open_interaction_ids(self._sid))
         pending = {item.interaction_id: item for item in state.pending_interactions}
+        closed = {item.interaction_id: item for item in state.closed_interactions}
         batch = self._batch
         lost_parts: list[OutputPart] = []
+        for interaction_id in sorted(recorded_interactions & closed.keys()):
+            batch.facts.append(InteractionClose(interaction_id, closed[interaction_id].reason))
         for response_id in sorted(recorded_open - runtime_open.keys()):
             batch.facts.append(
                 ResponseEnd(response_id, "failed", "runtime_lost", error=lost_response_error("runtime_lost"))
@@ -326,7 +329,7 @@ class SessionReader:
         for response_id, response in runtime_open.items():
             if response_id not in recorded_open:
                 batch.facts.append(ResponseStart(response_id, response.origin, tuple(response.input_ids)))
-        for interaction_id in sorted(recorded_interactions - pending.keys()):
+        for interaction_id in sorted(recorded_interactions - pending.keys() - closed.keys()):
             batch.facts.append(InteractionClose(interaction_id, "expired"))
         for interaction_id, item in pending.items():
             if interaction_id not in recorded_interactions:
@@ -471,7 +474,7 @@ class SessionReader:
                 self._batch.facts.append(InteractionClose(interaction_id, "expired"))
             else:
                 self._batch.facts.append(InteractionClose(interaction_id, "answered"))
-            # Committed before the next notice is read, so an answer is never handed over twice.
+            # Runtime acceptance receipts distinguish redelivery after a lost commit.
             await self._commit()
 
     async def _refuse(self, input_id: str, failure: dict[str, Any]) -> None:

@@ -1047,8 +1047,8 @@ class RunnerLink:
         """
         if frame.get("requires_persistence") is None:
             return
-        if frame.get("requires_persistence") is not True or frame.get("op") != "event":
-            raise RunnerLinkError("only runner event frames may require persistence, as true")
+        if frame.get("requires_persistence") is not True or frame.get("op") not in {"event", "interaction_closed"}:
+            raise RunnerLinkError("only runner events and interaction closures may require persistence, as true")
         self._durable_unacked.add(int(frame["seq"]))
 
 

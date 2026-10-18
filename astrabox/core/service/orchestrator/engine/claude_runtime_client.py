@@ -121,6 +121,12 @@ class _Translation:
             return self._event(frame)
         if op == "interaction":
             return self._interaction(frame)
+        if op == "interaction_closed":
+            interaction_id = str(frame.get("interaction_id") or "").strip()
+            if not interaction_id or frame.get("reason") != "answered":
+                raise ValueError(f"runner interaction closure is invalid: {frame!r}")
+            self.interactions.pop(interaction_id, None)
+            return [InteractionClosed(None, interaction_id, "answered")]
         if op == "status":
             state = frame.get("state")
             if state == "busy":
@@ -485,12 +491,18 @@ class ClaudeRuntimeClient:
             queued_input_ids=tuple(str(i) for i in snapshot.get("queued_input_ids") or []),
             admitted_input_ids=tuple(str(i) for i in snapshot.get("consumed_input_ids") or []),
             cursor=RuntimeCursor(self._boot_id, {"seq": through, "index": _WHOLE_FRAME}),
+            closed_interactions=tuple(
+                InteractionClosed(None, str(interaction_id), "answered")
+                for interaction_id in snapshot.get("answered_interaction_ids") or []
+            ),
         )
 
     async def answer(self, interaction_id: str, response: dict[str, Any]) -> None:
         # Answer delivery can precede journal replay on a new reader. The
         # runner's pending gate, not this reader's cache, owns the contract.
         state = await self.state()
+        if any(item.interaction_id == interaction_id for item in state.closed_interactions):
+            return
         pending = next(
             (item for item in state.pending_interactions if item.interaction_id == interaction_id),
             None,

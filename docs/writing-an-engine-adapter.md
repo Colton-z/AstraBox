@@ -165,7 +165,7 @@ time; a new reader opens a new client.
 | `submit(input)` | Hand the runtime one `RuntimeInput`; return once the runtime has received it. Idempotent by `input_id`. Raise `RuntimeInputRefused(code, message, status_code=)` when the runtime declines it. |
 | `events(after=cursor)` | An async generator of runtime events after the cursor (from the start for `None`), for as long as the connection lives. Raise `RuntimeCursorExpired` when the cursor cannot be resumed. |
 | `state()` | The runtime's own account of itself now (`RuntimeState`). |
-| `answer(interaction_id, response)` | Pass a person's answer to an open interaction. Raise `InteractionNotOpen` when the runtime holds no such open interaction. |
+| `answer(interaction_id, response)` | Pass a person's answer to an open interaction. A redelivery may return normally when the runtime retains proof it accepted that answer. Otherwise raise `InteractionNotOpen` when it holds no such open interaction. |
 | `interrupt(cancel_queued=False)` | Stop the response in progress; with `cancel_queued`, also drop the inputs queued behind it. |
 | `committed(cursor)` | AstraBox durably recorded every event through the cursor. A runtime that keeps history only until its reader has it may release what precedes the cursor. |
 | `capabilities()` | The connected runtime's `EngineCapabilityManifest`: permission modes, input content types, and controls. |
@@ -230,10 +230,14 @@ into the position.
 Raise `RuntimeCursorExpired` for a cursor from another generation or for a
 position the vendor no longer retains. The reader then takes back the inputs
 the runtime received but never admitted, asks `state()` for the runtime's own
-account (open responses, pending interactions, queued and admitted inputs, and
-the cursor to continue from), and reconciles: a response the runtime no longer
+account (open responses, pending and closed interactions, queued and admitted
+inputs, and the cursor to continue from), and reconciles: a response the runtime no longer
 reports ends as failed (`runtime_lost`), and an interaction it no longer waits
-on closes as expired.
+on closes with the runtime's retained closure reason, or as expired when it has
+no closure receipt. Adapters report an accepted answer through a replayable
+`InteractionClosed(..., "answered")` event and retain its receipt in
+`RuntimeState.closed_interactions` for reconciliation. An answer saved in the
+platform database does not establish acceptance by the runtime.
 
 ### Shape a response's browser parts
 
