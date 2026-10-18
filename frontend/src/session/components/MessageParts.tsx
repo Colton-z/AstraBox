@@ -663,7 +663,7 @@ function AssistantProcess({
         <div
           role="status"
           data-testid="assistant-process-activity"
-          className="ml-6 min-h-5 border-l border-border pb-3 pl-6 text-sm leading-5 text-muted-foreground"
+          className="ml-6 min-h-8 border-l border-border pb-3 pl-6 text-sm leading-5 text-muted-foreground"
         >
           {action && <div className="truncate" title={action}>{action}</div>}
           {unfinished.length > 1 && (
