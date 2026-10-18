@@ -53,7 +53,7 @@ ALL_IN_ONE_IMAGE    ?= astrabox/all-in-one:latest
 # distinguishable.
 IMAGE_TAG           ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null && { git diff --quiet 2>/dev/null || echo -dirty; } || date -u +nogit-%Y%m%d%H%M%S)
 REGISTRY            ?=
-CLAUDE_CODE_VERSION ?= 2.1.287
+CLAUDE_CODE_VERSION ?= 2.1.302
 SANDBOX_BASE_IMAGE  ?= ghcr.io/agent-infra/sandbox:1.11.0
 NPM_REGISTRY        ?= https://registry.npmjs.org/
 

@@ -74,7 +74,7 @@ RUN set -eux; \
 # npm registry (verified via `npm view @anthropic-ai/claude-code version`); bump
 # deliberately, never float to a moving tag, so the image digest pins the exact
 # agent the host SDK speaks to.
-ARG CLAUDE_CODE_VERSION=2.1.287
+ARG CLAUDE_CODE_VERSION=2.1.302
 
 # Public npm registry only (the default registry.npmjs.org below). Overridable for
 # air-gapped/private mirrors.
