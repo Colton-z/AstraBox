@@ -41,6 +41,7 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from astrabox.core.model import SessionState
+from astrabox.core.service.orchestrator.engine.interaction_contract import public_interaction_view
 from astrabox.persistence.sql import (
     execute,
     fetch_all,
@@ -155,6 +156,7 @@ class InteractionOpen:
 class InteractionClose:
     interaction_id: str
     status: Literal["answered", "withdrawn", "expired"]
+    output_seq: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -596,6 +598,24 @@ class SessionRuntimeRepository:
             if held.rowcount == 0:
                 return False
             sid = lease.session_id
+            for fact in batch.facts:
+                await _apply(conn, sid, fact)
+            output = {part.seq: part for part in batch.output}
+            for fact in batch.facts:
+                if not isinstance(fact, InteractionClose) or fact.output_seq is None:
+                    continue
+                row = (await conn.execute(select(_INTERACTIONS).where(
+                    _INTERACTIONS.c.session_id == sid,
+                    _INTERACTIONS.c.interaction_id == fact.interaction_id,
+                ))).mappings().one()
+                data = public_interaction_view({
+                    **row["contract"], "status": row["status"], "answer": row["answer"],
+                })
+                output[fact.output_seq] = OutputPart(
+                    fact.output_seq, str(row["response_id"]),
+                    {"type": "data-interaction", "id": fact.interaction_id, "data": data},
+                )
+            batch.output[:] = sorted(output.values(), key=lambda part: part.seq)
             if batch.output:
                 await conn.execute(
                     insert(_OUTPUT),
@@ -604,8 +624,6 @@ class SessionRuntimeRepository:
                         for part in batch.output
                     ],
                 )
-            for fact in batch.facts:
-                await _apply(conn, sid, fact)
             session_values: dict[str, Any] = {}
             if batch.cursor is not None:
                 session_values["reader_cursor"] = batch.cursor

@@ -275,6 +275,13 @@ question answers, a decision uses one of the declared option IDs, and a tool
 approval accepts `approve` or `reject`. See [Permission
 Modes](permission-modes.md) for complete examples.
 
+Each `data-interaction` part uses its `interaction_id` as the part `id`.
+When the runtime closes the interaction, another part with that same ID
+updates its recorded status and, for an answered form, its selected answers.
+Replace the existing data part as the AI SDK does; do not append another card.
+The settlement is recorded with the closing fact and follows the same output
+cursor as every other part, including after a cold history snapshot.
+
 ## `finish` full schema
 
 The terminal `finish` part names the AI SDK finish reason:

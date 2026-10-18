@@ -185,8 +185,11 @@ class SessionReader:
         subscription = self._feed.subscribe(self._sid)
         lost = False
         try:
+            self._seq, cursor_json = await self._repo.resume_point(self._sid)
             async with asyncio.TaskGroup() as group:
-                reading = group.create_task(self._read(), name=f"reader-read-{self._sid}")
+                reading = group.create_task(
+                    self._read(RuntimeCursor.from_json(cursor_json)), name=f"reader-read-{self._sid}"
+                )
                 committing = group.create_task(self._commit_loop(), name=f"reader-commit-{self._sid}")
                 delivering = group.create_task(
                     self._deliver_loop(subscription), name=f"reader-deliver-{self._sid}"
@@ -206,10 +209,8 @@ class SessionReader:
 
     # -- reading -----------------------------------------------------------
 
-    async def _read(self) -> None:
-        last_seq, cursor_json = await self._repo.resume_point(self._sid)
-        self._seq = last_seq
-        events = await self._open_events(RuntimeCursor.from_json(cursor_json))
+    async def _read(self, cursor: RuntimeCursor | None) -> None:
+        events = await self._open_events(cursor)
         async for event in events:
             if isinstance(event, InputAdmitted):
                 await pass_fault_barrier(
@@ -285,7 +286,7 @@ class SessionReader:
         elif isinstance(event, InteractionOpened):
             batch.facts.append(InteractionOpen(event.response_id, event.interaction_id, event.contract))
         elif isinstance(event, InteractionClosed):
-            batch.facts.append(InteractionClose(event.interaction_id, event.reason))
+            self._close_interaction(event.interaction_id, event.reason)
         elif isinstance(event, InputAdmitted):
             batch.facts.append(InputsAdmitted((event.input_id,)))
             urgent = False
@@ -308,6 +309,12 @@ class SessionReader:
         if urgent:
             self._urgent.set()
 
+    def _close_interaction(self, interaction_id: str, status: Literal["answered", "withdrawn", "expired"]) -> None:
+        # Reserve its position before later live parts. The commit renders the
+        # durable answer and publishes it through the existing output notice.
+        self._seq += 1
+        self._batch.facts.append(InteractionClose(interaction_id, status, self._seq))
+
     async def _reconcile(self, state: RuntimeState) -> None:
         """Align the recorded facts with the runtime's own account of itself."""
         recorded_open = set(await self._repo.open_response_ids(self._sid))
@@ -318,7 +325,7 @@ class SessionReader:
         batch = self._batch
         lost_parts: list[OutputPart] = []
         for interaction_id in sorted(recorded_interactions & closed.keys()):
-            batch.facts.append(InteractionClose(interaction_id, closed[interaction_id].reason))
+            self._close_interaction(interaction_id, closed[interaction_id].reason)
         for response_id in sorted(recorded_open - runtime_open.keys()):
             batch.facts.append(
                 ResponseEnd(response_id, "failed", "runtime_lost", error=lost_response_error("runtime_lost"))
@@ -330,7 +337,7 @@ class SessionReader:
             if response_id not in recorded_open:
                 batch.facts.append(ResponseStart(response_id, response.origin, tuple(response.input_ids)))
         for interaction_id in sorted(recorded_interactions - pending.keys() - closed.keys()):
-            batch.facts.append(InteractionClose(interaction_id, "expired"))
+            self._close_interaction(interaction_id, "expired")
         for interaction_id, item in pending.items():
             if interaction_id not in recorded_interactions:
                 batch.facts.append(InteractionOpen(item.response_id, interaction_id, item.contract))
@@ -471,9 +478,9 @@ class SessionReader:
             try:
                 await self._client.answer(interaction_id, dict(row["answer"]))
             except InteractionNotOpen:
-                self._batch.facts.append(InteractionClose(interaction_id, "expired"))
+                self._close_interaction(interaction_id, "expired")
             else:
-                self._batch.facts.append(InteractionClose(interaction_id, "answered"))
+                self._close_interaction(interaction_id, "answered")
             # Runtime acceptance receipts distinguish redelivery after a lost commit.
             await self._commit()
 

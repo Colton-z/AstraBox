@@ -381,6 +381,10 @@ export function useSessionChat({
       setLiveInteraction(interaction);
       refreshDetail();
     },
+    interactionClosed: (interactionId) => {
+      setClosedInteractions((current) => new Set(current).add(interactionId));
+      refreshDetail();
+    },
     childRunsChanged: () => {
       setChildRunRevision((revision) => revision + 1);
     },
@@ -418,6 +422,7 @@ export function useSessionChat({
       responseEnded: (...args) => hostRef.current.responseEnded(...args),
       inputFailed: (...args) => hostRef.current.inputFailed(...args),
       interactionOpened: (...args) => hostRef.current.interactionOpened(...args),
+      interactionClosed: (...args) => hostRef.current.interactionClosed(...args),
       childRunsChanged: () => hostRef.current.childRunsChanged(),
       sessionChanged: () => hostRef.current.sessionChanged(),
       connected: () => hostRef.current.connected(),

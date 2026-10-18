@@ -47,6 +47,7 @@ export interface FollowerHost {
   responseEnded(messageId: string): void;
   inputFailed(failure: InputFailure & { input_id: string }): void;
   interactionOpened(interaction: PendingInteraction): void;
+  interactionClosed(interactionId: string): void;
   childRunsChanged(): void;
   /**
    * What a page shows of the session record changed, such as the title
@@ -286,6 +287,10 @@ export class SessionFollower {
         const data = (chunk as { data?: Record<string, unknown> }).data;
         await this.feed(chunk);
         if (data && typeof data.interaction_id === 'string') {
+          if (data.status && data.status !== 'open') {
+            this.host.interactionClosed(data.interaction_id);
+            return;
+          }
           // The record names the response it pauses on the session's reads;
           // on the stream it arrives inside that response's message.
           this.host.interactionOpened({

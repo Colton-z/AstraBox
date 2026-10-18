@@ -105,7 +105,7 @@ def fold_message(message_id: str, chunks: Iterable[Mapping[str, Any]]) -> dict[s
             if chunk.get("transient") is True:
                 continue
             part = {"type": kind, "data": deepcopy(chunk.get("data"))}
-            part_id = chunk.get("id")
+            part_id = part["data"]["interaction_id"] if kind == "data-interaction" else chunk.get("id")
             if part_id is not None:
                 part["id"] = part_id
                 existing = data_parts.get((kind, str(part_id)))
@@ -285,5 +285,6 @@ def public_part(part: Mapping[str, Any], *, shared: bool) -> dict[str, Any] | No
         data = public_interaction_view(public.get("data"), include_tool_input=not shared)
         if data is None:
             return None
+        public["id"] = data["interaction_id"]
         public["data"] = data
     return public
