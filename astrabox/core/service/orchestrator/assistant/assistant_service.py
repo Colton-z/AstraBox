@@ -1390,6 +1390,13 @@ class AssistantService:
             )
         )
         if undestroyed:
+            source = await self._sessions_repo.get_session_including_deleted(session_id)
+            pending_state = next((
+                record for record in (source or {}).get("retained_startup_allocations") or ()
+                if record.get("native_state_save_required")
+                and record.get("sandbox_generation") == provisioning_sandbox_generation
+                and (record.get("allocation") or {}).get("sandbox_id") == undestroyed
+            ), None)
             logger.error(
                 "Assistant materializer failed with an unconfirmed sandbox: "
                 "session=%s assistant=%s sandbox=%s (%s)",
@@ -1409,6 +1416,8 @@ class AssistantService:
                         "provisioning_session_id": session_id,
                         "provisioning_sandbox_generation": provisioning_sandbox_generation,
                     },
+                    runtime_identity=pending_state.get("runtime_identity") if pending_state else None,
+                    state_save_required=pending_state is not None,
                 )
             )
         return bool(
@@ -1595,10 +1604,15 @@ class AssistantService:
                     owns_materialization=False,
                     response=response,
                 )
-            # Pointer released; fall through and materialize a fresh sandbox in
-            # this same call. The state is still RECOVERY_REQUIRED, which is
-            # what the MATERIALIZING compare-and-set below expects.
-            sandbox_id = ""
+            # Completing a pending native save uses hibernation release, which
+            # changes the state as well as clearing the old sandbox pointer.
+            refreshed = await self._workspace_service.get_workspace(
+                user_id=user.user_id,
+                assistant_id=assistant_id,
+            )
+            workspace = refreshed or workspace
+            sandbox_id = str(workspace.get("current_sandbox_id") or "").strip()
+            workspace_state = str(workspace.get("state") or "").strip()
         active_materializer_id = str(
             workspace.get("provisioning_session_id") or ""
         ).strip()
@@ -2056,6 +2070,11 @@ class AssistantService:
         the workspace exactly as it was — still RECOVERY_REQUIRED, still
         pointing at that sandbox — so the next wake retries.
         """
+        if not workspace.get("post_commit_cleanup_pending"):
+            result = await self._complete_hibernation_release(
+                user_id=user_id, assistant_id=assistant_id, sandbox_id=sandbox_id,
+            )
+            return bool(result.get("released"))
         if self._runtime_manager is None:
             logger.warning(
                 "assistant workspace recovery cannot retry the destruction "

@@ -7272,6 +7272,20 @@ export interface components {
             /** Src Path */
             src_path: string;
         };
+        /**
+         * NativeStateInitialization
+         * @description The allocation whose unpublished profile is being recovered.
+         */
+        NativeStateInitialization: {
+            /** Recovery Owner */
+            recovery_owner: string;
+            /** Sandbox Generation */
+            sandbox_generation: string;
+            /** Sandbox Id */
+            sandbox_id: string;
+            /** Session Id */
+            session_id: string;
+        };
         /** PerformUserAction */
         PerformUserAction: {
             /** Action Id */
@@ -7414,6 +7428,7 @@ export interface components {
         RuntimeStateSaveRequest: {
             /** Expected Snapshot Id */
             expected_snapshot_id: string | null;
+            initialization?: components["schemas"]["NativeStateInitialization"] | null;
             owner: components["schemas"]["RuntimeStateOwnerPayload"];
             /** Payload B64 */
             payload_b64: string;

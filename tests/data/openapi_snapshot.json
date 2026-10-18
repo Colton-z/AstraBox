@@ -9585,6 +9585,40 @@
         "title": "MoveSessionFilesRequest",
         "type": "object"
       },
+      "NativeStateInitialization": {
+        "additionalProperties": false,
+        "description": "The allocation whose unpublished profile is being recovered.",
+        "properties": {
+          "recovery_owner": {
+            "minLength": 1,
+            "title": "Recovery Owner",
+            "type": "string"
+          },
+          "sandbox_generation": {
+            "minLength": 1,
+            "title": "Sandbox Generation",
+            "type": "string"
+          },
+          "sandbox_id": {
+            "minLength": 1,
+            "title": "Sandbox Id",
+            "type": "string"
+          },
+          "session_id": {
+            "minLength": 1,
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "recovery_owner",
+          "sandbox_generation",
+          "sandbox_id"
+        ],
+        "title": "NativeStateInitialization",
+        "type": "object"
+      },
       "PerformUserAction": {
         "additionalProperties": false,
         "properties": {
@@ -9987,6 +10021,16 @@
               }
             ],
             "title": "Expected Snapshot Id"
+          },
+          "initialization": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NativeStateInitialization"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "owner": {
             "$ref": "#/components/schemas/RuntimeStateOwnerPayload"

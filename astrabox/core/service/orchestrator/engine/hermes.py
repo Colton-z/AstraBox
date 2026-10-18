@@ -44,6 +44,7 @@ from astrabox.core.service.orchestrator.engine.base import (
     EngineKind,
     EngineStartupContext,
     EngineStartupMaterialRequest,
+    RuntimeStateSaveRequired,
 )
 from astrabox.core.service.orchestrator.engine.capabilities import (
     CONVERSATION_PLACEMENT_PER_ACCOUNT,
@@ -377,6 +378,7 @@ class HermesEngineAdapter(EngineAdapter):
         engine_client: HermesRuntimeClient | None = None
         engine_manifest: EngineCapabilityManifest | None = None
         runtime_identity = context.runtime_identity
+        profile_prepared = False
         try:
             await _await_hermes_inbox_ready(sandbox)
             if not runtime_identity:
@@ -400,6 +402,7 @@ class HermesEngineAdapter(EngineAdapter):
                         )
                     )
 
+                profile_prepared = True
                 spawn_fingerprint = await _prepare_hermes_profile(
                     sandbox,
                     identity=runtime_identity,
@@ -431,6 +434,11 @@ class HermesEngineAdapter(EngineAdapter):
             if engine_client is not None:
                 with contextlib.suppress(BaseException):
                     await engine_client.close()
+            if profile_prepared and workspace_plan.operation == "runtime_start" and runtime_identity:
+                try:
+                    await self.quiesce_and_save_runtime_state(sandbox, runtime_identity=runtime_identity)
+                except BaseException as save_error:
+                    raise RuntimeStateSaveRequired(extract_sandbox_id(sandbox), runtime_identity) from save_error
             raise APIError(
                 code="AGENT_RUNTIME_ERROR",
                 message=f"hermes runtime start failed: {exc}",
@@ -549,6 +557,25 @@ class HermesEngineAdapter(EngineAdapter):
         commands: SandboxCommands = sandbox.commands
         phase = "hermes_close_restarts"
         try:
+            probe = (
+                "from pathlib import Path; import sys; "
+                "paths=[Path(p) for p in sys.argv[1:]]; "
+                "present=False\n"
+                "for p in paths:\n"
+                " try: p.lstat(); present=True\n"
+                " except FileNotFoundError: pass\n"
+                "print('HERMES_NATIVE_STATE_PRESENT' if present else 'HERMES_NATIVE_STATE_NOT_STARTED')"
+            )
+            observed = await commands.run(shlex.join([
+                "python3", "-c", probe, "/run/astrabox-hermes/profile-ready.json",
+                posixpath.join(runtime_identity["config_dir"], "state.db"),
+                posixpath.join(runtime_identity["config_dir"], "astrabox-runtime-state-restored.json"),
+                posixpath.join(runtime_identity["config_dir"], "astrabox-initial-state-recovery.json"),
+            ]))
+            if observed.exit_code != 0:
+                raise RuntimeError("native state initialization could not be observed")
+            if observed.output.strip() == "HERMES_NATIVE_STATE_NOT_STARTED":
+                return
             # A restart already running finishes first; none starts after.
             closed = await commands.run(
                 "mkdir -p " + shlex.quote(posixpath.dirname(_HERMES_PAUSING_MARKER))
@@ -585,6 +612,7 @@ class HermesEngineAdapter(EngineAdapter):
                 ):
                     raise RuntimeError("supervisor did not confirm STOPPED")
             phase = "hermes_native_state_save"
+            await self._restore_runtime_state(commands, runtime_identity)
             await self._save_runtime_state(commands, runtime_identity)
         except Exception as exc:
             raise APIError(
@@ -593,6 +621,20 @@ class HermesEngineAdapter(EngineAdapter):
                 status_code=503,
                 data={"phase": phase},
             ) from exc
+
+    async def _restore_runtime_state(
+        self, commands: SandboxCommands, runtime_identity: dict[str, Any]
+    ) -> None:
+        """Finish a fenced initial recovery before saving a retained cold profile."""
+        env_path = posixpath.join(runtime_identity["config_dir"], _HERMES_PROFILE_ENV_FILENAME)
+        command = shlex.join([
+            "runuser", "-u", runtime_identity["linux_user"], "--", "bash", "-c",
+            'set -euo pipefail; source "$1"; exec "$HERMES_VENV/bin/python" "$2" restore --profile-env "$1"',
+            "astrabox-hermes-state-restore", env_path, _HERMES_STATE_BOOTSTRAP,
+        ])
+        result = await commands.run(command, timeout=None)
+        if result.exit_code != 0:
+            raise RuntimeError("native state restore did not complete before release")
 
     async def _save_runtime_state(
         self, commands: SandboxCommands, runtime_identity: dict[str, Any]

@@ -596,6 +596,8 @@ class AssistantWorkspaceService:
         sandbox_id: str,
         reason: str,
         expected_owner: dict[str, Any] | None = None,
+        runtime_identity: dict[str, Any] | None = None,
+        state_save_required: bool = False,
     ) -> bool:
         """Take a box the workspace never bound onto the pointer, as its name.
 
@@ -609,10 +611,10 @@ class AssistantWorkspaceService:
 
         So when a failure tail finds a box it could not confirm destroyed, the
         box's id is written onto the pointer and the workspace goes to
-        RECOVERY_REQUIRED with the cleanup marked pending — exactly the shape
-        ``wake`` already retries (``_retry_recovery_destruction`` in
-        ``assistant_service.py``). The orphan then converges as an ordinary
-        pending destruction.
+        RECOVERY_REQUIRED. An unconfirmed native save keeps cleanup uncommitted
+        and retains the private runtime identity; wake must complete that
+        barrier before destruction. Otherwise only confirmed destruction is
+        still pending.
 
         The condition is the pointer still being empty, and with
         ``expected_owner`` (``state``, ``provisioning_session_id``,
@@ -622,6 +624,8 @@ class AssistantWorkspaceService:
         remains only in the caller's error.
         """
         resolved_sandbox_id = str(sandbox_id or "").strip()
+        if state_save_required and not runtime_identity:
+            raise ValueError("retaining native state requires its runtime identity")
         if not resolved_sandbox_id:
             raise APIError(
                 code="ASSISTANT_WORKSPACE_INVALID_SANDBOX",
@@ -636,6 +640,8 @@ class AssistantWorkspaceService:
             sandbox_id=resolved_sandbox_id,
             reason=reason,
             materializer=_materializer(expected_owner) if expected_owner else None,
+            runtime_identity=runtime_identity,
+            state_save_required=state_save_required,
         )
 
     async def release_recovered_sandbox(

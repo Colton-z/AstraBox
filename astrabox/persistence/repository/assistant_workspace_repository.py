@@ -617,10 +617,10 @@ class AssistantWorkspaceRepository:
         )
 
     async def mark_hibernation_release_required(self, assistant_id: str, *, sandbox_id: str) -> bool:
-        """RECOVERY_REQUIRED with the box's destruction pending, while HIBERNATING on it."""
+        """Record a completed native save while hibernating or recovering this box."""
         return await self._transition(
             assistant_id,
-            [_COLUMNS.state == "HIBERNATING", _COLUMNS.current_sandbox_id == sandbox_id],
+            [_COLUMNS.state.in_(("HIBERNATING", "RECOVERY_REQUIRED")), _COLUMNS.current_sandbox_id == sandbox_id],
             {"state": "RECOVERY_REQUIRED", "post_commit_cleanup_pending": True, "last_error": None},
         )
 
@@ -645,8 +645,10 @@ class AssistantWorkspaceRepository:
         sandbox_id: str,
         reason: str,
         materializer: MaterializerClaim | None,
+        runtime_identity: dict[str, Any] | None = None,
+        state_save_required: bool = False,
     ) -> bool:
-        """Name an unconfirmed box on an empty pointer, RECOVERY_REQUIRED with cleanup pending."""
+        """Name an unconfirmed box with its remaining save or destruction obligation."""
         conditions: list[ColumnElement[bool]] = [_COLUMNS.current_sandbox_id.is_(None)]
         if materializer is not None:
             conditions.extend(materializer.conditions())
@@ -656,8 +658,9 @@ class AssistantWorkspaceRepository:
             {
                 "state": "RECOVERY_REQUIRED",
                 "current_sandbox_id": sandbox_id,
-                "post_commit_cleanup_pending": True,
+                "post_commit_cleanup_pending": not state_save_required,
                 "last_error": reason,
+                **({"runtime_identity": runtime_identity} if runtime_identity is not None else {}),
             },
         )
 

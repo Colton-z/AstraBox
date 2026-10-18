@@ -16,6 +16,7 @@ from typing import Any
 PROFILE_MARKER = Path("/run/astrabox-hermes/profile-ready.json")
 TARGET_NAME = "astrabox-runtime-state.json"
 RECEIPT_NAME = "astrabox-runtime-state-restored.json"
+INITIAL_RECOVERY_NAME = "astrabox-initial-state-recovery.json"
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -93,6 +94,83 @@ def publish(env_path: Path, sandbox_id: str) -> None:
     print(f"HERMES_PROFILE_INITIALIZED fresh={int(previous is None)}", flush=True)
 
 
+def recover_initial_state(
+    home: Path, target: dict[str, Any], initialized: dict[str, Any],
+    receipt: dict[str, Any], profile: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    """Publish an immutable native backup under the current allocation's fence."""
+    import hermes_profile_state
+    from hermes_native_store import snapshot
+    from hermes_state_transport import PROFILE, save_snapshot
+
+    proof = target.get("initialization")
+    if not isinstance(proof, dict) or proof.get("sandbox_id") != initialized["sandbox_id"]:
+        raise RuntimeError("Initial native state recovery needs the current allocation")
+    pending = home / INITIAL_RECOVERY_NAME
+    if pending.exists():
+        recovery = read_json(pending)
+        if recovery.get("owner") != target["owner"]:
+            raise RuntimeError("Initial native state recovery belongs to another owner")
+        name = recovery.get("backup")
+        if not isinstance(name, str) or not name.startswith(".astrabox-initial-state-") or Path(name).name != name:
+            raise RuntimeError("Initial native state backup path is invalid")
+        backup = home / name
+        if backup.is_symlink() or not backup.is_dir() or backup.stat().st_uid != os.geteuid():
+            raise RuntimeError("Initial native state backup is not owned by this profile")
+    else:
+        if (
+            receipt.get("owner") != target["owner"]
+            or receipt.get("hermes_home") != str(home)
+            or not receipt.get("sandbox_id")
+            or receipt.get("snapshot_id") is not None
+            or receipt.get("profile_snapshot_id") != profile["snapshot_id"]
+        ):
+            raise RuntimeError("Unpublished native state has no matching owner receipt")
+        backup = Path(tempfile.mkdtemp(prefix=".astrabox-initial-state-", dir=home))
+        snapshot(home, backup / "state.db")
+        atomic_json(backup / "previous-receipt.json", receipt, mode=0o600)
+        profile_bytes = hermes_profile_state.pack(home)
+        descriptor = os.open(backup / "profile.tar.gz", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(profile_bytes)
+            stream.flush()
+            os.fsync(stream.fileno())
+        recovery = {
+            "owner": target["owner"], "backup": backup.name,
+            "profile_snapshot_id": profile["snapshot_id"],
+            "native_sha256": hashlib.sha256((backup / "state.db").read_bytes()).hexdigest(),
+            "profile_sha256": hashlib.sha256(profile_bytes).hexdigest(),
+        }
+        atomic_json(pending, recovery, mode=0o600)
+        for path in (backup / "state.db", backup, home):
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+    native_path, profile_path = backup / "state.db", backup / "profile.tar.gz"
+    if any(path.is_symlink() or not path.is_file() for path in (native_path, profile_path)):
+        raise RuntimeError("Initial native state backup is not a regular file")
+    native_bytes, profile_bytes = native_path.read_bytes(), profile_path.read_bytes()
+    if (
+        hashlib.sha256(native_bytes).hexdigest() != recovery["native_sha256"]
+        or hashlib.sha256(profile_bytes).hexdigest() != recovery["profile_sha256"]
+    ):
+        raise RuntimeError("Initial native state backup checksum changed")
+    # Preserve the complete profile before the native head can become visible.
+    # A lost acknowledgement resends these exact bytes through the normal CAS.
+    profile_id = save_snapshot(
+        target, profile_bytes, recovery["profile_snapshot_id"], PROFILE, initialization=proof,
+    )
+    native_id = save_snapshot(target, native_bytes, None, initialization=proof)
+    print("HERMES_STATE_INITIAL_RECOVERED", flush=True)
+    return (
+        {"snapshot_id": native_id, "payload": native_bytes},
+        {"snapshot_id": profile_id, "payload": profile_bytes},
+        backup.name,
+    )
+
+
 def restore_once(env_path: Path) -> None:
     if not ready(env_path):
         raise RuntimeError("This box's Hermes profile has not been initialized")
@@ -104,8 +182,12 @@ def restore_once(env_path: Path) -> None:
         raise RuntimeError("Hermes initialization disappeared before restore")
     identity = {key: initialized[key] for key in ("sandbox_id", "hermes_home", "owner")}
     receipt_path = home / RECEIPT_NAME
+    receipt: dict[str, Any] = {}
+    pending = home / INITIAL_RECOVERY_NAME
     if receipt_path.exists():
         receipt = read_json(receipt_path)
+        if pending.exists() and receipt.get("initial_recovery_backup") == read_json(pending).get("backup"):
+            pending.unlink()
         if all(receipt.get(key) == value for key, value in identity.items()):
             print("HERMES_STATE_RESTORE_ALREADY_INITIALIZED", flush=True)
             return
@@ -115,6 +197,10 @@ def restore_once(env_path: Path) -> None:
     from hermes_state_transport import PROFILE, load_snapshot
 
     loaded = load_snapshot(target)
+    profile = load_snapshot(target, PROFILE)
+    recovered_backup = None
+    if pending.exists() or (loaded["snapshot_id"] is None and (home / "state.db").exists()):
+        loaded, profile, recovered_backup = recover_initial_state(home, target, initialized, receipt, profile)
     if loaded["snapshot_id"] is None:
         if (home / "state.db").exists():
             raise RuntimeError("Platform has no snapshot but the cold profile contains state.db")
@@ -127,7 +213,6 @@ def restore_once(env_path: Path) -> None:
             restore(source, home)
     # No saved profile means none was published yet; whatever the home holds
     # (a persistent workspace's files, or nothing) stays and is published next.
-    profile = load_snapshot(target, PROFILE)
     if profile["snapshot_id"] is not None:
         hermes_profile_state.restore(profile["payload"], home)
     # This cold restore supersedes the previous box's unacknowledged local copy.
@@ -140,9 +225,12 @@ def restore_once(env_path: Path) -> None:
             **identity,
             "snapshot_id": loaded["snapshot_id"],
             "profile_snapshot_id": profile["snapshot_id"],
+            **({"initial_recovery_backup": recovered_backup} if recovered_backup is not None else {}),
         },
         mode=0o600,
     )
+    if recovered_backup is not None:
+        pending.unlink()
     print("HERMES_STATE_RESTORE_COMPLETE", flush=True)
 
 

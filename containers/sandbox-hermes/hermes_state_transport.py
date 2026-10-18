@@ -103,6 +103,8 @@ def save_snapshot(
     payload: bytes,
     expected_snapshot_id: str | None,
     archive: str = SESSION_DB,
+    *,
+    initialization: dict[str, Any] | None = None,
 ) -> str:
     """Save snapshot bytes against the caller's predecessor and return its ID.
 
@@ -123,6 +125,7 @@ def save_snapshot(
             "payload_b64": base64.b64encode(payload).decode("ascii"),
             "sha256": hashlib.sha256(payload).hexdigest(),
             "expected_snapshot_id": expected_snapshot_id,
+            **({"initialization": initialization} if initialization is not None else {}),
         },
     )
     snapshot_id = data.get("snapshot_id")

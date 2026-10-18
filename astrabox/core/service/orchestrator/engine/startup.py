@@ -8,7 +8,10 @@ credentials, records cleanup ownership, and replenishes prepared capacity.
 from __future__ import annotations
 
 import contextlib
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from astrabox.core.service.orchestrator.runtime.models import SessionRuntime
 
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.settings import load_astrabox_settings
@@ -25,6 +28,7 @@ from astrabox.core.service.orchestrator.engine.base import (
     EngineAdapter,
     EngineStartupContext,
     EngineStartupMaterialRequest,
+    RuntimeStateSaveRequired,
 )
 from astrabox.core.service.orchestrator.engine.provisioning import (
     engine_service_credential,
@@ -56,6 +60,41 @@ async def _report_progress(callback: Any, stage: str) -> None:
         return
     with contextlib.suppress(Exception):
         await callback(stage)
+
+
+async def _activate_with_native_state_custody(
+    adapter: EngineAdapter, context: EngineStartupContext,
+) -> SessionRuntime:
+    """Name a native profile's allocation before its first writer starts."""
+    target = context.runtime_state_store or {}
+    if target.get("owner", {}).get("subject_kind") != "assistant":
+        return await adapter.activate_runtime(context)
+    from astrabox.core.service.orchestrator.session_lifecycle.ownership import current_recovery
+
+    ownership = current_recovery(context.session_id)
+    if ownership is None:
+        raise APIError(code="AGENT_RUNTIME_ERROR", message="native profile startup requires allocation ownership", status_code=500)
+    source = await ownership.require_current()
+    allocation = source.get("startup_allocation") or {}
+    if allocation.get("sandbox_id") != context.sandbox_id or allocation.get("scope") != "sandbox":
+        raise ownership.lost()
+    record = {
+        "allocation": allocation, "sandbox_generation": ownership.sandbox_generation,
+        "assignment_id": ownership.assignment_id, "recovery_owner": ownership.owner,
+        "native_state_save_required": True, "runtime_identity": context.runtime_identity,
+    }
+    await ownership.repository.retain_startup_allocation(context.session_id, record)
+    await ownership.require_current()
+    try:
+        runtime = await adapter.activate_runtime(context)
+    except RuntimeStateSaveRequired:
+        raise
+    except BaseException:
+        # The adapter confirmed its failure barrier, or no native writer began.
+        await ownership.repository.clear_retained_startup_allocation(context.session_id, record)
+        raise
+    await ownership.repository.clear_retained_startup_allocation(context.session_id, record)
+    return runtime
 
 
 def _workspace_capability_scope(workspace_plan: Any, user_id: str | None) -> Any:
@@ -121,6 +160,7 @@ def _runtime_state_target(
     request: EngineStartupMaterialRequest,
     *,
     session_id: str,
+    sandbox_id: str,
     workspace_plan: Any,
     user_id: str | None,
     deployment_settings: Any,
@@ -167,10 +207,22 @@ def _runtime_state_target(
             status_code=500,
         )
     token = mint_runtime_state_capability_token(owner.canonical_key())
-    return {
+    target: dict[str, Any] = {
         "base_url": f"{base}{CAPABILITY_PATH_PREFIX}/{token}/api/v1/runtime-state",
         "owner": asdict(owner),
     }
+    if owner.subject_kind == "assistant":
+        from astrabox.core.service.orchestrator.session_lifecycle.ownership import current_recovery
+
+        ownership = current_recovery(session_id)
+        if ownership is not None and ownership.owner and ownership.sandbox_generation:
+            target["initialization"] = {
+                "session_id": session_id,
+                "recovery_owner": ownership.owner,
+                "sandbox_generation": ownership.sandbox_generation,
+                "sandbox_id": sandbox_id,
+            }
+    return target
 
 
 def _resolve_declared_secrets(
@@ -426,6 +478,7 @@ async def start_platform_runtime(
             runtime_state_store=_runtime_state_target(
                 material_request,
                 session_id=session_id,
+                sandbox_id=provisioned.sandbox_id,
                 workspace_plan=workspace_plan,
                 user_id=user_id,
                 deployment_settings=platform.deployment_settings,
@@ -435,7 +488,7 @@ async def start_platform_runtime(
             platform_mcp_deployment_id=platform_mcp_deployment_id,
         )
         runtime_context = await prepare_session_runtime_context(runtime_context)
-        runtime = await adapter.activate_runtime(runtime_context)
+        runtime = await _activate_with_native_state_custody(adapter, runtime_context)
         if prepared is not None:
             await clear_claimed_slot(
                 agent_id=str(getattr(template, "agent_id", "") or ""),
@@ -791,6 +844,7 @@ async def attach_platform_runtime(
             runtime_state_store=_runtime_state_target(
                 material_request,
                 session_id=session_id,
+                sandbox_id=sandbox_id,
                 workspace_plan=workspace_plan,
                 user_id=user_id,
                 deployment_settings=platform.deployment_settings,

@@ -410,6 +410,22 @@ backend for this acknowledgement, retaining native normalization, immutable
 publication, and verified reads. Its restore barrier runs before the Session
 opens on replacement compute.
 
+An Assistant profile's startup records its native-state release obligation
+before activation. A failed activation must stop native writers and confirm
+the store and profile save, or raise `RuntimeStateSaveRequired` with the exact
+sandbox and runtime identity. The platform retains that allocation for
+recovery. Wake completes the save barrier before releasing its compute; a
+periodic mirror or a saved profile archive alone is not that confirmation.
+
+Hermes also recovers a same-owner local SessionDB left before its first native
+snapshot was published. Cold bootstrap preserves a complete supplier backup,
+profile archive and previous receipt in the private profile home. It publishes
+those immutable bytes through the existing snapshot API with the current
+materializer, allocation and generation validated in the save transaction.
+Foreign receipts and superseded generations are refused. A partial publication
+resends the same backed-up bytes through the snapshot predecessor check; the
+restore receipt changes only after both archives are acknowledged.
+
 ### Execution user and environment variables
 
 Create every required account and writable directory in the image. The runtime

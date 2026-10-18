@@ -396,7 +396,7 @@ class SessionRepository:
         await transaction(write)
 
     async def clear_retained_startup_allocation(self, session_id: str, record: dict[str, Any]) -> None:
-        """Remove one exact orphan allocation after its supplier confirms it is gone."""
+        """Remove one exact receipt after its native-save or resource-release obligation settles."""
         async def write(conn: AsyncConnection) -> None:
             row = (await conn.execute(
                 select(_SESSIONS.c.retained_startup_allocations)
