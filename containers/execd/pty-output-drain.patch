@@ -1,0 +1,33 @@
+--- a/components/execd/pkg/runtime/pty_session.go
++++ b/components/execd/pkg/runtime/pty_session.go
+@@ -50,0 +51,2 @@
++	// AstraBox modification: holders share the broadcaster completion contract.
++	OutputDone() <-chan struct{}
+--- a/components/execd/pkg/web/controller/pty_ws.go
++++ b/components/execd/pkg/web/controller/pty_ws.go
+@@ -287,3 +287,22 @@
+-	// 10d. Exit watcher: waits for the process to exit, then sends exit frame
+-	// and closes the WS connection immediately (unblocks ReadJSON in the read loop).
+-	safego.Go(func() { ptyExitWatcher(session, writeJSON, closeConn, nil, cancelCh, cancelOnce) })
++	// AstraBox modification: finish both fanout and socket writes before exit.
++	holderOutputDrained := make(chan struct{})
++	outputDoneCh := session.OutputDone()
++	safego.Go(func() {
++		defer close(holderOutputDrained)
++		select {
++		case <-outputDoneCh:
++		case <-cancelCh:
++			return
++		}
++		detach()
++		pumpWg.Wait()
++	})
++	// Keep detachment inside this holder's lock lifetime during cancellation.
++	defer func() {
++		cancelOnce()
++		detach()
++		<-holderOutputDrained
++	}()
++	safego.Go(func() {
++		ptyExitWatcher(session, writeJSON, closeConn, holderOutputDrained, cancelCh, cancelOnce)
++	})
