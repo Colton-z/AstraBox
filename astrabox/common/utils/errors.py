@@ -637,6 +637,7 @@ for _code, _status, _category, _retryable, _owner in (
     # Hermes gateway failed. The same start is valid once the sandbox answers.
     ("HERMES_GATEWAY_START_FAILED", 502, "runtime.preparation", True, "runtime"),
     ("HERMES_BACKEND_NOT_READY", 503, "runtime.preparation", True, "runtime"),
+    ("RUNTIME_STATE_SAVE_REQUIRED", 503, "runtime.preparation", True, "runtime"),
     # Hermes declined one message at prompt.submit: its active-session limit,
     # session storage it could not write, or a voice-mode stop phrase. The
     # identical message goes through once Hermes takes messages again.
