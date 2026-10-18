@@ -132,6 +132,12 @@ as the provider-table writes. Reading platform state before and after a write
 does not provide that guarantee. Do not update platform-owned definition fields
 to store private provider state.
 
+An Assistant's first synchronization runs before its workspace publishes
+`READY`. Its guard validates the owning materializer Session, startup owner,
+sandbox generation and recorded allocation while holding their database locks.
+Synchronization on a ready workspace validates its published sandbox instead.
+Both paths retain the operation, owner, revision and deadline checks.
+
 For standalone provider-state writes, including registration, import
 `issue_preparation_commit_guard` from `astrabox.runtime_preparation`.
 Call it inside AstraBox's identity middleware, or

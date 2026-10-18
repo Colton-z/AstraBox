@@ -335,6 +335,15 @@ async def _synchronize_assistant_resources(
 
     def build(_row: dict[str, Any], operation: ResourcePreparationOperation) -> ResourcePreparationContext:
         from astrabox.core.service.orchestrator.runtime.preparation_commit import callback_commit_guard
+        from astrabox.core.service.orchestrator.session_lifecycle.ownership import current_recovery
+        from astrabox.persistence.repository.preparation_subject_repository import subject_conflict
+
+        materializer = None
+        if _row.get("state") == "MATERIALIZING":
+            ownership = current_recovery(context.session_id)
+            if ownership is None or not ownership.sandbox_generation:
+                raise subject_conflict()
+            materializer = (context.session_id, tuple(ownership.expected.items()))
 
         return ResourcePreparationContext(
             operation=operation, owner_user_id=owner_user_id, revision=revision,
@@ -345,6 +354,7 @@ async def _synchronize_assistant_resources(
             commit_guard=callback_commit_guard(
                 operation=operation, owner_user_id=owner_user_id, revision=revision,
                 provider=provider.name, config=config, preparation_id=context.sandbox_id,
+                materializer=materializer,
             ),
         )
 

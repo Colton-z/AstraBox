@@ -76,6 +76,7 @@ class _CommitGuard:
     provider: str | None = field(default=None, repr=False)
     generation: tuple[tuple[str, object], ...] = field(default=(), repr=False)
     sandbox_id: str | None = field(default=None, repr=False)
+    materializer: tuple[str, tuple[tuple[str, object], ...]] | None = field(default=None, repr=False)
     requester: tuple[str, tuple[str, ...]] | None = field(default=None, repr=False)
 
     async def validate(self, connection: AsyncConnection) -> None:
@@ -105,14 +106,35 @@ class _CommitGuard:
             or runtime.get(f"{prefix}_provider") != self.provider
             or deadline_seconds <= time.time()
             or any(runtime.get(key) != value for key, value in self.generation)
-            or (self.sandbox_id is not None and runtime.get("current_sandbox_id") != self.sandbox_id)
         ):
             raise subject_conflict()
+        if self.sandbox_id is not None:
+            if self.materializer is None:
+                if runtime.get("state") != "READY" or runtime.get("current_sandbox_id") != self.sandbox_id:
+                    raise subject_conflict()
+            else:
+                session_id, expected = self.materializer
+                session = state.materializer_session or {}
+                allocation = session.get("startup_allocation") or {}
+                if (
+                    runtime.get("state") != "MATERIALIZING"
+                    or runtime.get("provisioning_session_id") != session_id
+                    or not runtime.get("provisioning_sandbox_generation")
+                    or runtime.get("provisioning_sandbox_generation") != session.get("sandbox_generation")
+                    or session.get("session_id") != session_id
+                    or session.get("assistant_id") != self.subject.id
+                    or session.get("user_id") != self.owner_user_id
+                    or any(session.get(key) != value for key, value in expected)
+                    or allocation.get("sandbox_id") != self.sandbox_id
+                    or allocation.get("scope") != "sandbox"
+                ):
+                    raise subject_conflict()
 
 
 def callback_commit_guard(
     *, operation: ResourcePreparationOperation, owner_user_id: str, revision: str,
     provider: str, config: Mapping[str, Any], preparation_id: str,
+    materializer: tuple[str, tuple[tuple[str, object], ...]] | None = None,
 ) -> PreparationCommitGuard:
     """Bind a claimed synchronization to its real operation and prepared generation."""
     agent = operation.subject.kind == "agent"
@@ -124,6 +146,7 @@ def callback_commit_guard(
         subject=operation.subject, owner_user_id=owner_user_id,
         revision=revision, operation=operation, provider=provider,
         generation=generation, sandbox_id=None if agent else preparation_id,
+        materializer=materializer,
     )
 
 
