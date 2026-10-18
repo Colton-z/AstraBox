@@ -12,7 +12,8 @@ wire rules out of core:
 * the WebSocket ``/pty/{id}/ws`` in pipe mode (``pty=0``) carries binary
   frames tagged ``0x01`` stdout, ``0x02`` stderr and ``0x03`` replay (an
   8-byte big-endian offset, then the bytes), stdin tagged ``0x00``, and JSON
-  text for control; a second holder is refused with 409 unless it takes over;
+  text for control; ``errors=frame`` keeps refusal codes inside the socket
+  through proxies that upgrade before contacting execd;
 * a replay asked for from before execd's buffer starts at what the buffer
   still holds and says so only through its offset, so the offset is compared
   with the one asked for and a gap refuses the attachment;
@@ -294,7 +295,7 @@ class ExecdProcesses:
         requested = max(0, int(since))
         url = (
             f"{_websocket_url(endpoint.url)}{self._path(process_id)}/ws"
-            f"?pty=0&takeover={int(takeover)}&since={requested}"
+            f"?pty=0&takeover={int(takeover)}&since={requested}&errors=frame"
         )
         try:
             connection = await websockets.connect(
@@ -428,11 +429,20 @@ class ExecdProcesses:
                 if kind == "connected":
                     return pending
                 if kind == "error":
+                    if payload.get("code") == "ALREADY_CONNECTED":
+                        raise SandboxProcessAlreadyAttached(
+                            f"another attachment holds process {process_id!r}"
+                        )
+                    if payload.get("code") == "SESSION_GONE":
+                        raise SandboxProcessDetached(f"execd does not know process {process_id!r}")
                     raise RuntimeError(
                         f"execd refused to attach to process {process_id!r}: "
                         f"{payload.get('error') or payload}"
                     )
-                continue
+                raise RuntimeError(
+                    f"execd sent an unexpected attachment control frame for "
+                    f"process {process_id!r}: {payload}"
+                )
             frame = bytes(message)
             if not frame:
                 continue

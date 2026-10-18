@@ -1,0 +1,47 @@
+--- a/components/execd/pkg/web/controller/pty_ws.go
++++ b/components/execd/pkg/web/controller/pty_ws.go
+@@ -41,0 +42,17 @@
++// AstraBox modification: retain native refusal codes through upgraded proxies.
++func ptyRefuseWebSocket(ctx *gin.Context, status int, code model.ErrorCode, wsCode, message string) {
++	if ctx.Query("errors") != "frame" {
++		ctx.JSON(status, model.ErrorResponse{Code: code, Message: message})
++		return
++	}
++	conn, err := wsUpgrader.Upgrade(ctx.Writer, ctx.Request, nil)
++	if err != nil {
++		return
++	}
++	defer conn.Close()
++	writeErrFrame(conn, wsCode, message)
++	_ = conn.WriteControl(websocket.CloseMessage,
++		websocket.FormatCloseMessage(websocket.ClosePolicyViolation, wsCode),
++		time.Now().Add(wsWriteDeadline))
++}
++
+@@ -56,2 +73,2 @@
+-//  1. Look up session → 404 before upgrade if missing
+-//  2. Acquire WS lock without eviction → 409 if held and not a ?takeover=1 request
++//  1. Look up session → refuse if missing (errors=frame opts into WS error frames)
++//  2. Acquire WS lock without eviction → refuse if held and not a ?takeover=1 request
+@@ -81 +98 @@
+-	// 1. Look up session — must happen before upgrade so we can return HTTP errors.
++	// 1. Look up session before acquiring a holder or starting its shell.
+@@ -84,4 +101,2 @@
+-		ctx.JSON(http.StatusNotFound, model.ErrorResponse{
+-			Code:    model.ErrorCodeContextNotFound,
+-			Message: "pty session " + id + " not found",
+-		})
++		ptyRefuseWebSocket(ctx, http.StatusNotFound, model.ErrorCodeContextNotFound,
++			model.WSErrCodeSessionGone, "pty session "+id+" not found")
+@@ -97,2 +112,2 @@
+-	//    plain "already connected" with no takeover is refused with HTTP 409 *before*
+-	//    the upgrade. A ?takeover=1 request (on a real WS handshake) instead evicts the
++	//    plain "already connected" with no takeover is refused without eviction
++	//    (HTTP 409, or a native error frame for errors=frame). A ?takeover=1 request (on a real WS handshake) instead evicts the
+@@ -104,4 +119,2 @@
+-		ctx.JSON(http.StatusConflict, model.ErrorResponse{
+-			Code:    model.WSErrCodeAlreadyConnected,
+-			Message: "another client is already connected to pty session " + id,
+-		})
++		ptyRefuseWebSocket(ctx, http.StatusConflict, model.WSErrCodeAlreadyConnected,
++			model.WSErrCodeAlreadyConnected, "another client is already connected to pty session "+id)
