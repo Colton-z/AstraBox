@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote
 
@@ -222,10 +223,11 @@ class ExecdProcessAttachment:
 class ExecdProcesses:
     """:class:`astrabox.seams.sandbox_data.SandboxProcesses` over one execd.
 
-    Build it from an endpoint resolver, which is called once, at the first
-    operation, or with :meth:`at_endpoint` from a URL and the headers a
-    request needs. It holds no connection between operations, so it needs no
-    closing; each attachment is closed by its own ``detach``.
+    Build it from an endpoint resolver, called on first use and before a new
+    operation when the cached endpoint has expired. Without an expiry, the
+    endpoint stays cached. Use :meth:`at_endpoint` for a fixed URL and headers.
+    It holds no connection between operations, so it needs no closing; each
+    attachment is closed by its own ``detach``.
     """
 
     def __init__(
@@ -361,7 +363,12 @@ class ExecdProcesses:
         return f"/pty/{quote(target, safe='')}"
 
     async def _resolved(self) -> SandboxEndpoint:
-        if self._endpoint is None:
+        expires_at = self._endpoint.expires_at if self._endpoint is not None else None
+        if expires_at is not None and expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if self._endpoint is None or (
+            expires_at is not None and expires_at <= datetime.now(timezone.utc)
+        ):
             self._endpoint = await self._resolve_endpoint()
         return self._endpoint
 
