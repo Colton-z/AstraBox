@@ -75,7 +75,7 @@ def preparation_subject(session: Mapping[str, Any] | None) -> PreparationSubject
 
 
 async def require_session_user_prerequisites(session: dict[str, Any]) -> None:
-    """Read a conversation's prerequisites before acquiring its runtime.
+    """Read a conversation's prerequisites before startup or input acceptance.
 
     Resource preparation, including an Assistant workspace's internal
     materializer, is not a user conversation and may prepare its own box.

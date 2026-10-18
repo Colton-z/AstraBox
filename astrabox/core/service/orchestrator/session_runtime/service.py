@@ -15,12 +15,13 @@ from typing import Any
 
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
-from astrabox.core.model import SessionState
+from astrabox.core.model import AgentState, SessionState
 from astrabox.core.service.orchestrator.engine.interaction_contract import (
     public_interaction_view,
     resolve_interaction_permission_mode,
     validate_interaction_response,
 )
+from astrabox.core.service.orchestrator.runtime.preparation import require_session_user_prerequisites
 from astrabox.core.service.orchestrator.session_runtime.feed import SessionFeed
 from astrabox.core.service.orchestrator.session_runtime.follow import follow_output
 from astrabox.core.service.orchestrator.session_runtime.host import ReaderHost
@@ -29,6 +30,7 @@ from astrabox.persistence.repository.session_repository import SessionRepository
 from astrabox.persistence.provider import get_persistence
 from astrabox.persistence.repository.session_runtime_repository import SessionRuntimeRepository
 from astrabox.seams.admission import ADMISSION_KIND_INPUT, AdmissionRequest, enforce_admission
+from astrabox.seams.runtime_preparation import validated_user_action
 
 _HISTORY_PAGE_LIMIT = 100
 
@@ -117,7 +119,16 @@ class SessionRuntimeService:
         content_blocks: list[dict[str, Any]] | None = None,
         client_message_id: str | None = None,
     ) -> dict[str, Any]:
-        """Accept a person's message for the session they own."""
+        """Check a known startup prerequisite before accepting the owner's message."""
+        session = await self._sessions.get_owned_session(session_id, str(user.user_id))
+        if session is None:
+            raise await self._not_accepting(session_id, str(user.user_id))
+        if (
+            session.get("state") == SessionState.READY.value
+            and session.get("agent_state") not in {AgentState.DELETING.value, AgentState.DELETED.value}
+            and validated_user_action(session.get("startup_user_action")) is not None
+        ):
+            await require_session_user_prerequisites(session)
         return await self._accept(
             session_id,
             content,
