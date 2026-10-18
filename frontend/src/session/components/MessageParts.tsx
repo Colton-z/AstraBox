@@ -839,12 +839,19 @@ export function MarkdownContent({ text, testid }: { text: string; testid?: strin
  */
 export function ThinkingPartCard({ text, isStreaming }: { text: string; isStreaming?: boolean }) {
   const { t } = useTranslation();
+  const [open, setOpen] = useState(Boolean(isStreaming));
+
+  // Streaming opens a fragment once; the reader owns its later disclosure.
+  useEffect(() => {
+    if (isStreaming) setOpen(true);
+  }, [isStreaming]);
 
   return (
     <Reasoning
       data-testid="reasoning-part"
       data-chars={text.trim().length}
-      isStreaming={isStreaming}
+      open={open}
+      onOpenChange={setOpen}
       className={cn(
         'mb-0 overflow-hidden rounded-[var(--radius)] border bg-muted/60 transition-colors',
         isStreaming ? 'border-primary/40' : 'border-border',
@@ -852,11 +859,11 @@ export function ThinkingPartCard({ text, isStreaming }: { text: string; isStream
     >
       <ReasoningTrigger
         className="ring-inward px-3 py-2 text-13 hover:bg-accent/40"
-        getThinkingMessage={(streaming) => (
+        getThinkingMessage={() => (
           <span className="flex flex-1 items-center gap-2 text-left">
-            {streaming && <span className="astra-dot astra-dot--live" />}
+            {isStreaming && <span className="astra-dot astra-dot--live" />}
             <span className="t-eyebrow">
-              {streaming ? <Shimmer duration={1}>{t('chat:message.thinking')}</Shimmer> : t('chat:message.thought_process')}
+              {isStreaming ? <Shimmer duration={1}>{t('chat:message.thinking')}</Shimmer> : t('chat:message.thought_process')}
             </span>
           </span>
         )}
