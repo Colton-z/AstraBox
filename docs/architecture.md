@@ -287,6 +287,10 @@ then starts on a new sandbox instead of a prepared one. Engines do not choose
 the storage medium or implement directory routing. Local filesystems suit a
 single sandbox host; multiple hosts require the same shared filesystem.
 No-volume deployments do not need a route.
+Assistant deployments can also keep the live engine profile on sandbox-local
+storage while mounting their workspace, through
+`ASTRABOX_ASSISTANT_PROFILE_ON_WORKSPACE_VOLUME=false`. This changes the shared
+mount plan, not the native/profile snapshot or save-barrier workflow.
 See [workspace deployment](deploy.md#where-conversation-workspaces-live).
 
 The `mounted_volume` storage plugin uses the deployment's configured volume.

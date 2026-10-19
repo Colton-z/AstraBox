@@ -359,6 +359,28 @@ workspace files, not the platform database's custody of native SessionStores.
 In this no-volume mode no mount helper runs, whatever
 `ASTRABOX_WORKSPACE_MOUNTER_IMAGE` names.
 
+With workspace storage enabled, Assistant profiles are also mounted by default.
+The filesystem holding a profile must support the engine's live SQLite and
+atomic file operations. Set
+`ASTRABOX_ASSISTANT_PROFILE_ON_WORKSPACE_VOLUME=false` to mount only the user
+workspace and keep the profile on the sandbox filesystem. The common mount
+planner applies this choice before allocation; storage providers receive the
+resulting plan without filtering paths. Native and profile snapshots still use
+the platform database, and an unconfirmed save still retains the allocation.
+
+Hermes snapshots preserve its complete SessionDB and the supported profile
+state: memories, user skills, scheduled jobs and execution history, project and
+memory stores, kanban boards, verification evidence and A2A records. Runtime
+configuration and credentials are supplied by the platform. Arbitrary extra
+files in the profile, caches and vendor messaging-pairing data are outside this
+profile snapshot contract; keep user task files in the workspace.
+
+Before changing this option for an existing Assistant, confirm both native and
+profile snapshots through its normal save/hibernate path. An Assistant with an
+unconfirmed save must finish recovery on its retained allocation first. Keep the
+previous backing directory and recovery backups; changing this option does not
+delete or import them.
+
 With an existing OpenSandbox service (`ASTRABOX_SANDBOX_OPENAPI_BASE_URL`),
 persistent workspaces require that service's Kubernetes runtime; see
 [Connect an existing OpenSandbox service](providers/opensandbox.md#connect-an-existing-opensandbox-service).

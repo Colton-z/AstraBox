@@ -349,9 +349,9 @@ def assistant_workspace_dir(user_id: str, assistant_id: str) -> str:
 def assistant_config_dir(user_id: str, assistant_id: str) -> str:
     """The Assistant's engine config directory, rendered from its profile.
 
-    Optional workspace storage mounts this profile separately from user files.
-    The vendor's live SessionDB resides here; its native snapshot is also held
-    in the platform database for restoration without a persistent volume.
+    The vendor's live SessionDB resides here. Deployments choose whether
+    enabled workspace storage also mounts this directory; native and profile
+    snapshots restore engine state independently of that placement.
     """
 
     from astrabox.core.service.orchestrator.engine.runtime_profiles import (

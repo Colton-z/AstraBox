@@ -97,8 +97,8 @@ def plan_subject_storage_mounts(
         (`conversation_identity` requires it under the home for an Agent-tenanted
         box, and equal to the visible workspace for a per-Session one), which is
         what makes one mount serve both tenancies without a bind.
-      - ``assistant_runtime`` — one Assistant's workspace and the config beside
-        it, the two halves of that product's promise.
+      - ``assistant_runtime`` — one Assistant's workspace, with its live engine
+        profile included when the deployment enables that mount.
 
     A ``subject_kind`` outside these raises rather than falling through to a
     default: a blank or misspelled kind that silently picked a path would put a
@@ -151,27 +151,21 @@ def plan_subject_storage_mounts(
         # and restored independently of this optional workspace volume.
         return [(str(identity["workspace_source_dir"]), f"{root}/workspace")]
     if kind == "assistant_runtime":
-        subject_root = root
-        # Optional persistent storage retains the workspace and profile in
-        # separate directories. Hermes also snapshots its complete native
-        # SessionDB to the platform database; startup restores that snapshot
-        # through hermes_state_bootstrap.py with or without these mounts.
-        # The mounted profile still needs the filesystem semantics required by
-        # the vendor's live SQLite database.
-        #
-        # Render both paths from the profile so they match the workload's home.
-        # Mount planning precedes box creation, so the runtime identity is not
-        # available here.
-        return [
+        # Native/profile snapshots retain engine state independently of these
+        # mounts. A deployment may keep live SQLite on the sandbox filesystem
+        # while routing only user workspace files through persistent storage.
+        mounts = [
             (
                 assistant_workspace_dir(str(user_id or ""), str(assistant_id or "")),
-                f"{subject_root}/workspace",
-            ),
-            (
-                assistant_config_dir(str(user_id or ""), str(assistant_id or "")),
-                f"{subject_root}/config",
+                f"{root}/workspace",
             ),
         ]
+        if settings.assistant_profile_on_workspace_volume:
+            mounts.append((
+                assistant_config_dir(str(user_id or ""), str(assistant_id or "")),
+                f"{root}/config",
+            ))
+        return mounts
     raise APIError(
         code="NAS_MOUNT_FAILED",
         message=(

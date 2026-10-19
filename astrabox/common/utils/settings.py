@@ -415,6 +415,15 @@ class AstraBoxRuntimeSettings(BaseSettings):
             AliasPath("astrabox", "sandbox", "workspace_volume"),
         ),
     )
+    #: Include the Assistant's live engine profile on enabled workspace storage.
+    #: False keeps the profile local while native/profile snapshots stay in the database.
+    assistant_profile_on_workspace_volume: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "ASTRABOX_ASSISTANT_PROFILE_ON_WORKSPACE_VOLUME",
+            AliasPath("astrabox", "assistant", "profile_on_workspace_volume"),
+        ),
+    )
     #: Used only when ``sandbox_workspace_volume`` names a backing volume.
     workspace_mounter_image: str = Field(
         default_factory=lambda: release_image("workspace-mounter"),

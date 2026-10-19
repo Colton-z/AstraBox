@@ -919,6 +919,17 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "astrabox.common.utils.settings",
     ),
     (
+        "ASTRABOX_ASSISTANT_PROFILE_ON_WORKSPACE_VOLUME",
+        "public",
+        "true",
+        "When persistent workspace storage is enabled, also mount the Assistant's "
+        "live engine profile on that volume. False mounts only workspace files "
+        "and keeps the profile on the sandbox filesystem; native and profile "
+        "snapshots still use the platform database and the same save barriers. "
+        "A mounted profile requires the vendor's SQLite filesystem semantics.",
+        "astrabox.common.utils.settings",
+    ),
+    (
         "ASTRABOX_WORKSPACE_MOUNTER_IMAGE",
         "public",
         "derived",
