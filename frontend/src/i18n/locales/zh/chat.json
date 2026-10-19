@@ -148,6 +148,7 @@
     "turn_failed": "本轮执行失败",
     "turn_failed_with_detail": "本轮执行失败：{{error}}",
     "api_retry": "重试中 —— 模型端点拒绝了这次请求",
+    "api_retry_finished": "重试等待已结束",
     "api_retry_attempt": "重试中 —— 第 {{attempt}} 次，共 {{max}} 次",
     "stop_reason": {
       "max_tokens": "达到最大 token 限制",

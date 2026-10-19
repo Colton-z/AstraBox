@@ -263,6 +263,15 @@ id and whose `messageMetadata` carries `response_id`, `input_ids`, and `origin`.
 They end with a `finish` part; a response that fails sends an `error` part
 before its `finish`.
 
+An adapter may withdraw an unconfirmed text or reasoning preview without
+removing completed steps. Put its chunk id in
+`providerMetadata.astrabox.part_id` on the opening chunk, then publish a
+`message-metadata` chunk with the cumulative `retracted_part_ids` for that
+response. Live messages and stored history omit those parts before display
+and process-block grouping. The output log retains the original chunks and
+the withdrawal for deterministic replay. The adapter, not the platform,
+decides whether native output is provisional or has been superseded.
+
 When a response pauses on an interaction, report `InteractionOpened` with the
 contract, then the parts that close the browser's message segment: a
 `tool-approval-request` part for a tool approval

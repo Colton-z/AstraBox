@@ -114,6 +114,12 @@ def fold_message(message_id: str, chunks: Iterable[Mapping[str, Any]]) -> dict[s
                     continue
                 data_parts[(kind, str(part_id))] = part
             parts.append(part)
+    retracted = set(metadata.get("retracted_part_ids") or ())
+    if retracted:
+        parts = [part for part in parts if (
+            part["type"] not in {"text", "reasoning"}
+            or part.get("providerMetadata", {}).get("astrabox", {}).get("part_id") not in retracted
+        )]
     open_parts = {
         id(part): part_id
         for lane in (texts, reasonings)

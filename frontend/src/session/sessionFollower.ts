@@ -3,7 +3,7 @@ import { DefaultChatTransport, JSONParseError, TypeValidationError } from 'ai';
 import type { UIMessage, UIMessageChunk } from 'ai';
 import { buildSessionStreamUrl } from '../api';
 import type { PendingInteraction } from '../types';
-import { lastOpenResponse, responseMetadata, type InputFailure, type ResponseMetadata } from './sessionMessages';
+import { lastOpenResponse, responseMetadata, retractMessageParts, type InputFailure, type ResponseMetadata } from './sessionMessages';
 import { withStreamLiveness } from './streamLiveness';
 import { consoleFetch } from '../consoleTransport';
 
@@ -506,7 +506,7 @@ export class SessionFollower {
           ...partOrder.map((index, original) => message.parts[index] ?? base!.parts[original]),
           ...message.parts.slice(partOrder.length),
         ];
-        this.host.write({ ...message, parts });
+        this.host.write(retractMessageParts({ ...message, parts }));
       };
       const unsubscribe = chat['~registerMessagesCallback'](publish, 50);
       for (const { index, id } of continuation) {

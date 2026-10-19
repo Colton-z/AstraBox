@@ -27,11 +27,14 @@
 import { expect, test, type APIRequestContext } from '@playwright/test';
 
 import { AstraApi, messageText, messageToolCalls } from '../fixtures/astraApi';
+import { channelCallback } from '../fixtures/channelCallback';
 import {
   nativeTranscriptRows,
+  postgresRows,
   sessionInputRows,
   sessionInteractionRows,
   sessionResponseRows,
+  sqlLiteral,
 } from '../fixtures/dbOracle';
 import { PlatformApi } from '../fixtures/platformApi';
 import { IMAGE_RUNNER_LAUNCHER, imageRunnerPidLookup, imageRunnerRestartScript } from '../fixtures/runnerRestart';
@@ -58,6 +61,7 @@ let agentId = '';
 let deploymentId = '';
 let activeSessionId = '';
 const evidence: Record<string, unknown> = {};
+let recipient: Awaited<ReturnType<typeof channelCallback>> | null = null;
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('expected an evidence object');
@@ -108,6 +112,11 @@ test.beforeEach(() => {
 });
 
 test.afterEach(async ({ request }, info) => {
+  if (recipient) {
+    evidence.channel = { deliveries: recipient.deliveries, errors: recipient.errors };
+    await recipient.close();
+    recipient = null;
+  }
   const failed = ['failed', 'timedOut', 'interrupted'].includes(String(info.status));
   await info.attach('superseded-exited-question-evidence', {
     body: JSON.stringify({ agentId, deploymentId, sessionId: activeSessionId, ...evidence,
@@ -147,6 +156,7 @@ async function triggerThreadMessage(
       text,
       message_id: messageId,
       conversation_id: threadId,
+      reply: { callback_url: recipient!.url },
     },
     headers: { 'x-channel-secret': secret },
     timeout: 120_000,
@@ -201,6 +211,7 @@ async function runSupersededQuestion(request: APIRequestContext, fault: 'sandbox
   const secret = String(deployment.secret || '').trim();
   expect(deploymentId, 'the channel deployment must expose its id').not.toEqual('');
   expect(secret, 'the channel deployment must expose its trigger secret').not.toEqual('');
+  recipient = await channelCallback();
 
   // No warm message. The whole-box fault puts the superseding message on a
   // cold re-borrow, and three live model replies plus that borrow do not fit
@@ -239,6 +250,14 @@ async function runSupersededQuestion(request: APIRequestContext, fault: 'sandbox
     .not.toEqual('');
   const interactionId = String(pending.interaction_id || '').trim();
   expect(interactionId).not.toBe('');
+  const channelQuestion = () => postgresRows<Record<string, unknown>>(
+    `SELECT state, answering_item FROM channel_interactions WHERE deployment_id = ${sqlLiteral(deploymentId)} `
+      + `AND session_id = ${sqlLiteral(sessionId)} AND interaction_id = ${sqlLiteral(interactionId)}`,
+  );
+  await expect.poll(channelQuestion, { message: 'the original channel question was actually shown' })
+    .toEqual([expect.objectContaining({ state: 'OPEN', answering_item: null })]);
+  expect(recipient.errors).toEqual([]);
+  expect(recipient.deliveries.some((delivery) => delivery.question?.interaction_id === interactionId)).toBe(true);
   await expect.poll(() => originalToolRows(sessionId, toolCallId).length,
     { message: 'the real unanswered native tool call must be durable before the fault' }).toBe(1);
   const originalQuestion = originalToolRows(sessionId, toolCallId)[0];
@@ -291,6 +310,10 @@ async function runSupersededQuestion(request: APIRequestContext, fault: 'sandbox
   // Drop the host's connection to the old runtime as well as the callback
   // process, so nothing in this process keeps answering for the dead wait.
   await api.adminEvictRuntime(sessionId);
+  await expect.poll(channelQuestion, {
+    message: 'runtime withdrawal closes the shown channel question without another inbound',
+    timeout: 30_000,
+  }).toEqual([expect.objectContaining({ state: 'CLOSED', answering_item: null })]);
   // Whether the platform still shows the question here is a race with its own
   // detection of the loss, not part of the contract; it is kept as evidence.
   evidence.afterFault = {
@@ -392,6 +415,7 @@ async function runSupersededQuestion(request: APIRequestContext, fault: 'sandbox
     .toEqual([expect.objectContaining({ answer: null, answered_by: null, answered_at: null })]);
   expect(['withdrawn', 'expired'], 'the question must close with its runtime')
     .toContain(finalInteraction[0].status);
+  expect(channelQuestion()).toEqual([expect.objectContaining({ state: 'CLOSED', answering_item: null })]);
   const finalInputs = sessionInputRows(sessionId);
   expect(finalInputs).toHaveLength(2);
   expect(finalInputs[0]).toEqual(initialInputs[0]);
@@ -412,6 +436,11 @@ async function runSupersededQuestion(request: APIRequestContext, fault: 'sandbox
   });
   expect(nativeReplies.length).toBeGreaterThan(0);
   expect(finalNative.every((row) => row.session_id === originalQuestion.session_id)).toBe(true);
+  await expect.poll(() => recipient!.deliveries
+    .filter((delivery) => delivery.question === null).map((delivery) => delivery.text.trim()), {
+    message: 'the participant receives the native new reply once after the old question closes',
+  }).toEqual([nativeReplies.map((row) => nativeText(row.entry)).join('\n\n').trim()]);
+  expect(recipient!.errors).toEqual([]);
   evidence.completed = { completed, finalInputs, finalInteraction, finalNative, newInputs, nativeReplies, history };
   test.info().annotations.push({
     type: 'retired_tool_call_parts',

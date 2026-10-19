@@ -148,6 +148,7 @@
     "turn_failed": "This turn failed",
     "turn_failed_with_detail": "This turn failed: {{error}}",
     "api_retry": "Retrying — the model endpoint refused the request",
+    "api_retry_finished": "Retry wait ended",
     "api_retry_attempt": "Retrying — attempt {{attempt}} of {{max}}",
     "stop_reason": {
       "max_tokens": "Reached the max token limit",

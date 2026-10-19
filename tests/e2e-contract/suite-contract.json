@@ -15,22 +15,22 @@
       "playwright": {
         "parallel": [],
         "exclusive": [
-          "specs/agent-workspace-resume.exclusive.spec.ts › the same Agent conversation reads its persisted workspace after sandbox rebuild",
-          "specs/agent-workspace-resume.exclusive.spec.ts › deepseek_harness: the same Agent conversation reads its persisted workspace after sandbox rebuild",
-          "specs/agent-workspace-resume.exclusive.spec.ts › pi: the same Agent conversation reads its persisted workspace after sandbox rebuild",
-          "specs/agent-workspace-resume.exclusive.spec.ts › codex: the same Agent conversation reads its persisted workspace after sandbox rebuild",
-          "specs/agent-workspace-resume.exclusive.spec.ts › cross-host: the same Agent conversation reads its persisted workspace after sandbox rebuild",
-          "specs/agent-workspace-resume.exclusive.spec.ts › cross-host: deepseek_harness: the same Agent conversation reads its persisted workspace after sandbox rebuild",
-          "specs/agent-workspace-resume.exclusive.spec.ts › cross-host: pi: the same Agent conversation reads its persisted workspace after sandbox rebuild",
-          "specs/agent-workspace-resume.exclusive.spec.ts › cross-host: codex: the same Agent conversation reads its persisted workspace after sandbox rebuild",
-          "specs/assistant-workspace-files-survive-park-and-wake.exclusive.spec.ts › assistant workspace profile survives hibernate and wake on a fresh box",
-          "specs/distributed-prewarm.exclusive.spec.ts › two live backends share prepared capacity without crossing conversation files or history",
-          "specs/cross-host-backend-claim.exclusive.spec.ts › backend on B claims the prepared sandbox on A and serves its files and live turn"
+          "specs/agent-workspace-resume.exclusive.spec.ts \u203a the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/agent-workspace-resume.exclusive.spec.ts \u203a deepseek_harness: the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/agent-workspace-resume.exclusive.spec.ts \u203a pi: the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/agent-workspace-resume.exclusive.spec.ts \u203a codex: the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/agent-workspace-resume.exclusive.spec.ts \u203a cross-host: the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/agent-workspace-resume.exclusive.spec.ts \u203a cross-host: deepseek_harness: the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/agent-workspace-resume.exclusive.spec.ts \u203a cross-host: pi: the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/agent-workspace-resume.exclusive.spec.ts \u203a cross-host: codex: the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/assistant-workspace-files-survive-park-and-wake.exclusive.spec.ts \u203a assistant workspace profile survives hibernate and wake on a fresh box",
+          "specs/distributed-prewarm.exclusive.spec.ts \u203a two live backends share prepared capacity without crossing conversation files or history",
+          "specs/cross-host-backend-claim.exclusive.spec.ts \u203a backend on B claims the prepared sandbox on A and serves its files and live turn"
         ]
       }
     },
     "tests": {
-      "no_volume_core": 593,
+      "no_volume_core": 594,
       "persistent_files": 19
     }
   },
@@ -42,9 +42,9 @@
   ],
   "playwright": {
     "exclusive": {
-      "files": 177,
-      "parallel_files": 113,
-      "parallel_tests": 206,
+      "files": 178,
+      "parallel_files": 114,
+      "parallel_tests": 207,
       "serial_files": [
         "specs/a-prepared-seat-is-not-a-promise-the-box-can-still-keep.exclusive.spec.ts",
         "specs/a2a-stream-and-interaction.exclusive.spec.ts",
@@ -113,7 +113,7 @@
       ],
       "serial_tests": 105,
       "serial_workers": 1,
-      "tests": 311,
+      "tests": 312,
       "workers": 5
     },
     "parallel": {
