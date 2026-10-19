@@ -156,6 +156,12 @@ else:
   const endedReads = control('read-receipts', other.session_id);
   expect(await pendingState(other.session_id)).toEqual({ applicable: false, ready: false, user_action: null, actions: [] });
   expect(control('read-receipts', other.session_id)).toBe(endedReads);
+  await openSessionView(page, other.session_id);
+  await expect(page.getByTestId('session-recover')).toBeEnabled();
+  await page.getByTestId('session-recover').click();
+  await api.waitForSessionReady(other.session_id);
+  await expect(page.getByTestId('session-recover')).toHaveCount(0);
+  await openSessionView(page, sid);
 
   const before = await api.getMessages(sid);
   control('block', sid);
@@ -179,6 +185,7 @@ else:
     await page.evaluate(() => window.dispatchEvent(new Event('online')));
     await expect(composer).toBeDisabled();
     await expect(composer).toHaveAttribute('placeholder', 'Start a new session to continue');
+    await expect(page.getByTestId('session-recover')).toHaveCount(0);
     const lateAfterDelete = page.waitForResponse((reply) => reply.request().method() === 'GET'
       && new URL(reply.url()).pathname === actionPath);
     releaseBeforeDelete();
@@ -201,6 +208,7 @@ else:
     await page.reload({ waitUntil: 'domcontentloaded' });
     await expect(page.getByTestId('assistant-message').filter({ hasText: 'STARTUP_READY' })).toBeVisible();
     await expect(composer).toBeDisabled();
+    await expect(page.getByTestId('session-recover')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Refresh status', exact: true })).toHaveCount(0);
     await expect(page.getByRole('alert').filter({ hasText: 'Could not check session requirements.' })).toHaveCount(0);
     await returnToTab(page, Date.now());
