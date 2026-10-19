@@ -482,6 +482,19 @@ Interrupt the work first, or wait for it to finish. A Session that is waiting
 for an answer to an approval or a question is not working and can be archived
 or deleted.
 
+## Browser
+
+The Browser panel controls the sandbox's desktop through a signed, expiring
+viewer URL. It is available for a conversation-owned Agent sandbox and for an
+Assistant workspace owned by the signed-in user. An Assistant's Sessions share
+that owner's desktop. Agent sandboxes shared between users cannot expose a
+Browser because the desktop is not isolated per conversation.
+
+Wake a hibernated Assistant workspace before opening Browser. Reconnect mints a
+new link against the workspace's current sandbox, including after replacement.
+Desktop tabs and Browser links belong to that sandbox; they do not survive its
+replacement. This viewer does not require a persistent workspace volume.
+
 ## Conversation Workflow
 
 Sessions support multi-message conversations. The recommended pattern is:

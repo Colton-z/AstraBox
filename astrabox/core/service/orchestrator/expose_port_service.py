@@ -20,6 +20,10 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.settings import load_astrabox_settings
 from astrabox.common.utils.user_context import UserContext
+from astrabox.core.service.orchestrator.runtime_binding import (
+    is_assistant_user_conversation,
+    resolve_assistant_workspace_binding,
+)
 from astrabox.seams.sandbox import (
     SandboxBrowserEndpoint,
     sandbox_for_name,
@@ -149,7 +153,7 @@ class ExposePortService:
         if not url.startswith(("http://", "https://")):
             url = f"https://{url}"
         session_id = context.get("session_id")
-        if session_id:
+        if session_id and context.get("session_kind") != "assistant_chat":
             # Direct application traffic bypasses the platform, so silence in
             # the conversation cannot establish that this box is unused.
             recorded = await self._sessions_repo.compare_and_update_session(
@@ -205,19 +209,7 @@ class ExposePortService:
             if bound_session:
                 session = await self._sessions_repo.get_session(bound_session)
                 if isinstance(session, dict):
-                    sandbox_id = str(session.get("sandbox_id") or "").strip()
-                    if sandbox_id:
-                        return {
-                            "deployment_id": normalized,
-                            "session_id": bound_session,
-                            "sandbox_id": sandbox_id,
-                            "sandbox_backend": str(
-                                session.get("sandbox_backend") or ""
-                            ).strip()
-                            or None,
-                            "user_id": str(session.get("user_id") or "").strip(),
-                            "conversation_user_id": "",
-                        }
+                    return await self._session_context(normalized, bound_session, session)
             sandbox_id = str(binding.get("sandbox_id") or "").strip()
             if sandbox_id:
                 return {
@@ -235,7 +227,26 @@ class ExposePortService:
                 message=f"no binding or session found for id={normalized!r}",
                 status_code=404,
             )
+        return await self._session_context(normalized, normalized, session)
+
+    async def _session_context(
+        self, deployment_id: str, session_id: str, session: dict[str, Any]
+    ) -> dict[str, Any]:
         sandbox_id = str(session.get("sandbox_id") or "").strip()
+        if is_assistant_user_conversation(session):
+            reference = session["workspace_ref"]
+            if reference.get("user_id") != session.get("user_id"):
+                raise APIError(code="BINDING_NOT_FOUND", message="workspace binding not found", status_code=404)
+            resolution = await resolve_assistant_workspace_binding(
+                session=session, assistant_workspace_service=self._assistant_workspace_service,
+            )
+            if not resolution.can_dispatch:
+                raise APIError(
+                    code=resolution.reason_code or "ASSISTANT_WORKSPACE_NOT_READY",
+                    message=resolution.reason_message or "assistant workspace is not ready",
+                    status_code=409,
+                )
+            sandbox_id = str(resolution.sandbox_id)
         if not sandbox_id:
             raise APIError(
                 code="SANDBOX_NOT_AVAILABLE",
@@ -243,8 +254,9 @@ class ExposePortService:
                 status_code=502,
             )
         return {
-            "deployment_id": normalized,
-            "session_id": normalized,
+            "deployment_id": deployment_id,
+            "session_id": session_id,
+            "session_kind": session.get("session_kind"),
             "sandbox_id": sandbox_id,
             "sandbox_backend": str(session.get("sandbox_backend") or "").strip() or None,
             "user_id": str(session.get("user_id") or "").strip(),
