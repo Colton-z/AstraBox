@@ -176,6 +176,23 @@ the reader calls with the Session's stored mode when it connects and whenever
 the owner changes it, and `stop_child_run(control_ref)`, which stops one
 sub-agent by the control reference your child facts carry.
 
+An engine declaring `supports_server_info` may return `runtime_versions` in
+`get_server_info()`: `runtime_generation` is its observed incarnation id, and
+`components` lists `{component, version, source, reason}` records. Component
+names and version strings belong to the adapter. A known version has a
+nonempty string; an unknown one has `version: null` and a nonempty reason.
+Every component names its observation source. Deployment labels and host
+package versions are not observations of an in-box runtime.
+
+Startup, recovery and reader connection save this observation with its sandbox
+id and read time. The admin Session list and detail read that saved snapshot;
+they neither query nor wake compute. The snapshot describes the last connected
+instance, not continuous health or a version audit log. Its generation and
+`matches_bound_sandbox` distinguish it from another instance; absent information
+is explicitly unknown. Engines without this optional observation remain usable.
+The Claude runner records its loaded source SHA256, installed SDK distribution
+and the output of its selected native CLI's `--version` once per runner boot.
+
 ### Report the runtime's events
 
 The events are a small closed set. Each keeps the vendor's own words:

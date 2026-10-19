@@ -122,6 +122,8 @@ class Session(Base):
     slash_commands: Mapped[list[Any] | None]
     slash_command_details: Mapped[list[Any] | None]
     engine_capabilities: Mapped[dict[str, Any] | None]
+    #: Last connected runtime's observed component versions and instance coordinates.
+    runtime_versions: Mapped[dict[str, Any] | None]
 
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     #: The session list's order: moves when someone sends or the runtime answers.

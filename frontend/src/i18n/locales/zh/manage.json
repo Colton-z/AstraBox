@@ -111,6 +111,23 @@
     "vault_id": "凭证库 ID",
     "credentials": "凭证"
   },
+  "runtime_versions": {
+    "title": "最近观测的运行版本",
+    "source": "来源",
+    "observed": "观测时间",
+    "previous_instance": "此记录属于之前的沙箱实例。",
+    "reasons": {
+      "runtime_not_observed": "未知：尚无该运行时的观测记录。",
+      "server_info_not_supported": "未知：引擎不支持读取服务信息。",
+      "engine_versions_not_reported": "未知：引擎尚未报告组件版本。",
+      "server_info_unavailable": "未知：连接时未能读取运行时信息。",
+      "invalid_engine_version_observation": "未知：引擎返回的版本记录格式无效。",
+      "native_cli_version_unavailable": "未知：CLI 版本命令未返回版本。",
+      "native_cli_version_timeout": "未知：CLI 版本命令超时。",
+      "native_cli_version_command_unavailable": "未知：无法启动 CLI 版本命令。",
+      "native_cli_version_invalid_utf8": "未知：CLI 版本输出不是有效 UTF-8。"
+    }
+  },
   "common_fields": {
     "user": "用户",
     "duration": "时长",

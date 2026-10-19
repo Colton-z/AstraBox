@@ -169,7 +169,16 @@ class AdminService:
         identity = session.get("runtime_identity") if isinstance(session.get("runtime_identity"), dict) else {}
         workspace_ref = session.get("workspace_ref") if isinstance(session.get("workspace_ref"), dict) else {}
         stage_evidence = identity.get("stage_evidence") if isinstance(identity.get("stage_evidence"), dict) else {}
+        observation = session.get("runtime_versions")
+        observation = observation if isinstance(observation, dict) else {
+            "components": [], "reason": "runtime_not_observed",
+        }
         return {
+            **observation,
+            "matches_bound_sandbox": bool(
+                observation.get("sandbox_id")
+                and observation["sandbox_id"] == session.get("sandbox_id")
+            ),
             "engine_kind": (
                 str(session.get("engine_kind") or "").strip()
                 or str(workspace_ref.get("engine_kind") or "").strip()

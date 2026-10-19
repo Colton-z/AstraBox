@@ -18,6 +18,7 @@ import {
   killSandbox,
   requireSandboxHandle,
   sandboxRunning,
+  sandboxExec,
   waitForSandboxStopped,
 } from '../fixtures/sandboxOps';
 import { appPath, parseTimeoutEnv } from '../fixtures/env';
@@ -43,6 +44,37 @@ function identityOf(detail: AdminSessionRecord, label: string): Record<string, u
     `${label} runtime_identity should expose linux_user`,
   ).not.toEqual('');
   return identity as Record<string, unknown>;
+}
+
+interface ObservedVersions {
+  sandbox_id: string;
+  runtime_generation: string;
+  observed_at: string;
+  matches_bound_sandbox: boolean;
+  components: Array<{ component: string; version: string; source: string }>;
+}
+
+/** Compare the saved observation with the actual files and binaries in that box. */
+async function observedVersions(api: AstraApi, sessionId: string, sandboxId: string): Promise<ObservedVersions> {
+  const detail = await api.adminSessionDetail(sessionId);
+  const versions = detail.runtime_versions as ObservedVersions;
+  expect(versions.sandbox_id).toBe(sandboxId);
+  expect(versions.runtime_generation).toBeTruthy();
+  expect(versions.matches_bound_sandbox).toBe(true);
+  const sandbox = await requireSandboxHandle(api, sandboxId);
+  const actual = JSON.parse(sandboxExec(sandbox, `/usr/local/bin/python3.12 - <<'PY'
+import hashlib, json, subprocess
+from pathlib import Path
+from importlib.metadata import version
+print(json.dumps({
+  "astrabox-runner": hashlib.sha256(Path('/opt/astrabox/sandbox_runner.py').read_bytes()).hexdigest(),
+  "claude-agent-sdk": version('claude-agent-sdk'),
+  "claude-code": subprocess.check_output(['/usr/local/bin/claude', '--version'], cwd='/tmp', timeout=2, text=True).strip(),
+}))
+PY`, 5_000));
+  expect(Object.fromEntries((versions.components ?? []).map((item) => [item.component, item.version]))).toEqual(actual);
+  expect(versions.components?.every((item) => Boolean(item.source))).toBe(true);
+  return versions;
 }
 
 // Teardown that changes state runs on the passing path only, and hook
@@ -198,6 +230,15 @@ test('session sandbox replacement preserves the conversation identity and thread
     const historicalDetail = await api.adminSessionDetail(historicalId);
     const engineSessionKey = String(historicalDetail.engine_session_key || '').trim();
     expect(engineSessionKey, 'historical session should persist an engine_session_key before replacement').not.toEqual('');
+    const oldVersions = await observedVersions(api, historicalId, oldSandbox);
+    await api.adminEvictRuntime(historicalId);
+    await expect.poll(async () => {
+      const detail = await api.adminSessionDetail(historicalId);
+      return (detail.runtime_versions as ObservedVersions).observed_at;
+    }, { timeout: 30_000 }).not.toBe(oldVersions.observed_at);
+    const reconnectedVersions = await observedVersions(api, historicalId, oldSandbox);
+    expect(reconnectedVersions.runtime_generation).toBe(oldVersions.runtime_generation);
+    expect(reconnectedVersions.components).toEqual(oldVersions.components);
 
     // ── A concurrent conversation in the same Agent scope, started and driven
     //    from the page like the first one. Its job here is the isolation half:
@@ -224,6 +265,10 @@ test('session sandbox replacement preserves the conversation identity and thread
     killSandbox(oldSandboxHandle);
     await waitForSandboxStopped(oldSandboxHandle, KILL_CONVERGE_MS);
     expect(sandboxRunning(oldSandboxHandle), 'the reclaimed sandbox should be gone').toBe(false);
+    await api.adminSessionDetail(historicalId);
+    await api.data('GET', '/admin/sessions/all?page=1&page_size=50');
+    expect((await api.getSession(historicalId)).sandbox_id ?? oldSandbox,
+      'management reads must not allocate replacement compute').toBe(oldSandbox);
     test.info().annotations.push({ type: 'e2e_uidgid_reclaimed_sandbox_id', description: oldSandbox });
 
     // ── Back to the historical conversation the way a user goes back: its row
@@ -308,6 +353,19 @@ test('session sandbox replacement preserves the conversation identity and thread
     const newSandbox = String(rebound.sandbox_id || '').trim();
     expect(newSandbox, 'rebuilt conversation should hold a sandbox_id').not.toEqual('');
     expect(newSandbox, `rebuilt sandbox must differ from the reclaimed one (old=${oldSandbox})`).not.toBe(oldSandbox);
+    const newVersions = await observedVersions(api, historicalId, newSandbox);
+    expect(newVersions.runtime_generation).not.toBe(oldVersions.runtime_generation);
+    const management = await page.context().newPage();
+    await management.addInitScript(() => localStorage.setItem('astrabox-lang', 'en'));
+    await management.goto(appPath('/manage/sessions'));
+    const versionCell = management.locator(`[data-testid="runtime-versions"][data-runtime-generation="${newVersions.runtime_generation}"]`);
+    await expect(versionCell).toHaveAttribute('data-runtime-generation', newVersions.runtime_generation!);
+    await expect(versionCell).toContainText(newVersions.components!.find((item) => item.component === 'claude-agent-sdk')!.version!);
+    await management.goto(appPath(`/manage/sessions/${historicalId}`));
+    const versionFacts = management.getByTestId('runtime-versions');
+    await expect(versionFacts).toHaveAttribute('data-runtime-generation', newVersions.runtime_generation!);
+    for (const item of newVersions.components ?? []) await expect(versionFacts).toContainText(item.version!);
+    await management.close();
     test.info().annotations.push({ type: 'e2e_uidgid_new_sandbox_id', description: newSandbox });
 
     // Calm terminal state: the replacement is a non-event for the row too. The

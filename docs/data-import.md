@@ -1,7 +1,7 @@
 # Preserve records through an offline upgrade
 
-Convert existing data to AstraBox **0.1.9's PostgreSQL schema, Alembic revision
-`0002`**, before starting the upgraded installation. This guide defines the
+Convert existing data to **this checkout's PostgreSQL schema, Alembic revision
+`0003`**, before starting the upgraded installation. This guide defines the
 record relationships and custody to preserve. The operator owns conversion,
 transactional loading and its validation; AstraBox does not provide an
 installation-wide import command or automatically convert 0.1.8 records.
@@ -10,6 +10,8 @@ Other databases and private extension formats are outside this specification.
 The examples below were reviewed against the current models and API; they were
 not executed as a migration acceptance. Pin both the installed release and its
 schema revision. Do not load old collection documents into the new tables.
+Leave `sessions.runtime_versions` NULL when importing: a runtime connection
+records the actual versions with its sandbox and incarnation after startup.
 
 ## Prepare and load in this order
 

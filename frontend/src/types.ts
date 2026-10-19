@@ -550,6 +550,12 @@ export interface AdminSessionVersions {
   runtime_identity_status?: string | null;
   bootstrap_transport?: string | null;
   has_local_runtime?: boolean;
+  observed_at?: string;
+  sandbox_id?: string | null;
+  runtime_generation?: string | null;
+  matches_bound_sandbox?: boolean;
+  reason?: string | null;
+  components?: Array<{ component: string; version: string | null; source: string; reason?: string | null }>;
   [key: string]: unknown;
 }
 

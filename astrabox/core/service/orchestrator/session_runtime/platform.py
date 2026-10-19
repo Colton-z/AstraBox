@@ -19,6 +19,7 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.time_utils import parse_iso
 from astrabox.core.model import SessionState
 from astrabox.core.service.orchestrator.engine.runtime import RuntimeClient, RuntimeInput
+from astrabox.core.service.orchestrator.session_lifecycle.startup import runtime_initialization_metadata
 from astrabox.core.service.orchestrator.session_runtime.host import (
     ConnectedRuntime,
     RuntimeEnded,
@@ -98,6 +99,11 @@ class PlatformRuntimeConnector:
             client = runtime.engine_client
             if not isinstance(client, RuntimeClient):
                 raise TypeError(f"the {runtime.engine_kind} adapter does not serve the runtime contract")
+            initialization = await runtime_initialization_metadata(session_id, runtime)
+            await self._sessions.update_session(
+                session_id, {"runtime_versions": initialization["runtime_versions"]},
+                touch_updated_at=False,
+            )
             return ConnectedRuntime(
                 client=client,
                 sandbox_id=str(runtime.sandbox_id or session.get("sandbox_id") or ""),

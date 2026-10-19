@@ -82,6 +82,7 @@ RUNNER_PROTOCOL = "astrabox.runner-wire.v1"
 #: This runner process's identity. Journal sequences restart in a new process,
 #: so a host cursor names the boot it was read from and is refused by another.
 RUNNER_BOOT_ID = uuid_mod.uuid4().hex
+RUNNER_SOURCE_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
 #: An optional script an external provider or deployment termination trigger
 #: may run when this box is torn down. The runner writes the content once it
@@ -327,6 +328,49 @@ def _runner_engine_contract() -> dict[str, Any]:
         "sdk_version": sdk_version,
         "accepted_option_keys": accepted_option_keys,
         "permission_modes": permission_modes,
+    }
+
+
+async def _runtime_versions(contract: dict[str, Any]) -> dict[str, Any]:
+    """Observe the image's components once for this runner incarnation."""
+    cli: dict[str, Any] = {
+        "component": "claude-code", "version": None,
+        "source": "native_cli_--version", "reason": "native_cli_version_unavailable",
+    }
+    process: asyncio.subprocess.Process | None = None
+    try:
+        process = await asyncio.create_subprocess_exec(
+            CLAUDE_CLI_PATH, "--version", stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL, cwd="/tmp",
+        )
+        stdout, _ = await asyncio.wait_for(process.communicate(), timeout=2)
+        value = stdout.decode("utf-8").strip()
+        if process.returncode == 0 and value:
+            cli.update(version=value, reason=None)
+        elif process.returncode != 0:
+            cli["reason"] = f"native_cli_version_exit_{process.returncode}"
+    except TimeoutError:
+        cli["reason"] = "native_cli_version_timeout"
+    except OSError:
+        cli["reason"] = "native_cli_version_command_unavailable"
+    except UnicodeError:
+        cli["reason"] = "native_cli_version_invalid_utf8"
+    finally:
+        if process is not None and process.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            await process.wait()
+    if cli["reason"]:
+        logger.warning("native CLI version observation unavailable: %s", cli["reason"])
+    return {
+        "runtime_generation": RUNNER_BOOT_ID,
+        "components": [
+            {"component": "astrabox-runner", "version": RUNNER_SOURCE_SHA256,
+             "source": "loaded_runner_source_sha256"},
+            {"component": "claude-agent-sdk", "version": contract["sdk_version"],
+             "source": "in_box_python_distribution"},
+            cli,
+        ],
     }
 
 
@@ -2306,6 +2350,7 @@ class RunnerWsServer:
         self._activation_token_file = activation_token_file
         self.session: RunnerSession | None = None
         self._activation_token: str | None = None
+        self._observed_versions: dict[str, Any] | None = None
         self._server: Any = None
 
     @property
@@ -2547,6 +2592,9 @@ class RunnerWsServer:
             )
         logger.info("runner serving session %s", self.session.session_id)
         _write_death_notice(opening.get("death_notice"))
+        if self._observed_versions is None:
+            self._observed_versions = await _runtime_versions(engine_contract)
+        engine_contract["runtime_versions"] = self._observed_versions
         window = self.session.sender.cursor_window(after_sequence)
         await link.send({
             "op": "hello",

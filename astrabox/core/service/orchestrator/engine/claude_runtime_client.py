@@ -405,6 +405,7 @@ class ClaudeRuntimeClient:
         self._link = link
         self._session_id = session_id
         self._boot_id = boot_id
+        self._runtime_versions = dict(hello.get("engine_contract", {}).get("runtime_versions") or {})
         self._translation = _Translation()
         self._translation.engine_session_key = resume_session_key
         self._next_sequence: int | None = None
@@ -574,7 +575,8 @@ class ClaudeRuntimeClient:
         await self._link.stop_task(control_id)
 
     async def get_server_info(self) -> dict[str, Any] | None:
-        return await self._link.get_init_info()
+        info = await self._link.get_init_info()
+        return {**(info or {}), "runtime_versions": self._runtime_versions}
 
     async def close(self) -> None:
         await self._link.close()
