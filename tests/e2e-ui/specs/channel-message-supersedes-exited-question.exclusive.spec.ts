@@ -24,7 +24,7 @@
  * interrupted result; that is not a user answer or a platform-authored tool
  * result.
  */
-import { expect, test, type APIRequestContext } from '@playwright/test';
+import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 
 import { AstraApi, messageText, messageToolCalls } from '../fixtures/astraApi';
 import { channelCallback } from '../fixtures/channelCallback';
@@ -40,7 +40,7 @@ import { PlatformApi } from '../fixtures/platformApi';
 import { IMAGE_RUNNER_LAUNCHER, imageRunnerPidLookup, imageRunnerRestartScript } from '../fixtures/runnerRestart';
 import { killSandbox, requireSandboxHandle, sandboxExec } from '../fixtures/sandboxOps';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
-import { apiPath } from '../fixtures/env';
+import { apiPath, appPath } from '../fixtures/env';
 
 interface ChannelTriggerReceipt {
   deployment_id: string;
@@ -175,11 +175,11 @@ test('a newer channel message runs after the question it supersedes lost its run
   await runSupersededQuestion(request, 'sandbox-loss');
 });
 
-test('a newer channel message retires an exited question without a native tool result on the same sandbox being fabricated by the platform', async ({ request }) => {
-  await runSupersededQuestion(request, 'runner-loss');
+test('a newer channel message retires an exited question without a native tool result on the same sandbox being fabricated by the platform', async ({ request, page }) => {
+  await runSupersededQuestion(request, 'runner-loss', page);
 });
 
-async function runSupersededQuestion(request: APIRequestContext, fault: 'sandbox-loss' | 'runner-loss') {
+async function runSupersededQuestion(request: APIRequestContext, fault: 'sandbox-loss' | 'runner-loss', page?: Page) {
   const api = new AstraApi(request);
   const platform = new PlatformApi(request);
   const runId = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
@@ -279,6 +279,18 @@ async function runSupersededQuestion(request: APIRequestContext, fault: 'sandbox
   expect(initialInputs.map((row) => ({ source: row.source, content: row.content })))
     .toEqual([{ source: 'channel', content: questionText }]);
   evidence.before = { fault, originalQuestion, pending, waiting, runtimeBefore, initialInputs, initialInteractions };
+  const outboxRows = () => postgresRows<Record<string, unknown>>(
+    `SELECT response_id, state, attempts, last_error FROM channel_outbox `
+      + `WHERE deployment_id = ${sqlLiteral(deploymentId)} AND session_id = ${sqlLiteral(sessionId)} ORDER BY response_seq`,
+  );
+  const projected = () => postgresRows<{ caught_up: boolean }>(
+    `SELECT after_seq >= (SELECT COALESCE(MAX(seq), 0) FROM session_output WHERE session_id = ${sqlLiteral(sessionId)}) AS caught_up `
+      + `FROM channel_output_subscriptions WHERE deployment_id = ${sqlLiteral(deploymentId)} AND session_id = ${sqlLiteral(sessionId)}`,
+  );
+  if (page) {
+    await page.goto(appPath(`/sessions/${sessionId}`));
+    await expect(page.getByTestId('pending-interaction-panel')).toBeVisible();
+  }
 
   // Out-of-band death, not a reclaim: a reclaim releases the box through the
   // platform, which is precisely the path this spec must NOT start from. The
@@ -314,6 +326,18 @@ async function runSupersededQuestion(request: APIRequestContext, fault: 'sandbox
     message: 'runtime withdrawal closes the shown channel question without another inbound',
     timeout: 30_000,
   }).toEqual([expect.objectContaining({ state: 'CLOSED', answering_item: null })]);
+  await expect.poll(projected, { message: 'channel projection consumed the entire failed response' })
+    .toEqual([{ caught_up: true }]);
+  expect(outboxRows().map((row) => row.response_id),
+    'inspect all delivery identities, including continuations: the withdrawn question adds no failure card')
+    .toEqual([parkedResponseId]);
+  if (page) {
+    const failure = page.getByText('The agent runtime stopped before this response finished (runtime_lost).', { exact: false });
+    await expect(failure).toBeVisible();
+    await expect(page.getByTestId('pending-interaction-panel')).toHaveCount(0);
+    await page.reload();
+    await expect(failure).toBeVisible();
+  }
   // Whether the platform still shows the question here is a race with its own
   // detection of the loss, not part of the contract; it is kept as evidence.
   evidence.afterFault = {
@@ -441,7 +465,50 @@ async function runSupersededQuestion(request: APIRequestContext, fault: 'sandbox
     message: 'the participant receives the native new reply once after the old question closes',
   }).toEqual([nativeReplies.map((row) => nativeText(row.entry)).join('\n\n').trim()]);
   expect(recipient!.errors).toEqual([]);
-  evidence.completed = { completed, finalInputs, finalInteraction, finalNative, newInputs, nativeReplies, history };
+  await expect.poll(projected).toEqual([{ caught_up: true }]);
+  expect(outboxRows().map((row) => row.response_id)).toEqual([parkedResponseId, nextReply.id]);
+  evidence.completed = { completed, finalInputs, finalInteraction, finalNative, newInputs, nativeReplies, history, outbox: outboxRows() };
+  if (fault === 'runner-loss') {
+    // A genuine reply keeps its delivery when its response fails.
+    const heldFile = `/tmp/e2e-channel-open-reply-${runId}`;
+    const heldPrefix = `E2E_OPEN_REPLY_${runId}`;
+    const heldPrompt = `First say exactly ${heldPrefix}. Then use Bash once to run exactly: printf ready > ${heldFile}; sleep 60. Do not run in the background.`;
+    await triggerThreadMessage(request, { secret, threadId, messageId: `open-reply-${runId}`, text: heldPrompt });
+    await expect.poll(() => nativeRows(sessionId).flatMap((row) => nativeBlocks(row.entry))
+      .filter((block) => block.type === 'tool_use' && block.name === 'Bash'
+        && String(object(block.input).command || '').includes(heldFile)).length, { timeout: 120_000 }).toBe(1);
+    await expect.poll(() => sandboxExec(originalHandle, `if [ -f ${heldFile} ]; then cat ${heldFile}; fi`)).toBe('ready');
+    expect(nativeRows(sessionId).filter((row) => row.entry.type === 'assistant' && nativeText(row.entry).includes(heldPrefix))).toHaveLength(1);
+    const heldNativeInput = nativeRows(sessionId).find((row) => row.entry.type === 'user' && nativeText(row.entry) === heldPrompt)!;
+    expect(heldNativeInput).toBeDefined();
+    const heldNativeText = nativeRows(sessionId).filter((row) => row.seq > heldNativeInput.seq && row.entry.type === 'assistant')
+      .map((row) => nativeText(row.entry)).filter(Boolean).join('\n\n').trim();
+    const openResponse = sessionResponseRows(sessionId).find((row) => row.status === 'running');
+    expect(openResponse, 'the held command has an unfinished response').toBeDefined();
+    await expect.poll(() => outboxRows().map((row) => row.response_id))
+      .toEqual([parkedResponseId, nextReply.id, openResponse!.response_id]);
+    sandboxExec(originalHandle, imageRunnerRestartScript({
+      signal: 'KILL', launch: IMAGE_RUNNER_LAUNCHER,
+      log: '/tmp/astrabox-open-reply-runner.log', evidence: 'printf restarted', name: 'open reply image runner',
+    }));
+    await api.adminEvictRuntime(sessionId);
+    await expect.poll(() => sessionResponseRows(sessionId).find((row) => row.response_id === openResponse!.response_id))
+      .toMatchObject({ status: 'ended', outcome: 'failed', native_reason: 'runtime_lost' });
+    await expect.poll(projected).toEqual([{ caught_up: true }]);
+    await expect.poll(outboxRows).toEqual([
+      expect.objectContaining({ response_id: parkedResponseId, state: 'DELIVERED' }),
+      expect.objectContaining({ response_id: nextReply.id, state: 'DELIVERED' }),
+      expect.objectContaining({ response_id: openResponse!.response_id, state: 'DELIVERED', attempts: 0, last_error: null }),
+    ]);
+    await expect.poll(() => recipient!.deliveries.filter((delivery) => delivery.question === null).map((delivery) => delivery.text.trim()))
+      .toEqual([nativeReplies.map((row) => nativeText(row.entry)).join('\n\n').trim(), heldNativeText]);
+    const failedHistory = await api.getMessages(sessionId, 100);
+    const failedReply = failedHistory.messages.find((message) => message.id === openResponse!.response_id)!;
+    expect(failedReply.metadata).toMatchObject({ outcome: 'failed', native_reason: 'runtime_lost' });
+    expect(messageText(failedReply)).toContain(heldNativeText);
+    expect(recipient!.errors).toEqual([]);
+    evidence.openReplyFailure = { response: openResponse, nativeText: heldNativeText, outbox: outboxRows(), history: failedHistory };
+  }
   test.info().annotations.push({
     type: 'retired_tool_call_parts',
     description: JSON.stringify(

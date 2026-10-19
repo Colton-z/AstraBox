@@ -17,9 +17,11 @@ segment as one reply:
 * a reply that closed at an interaction names it, so its delivery can show the
   question while the response still waits on it.
 
-Parts that arrive while no segment is open (a response the runtime lost after
-its last interaction closes with ``error`` and ``finish`` and no new
-``start``) belong to no reply.
+Parts that arrive while no segment is open belong to no reply. A platform
+``start`` that reopens a lost response for the browser declares
+``channel_delivery=False``: it creates no new channel delivery after an
+interaction. A reply already open retains its original delivery declaration
+and receives the failure.
 """
 
 from __future__ import annotations

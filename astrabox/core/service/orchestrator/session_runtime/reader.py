@@ -139,10 +139,11 @@ def lost_response_parts(response_id: str, reason: str) -> list[dict[str, Any]]:
 
     They open with the response's ``start``: a response paused on an
     interaction has already finished its browser message, and in a message
-    still open a repeated ``start`` only names it again.
+    still open a repeated ``start`` only names it again. This informational
+    start does not create a channel reply; an already-open reply still fails.
     """
     return [
-        {"type": "start", "messageId": response_id},
+        {"type": "start", "messageId": response_id, "messageMetadata": {"channel_delivery": False}},
         {"type": "error", "errorText": lost_response_error(reason)["message"]},
         {"type": "finish", "messageMetadata": {"response_id": response_id, "outcome": "failed"}},
     ]
