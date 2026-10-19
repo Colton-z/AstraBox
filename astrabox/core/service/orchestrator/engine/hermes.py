@@ -593,8 +593,8 @@ class HermesEngineAdapter(EngineAdapter):
                 ("astrabox-hermes-state-mirror", "hermes_stop_state_mirror"),
                 (_HERMES_BACKEND_PROGRAM, "hermes_stop_backend"),
             ):
-                # Re-entering a failed save can find an already stopped service.
-                # The supervisor's read-back, not its stop command text, is proof.
+                # A failed mirror can already have exited. Supervisor's
+                # read-back, not the stop command's result, confirms no writer.
                 await commands.run("supervisorctl stop " + shlex.quote(program))
                 status = await commands.run(
                     "bash -lc " + shlex.quote(
@@ -606,11 +606,11 @@ class HermesEngineAdapter(EngineAdapter):
                 if (
                     status.exit_code != 0
                     or re.fullmatch(
-                        re.escape(program) + r"\s+STOPPED(?:\s+[^\n]*)?",
+                        re.escape(program) + r"\s+(?:STOPPED|EXITED|FATAL)(?:\s+[^\n]*)?",
                         status.output.strip(),
                     ) is None
                 ):
-                    raise RuntimeError("supervisor did not confirm STOPPED")
+                    raise RuntimeError("supervisor did not confirm a stopped process")
             phase = "hermes_native_state_save"
             await self._restore_runtime_state(commands, runtime_identity)
             await self._save_runtime_state(commands, runtime_identity)
