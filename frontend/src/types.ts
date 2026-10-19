@@ -438,6 +438,7 @@ export interface UserAction {
 }
 
 export interface SessionUserActionState {
+  applicable: boolean;
   ready: boolean;
   user_action: UserAction | null;
   actions: { id: string; label: string }[];

@@ -11283,6 +11283,11 @@
             "title": "Actions",
             "type": "array"
           },
+          "applicable": {
+            "description": "Whether execution prerequisites apply; false for read-only history",
+            "title": "Applicable",
+            "type": "boolean"
+          },
           "ready": {
             "title": "Ready",
             "type": "boolean"
@@ -11299,6 +11304,7 @@
           }
         },
         "required": [
+          "applicable",
           "ready"
         ],
         "title": "SessionUserActionView",

@@ -425,6 +425,7 @@ for _code, _status, _category, _retryable, _owner in (
     ("PENDING_INPUTS_NOT_CANCELLED", 409, "state", False, "session"),
     # The conversation's Agent was deleted; its history stays readable.
     ("AGENT_DELETED", 409, "state", False, "session"),
+    ("SESSION_READ_ONLY", 409, "state", False, "session"),
     # An engine with a permission-mode vocabulary but no product default needs
     # the caller to choose one explicitly.
     ("ENGINE_PERMISSION_MODE_REQUIRED", 400, "request", False, "client"),

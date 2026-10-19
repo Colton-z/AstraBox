@@ -512,7 +512,7 @@ def test_session_materials_gate_native_startup_and_preserve_resume(
         assert (failure.get("user_action") or {}).get("url") == "https://example.com/authorize", failure
         wait_until_settled(e2e_client, sid)
         cleared = data(e2e_client.post(f"/api/v1/sessions/{sid}/user-action", json={"action_id": "authorize"}))
-        assert cleared == {"ready": True, "user_action": None, "actions": []}, cleared
+        assert cleared == {"applicable": True, "ready": True, "user_action": None, "actions": []}, cleared
     finally:
         _hold(server, "user-actions", sid, False)
     transcripts = json.dumps(_native(execute, original["runtime_identity"])["transcripts"])
@@ -768,7 +768,7 @@ def test_a_startup_user_action_keeps_the_conversation_until_the_user_acts(
                           "counts_after": counts(), "implicit_authorization_operations": 0}))
 
         cleared = data(e2e_client.post(f"/api/v1/sessions/{sid}/user-action", json={"action_id": "authorize"}))
-        assert cleared == {"ready": True, "user_action": None, "actions": []}, cleared
+        assert cleared == {"applicable": True, "ready": True, "user_action": None, "actions": []}, cleared
         assert provider_calls("user-action-calls") == before_operations + 1
     finally:
         _hold(server, "startup-user-actions", aid, False)

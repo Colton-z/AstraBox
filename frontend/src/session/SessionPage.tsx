@@ -187,7 +187,8 @@ function SessionPageReady({
     onArtifactAppeared: artifacts.appeared,
   });
   const { messages, isWorking, isSending, isStopping } = chat;
-  const isTerminated = session.state === 'TERMINATED' || lifecycleState === 'terminated' || lifecycleState === 'deleted'
+  const isTerminated = session.state === 'TERMINATED' || session.state === 'DELETED'
+    || lifecycleState === 'terminated' || lifecycleState === 'deleted'
     || session.agent_state === 'DELETING' || session.agent_state === 'DELETED';
 
   // ── Pending interaction ──────────────────────────────────────
@@ -221,7 +222,7 @@ function SessionPageReady({
     ...[...chat.unsent].filter(([, entry]) => entry.userAction).map(([id]) => id),
     ...messages.filter((message) => inputFailure(message)?.user_action).map((message) => message.id),
   ]), [session.state, session.runtime_unavailable, session.sandbox_id, chat.unsent, messages]);
-  const prerequisite = useSessionUserAction(sessionId, session.user_id ?? '', userActionInvalidation);
+  const prerequisite = useSessionUserAction(sessionId, session.user_id ?? '', userActionInvalidation, !isTerminated);
   const composerCanSend = prerequisite.ready && canSend;
 
   // ── Composer input (draft, slash commands, history, keydown) ─

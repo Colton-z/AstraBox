@@ -293,6 +293,16 @@ sending while a prerequisite is unknown or pending. A status read is advisory:
 `prepare_turn` remains the authority for every caller, including those that do
 not use the console.
 
+The HTTP view also carries platform-owned `applicable`. For an ended Session,
+or one whose Agent is `DELETING` or `DELETED`, GET returns
+`{"applicable": false, "ready": false, "user_action": null, "actions": []}`
+without calling the provider. POST refuses with `409 SESSION_READ_ONLY` before
+reading or performing a provider operation. Owner and API-scope checks still
+apply. The console omits the prerequisite view and does not query it when it
+already knows the conversation is read-only; late responses from its executable
+state cannot restore an action. Executable conversations return
+`applicable: true`, retaining the provider's readiness and failure semantics.
+
 The console re-reads prerequisites when startup or runtime recovery changes
 the Session binding, when the page regains focus or visibility, and when the
 browser comes back online. Return reads use the console's shared throttling

@@ -7911,6 +7911,11 @@ export interface components {
         SessionUserActionView: {
             /** Actions */
             actions?: components["schemas"]["UserActionCommandView"][];
+            /**
+             * Applicable
+             * @description Whether execution prerequisites apply; false for read-only history
+             */
+            applicable: boolean;
             /** Ready */
             ready: boolean;
             user_action?: components["schemas"]["UserActionView"] | null;

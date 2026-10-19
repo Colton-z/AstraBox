@@ -42,6 +42,8 @@ STARTUP_USER_ACTIONS = STATE / "runtime-preparation-startup-user-actions.json"
 TURN_DELAY = STATE / "runtime-preparation-turn-delay.json"
 TURN_RECEIPTS = STATE / "runtime-preparation-turns.jsonl"
 USER_ACTION_RECEIPTS = STATE / "runtime-preparation-user-action-calls.jsonl"
+USER_ACTION_READ_RECEIPTS = STATE / "runtime-preparation-user-action-reads.jsonl"
+USER_ACTION_READ_FAILURES = STATE / "runtime-preparation-user-action-read-failures.json"
 SYNCHRONIZED = STATE / "runtime-preparation-synchronized.jsonl"
 ACTION_URL = "https://example.com/authorize"
 
@@ -244,6 +246,10 @@ class PreparationFixture(RuntimePreparationProvider):
         return RuntimeMaterials(files=(self._material(context, "turn"),))
 
     async def read_user_actions(self, *, context):
+        with USER_ACTION_READ_RECEIPTS.open("a") as receipts:
+            receipts.write(json.dumps({"session_id": context.session_id, "at": time.time()}) + "\n")
+        if _listed(USER_ACTION_READ_FAILURES, context.session_id):
+            raise RuntimeError("SECRET_SENTINEL_MUST_NOT_APPEAR")
         hold = STATE / f"runtime-preparation-ui-startup-{context.subject.id}"
         startup_waiting = hold.is_file() and hold.read_text() == context.session_id
         if not (startup_waiting or _listed(USER_ACTIONS, context.session_id) or _listed(STARTUP_USER_ACTIONS, context.subject.id)):

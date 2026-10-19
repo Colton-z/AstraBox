@@ -119,6 +119,7 @@ export interface HeldInput {
  */
 export interface SessionRecord {
   session_id: string;
+  agent_state?: string | null;
   user_id?: string | null;
   /** CREATING / READY / PROCESSING / WAITING_INPUT / TERMINATED / DELETED. */
   state?: string | null;
