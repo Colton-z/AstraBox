@@ -2410,7 +2410,7 @@
       },
       "AgentRecord": {
         "additionalProperties": true,
-        "description": "One stored Agent as these routes project it.\n\nThe Agent document is open — ``AgentService._sanitize`` passes through\nevery key that is not internal — so the fields named here are the ones the\nconsole addresses by name, and ``extra=\"allow\"`` carries the rest. Their\ntypes are the ones ``agent_schema.AGENT_FIELD_SCHEMA`` enforces on write,\nplus the identity and ownership fields ``AgentConfigService`` stamps.\n``artifacts_enabled`` is always present because a read reports the switch\nas it takes effect, including for an Agent stored without it.\n\n``can_manage`` is computed per viewer and therefore present only on the\nreads that compute it (list and get), not on a write's echo of the record;\n``favorited`` likewise, on the full list.",
+        "description": "One stored Agent as these routes project it.\n\nThe Agent document is open — ``AgentService._sanitize`` passes through\nevery key that is not internal — so the fields named here are the ones the\nconsole addresses by name, and ``extra=\"allow\"`` carries the rest. Their\ntypes are the ones ``agent_schema.AGENT_FIELD_SCHEMA`` enforces on write,\nplus the identity and ownership fields ``AgentConfigService`` stamps.\n``artifacts_enabled`` is always present because a read reports the switch\nas it takes effect, including for an Agent stored without it.\n\n``can_manage`` is computed per viewer and therefore present only on the\nreads that compute it (list and get), not on a write's echo of the record;\n``favorited`` and ``can_start_conversation`` are present on the full list.\nThe latter reports configured admission eligibility, not runtime health.",
         "properties": {
           "admins": {
             "anyOf": [
@@ -2465,6 +2465,17 @@
               }
             ],
             "title": "Can Manage"
+          },
+          "can_start_conversation": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Can Start Conversation"
           },
           "categories": {
             "anyOf": [

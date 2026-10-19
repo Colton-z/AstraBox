@@ -363,6 +363,7 @@ function AgentCard({
   const name = agentDisplayName(agent);
   const tags = agentTags(agent);
   const favorited = agent.favorited === true;
+  const unavailable = agent.can_start_conversation === false;
   return (
     <Card
       data-testid="agent-option"
@@ -382,10 +383,11 @@ function AgentCard({
           trail={
             <div className="flex items-center gap-1.5">
               <Badge
-                variant={agent.state === 'ACTIVE' ? 'secondary' : 'outline'}
+                variant={!unavailable && agent.state === 'ACTIVE' ? 'secondary' : 'outline'}
                 className="t-mono text-10 font-normal"
               >
-                {agentStateLabel(String(agent.state || ''), t)}
+                {unavailable
+                  ? t('agents:home_unavailable') : agentStateLabel(String(agent.state || ''), t)}
               </Badge>
               {/* The fill carries the state, not a hue: a filled star and an
                   outline one stay distinct in greyscale
@@ -456,7 +458,7 @@ function AgentCard({
         <Button
           data-testid="agent-start"
           variant="outline"
-          disabled={starting}
+          disabled={starting || unavailable}
           onClick={onStart}
           className="w-full justify-center"
         >

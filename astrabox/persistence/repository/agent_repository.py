@@ -80,12 +80,14 @@ from astrabox.persistence.sql.models.agents import (
     AgentVaultBinding,
 )
 from astrabox.persistence.sql.models.sessions import Session
+from astrabox.persistence.sql.models.environments import Environment
 from astrabox.persistence.sql.statements import insert_if_absent_primary_key, upsert_primary_key
 from astrabox.persistence.provider import get_persistence
 from astrabox.seams.persistence_coordination import SessionNotice
 
 _AGENTS = Agent.__table__
 _SESSIONS = Session.__table__
+_ENVIRONMENTS = Environment.__table__
 _LINKS = AgentCategoryLink.__table__
 _VAULTS = AgentVaultBinding.__table__
 _ASSIGNMENTS = AgentMCPAssignment.__table__
@@ -803,13 +805,22 @@ class AgentRepository:
     async def list_visible_agents(
         self, viewer: str, *, platform_admin: bool
     ) -> list[dict[str, Any]]:
-        """Every live Agent ``viewer`` may see, the most recently edited first."""
+        """Visible Agents and their configuration eligibility, newest edit first."""
         rows = await fetch_all(
             _definition()
-            .where(_LIVE, visible_to(viewer, platform_admin=platform_admin))
+            .outerjoin(_ENVIRONMENTS, _ENVIRONMENTS.c.name == _AGENTS.c.environment_name)
+            .add_columns(and_(
+                _AGENTS.c.state != "DELETING",
+                _AGENTS.c.enabled.is_(True),
+                _ENVIRONMENTS.c.enabled.is_(True),
+            ).label("can_start_conversation"))
+            .where(
+                _LIVE,
+                visible_to(viewer, platform_admin=platform_admin),
+            )
             .order_by(_AGENTS.c.updated_at.desc(), _AGENTS.c.agent_id.desc())
         )
-        return [_view(row) for row in rows]
+        return [{**_view(row), "can_start_conversation": row["can_start_conversation"]} for row in rows]
 
     async def list_manageable_agents(
         self, viewer: str, *, platform_admin: bool

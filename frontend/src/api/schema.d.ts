@@ -4741,7 +4741,8 @@ export interface components {
          *
          *     ``can_manage`` is computed per viewer and therefore present only on the
          *     reads that compute it (list and get), not on a write's echo of the record;
-         *     ``favorited`` likewise, on the full list.
+         *     ``favorited`` and ``can_start_conversation`` are present on the full list.
+         *     The latter reports configured admission eligibility, not runtime health.
          */
         AgentRecord: {
             /** Admins */
@@ -4754,6 +4755,8 @@ export interface components {
             artifacts_enabled?: boolean | null;
             /** Can Manage */
             can_manage?: boolean | null;
+            /** Can Start Conversation */
+            can_start_conversation?: boolean | null;
             /** Categories */
             categories?: string[] | null;
             /** Claude Options */

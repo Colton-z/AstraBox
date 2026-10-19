@@ -62,7 +62,9 @@
 import { expect, test, type Page } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
+import { postgresRows, sqlLiteral } from '../fixtures/dbOracle';
 import { apiPath, appPath, parseTimeoutEnv } from '../fixtures/env';
+import { PlatformApi } from '../fixtures/platformApi';
 import { onPassOnly } from '../fixtures/sessionCleanup';
 
 /**
@@ -96,9 +98,14 @@ const THROTTLE_MARGIN_MS = 1_000;
 // interrupted result keeps it so the scene stays readable — the same rule, in
 // its general form (fixtures/sessionCleanup.ts).
 let agentId = '';
+let environmentName = '';
+let environment: Record<string, unknown> = {};
 onPassOnly(async ({ request }) => {
-  if (agentId) await new AstraApi(request).deleteAgent(agentId);
+  const api = new AstraApi(request);
+  if (agentId) await api.deleteAgent(agentId);
+  if (environmentName) await api.data('DELETE', `/admin/environments/${environmentName}`);
   agentId = '';
+  environmentName = '';
 });
 
 /** Send the picker's tab to the background, observably. */
@@ -153,6 +160,7 @@ test('the open agent picker shows an agent created elsewhere and drops one delet
   // "died", and a listener added later misses the render that mattered.
   const uncaught: string[] = [];
   page.on('pageerror', (error) => uncaught.push(error.message));
+  await context.addInitScript(() => localStorage.setItem('astrabox-lang', 'en'));
 
   // ── the meter: every agent-list read the PICKER'S TAB issues ─────────────
   // Requests, not responses: the diagnosis this spec exists to print is "the
@@ -182,11 +190,22 @@ test('the open agent picker shows an agent created elsewhere and drops one delet
   const seeded = await api.defaultAgent();
   const seededName = String(seeded.name || '').trim();
   expect(seededName, 'the seeded default Agent must have a name').not.toEqual('');
-  const environmentName = String(seeded.environment_name || '').trim();
-  expect(environmentName, 'the seeded default Agent must name an Environment').not.toEqual('');
-  const models = await api.listEnvironmentModels(environmentName);
+  const donorName = String(seeded.environment_name || '').trim();
+  expect(donorName, 'the seeded default Agent must name an Environment').not.toEqual('');
+  const models = await api.listEnvironmentModels(donorName);
   const model = models.find((item) => item && !item.includes('*'));
-  expect(model, `${environmentName} must expose a concrete model`).toBeTruthy();
+  expect(model, `${donorName} must expose a concrete model`).toBeTruthy();
+  const platform = new PlatformApi(request);
+  const donor = (await platform.listEnvironments()).find((row) => row.name === donorName);
+  expect(donor).toBeTruthy();
+  const fields = new Set((await platform.environmentSchema()).fields!.map((field) => String(field.key)));
+  environmentName = `__e2e_picker_env_${Date.now()}`;
+  environment = {
+    ...Object.fromEntries(Object.entries(donor!).filter(([key]) => fields.has(key))),
+    name: environmentName, display_name: environmentName, enabled: true,
+    provider_access: {}, tracing: null,
+  };
+  await platform.putEnvironment(environmentName, environment);
   // Word characters only: the name is read back through an attribute selector.
   const name = `__e2e_picker_freshness_${Date.now()}`;
 
@@ -303,6 +322,59 @@ test('the open agent picker shows an agent created elsewhere and drops one delet
     'the card the user was already looking at must be the same DOM node — a picker that '
       + 'remounted (a tab switch, a route change) refetches for free and proves nothing',
   ).toBe(true);
+
+  // Configuration availability is separate from the Agent's visibility and own switch.
+  type ManagementPage = { agents: Array<{ agent_id: string }>; total: number; enabled: number };
+  const managementPath = `/agents?page=1&limit=1&q=${encodeURIComponent(name)}`;
+  const managementBefore = await api.data<ManagementPage>('GET', managementPath);
+  const compute = () => postgresRows(`SELECT
+    (SELECT count(*) FROM sessions WHERE agent_id=${sqlLiteral(agentId)}) AS sessions,
+    (SELECT count(*) FROM agent_runtimes WHERE agent_id=${sqlLiteral(agentId)}
+      AND (sandbox_id IS NOT NULL OR client_pool_name IS NOT NULL)) AS allocations,
+    (SELECT count(*) FROM agent_prepared_slots WHERE agent_id=${sqlLiteral(agentId)}) AS prepared`);
+  expect(compute()).toEqual([{ sessions: 0, allocations: 0, prepared: 0 }]);
+  await leaveTheTab(page);
+  await platform.putEnvironment(environmentName, { ...environment, enabled: false });
+  expect(postgresRows(`SELECT enabled FROM environments WHERE name=${sqlLiteral(environmentName)}`))
+    .toEqual([{ enabled: false }]);
+  const unavailable = (await api.listAgents()).find((agent) => agent.agent_id === agentId);
+  expect(unavailable?.can_start_conversation).toBe(false);
+  expect(unavailable?.enabled).toBe(true);
+  await returnToTheTab(page, lastRead());
+  await expect(newCard.getByText('Unavailable', { exact: true })).toBeVisible({ timeout: PICKER_REFRESH_MS });
+  await expect(newCard.getByTestId('agent-start')).toBeDisabled();
+  const cold = await context.newPage();
+  await cold.goto(appPath('/agents'));
+  await expect(cold.locator(`[data-testid="agent-option"][data-agent-name="${seededName}"]`)).toBeVisible();
+  await cold.reload({ waitUntil: 'domcontentloaded' });
+  await expect(cold.locator(`[data-testid="agent-option"][data-agent-name="${seededName}"]`)).toBeVisible();
+  const coldCard = cold.locator(`[data-testid="agent-option"][data-agent-name="${name}"]`);
+  await expect(coldCard.getByText('Unavailable', { exact: true })).toBeVisible();
+  await expect(coldCard.getByTestId('agent-start')).toBeDisabled();
+  await cold.close();
+  const refused = await request.post(apiPath(`/agents/${agentId}/conversations`), { data: {} });
+  expect(refused.status()).toBe(409);
+  expect((await refused.json()).code).toBe('AGENT_ENVIRONMENT_DISABLED');
+  const managementDisabled = await api.data<ManagementPage>('GET', managementPath);
+  expect(managementDisabled.agents.map((agent) => agent.agent_id)).toEqual([agentId]);
+  expect([managementDisabled.total, managementDisabled.enabled])
+    .toEqual([managementBefore.total, managementBefore.enabled]);
+  await other.goto(appPath(`/manage/agents/${agentId}`));
+  await expect(other.getByRole('heading', { name, exact: true })).toBeVisible();
+  expect((await api.getAgent(agentId)).environment_name).toBe(environmentName);
+  await leaveTheTab(page);
+  await platform.putEnvironment(environmentName, environment);
+  expect((await api.listAgents()).find((agent) => agent.agent_id === agentId)?.can_start_conversation).toBe(true);
+  await returnToTheTab(page, lastRead());
+  await expect(newCard).toBeVisible({ timeout: PICKER_REFRESH_MS });
+  await expect(newCard.getByTestId('agent-start')).toBeEnabled();
+  expect(compute()).toEqual([{ sessions: 0, allocations: 0, prepared: 0 }]);
+  await test.info().attach('disabled-environment-picker', {
+    body: JSON.stringify({ agent_id: agentId, environment: environmentName,
+      disabled_picker_unavailable: unavailable, refused_status: refused.status(),
+      management_retained: managementDisabled, restored_picker_present: true, compute: compute() }),
+    contentType: 'application/json',
+  });
 
   // ── direction two: something disappears, on the same mount ───────────────
   // A picker that keeps offering "Start conversation" on a deleted Agent hands

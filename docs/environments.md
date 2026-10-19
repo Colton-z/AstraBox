@@ -119,6 +119,14 @@ Agent authors see only enabled Environments that can run Agents. Model and
 tracing credentials remain hidden from that selection list.
 
 Disabling an Environment prevents new Agent conversations and prewarm refreshes.
+The full list (`GET /api/v1/agents` without `page=1`) retains every visible Agent
+and returns `can_start_conversation`. It is false when the Agent is disabled or
+deleting, or its Environment is disabled or missing. The conversation picker
+marks these entries **Unavailable** and disables **Start conversation**.
+Management and history views retain the definitions. Re-enabling the Environment
+restores the action for its enabled Agents. This field describes configuration
+eligibility, not runtime health; listing neither prepares compute nor checks
+credentials. Conversation creation still validates the current configuration.
 AstraBox retires its Agents' unclaimed prepared capacity without reclaiming
 sandboxes already assigned to Sessions. Managers can still read prepared-runtime
 status and delete Agents; the status shows prewarming disabled and zero available

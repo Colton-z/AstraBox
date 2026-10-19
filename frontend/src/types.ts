@@ -141,6 +141,7 @@ export type AgentAccessPolicy = Omit<AgentAccess, 'created_by'>;
 export interface AgentConfig extends AgentDraft {
   agent_id: string;
   can_manage?: boolean;
+  can_start_conversation?: boolean;
   // Whether the reader has favorited it; the full list read carries it.
   favorited?: boolean;
   version?: number;
