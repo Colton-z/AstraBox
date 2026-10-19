@@ -109,6 +109,7 @@ class _Translation:
         #: The open response and how to interrupt it (the runner's command or response id).
         self.response_id: str | None = None
         self.interrupt_target: str | None = None
+        self.input_ids: tuple[str, ...] = ()
         #: The open response's browser message was closed at an interaction and
         #: reopens with its next part.
         self.closed_for_interaction = False
@@ -284,9 +285,19 @@ class _Translation:
             # An input the engine takes before the open response's Result is
             # answered within that response (the next Result ends both), so it
             # joins the open response instead of replacing it unended.
-            return [ResponseStarted(None, self.response_id, origin, input_ids)] if input_ids else []
+            if not input_ids:
+                return []
+            self.input_ids = tuple(dict.fromkeys((*self.input_ids, *input_ids)))
+            return [
+                ResponseStarted(None, self.response_id, origin, input_ids),
+                ResponseOutput(None, self.response_id, {
+                    "type": "message-metadata",
+                    "messageMetadata": {"input_ids": list(self.input_ids)},
+                }),
+            ]
         self.response_id = response_id
         self.interrupt_target = interrupt_target
+        self.input_ids = input_ids
         self.closed_for_interaction = False
         self.stream = ClaudeStreamCursor(child_identities=self.children)
         start = {
@@ -316,6 +327,7 @@ class _Translation:
         self.interactions = {k: v for k, v in self.interactions.items() if v["response_id"] != response_id}
         self.response_id = None
         self.interrupt_target = None
+        self.input_ids = ()
         self.closed_for_interaction = False
         return events
 

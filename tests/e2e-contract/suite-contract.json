@@ -30,7 +30,7 @@
       }
     },
     "tests": {
-      "no_volume_core": 597,
+      "no_volume_core": 593,
       "persistent_files": 19
     }
   },
@@ -161,7 +161,7 @@
         "codex",
         "pi"
       ],
-      "matrix_tests": 248,
+      "matrix_tests": 244,
       "parallel_node_ids": [
         "tests/e2e/agent_instruction_install_test.py::test_authored_instructions_reach_the_first_reply[cold-conversation]",
         "tests/e2e/agent_instruction_install_test.py::test_authored_instructions_reach_the_first_reply[cold-agent]",
@@ -197,7 +197,6 @@
         "tests/e2e/test_files.py::test_files_upload_list_download_round_trip",
         "tests/e2e/test_files.py::test_a_file_larger_than_the_servers_memory_budget_round_trips",
         "tests/e2e/test_files.py::test_files_download_refusals_and_edge_names_answer_before_the_body",
-        "tests/e2e/test_input_queue.py::test_a_message_sent_while_a_response_runs_is_answered_after_it",
         "tests/e2e/test_interactions.py::test_exit_plan_mode_approve_settles",
         "tests/e2e/test_interactions.py::test_ask_user_question_answer_settles",
         "tests/e2e/test_interactions.py::test_codex_plan_mode_question_answer_settles",
@@ -237,11 +236,11 @@
         "tests/e2e/test_skill_content.py::test_an_installed_content_provider_supplies_a_skill",
         "tests/e2e/test_terminal.py::test_a_command_after_runner_loss_uses_a_fresh_shell"
       ],
-      "tests": 71,
+      "tests": 70,
       "workers": 5
     },
-    "matrix_tests": 258,
-    "tests": 81
+    "matrix_tests": 254,
+    "tests": 80
   },
   "suites": {
     "exclusive": {

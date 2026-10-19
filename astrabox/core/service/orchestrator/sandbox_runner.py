@@ -253,13 +253,6 @@ class _QueuedDelivery:
     accepted: asyncio.Future[None]
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
-class _BufferedDelivery:
-    command: DeliveryCommand
-    sdk_input: dict[str, Any]
-    pending_consumption: _PendingPromptConsumption
-
-
 _STOP = object()
 
 
@@ -1358,17 +1351,11 @@ class RunnerSession:
             str, tuple[DeliveryCommand, asyncio.Future[None]]
         ] = {}
         self._delivered_commands: dict[str, DeliveryCommand] = {}
-        # Claude accepts another query while a response is active, but that is
-        # steering rather than an ordered next prompt: the later instruction
-        # can replace the answer the earlier input was still producing. The
-        # runner therefore owns the adapter buffer and submits one input per
-        # SDK Result boundary.
-        self._buffered_deliveries: deque[_BufferedDelivery] = deque()
         self._pending_prompt_consumptions: deque[_PendingPromptConsumption] = deque()
         self._consumed_prompt_ids: set[str] = set()
         # Consumption groups commands under the next SDK Result. Interrupt
         # needs that boundary to decide whether the cancelled command already
-        # settled and whether a queued successor keeps the adapter FIFO active.
+        # settled and whether Claude still has another input to consume.
         self._command_ids_by_input_id: dict[str, str] = {}
         # Vendor message id -> platform input id, for inputs queried but not yet
         # echoed. See :meth:`_query_delivery` for why the two differ.
@@ -1761,7 +1748,6 @@ class RunnerSession:
         continues_fifo = bool(
             self._pending_prompt_consumptions
             or self._consumed_commands_since_result
-            or self._buffered_deliveries
         )
         self._run_start_seq = None
         await self.sender.send(
@@ -1769,15 +1755,8 @@ class RunnerSession:
             command_id=response_id,
             continues_fifo=continues_fifo,
         )
-        prompted_successor = (
-            await self._query_next_buffered()
-            if self._buffered_deliveries
-            else False
-        )
         self._busy = bool(
-            prompted_successor
-            or self._buffered_deliveries
-            or self._pending_prompt_consumptions
+            self._pending_prompt_consumptions
             or self._consumed_commands_since_result
         )
         await self._report_status()
@@ -1790,32 +1769,12 @@ class RunnerSession:
             if not isinstance(queued, _QueuedDelivery):
                 raise RunnerProtocolError("delivery queue contains an invalid item")
             try:
-                if self._client is None:
-                    raise RunnerProtocolError("input before session start")
-                sdk_input = self._validated_input(queued.command)
-                delivery = _BufferedDelivery(
-                    command=queued.command,
-                    sdk_input=sdk_input,
-                    pending_consumption=self._pending_prompt_consumption(sdk_input),
+                await self._query_delivery(queued.command)
+                logger.info(
+                    "queried the SDK: command_id=%s sequence=%d",
+                    queued.command.command_id,
+                    queued.command.sequence,
                 )
-                if self._busy:
-                    # Acceptance is the adapter's receipt, not a claim that the
-                    # vendor consumed the input. Keep the command replayable by
-                    # id and report consumption only after UserPromptSubmit.
-                    self._buffered_deliveries.append(delivery)
-                    logger.info(
-                        "buffered behind the active response: command_id=%s "
-                        "sequence=%d",
-                        queued.command.command_id,
-                        queued.command.sequence,
-                    )
-                else:
-                    await self._query_delivery(delivery)
-                    logger.info(
-                        "queried the SDK: command_id=%s sequence=%d",
-                        queued.command.command_id,
-                        queued.command.sequence,
-                    )
                 self._delivered_commands[queued.command.command_id] = queued.command
                 self._last_delivery_sequence = queued.command.sequence
             except Exception as exc:
@@ -1827,14 +1786,15 @@ class RunnerSession:
                 if not queued.accepted.done():
                     queued.accepted.set_result(None)
 
-    async def _query_delivery(self, delivery: _BufferedDelivery) -> None:
-        """Give one accepted FIFO input to Claude at a legal prompt boundary."""
+    async def _query_delivery(self, command: DeliveryCommand) -> None:
+        """Hand an input to Claude's native queue and track its consumption."""
 
         if self._client is None:
             raise RunnerProtocolError("input before session start")
-        pending = delivery.pending_consumption
+        sdk_input = self._validated_input(command)
+        pending = self._pending_prompt_consumption(sdk_input)
         self._pending_prompt_consumptions.append(pending)
-        self._command_ids_by_input_id[pending.input_id] = delivery.command.command_id
+        self._command_ids_by_input_id[pending.input_id] = command.command_id
         # ``uuid`` on a streaming input is the vendor's id for a transcript
         # message; the platform input id identifies the FIFO entry. Claude discards,
         # silently, an input whose uuid already names a message in the session
@@ -1846,7 +1806,7 @@ class RunnerSession:
         self._platform_input_ids_by_vendor_uuid[vendor_uuid] = pending.input_id
         try:
             await self._client.query(
-                self._single_input({**delivery.sdk_input, "uuid": vendor_uuid}),
+                self._single_input({**sdk_input, "uuid": vendor_uuid}),
                 session_id=self.session_id,
             )
         except Exception:
@@ -1855,16 +1815,6 @@ class RunnerSession:
                 self._pending_prompt_consumptions.remove(pending)
             self._command_ids_by_input_id.pop(pending.input_id, None)
             raise
-
-    async def _query_next_buffered(self) -> bool:
-        """Prompt the FIFO head after the preceding response has ended."""
-
-        if not self._buffered_deliveries:
-            return False
-        delivery = self._buffered_deliveries[0]
-        await self._query_delivery(delivery)
-        self._buffered_deliveries.popleft()
-        return True
 
     @staticmethod
     def _same_delivery(left: DeliveryCommand, right: DeliveryCommand) -> bool:
@@ -1932,13 +1882,12 @@ class RunnerSession:
     def state(self) -> dict[str, Any]:
         """This session's own account of itself, consistent with the journal's last frame.
 
-        ``consumed`` are the inputs this process handed to Claude (their
-        response is running or done); ``queued`` are received and not yet
-        handed over. Both are platform input ids. ``run_start_seq`` is where
-        the running response begins in the journal.
+        ``consumed`` are the inputs Claude reported consuming; ``queued`` are
+        handed to its native queue but not yet consumed. Both are platform
+        input ids. ``run_start_seq`` is where the running response begins in
+        the journal.
         """
-        queued = [item.command.command_id for item in self._buffered_deliveries]
-        queued.extend(item.input_id for item in self._pending_prompt_consumptions)
+        queued = [item.input_id for item in self._pending_prompt_consumptions]
         return {
             "boot_id": RUNNER_BOOT_ID,
             "last_seq": self.sender.last_seq,
@@ -2068,7 +2017,6 @@ class RunnerSession:
         continues_fifo = bool(
             self._pending_prompt_consumptions
             or self._consumed_commands_since_result
-            or self._buffered_deliveries
         )
         self._run_start_seq = None
         await self.sender.send(
@@ -2076,15 +2024,8 @@ class RunnerSession:
             command_id=command_id,
             continues_fifo=continues_fifo,
         )
-        prompted_successor = (
-            await self._query_next_buffered()
-            if self._buffered_deliveries
-            else False
-        )
         self._busy = bool(
-            prompted_successor
-            or self._buffered_deliveries
-            or self._pending_prompt_consumptions
+            self._pending_prompt_consumptions
             or self._consumed_commands_since_result
         )
         await self._report_status()
@@ -2292,15 +2233,12 @@ class RunnerSession:
                             self._store.confirmed_store_sequence()
                         )
                     )
-                prompted_successor = await self._query_next_buffered()
                 # deferred_tool_use rides on the ResultMessage event itself. A
                 # separate op for it would be unreachable: the host's turn
                 # iterator returns at the result frame, so anything sent after
                 # it only meets the next turn's seq barrier.
                 self._busy = bool(
-                    prompted_successor
-                    or self._buffered_deliveries
-                    or self._pending_prompt_consumptions
+                    self._pending_prompt_consumptions
                     or self._consumed_commands_since_result
                 )
                 await self._report_status()

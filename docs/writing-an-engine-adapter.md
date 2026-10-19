@@ -201,8 +201,25 @@ and `waiting` while a response is paused on a person.
 `submit()` must be idempotent by `input_id`. Where the vendor deduplicates by a
 message id, use the input id (or a value derived from it) as that id; where it
 does not, check the vendor's history, queue, or your own submissions before
-sending the input again. A runtime that is working takes the input into its own
-queue; how it answers queued inputs is the vendor's behavior.
+sending the input again. A runtime that is working may receive another input
+without having admitted it yet. Its adapter must keep those boundaries
+distinct; how the vendor consumes and answers the input is engine-specific.
+
+The Claude adapter hands inputs in delivery order to the same persistent
+`ClaudeSDKClient.query()`, including while a response is running. Claude's
+native queue decides when to consume them and which response answers them;
+the adapter does not wait for `ResultMessage` before delivering another input.
+A delivery receipt therefore does not mean Claude has consumed that input.
+Multiple inputs consumed before the same Result belong to the same response.
+When another input joins, the existing message's metadata carries the complete
+`input_ids` through the same output log used by live readers and history.
+Other engines report their own admission and response boundaries through the
+same contract.
+
+Recovery coverage includes inputs handed to the native queue but not consumed,
+completed earlier responses, and the currently active response with all inputs
+the engine has consumed. Compare native consumption and Result boundaries with
+the platform's input and response records; do not require one response per input.
 
 Report `InputAdmitted` only at the vendor record that survives a restart of the
 runtime's process, such as the user message written to the vendor's transcript.
