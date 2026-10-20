@@ -1661,8 +1661,8 @@ export async function replayPersonalScheduleRun(deploymentId: string, runId: str
 
 export async function listChannelProviders(): Promise<ChannelProviderDescriptor[]> {
   return expectList<ChannelProviderDescriptor>(
-    await send((wire) => client.GET('/api/v1/admin/channel-providers', { ...wire })),
-    '/admin/channel-providers',
+    await send((wire) => client.GET('/api/v1/channel-providers', { ...wire })),
+    '/channel-providers',
   );
 }
 

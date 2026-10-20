@@ -8,6 +8,14 @@ Schedules and authenticated webhooks start a new Session for each invocation.
 Messages from a chat platform start or continue the Session mapped to that
 external conversation.
 
+An Agent's creator and assigned administrators manage its triggers and Run
+history in **Management console → Triggers**, including **Run now** and
+**Replay**. The list and creation targets include only resources you manage.
+Platform administrators manage every Agent's triggers. Choosing another
+execution account or linking messaging participants to accounts requires the
+platform administrator role; managing an Agent does not grant that authority.
+An Assistant's triggers remain private to its owner.
+
 ## Choose a trigger
 
 | Trigger | API scene | What you can do |

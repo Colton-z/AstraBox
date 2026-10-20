@@ -98,7 +98,7 @@ vi.mock('@/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api')>();
   return {
     ...actual,
-    listAgents: async () => [{ agent_id: 'agent-1', name: 'Analyst' }],
+    listAgents: async () => [{ agent_id: 'agent-1', name: 'Analyst', can_manage: true }],
     listChannelProviders: async () => channelProviders,
     listDeployments: async () => [{ ...deployment, agent_name: 'Analyst' }],
     listAgentDeployments: async () => {

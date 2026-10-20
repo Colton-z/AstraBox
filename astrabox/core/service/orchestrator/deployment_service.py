@@ -48,7 +48,7 @@ from astrabox.persistence.repository.session_runtime_repository import SessionRu
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
-from astrabox.core.service.orchestrator.agent_access import is_platform_admin
+from astrabox.core.service.orchestrator.agent_access import can_manage_agent, is_platform_admin
 from astrabox.seams.channel_response import (
     MAX_RESPONSE_INSTRUCTION_CHARS,
     RESPONSE_POLICIES,
@@ -285,19 +285,13 @@ class DeploymentService:
 
     @staticmethod
     def _can_manage_agent(user: UserContext, agent: dict[str, Any] | None) -> bool:
-        owner_id = str((agent or {}).get("created_by") or "").strip()
-        return bool(agent) and (
-            is_platform_admin(getattr(user, "roles", []))
-            or bool(owner_id and owner_id == user.user_id)
-        )
+        return agent is not None and can_manage_agent(agent, user.user_id, user.roles)
 
     async def assert_can_manage_agent(self, user: UserContext, agent_id: str) -> dict[str, Any]:
         """Resolve an agent and assert the caller may manage its bindings.
 
-        An agent is an Owner resource (domain-model.md §1): its trigger
-        bindings are managed by the agent's owner, or by an instance admin.
-        Authorization is anchored on the Agent's own owner rather than on any
-        referenced runtime configuration.
+        The Agent's creator, assigned administrators and platform
+        administrators manage its bindings through the same Agent ACL.
         Missing and foreign agents share one non-disclosing 404.
         """
         agent = await self._agent_repo.get_agent(str(agent_id or "").strip())

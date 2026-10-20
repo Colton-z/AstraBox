@@ -30,7 +30,7 @@
       }
     },
     "tests": {
-      "no_volume_core": 598,
+      "no_volume_core": 599,
       "persistent_files": 19
     }
   },
@@ -42,7 +42,7 @@
   ],
   "playwright": {
     "exclusive": {
-      "files": 181,
+      "files": 182,
       "parallel_files": 115,
       "parallel_tests": 209,
       "serial_files": [
@@ -50,6 +50,7 @@
         "specs/a2a-stream-and-interaction.exclusive.spec.ts",
         "specs/admin-native-transcript-batch-export.exclusive.spec.ts",
         "specs/agent-manager-session-logs.exclusive.spec.ts",
+        "specs/agent-manager-triggers.exclusive.spec.ts",
         "specs/agent-per-session-sandbox.exclusive.spec.ts",
         "specs/agent-workspace-resume.exclusive.spec.ts",
         "specs/an-artifact-an-agent-publishes-outlives-its-sandbox.exclusive.spec.ts",
@@ -113,9 +114,9 @@
         "specs/subagent-replay-recovery.exclusive.spec.ts",
         "specs/untouched-tab-catches-up-after-backend-restart.exclusive.spec.ts"
       ],
-      "serial_tests": 107,
+      "serial_tests": 108,
       "serial_workers": 1,
-      "tests": 316,
+      "tests": 317,
       "workers": 5
     },
     "parallel": {
