@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from astrabox.common.utils.errors import APIError
+from astrabox.config.settings import get_settings
 from astrabox.persistence.repository.agent_repository import _read as read_agent
 from astrabox.persistence.repository.assistant_catalog_repository import _assistants, _record
 from astrabox.persistence.repository.assistant_defaults_repository import (
@@ -74,14 +75,23 @@ async def lock_subject(
         raise subject_conflict()
     runtime_table = AssistantWorkspace.__table__ if assistant else AgentRuntime.__table__
     runtime_key = runtime_table.c.assistant_id if assistant else runtime_table.c.agent_id
+    execution_target = get_settings().execution_target
+    runtime_conditions = [runtime_key == subject.id]
+    if not assistant:
+        runtime_conditions.append(runtime_table.c.execution_target == execution_target)
     runtime = (await connection.execute(
-        select(runtime_table).where(runtime_key == subject.id).with_for_update(read=True)
+        select(runtime_table).where(*runtime_conditions).with_for_update(read=True)
     )).mappings().first()
+    if runtime is not None and runtime["execution_target"] != execution_target:
+        raise subject_conflict()
     materializer_session = None
     if assistant and runtime is not None and runtime["state"] == "MATERIALIZING":
         materializer_session = (await connection.execute(
             select(Session.__table__)
-            .where(Session.session_id == runtime["provisioning_session_id"])
+            .where(
+                Session.session_id == runtime["provisioning_session_id"],
+                Session.execution_target == execution_target,
+            )
             .with_for_update(read=True)
         )).mappings().first()
     layers: list[dict[str, Any]] = []

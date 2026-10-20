@@ -22,6 +22,7 @@ from astrabox.core.service.orchestrator.engine.interaction_contract import (
     validate_interaction_response,
 )
 from astrabox.core.service.orchestrator.runtime.preparation import require_session_user_prerequisites
+from astrabox.core.service.orchestrator.runtime.execution_target import require_execution_target
 from astrabox.core.service.orchestrator.session_runtime.feed import SessionFeed
 from astrabox.core.service.orchestrator.session_runtime.follow import follow_output
 from astrabox.core.service.orchestrator.session_runtime.host import ReaderHost
@@ -126,6 +127,7 @@ class SessionRuntimeService:
         session = await self._sessions.get_owned_session(session_id, str(user.user_id))
         if session is None:
             raise await self._not_accepting(session_id, str(user.user_id))
+        require_execution_target(session)
         if (
             session.get("state") == SessionState.READY.value
             and session.get("agent_state") not in {AgentState.DELETING.value, AgentState.DELETED.value}
@@ -181,14 +183,15 @@ class SessionRuntimeService:
                 session_id=session_id,
             )
         )
+        session = (
+            await self._sessions.get_owned_session(session_id, owner_user_id)
+            if owner_user_id is not None
+            else await self._sessions.get_session(session_id)
+        )
+        if session is None:
+            raise await self._not_accepting(session_id, owner_user_id)
+        require_execution_target(session)
         if content_blocks:
-            session = (
-                await self._sessions.get_owned_session(session_id, owner_user_id)
-                if owner_user_id is not None
-                else await self._sessions.get_session(session_id)
-            )
-            if session is None:
-                raise await self._not_accepting(session_id, owner_user_id)
             manifest = session.get("engine_capabilities")
             declared_types = manifest.get("input_content_types") if isinstance(manifest, dict) else None
             if not isinstance(declared_types, list) or any(
@@ -258,7 +261,7 @@ class SessionRuntimeService:
         self, user: UserContext, session_id: str, interaction_id: str, answer: dict[str, Any]
     ) -> dict[str, Any]:
         """Store a person's answer for the runtime; the reader hands it over."""
-        await self._require_owner(user, session_id)
+        await self._require_owner(user, session_id, execution=True)
         interaction = await self._repo.get_interaction(session_id, interaction_id)
         if interaction is None:
             raise APIError(code="INTERACTION_NOT_FOUND", message="interaction not found", status_code=404)
@@ -286,7 +289,7 @@ class SessionRuntimeService:
         cannot be reached. Held inputs without an open response also refuse
         the operation; ``idle`` means neither was observed.
         """
-        await self._require_owner(user, session_id)
+        await self._require_owner(user, session_id, execution=True)
         if not await self._repo.open_response_ids(session_id):
             held = await self._repo.open_input_ids(session_id)
             if held:
@@ -313,7 +316,7 @@ class SessionRuntimeService:
 
     async def stop_child_run(self, user: UserContext, session_id: str, control_ref: str) -> dict[str, Any]:
         """Ask the runtime to stop one sub-agent, named by the runtime's own handle."""
-        await self._require_owner(user, session_id)
+        await self._require_owner(user, session_id, execution=True)
         control = await self._repo.request_control(
             session_id, kind="stop_child", target=control_ref, requested_by=str(user.user_id)
         )
@@ -384,6 +387,11 @@ class SessionRuntimeService:
             "output_seq": output_seq,
         }
 
-    async def _require_owner(self, user: UserContext, session_id: str) -> None:
+    async def _require_owner(self, user: UserContext, session_id: str, *, execution: bool = False) -> None:
         if await self._sessions.get_owner(session_id) != str(user.user_id):
             raise APIError(code="SESSION_NOT_FOUND", message="session not found", status_code=404)
+        if execution:
+            session = await self._sessions.get_owned_session(session_id, str(user.user_id))
+            if session is None:
+                raise APIError(code="SESSION_NOT_FOUND", message="session not found", status_code=404)
+            require_execution_target(session)

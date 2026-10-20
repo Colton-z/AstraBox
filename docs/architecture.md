@@ -344,7 +344,7 @@ Two separate choices determine how work is distributed:
 
 | Choice | What is shared |
 | --- | --- |
-| AstraBox backend replicas | API and orchestration replicas use the same product database, credential configuration, and reachable sandbox service. Saved Session and native state are available independently of a replica's local memory. One replica at a time holds each Session's connection to its runtime; when it stops, another replica takes the Session over. |
+| AstraBox backend replicas | API and orchestration replicas within one execution target use the same product database, credential configuration, and reachable sandbox service. Saved Session and native state are available independently of a replica's local memory. One replica at a time holds each Session's connection to its runtime; when it stops, another replica takes the Session over. |
 | Sandbox worker nodes | The sandbox service places compute on its workers. Persistent workspaces spanning workers require shared backing storage; each mergerfs view runs beside its consuming sandbox. |
 
 Increasing backend replicas does not make a node-local workspace filesystem
@@ -352,12 +352,14 @@ shared. Configure the two independently: database and service access for the
 backend replicas, and suitable compute and workspace storage for sandbox
 workers.
 
-One product database defines one control plane, including its physical runtime
-records. It is not a shared configuration catalog for independently operated
-control planes. Different runtime settings can produce incompatible Agent
-generations and replace the same prepared-capacity records. See
+One product database defines one logical control plane. Physical execution
+targets share its definitions, authorization and history while retaining their
+own compute ledgers and worker ownership. Replicas within one target use
+compatible runtime settings and callbacks; a different target does not reconcile
+or clean up their compute. Native SessionStore custody and runtime transport
+remain target-owned core work even when automatic triggers are disabled. See
 [sharing a product database](deploy.md#share-a-product-database) for the
-configuration requirements and isolation boundary.
+configuration and rollout requirements.
 
 ## Extensions {#plugin-interfaces}
 

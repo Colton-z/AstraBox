@@ -53,6 +53,13 @@ _REMOVED_LOCAL_SANDBOX_BACKEND = "direct_docker"
 _CURRENT_LOCAL_SANDBOX_BACKEND = "open_sandbox"
 
 
+def validate_execution_target(value: str) -> str:
+    """An execution target is a stable, unpadded database key."""
+    if not value or value != value.strip() or len(value) > 128:
+        raise ValueError("execution_target must be a nonempty, unpadded key of at most 128 characters")
+    return value
+
+
 _CPU_QUANTITY = re.compile(r"(\d+(?:\.\d+)?)(m?)")
 _MEMORY_QUANTITY = re.compile(r"(\d+(?:\.\d+)?)(Ki|Mi|Gi|Ti|Pi|Ei|k|M|G|T|P|E)?")
 _MEMORY_UNITS = {
@@ -449,6 +456,25 @@ class AstraBoxSettings(BaseSettings):
         return self.state_dir.expanduser()
 
     # --- persistence -------------------------------------------------------
+    execution_target: str = Field(
+        default="astrabox", min_length=1, max_length=128,
+        description="Stable ownership key for this process's sandbox runtimes.",
+    )
+
+    @field_validator("execution_target")
+    @classmethod
+    def _validate_execution_target(cls, value: str) -> str:
+        return validate_execution_target(value)
+
+    agent_prewarm_enabled: bool = Field(
+        default=True,
+        description="Use prepared Agent capacity in this execution target; false selects cold admission.",
+    )
+    background_execution_enabled: bool = Field(
+        default=True,
+        description="Run channel and scheduler workers in this execution target.",
+    )
+
     scheduler_provider: str = Field(
         default="dbos",
         description=(

@@ -262,6 +262,9 @@ class SessionService:
 
     async def get_webshell_url(self, user: UserContext, session_id: str) -> dict[str, Any]:
         session = await self.must_get_owned_session(user, session_id)
+        from astrabox.core.service.orchestrator.runtime.execution_target import require_execution_target
+
+        require_execution_target(session)
         if is_assistant_user_conversation(session) and self._assistant_workspace_service is not None:
             session, resolution = await reconcile_session_runtime_binding(
                 session=session,

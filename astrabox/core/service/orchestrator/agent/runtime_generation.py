@@ -275,6 +275,7 @@ async def reconcile_runtime_generation(
         template.runtime_generation = generation
         template.sandbox_generation = sandbox_generation
     repo = agent_repo if agent_repo is not None else AgentRepository()
+    await repo.ensure_runtime(agent_id)
 
     def _publish_pool_epoch(epoch: str) -> None:
         if isinstance(template, dict):

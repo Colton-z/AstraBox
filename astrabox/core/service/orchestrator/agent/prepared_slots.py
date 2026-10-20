@@ -415,7 +415,9 @@ async def prepare_pool_seats(
     footprint = 0
     try:
         reading = await lease.read_memory(sandbox_id)
-        while len(seats) < template.prepared_capacity and reading is not None and room_for_one_more(
+        from astrabox.core.service.orchestrator.agent.client_pool import prepared_capacity
+
+        while len(seats) < prepared_capacity(template) and reading is not None and room_for_one_more(
             sandbox_id, reading[0], reading[1] + footprint, pending=len(seats)
         ):
             seats.append(

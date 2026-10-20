@@ -340,6 +340,9 @@ class ChannelIngressService:
         self, binding: dict[str, Any], inbound: ChannelInbound
     ) -> ChannelIngressReceipt:
         """`ingest` for a caller that already loaded the binding row."""
+        from astrabox.core.service.orchestrator.runtime.execution_target import require_execution_target
+
+        require_execution_target(binding)
         deployment_id = str(binding.get("deployment_id") or "")
         channel_name = channel_scene_name(str(binding.get("scene") or ""))
         if channel_name is None:
@@ -2281,6 +2284,9 @@ class ChannelIngressService:
                 f"channel delivery binding {deployment_id!r} is missing, disabled, "
                 "or no longer matches its delivery row"
             )
+        from astrabox.core.service.orchestrator.runtime.execution_target import require_execution_target
+
+        require_execution_target(binding)
         return await self._channel_credentials.hydrate(
             binding, get_channel(expected_channel)
         )

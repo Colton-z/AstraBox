@@ -232,6 +232,9 @@ class ExposePortService:
     async def _session_context(
         self, deployment_id: str, session_id: str, session: dict[str, Any]
     ) -> dict[str, Any]:
+        from astrabox.core.service.orchestrator.runtime.execution_target import require_execution_target
+
+        require_execution_target(session)
         sandbox_id = str(session.get("sandbox_id") or "").strip()
         if is_assistant_user_conversation(session):
             reference = session["workspace_ref"]

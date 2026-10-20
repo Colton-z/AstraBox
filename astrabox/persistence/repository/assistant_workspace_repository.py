@@ -24,6 +24,7 @@ from sqlalchemy import (
     Select,
     Text,
     cast,
+    and_,
     delete,
     exists,
     func,
@@ -33,6 +34,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from astrabox.config.settings import get_settings, validate_execution_target
 from astrabox.persistence.repository.assistant_catalog_repository import _ChildObject, _OrderedChildren
 from astrabox.persistence.sql import execute, fetch_all, fetch_one, fetch_value, from_iso, to_iso, transaction
 from astrabox.persistence.sql.statements import insert_if_absent, upsert_primary_key
@@ -79,6 +81,7 @@ def _view(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
         return None
     workspace: dict[str, Any] = {
         "assistant_id": row["assistant_id"],
+        "execution_target": row["execution_target"],
         "created_by_user_id": row["created_by_user_id"],
         "engine_kind": row["engine_kind"],
         "state": row["state"],
@@ -152,6 +155,17 @@ _BOX_RETIRED = {
 class AssistantWorkspaceRepository:
     """One workspace row per Assistant, and the profiles prepared in its box."""
 
+    def __init__(self, *, execution_target: str | None = None) -> None:
+        self.execution_target = validate_execution_target(
+            get_settings().execution_target if execution_target is None else execution_target
+        )
+
+    def _runtime_owner(self, assistant_id: str) -> ColumnElement[bool]:
+        return and_(
+            _COLUMNS.assistant_id == assistant_id,
+            _COLUMNS.execution_target == self.execution_target,
+        )
+
     # ── reads ────────────────────────────────────────────────────────────
 
     async def get_workspace(self, assistant_id: str) -> dict[str, Any] | None:
@@ -174,7 +188,10 @@ class AssistantWorkspaceRepository:
             return []
         rows = await fetch_all(
             select(_WORKSPACES)
-            .where(_COLUMNS.current_sandbox_id == target)
+            .where(
+                _COLUMNS.current_sandbox_id == target,
+                _COLUMNS.execution_target == self.execution_target,
+            )
             .order_by(_COLUMNS.assistant_id)
         )
         return [view for view in map(_view, rows) if view is not None]
@@ -240,7 +257,8 @@ class AssistantWorkspaceRepository:
         self, conditions: Sequence[ColumnElement[bool]], *, after: str | None, limit: int
     ) -> list[dict[str, Any]]:
         statement: Select[Any] = select(_WORKSPACES).where(
-            _COLUMNS.current_sandbox_id.is_not(None), *conditions
+            _COLUMNS.current_sandbox_id.is_not(None),
+            _COLUMNS.execution_target == self.execution_target, *conditions,
         )
         after_id = str(after or "").strip()
         if after_id:
@@ -278,6 +296,7 @@ class AssistantWorkspaceRepository:
                 return None
             created = await insert_if_absent(conn, _WORKSPACES, {
                 "assistant_id": assistant_id,
+                "execution_target": self.execution_target,
                 "created_by_user_id": created_by_user_id,
                 "engine_kind": engine_kind,
                 "state": "MATERIALIZING",
@@ -286,7 +305,7 @@ class AssistantWorkspaceRepository:
             if not created:
                 return None
             row = (await conn.execute(
-                select(_WORKSPACES).where(_COLUMNS.assistant_id == assistant_id)
+                select(_WORKSPACES).where(self._runtime_owner(assistant_id))
             )).mappings().one()
             return _view({**row, "assistant_profiles": None})
 
@@ -305,7 +324,7 @@ class AssistantWorkspaceRepository:
         """Apply ``values`` if the row still satisfies ``conditions``; whether it did."""
         moved = (
             update(_WORKSPACES)
-            .where(_COLUMNS.assistant_id == assistant_id, *conditions)
+            .where(self._runtime_owner(assistant_id), *conditions)
             .values(**values, updated_at=func.now())
         )
         if not retire_profiles:
@@ -466,7 +485,7 @@ class AssistantWorkspaceRepository:
             ready = (
                 update(_WORKSPACES)
                 .where(
-                    _COLUMNS.assistant_id == assistant_id,
+                    self._runtime_owner(assistant_id),
                     _COLUMNS.state == "MATERIALIZING",
                     _COLUMNS.provisioning_session_id == provisioning_session_id,
                     _COLUMNS.provisioning_sandbox_generation == provisioning_sandbox_generation,
@@ -498,7 +517,7 @@ class AssistantWorkspaceRepository:
             await fetch_value(
                 select(
                     exists().where(
-                        _COLUMNS.assistant_id == assistant_id,
+                        self._runtime_owner(assistant_id),
                         _COLUMNS.state == "READY",
                         _COLUMNS.current_sandbox_id == sandbox_id,
                         _COLUMNS.provisioning_session_id.is_(None),
@@ -525,7 +544,7 @@ class AssistantWorkspaceRepository:
             current = await conn.scalar(
                 select(_COLUMNS.assistant_id)
                 .where(
-                    _COLUMNS.assistant_id == assistant_id,
+                    self._runtime_owner(assistant_id),
                     _COLUMNS.state == "READY",
                     _COLUMNS.current_sandbox_id == sandbox_id,
                 )
@@ -597,7 +616,7 @@ class AssistantWorkspaceRepository:
             await fetch_value(
                 select(
                     exists().where(
-                        _COLUMNS.assistant_id == assistant_id,
+                        self._runtime_owner(assistant_id),
                         _COLUMNS.state == "RECOVERY_REQUIRED",
                         _COLUMNS.last_error == last_error,
                         _COLUMNS.post_commit_cleanup_pending.is_(not cleanup_confirmed),

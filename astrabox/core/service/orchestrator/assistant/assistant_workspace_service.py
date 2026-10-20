@@ -151,6 +151,15 @@ class AssistantWorkspaceService:
         _ = user_id
         return await self._workspace_repo.get_workspace(assistant_id)
 
+    async def get_owned_workspace(self, *, user_id: str, assistant_id: str) -> dict[str, Any] | None:
+        """Read a workspace for a physical operation in this execution target."""
+        from astrabox.core.service.orchestrator.runtime.execution_target import require_execution_target
+
+        workspace = await self.get_workspace(user_id=user_id, assistant_id=assistant_id)
+        if workspace is not None:
+            require_execution_target(workspace)
+        return workspace
+
     async def has_assistant_workspace(self, *, assistant_id: str) -> bool:
         return await self._workspace_repo.has_workspace(assistant_id)
 
@@ -290,7 +299,7 @@ class AssistantWorkspaceService:
         )
         if created is not None:
             return created
-        existing = await self._workspace_repo.get_workspace(assistant_id)
+        existing = await self.get_owned_workspace(user_id=user_id, assistant_id=assistant_id)
         if existing is None:
             # Nothing was inserted and nothing exists: the Assistant was
             # deleted after the caller resolved it.

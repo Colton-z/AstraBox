@@ -2305,9 +2305,17 @@
             ],
             "title": "Client Pool Name"
           },
+          "configured_target": {
+            "title": "Configured Target",
+            "type": "integer"
+          },
           "enabled": {
             "title": "Enabled",
             "type": "boolean"
+          },
+          "execution_target": {
+            "title": "Execution Target",
+            "type": "string"
           },
           "last_error": {
             "anyOf": [
@@ -2357,6 +2365,10 @@
             "title": "Prepared Count",
             "type": "integer"
           },
+          "prewarm_enabled": {
+            "title": "Prewarm Enabled",
+            "type": "boolean"
+          },
           "ready": {
             "title": "Ready",
             "type": "boolean"
@@ -2401,6 +2413,9 @@
         },
         "required": [
           "enabled",
+          "execution_target",
+          "prewarm_enabled",
+          "configured_target",
           "target",
           "ready",
           "prepared_count"
@@ -4224,6 +4239,28 @@
           "data"
         ],
         "title": "ApiEnvelope[DeploymentTriggerAck]",
+        "type": "object"
+      },
+      "ApiEnvelope_ExecutionPolicy_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ExecutionPolicy"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[ExecutionPolicy]",
         "type": "object"
       },
       "ApiEnvelope_ExposedPortUrl_": {
@@ -8797,6 +8834,10 @@
             ],
             "title": "Execution Mode"
           },
+          "execution_target": {
+            "title": "Execution Target",
+            "type": "string"
+          },
           "execution_user_id": {
             "anyOf": [
               {
@@ -8909,7 +8950,8 @@
           }
         },
         "required": [
-          "deployment_id"
+          "deployment_id",
+          "execution_target"
         ],
         "title": "DeploymentRecord",
         "type": "object"
@@ -8969,6 +9011,59 @@
           "display_name"
         ],
         "title": "EnsurePrimaryAssistantRequest",
+        "type": "object"
+      },
+      "ExecutionPolicy": {
+        "additionalProperties": false,
+        "description": "Policy for new automatic work, distinct from custody of accepted runtime work.",
+        "properties": {
+          "agent_prewarm_enabled": {
+            "title": "Agent Prewarm Enabled",
+            "type": "boolean"
+          },
+          "background_execution_enabled": {
+            "title": "Background Execution Enabled",
+            "type": "boolean"
+          },
+          "execution_target": {
+            "title": "Execution Target",
+            "type": "string"
+          },
+          "runtime_recovery_scope": {
+            "const": "owned_target",
+            "title": "Runtime Recovery Scope",
+            "type": "string"
+          },
+          "scheduler_control_configured": {
+            "title": "Scheduler Control Configured",
+            "type": "boolean"
+          },
+          "scheduler_provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scheduler Provider"
+          },
+          "scheduler_worker_enabled": {
+            "title": "Scheduler Worker Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "execution_target",
+          "agent_prewarm_enabled",
+          "background_execution_enabled",
+          "runtime_recovery_scope",
+          "scheduler_provider",
+          "scheduler_control_configured",
+          "scheduler_worker_enabled"
+        ],
+        "title": "ExecutionPolicy",
         "type": "object"
       },
       "ExposedPortUrl": {
@@ -19730,6 +19825,25 @@
           }
         },
         "summary": "Trigger Deployment"
+      }
+    },
+    "/api/v1/execution-policy": {
+      "get": {
+        "description": "Read this process's policy without starting workers or touching runtime resources.",
+        "operationId": "get_execution_policy_api_v1_execution_policy_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_ExecutionPolicy_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Execution Policy"
       }
     },
     "/api/v1/exposed-ports/{deployment_id}/{port}/url": {

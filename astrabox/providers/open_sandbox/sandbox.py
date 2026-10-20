@@ -1211,6 +1211,7 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         handle = await create_open_sandbox_box(
             session_id=spec.session_id,
             assignment_id=spec.assignment_id,
+            execution_target=spec.execution_target,
             image=str(spec.image or "").strip() or resolve_agent_image(),
             env=dict(spec.env),
             resource_limits=dict(spec.resource_limits),

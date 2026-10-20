@@ -13,6 +13,7 @@ from astrabox.common.utils.api_response import success_response
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import API_READ_SCOPE, API_WRITE_SCOPE
 from astrabox.core.model import AgentState, SessionState
+from astrabox.core.service.orchestrator.runtime.execution_target import require_execution_target
 from astrabox.core.service.orchestrator.runtime.preparation import preparation_subject
 from astrabox.persistence.repository.session_repository import SessionRepository
 from astrabox.seams.runtime_preparation import (
@@ -57,6 +58,8 @@ async def _context(request: Request, session_id: str, *, write: bool) -> Session
     session = await SessionRepository().get_owned_session(session_id, user.user_id)
     if session is None:
         raise APIError(code="SESSION_NOT_FOUND", message="Session not found", status_code=404)
+    if write:
+        require_execution_target(session)
     if (
         session.get("state") in {SessionState.TERMINATED.value, SessionState.DELETED.value}
         or session.get("agent_state") in {AgentState.DELETING.value, AgentState.DELETED.value}

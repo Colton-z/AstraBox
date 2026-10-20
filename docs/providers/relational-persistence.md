@@ -19,12 +19,13 @@ from deployment-local runtime storage. Repository joins, foreign keys and
 atomic workflows cross those records; separating them requires a platform
 design beyond supplying a different physical provider.
 
-Agent runtime generations and pool pointers are keyed by Agent, Session
-runtime bindings and reader leases by Session, and Assistant workspaces by
-Assistant. None has a deployment runtime scope. Namespacing provider pools or
-coordination locks does not partition those records. Independent control
-planes require separate product databases; replicas sharing one database must
-follow the [deployment configuration contract](../deploy.md#share-a-product-database).
+Agent runtime generations, pools and quota records include their execution
+target. A Session or Assistant workspace retains its physical execution target;
+channel and scheduler work inherits the target of its Deployment. These are
+columns in the common schema and transactions, not provider-local partitions
+or separate runtime databases. Providers preserve the complete composite keys
+and foreign keys. Replicas within a target follow the
+[deployment configuration contract](../deploy.md#share-a-product-database).
 
 ## Register and select a provider
 

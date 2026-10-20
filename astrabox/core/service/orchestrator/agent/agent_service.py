@@ -336,6 +336,8 @@ class AgentService:
         return environment is not None and environment.get("enabled") is not False
 
     async def _prepared_runtime_status(self, agent_id: str) -> dict[str, Any]:
+        from astrabox.config.settings import get_settings
+        from astrabox.core.service.orchestrator.agent.client_pool import prepared_capacity
         from astrabox.core.service.orchestrator.agent.prepared_capacity import LAST_MISS_FIELD
         from astrabox.core.service.orchestrator.agent.prepared_slots import (
             _manifest_is_reapable, slot_manifests,
@@ -351,7 +353,12 @@ class AgentService:
         agent = await self._agent_repo.read_ledger(agent_id)
         if agent is None:
             raise APIError(code="AGENT_NOT_FOUND", message="agent not found", status_code=404)
-        target = int(agent.get("prepared_capacity") or 0)
+        target = prepared_capacity(agent)
+        policy = {
+            "execution_target": self._agent_repo.execution_target,
+            "prewarm_enabled": get_settings().agent_prewarm_enabled,
+            "configured_target": int(agent.get("prepared_capacity") or 0),
+        }
         enabled = target > 0 and await self._runtime_enabled(agent)
         last_miss_at = str(agent.get(LAST_MISS_FIELD) or "").strip() or None
         pool_name = str(agent.get("_client_pool_name") or "").strip()
@@ -368,6 +375,7 @@ class AgentService:
             )
             if requested_generation != agent.get("_prepared_runtime_generation"):
                 return {
+                    **policy,
                     "enabled": True,
                     "target": target,
                     "ready": False,
@@ -417,6 +425,7 @@ class AgentService:
         prepared_count = pooled + len(usable) if enabled else 0
         idle_box = pool.idle_sandbox_ids[0] if pool is not None and pool.idle_sandbox_ids else None
         return {
+            **policy,
             "enabled": enabled,
             "target": target if enabled else 0,
             "ready": prepared_count > 0,
@@ -453,6 +462,14 @@ class AgentService:
                 code="FORBIDDEN",
                 message="only an Agent manager or platform admin may refresh prewarming",
                 status_code=403,
+            )
+        from astrabox.config.settings import get_settings
+
+        if not get_settings().agent_prewarm_enabled:
+            raise APIError(
+                code="AGENT_PREWARM_DISABLED", status_code=409,
+                message="Agent prewarming is disabled for this execution target",
+                data={"execution_target": self._agent_repo.execution_target},
             )
         if int(agent.get("prepared_capacity") or 0) <= 0 or not await self._runtime_enabled(agent):
             raise APIError(
@@ -635,6 +652,7 @@ class AgentService:
             CLIENT_POOL_BACKEND_FIELD,
             CLIENT_POOL_NAME_FIELD,
             ensure_agent_client_pool,
+            prepared_capacity,
             retire_agent_client_pool,
         )
         from astrabox.core.service.orchestrator.agent.prepared_slots import (
@@ -671,7 +689,7 @@ class AgentService:
                         runtime_manager=self._runtime_manager,
                         agent_repo=self._agent_repo,
                     )
-                if not enabled or int(row.get("prepared_capacity") or 0) <= 0:
+                if not enabled or prepared_capacity(row) <= 0:
                     await retire_prepared_runtime(
                         target,
                         reason="Agent runtime preparation is disabled",

@@ -218,7 +218,10 @@ class AgentPreparedRuntimeStatus(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool
-    #: The Agent's ``prepared_capacity`` while its runtime is enabled, else 0.
+    execution_target: str
+    prewarm_enabled: bool
+    configured_target: int
+    #: Prepared capacity selected by this execution target, independently of Agent enablement.
     target: int
     ready: bool
     #: Prepared units a new conversation can take right now.

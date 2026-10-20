@@ -461,6 +461,34 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "astrabox.config.settings",
     ),
     (
+        "ASTRABOX_EXECUTION_TARGET",
+        "public",
+        "astrabox",
+        "Stable execution target recorded on Agent compute ledgers, Sessions and Assistant "
+        "workspaces. Processes serving the same physical sandbox environment use the same key; "
+        "a distinct physical environment uses a different key. Authored Agent identity and "
+        "authorization remain shared.",
+        "astrabox.config.settings",
+    ),
+    (
+        "ASTRABOX_AGENT_PREWARM_ENABLED",
+        "public",
+        "true",
+        "Use prepared Agent capacity in this execution target. False selects cold admission "
+        "and disables pool creation, refill and acquisition without changing shared "
+        "Agent.prepared_capacity. Retirement and cleanup apply only to this target's inventory.",
+        "astrabox.config.settings",
+    ),
+    (
+        "ASTRABOX_BACKGROUND_EXECUTION_ENABLED",
+        "public",
+        "true",
+        "Run channel and scheduler workers in this execution target. False retains interactive "
+        "work and target-owned runtime ingestion, recovery, cleanup and active sandbox keepalive; "
+        "Agent prewarming is controlled separately.",
+        "astrabox.config.settings",
+    ),
+    (
         "ASTRABOX_PERSISTENCE_PROVIDER",
         "public",
         "postgres",

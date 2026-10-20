@@ -8,6 +8,7 @@ from sqlalchemy import and_, delete, func, insert, literal, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.sql import ColumnElement
 
+from astrabox.config.settings import get_settings, validate_execution_target
 from astrabox.persistence.sql import ForeignKeyViolation, execute, fetch_all, fetch_one, to_iso, transaction
 from astrabox.persistence.sql.models.deployments import Deployment
 
@@ -16,7 +17,7 @@ _DEPLOYMENTS = Deployment.__table__
 #: Columns a Deployment always has; every other column is reported only when
 #: the Deployment sets it, as the API has always shown absent settings.
 _ALWAYS = frozenset({
-    "deployment_id", "created_by", "enabled", "scene", "prompt_prefix",
+    "deployment_id", "execution_target", "created_by", "enabled", "scene", "prompt_prefix",
     "created_at", "updated_at",
 })
 
@@ -29,7 +30,7 @@ _WRITABLE = frozenset({
     "credentials_configured", "callback_base_url",
 })
 _IDENTITY = frozenset({
-    "deployment_id", "agent_id", "assistant_id", "created_by", "scope",
+    "deployment_id", "execution_target", "agent_id", "assistant_id", "created_by", "scope",
     "owner_user_id", "owner_org_id", "source_assistant_id",
 })
 
@@ -119,6 +120,11 @@ class DeploymentRepository:
     channel records.
     """
 
+    def __init__(self, *, execution_target: str | None = None) -> None:
+        self.execution_target = validate_execution_target(
+            get_settings().execution_target if execution_target is None else execution_target
+        )
+
     async def get_by_id(self, deployment_id: str) -> dict[str, Any] | None:
         wid = str(deployment_id or "").strip()
         if not wid:
@@ -186,9 +192,12 @@ class DeploymentRepository:
         ))
 
     async def list_scheduled(self) -> list[dict[str, Any]]:
-        """Every scheduled Deployment, for the scheduler's startup reconcile."""
+        """This execution target's scheduled Deployments, for its worker reconciliation."""
         return _views(await fetch_all(
-            select(_DEPLOYMENTS).where(_DEPLOYMENTS.c.scene == _const("schedule"))
+            select(_DEPLOYMENTS).where(
+                _DEPLOYMENTS.c.scene == _const("schedule"),
+                _DEPLOYMENTS.c.execution_target == self.execution_target,
+            )
         ))
 
     async def list_channel_bindings(self) -> list[dict[str, Any]]:
@@ -201,7 +210,10 @@ class DeploymentRepository:
         table = _DEPLOYMENTS.c
         rows = await fetch_all(
             select(table.deployment_id, table.scene, table.updated_at)
-            .where(table.enabled, table.scene.like(_const("channel:%")))
+            .where(
+                table.enabled, table.scene.like(_const("channel:%")),
+                table.execution_target == self.execution_target,
+            )
             .order_by(table.deployment_id)
         )
         return [{**row, "updated_at": to_iso(row["updated_at"])} for row in rows]
@@ -226,6 +238,7 @@ class DeploymentRepository:
             update(_DEPLOYMENTS)
             .where(
                 table.deployment_id == wid,
+                table.execution_target == self.execution_target,
                 table.scene == expected_scene,
                 table.enabled,
             )
@@ -243,6 +256,9 @@ class DeploymentRepository:
             {key: value for key, value in doc.items() if key != "deployment_id"},
             allowed=_WRITABLE | _IDENTITY,
         )
+        if "execution_target" in values and values["execution_target"] != self.execution_target:
+            raise ValueError("a Deployment must be created in this repository's execution target")
+        values["execution_target"] = self.execution_target
         wid = str(deployment_id or "").strip()
 
         async def create(conn: AsyncConnection) -> dict[str, Any]:

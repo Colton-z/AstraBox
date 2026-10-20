@@ -168,6 +168,7 @@ class AssistantWorkspace(Base):
 
     __tablename__ = "assistant_workspaces"
     __table_args__ = (
+        Index(None, "execution_target", "assistant_id"),
         CheckConstraint(
             "state IN ('MATERIALIZING', 'READY', 'HIBERNATING', 'RECOVERY_REQUIRED')",
             name="state",
@@ -187,6 +188,8 @@ class AssistantWorkspace(Base):
     assistant_id: Mapped[str] = mapped_column(
         KeyText(128), ForeignKey("assistants.assistant_id", ondelete="CASCADE"), primary_key=True
     )
+    #: One Assistant workspace retains its physical execution target across box replacement.
+    execution_target: Mapped[str] = mapped_column(KeyText(128), server_default="astrabox")
     created_by_user_id: Mapped[str] = mapped_column(payload_text())
     engine_kind: Mapped[str] = mapped_column(payload_text())
     state: Mapped[str] = mapped_column(payload_text())

@@ -81,6 +81,7 @@ from astrabox.core.service.orchestrator.runtime.packages import (
     package_egress_hosts,
 )
 from astrabox.providers.sandbox_image import sandbox_boot_env
+from astrabox.config.settings import get_settings
 from astrabox.seams.egress_credentials import (
     EGRESS_HELD_PLACEHOLDER,
     ModelEgressCredential,
@@ -1086,6 +1087,7 @@ def engine_create_spec(
     return SandboxCreateSpec(
         session_id=session_id,
         assignment_id=assignment_id,
+        execution_target=get_settings().execution_target,
         resource_limits=resource_limits,
         resource_requests=resource_requests,
         image=resolve_runtime_template_name(template),
@@ -1656,6 +1658,8 @@ async def claim_prepared_engine_sandbox(
     An adapter receives only the resulting box and its own opaque evidence.
     """
     from astrabox.seams.runtime_preparation import runtime_preparation_plan
+    from astrabox.core.service.orchestrator.agent.client_pool import prepared_capacity
+
 
     if not artifact_tools_enabled(getattr(template, "session_source_type", None)):
         # Prepared native processes froze personal artifact tools before any Session existed.
@@ -1672,7 +1676,7 @@ async def claim_prepared_engine_sandbox(
         return None
     agent_id = str(getattr(template, "agent_id", "") or "").strip()
     generation = str(getattr(template, "runtime_generation", "") or "").strip()
-    if not agent_id or not generation or int(getattr(template, "prepared_capacity", 0) or 0) <= 0:
+    if not agent_id or not generation or (prepared_claim is None and prepared_capacity(template) <= 0):
         return None
 
     from astrabox.core.service.orchestrator.agent.prepared_boxes import (
@@ -2120,6 +2124,9 @@ async def provision_engine_sandbox(
     from astrabox.seams.sandbox import sandbox_for_name
     from astrabox.seams.runtime_preparation import runtime_preparation_plan
 
+    persisted_backend = await manager.resolve_runtime_sandbox_backend(
+        session_id, workspace_plan=workspace_plan
+    )
     composed = {request.credential_env_var, request.cwd_env_var} - {None}
     conflicting = sorted(composed & set(request.env))
     if conflicting:
@@ -2140,9 +2147,6 @@ async def provision_engine_sandbox(
 
         await reconcile_runtime_generation(template, runtime_manager=manager)
 
-    persisted_backend = await manager.resolve_runtime_sandbox_backend(
-        session_id, workspace_plan=workspace_plan
-    )
     backend_adapter = sandbox_for_name(persisted_backend)
 
     # Recovery precedes every placement or pool claim. A worker may have
