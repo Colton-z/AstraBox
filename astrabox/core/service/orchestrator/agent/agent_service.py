@@ -800,6 +800,10 @@ class AgentService:
         idempotency_key: str | None = None,
         source_type: str = "agent",
     ) -> dict[str, Any]:
+        if agent.get("enabled") is False:
+            raise APIError(
+                code="AGENT_DISABLED", message="agent is disabled", status_code=409
+            )
         create_options: dict[str, Any] = {
             # No permission_mode: creation falls to the product default for
             # (agent_chat, engine) declared once in engine/capabilities.py.

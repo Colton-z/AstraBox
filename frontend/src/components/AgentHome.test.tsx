@@ -71,6 +71,7 @@ function agent(over: Partial<AgentConfig> & { agent_id: string; name: string }):
     display_meta: {},
     favorited: false,
     can_manage: false,
+    can_start_conversation: true,
     ...over,
   };
 }

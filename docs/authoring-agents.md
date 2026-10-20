@@ -4,6 +4,25 @@
 
 An Agent runs an installed Agent program with a model, system prompt, extensions, and Environment. Multiple Sessions can share one Agent. Saving an Agent does not interrupt work already in progress; AstraBox resolves the latest saved Agent and Environment when it first prepares or rebuilds a Session runtime.
 
+## Archive an Agent
+
+Open the Agent in management and choose **Archive agent**. Archiving uses the
+Agent deletion operation: it removes the Agent from business and management
+lists, stops its triggers, and retires prepared capacity. Its definition stays
+in the database as `DELETED`; conversation history remains readable. There
+is no restore operation. Disabling an Agent is reversible and keeps it in
+management.
+
+## View and export Agent conversations
+
+Open **Console > Sessions** to see the conversations for every Agent you manage
+as creator or assigned administrator. Managing three Agents includes all three
+in this page. Select an Agent or date range to narrow the list, then choose
+**Export transcripts** to download the matching native transcripts together.
+The server applies the same Agent permissions to the list, conversation detail,
+and export; public use access alone does not grant access to other users' logs.
+Instance-wide administration remains restricted to platform administrators.
+
 ## Core elements
 
 You can think of an Agent as a "job description":
@@ -39,7 +58,7 @@ The Agent executes tasks inside a Session. AstraBox keeps the Agent available, s
 | `exposure_mode` | string | No | Where the Agent is available: `chat_only`, `mcp_only`, or `both`. |
 | `idle_hibernate_seconds` | integer | No | How long the Session runtime may remain idle before the Environment's pause or removal behavior applies. |
 | `prepared_capacity` | integer | No | How many new conversations can start at the same moment on a prepared runtime, from 0 to 1000; 0 turns prewarming off. Omitted on create, it is 1 where the deployment can prewarm and 0 where it cannot; see [Prewarming](#prewarming). |
-| `enabled` | boolean | No | Whether the Agent can start new Sessions. |
+| `enabled` | boolean | No | Whether the Agent can start new Sessions. Disabled Agents are hidden from the user-facing picker and retained in management. |
 | `visibility` | string | — | Agent authorization mode: `public`, `private`, or `allowlist`. Managed through the Agent access endpoint. |
 | `admins` | array | — | Accounts allowed to manage the Agent. Managed through the Agent access endpoint. |
 | `allowed_user_ids` | array | — | Accounts allowed by `allowlist` authorization. Managed through the Agent access endpoint. |

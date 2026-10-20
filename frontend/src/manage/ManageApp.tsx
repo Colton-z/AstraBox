@@ -107,8 +107,7 @@ type NavItem = {
   /** Which quiet count to show, for the resources that have one to show. */
   count?: keyof NavCounts;
   /**
-   * Shown to platform administrators only: the page writes under
-   * `/api/v1/admin`, which refuses everyone else.
+   * Shown only to platform administrators for instance-wide operations.
    */
   adminOnly?: boolean;
 };

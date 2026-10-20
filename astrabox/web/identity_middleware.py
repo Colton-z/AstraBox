@@ -103,6 +103,22 @@ def _is_admin_path(path: str) -> bool:
     return path.startswith("/api/v1/admin")
 
 
+def _is_session_management_path(scope: dict[str, Any], path: str) -> bool:
+    """Session operations whose service checks the caller's resource ACL."""
+    prefix = "/api/v1/admin/sessions/"
+    if not path.startswith(prefix):
+        return False
+    parts = path.removeprefix(prefix).split("/")
+    method = str(scope.get("method") or "GET").upper()
+    if method == "GET":
+        return parts in (["all"], ["transcripts"]) or (
+            len(parts) == 2
+            and bool(parts[0])
+            and parts[1] in {"detail", "trace", "transcript"}
+        )
+    return method == "POST" and len(parts) == 2 and bool(parts[0]) and parts[1] == "kill"
+
+
 def _required_api_scope(scope: dict[str, Any], path: str) -> str | None:
     """Return the OAuth scope a machine identity needs for this route."""
 
@@ -219,7 +235,8 @@ class WebIdentityMiddleware:
         # configured, the admin surface hard-gates: anonymous never passes
         # (a strict resolver that returns None instead of raising must not
         # silently reopen the console), and an asserted identity needs the
-        # admin role.
+        # admin role. Session management instead checks the durable resource's
+        # ACL in AdminService; the allowlist excludes unscoped import/eviction.
         if (
             user is None
             and _is_admin_path(path)
@@ -240,6 +257,7 @@ class WebIdentityMiddleware:
             user is not None
             and _is_admin_path(path)
             and PLATFORM_ADMIN_ROLE not in user.roles
+            and not _is_session_management_path(scope, path)
         ):
             await self._reject(
                 scope,

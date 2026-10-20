@@ -76,12 +76,15 @@ def interaction_view(row: dict[str, Any], *, include_tool_input: bool) -> dict[s
 def runtime_view_state(session: dict[str, Any], activity: dict[str, Any]) -> str:
     """The session's state as the page shows it.
 
-    The lifecycle state while the session is not READY; otherwise what the
-    runtime reports, with inputs the platform still holds counted as work.
+    The lifecycle state while the session is not READY, recovery required
+    while its runtime is unavailable, and otherwise what the runtime reports,
+    with inputs the platform still holds counted as work.
     """
     lifecycle = str(session.get("state") or "")
     if lifecycle != SessionState.READY.value:
         return lifecycle
+    if session.get("runtime_unavailable"):
+        return SessionState.RECOVERY_REQUIRED.value
     status = str(session.get("runtime_status") or "idle")
     if status == "waiting" or activity["open_interactions"]:
         return "WAITING_INPUT"

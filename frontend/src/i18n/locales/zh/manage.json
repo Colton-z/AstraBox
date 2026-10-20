@@ -199,6 +199,10 @@
     "unnamed_assistant": "未命名 Assistant"
   },
   "agents": {
+    "archive": "归档 Agent",
+    "archiving": "正在归档…",
+    "archive_title": "归档“{{name}}”？",
+    "archive_description": "将此 Agent 从业务入口和管理列表移除。配置和对话历史仍保留在数据库中供审计，归档后无法恢复。",
     "title": "Agent",
     "meta": "{{count}} 个 Agent · {{enabled}} 个已启用",
     "description": "为 Agent 选择模型、系统提示词、MCP 服务、Skill、Plugin、代码仓库和运行设置，再从支持的入口使用它。",
