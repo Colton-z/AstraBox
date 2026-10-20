@@ -18,9 +18,9 @@ export function UserActionNotice({ action }: { action: UserAction }) {
 
 export function SessionUserAction({ gate }: { gate: ReturnType<typeof useSessionUserAction> }) {
   const { t } = useTranslation();
-  if (!gate.applicable || gate.ready) return null;
+  if (!gate.applicable || gate.ready || (!gate.error && !gate.state?.user_action)) return null;
   return (
-    <div className="mb-3 space-y-2 rounded-lg border p-3 text-sm" aria-busy={gate.busy}>
+    <div className="mb-3 space-y-2 rounded-lg border p-3 text-sm" aria-busy={gate.busy} data-testid="session-user-action">
       {gate.state?.user_action && <UserActionNotice action={gate.state.user_action} />}
       {gate.busy && <p role="status">{t('chat:user_action.checking')}</p>}
       {gate.error && <ErrorNote>{t('chat:user_action.failed')} {gate.error}</ErrorNote>}

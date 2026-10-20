@@ -67,6 +67,12 @@ RUN --mount=type=bind,from=hermes-source,source=/hermes-source.tar.gz,target=/tm
     hermes import --help; \
     "${HERMES_VENV}/bin/python" -c 'import tui_gateway.entry'
 
+# The editable supplier install keeps this typed extension in the image without
+# rebuilding its dependencies or changing its native SessionStore and loop.
+COPY containers/sandbox-hermes/patches/ /opt/astrabox/hermes-patches/
+RUN git -C /opt/hermes/source apply --check /opt/astrabox/hermes-patches/session-tool-environment.patch \
+    && git -C /opt/hermes/source apply /opt/astrabox/hermes-patches/session-tool-environment.patch
+
 # astrabox-hermes-config-merge installs plugin dependencies with Hermes' own
 # installer, and the profile setup writes the owner's configuration to its
 # managed scope; a Hermes that moved either fails here, not in a box.

@@ -107,11 +107,16 @@ Session。
 保持不变。材料字节和环境变量值不会出现在对应 dataclass 的表示形式和公开错误中。与
 Session 绑定的 provider 必须返回材料。
 
-环境变量在它所启动的运行时的整个生命周期内保持不变。引擎适配器必须声明
-`supports_startup_environment()`，并在原生初始化之前交付
-`EngineStartupContext.runtime_env`。内置 Claude Code 适配器通过其 SDK 选项完成这一步；
-其他内置适配器会拒绝 Session 环境变量，而不是忽略它。由平台负责的环境变量名不能被覆盖。
-拒绝会以 `RUNTIME_PREPARATION_FAILED` 阻止激活；异常文本不会公开。
+引擎适配器声明 `startup_environment_scope()`。`"process"` 在原生初始化之前交付
+`EngineStartupContext.runtime_env`，此后固定；Claude Code 通过 SDK 选项完成这一步。
+`"session"` 通过原生会话上下文交付 `EngineStartupContext.session_env`，不改变共享进程
+环境。Hermes 镜像包含固定上游提交、保留 MIT 许可的扩展，在原生 `session.create` 和
+`session.resume` 中绑定映射，再由原生上下文传到工具子进程。重连和换箱时重新交付；
+没有会话的 Assistant 工作区准备不接收这些值。缺少扩展的旧镜像会明确拒绝 RPC 参数。
+返回 `None` 的适配器拒绝 Session 环境变量。由平台负责的环境变量名不能被覆盖；
+Hermes 也拒绝原生身份和凭据变量。已初始化的进程拒绝新的进程作用域环境。
+平台准备阶段的拒绝会以 `RUNTIME_PREPARATION_FAILED` 阻止激活，回调异常文本不会公开。
+原生会话环境校验以 `AGENT_RUNTIME_ERROR` 阻止 Hermes 连接，消息不包含传入的环境变量值。
 
 Claude Agent SDK 在启动 CLI 之前会先用 `claude -v` 探测它，此时不带选项中的环境变量。
 如果镜像中的包装程序要求有 Session 材料才放行 CLI，应原样透传 `-v` 和 `--version`。

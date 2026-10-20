@@ -415,7 +415,8 @@ async def prepare_session_runtime_context(context: EngineStartupContext) -> Engi
     """Finish Session materials before the engine sees its startup context.
 
     Later inputs are prepared by the provider's ``prepare_turn`` under the
-    turn guard; this startup environment stays fixed for the runtime's life.
+    turn guard. Process-scoped environment is frozen; native Session context
+    is bound again on attachment without changing a shared process.
     """
     provider = runtime_preparation_provider()
     prepared = context.prepared_manifest
@@ -471,11 +472,12 @@ async def prepare_session_runtime_context(context: EngineStartupContext) -> Engi
             if runtime_preparation_plan(config).session_bound and not materials.files and not environment:
                 raise ValueError("Session-bound preparation returned no materials")
             if environment:
-                if request.engine_initialized:
-                    raise ValueError("an initialized engine cannot receive new startup environment")
                 adapter = get_engine_adapter(str(config.get("engine_kind") or ""))
-                if not adapter.supports_startup_environment():
+                scope = adapter.startup_environment_scope()
+                if scope not in {"process", "session"}:
                     raise ValueError("engine cannot deliver Session startup environment")
+                if scope == "process" and request.engine_initialized:
+                    raise ValueError("an initialized engine cannot receive new startup environment")
                 request_env = adapter.sandbox_request(
                     template=context.template, model_access=context.model_access,
                 )
@@ -507,4 +509,6 @@ async def prepare_session_runtime_context(context: EngineStartupContext) -> Engi
                 ) from None
         raise APIError(code="RUNTIME_PREPARATION_FAILED", status_code=502,
                        message="Session runtime preparation failed; inspect the deployment integration") from None
+    if environment and scope == "session":
+        return dataclasses.replace(context, session_env=environment)
     return dataclasses.replace(context, runtime_env={**dict(context.runtime_env or {}), **environment})

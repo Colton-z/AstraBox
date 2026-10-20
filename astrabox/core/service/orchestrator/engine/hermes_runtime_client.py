@@ -500,9 +500,9 @@ class _Translation:
         for item in chosen:
             self.state.pending.remove(item)
         input_ids = tuple(item.input for item in chosen)
-        events: list[RuntimeEvent] = [
-            InputAdmitted(None, item.input) for item in chosen if not item.admitted
-        ]
+        # Replayed turn events can consume the pending entry before its
+        # synthetic submit receipt is read. Starting the turn proves admission.
+        events: list[RuntimeEvent] = [InputAdmitted(None, item.input) for item in chosen]
         if input_ids:
             origin: ResponseOrigin = "input"
             response_id = input_response_message_id(input_ids[0])
@@ -801,6 +801,7 @@ class HermesRuntimeClient:
         gateway: HermesGatewayPort,
         platform_session_id: str,
         resume_session_key: str | None,
+        session_env: dict[str, str] | None = None,
         read_cron_run_output: Callable[[str], Awaitable[CronRunOutput | None]] | None = None,
         cron_store: HermesCronJobRepository | None = None,
     ) -> HermesRuntimeClient:
@@ -831,10 +832,11 @@ class HermesRuntimeClient:
                 if not key:
                     raise RuntimeError("Hermes title lookup returned no durable session key")
         created = not key
+        context_params = {"tool_environment": dict(session_env)} if session_env is not None else {}
         if key:
-            result = await gateway.request("session.resume", {"session_id": key, "cols": 120})
+            result = await gateway.request("session.resume", {"session_id": key, "cols": 120, **context_params})
         else:
-            result = await gateway.request("session.create", {"cols": 120})
+            result = await gateway.request("session.create", {"cols": 120, **context_params})
         sid = str(result.get("session_id") or "").strip()
         if not sid:
             raise RuntimeError("Hermes did not return a TUI session id")
@@ -969,9 +971,8 @@ class HermesRuntimeClient:
         await self._send(item.input_id, item.content)
 
     async def _send(self, input_id: str, text: str) -> None:
-        state = self._translation.state
         entry = _Pending(input=input_id, receipt="sending", after=self._received_seq)
-        state.pending.append(entry)
+        self._translation.state.pending.append(entry)
         done: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self._inflight[input_id] = (done, entry.after)
         try:
@@ -993,7 +994,7 @@ class HermesRuntimeClient:
                     status,
                     self._platform_session_id,
                 )
-                state.pending.remove(entry)
+                self._translation.state.pending.remove(entry)
                 self._inbox.put_nowait(("admit", input_id))
             elif result.get("voice_stopped") is True:
                 raise RuntimeInputRefused(
@@ -1052,6 +1053,10 @@ class HermesRuntimeClient:
             # what happened in the gap is unknown, so ``state`` starts afresh.
             raise RuntimeCursorExpired(f"Hermes holds none of the events of session {self._sid} after {last_seen}")
         if restored is not None:
+            # Replay lookup can overlap a submit. Its live native receipt
+            # and sequence watermark must survive cursor restoration.
+            local = {item.input: item for item in self._translation.state.pending}
+            restored.pending = [local.pop(item.input, item) for item in restored.pending] + list(local.values())
             self._translation.state = restored
         self._reading = True
         self._last_seq = last_seen

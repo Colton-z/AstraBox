@@ -144,6 +144,8 @@ class EngineStartupContext:
     model_credential: str
     resume_session_key: str | None
     runtime_env: dict[str, str] | None = None
+    #: Context bound to one native Session, outside a shared process environment.
+    session_env: dict[str, str] | None = field(default=None, repr=False)
     #: Host-side refresh a client runs before handing its runtime an input
     #: (protected MCP credentials rotated since the runtime started).
     prepare_engine_input: Any = None
@@ -359,9 +361,9 @@ class EngineAdapter(ABC):
         ...
 
 
-    def supports_startup_environment(self) -> bool:
-        """Whether activation delivers runtime_env before native initialization."""
-        return False
+    def startup_environment_scope(self) -> Literal["process", "session"] | None:
+        """Where activation delivers the provider's Session environment."""
+        return None
 
     def startup_material_request(
         self,

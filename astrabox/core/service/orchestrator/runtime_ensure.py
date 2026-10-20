@@ -612,15 +612,17 @@ class RuntimeEnsure:
             )
         except Exception as lightweight_exc:
             _raise_user_action_refusal(lightweight_exc, session_id)
-            logger.warning(
-                "engine turn transport lightweight attach failed, escalating to full prepare "
-                "engine=%s session=%s sandbox=%s: %s",
-                workspace_plan.engine_kind,
-                session_id,
-                sandbox_id,
-                lightweight_exc,
-            )
             try:
+                if isinstance(lightweight_exc, APIError) and not lightweight_exc.retryable:
+                    raise lightweight_exc
+                logger.warning(
+                    "engine turn transport lightweight attach failed, escalating to full prepare "
+                    "engine=%s session=%s sandbox=%s: %s",
+                    workspace_plan.engine_kind,
+                    session_id,
+                    sandbox_id,
+                    lightweight_exc,
+                )
                 template = await self._agent_config.resolve_session_harness(session)
                 if template is None:
                     raise lightweight_exc
@@ -651,7 +653,7 @@ class RuntimeEnsure:
                 _raise_user_action_refusal(full_exc, session_id)
                 error_text = str(full_exc)
                 logger.warning(
-                    "engine turn transport full prepare also failed "
+                    "engine turn transport attach failed "
                     "engine=%s session=%s sandbox=%s: %s",
                     workspace_plan.engine_kind,
                     session_id,

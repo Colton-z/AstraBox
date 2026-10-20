@@ -232,8 +232,9 @@ is supplied while an Agent's inventory or an Assistant's workspace is prepared
 without a conversation.
 
 `context.engine_initialized` reports whether activation will attach to an
-existing native process. Such a callback can refresh files and external gateway
-bindings, but must return an empty environment. Binding or material preparation
+existing native process. Such a callback can refresh files, external gateway
+bindings and Session-scoped tool context, but cannot change a frozen process
+environment. Binding or material preparation
 failure blocks activation and discards the exact failed prepared claim; it never
 silently creates a cold replacement.
 
@@ -245,14 +246,24 @@ paths remain stable for that Session and sandbox. Material bytes and environment
 values are excluded from their dataclass representations and public errors. A
 Session-bound provider must return material.
 
-The environment stays fixed for the life of the runtime it starts. An engine
-adapter must declare `supports_startup_environment()` and deliver
-`EngineStartupContext.runtime_env` before native initialization. The built-in
-Claude Code adapter does so through its SDK options; other built-in adapters
-refuse Session environment rather than ignore it. Platform-owned environment
-names cannot be overwritten. An initialized process refuses new startup
-environment instead of ignoring it. A refusal blocks activation with
-`RUNTIME_PREPARATION_FAILED`; the exception text is not exposed.
+An engine adapter declares `startup_environment_scope()`. `"process"` delivers
+`EngineStartupContext.runtime_env` before native initialization and stays fixed
+for that process; Claude Code uses its SDK options. `"session"` delivers
+`EngineStartupContext.session_env` through a native Session context, without
+changing a shared process environment. The Hermes image carries a pinned,
+MIT-licensed extension to its typed `session.create` and `session.resume`
+contracts for this mapping; its native context propagation delivers the values
+to tool subprocesses. Each conversation receives its own mapping again on
+reattachment or box replacement. Assistant workspace preparation receives none.
+An image without this extension rejects the RPC parameter explicitly.
+
+Adapters returning `None` refuse the environment. Platform-owned environment
+names cannot be overwritten, and Hermes also refuses native identity and
+credential names. An initialized process refuses new process-scoped startup
+environment. Platform preparation refusals block activation with
+`RUNTIME_PREPARATION_FAILED`; callback exception text is not exposed. Native
+Session environment validation blocks Hermes attachment with `AGENT_RUNTIME_ERROR`
+and a message that contains no supplied environment values.
 
 The Claude Agent SDK probes the CLI with `claude -v` before it starts it, without
 the options environment. An image wrapper that gates the CLI on Session material
