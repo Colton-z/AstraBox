@@ -73,7 +73,7 @@ which accepts 3–30 lowercase letters, digits, underscores and hyphens. A
 control-only DBOS client needs a system database initialized by a worker;
 it does not initialize the native schema or execute workflows.
 
-Inventory-based wiring retirement and orphan cleanup require the sandbox's
+Retiring outdated network configurations and cleaning orphan resources require the sandbox's
 create-time execution-target marker. A box without that marker is outside these
 automatic inventories; its persisted Session or Assistant owner still drives
 ordinary recovery, renewal and disposal. Unattributed resources require explicit

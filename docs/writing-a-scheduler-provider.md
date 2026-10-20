@@ -118,7 +118,7 @@ Set the class's `name` to the entry-point name. A deployment selects it with
 scheduled Deployments. AstraBox instantiates and registers the class when it
 starts. The class may also set `seams_api_version`; an incompatible declared
 version fails at startup instead of at the first due time. The target-aware
-scheduler contract requires seams API9.
+scheduler contract requires provider API9.
 
 ## Verify the provider
 

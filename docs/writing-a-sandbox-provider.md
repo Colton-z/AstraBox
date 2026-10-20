@@ -233,7 +233,7 @@ another message.
 - [Container Reference](container-reference.md) — what a sandbox image carries
 - [Embed AstraBox](embedding.md) — entry points and startup
 
-Execution ownership is part of provider seam API9. Every `SandboxCreateSpec`
+Execution ownership is part of provider interface API9. Every `SandboxCreateSpec`
 carries `execution_target`. Add `execution_target_metadata(spec.execution_target)`
 to the provider-owned create metadata before allocating a resource, and preserve
 that mapping through adoption and inventory readback. Its opaque value uses the

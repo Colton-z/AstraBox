@@ -25,7 +25,7 @@ channel and scheduler work inherits the target of its Deployment. These are
 columns in the common schema and transactions, not provider-local partitions
 or separate runtime databases. Providers preserve the complete composite keys
 and foreign keys. Replicas within a target follow the
-[deployment configuration contract](../deploy.md#share-a-product-database).
+[deployment configuration contract](/docs/deploy#share-a-product-database).
 
 ## Register and select a provider
 
