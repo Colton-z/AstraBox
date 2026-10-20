@@ -18,7 +18,7 @@ you need:
 
 | Method | When the platform calls it |
 | --- | --- |
-| `plan` | Whenever it plans an Agent's runtime; synchronous, no I/O |
+| `plan` | Asynchronously when resolving a configuration that admits work; reads persisted subject policy |
 | `synchronize`, `recover` | Once per prepared Agent box, before it becomes waiting inventory; for an Assistant, whenever its workspace prepares a revision |
 | `prepare_session` | Before the engine initializes: cold start, claim, reattachment, sandbox replacement |
 | `prepare_turn` | Before each input is handed to the engine |
@@ -31,8 +31,13 @@ Agent per Session, or dispatches work.
 
 ## Declare when a Session is required
 
-`plan(*, config) -> RuntimePreparationPlan` is synchronous and performs no I/O.
-Its detached resolved Agent configuration contains no requesting Session.
+`async plan(*, config) -> RuntimePreparationPlan` may read the integration's
+persisted policy. Its detached resolved configuration contains no requesting
+Session. It must not perform writes or depend on process-local caches. The
+platform resolves it under a 30-second deadline into one runtime view; generation,
+inventory preparation and claim use that view's declaration. Read-only history
+and management projections do not call it. The extension interface version is
+`8`; `plan` is an asynchronous method.
 `session_bound=True` means the engine cannot be initialized through
 `EngineAdapter.prepare_runtime` before a real Session's materials exist.
 
@@ -45,10 +50,27 @@ exactly the claimed unit; they do not silently switch to a cold start.
 
 The provider name and declaration participate in the runtime generation. Changes
 invalidate waiting inventory. With `session_bound=False`, ordinary initialized
-prewarming and protected Vault credential substitution retain their existing path.
+prewarming remains available. Model delivery defaults to `"platform"`, which
+uses the configured protected Vault path for initialized inventory.
 Session-bound resource prewarming also works without Credential Vault; it leaves
 model and environment credentials out of unclaimed inventory and resolves them
 at claim. It does not implement unavailable Vault capabilities.
+
+An integration that protects model traffic itself declares
+`model_credential_delivery="provider"`, independently of `session_bound` and the
+platform Vault switch. The engine receives an inert workload-specific placeholder
+instead of the configured model key. The integration must refuse unbound traffic
+and bind only the persisted Session owner and subject in `prepare_session` before
+returning. `context.model_credential_placeholder` names the actual value already
+fixed in an initialized process. It remains stable on reattachment; a prepared
+claim retains its inventory identity. Use the supported backend or external
+gateway API to update that binding, rather than changing the child's environment.
+Reattachment refuses a change of delivery owner for an existing native process;
+replace its compute to change that frozen contract.
+If the backend needs its credential proxy prepared at box creation, the sandbox
+integration requests `SandboxCreateSpec.credential_proxy_enabled` independently
+of the platform Vault. This delegation covers only model delivery: MCP and
+environment credentials retain their own protection requirements.
 
 This controls initialization performed by the engine adapter. Required system
 services and wrappers must already be baked into the selected image. The provider
@@ -209,6 +231,12 @@ conversation it runs after the Assistant's resources are synchronized. No Sessio
 is supplied while an Agent's inventory or an Assistant's workspace is prepared
 without a conversation.
 
+`context.engine_initialized` reports whether activation will attach to an
+existing native process. Such a callback can refresh files and external gateway
+bindings, but must return an empty environment. Binding or material preparation
+failure blocks activation and discards the exact failed prepared claim; it never
+silently creates a cold replacement.
+
 Return `RuntimeFile(name, content: bytes)` entries and an environment mapping.
 Use `context.file_path(name)` when an environment value names a returned file.
 The platform writes each file into the workload's private home with ownership
@@ -222,7 +250,8 @@ adapter must declare `supports_startup_environment()` and deliver
 `EngineStartupContext.runtime_env` before native initialization. The built-in
 Claude Code adapter does so through its SDK options; other built-in adapters
 refuse Session environment rather than ignore it. Platform-owned environment
-names cannot be overwritten. A refusal blocks activation with
+names cannot be overwritten. An initialized process refuses new startup
+environment instead of ignoring it. A refusal blocks activation with
 `RUNTIME_PREPARATION_FAILED`; the exception text is not exposed.
 
 The Claude Agent SDK probes the CLI with `claude -v` before it starts it, without

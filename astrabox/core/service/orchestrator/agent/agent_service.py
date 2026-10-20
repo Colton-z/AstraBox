@@ -688,13 +688,9 @@ class AgentService:
                         if not cleared:
                             self._reconciliation_requested.add(target)
                 else:
-                    refreshed = await self._agent_config.resolve_agent_harness(target)
-                    if refreshed is None:
-                        return
-                    if isinstance(refreshed, dict):
-                        refreshed["runtime_generation"] = generation
-                    else:
-                        refreshed.runtime_generation = generation
+                    # Prepare the same policy snapshot whose generation was
+                    # published above; a later edit gets its own reconciliation.
+                    refreshed = template
                     # The namespace is recorded, and the one it displaces queued
                     # for retirement, before it starts; an edit landing during
                     # this pass leaves it named for the next pass to retire.

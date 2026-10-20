@@ -368,6 +368,10 @@ class AgentConfigService:
             ),
         )
         self._overlay_environment_runtime(view, env)
+        if require_enabled_environment:
+            from astrabox.seams.runtime_preparation import resolve_runtime_preparation_plan
+
+            view.runtime_preparation = await resolve_runtime_preparation_plan(view)
         return view
 
     @staticmethod
@@ -503,6 +507,10 @@ class AgentConfigService:
             ),
         )
         self._overlay_environment_runtime(view, env)
+        if require_enabled_environment:
+            from astrabox.seams.runtime_preparation import resolve_runtime_preparation_plan
+
+            view.runtime_preparation = await resolve_runtime_preparation_plan(view)
         return view
 
     def _overlay_environment_runtime(self, view: AgentView, env: dict[str, Any]) -> None:

@@ -452,6 +452,12 @@ async def prepare_session_runtime_context(context: EngineStartupContext) -> Engi
         runtime_generation=str(config.get("runtime_generation") or ""),
         sandbox_id=context.sandbox_id, runtime_identity=identity, config=config,
         sandbox=context.sandbox,
+        engine_initialized=bool(prepared and prepared["engine_initialized"]) or context.attach_mode == "lightweight",
+        model_credential_placeholder=(
+            context.model_credential
+            if runtime_preparation_plan(config).model_credential_delivery == "provider"
+            else None
+        ),
     )
     try:
         async with asyncio.timeout(30.0):
@@ -465,6 +471,8 @@ async def prepare_session_runtime_context(context: EngineStartupContext) -> Engi
             if runtime_preparation_plan(config).session_bound and not materials.files and not environment:
                 raise ValueError("Session-bound preparation returned no materials")
             if environment:
+                if request.engine_initialized:
+                    raise ValueError("an initialized engine cannot receive new startup environment")
                 adapter = get_engine_adapter(str(config.get("engine_kind") or ""))
                 if not adapter.supports_startup_environment():
                     raise ValueError("engine cannot deliver Session startup environment")

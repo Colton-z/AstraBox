@@ -161,6 +161,7 @@ async def runtime_generations(
         "runtime_preparation": {
             "provider": integration.name if integration is not None else None,
             "session_bound": runtime_preparation_plan(template).session_bound,
+            "model_credential_delivery": runtime_preparation_plan(template).model_credential_delivery,
         },
         "agent_id": agent_id,
         "prewarm_revision": _value(template, "prewarm_revision"),

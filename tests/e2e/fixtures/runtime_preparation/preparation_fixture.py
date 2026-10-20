@@ -33,6 +33,7 @@ from astrabox.seams.runtime_preparation import (
     RuntimePreparationProvider,
     SessionUserActionCommand,
     SessionUserActionState,
+    runtime_preparation_plan,
 )
 
 STATE = Path("/data")
@@ -168,7 +169,11 @@ class PreparationFixture(RuntimePreparationProvider):
     def __init__(self):
         self.revisions = {}
 
-    def plan(self, *, config):
+    async def plan(self, *, config):
+        if config.get("sandbox_backend") == "binding_fixture":
+            from credential_binding_fixture import plan
+
+            return await plan(config)
         return RuntimePreparationPlan(session_bound=str(config.get("name", "")).startswith("Material "))
 
     async def synchronize(self, *, context):
@@ -213,6 +218,10 @@ class PreparationFixture(RuntimePreparationProvider):
         }).encode())
 
     async def prepare_session(self, *, context):
+        if context.config.get("sandbox_backend") == "binding_fixture":
+            from credential_binding_fixture import bind
+
+            return await bind(context)
         if _listed(STARTUP_USER_ACTIONS, context.subject.id):
             raise PreparationUserActionRequired(message="Authorize this Agent to continue", url=ACTION_URL)
         hold = STATE / f"runtime-preparation-ui-startup-{context.subject.id}"
@@ -221,11 +230,14 @@ class PreparationFixture(RuntimePreparationProvider):
             async with asyncio.timeout(20):
                 while hold.is_file():
                     await asyncio.sleep(0.05)
-        if not self.plan(config=context.config).session_bound:
+        if not runtime_preparation_plan(context.config).session_bound:
             return RuntimeMaterials()
         return RuntimeMaterials(
             files=(self._material(context, "startup"),),
-            environment={"ASTRABOX_CFUSE_AGENT_TOKEN_FILE": context.file_path("agent-token.json")},
+            environment=(
+                {} if context.engine_initialized
+                else {"ASTRABOX_CFUSE_AGENT_TOKEN_FILE": context.file_path("agent-token.json")}
+            ),
         )
 
     async def prepare_turn(self, *, context):
@@ -246,6 +258,11 @@ class PreparationFixture(RuntimePreparationProvider):
         return RuntimeMaterials(files=(self._material(context, "turn"),))
 
     async def read_user_actions(self, *, context):
+        from credential_binding_fixture import prerequisites
+
+        binding = await prerequisites(context)
+        if binding is not None:
+            return binding
         with USER_ACTION_READ_RECEIPTS.open("a") as receipts:
             receipts.write(json.dumps({"session_id": context.session_id, "at": time.time()}) + "\n")
         if _listed(USER_ACTION_READ_FAILURES, context.session_id):

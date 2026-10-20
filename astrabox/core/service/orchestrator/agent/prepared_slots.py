@@ -1496,7 +1496,8 @@ async def _compose_gateway_vault(
         vault_enabled=vault_enabled,
         vault_write=vault_write,
     )
-    if vault_write is None and runtime_preparation_plan(template).session_bound:
+    preparation = runtime_preparation_plan(template)
+    if vault_write is None and (preparation.session_bound or preparation.model_credential_delivery == "provider"):
         return credential, runtime_env, False, []
     if vault_write is None:
         raise APIError(
@@ -1512,7 +1513,7 @@ async def _compose_gateway_vault(
     return (
         credential,
         runtime_env,
-        credential == workload_model_placeholder(slot_id),
+        bool(vault_write.model) and credential == workload_model_placeholder(slot_id),
         environment_credential_contract(vault_write),
     )
 

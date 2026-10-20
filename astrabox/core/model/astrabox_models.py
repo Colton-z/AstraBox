@@ -1,5 +1,6 @@
 from dataclasses import asdict, dataclass, field
 from astrabox.seams.skills import SkillDescriptor
+from astrabox.seams.runtime_preparation import RuntimePreparationPlan
 from enum import Enum
 from typing import Any
 
@@ -163,6 +164,7 @@ class AgentView:
     #: prepared from; a conversation reuses that profile only while it matches.
     assistant_revision: str | None = None
     runtime_generation: str | None = None
+    runtime_preparation: RuntimePreparationPlan | None = None
     sandbox_generation: str | None = None
     #: A supplier pool lifetime is distinct from reusable box compatibility.
     client_pool_epoch: str | None = None
