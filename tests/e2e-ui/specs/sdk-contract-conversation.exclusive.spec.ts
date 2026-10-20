@@ -35,6 +35,8 @@ import { apiPath, parseTimeoutEnv } from '../fixtures/env';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
 import { sessionStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
 import { sessionInputRows, sessionOutputRows, sessionResponseRows } from '../fixtures/dbOracle';
+import { requireSandboxHandle, sandboxExec } from '../fixtures/sandboxOps';
+import { installStopFinishFault } from '../fixtures/stopFinishFault';
 
 const TOOL_START_TIMEOUT_MS = parseTimeoutEnv('ASTRABOX_E2E_TOOL_START_TIMEOUT_MS', 150_000);
 const TURN_TIMEOUT_MS = parseTimeoutEnv('ASTRABOX_E2E_TURN_TIMEOUT_MS', 180_000);
@@ -65,7 +67,7 @@ async function createConversation(api: AstraApi): Promise<SessionRecord> {
   return ready;
 }
 
-function blockingCommand(startedPath: string, releasePath: string, resultMarker: string): string {
+function blockingCommand(startedPath: string, releasePath: string, resultMarker: string, processPath?: string): string {
   return [
     "python3 - <<'PY'",
     'import time',
@@ -73,6 +75,10 @@ function blockingCommand(startedPath: string, releasePath: string, resultMarker:
     `started = Path(${JSON.stringify(startedPath)})`,
     `release = Path(${JSON.stringify(releasePath)})`,
     "started.write_text('started', encoding='utf-8')",
+    ...(processPath ? [
+      'import json, os',
+      `Path(${JSON.stringify(processPath)}).write_text(json.dumps({"pid": os.getpid(), "start_ticks": Path('/proc/self/stat').read_text().rsplit(')', 1)[1].split()[19]}))`,
+    ] : []),
     'deadline = time.monotonic() + 300',
     'while not release.is_file():',
     '    if time.monotonic() >= deadline:',
@@ -89,12 +95,13 @@ function blockingPrompt(
   releasePath: string,
   resultMarker: string,
   finalMarker: string,
+  processPath?: string,
 ): string {
   return [
     label,
     'Use the Bash tool exactly once to run this command verbatim:',
     '```bash',
-    blockingCommand(startedPath, releasePath, resultMarker),
+    blockingCommand(startedPath, releasePath, resultMarker, processPath),
     '```',
     'Do not use any other tool. Wait for Bash before replying.',
     `After it finishes, reply with exactly ${finalMarker}.`,
@@ -705,7 +712,7 @@ test('Cancel hands stopping state to an already queued next input', async ({ req
   }
 });
 
-test('Cancel remains non-fatal and the next input dequeues before model response', async ({ request, page }) => {
+test('a lost stop finish cannot block the queued response or an idle conversation', async ({ request, page }) => {
   const api = new AstraApi(request);
   const session = await createConversation(api);
   const sessionId = session.session_id;
@@ -717,10 +724,34 @@ test('Cancel remains non-fatal and the next input dequeues before model response
   const nextRelease = `/workspace/.astrabox-e2e-sdk-cancel-next-${runId}.release`;
   const nextUserMarker = `SDK_CANCEL_NEXT_USER_${runId}`;
   const nextFinalMarker = `SDK_CANCEL_NEXT_FINAL_${runId}`;
+  const firstProcess = `${firstStarted}.process`;
+  const nextProcess = `${nextStarted}.process`;
+  const box = await requireSandboxHandle(api, String(session.sandbox_id));
+  const fault = await installStopFinishFault(page, sessionId);
+  await page.addInitScript(() => localStorage.setItem('astrabox-lang', 'en'));
+  const fatal: string[] = [];
+  page.on('pageerror', (error) => fatal.push(error.message));
+  page.on('console', (message) => {
+    if (message.type() === 'error' && /session stream.*could not|TypeValidationError|JSONParseError/i.test(message.text())) {
+      fatal.push(message.text());
+    }
+  });
+  const processFact = async (path: string): Promise<{ pid: number; start_ticks: string }> =>
+    JSON.parse(await api.downloadFileText(sessionId, path));
+  const alive = (fact: { pid: number; start_ticks: string }) => {
+    const program = [
+      'from pathlib import Path',
+      `p=Path('/proc/${Number(fact.pid)}/stat')`,
+      "fields=p.read_text().rsplit(')', 1)[1].split() if p.exists() else []",
+      `print(bool(fields) and fields[19]==${JSON.stringify(fact.start_ticks)} and fields[0]!='Z')`,
+    ].join('; ');
+    const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+    return sandboxExec(box, `python3 -c ${quote(program)}`, 5_000).trim() === 'True';
+  };
 
   try {
     await openSessionView(page, sessionId);
-    const firstDidStartPrompt = blockingPrompt(`SDK_CANCEL_FIRST_${runId}`, firstStarted, firstRelease, `SDK_CANCEL_FIRST_RESULT_${runId}`, `SDK_CANCEL_FIRST_FINAL_${runId}`);
+    const firstDidStartPrompt = blockingPrompt(`SDK_CANCEL_FIRST_${runId}`, firstStarted, firstRelease, `SDK_CANCEL_FIRST_RESULT_${runId}`, `SDK_CANCEL_FIRST_FINAL_${runId}`, firstProcess);
     let firstInputId = (await receiptOf(await sendPrompt(page, sessionId, firstDidStartPrompt))).input_id;
     // Ask again rather than skip: a skip ends the round exactly as a
     // failure does, so the model's choice decided it instead of the
@@ -731,7 +762,7 @@ test('Cancel remains non-fatal and the next input dequeues before model response
         if (attempt > 1) firstInputId = (await api.postTurnInput(sessionId, firstDidStartPrompt)).input_id;
       },
       probe: async () =>
-        (await waitForToolStart(api, sessionId, [firstStarted], TOOL_START_TIMEOUT_MS, firstInputId))
+        (await waitForToolStart(api, sessionId, [firstStarted, firstProcess], TOOL_START_TIMEOUT_MS, firstInputId))
           ? true
           : null,
       what: 'the configured model did not enter the first blocking Bash tool',
@@ -745,17 +776,47 @@ test('Cancel remains non-fatal and the next input dequeues before model response
       nextRelease,
       `SDK_CANCEL_NEXT_RESULT_${runId}`,
       nextFinalMarker,
+      nextProcess,
     ));
+    const firstResponseId = (await api.getSession(sessionId)).current_responses?.[0]?.response_id;
+    expect(firstResponseId).toBeTruthy();
+    const firstNative = await processFact(firstProcess);
+    expect(firstNative.pid).toBeGreaterThan(1);
+    expect(alive(firstNative)).toBe(true);
+    expect((await api.getSession(sessionId)).held_inputs?.map((input) => input.input_id)).toContain(next.inputId);
+    await fault.arm(firstResponseId!, true);
+    const firstAck = page.waitForResponse((response) => response.request().method() === 'POST'
+      && new URL(response.url()).pathname === apiPath(`/sessions/${sessionId}/interrupt`));
     await page.getByTestId('run-composer-stop').click();
+    await expect.poll(async () => (await fault.read()).held).toBe(true);
+    await fault.replayStart();
+    await page.evaluate(() => new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    }));
+    await expect(page.getByTestId('run-composer-stop')).toHaveAccessibleName('Stopping');
+    await expect(page.getByTestId('run-composer-stop')).toBeDisabled();
+    await expect(page.getByTestId('composer-prompt')).toBeDisabled();
+    expect(alive(firstNative), 'the same response is still running before the held interrupt is sent').toBe(true);
+    await fault.release();
+    expect((await firstAck).status()).toBe(200);
 
     const nextDidStart = await waitForToolStart(
       api,
       sessionId,
-      [nextStarted],
+      [nextStarted, nextProcess],
       180_000,
       next.inputId,
     );
     expect(nextDidStart, 'the next message was answered without executing its required Bash tool').toBe(true);
+    expect((await fault.read()).dropped).toEqual([firstResponseId]);
+    expect((await fault.read()).acknowledgements).toEqual([firstResponseId]);
+    await expect.poll(() => alive(firstNative)).toBe(false);
+    const nextNative = await processFact(nextProcess);
+    expect(alive(nextNative), 'the next foreground process must really be running').toBe(true);
+    const nextResponseId = (await api.getSession(sessionId)).current_responses?.[0]?.response_id;
+    expect(nextResponseId).toBeTruthy();
+    expect(nextResponseId).not.toBe(firstResponseId);
+    expect((await fault.read()).starts).toContain(nextResponseId);
     await expect(
       queuedLabel(page, next.clientMessageId),
       'the engine took the next message, so the session does not hold it',
@@ -766,16 +827,42 @@ test('Cancel remains non-fatal and the next input dequeues before model response
       'the engine takes the next message before its response has an answer',
     ).toHaveCount(0);
     await expect(page.getByTestId('run-composer-stop')).toBeEnabled();
+    await expect(page.getByTestId('run-composer-stop')).toHaveAccessibleName('Stop generating');
+    await expect(page.getByTestId('composer-prompt')).toBeEnabled();
     await expect(page.getByText(/API Error|AGENT_RUNTIME_ERROR|Traceback/i)).toHaveCount(0);
     const stopped = await api.waitForReplyTo(sessionId, firstInputId, { timeoutMs: 30_000 });
     expect(stopped.metadata?.outcome, 'Stop must end the first response as cancelled').toBe('cancelled');
 
-    await releaseFiles(api, sessionId, [nextRelease]);
-    const answer = await waitForAssistantMarker(api, sessionId, nextFinalMarker);
-    expect(answersInput(answer, next.inputId), 'the answer is the response to the next message').toBe(true);
+    // No successor starts after this stop: detail and canonical history must
+    // settle the page even when this response's finish is also unavailable.
+    await fault.arm(nextResponseId!);
+    const nextAck = page.waitForResponse((response) => response.request().method() === 'POST'
+      && new URL(response.url()).pathname === apiPath(`/sessions/${sessionId}/interrupt`));
+    await page.getByTestId('run-composer-stop').click();
+    expect((await nextAck).status()).toBe(200);
+    await expect.poll(() => alive(nextNative)).toBe(false);
     const ready = await api.waitForSessionReady(sessionId, TURN_TIMEOUT_MS);
-    expect(ready.last_response?.response_id).toBe(answer.id);
-    expect(ready.last_response?.outcome).toBe('completed');
+    expect(ready.last_response?.response_id).toBe(nextResponseId);
+    expect(ready.last_response?.outcome).toBe('cancelled');
+    expect((await fault.read()).dropped).toEqual([firstResponseId, nextResponseId]);
+    expect((await fault.read()).sameIdReplays).toBe(1);
+    expect((await fault.read()).acknowledgements).toEqual([firstResponseId, nextResponseId]);
+    await test.info().attach('stop-finish-fault', { body: JSON.stringify(await fault.read()), contentType: 'application/json' });
+    await expect(page.getByTestId('run-composer-stop')).toHaveCount(0, { timeout: 30_000 });
+    await expect(page.getByTestId('composer-prompt')).toBeEnabled();
+    expect(await filesExist(api, sessionId, [firstRelease, nextRelease])).toEqual([false, false]);
+    const durable = (await api.getMessages(sessionId, 100)).messages;
+    expect(new Set(durable.map((message) => message.id)).size).toBe(durable.length);
+    for (const inputId of [firstInputId, next.inputId]) {
+      const replies = durable.filter((message) => answersInput(message, inputId));
+      expect(replies).toHaveLength(1);
+      expect(replies[0].metadata?.outcome).toBe('cancelled');
+      expect(messageToolCalls(replies[0]).some((call) => call.toolName === 'Bash')).toBe(true);
+    }
+    expect(fatal).toEqual([]);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await expect(page.getByTestId('composer-prompt')).toBeEnabled();
+    expect((await api.getMessages(sessionId, 100)).messages).toEqual(durable);
   } finally {
     await releaseFiles(api, sessionId, [firstRelease, nextRelease]).catch(() => {});
     // The session is not deleted here — `trackSessions()` decides in an

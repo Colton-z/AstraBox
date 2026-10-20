@@ -41,6 +41,9 @@ USER_ACTIONS = STATE / "runtime-preparation-user-actions.json"
 STARTUP_USER_ACTIONS = STATE / "runtime-preparation-startup-user-actions.json"
 TURN_DELAY = STATE / "runtime-preparation-turn-delay.json"
 TURN_RECEIPTS = STATE / "runtime-preparation-turns.jsonl"
+USER_ACTION_RECEIPTS = STATE / "runtime-preparation-user-action-calls.jsonl"
+USER_ACTION_READ_RECEIPTS = STATE / "runtime-preparation-user-action-reads.jsonl"
+USER_ACTION_READ_FAILURES = STATE / "runtime-preparation-user-action-read-failures.json"
 SYNCHRONIZED = STATE / "runtime-preparation-synchronized.jsonl"
 ACTION_URL = "https://example.com/authorize"
 
@@ -212,6 +215,12 @@ class PreparationFixture(RuntimePreparationProvider):
     async def prepare_session(self, *, context):
         if _listed(STARTUP_USER_ACTIONS, context.subject.id):
             raise PreparationUserActionRequired(message="Authorize this Agent to continue", url=ACTION_URL)
+        hold = STATE / f"runtime-preparation-ui-startup-{context.subject.id}"
+        if hold.is_file():
+            hold.write_text(context.session_id)
+            async with asyncio.timeout(20):
+                while hold.is_file():
+                    await asyncio.sleep(0.05)
         if not self.plan(config=context.config).session_bound:
             return RuntimeMaterials()
         return RuntimeMaterials(
@@ -237,7 +246,13 @@ class PreparationFixture(RuntimePreparationProvider):
         return RuntimeMaterials(files=(self._material(context, "turn"),))
 
     async def read_user_actions(self, *, context):
-        if not (_listed(USER_ACTIONS, context.session_id) or _listed(STARTUP_USER_ACTIONS, context.subject.id)):
+        with USER_ACTION_READ_RECEIPTS.open("a") as receipts:
+            receipts.write(json.dumps({"session_id": context.session_id, "at": time.time()}) + "\n")
+        if _listed(USER_ACTION_READ_FAILURES, context.session_id):
+            raise RuntimeError("SECRET_SENTINEL_MUST_NOT_APPEAR")
+        hold = STATE / f"runtime-preparation-ui-startup-{context.subject.id}"
+        startup_waiting = hold.is_file() and hold.read_text() == context.session_id
+        if not (startup_waiting or _listed(USER_ACTIONS, context.session_id) or _listed(STARTUP_USER_ACTIONS, context.subject.id)):
             return SessionUserActionState(ready=True)
         return SessionUserActionState(
             ready=False,
@@ -246,6 +261,8 @@ class PreparationFixture(RuntimePreparationProvider):
         )
 
     async def perform_user_action(self, *, context, action_id):
+        with USER_ACTION_RECEIPTS.open("a") as receipts:
+            receipts.write(json.dumps({"session_id": context.session_id, "action_id": action_id}) + "\n")
         if action_id == "authorize":
             for path, key in ((USER_ACTIONS, context.session_id), (STARTUP_USER_ACTIONS, context.subject.id)):
                 if path.is_file():

@@ -15,12 +15,13 @@ from typing import Any
 
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
-from astrabox.core.model import SessionState
+from astrabox.core.model import AgentState, SessionState
 from astrabox.core.service.orchestrator.engine.interaction_contract import (
     public_interaction_view,
     resolve_interaction_permission_mode,
     validate_interaction_response,
 )
+from astrabox.core.service.orchestrator.runtime.preparation import require_session_user_prerequisites
 from astrabox.core.service.orchestrator.session_runtime.feed import SessionFeed
 from astrabox.core.service.orchestrator.session_runtime.follow import follow_output
 from astrabox.core.service.orchestrator.session_runtime.host import ReaderHost
@@ -29,6 +30,7 @@ from astrabox.persistence.repository.session_repository import SessionRepository
 from astrabox.persistence.provider import get_persistence
 from astrabox.persistence.repository.session_runtime_repository import SessionRuntimeRepository
 from astrabox.seams.admission import ADMISSION_KIND_INPUT, AdmissionRequest, enforce_admission
+from astrabox.seams.runtime_preparation import validated_user_action
 
 _HISTORY_PAGE_LIMIT = 100
 
@@ -104,6 +106,10 @@ class SessionRuntimeService:
 
     # -- requests ----------------------------------------------------------
 
+    def notification_health(self) -> dict[str, Any]:
+        """The notification listener owned by this service, including its terminal state."""
+        return self._feed.diagnostics()
+
     async def send(
         self,
         user: UserContext,
@@ -113,7 +119,16 @@ class SessionRuntimeService:
         content_blocks: list[dict[str, Any]] | None = None,
         client_message_id: str | None = None,
     ) -> dict[str, Any]:
-        """Accept a person's message for the session they own."""
+        """Check a known startup prerequisite before accepting the owner's message."""
+        session = await self._sessions.get_owned_session(session_id, str(user.user_id))
+        if session is None:
+            raise await self._not_accepting(session_id, str(user.user_id))
+        if (
+            session.get("state") == SessionState.READY.value
+            and session.get("agent_state") not in {AgentState.DELETING.value, AgentState.DELETED.value}
+            and validated_user_action(session.get("startup_user_action")) is not None
+        ):
+            await require_session_user_prerequisites(session)
         return await self._accept(
             session_id,
             content,
@@ -262,13 +277,25 @@ class SessionRuntimeService:
         return {"session_id": session_id, "interaction_id": interaction_id, "answered": True}
 
     async def interrupt(self, user: UserContext, session_id: str) -> dict[str, Any]:
-        """Ask the running runtime to stop; ``idle`` when no response is running.
+        """Ask the runtime to stop a response, without withdrawing accepted inputs.
 
         A response that is running but whose runtime has no connected reader
-        cannot be reached, which is a conflict, not idleness.
+        cannot be reached. Held inputs without an open response also refuse
+        the operation; ``idle`` means neither was observed.
         """
         await self._require_owner(user, session_id)
         if not await self._repo.open_response_ids(session_id):
+            held = await self._repo.open_input_ids(session_id)
+            if held:
+                raise APIError(
+                    code="PENDING_INPUTS_NOT_CANCELLED",
+                    message=(
+                        "No response is running to interrupt. Accepted messages were not withdrawn "
+                        "and may still run; archive the conversation to take it offline."
+                    ),
+                    status_code=409,
+                    data={"input_ids": held},
+                )
             return {"session_id": session_id, "status": "idle"}
         control = await self._repo.request_control(
             session_id, kind="interrupt", target=None, requested_by=str(user.user_id)
@@ -321,9 +348,9 @@ class SessionRuntimeService:
         )
         response_ids = [str(r["response_id"]) for r in page["responses"]]
         outputs = await self._repo.output_for_responses(session_id, response_ids, through_seq=output_seq)
-        answers = await self._repo.approval_answers(session_id, response_ids)
+        interactions = await self._repo.response_interactions(session_id, response_ids)
         return {
-            "messages": history_messages(page, outputs, answers),
+            "messages": history_messages(page, outputs, interactions),
             "has_more": page["has_more"],
             "before": _encode_before(page["before"]),
             "output_seq": output_seq,

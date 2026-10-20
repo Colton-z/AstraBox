@@ -28,6 +28,8 @@ export interface ResponseMetadata {
   response_id?: string;
   /** Open text/reasoning prefixes in a history snapshot, addressed by their output chunk ids. */
   continuation_parts?: Array<{ index: number; id: string }>;
+  /** Preview chunks the adapter withdrew, addressed by providerMetadata.astrabox.part_id. */
+  retracted_part_ids?: string[];
   /** The inputs this response answers; empty for one the runtime started itself. */
   input_ids?: string[];
   /** `input`, or `engine` for a response nobody's message asked for. */
@@ -73,6 +75,17 @@ function record(value: unknown): Record<string, unknown> {
 
 export function responseMetadata(message: UIMessage): ResponseMetadata {
   return record(message.metadata) as ResponseMetadata;
+}
+
+/** Apply the adapter's withdrawals before a live message reaches any display. */
+export function retractMessageParts(message: UIMessage): UIMessage {
+  const retracted = new Set(responseMetadata(message).retracted_part_ids ?? []);
+  if (retracted.size === 0) return message;
+  return { ...message, parts: message.parts.filter((part) => {
+    if (part.type !== 'text' && part.type !== 'reasoning') return true;
+    const identity = record(part.providerMetadata?.astrabox).part_id;
+    return typeof identity !== 'string' || !retracted.has(identity);
+  }) };
 }
 
 export function inputMetadata(message: UIMessage): InputMetadata {

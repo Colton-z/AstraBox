@@ -35,8 +35,9 @@ export function useSessionBanners({
 }) {
   const showRuntimeUnavailableBanner = shouldShowRuntimeUnavailableBanner(session, hasPendingInteraction, lifecycleDetailStale, isTerminated, transparentlyRecoverable);
   const showSessionLastError = shouldShowSessionLastError(session, isTerminated, lifecycleDetailStale, transparentlyRecoverable);
-  // A terminated Agent conversation can be brought back; an Assistant's is ended for good.
-  const showRecoverButton = isTerminated && !isAssistantConversation;
+  // Recovery requires a surviving Agent; deleted histories remain read-only.
+  const showRecoverButton = isTerminated && !isAssistantConversation && session.state !== 'DELETED'
+    && session.agent_state !== 'DELETING' && session.agent_state !== 'DELETED';
   // An idle subscription follows future activity; losing it did not fail a user operation.
   const showTransientBackendMessage = streamTrouble && (isWorking || isSending) && !isTerminated && !lifecycleError;
   const showBanner = shouldShowSessionErrorBanner({

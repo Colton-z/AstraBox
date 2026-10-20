@@ -49,7 +49,8 @@ class AgentRecord(BaseModel):
 
     ``can_manage`` is computed per viewer and therefore present only on the
     reads that compute it (list and get), not on a write's echo of the record;
-    ``favorited`` likewise, on the full list.
+    ``favorited`` and ``can_start_conversation`` are present on the full list.
+    The latter reports configured admission eligibility, not runtime health.
     """
 
     # `model` is an Agent field; pydantic's default
@@ -94,6 +95,8 @@ class AgentRecord(BaseModel):
     can_manage: bool | None = None
     #: Whether the caller has favorited it; on the full list only.
     favorited: bool | None = None
+    #: Configured eligibility for a new conversation; on the full list only.
+    can_start_conversation: bool | None = None
 
 
 class AgentListPage(BaseModel):
@@ -262,8 +265,8 @@ def register_agent_routes(app: Any) -> None:
         "/api/v1/agents",
         # Two shapes, like GET /api/v1/sessions: `page=1` answers one page
         # (limit, cursor, q, status) for the console's Agent list; without it
-        # the answer is every Agent the caller may see, for pickers and
-        # scripts that want the whole list.
+        # the answer is every visible Agent with can_start_conversation,
+        # for pickers and scripts that want the whole list.
         response_model=ApiEnvelope[AgentListPage] | ApiEnvelope[list[AgentRecord]],
         response_model_exclude_unset=True,
     )

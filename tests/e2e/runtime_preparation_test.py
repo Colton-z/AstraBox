@@ -32,6 +32,7 @@ from tests.e2e._sandbox_helpers import (
     get_admin_session_detail,
     get_session,
     history,
+    message_text,
     output_position,
     poll_until_ready,
     psql,
@@ -511,7 +512,7 @@ def test_session_materials_gate_native_startup_and_preserve_resume(
         assert (failure.get("user_action") or {}).get("url") == "https://example.com/authorize", failure
         wait_until_settled(e2e_client, sid)
         cleared = data(e2e_client.post(f"/api/v1/sessions/{sid}/user-action", json={"action_id": "authorize"}))
-        assert cleared == {"ready": True, "user_action": None, "actions": []}, cleared
+        assert cleared == {"applicable": True, "ready": True, "user_action": None, "actions": []}, cleared
     finally:
         _hold(server, "user-actions", sid, False)
     transcripts = json.dumps(_native(execute, original["runtime_identity"])["transcripts"])
@@ -653,12 +654,11 @@ def test_a_shared_box_burst_starts_each_conversation_on_its_own_material(
 def test_a_startup_user_action_keeps_the_conversation_until_the_user_acts(
     e2e_client: httpx.Client, live_test_deadline: float,
 ) -> None:
-    """A prerequisite met only by the user leaves the conversation open, not ended.
+    """A user prerequisite blocks allocation while history stays readable.
 
-    Its first message is refused with the action at once, without waiting for
-    a runtime: the console receives ``data-input-failed`` carrying the action,
-    and the conversation stays READY. The message sent after the user acts
-    starts the runtime with its material and is answered.
+    Known blocked console inputs are refused before history changes. Explicit
+    authorization then starts the native runtime, and ordinary later input
+    does not query the prerequisite provider again.
     """
     profile = current_profile()
     assert profile["engine_kind"] == "claude_code", "The gate wraps the Claude CLI"
@@ -676,6 +676,26 @@ def test_a_startup_user_action_keeps_the_conversation_until_the_user_acts(
     release_agent(aid)
     _hold(server, "startup-user-actions", aid, True)
     try:
+        namespace = os.environ["ASTRABOX_E2E_KUBE_NAMESPACE"]
+        kubectl = ["kubectl", "--kubeconfig", os.environ["ASTRABOX_E2E_KUBECONFIG"]]
+        resource = f"/apis/sandbox.opensandbox.io/v1alpha1/namespaces/{namespace}/batchsandboxes"
+        inventory = _run_json([*kubectl, "get", "--raw", resource])
+        assert isinstance(inventory, dict), "Native sandbox list unavailable"
+        version = inventory["metadata"]["resourceVersion"]
+        assert version, "Native collection version unavailable"
+
+        def native_events() -> list[str]:
+            # Replay from before startup, including boxes already deleted.
+            # A failed/expired watch is an observation failure, never a pass.
+            observed = subprocess.run([
+                *kubectl, "get", "--raw",
+                f"{resource}?watch=1&resourceVersion={version}&timeoutSeconds=1",
+            ], check=True, capture_output=True, text=True, timeout=30)
+            events = [json.loads(line) for line in observed.stdout.splitlines() if line.strip()]
+            assert all(event["type"] != "ERROR" for event in events), "Native sandbox watch failed"
+            return [event["type"] for event in events
+                    if event["object"].get("metadata", {}).get("labels", {}).get("astrabox.session-id") == sid]
+
         sid = data(e2e_client.post(f"/api/v1/agents/{aid}/conversations", json={}))["session_id"]
         release_session(sid)
         session = get_session(e2e_client, sid)
@@ -684,20 +704,72 @@ def test_a_startup_user_action_keeps_the_conversation_until_the_user_acts(
             time.sleep(0.5)
             session = get_session(e2e_client, sid)
         assert session.get("state") == "READY", f"a startup prerequisite ended the conversation: {session}"
+        assert not session.get("sandbox_id") and session.get("runtime_unavailable"), session
+        stored = psql_rows(f"SELECT startup_user_action FROM sessions WHERE session_id={sql_literal(sid)}")[0]
+        assert stored["startup_user_action"]["url"] == "https://example.com/authorize", stored
         state = data(e2e_client.get(f"/api/v1/sessions/{sid}/user-action"))
         assert state["ready"] is False and state["user_action"]["url"] == "https://example.com/authorize", state
 
-        started = time.monotonic()
-        failure = _refused(
-            e2e_client, sid, "BLOCKED_" + uuid.uuid4().hex,
-            "TURN_PREPARATION_USER_ACTION_REQUIRED", timeout=45,
-        )
-        assert (failure.get("user_action") or {}).get("url") == "https://example.com/authorize", failure
-        assert time.monotonic() - started < 45, "the refused message waited for a runtime"
+        imported_text = "IMPORTED_WHILE_BLOCKED_" + uuid.uuid4().hex
+        imported = data(e2e_client.post(f"/api/v1/admin/sessions/{sid}/history-import", json={"messages": [{
+            "source_id": "blocked-history", "role": "user", "created_at": "2026-01-05T09:00:00Z",
+            "blocks": [{"type": "text", "text": imported_text}],
+        }]}))
+        assert imported["imported"] == 1, imported
+        assert imported_text in [message_text(message) for message in history(e2e_client, sid)]
+        refused_recovery = e2e_client.post(f"/api/v1/sessions/{sid}/recover", json={})
+        assert refused_recovery.status_code == 409, refused_recovery.text
+        assert refused_recovery.json()["error"]["code"] == "TURN_PREPARATION_USER_ACTION_REQUIRED"
+
+        def counts() -> dict:
+            return psql_rows("SELECT " + ", ".join(
+                f"(SELECT count(*) FROM {table} WHERE session_id={sql_literal(sid)}) AS {name}"
+                for table, name in (("session_inputs", "inputs"), ("session_responses", "responses"),
+                                    ("session_output", "output"))
+            ))[0]
+
+        def provider_calls(name: str) -> int:
+            result = _run_json(["docker", "exec", server, "python", "-c",
+                "import json,sys; from pathlib import Path; "
+                "p=Path('/data/runtime-preparation-'+sys.argv[1]+'.jsonl'); "
+                "print(json.dumps(sum(json.loads(line)['session_id']==sys.argv[2] "
+                "for line in (p.read_text().splitlines() if p.exists() else []))))", name, sid])
+            assert isinstance(result, int), result
+            return result
+
+        before_history, before_counts = history(e2e_client, sid), counts()
+        assert before_counts == {"inputs": 1, "responses": 0, "output": 0}, before_counts
+        before_operations = provider_calls("user-action-calls")
+        payload = {"content": "BLOCKED_" + uuid.uuid4().hex, "client_message_id": str(uuid.uuid4())}
+        attachment = {"content": [{"type": "image", "source": {
+            "type": "base64", "media_type": "image/png",
+            "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg==",
+        }}], "client_message_id": str(uuid.uuid4())}
+        for body in (payload, payload, attachment):
+            refused = e2e_client.post(f"/api/v1/sessions/{sid}/inputs", json=body)
+            assert refused.status_code == 409, refused.text
+            error = refused.json()["error"]
+            assert error["code"] == "TURN_PREPARATION_USER_ACTION_REQUIRED", error
+            assert error["evidence"]["user_action"]["url"] == "https://example.com/authorize", error
+            assert history(e2e_client, sid) == before_history and counts() == before_counts
+        _hold(server, "user-action-read-failures", sid, True)
+        try:
+            failed_read = e2e_client.post(f"/api/v1/sessions/{sid}/inputs", json=payload)
+            assert failed_read.status_code == 502, failed_read.text
+            assert failed_read.json()["error"]["code"] == "SESSION_USER_ACTION_FAILED"
+            assert "SECRET_SENTINEL" not in failed_read.text
+            assert history(e2e_client, sid) == before_history and counts() == before_counts
+        finally:
+            _hold(server, "user-action-read-failures", sid, False)
+        assert provider_calls("user-action-calls") == before_operations
         assert get_session(e2e_client, sid)["state"] == "READY"
+        assert native_events() == [], "A blocked startup created, changed or deleted a native sandbox"
+        print(json.dumps({"phase": "blocked-console-refused", "counts_before": before_counts,
+                          "counts_after": counts(), "implicit_authorization_operations": 0}))
 
         cleared = data(e2e_client.post(f"/api/v1/sessions/{sid}/user-action", json={"action_id": "authorize"}))
-        assert cleared == {"ready": True, "user_action": None, "actions": []}, cleared
+        assert cleared == {"applicable": True, "ready": True, "user_action": None, "actions": []}, cleared
+        assert provider_calls("user-action-calls") == before_operations + 1
     finally:
         _hold(server, "startup-user-actions", aid, False)
 
@@ -709,6 +781,15 @@ def test_a_startup_user_action_keeps_the_conversation_until_the_user_acts(
     native = _native(_sandbox_exec(detail["sandbox_id"]), detail["runtime_identity"])
     assert native["receipts"] and not any(item.get("denied") for item in native["receipts"]), native
     assert native["receipts"][-1]["session_id"] == sid and native["receipts"][-1]["phase"] == "startup"
+    assert native_events(), "Native watch did not observe the authorized allocation"
+    steady_reads = provider_calls("user-action-reads")
+    marker = "ORDINARY_" + uuid.uuid4().hex
+    reply = send_and_follow(e2e_client, sid, f"Reply with exactly {marker}, without tools.", until="end")
+    assert reply.error is None and marker in reply.text, reply.error or reply.text
+    wait_until_settled(e2e_client, sid)
+    assert provider_calls("user-action-reads") == steady_reads
+    print(json.dumps({"phase": "authorized-native-replies", "prerequisite_reads_before_ordinary": steady_reads,
+                      "prerequisite_reads_after_ordinary": provider_calls("user-action-reads")}))
 
 
 def _assistant_workspace(client: httpx.Client, assistant_id: str, deadline: float) -> dict:

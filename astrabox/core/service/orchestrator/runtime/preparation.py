@@ -35,6 +35,9 @@ from astrabox.seams.runtime_preparation import (
     RuntimeMaterials,
     PreparationUserActionRequired,
     SessionPreparationContext,
+    SessionUserActionContext,
+    SessionUserActionState,
+    TURN_PREPARATION_USER_ACTION_REQUIRED,
     runtime_material_path,
     runtime_preparation_plan,
     runtime_preparation_provider,
@@ -69,6 +72,42 @@ def preparation_subject(session: Mapping[str, Any] | None) -> PreparationSubject
             return PreparationSubject(kind="agent", id=agent_id)
     raise APIError(code="RUNTIME_PREPARATION_FAILED", status_code=409,
                    message="Runtime preparation requires the Session's Agent or Assistant binding")
+
+
+async def require_session_user_prerequisites(session: dict[str, Any]) -> None:
+    """Read a conversation's prerequisites before startup or input acceptance.
+
+    Resource preparation, including an Assistant workspace's internal
+    materializer, is not a user conversation and may prepare its own box.
+    """
+    provider = runtime_preparation_provider()
+    if provider is None or is_assistant_workspace_bootstrap(session):
+        return
+    session_id = str(session.get("session_id") or "").strip()
+    principal = str(session.get("user_id") or "").strip()
+    if not session_id or not principal:
+        raise APIError(code="RUNTIME_PREPARATION_FAILED", status_code=409,
+                       message="Runtime preparation requires the persisted Session owner")
+    context = SessionUserActionContext(
+        session_id=session_id, principal_id=principal, subject=preparation_subject(session),
+    )
+    try:
+        async with asyncio.timeout(30.0):
+            state = await provider.read_user_actions(context=context)
+            if not isinstance(state, SessionUserActionState):
+                raise TypeError("runtime preparation requires SessionUserActionState")
+            action = state.public()["user_action"]
+    except Exception as exc:
+        logger.warning("Session prerequisite read failed: session=%s error_type=%s",
+                       session_id, type(exc).__name__)
+        raise APIError(code="SESSION_USER_ACTION_FAILED", status_code=502,
+                       message="Unable to determine the session requirements; refresh to try again") from None
+    if not state.ready:
+        raise APIError(
+            code=TURN_PREPARATION_USER_ACTION_REQUIRED, status_code=409,
+            message=action["message"],
+            evidence={"reason": "user_action_required", "user_action": action, "session_id": session_id},
+        )
 
 
 def subject_revision(subject: PreparationSubject, config: Mapping[str, Any]) -> str:
@@ -296,6 +335,15 @@ async def _synchronize_assistant_resources(
 
     def build(_row: dict[str, Any], operation: ResourcePreparationOperation) -> ResourcePreparationContext:
         from astrabox.core.service.orchestrator.runtime.preparation_commit import callback_commit_guard
+        from astrabox.core.service.orchestrator.session_lifecycle.ownership import current_recovery
+        from astrabox.persistence.repository.preparation_subject_repository import subject_conflict
+
+        materializer = None
+        if _row.get("state") == "MATERIALIZING":
+            ownership = current_recovery(context.session_id)
+            if ownership is None or not ownership.sandbox_generation:
+                raise subject_conflict()
+            materializer = (context.session_id, tuple(ownership.expected.items()))
 
         return ResourcePreparationContext(
             operation=operation, owner_user_id=owner_user_id, revision=revision,
@@ -306,6 +354,7 @@ async def _synchronize_assistant_resources(
             commit_guard=callback_commit_guard(
                 operation=operation, owner_user_id=owner_user_id, revision=revision,
                 provider=provider.name, config=config, preparation_id=context.sandbox_id,
+                materializer=materializer,
             ),
         )
 

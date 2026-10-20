@@ -3678,9 +3678,9 @@ export interface paths {
          * Readiness probe
          * @description Readiness endpoint for rolling deploys.
          *
-         *     200 when this replica should receive new traffic; 503 once shutdown
-         *     begins (drain / quiesce), so the load balancer stops routing here while
-         *     in-flight turns finish. See ``astrabox/api/readiness.py``.
+         *     200 when this replica should receive new traffic; 503 during shutdown
+         *     or after its core notification listener ends unexpectedly. In-flight
+         *     turns are not killed by this probe. See ``astrabox/api/readiness.py``.
          */
         get: operations["readyz_readyz_get"];
         put?: never;
@@ -4007,6 +4007,7 @@ export interface components {
             /** Pid */
             pid: number;
             runtimes: components["schemas"]["AdminRuntimes"];
+            session_feed: components["schemas"]["AdminSessionFeedHealth"];
             /** Severity */
             severity: string;
             threads: components["schemas"]["AdminThreads"];
@@ -4301,6 +4302,26 @@ export interface components {
             state: string;
         } & {
             [key: string]: unknown;
+        };
+        /**
+         * AdminSessionFeedHealth
+         * @description The core notification task's lifecycle, with exception values excluded.
+         */
+        AdminSessionFeedHealth: {
+            /** Last Error */
+            last_error: {
+                [key: string]: unknown;
+            } | null;
+            /** Last Notice At */
+            last_notice_at: string | null;
+            /** Last Notice Seq */
+            last_notice_seq: number | null;
+            /** Ready */
+            ready: boolean;
+            /** Started */
+            started: boolean;
+            /** Task State */
+            task_state: string;
         };
         /**
          * AdminSessionPage
@@ -4720,7 +4741,8 @@ export interface components {
          *
          *     ``can_manage`` is computed per viewer and therefore present only on the
          *     reads that compute it (list and get), not on a write's echo of the record;
-         *     ``favorited`` likewise, on the full list.
+         *     ``favorited`` and ``can_start_conversation`` are present on the full list.
+         *     The latter reports configured admission eligibility, not runtime health.
          */
         AgentRecord: {
             /** Admins */
@@ -4733,6 +4755,8 @@ export interface components {
             artifacts_enabled?: boolean | null;
             /** Can Manage */
             can_manage?: boolean | null;
+            /** Can Start Conversation */
+            can_start_conversation?: boolean | null;
             /** Categories */
             categories?: string[] | null;
             /** Claude Options */
@@ -7251,6 +7275,20 @@ export interface components {
             /** Src Path */
             src_path: string;
         };
+        /**
+         * NativeStateInitialization
+         * @description The allocation whose unpublished profile is being recovered.
+         */
+        NativeStateInitialization: {
+            /** Recovery Owner */
+            recovery_owner: string;
+            /** Sandbox Generation */
+            sandbox_generation: string;
+            /** Sandbox Id */
+            sandbox_id: string;
+            /** Session Id */
+            session_id: string;
+        };
         /** PerformUserAction */
         PerformUserAction: {
             /** Action Id */
@@ -7393,6 +7431,7 @@ export interface components {
         RuntimeStateSaveRequest: {
             /** Expected Snapshot Id */
             expected_snapshot_id: string | null;
+            initialization?: components["schemas"]["NativeStateInitialization"] | null;
             owner: components["schemas"]["RuntimeStateOwnerPayload"];
             /** Payload B64 */
             payload_b64: string;
@@ -7875,6 +7914,11 @@ export interface components {
         SessionUserActionView: {
             /** Actions */
             actions?: components["schemas"]["UserActionCommandView"][];
+            /**
+             * Applicable
+             * @description Whether execution prerequisites apply; false for read-only history
+             */
+            applicable: boolean;
             /** Ready */
             ready: boolean;
             user_action?: components["schemas"]["UserActionView"] | null;

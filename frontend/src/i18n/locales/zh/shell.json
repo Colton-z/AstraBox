@@ -14,6 +14,7 @@
   "sessions_group": "会话",
   "settings": "设置",
   "sign_out": "退出登录",
+  "sign_out_failed": "退出登录失败：{{error}}",
   "signin": {
     "probe_failed": "无法确认登录状态",
     "probe_failed_note": "服务器未能确认你的登录状态。连接恢复后请重试。",

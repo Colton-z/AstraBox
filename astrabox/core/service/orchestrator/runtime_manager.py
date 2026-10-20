@@ -2169,6 +2169,19 @@ class RemoteAgentRuntimeManager:
         """Release exactly the resource scope named by one allocation."""
 
         ownership = current_recovery(session_id)
+        source = await self._sessions_repo.get_session_including_deleted(session_id)
+        if any(
+            retained.get("native_state_save_required")
+            and retained.get("allocation") == allocation.as_record()
+            for retained in (source or {}).get("retained_startup_allocations") or ()
+        ):
+            destruction = SandboxDestruction.refused(
+                allocation.sandbox_id, detail="native state must be saved before this allocation can be released",
+            )
+            return StartupAllocationCleanup(
+                allocation=allocation, released=False, record_cleared=False,
+                destruction=destruction, detail=destruction.detail,
+            )
         if allocation.scope == "sandbox":
             sessions, workspaces, agent = await asyncio.gather(
                 self._sessions_repo.list_sessions_by_sandbox_id(allocation.sandbox_id),

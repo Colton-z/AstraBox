@@ -44,6 +44,7 @@ from astrabox.core.service.orchestrator.engine.runtime import (
     ResponseOutput,
     ResponseStarted,
     RuntimeClient,
+    RuntimeControlRefused,
     RuntimeCursor,
     RuntimeCursorExpired,
     RuntimeDiagnostic,
@@ -138,10 +139,11 @@ def lost_response_parts(response_id: str, reason: str) -> list[dict[str, Any]]:
 
     They open with the response's ``start``: a response paused on an
     interaction has already finished its browser message, and in a message
-    still open a repeated ``start`` only names it again.
+    still open a repeated ``start`` only names it again. This informational
+    start does not create a channel reply; an already-open reply still fails.
     """
     return [
-        {"type": "start", "messageId": response_id},
+        {"type": "start", "messageId": response_id, "messageMetadata": {"channel_delivery": False}},
         {"type": "error", "errorText": lost_response_error(reason)["message"]},
         {"type": "finish", "messageMetadata": {"response_id": response_id, "outcome": "failed"}},
     ]
@@ -166,6 +168,7 @@ class SessionReader:
         self._repo = repo
         self._feed = feed
         self._hooks = hooks
+        self._permission_failure: dict[str, Any] | None = None
         self._sid = lease.session_id
         self._seq = 0
         self._batch = FactBatch()
@@ -185,8 +188,11 @@ class SessionReader:
         subscription = self._feed.subscribe(self._sid)
         lost = False
         try:
+            self._seq, cursor_json = await self._repo.resume_point(self._sid)
             async with asyncio.TaskGroup() as group:
-                reading = group.create_task(self._read(), name=f"reader-read-{self._sid}")
+                reading = group.create_task(
+                    self._read(RuntimeCursor.from_json(cursor_json)), name=f"reader-read-{self._sid}"
+                )
                 committing = group.create_task(self._commit_loop(), name=f"reader-commit-{self._sid}")
                 delivering = group.create_task(
                     self._deliver_loop(subscription), name=f"reader-deliver-{self._sid}"
@@ -206,10 +212,8 @@ class SessionReader:
 
     # -- reading -----------------------------------------------------------
 
-    async def _read(self) -> None:
-        last_seq, cursor_json = await self._repo.resume_point(self._sid)
-        self._seq = last_seq
-        events = await self._open_events(RuntimeCursor.from_json(cursor_json))
+    async def _read(self, cursor: RuntimeCursor | None) -> None:
+        events = await self._open_events(cursor)
         async for event in events:
             if isinstance(event, InputAdmitted):
                 await pass_fault_barrier(
@@ -285,7 +289,7 @@ class SessionReader:
         elif isinstance(event, InteractionOpened):
             batch.facts.append(InteractionOpen(event.response_id, event.interaction_id, event.contract))
         elif isinstance(event, InteractionClosed):
-            batch.facts.append(InteractionClose(event.interaction_id, event.reason))
+            self._close_interaction(event.interaction_id, event.reason)
         elif isinstance(event, InputAdmitted):
             batch.facts.append(InputsAdmitted((event.input_id,)))
             urgent = False
@@ -308,14 +312,23 @@ class SessionReader:
         if urgent:
             self._urgent.set()
 
+    def _close_interaction(self, interaction_id: str, status: Literal["answered", "withdrawn", "expired"]) -> None:
+        # Reserve its position before later live parts. The commit renders the
+        # durable answer and publishes it through the existing output notice.
+        self._seq += 1
+        self._batch.facts.append(InteractionClose(interaction_id, status, self._seq))
+
     async def _reconcile(self, state: RuntimeState) -> None:
         """Align the recorded facts with the runtime's own account of itself."""
         recorded_open = set(await self._repo.open_response_ids(self._sid))
         runtime_open = {response.response_id: response for response in state.open_responses}
         recorded_interactions = set(await self._repo.open_interaction_ids(self._sid))
         pending = {item.interaction_id: item for item in state.pending_interactions}
+        closed = {item.interaction_id: item for item in state.closed_interactions}
         batch = self._batch
         lost_parts: list[OutputPart] = []
+        for interaction_id in sorted(recorded_interactions & closed.keys()):
+            self._close_interaction(interaction_id, closed[interaction_id].reason)
         for response_id in sorted(recorded_open - runtime_open.keys()):
             batch.facts.append(
                 ResponseEnd(response_id, "failed", "runtime_lost", error=lost_response_error("runtime_lost"))
@@ -326,8 +339,8 @@ class SessionReader:
         for response_id, response in runtime_open.items():
             if response_id not in recorded_open:
                 batch.facts.append(ResponseStart(response_id, response.origin, tuple(response.input_ids)))
-        for interaction_id in sorted(recorded_interactions - pending.keys()):
-            batch.facts.append(InteractionClose(interaction_id, "expired"))
+        for interaction_id in sorted(recorded_interactions - pending.keys() - closed.keys()):
+            self._close_interaction(interaction_id, "expired")
         for interaction_id, item in pending.items():
             if interaction_id not in recorded_interactions:
                 batch.facts.append(InteractionOpen(item.response_id, interaction_id, item.contract))
@@ -399,7 +412,7 @@ class SessionReader:
         # Requests for an earlier reader were about what ran then.
         await self._repo.expire_controls(self._sid, before_generation=self._lease.generation)
         # The mode may have changed while no reader was connected.
-        await self._hooks.permission_mode()
+        await self._sync_permission_mode()
         # Controls accepted between connections may have no notice left to read.
         await self._apply_controls()
         await self._deliver_pending()
@@ -417,7 +430,17 @@ class SessionReader:
             elif isinstance(item, Notice) and item.kind == "control":
                 await self._apply_controls()
             elif isinstance(item, Notice) and item.kind == "permission":
-                await self._hooks.permission_mode()
+                await self._sync_permission_mode()
+
+    async def _sync_permission_mode(self) -> None:
+        try:
+            await self._hooks.permission_mode()
+        except RuntimeControlRefused as exc:
+            # The native failure still arrives through the independent event stream.
+            self._permission_failure = {"code": exc.code, "message": str(exc), "status_code": 409}
+            logger.warning("session %s permission mode refused: %s", self._sid, exc.code)
+        else:
+            self._permission_failure = None
 
     async def _apply_controls(self) -> None:
         for row in await self._repo.pending_controls(self._lease):
@@ -440,6 +463,9 @@ class SessionReader:
 
     async def _deliver_pending(self) -> None:
         for row in await self._repo.undelivered_inputs(self._sid):
+            if self._permission_failure is not None:
+                await self._refuse(str(row["input_id"]), self._permission_failure)
+                continue
             item = RuntimeInput(
                 input_id=str(row["input_id"]),
                 content=str(row["content"] or ""),
@@ -468,10 +494,10 @@ class SessionReader:
             try:
                 await self._client.answer(interaction_id, dict(row["answer"]))
             except InteractionNotOpen:
-                self._batch.facts.append(InteractionClose(interaction_id, "expired"))
+                self._close_interaction(interaction_id, "expired")
             else:
-                self._batch.facts.append(InteractionClose(interaction_id, "answered"))
-            # Committed before the next notice is read, so an answer is never handed over twice.
+                self._close_interaction(interaction_id, "answered")
+            # Runtime acceptance receipts distinguish redelivery after a lost commit.
             await self._commit()
 
     async def _refuse(self, input_id: str, failure: dict[str, Any]) -> None:

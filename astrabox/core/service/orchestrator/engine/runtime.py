@@ -102,6 +102,14 @@ class RuntimeInputRefused(RuntimeError):
         self.status_code = status_code
 
 
+class RuntimeControlRefused(RuntimeError):
+    """A native control failed without ending the runtime's event transport."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 class InteractionNotOpen(RuntimeError):
     """The runtime holds no open interaction with this id (answered, withdrawn
     or lost with a restarted runtime process)."""
@@ -173,14 +181,21 @@ class ResponseOutput(RuntimeEvent):
 
     ``frame`` is the adapter's translation and passes to the browser as is.
     ``response_id`` is ``None`` only for session-level output that belongs to
-    no response.
+    no response. On a message's ``start``, ``channel_delivery=False`` keeps
+    informational output in the Session without broadcasting it to channels.
     """
 
     response_id: str | None
     frame: dict[str, Any]
+    channel_delivery: bool = True
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "frame", public_ui_frame(self.frame))
+        frame = public_ui_frame(self.frame)
+        if not self.channel_delivery:
+            if frame["type"] != "start":
+                raise ValueError("channel delivery is declared on a message start")
+            frame["messageMetadata"] = {**frame.get("messageMetadata", {}), "channel_delivery": False}
+        object.__setattr__(self, "frame", frame)
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,7 +283,9 @@ class RuntimeState:
     ``admitted_input_ids`` are the inputs the runtime durably holds, so a reader
     that missed :class:`InputAdmitted` events can still close the platform's
     custody of them. ``cursor`` is where :meth:`RuntimeClient.events` continues
-    so that nothing after this snapshot is missed.
+    so that nothing after this snapshot is missed. ``closed_interactions``
+    carries closure receipts the runtime retains; a saved platform answer is
+    not evidence that the runtime accepted it.
     """
 
     status: RuntimeStatus
@@ -277,6 +294,8 @@ class RuntimeState:
     queued_input_ids: tuple[str, ...] = ()
     admitted_input_ids: tuple[str, ...] = ()
     cursor: RuntimeCursor | None = None
+    #: Native closure receipts retained by the runtime for reader recovery.
+    closed_interactions: tuple[InteractionClosed, ...] = ()
 
 
 # --------------------------------------------------------------------------
@@ -328,7 +347,7 @@ class RuntimeClient(Protocol):
         """Pass a person's answer to an open interaction.
 
         Raises :class:`InteractionNotOpen` when the runtime holds no such open
-        interaction.
+        interaction and no receipt that it already accepted this answer.
         """
         ...
 

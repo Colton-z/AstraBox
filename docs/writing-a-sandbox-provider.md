@@ -67,6 +67,24 @@ These implementations carry execd's wire rules: its mode format, its exit
 status reporting, its replay frames, and its connection closing. With them,
 the provider declares `supports_process_sessions = True`.
 
+For expiring process endpoints, construct `ExecdProcesses` with an async
+resolver that returns the complete `SandboxEndpoint`, including `expires_at`.
+It resolves again before a new HTTP request or WebSocket attachment when the
+cached endpoint expires; a naive expiry is interpreted as UTC. The resolver
+must return a usable endpoint. `at_endpoint` is for fixed addresses. Resolving
+another address preserves the process ID and replay cursor; it does not replace
+an open attachment. The provider owns an existing connection's expiry policy.
+HTTP permission errors do not trigger endpoint renewal or retries.
+
+For process attachments through a WebSocket proxy, use the bundled execd image
+and `ExecdProcesses` together. The client requests `errors=frame`, so an occupied
+holder or missing process is rejected with the daemon's existing machine code
+after WebSocket upgrade. The proxy must forward text and binary frames without
+rewriting them. Unclassified proxy failures are errors, not evidence of an
+occupied process; no status query or automatic takeover replaces the atomic
+attachment decision. Existing boxes need the matching execd binary as well as
+the updated client.
+
 execd runs as root and executes whatever a request that reaches it asks for.
 Put a per-sandbox credential in the headers `get_endpoint` returns, where the
 sandbox's own workload cannot read it, or let only AstraBox reach the port.

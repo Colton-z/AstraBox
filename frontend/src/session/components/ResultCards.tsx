@@ -92,6 +92,7 @@ export function ResponseFailureCard({ error }: { error?: string }) {
  * engine's verdict.
  */
 export interface ApiRetryData {
+  active?: boolean;
   attempt?: number;
   max_retries?: number;
   error_status?: number;
@@ -110,7 +111,9 @@ export function ApiRetryNote({ payload }: { payload: ApiRetryData }) {
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-citrine/50 px-3 py-2 text-xs text-muted-foreground">
       <span className="font-medium text-citrine-fg">
-        {attempt !== null && max !== null
+        {payload.active === false
+          ? t('chat:result.api_retry_finished')
+          : attempt !== null && max !== null
           ? t('chat:result.api_retry_attempt', { attempt, max })
           : t('chat:result.api_retry')}
       </span>

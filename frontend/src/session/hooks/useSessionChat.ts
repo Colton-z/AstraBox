@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Chat, useChat } from '@ai-sdk/react';
 import { isToolUIPart, type UIMessage } from 'ai';
 import { toast } from 'sonner';
+import i18n from '@/i18n';
 import { ApiError, answerInteraction, interruptSession, sendInput } from '../../api';
 import type {
   InteractionResponse,
@@ -64,6 +65,11 @@ export interface UseSessionChatProps {
   onArtifactAppeared: (marker: ArtifactMarker, toolCallId: string) => void;
 }
 
+interface PendingStop {
+  requestId: number;
+  responseIds: readonly string[];
+}
+
 /**
  * The conversation as its owner sees it: history, the session's stream, and
  * what the owner does to it.
@@ -100,7 +106,8 @@ export function useSessionChat({
   const [liveInteraction, setLiveInteraction] = useState<PendingInteraction | null>(history.pendingInteraction);
   const [closedInteractions, setClosedInteractions] = useState<ReadonlySet<string>>(() => new Set());
   const [interactionSubmitting, setInteractionSubmitting] = useState(false);
-  const [stopping, setStopping] = useState(false);
+  const [stopping, setStopping] = useState<PendingStop | null>(null);
+  const stopRequestIdRef = useRef(0);
   const [streamTrouble, setStreamTrouble] = useState(false);
   const troubleTimerRef = useRef<number | null>(null);
   const [childRunRevision, setChildRunRevision] = useState(0);
@@ -126,10 +133,16 @@ export function useSessionChat({
   const onSessionChangedRef = useRef(onSessionChanged);
   onSessionChangedRef.current = onSessionChanged;
   const mountedRef = useRef(true);
+  const historyControllerRef = useRef<AbortController | null>(null);
   const historyReadEpochRef = useRef(0);
   useEffect(() => {
+    const controller = new AbortController();
+    historyControllerRef.current = controller;
     mountedRef.current = true;
-    return () => { mountedRef.current = false; };
+    return () => {
+      mountedRef.current = false;
+      controller.abort();
+    };
   }, []);
 
   const refreshDetail = useCallback(() => {
@@ -152,6 +165,8 @@ export function useSessionChat({
    * messages someone sent from another tab, a channel or a schedule.
    */
   const readHistoryAgain = useCallback(async ({ restart }: { restart: boolean }) => {
+    const signal = historyControllerRef.current?.signal;
+    if (!signal || signal.aborted) return;
     // Restarting follows from the history's position, so nothing the old
     // follower would still write may land on top of what history says.
     if (restart) {
@@ -162,8 +177,8 @@ export function useSessionChat({
     const shown = new Map(chat.messages.map((message) => [message.id, message]));
     const writingAtRead = followerRef.current?.writing();
     try {
-      const window = await readLatestWindow(readHistory, sessionId, chat.messages);
-      if (!mountedRef.current || epoch !== historyReadEpochRef.current) return;
+      const window = await readLatestWindow(readHistory, sessionId, chat.messages, signal);
+      if (signal.aborted || !mountedRef.current || epoch !== historyReadEpochRef.current) return;
       if (restart && window.outputSeq === null) {
         throw new Error('SESSION_HISTORY_POSITION_MISSING: the history page carried no output_seq');
       }
@@ -194,6 +209,7 @@ export function useSessionChat({
         setFollowFrom({ seq: window.outputSeq });
       }
     } catch (error) {
+      if (signal.aborted) return;
       console.error('[useSessionChat] history read failed:', error);
       if (restart && mountedRef.current && epoch === historyReadEpochRef.current) {
         setStreamTrouble(true);
@@ -209,14 +225,15 @@ export function useSessionChat({
   readHistoryAgainRef.current = readHistoryAgain;
 
   const loadOlder = useCallback(async () => {
+    const signal = historyControllerRef.current?.signal;
     const current = pagingRef.current;
     const before = current.nextCursor;
-    if (!current.hasMore || !before || current.loadingMore) return;
+    if (!signal || signal.aborted || !current.hasMore || !before || current.loadingMore) return;
     setPaging((state) => ({ ...state, loadingMore: true, loadMoreError: null }));
     try {
-      const page = await readHistoryPage(readHistory, sessionId, before);
+      const page = await readHistoryPage(readHistory, sessionId, before, signal);
       const nextCursor = nextHistoryCursor(page, before);
-      if (!mountedRef.current) return;
+      if (signal.aborted || !mountedRef.current) return;
       let added = 0;
       setMessages((shown) => {
         const next = prependOlderMessages(shown, page.messages);
@@ -231,7 +248,7 @@ export function useSessionChat({
         loadingMore: false,
       }));
     } catch (error) {
-      if (!mountedRef.current) return;
+      if (signal.aborted || !mountedRef.current) return;
       setPaging((state) => ({
         ...state,
         loadingMore: false,
@@ -304,6 +321,15 @@ export function useSessionChat({
     void readHistoryAgainRef.current({ restart: false });
   }, []);
 
+  const finishStopping = useCallback((responseId: string) => {
+    setStopping((current) => {
+      if (!current) return current;
+      const remaining = current.responseIds.filter((id) => id !== responseId);
+      if (remaining.length === 0) return null;
+      return remaining.length === current.responseIds.length ? current : { ...current, responseIds: remaining };
+    });
+  }, []);
+
   const hostRef = useRef<FollowerHost>(null as unknown as FollowerHost);
   hostRef.current = {
     messages: () => chat.messages,
@@ -316,6 +342,11 @@ export function useSessionChat({
     },
     responseStarted: (messageId, metadata, reopened) => {
       setWriting(messageId);
+      setStopping((current) => {
+        if (!current) return current;
+        if (current.responseIds.length === 0) return { ...current, responseIds: [messageId] };
+        return current.responseIds.includes(messageId) ? current : null;
+      });
       const inputIds = Array.isArray(metadata.input_ids) ? metadata.input_ids.map(String) : [];
       if (inputIds.length > 0) {
         const unknown = markInputs(inputIds, (message) => (
@@ -331,8 +362,8 @@ export function useSessionChat({
       refreshDetail();
     },
     responseEnded: (messageId) => {
-      setWriting(null);
-      setStopping(false);
+      setWriting((current) => current === messageId ? null : current);
+      finishStopping(messageId);
       closeInteractionsOf(messageId);
       void (async () => {
         const read = await refreshRef.current({ force: true }).catch(() => null);
@@ -368,6 +399,10 @@ export function useSessionChat({
     },
     interactionOpened: (interaction) => {
       setLiveInteraction(interaction);
+      refreshDetail();
+    },
+    interactionClosed: (interactionId) => {
+      setClosedInteractions((current) => new Set(current).add(interactionId));
       refreshDetail();
     },
     childRunsChanged: () => {
@@ -407,6 +442,7 @@ export function useSessionChat({
       responseEnded: (...args) => hostRef.current.responseEnded(...args),
       inputFailed: (...args) => hostRef.current.inputFailed(...args),
       interactionOpened: (...args) => hostRef.current.interactionOpened(...args),
+      interactionClosed: (...args) => hostRef.current.interactionClosed(...args),
       childRunsChanged: () => hostRef.current.childRunsChanged(),
       sessionChanged: () => hostRef.current.sessionChanged(),
       connected: () => hostRef.current.connected(),
@@ -568,14 +604,25 @@ export function useSessionChat({
 
   const handleStopGeneration = useCallback(async () => {
     if (stopping) return;
-    setStopping(true);
+    const writingId = followerRef.current?.writing();
+    const request: PendingStop = {
+      requestId: ++stopRequestIdRef.current,
+      responseIds: [...new Set([
+        ...(sessionRef.current.current_responses ?? []).map((response) => response.response_id),
+        ...(writingId ? [writingId] : []),
+      ])],
+    };
+    setStopping(request);
+    const clearRequest = () => setStopping((current) => current?.requestId === request.requestId ? null : current);
     try {
       const receipt = await interruptSession(sessionId);
-      if (receipt.status !== 'accepted') setStopping(false);
+      if (receipt.status !== 'accepted') clearRequest();
     } catch (error) {
-      setStopping(false);
+      clearRequest();
       console.error('[useSessionChat] interrupt failed:', error);
-      toast.error(error instanceof Error ? error.message : String(error));
+      toast.error(error instanceof ApiError && error.code === 'PENDING_INPUTS_NOT_CANCELLED'
+        ? i18n.t('chat:page.pending_inputs_not_cancelled')
+        : error instanceof Error ? error.message : String(error));
     } finally {
       refreshDetail();
     }
@@ -585,10 +632,20 @@ export function useSessionChat({
     || session.state === 'WAITING_INPUT'
     || (session.current_responses?.length ?? 0) > 0;
   useEffect(() => {
-    // The stop took effect when nothing runs any more, whether or not this
-    // page saw the response end on its stream.
-    if (stopping && !runtimeWorking && writing === null) setStopping(false);
-  }, [runtimeWorking, stopping, writing]);
+    if (!stopping) return;
+    const ended = session.last_response;
+    if (ended?.status === 'ended' && stopping.responseIds.includes(ended.response_id)
+      && !session.current_responses?.some((response) => response.response_id === ended.response_id)) {
+      finishStopping(ended.response_id);
+      // A missed finish leaves the follower's segment open; canonical history
+      // closes it without assuming that a same-id start is a different response.
+      if (writing === ended.response_id && (session.current_responses?.length ?? 0) === 0) {
+        void readHistoryAgainRef.current({ restart: true });
+      }
+    } else if (!runtimeWorking && writing === null) {
+      setStopping((current) => current?.requestId === stopping.requestId ? null : current);
+    }
+  }, [finishStopping, runtimeWorking, session.current_responses, session.last_response, stopping, writing]);
 
   // ── What the page shows ─────────────────────────────────────────────
 
@@ -605,7 +662,7 @@ export function useSessionChat({
     isWorking: writing !== null || session.state === 'PROCESSING',
     /** A message is on its way to the session. */
     isSending: sendsInFlight > 0,
-    isStopping: stopping,
+    isStopping: stopping !== null,
     streamTrouble,
     childRunRevision,
     firstItemIndex: paging.firstItemIndex,

@@ -617,6 +617,9 @@
           "runtimes": {
             "$ref": "#/components/schemas/AdminRuntimes"
           },
+          "session_feed": {
+            "$ref": "#/components/schemas/AdminSessionFeedHealth"
+          },
           "severity": {
             "title": "Severity",
             "type": "string"
@@ -635,7 +638,8 @@
           "asyncio",
           "memory",
           "load_avg",
-          "runtimes"
+          "runtimes",
+          "session_feed"
         ],
         "title": "AdminProcessHealth",
         "type": "object"
@@ -1389,6 +1393,67 @@
           "endpoint"
         ],
         "title": "AdminSandboxSummary",
+        "type": "object"
+      },
+      "AdminSessionFeedHealth": {
+        "description": "The core notification task's lifecycle, with exception values excluded.",
+        "properties": {
+          "last_error": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "last_notice_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Notice At"
+          },
+          "last_notice_seq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Notice Seq"
+          },
+          "ready": {
+            "title": "Ready",
+            "type": "boolean"
+          },
+          "started": {
+            "title": "Started",
+            "type": "boolean"
+          },
+          "task_state": {
+            "title": "Task State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "started",
+          "ready",
+          "task_state",
+          "last_error",
+          "last_notice_at",
+          "last_notice_seq"
+        ],
+        "title": "AdminSessionFeedHealth",
         "type": "object"
       },
       "AdminSessionPage": {
@@ -2345,7 +2410,7 @@
       },
       "AgentRecord": {
         "additionalProperties": true,
-        "description": "One stored Agent as these routes project it.\n\nThe Agent document is open — ``AgentService._sanitize`` passes through\nevery key that is not internal — so the fields named here are the ones the\nconsole addresses by name, and ``extra=\"allow\"`` carries the rest. Their\ntypes are the ones ``agent_schema.AGENT_FIELD_SCHEMA`` enforces on write,\nplus the identity and ownership fields ``AgentConfigService`` stamps.\n``artifacts_enabled`` is always present because a read reports the switch\nas it takes effect, including for an Agent stored without it.\n\n``can_manage`` is computed per viewer and therefore present only on the\nreads that compute it (list and get), not on a write's echo of the record;\n``favorited`` likewise, on the full list.",
+        "description": "One stored Agent as these routes project it.\n\nThe Agent document is open — ``AgentService._sanitize`` passes through\nevery key that is not internal — so the fields named here are the ones the\nconsole addresses by name, and ``extra=\"allow\"`` carries the rest. Their\ntypes are the ones ``agent_schema.AGENT_FIELD_SCHEMA`` enforces on write,\nplus the identity and ownership fields ``AgentConfigService`` stamps.\n``artifacts_enabled`` is always present because a read reports the switch\nas it takes effect, including for an Agent stored without it.\n\n``can_manage`` is computed per viewer and therefore present only on the\nreads that compute it (list and get), not on a write's echo of the record;\n``favorited`` and ``can_start_conversation`` are present on the full list.\nThe latter reports configured admission eligibility, not runtime health.",
         "properties": {
           "admins": {
             "anyOf": [
@@ -2400,6 +2465,17 @@
               }
             ],
             "title": "Can Manage"
+          },
+          "can_start_conversation": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Can Start Conversation"
           },
           "categories": {
             "anyOf": [
@@ -9520,6 +9596,40 @@
         "title": "MoveSessionFilesRequest",
         "type": "object"
       },
+      "NativeStateInitialization": {
+        "additionalProperties": false,
+        "description": "The allocation whose unpublished profile is being recovered.",
+        "properties": {
+          "recovery_owner": {
+            "minLength": 1,
+            "title": "Recovery Owner",
+            "type": "string"
+          },
+          "sandbox_generation": {
+            "minLength": 1,
+            "title": "Sandbox Generation",
+            "type": "string"
+          },
+          "sandbox_id": {
+            "minLength": 1,
+            "title": "Sandbox Id",
+            "type": "string"
+          },
+          "session_id": {
+            "minLength": 1,
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "recovery_owner",
+          "sandbox_generation",
+          "sandbox_id"
+        ],
+        "title": "NativeStateInitialization",
+        "type": "object"
+      },
       "PerformUserAction": {
         "additionalProperties": false,
         "properties": {
@@ -9922,6 +10032,16 @@
               }
             ],
             "title": "Expected Snapshot Id"
+          },
+          "initialization": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NativeStateInitialization"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "owner": {
             "$ref": "#/components/schemas/RuntimeStateOwnerPayload"
@@ -11174,6 +11294,11 @@
             "title": "Actions",
             "type": "array"
           },
+          "applicable": {
+            "description": "Whether execution prerequisites apply; false for read-only history",
+            "title": "Applicable",
+            "type": "boolean"
+          },
           "ready": {
             "title": "Ready",
             "type": "boolean"
@@ -11190,6 +11315,7 @@
           }
         },
         "required": [
+          "applicable",
           "ready"
         ],
         "title": "SessionUserActionView",
@@ -12146,7 +12272,7 @@
   "info": {
     "summary": "Self-hosted agent runtime that runs installed Agent programs in isolated sandboxes and streams responses over the AI SDK Data Stream Protocol (SSE).",
     "title": "AstraBox",
-    "version": "0.1.9"
+    "version": "0.1.10"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -22997,7 +23123,7 @@
     },
     "/readyz": {
       "get": {
-        "description": "Readiness endpoint for rolling deploys.\n\n200 when this replica should receive new traffic; 503 once shutdown\nbegins (drain / quiesce), so the load balancer stops routing here while\nin-flight turns finish. See ``astrabox/api/readiness.py``.",
+        "description": "Readiness endpoint for rolling deploys.\n\n200 when this replica should receive new traffic; 503 during shutdown\nor after its core notification listener ends unexpectedly. In-flight\nturns are not killed by this probe. See ``astrabox/api/readiness.py``.",
         "operationId": "readyz_readyz_get",
         "responses": {
           "200": {

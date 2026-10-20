@@ -41,6 +41,7 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from astrabox.core.model import SessionState
+from astrabox.core.service.orchestrator.engine.interaction_contract import public_interaction_view
 from astrabox.persistence.sql import (
     execute,
     fetch_all,
@@ -77,7 +78,10 @@ _INTERACTIONS = SessionInteraction.__table__
 #: messages. They have nothing for a reader: one would only attach to the
 #: workspace's box behind the workspace's lifecycle, as when a pause is
 #: releasing it.
-_WORKSPACE_OWN = and_(_SESSIONS.c.hidden.is_(True), _SESSIONS.c.owner_type == "assistant_workspace")
+_WORKSPACE_OWN = and_(
+    _SESSIONS.c.hidden.is_(True),
+    _SESSIONS.c.owner_type.is_not_distinct_from("assistant_workspace"),
+)
 _OUTPUT = SessionOutput.__table__
 _READERS = SessionReader.__table__
 _CONTROLS = SessionControl.__table__
@@ -152,6 +156,7 @@ class InteractionOpen:
 class InteractionClose:
     interaction_id: str
     status: Literal["answered", "withdrawn", "expired"]
+    output_seq: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -593,6 +598,24 @@ class SessionRuntimeRepository:
             if held.rowcount == 0:
                 return False
             sid = lease.session_id
+            for fact in batch.facts:
+                await _apply(conn, sid, fact)
+            output = {part.seq: part for part in batch.output}
+            for fact in batch.facts:
+                if not isinstance(fact, InteractionClose) or fact.output_seq is None:
+                    continue
+                row = (await conn.execute(select(_INTERACTIONS).where(
+                    _INTERACTIONS.c.session_id == sid,
+                    _INTERACTIONS.c.interaction_id == fact.interaction_id,
+                ))).mappings().one()
+                data = public_interaction_view({
+                    **row["contract"], "status": row["status"], "answer": row["answer"],
+                })
+                output[fact.output_seq] = OutputPart(
+                    fact.output_seq, str(row["response_id"]),
+                    {"type": "data-interaction", "id": fact.interaction_id, "data": data},
+                )
+            batch.output[:] = sorted(output.values(), key=lambda part: part.seq)
             if batch.output:
                 await conn.execute(
                     insert(_OUTPUT),
@@ -601,8 +624,6 @@ class SessionRuntimeRepository:
                         for part in batch.output
                     ],
                 )
-            for fact in batch.facts:
-                await _apply(conn, sid, fact)
             session_values: dict[str, Any] = {}
             if batch.cursor is not None:
                 session_values["reader_cursor"] = batch.cursor
@@ -662,6 +683,17 @@ class SessionRuntimeRepository:
                 select(_OUTPUT.c.seq, _OUTPUT.c.response_id, _OUTPUT.c.part).where(*conditions).order_by(_OUTPUT.c.seq)
             )
         )
+
+    async def response_interactions(self, session_id: str, response_ids: Sequence[str]) -> list[dict[str, Any]]:
+        """Current interaction settlements for the responses on a history page."""
+        if not response_ids:
+            return []
+        return _views(await fetch_all(
+            select(_INTERACTIONS.c.interaction_id, _INTERACTIONS.c.status, _INTERACTIONS.c.answer).where(
+                _INTERACTIONS.c.session_id == session_id,
+                _INTERACTIONS.c.response_id.in_(list(response_ids)),
+            )
+        ))
 
     async def approval_answers(self, session_id: str, response_ids: Sequence[str]) -> list[dict[str, Any]]:
         """The answers people gave to these responses' interactions, by interaction.

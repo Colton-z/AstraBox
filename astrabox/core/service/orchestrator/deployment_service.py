@@ -39,7 +39,7 @@ import os
 import time
 import uuid
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from astrabox.persistence.repository.deployment_repository import DeploymentRepository
@@ -91,6 +91,10 @@ from astrabox.seams.channel import (
     channel_if_registered,
     channel_scene_name,
     get_channel,
+)
+from astrabox.seams.deployment_execution import (
+    DeploymentExecutionContext,
+    DeploymentExecutionValidator,
 )
 
 logger = get_logger(__name__)
@@ -163,6 +167,33 @@ class DeploymentService:
         # The channel spine (durable work items, dispatch, delivery).
         self._channel_ingress = channel_ingress
         self._channel_credentials = channel_credentials or ChannelCredentialService()
+        self._execution_identity_validator: DeploymentExecutionValidator | None = None
+
+    def set_execution_identity_validator(self, validator: DeploymentExecutionValidator) -> None:
+        """Install one pre-write validator on the default service from a service factory."""
+        if self._execution_identity_validator is not None and self._execution_identity_validator is not validator:
+            raise RuntimeError("a deployment execution identity validator is already installed")
+        self._execution_identity_validator = validator
+
+    async def _validate_external_execution_identity(
+        self, binding: dict[str, Any], *, actor: UserContext | None,
+        operation: Literal["create", "update"],
+    ) -> None:
+        validator = self._execution_identity_validator
+        if validator is None:
+            return
+        if actor is None:
+            raise RuntimeError("execution identity validation requires an explicit actor")
+        await validator(DeploymentExecutionContext(
+            operation=operation,
+            deployment_id=str(binding["deployment_id"]),
+            agent_id=str(binding.get("agent_id") or ""),
+            assistant_id=str(binding.get("assistant_id") or ""),
+            scene=str(binding["scene"]),
+            execution_mode=binding_execution_mode(binding),
+            execution_user_id=str(binding.get("execution_user_id") or ""),
+            actor=actor,
+        ))
 
     # ── scheduler provider access ────────────────────────────────────────────
 
@@ -782,6 +813,8 @@ class DeploymentService:
             doc["attention_policy"] = resolved_policy
         if instruction is not None:
             doc["response_instruction"] = instruction
+        if channel_provider is not None:
+            await self._validate_external_execution_identity(doc, actor=actor, operation="create")
         if normalized_credentials is not None:
             await self._channel_credentials.put(deployment_id, normalized_credentials)
         try:
@@ -1033,6 +1066,9 @@ class DeploymentService:
                         message=f"channel {existing_channel!r} has no named credentials",
                         status_code=400,
                     )
+            await self._validate_external_execution_identity(
+                {**existing, **updates}, actor=actor, operation="update",
+            )
             if normalized_credentials is not None:
                 await self._channel_credentials.put(
                     deployment_id, normalized_credentials

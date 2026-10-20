@@ -12,7 +12,8 @@ wire rules out of core:
 * the WebSocket ``/pty/{id}/ws`` in pipe mode (``pty=0``) carries binary
   frames tagged ``0x01`` stdout, ``0x02`` stderr and ``0x03`` replay (an
   8-byte big-endian offset, then the bytes), stdin tagged ``0x00``, and JSON
-  text for control; a second holder is refused with 409 unless it takes over;
+  text for control; ``errors=frame`` keeps refusal codes inside the socket
+  through proxies that upgrade before contacting execd;
 * a replay asked for from before execd's buffer starts at what the buffer
   still holds and says so only through its offset, so the offset is compared
   with the one asked for and a gap refuses the attachment;
@@ -29,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote
 
@@ -222,10 +224,11 @@ class ExecdProcessAttachment:
 class ExecdProcesses:
     """:class:`astrabox.seams.sandbox_data.SandboxProcesses` over one execd.
 
-    Build it from an endpoint resolver, which is called once, at the first
-    operation, or with :meth:`at_endpoint` from a URL and the headers a
-    request needs. It holds no connection between operations, so it needs no
-    closing; each attachment is closed by its own ``detach``.
+    Build it from an endpoint resolver, called on first use and before a new
+    operation when the cached endpoint has expired. Without an expiry, the
+    endpoint stays cached. Use :meth:`at_endpoint` for a fixed URL and headers.
+    It holds no connection between operations, so it needs no closing; each
+    attachment is closed by its own ``detach``.
     """
 
     def __init__(
@@ -292,7 +295,7 @@ class ExecdProcesses:
         requested = max(0, int(since))
         url = (
             f"{_websocket_url(endpoint.url)}{self._path(process_id)}/ws"
-            f"?pty=0&takeover={int(takeover)}&since={requested}"
+            f"?pty=0&takeover={int(takeover)}&since={requested}&errors=frame"
         )
         try:
             connection = await websockets.connect(
@@ -361,7 +364,12 @@ class ExecdProcesses:
         return f"/pty/{quote(target, safe='')}"
 
     async def _resolved(self) -> SandboxEndpoint:
-        if self._endpoint is None:
+        expires_at = self._endpoint.expires_at if self._endpoint is not None else None
+        if expires_at is not None and expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if self._endpoint is None or (
+            expires_at is not None and expires_at <= datetime.now(timezone.utc)
+        ):
             self._endpoint = await self._resolve_endpoint()
         return self._endpoint
 
@@ -421,11 +429,20 @@ class ExecdProcesses:
                 if kind == "connected":
                     return pending
                 if kind == "error":
+                    if payload.get("code") == "ALREADY_CONNECTED":
+                        raise SandboxProcessAlreadyAttached(
+                            f"another attachment holds process {process_id!r}"
+                        )
+                    if payload.get("code") == "SESSION_GONE":
+                        raise SandboxProcessDetached(f"execd does not know process {process_id!r}")
                     raise RuntimeError(
                         f"execd refused to attach to process {process_id!r}: "
                         f"{payload.get('error') or payload}"
                     )
-                continue
+                raise RuntimeError(
+                    f"execd sent an unexpected attachment control frame for "
+                    f"process {process_id!r}: {payload}"
+                )
             frame = bytes(message)
             if not frame:
                 continue

@@ -122,6 +122,8 @@ class Session(Base):
     slash_commands: Mapped[list[Any] | None]
     slash_command_details: Mapped[list[Any] | None]
     engine_capabilities: Mapped[dict[str, Any] | None]
+    #: Last connected runtime's observed component versions and instance coordinates.
+    runtime_versions: Mapped[dict[str, Any] | None]
 
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     #: The session list's order: moves when someone sends or the runtime answers.
@@ -222,7 +224,7 @@ class SessionReader(Base):
 class SessionInput(Base):
     """One input, held by the platform until the runtime durably admits it.
 
-    ``state``: ``pending`` (accepted, not yet with the runtime), ``delivered``
+    ``state``: ``pending`` (awaiting the delivery receipt), ``delivered``
     (the runtime received it), ``admitted`` (the runtime durably holds it) or
     ``failed`` (refused; ``failure`` says why). A runtime replaced before it
     admitted an input gets the input again; one replaced after does not.

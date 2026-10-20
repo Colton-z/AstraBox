@@ -191,6 +191,8 @@ class ReaderHost:
         connected: ConnectedRuntime | None = None
         try:
             while True:
+                if not await self._repo.renew_reader(lease, ttl_s=LEASE_TTL_S):
+                    return
                 try:
                     connected = await self._connector.connect(session_id)
                 except RuntimeNotReady:

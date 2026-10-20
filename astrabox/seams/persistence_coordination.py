@@ -75,5 +75,8 @@ class PersistenceCoordination(Protocol):
         report the gap with resync, then call ready again. Consumers subscribe
         before their initial durable read and reread on resync; delivery may
         coalesce duplicate notices. Cancellation closes listener resources.
+        A return, unhandled exception or cancellation outside service shutdown
+        ends the core-owned task and makes that replica not ready. The core
+        exposes task diagnostics; it does not retry provider-specific errors.
         """
         ...

@@ -1,4 +1,4 @@
-"""Authorize access to the desktop browser in a conversation-owned sandbox."""
+"""Authorize desktop access to a sandbox owned by the caller's task."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
+from astrabox.core.service.orchestrator.runtime_binding import is_assistant_user_conversation
 from astrabox.core.service.orchestrator.sandbox_viewer import mint_viewer_url
 
 
@@ -19,21 +20,28 @@ class SessionBrowserService:
     async def open_browser(self, user: UserContext, session_id: str) -> dict[str, str]:
         session = await self._sessions.must_get_owned_session(user, session_id)
         identity = session.get("runtime_identity") or {}
-        if session.get("session_kind") != "agent_chat" or identity.get("sandbox_tenancy") != "conversation":
+        assistant_workspace = is_assistant_user_conversation(session)
+        if not assistant_workspace and (
+            session.get("session_kind") != "agent_chat"
+            or identity.get("sandbox_tenancy") != "conversation"
+        ):
             raise APIError(
                 code="BROWSER_TENANCY_UNSUPPORTED",
-                message="Browser is available only in conversation-owned sandboxes",
+                message="Browser requires a conversation-owned sandbox or an owner-only Assistant workspace",
                 status_code=409,
             )
         if session.get("sandbox_parked_at"):
             await self._runtime.wake_parked_session(session)
             session = await self._sessions.must_get_owned_session(user, session_id)
         sandbox_id = str(session.get("sandbox_id") or "").strip()
-        if not sandbox_id:
+        if not assistant_workspace and not sandbox_id:
             raise APIError(code="BROWSER_UNAVAILABLE", message="sandbox browser is unavailable", status_code=409)
+        # Endpoint resolution reads the current workspace, so a conversation's
+        # cached sandbox cannot grant access to its previous allocation.
+        endpoint = await self._ports.expose_port(deployment_id=session_id, port=8003)
+        sandbox_id = endpoint["sandbox_id"]
         sandbox = await self._runtime.connect_sandbox_only(sandbox_id)
         try:
-            endpoint = await self._ports.expose_port(deployment_id=session_id, port=8003)
             result = await mint_viewer_url(
                 sandbox, endpoint, arguments=["grant-browser"], prefix="b/",
                 error_code="BROWSER_UNAVAILABLE",

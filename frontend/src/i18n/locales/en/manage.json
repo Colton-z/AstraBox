@@ -111,6 +111,23 @@
     "vault_id": "Vault ID",
     "credentials": "Credentials"
   },
+  "runtime_versions": {
+    "title": "Last observed runtime versions",
+    "source": "Source",
+    "observed": "Observed",
+    "previous_instance": "This observation belongs to an earlier sandbox.",
+    "reasons": {
+      "runtime_not_observed": "Unknown — this runtime has no saved observation.",
+      "server_info_not_supported": "Unknown — the engine has no server-info capability.",
+      "engine_versions_not_reported": "Unknown — the engine did not report component versions.",
+      "server_info_unavailable": "Unknown — the runtime could not be read at connection time.",
+      "invalid_engine_version_observation": "Unknown — the engine returned an invalid version observation.",
+      "native_cli_version_unavailable": "Unknown — the CLI version command returned no version.",
+      "native_cli_version_timeout": "Unknown — the CLI version command timed out.",
+      "native_cli_version_command_unavailable": "Unknown — the CLI version command could not be started.",
+      "native_cli_version_invalid_utf8": "Unknown — the CLI version output was not valid UTF-8."
+    }
+  },
   "common_fields": {
     "user": "User",
     "duration": "Duration",

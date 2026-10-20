@@ -36,6 +36,7 @@ import {
 } from './sessionConfig';
 import { TraceDigest } from './SessionTraceDigest';
 import { ResponseParts } from './SessionResponseParts';
+import { SessionRuntimeVersions } from './SessionRuntimeVersions';
 import { keepsLastRead, useKeepCurrent, type ReloadContext } from '@/hooks/useKeepCurrent';
 
 function joinList(values: string[] | null | undefined): string {
@@ -245,6 +246,10 @@ export default function SessionDetailPage() {
           <ConsoleFact
             label={t('manage:common_fields.local_runtime')}
             value={detail.has_local_runtime ? t('common:yes') : t('common:no')}
+          />
+          <ConsoleFact
+            label={t('manage:runtime_versions.title')}
+            value={<SessionRuntimeVersions versions={detail.runtime_versions} />}
           />
           <ConsoleFact
             label={t('manage:sessions.field_expires')}

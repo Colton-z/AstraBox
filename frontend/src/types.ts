@@ -141,6 +141,7 @@ export type AgentAccessPolicy = Omit<AgentAccess, 'created_by'>;
 export interface AgentConfig extends AgentDraft {
   agent_id: string;
   can_manage?: boolean;
+  can_start_conversation?: boolean;
   // Whether the reader has favorited it; the full list read carries it.
   favorited?: boolean;
   version?: number;
@@ -438,6 +439,7 @@ export interface UserAction {
 }
 
 export interface SessionUserActionState {
+  applicable: boolean;
   ready: boolean;
   user_action: UserAction | null;
   actions: { id: string; label: string }[];
@@ -549,6 +551,12 @@ export interface AdminSessionVersions {
   runtime_identity_status?: string | null;
   bootstrap_transport?: string | null;
   has_local_runtime?: boolean;
+  observed_at?: string;
+  sandbox_id?: string | null;
+  runtime_generation?: string | null;
+  matches_bound_sandbox?: boolean;
+  reason?: string | null;
+  components?: Array<{ component: string; version: string | null; source: string; reason?: string | null }>;
   [key: string]: unknown;
 }
 
@@ -735,6 +743,14 @@ export interface AdminProcessHealth {
     watchdog_task_count?: number;
     locked_count?: number;
     items?: AdminProcessRuntimeRow[];
+  };
+  session_feed?: {
+    started: boolean;
+    ready: boolean;
+    task_state: string;
+    last_error: { type: string; stack: string[] } | null;
+    last_notice_at: string | null;
+    last_notice_seq: number | null;
   };
 }
 
@@ -968,6 +984,12 @@ export interface PendingPlanPrompt {
   prompt: string;
   tool?: string | null;
 }
+
+/** History adds the recorded interaction settlement and answer. */
+export type HistoricalQuestionnaireInteraction = PendingQuestionnaireInteraction & {
+  status: 'open' | 'answered' | 'withdrawn' | 'expired';
+  answer?: Omit<QuestionnaireInteractionResponse, 'interaction_id'> | null;
+};
 
 // The decision-option fields the browser reads. An option also carries the
 // model-facing reply copy the adapter authored; that half settles the

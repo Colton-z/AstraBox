@@ -368,6 +368,13 @@ render one button for each choice that has an `action`, and report a press as a
 `ChannelInbound` whose `action` is that string. AstraBox resolves the action to
 its question; the provider does not parse answers or track question state.
 
+When the runtime withdraws or expires a shown question, AstraBox closes its
+durable channel interaction without recording an answer. Runtime updates and
+the regular recovery process close it even without another inbound message.
+A failed response remains a failed channel reply through the same
+output log; closing a question does not suppress that failure or turn it into
+a successful answer.
+
 AstraBox retains each subscription's position in the Session's output log and
 reads a partial reply from that log again after a restart. The durable outbox
 owns retries; the provider owns rendering and the destination API's

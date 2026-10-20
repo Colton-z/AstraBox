@@ -454,7 +454,11 @@ async def _a_reattach_replays_from_an_offset(box: DataContractBox, root: str) ->
 
 async def _one_attachment_holds_a_process(box: DataContractBox, root: str) -> None:
     processes = _processes(box)
-    process_id = await processes.start("printf 'ready\\n'; read x", cwd=root)
+    process_id = await processes.start(
+        "printf 'ready\\n'; read x; printf 'held:%s\\n' \"$x\"; read y; "
+        "printf 'taken:%s\\n' \"$y\"",
+        cwd=root,
+    )
     try:
         holder = await processes.attach(process_id, since=0, takeover=False)
         held = holder.frames()
@@ -465,14 +469,23 @@ async def _one_attachment_holds_a_process(box: DataContractBox, root: str) -> No
             pass
         else:
             raise AssertionError("a second attachment was accepted without taking over")
+        await holder.send(b"original\n")
+        await _read_until(held, lambda seen: _written(seen) == b"held:original\n")
         taker = await processes.attach(process_id, since=0, takeover=True)
+        taken = taker.frames()
         try:
-            await asyncio.wait_for(anext(held), 20.0)
-        except SandboxProcessDetached:
-            pass
-        else:
-            raise AssertionError("the attachment that was taken over went on reading")
+            try:
+                await asyncio.wait_for(anext(held), 20.0)
+            except SandboxProcessDetached:
+                pass
+            else:
+                raise AssertionError("the attachment that was taken over went on reading")
+            await taker.send(b"successor\n")
+            seen = await _read_until(taken, _exited)
+            assert _written(seen) == b"ready\nheld:original\ntaken:successor\n", seen
+            assert seen[-1] == ProcessExit(exit_code=0), seen
         finally:
+            await taken.aclose()
             await held.aclose()
             await holder.detach()
             await taker.detach()

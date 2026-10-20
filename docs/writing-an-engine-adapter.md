@@ -165,7 +165,7 @@ time; a new reader opens a new client.
 | `submit(input)` | Hand the runtime one `RuntimeInput`; return once the runtime has received it. Idempotent by `input_id`. Raise `RuntimeInputRefused(code, message, status_code=)` when the runtime declines it. |
 | `events(after=cursor)` | An async generator of runtime events after the cursor (from the start for `None`), for as long as the connection lives. Raise `RuntimeCursorExpired` when the cursor cannot be resumed. |
 | `state()` | The runtime's own account of itself now (`RuntimeState`). |
-| `answer(interaction_id, response)` | Pass a person's answer to an open interaction. Raise `InteractionNotOpen` when the runtime holds no such open interaction. |
+| `answer(interaction_id, response)` | Pass a person's answer to an open interaction. A redelivery may return normally when the runtime retains proof it accepted that answer. Otherwise raise `InteractionNotOpen` when it holds no such open interaction. |
 | `interrupt(cancel_queued=False)` | Stop the response in progress; with `cancel_queued`, also drop the inputs queued behind it. |
 | `committed(cursor)` | AstraBox durably recorded every event through the cursor. A runtime that keeps history only until its reader has it may release what precedes the cursor. |
 | `capabilities()` | The connected runtime's `EngineCapabilityManifest`: permission modes, input content types, and controls. |
@@ -175,6 +175,23 @@ Two optional members are used when present: `set_permission_mode(mode)`, which
 the reader calls with the Session's stored mode when it connects and whenever
 the owner changes it, and `stop_child_run(control_ref)`, which stops one
 sub-agent by the control reference your child facts carry.
+
+An engine declaring `supports_server_info` may return `runtime_versions` in
+`get_server_info()`: `runtime_generation` is its observed incarnation id, and
+`components` lists `{component, version, source, reason}` records. Component
+names and version strings belong to the adapter. A known version has a
+nonempty string; an unknown one has `version: null` and a nonempty reason.
+Every component names its observation source. Deployment labels and host
+package versions are not observations of an in-box runtime.
+
+Startup, recovery and reader connection save this observation with its sandbox
+id and read time. The admin Session list and detail read that saved snapshot;
+they neither query nor wake compute. The snapshot describes the last connected
+instance, not continuous health or a version audit log. Its generation and
+`matches_bound_sandbox` distinguish it from another instance; absent information
+is explicitly unknown. Engines without this optional observation remain usable.
+The Claude runner records its loaded source SHA256, installed SDK distribution
+and the output of its selected native CLI's `--version` once per runner boot.
 
 ### Report the runtime's events
 
@@ -201,8 +218,25 @@ and `waiting` while a response is paused on a person.
 `submit()` must be idempotent by `input_id`. Where the vendor deduplicates by a
 message id, use the input id (or a value derived from it) as that id; where it
 does not, check the vendor's history, queue, or your own submissions before
-sending the input again. A runtime that is working takes the input into its own
-queue; how it answers queued inputs is the vendor's behavior.
+sending the input again. A runtime that is working may receive another input
+without having admitted it yet. Its adapter must keep those boundaries
+distinct; how the vendor consumes and answers the input is engine-specific.
+
+The Claude adapter hands inputs in delivery order to the same persistent
+`ClaudeSDKClient.query()`, including while a response is running. Claude's
+native queue decides when to consume them and which response answers them;
+the adapter does not wait for `ResultMessage` before delivering another input.
+A delivery receipt therefore does not mean Claude has consumed that input.
+Multiple inputs consumed before the same Result belong to the same response.
+When another input joins, the existing message's metadata carries the complete
+`input_ids` through the same output log used by live readers and history.
+Other engines report their own admission and response boundaries through the
+same contract.
+
+Recovery coverage includes inputs handed to the native queue but not consumed,
+completed earlier responses, and the currently active response with all inputs
+the engine has consumed. Compare native consumption and Result boundaries with
+the platform's input and response records; do not require one response per input.
 
 Report `InputAdmitted` only at the vendor record that survives a restart of the
 runtime's process, such as the user message written to the vendor's transcript.
@@ -230,10 +264,14 @@ into the position.
 Raise `RuntimeCursorExpired` for a cursor from another generation or for a
 position the vendor no longer retains. The reader then takes back the inputs
 the runtime received but never admitted, asks `state()` for the runtime's own
-account (open responses, pending interactions, queued and admitted inputs, and
-the cursor to continue from), and reconciles: a response the runtime no longer
+account (open responses, pending and closed interactions, queued and admitted
+inputs, and the cursor to continue from), and reconciles: a response the runtime no longer
 reports ends as failed (`runtime_lost`), and an interaction it no longer waits
-on closes as expired.
+on closes with the runtime's retained closure reason, or as expired when it has
+no closure receipt. Adapters report an accepted answer through a replayable
+`InteractionClosed(..., "answered")` event and retain its receipt in
+`RuntimeState.closed_interactions` for reconciliation. An answer saved in the
+platform database does not establish acceptance by the runtime.
 
 ### Shape a response's browser parts
 
@@ -241,6 +279,15 @@ A response's parts start with a `start` part whose `messageId` is the response
 id and whose `messageMetadata` carries `response_id`, `input_ids`, and `origin`.
 They end with a `finish` part; a response that fails sends an `error` part
 before its `finish`.
+
+An adapter may withdraw an unconfirmed text or reasoning preview without
+removing completed steps. Put its chunk id in
+`providerMetadata.astrabox.part_id` on the opening chunk, then publish a
+`message-metadata` chunk with the cumulative `retracted_part_ids` for that
+response. Live messages and stored history omit those parts before display
+and process-block grouping. The output log retains the original chunks and
+the withdrawal for deterministic replay. The adapter, not the platform,
+decides whether native output is provisional or has been superseded.
 
 When a response pauses on an interaction, report `InteractionOpened` with the
 contract, then the parts that close the browser's message segment: a
@@ -405,6 +452,22 @@ bytes reach database custody. DSH extends its supplier's local attachment
 backend for this acknowledgement, retaining native normalization, immutable
 publication, and verified reads. Its restore barrier runs before the Session
 opens on replacement compute.
+
+An Assistant profile's startup records its native-state release obligation
+before activation. A failed activation must stop native writers and confirm
+the store and profile save, or raise `RuntimeStateSaveRequired` with the exact
+sandbox and runtime identity. The platform retains that allocation for
+recovery. Wake completes the save barrier before releasing its compute; a
+periodic mirror or a saved profile archive alone is not that confirmation.
+
+Hermes also recovers a same-owner local SessionDB left before its first native
+snapshot was published. Cold bootstrap preserves a complete supplier backup,
+profile archive and previous receipt in the private profile home. It publishes
+those immutable bytes through the existing snapshot API with the current
+materializer, allocation and generation validated in the save transaction.
+Foreign receipts and superseded generations are refused. A partial publication
+resends the same backed-up bytes through the snapshot predecessor check; the
+restore receipt changes only after both archives are acknowledged.
 
 ### Execution user and environment variables
 

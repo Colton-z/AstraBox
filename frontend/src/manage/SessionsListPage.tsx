@@ -32,6 +32,7 @@ import {
   type ConsoleColumn,
 } from './console';
 import { formatDateTime } from './agentConfig';
+import { SessionRuntimeVersions } from './SessionRuntimeVersions';
 import {
   formatDuration,
   sessionStateLabel,
@@ -248,6 +249,12 @@ export default function SessionsListPage() {
         ) : (
           <span className="text-muted-foreground">{t('common:no')}</span>
         ),
+    },
+    {
+      key: 'versions',
+      intent: 'compact',
+      header: t('manage:runtime_versions.title'),
+      cell: (s) => <SessionRuntimeVersions versions={s.runtime_versions} compact />,
     },
   ];
 

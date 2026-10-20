@@ -82,6 +82,7 @@ RUNNER_PROTOCOL = "astrabox.runner-wire.v1"
 #: This runner process's identity. Journal sequences restart in a new process,
 #: so a host cursor names the boot it was read from and is refused by another.
 RUNNER_BOOT_ID = uuid_mod.uuid4().hex
+RUNNER_SOURCE_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
 #: An optional script an external provider or deployment termination trigger
 #: may run when this box is torn down. The runner writes the content once it
@@ -253,13 +254,6 @@ class _QueuedDelivery:
     accepted: asyncio.Future[None]
 
 
-@dataclasses.dataclass(frozen=True, slots=True)
-class _BufferedDelivery:
-    command: DeliveryCommand
-    sdk_input: dict[str, Any]
-    pending_consumption: _PendingPromptConsumption
-
-
 _STOP = object()
 
 
@@ -334,6 +328,49 @@ def _runner_engine_contract() -> dict[str, Any]:
         "sdk_version": sdk_version,
         "accepted_option_keys": accepted_option_keys,
         "permission_modes": permission_modes,
+    }
+
+
+async def _runtime_versions(contract: dict[str, Any]) -> dict[str, Any]:
+    """Observe the image's components once for this runner incarnation."""
+    cli: dict[str, Any] = {
+        "component": "claude-code", "version": None,
+        "source": "native_cli_--version", "reason": "native_cli_version_unavailable",
+    }
+    process: asyncio.subprocess.Process | None = None
+    try:
+        process = await asyncio.create_subprocess_exec(
+            CLAUDE_CLI_PATH, "--version", stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL, cwd="/tmp",
+        )
+        stdout, _ = await asyncio.wait_for(process.communicate(), timeout=2)
+        value = stdout.decode("utf-8").strip()
+        if process.returncode == 0 and value:
+            cli.update(version=value, reason=None)
+        elif process.returncode != 0:
+            cli["reason"] = f"native_cli_version_exit_{process.returncode}"
+    except TimeoutError:
+        cli["reason"] = "native_cli_version_timeout"
+    except OSError:
+        cli["reason"] = "native_cli_version_command_unavailable"
+    except UnicodeError:
+        cli["reason"] = "native_cli_version_invalid_utf8"
+    finally:
+        if process is not None and process.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            await process.wait()
+    if cli["reason"]:
+        logger.warning("native CLI version observation unavailable: %s", cli["reason"])
+    return {
+        "runtime_generation": RUNNER_BOOT_ID,
+        "components": [
+            {"component": "astrabox-runner", "version": RUNNER_SOURCE_SHA256,
+             "source": "loaded_runner_source_sha256"},
+            {"component": "claude-agent-sdk", "version": contract["sdk_version"],
+             "source": "in_box_python_distribution"},
+            cli,
+        ],
     }
 
 
@@ -494,6 +531,11 @@ class EnvelopeSender:
         return int(self._journal[0]["seq"]) if self._journal else None
 
     @property
+    def first_unpersisted_event_seq(self) -> int | None:
+        """The first durable SDK event the host has not committed."""
+        return min(self._events_requiring_persistence - self._persisted_event_sequences, default=None)
+
+    @property
     def journal_count(self) -> int:
         return len(self._journal)
 
@@ -512,10 +554,11 @@ class EnvelopeSender:
         return self._link
 
     def set_link(self, link: HostLink) -> None:
-        """Reattach: the newest connection wins, unconditionally. There is no
-        arbitration between an old and a new consumer — the old link is simply
-        never written to again. A stale writer can only race a live one where
-        two consumers are allowed at once; this sender never has two."""
+        """Switch output to the newest connection before its handshake.
+
+        The websocket endpoint retires the displaced connection after replay;
+        this sender never writes to both consumers.
+        """
         # Logged because a pending approval's budget runs on the host's absence:
         # when one expires, the diagnosis turns on whether a host came back and
         # when. Without this line the box's own log ends at "host link closed"
@@ -648,9 +691,9 @@ class EnvelopeSender:
                 raise RunnerProtocolError(
                     "requires_persistence must be true when present"
                 )
-            if requires_persistence is True and op != "event":
+            if requires_persistence is True and op not in {"event", "interaction_closed", "error"}:
                 raise RunnerProtocolError(
-                    "only SDK event frames can require host persistence"
+                    "only SDK events, errors and interaction closures can require host persistence"
                 )
             frame = {"op": op, "seq": seq, "session_id": self._session_id, **fields}
             if result_store_sequence is not None:
@@ -1034,8 +1077,10 @@ class InteractionBroker:
         wait_budget_s: float = DEFAULT_INTERACTION_WAIT_S,
         hook_timeout_s: float = INTERACTION_HOOK_TIMEOUT_S,
         permission_mode: str = "default",
+        on_request: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None,
     ) -> None:
         self._sender = sender
+        self._on_request = on_request
         self._wait_budget_s = wait_budget_s
         self._hook_ceiling_s = max(hook_timeout_s - _INTERACTION_HOOK_MARGIN_S, 1.0)
         self._pending: dict[str, asyncio.Future[InteractionAnswer]] = {}
@@ -1072,7 +1117,10 @@ class InteractionBroker:
     async def _ask(self, interaction_id: str, *, tool_use_id: str, tool_name: str, tool_input: Any) -> None:
         request = {"tool_use_id": tool_use_id, "tool_name": tool_name, "tool_input": tool_input}
         self._requests[interaction_id] = request
-        await self._sender.send("interaction", interaction_id=interaction_id, **request)
+        if self._on_request is not None:
+            await self._on_request(interaction_id, request)
+        else:
+            await self._sender.send("interaction", interaction_id=interaction_id, **request)
 
     def cancel_all(self, *, message: str) -> int:
         """Resolve every pending gate as a deny (interrupt path).
@@ -1322,10 +1370,13 @@ class RunnerSession:
         self.slot_id = session_id
         self.session_id = session_id
         self.sender = EnvelopeSender(link, session_id)
+        self._answered_interactions: set[str] = set()
+        self._expired_interactions: set[str] = set()
         self.broker = InteractionBroker(
             self.sender,
             wait_budget_s=interaction_wait_s,
             permission_mode=permission_mode,
+            on_request=self._request_interaction,
         )
         self._client_factory = client_factory
         self._resume_client_factory = resume_client_factory
@@ -1333,6 +1384,7 @@ class RunnerSession:
         self._activation_callback = activation_callback
         self._permission_mode = str(permission_mode or "default")
         self._client: SdkSession | None = None
+        self._stream_error: Exception | None = None
         self._store_bound_to: str | None = None
         self._prepared = False
         self._active = False
@@ -1343,17 +1395,11 @@ class RunnerSession:
             str, tuple[DeliveryCommand, asyncio.Future[None]]
         ] = {}
         self._delivered_commands: dict[str, DeliveryCommand] = {}
-        # Claude accepts another query while a response is active, but that is
-        # steering rather than an ordered next prompt: the later instruction
-        # can replace the answer the earlier input was still producing. The
-        # runner therefore owns the adapter buffer and submits one input per
-        # SDK Result boundary.
-        self._buffered_deliveries: deque[_BufferedDelivery] = deque()
         self._pending_prompt_consumptions: deque[_PendingPromptConsumption] = deque()
         self._consumed_prompt_ids: set[str] = set()
         # Consumption groups commands under the next SDK Result. Interrupt
         # needs that boundary to decide whether the cancelled command already
-        # settled and whether a queued successor keeps the adapter FIFO active.
+        # settled and whether Claude still has another input to consume.
         self._command_ids_by_input_id: dict[str, str] = {}
         # Vendor message id -> platform input id, for inputs queried but not yet
         # echoed. See :meth:`_query_delivery` for why the two differ.
@@ -1485,6 +1531,8 @@ class RunnerSession:
         requested_mode = str(permission_mode or self._permission_mode).strip()
         if not requested_mode:
             raise RunnerProtocolError("activate permission_mode is empty")
+        self.sender.bind_prepared_session(link, target)
+        self.session_id = target
         resume = str(resume_session_key or "").strip()
         if resume:
             if self._resume_client_factory is None:
@@ -1534,8 +1582,6 @@ class RunnerSession:
                     "required MCP servers are not connected after activation: "
                     f"{unusable!r}"
                 )
-        self.sender.bind_prepared_session(link, target)
-        self.session_id = target
         self._active = True
         if self._store is not None and not self._store_bound:
             self._store.start_flusher()
@@ -1746,7 +1792,6 @@ class RunnerSession:
         continues_fifo = bool(
             self._pending_prompt_consumptions
             or self._consumed_commands_since_result
-            or self._buffered_deliveries
         )
         self._run_start_seq = None
         await self.sender.send(
@@ -1754,15 +1799,8 @@ class RunnerSession:
             command_id=response_id,
             continues_fifo=continues_fifo,
         )
-        prompted_successor = (
-            await self._query_next_buffered()
-            if self._buffered_deliveries
-            else False
-        )
         self._busy = bool(
-            prompted_successor
-            or self._buffered_deliveries
-            or self._pending_prompt_consumptions
+            self._pending_prompt_consumptions
             or self._consumed_commands_since_result
         )
         await self._report_status()
@@ -1775,32 +1813,12 @@ class RunnerSession:
             if not isinstance(queued, _QueuedDelivery):
                 raise RunnerProtocolError("delivery queue contains an invalid item")
             try:
-                if self._client is None:
-                    raise RunnerProtocolError("input before session start")
-                sdk_input = self._validated_input(queued.command)
-                delivery = _BufferedDelivery(
-                    command=queued.command,
-                    sdk_input=sdk_input,
-                    pending_consumption=self._pending_prompt_consumption(sdk_input),
+                await self._query_delivery(queued.command)
+                logger.info(
+                    "queried the SDK: command_id=%s sequence=%d",
+                    queued.command.command_id,
+                    queued.command.sequence,
                 )
-                if self._busy:
-                    # Acceptance is the adapter's receipt, not a claim that the
-                    # vendor consumed the input. Keep the command replayable by
-                    # id and report consumption only after UserPromptSubmit.
-                    self._buffered_deliveries.append(delivery)
-                    logger.info(
-                        "buffered behind the active response: command_id=%s "
-                        "sequence=%d",
-                        queued.command.command_id,
-                        queued.command.sequence,
-                    )
-                else:
-                    await self._query_delivery(delivery)
-                    logger.info(
-                        "queried the SDK: command_id=%s sequence=%d",
-                        queued.command.command_id,
-                        queued.command.sequence,
-                    )
                 self._delivered_commands[queued.command.command_id] = queued.command
                 self._last_delivery_sequence = queued.command.sequence
             except Exception as exc:
@@ -1812,14 +1830,15 @@ class RunnerSession:
                 if not queued.accepted.done():
                     queued.accepted.set_result(None)
 
-    async def _query_delivery(self, delivery: _BufferedDelivery) -> None:
-        """Give one accepted FIFO input to Claude at a legal prompt boundary."""
+    async def _query_delivery(self, command: DeliveryCommand) -> None:
+        """Hand an input to Claude's native queue and track its consumption."""
 
         if self._client is None:
             raise RunnerProtocolError("input before session start")
-        pending = delivery.pending_consumption
+        sdk_input = self._validated_input(command)
+        pending = self._pending_prompt_consumption(sdk_input)
         self._pending_prompt_consumptions.append(pending)
-        self._command_ids_by_input_id[pending.input_id] = delivery.command.command_id
+        self._command_ids_by_input_id[pending.input_id] = command.command_id
         # ``uuid`` on a streaming input is the vendor's id for a transcript
         # message; the platform input id identifies the FIFO entry. Claude discards,
         # silently, an input whose uuid already names a message in the session
@@ -1831,7 +1850,7 @@ class RunnerSession:
         self._platform_input_ids_by_vendor_uuid[vendor_uuid] = pending.input_id
         try:
             await self._client.query(
-                self._single_input({**delivery.sdk_input, "uuid": vendor_uuid}),
+                self._single_input({**sdk_input, "uuid": vendor_uuid}),
                 session_id=self.session_id,
             )
         except Exception:
@@ -1841,16 +1860,6 @@ class RunnerSession:
             self._command_ids_by_input_id.pop(pending.input_id, None)
             raise
 
-    async def _query_next_buffered(self) -> bool:
-        """Prompt the FIFO head after the preceding response has ended."""
-
-        if not self._buffered_deliveries:
-            return False
-        delivery = self._buffered_deliveries[0]
-        await self._query_delivery(delivery)
-        self._buffered_deliveries.popleft()
-        return True
-
     @staticmethod
     def _same_delivery(left: DeliveryCommand, right: DeliveryCommand) -> bool:
         """Whether two commands are one input; a host resending it numbers it anew."""
@@ -1859,6 +1868,35 @@ class RunnerSession:
             and left.session_id == right.session_id
             and left.sdk_input == right.sdk_input
         )
+
+    async def _request_interaction(self, interaction_id: str, request: dict[str, Any]) -> None:
+        """Observe a resumed native tool before exposing its gate to the host.
+
+        Resume may fire PreToolUse during connect, before a root assistant
+        message or any newly admitted platform input. That native execution
+        is engine-owned; it must not borrow the id of an unconsumed input.
+        Its identity combines this runner incarnation and the native tool id,
+        so replay is stable and a later recovery is a distinct interval.
+        """
+        boundary = self._engine_response_id is None and not self._consumed_commands_since_result
+        fields: dict[str, Any] = {}
+        if boundary:
+            tool_use_id = str(request.get("tool_use_id") or "").strip()
+            if not tool_use_id:
+                raise RunnerProtocolError("an engine-owned tool gate has no native tool_use_id")
+            response_id = str(uuid_mod.uuid5(uuid_mod.UUID(RUNNER_BOOT_ID), tool_use_id))
+            self._engine_response_id = response_id
+            self._engine_response_ids.add(response_id)
+            self._busy = True
+            # A snapshot during publication must replay the boundary as well.
+            self._run_start_seq = self.sender.last_seq + 1
+            fields = {"engine_boundary": True, "response_id": response_id}
+            await self._report_status()
+        sequence = await self.sender.send(
+            "interaction", interaction_id=interaction_id, **request, **fields
+        )
+        if boundary:
+            self._run_start_seq = sequence
 
     async def _report_status(self) -> None:
         """Send ``busy`` while an input or a background task runs, else ``idle``, on change."""
@@ -1888,24 +1926,26 @@ class RunnerSession:
     def state(self) -> dict[str, Any]:
         """This session's own account of itself, consistent with the journal's last frame.
 
-        ``consumed`` are the inputs this process handed to Claude (their
-        response is running or done); ``queued`` are received and not yet
-        handed over. Both are platform input ids. ``run_start_seq`` is where
-        the running response begins in the journal.
+        ``consumed`` are the inputs Claude reported consuming; ``queued`` are
+        handed to its native queue but not yet consumed. Both are platform
+        input ids. ``run_start_seq`` is where the running response begins in
+        the journal.
         """
-        queued = [item.command.command_id for item in self._buffered_deliveries]
-        queued.extend(item.input_id for item in self._pending_prompt_consumptions)
+        queued = [item.input_id for item in self._pending_prompt_consumptions]
         return {
             "boot_id": RUNNER_BOOT_ID,
             "last_seq": self.sender.last_seq,
             "busy": self._busy or bool(self._open_tasks),
             "last_delivery_sequence": self._last_delivery_sequence,
             "run_start_seq": self._run_start_seq,
+            "first_unpersisted_event_seq": self.sender.first_unpersisted_event_seq,
             "engine_response_id": self._engine_response_id,
             "running_input_ids": sorted(self._consumed_commands_since_result),
             "consumed_input_ids": sorted(self._consumed_commands_since_result | self._produced_commands),
             "queued_input_ids": queued,
             "pending_interactions": self.broker.pending_requests(),
+            "answered_interaction_ids": sorted(self._answered_interactions),
+            "expired_interaction_ids": sorted(self._expired_interactions),
         }
 
     async def submit(self, command: DeliveryCommand) -> str:
@@ -1942,10 +1982,21 @@ class RunnerSession:
             raise
         return "accepted"
 
-    def answer_interaction(
+    async def answer_interaction(
         self, interaction_id: str, answer: InteractionAnswer
     ) -> bool:
-        return self.broker.answer(interaction_id, answer)
+        if interaction_id in self._answered_interactions:
+            return True
+        if not self.broker.answer(interaction_id, answer):
+            return False
+        self._answered_interactions.add(interaction_id)
+        # Queue the closure before yielding to the SDK callback this answer
+        # released, so its tool output and Result cannot overtake the fact.
+        await self.sender.send(
+            "interaction_closed", interaction_id=interaction_id,
+            reason="answered", requires_persistence=True,
+        )
+        return True
 
     def attach_link(self, link: HostLink) -> None:
         self.sender.set_link(link)
@@ -2010,7 +2061,6 @@ class RunnerSession:
         continues_fifo = bool(
             self._pending_prompt_consumptions
             or self._consumed_commands_since_result
-            or self._buffered_deliveries
         )
         self._run_start_seq = None
         await self.sender.send(
@@ -2018,15 +2068,8 @@ class RunnerSession:
             command_id=command_id,
             continues_fifo=continues_fifo,
         )
-        prompted_successor = (
-            await self._query_next_buffered()
-            if self._buffered_deliveries
-            else False
-        )
         self._busy = bool(
-            prompted_successor
-            or self._buffered_deliveries
-            or self._pending_prompt_consumptions
+            self._pending_prompt_consumptions
             or self._consumed_commands_since_result
         )
         await self._report_status()
@@ -2039,10 +2082,13 @@ class RunnerSession:
     async def set_permission_mode(self, mode: str) -> None:
         if self._client is None:
             raise RunnerProtocolError("set_permission_mode before session start")
+        if self._stream_error is not None:
+            raise self._stream_error
         await self._client.set_permission_mode(mode)
         # Only after the SDK accepted it: the broker's gate short-circuits on
         # this mode, and gating on a mode the CLI refused would split the two.
         self.broker.set_permission_mode(mode)
+        self._permission_mode = mode
 
     async def get_server_info(self) -> dict[str, Any] | None:
         if self._client is None:
@@ -2077,23 +2123,34 @@ class RunnerSession:
         assert self._client is not None
         try:
             await self._pump_events_inner()
+            raise EOFError("Claude SDK message stream ended")
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 — the pump's death is the message
-            # A dying pump dies silently without this handler: the SDK raises
-            # (ProcessError — the CLI died; CLIJSONDecodeError — unparseable
-            # output), the task ends, and the host sees a turn go quiet with
-            # nothing to act on. The SDK's own class name is the taxonomy —
-            # "CLI not installed", "CLI died" and "output unparseable" are
-            # three different operator actions, and a bare string would
-            # collapse them into one.
-            with contextlib.suppress(Exception):
+            self._stream_error = exc
+            pending = self.broker.pending_ids()
+            self.broker.cancel_all(message=str(exc))
+            self._expired_interactions.update(pending)
+            self._engine_response_id = None
+            self._run_start_seq = None
+            self._interrupts_awaiting_prompt_boundary.difference_update(
+                self._consumed_commands_since_result
+            )
+            self._produced_commands.update(self._consumed_commands_since_result)
+            self._consumed_commands_since_result.clear()
+            self._open_tasks.clear()
+            self._busy = False
+            for interaction_id in pending:
                 await self.sender.send(
-                    "error",
-                    error_class=type(exc).__name__,
-                    detail=str(exc),
+                    "interaction_closed", interaction_id=interaction_id,
+                    reason="expired", requires_persistence=True,
                 )
-            raise
+            await self.sender.send(
+                "error", error_class=type(exc).__name__, detail=str(exc),
+                exit_code=getattr(exc, "exit_code", None), requires_persistence=True,
+            )
+            await self._report_status()
+            logger.exception("Claude SDK message stream failed")
 
     async def _pump_events_inner(self) -> None:
         assert self._client is not None
@@ -2220,15 +2277,12 @@ class RunnerSession:
                             self._store.confirmed_store_sequence()
                         )
                     )
-                prompted_successor = await self._query_next_buffered()
                 # deferred_tool_use rides on the ResultMessage event itself. A
                 # separate op for it would be unreachable: the host's turn
                 # iterator returns at the result frame, so anything sent after
                 # it only meets the next turn's seq barrier.
                 self._busy = bool(
-                    prompted_successor
-                    or self._buffered_deliveries
-                    or self._pending_prompt_consumptions
+                    self._pending_prompt_consumptions
                     or self._consumed_commands_since_result
                 )
                 await self._report_status()
@@ -2259,6 +2313,10 @@ class _WsHostLink:
 
     def mark_closed(self) -> None:
         self._open = False
+
+    async def close(self) -> None:
+        self.mark_closed()
+        await self._ws.close(code=1001, reason="host link superseded")
 
     async def send(self, frame: dict[str, Any]) -> bool:
         try:
@@ -2292,6 +2350,7 @@ class RunnerWsServer:
         self._activation_token_file = activation_token_file
         self.session: RunnerSession | None = None
         self._activation_token: str | None = None
+        self._observed_versions: dict[str, Any] | None = None
         self._server: Any = None
 
     @property
@@ -2389,6 +2448,7 @@ class RunnerWsServer:
             link.mark_closed()
 
     async def _open_session(self, opening: dict[str, Any], link: _WsHostLink, ws: Any) -> None:
+        previous_link: _WsHostLink | None = None
         op = opening.get("op")
         after_sequence = 0
         engine_contract = _runner_engine_contract()
@@ -2520,6 +2580,10 @@ class RunnerWsServer:
             self.session.sender.cursor_window(after_sequence)
             # No await between the ownership check and replacement. A link
             # still handshaking owns output too, before replay makes it ready.
+            previous = self.session.sender.link
+            if not isinstance(previous, _WsHostLink):
+                raise RunnerProtocolError("runner host link is not a websocket link")
+            previous_link = previous
             self.session.attach_link(link)
             logger.info("attached to session %s", self.session.session_id)
         else:
@@ -2528,6 +2592,9 @@ class RunnerWsServer:
             )
         logger.info("runner serving session %s", self.session.session_id)
         _write_death_notice(opening.get("death_notice"))
+        if self._observed_versions is None:
+            self._observed_versions = await _runtime_versions(engine_contract)
+        engine_contract["runtime_versions"] = self._observed_versions
         window = self.session.sender.cursor_window(after_sequence)
         await link.send({
             "op": "hello",
@@ -2543,11 +2610,15 @@ class RunnerWsServer:
         # Gap + retained suffix stay under the sender's lock so compaction
         # cannot move the advertised boundary between them.
         await self.session.sender.replay_after(after_sequence, emit_gap=True)
+        if previous_link is not None:
+            await previous_link.close()
 
     async def _dispatch(self, frame: dict[str, Any], link: _WsHostLink) -> None:
         session = self.session
         if session is None:
             raise RunnerProtocolError("frame before activation")
+        if session.sender.link is not link:
+            raise RunnerProtocolError("host link superseded")
         op = frame.get("op")
         if op == "input":
             sequence = frame.get("sequence")
@@ -2585,7 +2656,7 @@ class RunnerWsServer:
             )
         elif op == "answer":
             interaction_id = str(frame.get("interaction_id") or "")
-            answered = session.answer_interaction(
+            answered = await session.answer_interaction(
                 interaction_id,
                 InteractionAnswer(
                     decision=str(frame.get("decision") or "deny"),
@@ -2638,12 +2709,19 @@ class RunnerWsServer:
                 raise RunnerProtocolError(
                     "set_permission_mode requires request_id and mode"
                 )
-            await session.set_permission_mode(mode)
-            await link.send({
-                "op": "permission_mode_ack",
-                "request_id": request_id,
-                "mode": mode,
-            })
+            try:
+                await session.set_permission_mode(mode)
+            except Exception as exc:  # noqa: BLE001 — RPC refusal leaves the event journal connected
+                await link.send({
+                    "op": "permission_mode_ack", "request_id": request_id,
+                    "error_class": type(exc).__name__, "detail": str(exc),
+                })
+            else:
+                await link.send({
+                    "op": "permission_mode_ack",
+                    "request_id": request_id,
+                    "mode": mode,
+                })
         elif op == "state":
             await link.send({
                 "op": "state",

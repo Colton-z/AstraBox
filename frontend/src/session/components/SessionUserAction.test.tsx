@@ -15,8 +15,8 @@ it('shows a message without inventing a link when the operation has no URL', () 
 it('shows the external operation and only refreshes on explicit user action', () => {
   const refresh = vi.fn();
   const perform = vi.fn();
-  render(<SessionUserAction gate={{ ready: false, busy: false, error: null, refresh, perform,
-    state: { ready: false, user_action: { status: 'pending', message: 'Approve access', url: 'https://identity.example/consent' }, actions: [{ id: 'check', label: 'Check consent' }] },
+  render(<SessionUserAction gate={{ applicable: true, ready: false, busy: false, error: null, refresh, perform,
+    state: { applicable: true, ready: false, user_action: { status: 'pending', message: 'Approve access', url: 'https://identity.example/consent' }, actions: [{ id: 'check', label: 'Check consent' }] },
   }} />);
   expect(screen.getByRole('link').getAttribute('href')).toBe('https://identity.example/consent');
   expect(refresh).not.toHaveBeenCalled();

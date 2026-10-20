@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
-from http.client import HTTPException
+from http.client import HTTPException, IncompleteRead
 import json
 from typing import Any
 from urllib.error import HTTPError
@@ -26,10 +26,15 @@ def _post(target: dict[str, Any], operation: str, fields: dict[str, Any]) -> dic
         )
     except (TypeError, ValueError):
         raise RuntimeError("Invalid runtime-state request") from None
+    metadata = "HTTP response metadata unavailable"
     try:
         with urlopen(request, timeout=30) as response:
+            content_type = response.headers.get_content_type() if response.headers.get("Content-Type") else "missing"
+            length = response.headers.get("Content-Length")
+            expected = int(length) if length is not None and length.isascii() and length.isdecimal() else "unknown"
+            metadata = f"HTTP {response.status}, content_type={content_type}, expected_bytes={expected}"
             if response.status != 200:
-                raise RuntimeError("Unexpected runtime-state HTTP status")
+                raise RuntimeError(f"Unexpected runtime-state {operation} response: {metadata}")
             body = response.read()
     except HTTPError as exc:
         status = exc.code
@@ -38,6 +43,10 @@ def _post(target: dict[str, Any], operation: str, fields: dict[str, Any]) -> dic
         if status in (408, 429) or 500 <= status < 600:
             raise OSError(message) from None
         raise RuntimeError(message) from None
+    except IncompleteRead as exc:
+        raise OSError(
+            f"Incomplete runtime-state {operation} response: {metadata}, received_bytes={len(exc.partial)}"
+        ) from None
     except (OSError, HTTPException):
         raise OSError(f"Runtime-state {operation} request failed") from None
     except (TypeError, ValueError):
@@ -45,7 +54,9 @@ def _post(target: dict[str, Any], operation: str, fields: dict[str, Any]) -> dic
     try:
         envelope = json.loads(body)
     except (ValueError, UnicodeError):
-        raise RuntimeError(f"Invalid runtime-state {operation} response encoding") from None
+        raise RuntimeError(
+            f"Invalid runtime-state {operation} response encoding: {metadata}, received_bytes={len(body)}"
+        ) from None
     if not isinstance(envelope, dict) or envelope.get("code") != "OK":
         raise RuntimeError(f"Invalid runtime-state {operation} response")
     data = envelope.get("data")
@@ -103,6 +114,8 @@ def save_snapshot(
     payload: bytes,
     expected_snapshot_id: str | None,
     archive: str = SESSION_DB,
+    *,
+    initialization: dict[str, Any] | None = None,
 ) -> str:
     """Save snapshot bytes against the caller's predecessor and return its ID.
 
@@ -123,6 +136,7 @@ def save_snapshot(
             "payload_b64": base64.b64encode(payload).decode("ascii"),
             "sha256": hashlib.sha256(payload).hexdigest(),
             "expected_snapshot_id": expected_snapshot_id,
+            **({"initialization": initialization} if initialization is not None else {}),
         },
     )
     snapshot_id = data.get("snapshot_id")

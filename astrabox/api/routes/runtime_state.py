@@ -51,10 +51,21 @@ class RuntimeStateLoadRequest(BaseModel):
     owner: RuntimeStateOwnerPayload
 
 
+class NativeStateInitialization(BaseModel):
+    """The allocation whose unpublished profile is being recovered."""
+
+    model_config = ConfigDict(extra="forbid")
+    session_id: str = Field(min_length=1)
+    recovery_owner: str = Field(min_length=1)
+    sandbox_generation: str = Field(min_length=1)
+    sandbox_id: str = Field(min_length=1)
+
+
 class RuntimeStateSaveRequest(RuntimeStateLoadRequest):
     payload_b64: str
     sha256: str = Field(min_length=64, max_length=64)
     expected_snapshot_id: str | None = Field(pattern=r"^[0-9a-f]{64}$")
+    initialization: NativeStateInitialization | None = None
 
 
 class RuntimeStateSaveResult(BaseModel):
@@ -138,8 +149,15 @@ def _mount_archive(
                 content=error_response("INVALID_REQUEST", "snapshot digest mismatch"),
             )
         try:
+            guard = None
+            if payload.initialization is not None:
+                from astrabox.core.service.orchestrator.runtime.native_state_initialization import (
+                    NativeStateInitializationGuard,
+                )
+
+                guard = NativeStateInitializationGuard(owner, **payload.initialization.model_dump())
             snapshot_id = await repo.save(
-                owner, raw, expected_snapshot_id=payload.expected_snapshot_id
+                owner, raw, expected_snapshot_id=payload.expected_snapshot_id, guard=guard,
             )
         except RuntimeStateSnapshotConflict:
             return JSONResponse(

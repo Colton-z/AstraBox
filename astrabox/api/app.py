@@ -803,9 +803,9 @@ def create_app() -> FastAPI:
     async def readyz(response: Response) -> dict[str, str]:
         """Readiness endpoint for rolling deploys.
 
-        200 when this replica should receive new traffic; 503 once shutdown
-        begins (drain / quiesce), so the load balancer stops routing here while
-        in-flight turns finish. See ``astrabox/api/readiness.py``.
+        200 when this replica should receive new traffic; 503 during shutdown
+        or after its core notification listener ends unexpectedly. In-flight
+        turns are not killed by this probe. See ``astrabox/api/readiness.py``.
         """
         from astrabox.api.readiness import readiness_status
 

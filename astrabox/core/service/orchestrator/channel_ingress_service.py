@@ -1875,6 +1875,9 @@ class ChannelIngressService:
         """
         session_id = str(subscription["session_id"])
         deployment_id = str(subscription["deployment_id"])
+        await self._channel_repo.close_ended_channel_questions(
+            deployment_id=deployment_id, session_id=session_id,
+        )
         streaming = bool(subscription["streaming"])
         cursor = int(subscription["after_seq"])
         due: list[dict[str, Any]] = []
@@ -1889,7 +1892,7 @@ class ChannelIngressService:
                     continue
                 seq = int(row["seq"])
                 reply = await self._reply_through(session_id, response_id, seq)
-                if reply is None:
+                if reply is None or not reply.channel_delivery:
                     continue
                 if kind == "start" and reply.first_seq == seq:
                     entry = await self._channel_repo.create_outbox_entry(
@@ -2289,10 +2292,10 @@ class ChannelIngressService:
 
         Subscriptions are read in key order, a page per reconciler tick; a
         short page ends the pass and the next call starts over. A subscription
-        has work when its Session recorded output past its position (a reply
-        boundary no consumer projected, or parts a consumer had no reason to
-        read), or when its binding is disabled or its Session deleted, which
-        ends it.
+        has work when a shown question ended, its Session recorded output past
+        its position (a reply boundary no consumer projected, or parts a consumer
+        had no reason to read), or when its binding is disabled or its Session
+        deleted, which ends it.
         """
         subscriptions = await self._channel_repo.list_output_subscriptions(
             after=self._output_subscription_cursor, limit=_OUTPUT_SUBSCRIPTION_PAGE,

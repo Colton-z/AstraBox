@@ -155,8 +155,16 @@ export default function EnvironmentDetailPage() {
             : f.set(acc, f.get(draft as unknown as Record<string, unknown>)),
         { ...record } as Record<string, unknown>,
       ) as EnvironmentConfig;
-      await upsertAdminEnvironment(record.name, { ...payload, name: record.name });
+      const saved = await upsertAdminEnvironment(record.name, { ...payload, name: record.name });
       await load();
+      setDraft((current) => {
+        if (!current) return current;
+        return revertFields(
+          fields,
+          draftRecordOf(current)!,
+          draftRecordOf(saved)!,
+        ) as unknown as EnvironmentConfig;
+      });
       setSavedSection(index);
       if (savedTimer.current) window.clearTimeout(savedTimer.current);
       savedTimer.current = window.setTimeout(() => setSavedSection(null), 2600);

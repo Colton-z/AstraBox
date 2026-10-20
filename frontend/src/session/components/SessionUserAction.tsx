@@ -18,7 +18,7 @@ export function UserActionNotice({ action }: { action: UserAction }) {
 
 export function SessionUserAction({ gate }: { gate: ReturnType<typeof useSessionUserAction> }) {
   const { t } = useTranslation();
-  if (gate.ready) return null;
+  if (!gate.applicable || gate.ready) return null;
   return (
     <div className="mb-3 space-y-2 rounded-lg border p-3 text-sm" aria-busy={gate.busy}>
       {gate.state?.user_action && <UserActionNotice action={gate.state.user_action} />}

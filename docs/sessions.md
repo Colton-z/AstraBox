@@ -89,7 +89,12 @@ curl --silent --show-error --request POST \
 - **`status: "accepted"`**: AstraBox passes the request to the Agent program,
   which stops the response in progress and reports how it ended, for example
   `cancelled`.
-- **`status: "idle"`**: no runtime is connected, so nothing runs to interrupt.
+- **`status: "idle"`**: no open response or held input was observed. This does
+  not assert that the runtime is disconnected.
+- **`409 PENDING_INPUTS_NOT_CANCELLED`**: no open response was observed, but the
+  platform still holds accepted inputs. `data.input_ids` identifies those inputs
+  at the time of the read. They have not been withdrawn and may still run.
+  The console explains this refusal instead of presenting an idle success.
 - **After interrupt**: the Session remains reusable; send the next message as
   usual.
 
@@ -97,6 +102,19 @@ Only `DELETED` is final. Interrupting a response does not delete the Session or
 its saved history. A Session's web terminal has its own stop operation,
 `POST /api/v1/sessions/{session_id}/terminal/interrupt`; the conversation
 interrupt does not stop a terminal command.
+
+Interrupt does not withdraw queued messages, including when it stops an active
+response. Individual accepted inputs have no withdrawal operation. A `pending`
+row means the delivery receipt has not arrived; the runtime may already have
+received it. Do not delete or mark that row cancelled to implement withdrawal.
+
+To take the entire conversation offline, use **Archive** in the conversation
+list (`POST /api/v1/sessions/{session_id}/archive`). Successful archival prevents
+further runtime connections while retaining saved history. Held inputs then
+fail with `CONVERSATION_ENDED` when the reader reconciles the archived Session.
+It is a separate lifecycle operation, not per-message cancellation and
+not an undo of work the runtime already performed. Archival errors must be
+resolved before treating the conversation as offline.
 
 ## Sending Messages While the Agent Is Working
 
@@ -362,6 +380,45 @@ defines its accepted values. AstraBox stores the mode on the Session and
 applies it to the running Agent program; a Session without a running program
 receives it when its runtime starts.
 
+### Conversation history and folded work
+
+`GET /api/v1/sessions/{session_id}/messages` returns the recorded conversation
+as UI messages. The console reads the same messages through
+`GET /api/v1/sessions/{session_id}/history-blocks`, which replaces folded work
+with `data-process-block` headers. Each header's `block_id` and `cursor` address
+its parts at
+`GET /api/v1/sessions/{session_id}/history-blocks/{block_id}?cursor=...`.
+Opening the header fetches those parts at the recorded position.
+
+A response that ended `failed` or `cancelled` can fold its finished work and
+intermediate body text under one header. A successful response can do so when
+it has text after its last tool call. Text after the last tool call stays
+outside that fold. The native ending reason, such as `max_tokens`, does not
+select a separate layout. The response metadata retains `outcome` and
+`native_reason` independently of folding.
+
+The console's display contract is:
+
+- A failed response keeps its failure notice visible outside the fold. A
+  cancelled response keeps its stopped notice visible there.
+- On an abnormal ending, failed, denied and unfinished tool calls stay outside
+  the whole-response fold. Interaction and result parts also stay outside it;
+  a tool awaiting approval prevents that fold.
+- Expanding a whole-response header restores its body text and process groups.
+  Expanding an ordinary process group shows its tool and reasoning entries
+  directly. Tool cards keep their own disclosures for input and output. Folding
+  changes the initial presentation, without discarding the recorded steps.
+- Reloading reads the same recorded response outcome and content through the
+  history endpoints. A failed response does not become successful because its
+  work has a generated label.
+
+A process summary names operations; it is not the response's outcome. On the
+process-summary endpoint, `status: completed` means label generation finished.
+For a failed or cancelled response, `response_completed` is `false` even when
+that label exists. Integrations use the response's recorded `outcome` to decide
+whether it succeeded, and accept folded intermediate text when the failure
+notice and all recorded steps remain accessible.
+
 ### Unread replies
 
 A Session records when it last gained output (`last_output_at`), whether a
@@ -424,6 +481,19 @@ Archiving, deleting, ending a conversation and terminating its sandbox return
 Interrupt the work first, or wait for it to finish. A Session that is waiting
 for an answer to an approval or a question is not working and can be archived
 or deleted.
+
+## Browser
+
+The Browser panel controls the sandbox's desktop through a signed, expiring
+viewer URL. It is available for a conversation-owned Agent sandbox and for an
+Assistant workspace owned by the signed-in user. An Assistant's Sessions share
+that owner's desktop. Agent sandboxes shared between users cannot expose a
+Browser because the desktop is not isolated per conversation.
+
+Wake a hibernated Assistant workspace before opening Browser. Reconnect mints a
+new link against the workspace's current sandbox, including after replacement.
+Desktop tabs and Browser links belong to that sandbox; they do not survive its
+replacement. This viewer does not require a persistent workspace volume.
 
 ## Conversation Workflow
 

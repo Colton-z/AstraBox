@@ -17,6 +17,8 @@ from astrabox.seams.channel import (
     ChannelAttention,
     ChannelDeliveryReceipt,
     ChannelDescriptor,
+    ChannelDeliveryHandle,
+    ChannelEvent,
     ChannelInbound,
     ChannelProvider,
     ChannelRecall,
@@ -65,3 +67,28 @@ class InstalledChannel(ChannelProvider):
             )
             response.raise_for_status()
         return ChannelDeliveryReceipt(message_ids=[message_id])
+
+
+class _StreamingDelivery(ChannelDeliveryHandle):
+    def __init__(self, context: dict[str, Any], aliases: list[str]) -> None:
+        self._url = context["callback_url"]
+        self._alias = aliases[0] if aliases else f"installed-{uuid.uuid4().hex}"
+
+    async def emit(self, event: ChannelEvent) -> ChannelDeliveryReceipt:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.post(self._url, json={
+                "type": event.type, "text": event.text, "error": event.error,
+                "message_id": self._alias, "response_id": event.response_id,
+            })
+            response.raise_for_status()
+        return ChannelDeliveryReceipt(message_ids=[self._alias])
+
+
+class InstalledStreamingChannel(InstalledChannel):
+    """A separately installed provider exercising the public streaming contract."""
+
+    name = "installed_stream_probe"
+    supports_streaming_delivery = True
+
+    async def open_delivery(self, *, reply_context, prior_aliases, binding) -> ChannelDeliveryHandle:
+        return _StreamingDelivery(reply_context, prior_aliases)

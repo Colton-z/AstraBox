@@ -111,6 +111,7 @@ PASS_THROUGH = frozenset(
         # volume these behave exactly as in a Compose stack that sets none.
         "ASTRABOX_STORAGE_PROVIDER",
         "ASTRABOX_EFS_FILE_SYSTEM_ID",
+        "ASTRABOX_ASSISTANT_PROFILE_ON_WORKSPACE_VOLUME",
         "ASTRABOX_WORKSPACE_MOUNTER_IMAGE",
         "ASTRABOX_WORKSPACE_STORAGE_TOPOLOGY",
         "ASTRABOX_WORKSPACE_MOUNT_ROOT",

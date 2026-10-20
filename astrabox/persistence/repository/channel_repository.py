@@ -105,7 +105,7 @@ from astrabox.persistence.sql.models.channels import (
     ChannelOutputSubscription,
 )
 from astrabox.persistence.sql.models.deployments import Deployment
-from astrabox.persistence.sql.models.sessions import Session, SessionOutput
+from astrabox.persistence.sql.models.sessions import Session, SessionInteraction, SessionOutput
 
 _INBOUND = ChannelInbound.__table__
 _CONVERSATIONS = ChannelConversation.__table__
@@ -119,6 +119,7 @@ _LINKS = ChannelAccountLink.__table__
 _DEPLOYMENTS = Deployment.__table__
 _SESSIONS = Session.__table__
 _SESSION_OUTPUT = SessionOutput.__table__
+_SESSION_INTERACTIONS = SessionInteraction.__table__
 
 # A question a channel showed: OPEN while it can still be answered there;
 # ANSWERED once the engine accepted the participant's answer; CLOSED when the
@@ -231,6 +232,19 @@ _TEXT_PAYLOAD_FIELDS = ("content", "creator_user_id", "execution_user_id", "prom
 
 def new_owner_token() -> str:
     return uuid.uuid4().hex
+
+
+def _ended_channel_question() -> ColumnElement[bool]:
+    """A runtime-ended question without an answer being handed over by this channel."""
+    i, native = _INTERACTIONS.c, _SESSION_INTERACTIONS.c
+    return select(native.interaction_id).where(
+        native.session_id == i.session_id,
+        native.interaction_id == i.interaction_id,
+        or_(
+            native.status.in_(["withdrawn", "expired"]),
+            and_(native.status == "answered", i.answering_item.is_(None)),
+        ),
+    ).exists()
 
 
 def _const(value: str) -> ColumnElement[str]:
@@ -1546,8 +1560,9 @@ class ChannelRepository:
         """One page, in key order after ``after``, of the subscriptions with work.
 
         A subscription has work when its Session recorded output past its
-        position, its binding is disabled (``binding_enabled`` false), or its
-        Session was deleted (``session_deleted``).
+        position, a shown question has ended in the runtime, its binding is
+        disabled (``binding_enabled`` false), or its Session was deleted
+        (``session_deleted``).
         """
         s = _SUBSCRIPTIONS.c
         output_past = (
@@ -1566,7 +1581,15 @@ class ChannelRepository:
             )
             .join(_DEPLOYMENTS, _DEPLOYMENTS.c.deployment_id == s.deployment_id)
             .join(_SESSIONS, _SESSIONS.c.session_id == s.session_id)
-            .where(or_(~_DEPLOYMENTS.c.enabled, _SESSIONS.c.deleted, output_past))
+            .where(or_(
+                ~_DEPLOYMENTS.c.enabled, _SESSIONS.c.deleted, output_past,
+                select(_INTERACTIONS.c.ref).where(
+                    _INTERACTIONS.c.deployment_id == s.deployment_id,
+                    _INTERACTIONS.c.session_id == s.session_id,
+                    _INTERACTIONS.c.state == INTERACTION_OPEN,
+                    _ended_channel_question(),
+                ).exists(),
+            ))
         )
         if after is not None:
             statement = statement.where(tuple_(s.deployment_id, s.session_id) > tuple_(*after))
@@ -2070,6 +2093,14 @@ class ChannelRepository:
         )))
 
     # ── questions a channel showed ───────────────────────────────────────
+
+    async def close_ended_channel_questions(self, *, deployment_id: str, session_id: str) -> None:
+        """Close shown questions the runtime withdrew, expired or answered elsewhere."""
+        i = _INTERACTIONS.c
+        await execute(update(_INTERACTIONS).where(
+            i.deployment_id == deployment_id, i.session_id == session_id,
+            i.state == INTERACTION_OPEN, _ended_channel_question(),
+        ).values(state=INTERACTION_CLOSED, updated_at=func.now()))
 
     async def get_channel_interaction(
         self, *, deployment_id: str, ref: str

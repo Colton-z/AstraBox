@@ -914,6 +914,9 @@ def translate_claude_sdk_message(
         # flat run for a later reader to re-segment.
         streamed = cursor is not None and cursor.message_was_started(message)
         if not streamed:
+            yield from cursor.discard_partial_content()
+        yield from cursor.settle_retry()
+        if not streamed:
             if cursor is not None:
                 cursor.stream_message_id = ""
                 cursor.streamed_text = False
@@ -921,6 +924,8 @@ def translate_claude_sdk_message(
         yield from _translate_claude_assistant_blocks(message, envelope_seq, cursor)
         if not streamed:
             yield {"type": "finish-step"}
+        cursor.partial_part_ids.clear()
+        cursor.confirmed_text = cursor.emitted_text
         return
 
     if sdk_type == "UserMessage":
@@ -936,10 +941,12 @@ def translate_claude_sdk_message(
             return
         retry = api_retry_payload(message)
         if retry is not None:
+            yield from cursor.discard_partial_content()
+            cursor.retry = {**retry, "active": True}
             yield {
                 "type": "data-api-retry",
                 "id": "api-retry",
-                "data": retry,
+                "data": cursor.retry,
             }
             return
         yield _claude_raw_frame(str(message.get("subtype") or "system"), message)
@@ -961,6 +968,7 @@ def translate_claude_sdk_message(
     # translator projects that text only when no assistant text crossed the
     # seam, keeping live and reconnect translation in one vocabulary.
     subtype = str(message.get("subtype") or "")
+    yield from cursor.settle_retry()
     result_text = str(message.get("result") or "")
     # ``is_error`` is the SDK's own verdict on the run, and it does not always
     # agree with ``subtype``. A model endpoint that refuses the request ends the
@@ -1054,10 +1062,37 @@ class ClaudeStreamCursor:
         self.streamed_text = False
         self.stream_message_id = ""
         self.emitted_text = False
+        self.confirmed_text = False
+        self.partial_part_ids: set[str] = set()
+        self.retracted_part_ids: list[str] = []
+        self.retry: dict[str, Any] | None = None
         self.started_tool_ids: set[str] = set()
         self.child_identities = (
             child_identities if child_identities is not None else ClaudeChildIdentities()
         )
+
+    def discard_partial_content(self) -> Iterator[dict[str, Any]]:
+        """Retract previews not confirmed by a native AssistantMessage.
+
+        Claude's no-complete-block streaming retry discards its partial message.
+        Completed native blocks and executed tools are not speculative previews.
+        """
+        if not self.partial_part_ids:
+            return
+        self.retracted_part_ids.extend(sorted(self.partial_part_ids))
+        self.partial_part_ids.clear()
+        self.blocks.clear()
+        self.streamed_text = False
+        self.emitted_text = self.confirmed_text
+        yield {"type": "message-metadata", "messageMetadata": {
+            "retracted_part_ids": list(self.retracted_part_ids),
+        }}
+
+    def settle_retry(self) -> Iterator[dict[str, Any]]:
+        """Keep the native retry record without claiming its wait is still active."""
+        if self.retry is not None and self.retry.get("active"):
+            self.retry = {**self.retry, "active": False}
+            yield {"type": "data-api-retry", "id": "api-retry", "data": self.retry}
 
     def message_was_started(self, message: dict[str, Any]) -> bool:
         """Whether this complete block belongs to an observed native step."""
@@ -1214,12 +1249,16 @@ def translate_claude_stream_event(
             cursor.register(index, "text", block_id)
             cursor.streamed_text = True
             cursor.emitted_text = True
-            yield {"type": "text-start", "id": block_id, _BLOCK_INDEX_FIELD: index}
+            cursor.partial_part_ids.add(block_id)
+            yield {"type": "text-start", "id": block_id, _BLOCK_INDEX_FIELD: index,
+                   "providerMetadata": {"astrabox": {"part_id": block_id}}}
         elif kind == "thinking":
             block_id = _live_block_id(uuid, index)
             cursor.register(index, "thinking", block_id)
             cursor.streamed_text = True
-            yield {"type": "reasoning-start", "id": block_id, _BLOCK_INDEX_FIELD: index}
+            cursor.partial_part_ids.add(block_id)
+            yield {"type": "reasoning-start", "id": block_id, _BLOCK_INDEX_FIELD: index,
+                   "providerMetadata": {"astrabox": {"part_id": block_id}}}
         elif kind == "tool_use":
             tool_call_id = str(block.get("id") or _live_block_id(uuid, index))
             cursor.register(index, "tool_use", _live_block_id(uuid, index), tool_call_id)
@@ -1297,6 +1336,8 @@ def translate_claude_stream_event(
         # again. Both levels exist in the stream vocabulary, and dropping this
         # one leaves the turn a flat run of blocks that any later reader has to
         # re-segment from content.
+        yield from cursor.discard_partial_content()
+        yield from cursor.settle_retry()
         cursor.stream_message_id = _claude_message_id(event)
         cursor.streamed_text = False
         yield {

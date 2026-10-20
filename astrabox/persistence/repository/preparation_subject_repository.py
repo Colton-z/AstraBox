@@ -18,6 +18,7 @@ from astrabox.persistence.repository.environment_repository import _view as envi
 from astrabox.persistence.sql.models.agents import Agent, AgentRuntime
 from astrabox.persistence.sql.models.assistants import Assistant, AssistantDefaults, AssistantWorkspace
 from astrabox.persistence.sql.models.environments import Environment
+from astrabox.persistence.sql.models.sessions import Session
 from astrabox.seams.runtime_preparation import PreparationSubject
 
 
@@ -34,6 +35,7 @@ class PreparationSubjectState:
     environment: dict[str, Any]
     runtime: dict[str, Any] | None
     layers: list[dict[str, Any]]
+    materializer_session: dict[str, Any] | None = None
 
 
 async def lock_subject(
@@ -43,6 +45,7 @@ async def lock_subject(
 
     Assistant defaults precede these locks. Definition writers protect their
     child rows; an exclusive Assistant lock also blocks first workspace insert.
+    A materializing workspace's owning Session follows its workspace lock.
     No provider-owned rows may be locked before this function.
     """
     assistant = subject.kind == "assistant"
@@ -74,6 +77,13 @@ async def lock_subject(
     runtime = (await connection.execute(
         select(runtime_table).where(runtime_key == subject.id).with_for_update(read=True)
     )).mappings().first()
+    materializer_session = None
+    if assistant and runtime is not None and runtime["state"] == "MATERIALIZING":
+        materializer_session = (await connection.execute(
+            select(Session.__table__)
+            .where(Session.session_id == runtime["provisioning_session_id"])
+            .with_for_update(read=True)
+        )).mappings().first()
     layers: list[dict[str, Any]] = []
     if assistant:
         row = (await connection.execute(
@@ -93,4 +103,5 @@ async def lock_subject(
     return PreparationSubjectState(
         definition=document, environment=environment_view(dict(environment)),
         runtime=dict(runtime) if runtime is not None else None, layers=layers,
+        materializer_session=dict(materializer_session) if materializer_session is not None else None,
     )

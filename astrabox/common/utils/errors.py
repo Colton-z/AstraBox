@@ -422,8 +422,10 @@ for _code, _status, _category, _retryable, _owner in (
     # A running response whose runtime has no connected reader; retrying once
     # the reader reconnects can succeed.
     ("INTERRUPT_UNAVAILABLE", 409, "state", True, "session"),
+    ("PENDING_INPUTS_NOT_CANCELLED", 409, "state", False, "session"),
     # The conversation's Agent was deleted; its history stays readable.
     ("AGENT_DELETED", 409, "state", False, "session"),
+    ("SESSION_READ_ONLY", 409, "state", False, "session"),
     # An engine with a permission-mode vocabulary but no product default needs
     # the caller to choose one explicitly.
     ("ENGINE_PERMISSION_MODE_REQUIRED", 400, "request", False, "client"),
@@ -636,6 +638,7 @@ for _code, _status, _category, _retryable, _owner in (
     # Hermes gateway failed. The same start is valid once the sandbox answers.
     ("HERMES_GATEWAY_START_FAILED", 502, "runtime.preparation", True, "runtime"),
     ("HERMES_BACKEND_NOT_READY", 503, "runtime.preparation", True, "runtime"),
+    ("RUNTIME_STATE_SAVE_REQUIRED", 503, "runtime.preparation", True, "runtime"),
     # Hermes declined one message at prompt.submit: its active-session limit,
     # session storage it could not write, or a voice-mode stop phrase. The
     # identical message goes through once Hermes takes messages again.

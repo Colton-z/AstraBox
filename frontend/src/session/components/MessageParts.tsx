@@ -18,7 +18,8 @@ import { Reasoning, ReasoningTrigger } from '@/components/ai-elements/reasoning'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { cn } from '@/lib/utils';
 import { useTranscriptAccess } from '../TranscriptAccess';
-import type { ProcessDetails, ProcessSummaryState } from '../../types';
+import type { HistoricalQuestionnaireInteraction, ProcessDetails, ProcessSummaryState } from '../../types';
+import { QuestionnaireHistoryCard } from '@/components/composer/QuestionnaireHistoryCard';
 import { localizeDisplayText, toolPreview } from '../../utils/format';
 import { filterSupersededSingletonInteractionParts } from '../toolState';
 import { isOpenResponse, responseMetadata } from '../sessionMessages';
@@ -38,6 +39,8 @@ interface PartGroup {
   key: number;
   process: boolean;
   parts: MessagePart[];
+  /** Adjacent text shares one Markdown document; source parts remain intact. */
+  text?: string;
 }
 
 // What a reader acts on or reads as the turn's outcome. These never join a
@@ -122,7 +125,14 @@ export function groupAssistantProcess(
   settled = false,
 ): PartGroup[] {
   const groups: PartGroup[] = [];
+  const formToolIds = new Set(parts.flatMap((part) => {
+    if (part.type !== 'data-interaction') return [];
+    const interaction = part.data as HistoricalQuestionnaireInteraction | undefined;
+    return interaction?.presentation === 'form' && interaction.status && interaction.tool_call_id ? [interaction.tool_call_id] : [];
+  }));
   parts.forEach((part, index) => {
+    // The structured form is this tool call's presentation, not a second card.
+    if (part.type === 'dynamic-tool' && formToolIds.has(part.toolCallId)) return;
     if (
       part.type === 'step-start'
       || (part.type.startsWith('data-') && !STANDALONE_DATA_PARTS.has(part.type))
@@ -130,13 +140,18 @@ export function groupAssistantProcess(
       groups[groups.length - 1]?.parts.push(part);
       return;
     }
-    // Blank text renders nothing, so ending a process run on one would break
-    // the run at a part the reader never sees.
+    const previous = groups[groups.length - 1];
+    if (part.type === 'text' && previous?.text !== undefined && previous.parts.at(-1)?.type === 'text') {
+      previous.parts.push(part);
+      previous.text += part.text;
+      return;
+    }
+    // Blank text does not start a visible group, but prefixes inside a text
+    // run above retain their whitespace and Markdown syntax.
     if (part.type === 'text' && !part.text.trim()) return;
     const process = isProcessPart(part, pendingToolCallId, settled);
-    const previous = groups[groups.length - 1];
     if (process && previous?.process) previous.parts.push(part);
-    else groups.push({ key: index, process, parts: [part] });
+    else groups.push({ key: index, process, parts: [part], ...(!process && part.type === 'text' ? { text: part.text } : {}) });
   });
   return groups;
 }
@@ -169,6 +184,9 @@ function PartGroupRenderer({
   running: boolean;
   context: PartGroupRenderContext;
 }) {
+  if (group.text !== undefined) {
+    return <MarkdownContent text={group.text} testid={context.isUser ? undefined : 'assistant-text'} />;
+  }
   const rendered = group.parts.map((part, index) => (
     <PartRenderer
       key={`${context.groupOwnerId}-${group.key}-part-${index}`}
@@ -214,6 +232,7 @@ function useOpenGroups(): [Record<number, boolean>, (key: number, open: boolean)
 export function AssistantMessageParts({
   parts,
   partOwnerId,
+  foldProcess,
   pendingToolCallId,
   isActiveTurn = false,
   isStreaming,
@@ -221,6 +240,7 @@ export function AssistantMessageParts({
 }: {
   parts: MessagePart[];
   partOwnerId: string;
+  foldProcess: boolean;
   pendingToolCallId?: string;
   isActiveTurn?: boolean;
   isStreaming?: boolean;
@@ -236,7 +256,7 @@ export function AssistantMessageParts({
       {groups.map((group, index) => (
         <PartGroupRenderer
           key={`${partOwnerId}-group-${group.key}`}
-          group={group}
+          group={foldProcess ? group : { ...group, process: false }}
           running={Boolean(isStreaming && index === groups.length - 1 && !pendingToolCallId)}
           context={{
             groupOwnerId: partOwnerId,
@@ -643,7 +663,7 @@ function AssistantProcess({
         <div
           role="status"
           data-testid="assistant-process-activity"
-          className="ml-6 min-h-5 border-l border-border pb-3 pl-6 text-sm leading-5 text-muted-foreground"
+          className="ml-6 min-h-8 border-l border-border pb-3 pl-6 text-sm leading-5 text-muted-foreground"
         >
           {action && <div className="truncate" title={action}>{action}</div>}
           {unfinished.length > 1 && (
@@ -710,16 +730,22 @@ export function PartRenderer({
     }
     default: {
       const anyPart = part as Record<string, unknown>;
+      if (anyPart.type === 'data-interaction' && anyPart.data) {
+        const interaction = anyPart.data as HistoricalQuestionnaireInteraction;
+        return interaction.presentation === 'form' && interaction.status ? <QuestionnaireHistoryCard interaction={interaction} /> : null;
+      }
       if (typeof anyPart.type === 'string' && anyPart.type === 'data-process-block' && anyPart.data) {
+        const details = anyPart.data as ProcessDetails;
         return (
           <LazyProcessBlock
-            details={anyPart.data as ProcessDetails}
+            details={details}
             sessionId={sessionId}
             renderDetails={(messages) => messages.map((message) => (
               <AssistantMessageParts
                 key={message.id}
                 parts={message.parts}
                 partOwnerId={message.id}
+                foldProcess={details.summarize}
               />
             ))}
           />
@@ -774,10 +800,15 @@ function MessageImage({ mediaType, base64 }: { mediaType: string; base64: string
 
 const EMPTY_IMAGE_BYTES = new Uint8Array();
 
+// The plugin registers every language when constructed. Share its synchronous
+// transformer across markdown processors instead of rebuilding it per fragment.
+const highlightMarkdown = rehypeHighlight();
+const sharedHighlight = () => highlightMarkdown;
+
 export function MarkdownContent({ text, testid }: { text: string; testid?: string }) {
   return (
     <div className="markdown" data-testid={testid}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[sharedHighlight]}>
         {localizeDisplayText(text)}
       </ReactMarkdown>
     </div>
@@ -808,12 +839,19 @@ export function MarkdownContent({ text, testid }: { text: string; testid?: strin
  */
 export function ThinkingPartCard({ text, isStreaming }: { text: string; isStreaming?: boolean }) {
   const { t } = useTranslation();
+  const [open, setOpen] = useState(Boolean(isStreaming));
+
+  // Streaming opens a fragment once; the reader owns its later disclosure.
+  useEffect(() => {
+    if (isStreaming) setOpen(true);
+  }, [isStreaming]);
 
   return (
     <Reasoning
       data-testid="reasoning-part"
       data-chars={text.trim().length}
-      isStreaming={isStreaming}
+      open={open}
+      onOpenChange={setOpen}
       className={cn(
         'mb-0 overflow-hidden rounded-[var(--radius)] border bg-muted/60 transition-colors',
         isStreaming ? 'border-primary/40' : 'border-border',
@@ -821,11 +859,11 @@ export function ThinkingPartCard({ text, isStreaming }: { text: string; isStream
     >
       <ReasoningTrigger
         className="ring-inward px-3 py-2 text-13 hover:bg-accent/40"
-        getThinkingMessage={(streaming) => (
+        getThinkingMessage={() => (
           <span className="flex flex-1 items-center gap-2 text-left">
-            {streaming && <span className="astra-dot astra-dot--live" />}
+            {isStreaming && <span className="astra-dot astra-dot--live" />}
             <span className="t-eyebrow">
-              {streaming ? <Shimmer duration={1}>{t('chat:message.thinking')}</Shimmer> : t('chat:message.thought_process')}
+              {isStreaming ? <Shimmer duration={1}>{t('chat:message.thinking')}</Shimmer> : t('chat:message.thought_process')}
             </span>
           </span>
         )}

@@ -14,6 +14,7 @@
   "sessions_group": "Sessions",
   "settings": "Settings",
   "sign_out": "Sign out",
+  "sign_out_failed": "Could not sign out: {{error}}",
   "signin": {
     "probe_failed": "Could not check your sign-in status",
     "probe_failed_note": "The server could not confirm your sign-in status. Retry when the connection is available.",

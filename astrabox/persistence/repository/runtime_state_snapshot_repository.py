@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from astrabox.persistence.sql import fetch_all, fetch_one, transaction
 from astrabox.persistence.sql.models.sessions import RuntimeStateChunk, RuntimeStateHead
 from astrabox.persistence.sql.statements import insert_if_absent
+from astrabox.seams.runtime_preparation import PreparationCommitGuard
 
 CHUNK_SIZE = 256 * 1024
 
@@ -185,6 +186,8 @@ class RuntimeStateSnapshotRepository:
         owner: RuntimeStateOwner,
         payload: bytes,
         expected_snapshot_id: str | None = None,
+        *,
+        guard: PreparationCommitGuard | None = None,
     ) -> str:
         """Publish ``payload`` over ``expected_snapshot_id``; the published snapshot's id.
 
@@ -201,6 +204,8 @@ class RuntimeStateSnapshotRepository:
         size = len(payload)
         current = await self._head(owner)
         if current is not None and current["sha256"] == sha256 and current["size"] == size:
+            if guard is not None:
+                await transaction(guard.validate)
             return str(current["snapshot_id"])
         if (current["snapshot_id"] if current is not None else None) != expected_snapshot_id:
             raise RuntimeStateSnapshotConflict("runtime state snapshot predecessor changed")
@@ -225,6 +230,8 @@ class RuntimeStateSnapshotRepository:
         ]
 
         async def publish(conn: AsyncConnection) -> None:
+            if guard is not None:
+                await guard.validate(conn)
             # The head moves first: its row lock orders concurrent saves, and a
             # save that lost the compare-and-set stops before writing chunks.
             if expected_snapshot_id is None:

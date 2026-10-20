@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
 from typing import Any
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.time_utils import parse_iso
 from astrabox.core.model import SessionState
 from astrabox.core.service.orchestrator.engine.runtime import RuntimeClient, RuntimeInput
+from astrabox.core.service.orchestrator.session_lifecycle.startup import runtime_initialization_metadata
 from astrabox.core.service.orchestrator.session_runtime.host import (
     ConnectedRuntime,
     RuntimeEnded,
@@ -97,6 +99,11 @@ class PlatformRuntimeConnector:
             client = runtime.engine_client
             if not isinstance(client, RuntimeClient):
                 raise TypeError(f"the {runtime.engine_kind} adapter does not serve the runtime contract")
+            initialization = await runtime_initialization_metadata(session_id, runtime)
+            await self._sessions.update_session(
+                session_id, {"runtime_versions": initialization["runtime_versions"]},
+                touch_updated_at=False,
+            )
             return ConnectedRuntime(
                 client=client,
                 sandbox_id=str(runtime.sandbox_id or session.get("sandbox_id") or ""),
@@ -146,6 +153,7 @@ def reader_hooks(
     *,
     sessions: SessionRepository,
     runtime_manager: Any,
+    realign_live_sandbox_owners: Callable[[str], Awaitable[object]],
     committed: Callable[[str, FactBatch], Awaitable[None]],
 ) -> Callable[[str, ConnectedRuntime], ReaderHooks]:
     def build(session_id: str, connected: ConnectedRuntime) -> ReaderHooks:
@@ -156,6 +164,18 @@ def reader_hooks(
             await prepare_input(session, connected, item)
             if connected.refresh is not None:
                 await connected.refresh()
+            expiry = session.get("expires_at")
+            if (
+                expiry
+                and str(session.get("sandbox_id") or "") == connected.sandbox_id
+                and parse_iso(str(expiry)) <= datetime.now(timezone.utc)
+            ):
+                # A connected box can outlive its stored lease projection.
+                # Reuse lifecycle realignment without renewing a healthy lease.
+                try:
+                    await realign_live_sandbox_owners(connected.sandbox_id)
+                except Exception:
+                    logger.exception("live lease realignment failed session=%s", session_id)
 
         recorded_key: list[str | None] = [None]
 

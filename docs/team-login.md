@@ -198,6 +198,52 @@ maps the user and group claims. You can configure a JWKS URL directly instead
 of using issuer discovery. This method does not provide a browser redirect;
 the client or gateway must attach the token to each request.
 
+## Sign out
+
+The account menu sends one same-origin `POST /api/v1/auth/logout`, with browser
+credentials. This POST is not retried automatically. The identity deployment
+returns one of two results:
+
+| Result | Meaning | Console behavior |
+|---|---|---|
+| `204 No Content` | The deployment has ended this browser's session | Read `GET /api/v1/auth/session` without caching; navigate to the console root only if it returns `authenticated: false` |
+| `200 application/json` with `redirect_url` | The browser must visit the identity provider to finish logout | Navigate the top-level browser to that HTTP(S) URL; the provider owns logout and the return to the console |
+
+The bundled OIDC route returns 204 and deletes the AstraBox session cookie at
+the deployment's public path. It ends the console session; it does not end the
+identity provider's own browser session.
+
+An external identity deployment registers its session, login and logout routes
+through `astrabox.api.routers` or
+`astrabox.api.extensions.register_extension_router`. Its resolver still uses
+the `astrabox.web.identity` interface. A provider that requires browser navigation
+returns an unwrapped JSON object, for example:
+
+```json
+{"redirect_url":"https://identity.example.com/logout?return_to=https%3A%2F%2Fconsole.example.com%2Fastrabox%2F"}
+```
+
+The adapter constructs this URL from its configured provider origin and the
+provider's supported parameters. It includes the allowed console return URL;
+`astrabox.deploy.public_path.public_url(request, "/")` composes the console
+root with its public path prefix. Return addresses follow the provider's
+registration or allowlist rules. The console does not add provider parameters,
+read provider credentials or change the reported authentication state.
+
+Return navigation instructions as 200 JSON rather than an HTTP redirect from
+the POST: fetching a redirect does not navigate the browser. Provider logout
+can require its own browser session, as in
+[OpenID Connect RP-Initiated Logout 1.0](https://openid.net/specs/openid-connect-rpinitiated-1_0.html#RPLogout).
+Any deployment-owned cleanup precedes the response; a navigation instruction
+does not assert that provider logout has completed. On return, the console
+reads the real session probe again.
+
+HTTP errors, transport failures, invalid navigation instructions and a 204
+whose session probe does not confirm signed-out state leave the current page
+in place and show an error. They do not clear the saved sign-in destination or
+force navigation to the home page. An external deployment must implement its
+actual logout operation; a 204 with an unchanged authenticated probe is refused.
+
 ## Authorization after login
 
 A successful login does not automatically make a user an administrator. Group

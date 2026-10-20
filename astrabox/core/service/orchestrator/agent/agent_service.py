@@ -195,14 +195,11 @@ class AgentService:
         )
 
     async def list_agents(self, user: UserContext) -> list[dict[str, Any]]:
-        """The agents this caller may see — public ones, plus their own.
+        """Visible Agents with their configured conversation availability.
 
-        This read answers the agent picker, so the per-agent visibility has to
-        be applied here as well as in the console's management list. Enforcing
-        it only there would leave `private` as decoration on a record every user
-        could still enumerate through this call.
+        Visibility retains definitions for management. The picker reads the
+        separate configuration eligibility from the same database query.
         """
-        await self.ensure_bootstrap()
         rows = await self._agent_repo.list_visible_agents(
             user.user_id, platform_admin=is_platform_admin(user.roles)
         )
@@ -259,7 +256,6 @@ class AgentService:
                 message="cursor is not one this list returned",
                 status_code=400,
             ) from exc
-        await self.ensure_bootstrap()
         platform_admin = is_platform_admin(user.roles)
         fetched = await self._agent_repo.list_visible_agents_page(
             user.user_id,

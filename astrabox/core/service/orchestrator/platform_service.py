@@ -319,6 +319,7 @@ class AgentPlatformService:
             hooks=reader_hooks(
                 sessions=self._sessions_repo,
                 runtime_manager=self._runtime_manager,
+                realign_live_sandbox_owners=self._sandbox_lifecycle_service.realign_live_sandbox_owners,
                 committed=committed_facts(self.session_fact_consumers),
             ),
             committed=committed_facts(self.session_fact_consumers),
@@ -388,9 +389,9 @@ class AgentPlatformService:
     async def _start_session_runtime(self) -> None:
         if self._session_runtime_started:
             return
-        self._session_runtime_started = True
         await self._session_feed.start()
         self._reader_host.start()
+        self._session_runtime_started = True
 
     def _build_admin_and_deployments(
         self, assistant_lifecycle_getter: Callable[[], Any] | None
@@ -1229,20 +1230,16 @@ class AgentPlatformService:
             deployment_id,
             agent_id=agent_id,
             patch=patch,
-            **({"actor": user} if _CHANGES_EXECUTION.intersection(patch) else {}),
+            actor=user,
         )
         await self._channel_source_host.reconcile()
         return updated
 
     @staticmethod
     def _execution_identity(payload: dict[str, Any], user: UserContext) -> dict[str, Any]:
-        """Execution keywords for a create, only when the request names any.
-
-        A request without them keeps the replacement contract's original
-        keyword shape.
-        """
+        """Explicit execution choices and the authenticated caller of a create."""
         named = {key: payload[key] for key in _CHANGES_EXECUTION if key in payload}
-        return {**named, "actor": user} if named else {}
+        return {**named, "actor": user}
 
     async def _agent_channel_binding(
         self, user: UserContext, agent_id: str, deployment_id: str

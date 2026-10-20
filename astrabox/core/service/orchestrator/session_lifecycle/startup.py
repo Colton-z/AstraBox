@@ -28,6 +28,7 @@ from astrabox.common.utils.time_utils import utcnow_iso
 from astrabox.core.model import SessionState
 from astrabox.core.service.orchestrator.chunk_processing import extract_agent_session_metadata
 from astrabox.core.service.orchestrator.engine.base import bound_engine_client_manifest
+from astrabox.core.service.orchestrator.runtime.preparation import require_session_user_prerequisites
 from astrabox.core.service.orchestrator.runtime_binding import is_assistant_workspace_bootstrap
 from astrabox.core.service.orchestrator.runtime_subject import (
     RuntimeStartupCleanup,
@@ -176,6 +177,8 @@ class SessionStartup:
             return latest or {"session_id": session_id}
 
         try:
+            session = await ownership.require_current()
+            await require_session_user_prerequisites(session)
             await ownership.require_current()
             target = await self._runtime_subjects.acquire_startup(
                 session_id=session_id,
@@ -478,9 +481,17 @@ async def runtime_initialization_metadata(session_id: str, runtime: Any) -> dict
             ),
             status_code=502,
         ) from exc
-    metadata: dict[str, Any] = {"engine_capabilities": asdict(manifest)}
+    observation: dict[str, Any] = {
+        "observed_at": utcnow_iso(),
+        "sandbox_id": runtime.sandbox_id,
+        "runtime_generation": None,
+        "components": [],
+        "reason": "server_info_not_supported",
+    }
+    metadata: dict[str, Any] = {"engine_capabilities": asdict(manifest), "runtime_versions": observation}
     if not manifest.supports_server_info:
         return metadata
+    observation["reason"] = "engine_versions_not_reported"
     info_fn = getattr(getattr(runtime, "engine_client", None), "get_server_info", None)
     if not callable(info_fn):
         raise APIError(
@@ -498,8 +509,31 @@ async def runtime_initialization_metadata(session_id: str, runtime: Any) -> dict
             "startup initialization metadata fetch failed session=%s err=%s", session_id, exc
         )
         info = None
+        observation["reason"] = "server_info_unavailable"
     if isinstance(info, dict):
         metadata.update(extract_agent_session_metadata(info))
+        versions = info.get("runtime_versions")
+        if isinstance(versions, dict) and versions:
+            components = versions.get("components")
+            generation = versions.get("runtime_generation")
+            if (
+                isinstance(generation, str) and generation
+                and isinstance(components, list) and components
+                and all(isinstance(item, dict)
+                        and isinstance(item.get("component"), str) and item["component"]
+                        and isinstance(item.get("source"), str) and item["source"]
+                        and (isinstance(item.get("version"), str) and item["version"]
+                             or item.get("version") is None and isinstance(item.get("reason"), str) and item["reason"])
+                        for item in components)
+            ):
+                observation.update(
+                    runtime_generation=generation, reason=None,
+                    components=[{key: item.get(key) for key in ("component", "version", "source", "reason")}
+                                for item in components],
+                )
+            else:
+                observation["reason"] = "invalid_engine_version_observation"
+                logger.warning("invalid engine version observation session=%s", session_id)
     return metadata
 
 

@@ -7,6 +7,64 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-10-20
+
+This release collects the fixes and developer-facing improvements made after 0.1.9.
+
+### Upgrade notes
+
+- Update the server and sandbox runtime images together. Native recovery, interaction settlement and observed runtime versions require matching components. Process transport fixes also require the updated execd and sandbox images; existing sandboxes retain their installed binaries.
+- The relational schema adds a nullable sessions.runtime_versions observation. The built-in PostgreSQL provider applies the schema upgrade at startup; external persistence providers must supply the corresponding physical schema.
+- The provider seam version remains 7. PostgreSQL remains the built-in database; dialect-aware tag expressions do not constitute a bundled MySQL persistence provider.
+- Assistant profile placement defaults to its existing behavior. Deployments can set ASTRABOX_ASSISTANT_PROFILE_ON_WORKSPACE_VOLUME=false to keep the live profile sandbox-local while retaining optional persistent workspace files. Native state and profile recovery still use database snapshots and the acknowledged save barrier.
+
+### Runtime and recovery
+
+- Forward busy Claude inputs through the native SDK queue and retain all input-to-response bindings in live output and cold history.
+- Preserve answered approvals across reader-owner loss, reconcile native acceptance before expiry, and avoid stale host connections that can query state without receiving events.
+- Give resumed pending tools their native response owner before publishing their gates.
+- End a failed native CLI response without abandoning its journal or losing unresolved-question outcomes. Transport loss alone still does not imply engine death.
+- Advance the pinned Claude Code CLI to 2.1.302.
+- Resolve prepared plugin paths from the installed capability plan across claim, reconnect and replacement.
+- Reject known unmet startup prerequisites before storing console input, and refresh readiness after lifecycle changes or return from consent.
+- Restore Stop controls when a successor response starts after a missing finish.
+
+### Assistant capabilities
+
+- Preserve the exact sandbox until native/profile saving is acknowledged, including failed activation and cold materialization.
+- Complete hibernation when Supervisor reports an exited state writer, while retaining the save barrier and useful redacted snapshot diagnostics.
+- Authorize Browser access against the owner's current workspace allocation, including after sandbox replacement.
+- Add the built-in astrabox-agent-task Hermes skill for long A2A work. It uses the existing Task API and native notified background execution to deliver results back to the original conversation. A disconnected observer does not resubmit business work; observation processes do not survive sandbox loss.
+
+### Channels and developer integration
+
+- Close withdrawn questions from native terminal facts without inventing answers. Browser-only runtime-loss notices no longer open an extra failed channel reply, while a genuine existing reply retains its text and delivery identity.
+- Keep native startup notices in Session history without broadcasting them to channels.
+- Offer an optional execution-identity validator before channel binding or credential writes.
+- Expose deployment-owned console HTTP recovery through the shared transport, and support confirmed logout or identity-provider top-level navigation with explicit failure handling.
+- Expand Agent tags through native PostgreSQL/MySQL expressions while retaining visibility, distinct counts and ordering.
+
+### Console and diagnostics
+
+- Persist actual in-box runner, SDK and CLI version observations with sandbox and runtime-instance provenance. Management reads report saved observations without allocating compute.
+- Retain visible Agent definitions while marking unavailable configurations and disabling Start conversation.
+- Preserve deleted-Agent history as read-only without offering an unusable recovery action.
+- Bound streaming render work, retain localization updates, preserve opened reasoning and tool details, and stabilize activity-row geometry.
+- Preserve complete history across navigation, cancelled older-page requests and optional file-list failures.
+- Show recorded questionnaire questions, options, selections and settlement with answer controls disabled after closure.
+- Render stored process groups without a duplicate disclosure, retaining nested choices across parent toggles.
+- Synchronize saved Environment cards with masked server values while preserving unrelated drafts.
+- Remove abandoned preview content on native replacement while retaining completed tools; document abnormal-ending folding without disguising failed outcomes.
+
+### Process transport and operations
+
+- Drain stdout and stderr before sending process exit and release holder ownership safely on cancellation.
+- Resolve expired process endpoints before new requests or attachments without restarting the native process or retrying permission failures.
+- Preserve native occupied and missing-process refusal codes through proxies that upgrade WebSockets early.
+- Expose notification-listener liveness and terminal diagnostics; realign stale stored expiry projections from the current live sandbox binding.
+
+Full comparison: https://github.com/Colton-z/AstraBox/compare/v0.1.9...v0.1.10
+
 ## [0.1.9] - 2026-10-15
 
 **Upgrading:**

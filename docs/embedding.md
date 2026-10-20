@@ -144,6 +144,10 @@ Sandboxes call AstraBox back at `ASTRABOX_MCP_PROXY_BASE_URL`. When they reach
 it through the parent application, that address includes the mount path, such
 as `http://<host-address>:8088/astrabox`.
 
+For browser authentication response handling, a custom console can install a
+[console HTTP transport](console-transport.md). Python identity and middleware
+extensions do not automatically register browser recovery behavior.
+
 ## What the lifespan starts
 
 The AstraBox lifespan owns the complete service lifecycle:
@@ -228,6 +232,46 @@ interfaces. The adapter-specific guides cover
 [messaging platforms](writing-a-channel-provider.md),
 [schedulers](writing-a-scheduler-provider.md), and
 [sandbox providers](writing-a-sandbox-provider.md).
+
+### Validate a saved execution account
+
+A deployment can check its directory before a channel binding is saved without
+replacing the service. Register a factory at `astrabox.service_factories` that
+builds the default `deployment_service` and installs one async validator:
+
+```python
+from astrabox.common.utils.errors import APIError
+from astrabox.seams import DeploymentExecutionContext
+from mydeployment.directory import user_exists
+
+
+async def validate_identity(context: DeploymentExecutionContext) -> None:
+    if context.execution_mode == "account":
+        if not await user_exists(context.execution_user_id):
+            raise APIError(code="INVALID_REQUEST", message="unknown execution account", status_code=400)
+
+
+def deployment_service(build_default):
+    service = build_default()
+    service.set_execution_identity_validator(validate_identity)
+    return service
+
+
+def factories():
+    return {"deployment_service": deployment_service}
+```
+
+Point the package's `astrabox.service_factories` entry point at `factories`.
+`DeploymentExecutionContext` includes the create/update operation, binding ID,
+Agent or Assistant ID, scene, normalized execution mode and user ID, and the
+authenticated `UserContext`. Direct service callers must also supply `actor`.
+The callback runs on every channel create or update after core validation and
+before either binding or credential persistence. Raising `APIError` rejects the
+write with that structured error; other exceptions fail the request. No validator
+is installed by default, and a service accepts only one. A validator must not
+mutate platform state. It does not run during message ingestion or delivery;
+already accepted messages keep their frozen execution identity.
+
 
 ## Process and security requirements
 

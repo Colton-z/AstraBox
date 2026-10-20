@@ -70,8 +70,8 @@ class DeploymentServiceReplacement(Protocol):
     and delete MUST enforce the Agent or Assistant boundary themselves rather
     than treating ``agent_id``/``assistant_id`` as informational. A create or
     update naming ``execution_mode`` or ``execution_user_id`` receives the
-    authenticated ``actor`` and must enforce administrator authorization; calls
-    without either keep their existing keyword shape.
+    authenticated ``actor`` and must enforce administrator authorization.
+    Every platform create and update passes the authenticated ``actor``.
     """
 
     async def assert_can_manage_agent(

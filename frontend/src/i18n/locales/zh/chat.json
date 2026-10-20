@@ -3,6 +3,14 @@
     "loading": "正在加载文件变更…",
     "load_failed": "无法加载文件变更。"
   },
+  "interaction_history": {
+    "open": "等待回答",
+    "answered": "已回答",
+    "withdrawn": "已撤回",
+    "expired": "已过期",
+    "closed": "问卷已结束，无法再提交。",
+    "declined": "用户已拒绝回答。"
+  },
   "history": {
     "loading_older": "正在加载更早消息…",
     "load_older_failed": "更早消息加载失败",
@@ -18,7 +26,8 @@
     "messages_transient": "消息暂时不可用，正在自动重试。",
     "syncing_messages": "正在同步消息...",
     "messages_load_failed": "消息加载失败。",
-    "session_title_fallback": "会话 {{id}}"
+    "session_title_fallback": "会话 {{id}}",
+    "pending_inputs_not_cancelled": "当前没有可中断的回复。已接受的消息尚未撤回，仍可能执行。如需将整个会话下线，请在会话列表中选择归档。"
   },
   "header": {
     "end_conversation": "结束对话",
@@ -129,11 +138,6 @@
     "todo_item": "待办 {{index}}",
     "in_progress": "进行中",
     "user_questionnaire": "用户问卷",
-    "question_n": "问题 {{index}}",
-    "multi_select": "可多选",
-    "single_select": "单选",
-    "option_n": "选项 {{index}}",
-    "output": "输出",
     "execution_plan": "执行计划"
   },
   "result": {
@@ -144,6 +148,7 @@
     "turn_failed": "本轮执行失败",
     "turn_failed_with_detail": "本轮执行失败：{{error}}",
     "api_retry": "重试中 —— 模型端点拒绝了这次请求",
+    "api_retry_finished": "重试等待已结束",
     "api_retry_attempt": "重试中 —— 第 {{attempt}} 次，共 {{max}} 次",
     "stop_reason": {
       "max_tokens": "达到最大 token 限制",

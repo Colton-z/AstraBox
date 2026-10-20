@@ -12,6 +12,18 @@ provides `a2a_discover`, `a2a_call`, `a2a_list`, `a2a_history` and
 `a2a_orchestrate`. AstraBox does not start Hermes' inbound messaging gateway
 to execute managed Agents: that gateway owns a different execution lifecycle.
 
+For long managed-Agent tasks, load the built-in `astrabox-agent-task` skill.
+It submits through the existing A2A API with `returnImmediately=true`, retains
+the task reference, and subscribes to that task from a Hermes background
+terminal process with native completion notification. The Assistant reads the
+result through `get_agent_task` and reports it in the originating conversation.
+An interrupted observation connection does not fail or resubmit the task.
+Background notifications must be enabled for a reply after the current turn;
+otherwise the Assistant must wait with its native process tools. After runtime
+loss, the saved task reference permits another query; the observer process
+itself does not survive sandbox loss. The synchronous native `a2a_call` remains
+subject to its configured peer timeout.
+
 ## Calling a managed Agent
 
 An authenticated external client fetches the Agent Card at

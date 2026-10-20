@@ -109,6 +109,7 @@ class _Translation:
         #: The open response and how to interrupt it (the runner's command or response id).
         self.response_id: str | None = None
         self.interrupt_target: str | None = None
+        self.input_ids: tuple[str, ...] = ()
         #: The open response's browser message was closed at an interaction and
         #: reopens with its next part.
         self.closed_for_interaction = False
@@ -121,6 +122,13 @@ class _Translation:
             return self._event(frame)
         if op == "interaction":
             return self._interaction(frame)
+        if op == "interaction_closed":
+            interaction_id = str(frame.get("interaction_id") or "").strip()
+            reason = frame.get("reason")
+            if not interaction_id or reason not in ("answered", "expired"):
+                raise ValueError(f"runner interaction closure is invalid: {frame!r}")
+            self.interactions.pop(interaction_id, None)
+            return [InteractionClosed(None, interaction_id, reason)]
         if op == "status":
             state = frame.get("state")
             if state == "busy":
@@ -180,6 +188,13 @@ class _Translation:
 
     def _interaction(self, frame: dict[str, Any]) -> list[RuntimeEvent]:
         interaction_id = str(frame.get("interaction_id") or "").strip()
+        events: list[RuntimeEvent] = []
+        boundary = frame.get("engine_boundary") is True
+        if boundary:
+            resumed_id = str(frame.get("response_id") or "").strip()
+            if not resumed_id or self.response_id is not None:
+                raise ValueError(f"resumed tool boundary conflicts with the open response: {frame!r}")
+            events += self._start(resumed_id, "engine", (), interrupt_target=resumed_id)
         response_id = self.response_id
         if not interaction_id or response_id is None:
             raise ValueError(f"runner interaction outside a response: {frame!r}")
@@ -192,13 +207,21 @@ class _Translation:
         )
         self.interactions[interaction_id] = record
         parts = []
+        if boundary:
+            # The SDK can reissue this intent before assistant output on resume.
+            parts.append({
+                "type": "tool-input-available",
+                "toolCallId": str(frame.get("tool_use_id") or ""),
+                "toolName": str(frame.get("tool_name") or ""),
+                "input": frame.get("tool_input"),
+            })
         approval = build_tool_approval_request_frame(record)
         if approval is not None:
             parts.append(approval)
         parts += [{"type": "data-interaction", "data": dict(record)}, _finish("tool-calls")]
         # A second request while the first still waits arrives in a message
         # the first one closed.
-        events = self._reopen()
+        events += self._reopen()
         events.append(InteractionOpened(None, response_id, interaction_id, record))
         events += [ResponseOutput(None, response_id, part) for part in parts]
         events.append(StatusChanged(None, "waiting"))
@@ -247,13 +270,14 @@ class _Translation:
         ]
         if self.response_id is not None:
             return self._reopen() + [ResponseOutput(None, self.response_id, part) for part in parts]
-        events = self._start(event_id, "engine", (), interrupt_target=event_id)
+        events = self._start(event_id, "engine", (), interrupt_target=event_id, channel_delivery=False)
         return events + self._end("completed", "session_start", usage=None, error=None, parts=[*parts, _finish("stop")])
 
     # -- response boundaries -----------------------------------------------
 
     def _start(
-        self, response_id: str, origin: Any, input_ids: tuple[str, ...], *, interrupt_target: str
+        self, response_id: str, origin: Any, input_ids: tuple[str, ...], *, interrupt_target: str,
+        channel_delivery: bool = True,
     ) -> list[RuntimeEvent]:
         if not response_id:
             raise ValueError("a Claude response needs an id")
@@ -261,9 +285,19 @@ class _Translation:
             # An input the engine takes before the open response's Result is
             # answered within that response (the next Result ends both), so it
             # joins the open response instead of replacing it unended.
-            return [ResponseStarted(None, self.response_id, origin, input_ids)] if input_ids else []
+            if not input_ids:
+                return []
+            self.input_ids = tuple(dict.fromkeys((*self.input_ids, *input_ids)))
+            return [
+                ResponseStarted(None, self.response_id, origin, input_ids),
+                ResponseOutput(None, self.response_id, {
+                    "type": "message-metadata",
+                    "messageMetadata": {"input_ids": list(self.input_ids)},
+                }),
+            ]
         self.response_id = response_id
         self.interrupt_target = interrupt_target
+        self.input_ids = input_ids
         self.closed_for_interaction = False
         self.stream = ClaudeStreamCursor(child_identities=self.children)
         start = {
@@ -273,7 +307,7 @@ class _Translation:
         }
         return [
             ResponseStarted(None, response_id, origin, input_ids),
-            ResponseOutput(None, response_id, start),
+            ResponseOutput(None, response_id, start, channel_delivery=channel_delivery),
         ]
 
     def _end(
@@ -293,6 +327,7 @@ class _Translation:
         self.interactions = {k: v for k, v in self.interactions.items() if v["response_id"] != response_id}
         self.response_id = None
         self.interrupt_target = None
+        self.input_ids = ()
         self.closed_for_interaction = False
         return events
 
@@ -370,6 +405,7 @@ class ClaudeRuntimeClient:
         self._link = link
         self._session_id = session_id
         self._boot_id = boot_id
+        self._runtime_versions = dict(hello.get("engine_contract", {}).get("runtime_versions") or {})
         self._translation = _Translation()
         self._translation.engine_session_key = resume_session_key
         self._next_sequence: int | None = None
@@ -441,24 +477,31 @@ class ClaudeRuntimeClient:
         elif running:
             response_id = input_response_message_id(running[0])
             open_responses = (OpenResponse(response_id, "input", tuple(running)),)
-        pending = tuple(
-            PendingInteraction(
-                response_id or "",
-                str(item["interaction_id"]),
-                interaction_record(
-                    interaction_id=str(item["interaction_id"]),
-                    response_id=response_id or "",
-                    tool_use_id=str(item.get("tool_use_id") or ""),
-                    tool_name=str(item.get("tool_name") or ""),
-                    tool_input=item.get("tool_input"),
-                ),
+        pending_items: list[PendingInteraction] = []
+        for item in snapshot.get("pending_interactions") or []:
+            if response_id is None:
+                raise ValueError("runner snapshot has a pending interaction without an open response")
+            pending_items.append(
+                PendingInteraction(
+                    response_id,
+                    str(item["interaction_id"]),
+                    interaction_record(
+                        interaction_id=str(item["interaction_id"]),
+                        response_id=response_id,
+                        tool_use_id=str(item.get("tool_use_id") or ""),
+                        tool_name=str(item.get("tool_name") or ""),
+                        tool_input=item.get("tool_input"),
+                    ),
+                )
             )
-            for item in snapshot.get("pending_interactions") or []
-        )
+        pending = tuple(pending_items)
         status: RuntimeStatus = "waiting" if pending else ("working" if snapshot.get("busy") else "idle")
         run_start = snapshot.get("run_start_seq")
-        # Events resume where the open response began, so its parts are read whole.
+        # Replay the open response and any earlier SDK events still awaiting custody.
         through = int(run_start) - 1 if isinstance(run_start, int) else int(snapshot.get("last_seq") or 0)
+        unpersisted = snapshot["first_unpersisted_event_seq"]
+        if unpersisted is not None:
+            through = min(through, int(unpersisted) - 1)
         return RuntimeState(
             status=status,
             open_responses=open_responses,
@@ -466,12 +509,22 @@ class ClaudeRuntimeClient:
             queued_input_ids=tuple(str(i) for i in snapshot.get("queued_input_ids") or []),
             admitted_input_ids=tuple(str(i) for i in snapshot.get("consumed_input_ids") or []),
             cursor=RuntimeCursor(self._boot_id, {"seq": through, "index": _WHOLE_FRAME}),
+            closed_interactions=tuple(
+                InteractionClosed(None, str(interaction_id), reason)
+                for key, reason in (("answered_interaction_ids", "answered"), ("expired_interaction_ids", "expired"))
+                for interaction_id in snapshot.get(key) or []
+            ),
         )
 
     async def answer(self, interaction_id: str, response: dict[str, Any]) -> None:
         # Answer delivery can precede journal replay on a new reader. The
         # runner's pending gate, not this reader's cache, owns the contract.
         state = await self.state()
+        for item in state.closed_interactions:
+            if item.interaction_id == interaction_id:
+                if item.reason == "answered":
+                    return
+                raise InteractionNotOpen(interaction_id)
         pending = next(
             (item for item in state.pending_interactions if item.interaction_id == interaction_id),
             None,
@@ -522,7 +575,8 @@ class ClaudeRuntimeClient:
         await self._link.stop_task(control_id)
 
     async def get_server_info(self) -> dict[str, Any] | None:
-        return await self._link.get_init_info()
+        info = await self._link.get_init_info()
+        return {**(info or {}), "runtime_versions": self._runtime_versions}
 
     async def close(self) -> None:
         await self._link.close()

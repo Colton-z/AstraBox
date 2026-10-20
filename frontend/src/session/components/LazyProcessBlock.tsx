@@ -165,6 +165,7 @@ export function LazyProcessBlock({
         />
       </CollapsibleTrigger>
       <CollapsibleContent
+        keepMounted
         data-testid="process-block-details"
         className="flex min-w-0 flex-col gap-2.5 border-t border-border px-3 py-3"
       >

@@ -18,6 +18,8 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
+from astrabox.common.utils.errors import APIError
+
 from astrabox.core.service.orchestrator.engine.emissions import (
     ChildResourceFact,
     EngineTurnEmission,
@@ -49,6 +51,19 @@ class EngineStreamDetached(RuntimeError):
     its cursor; it never ends a response because of this, since the box may
     still finish valid work. Only the sandbox being gone ends open responses.
     """
+
+
+class RuntimeStateSaveRequired(APIError):
+    """Native state is not durable; the exact allocation must remain recoverable."""
+
+    def __init__(self, sandbox_id: str, runtime_identity: dict[str, Any]) -> None:
+        super().__init__(
+            code="RUNTIME_STATE_SAVE_REQUIRED", status_code=503,
+            message="Native runtime state could not be saved; the sandbox is retained for recovery",
+            data={"sandbox_id": sandbox_id, "phase": "native_state_save"},
+        )
+        self.sandbox_id = sandbox_id
+        self.runtime_identity = dict(runtime_identity)
 
 
 @dataclass(frozen=True)
@@ -365,7 +380,13 @@ class EngineAdapter(ABC):
         self,
         context: EngineStartupContext,
     ) -> "Any":
-        """Start only the vendor runtime inside the platform-prepared context."""
+        """Start the vendor runtime inside the platform-prepared context.
+
+        A workspace-native state store keeps release custody until activation
+        settles. On failure, stop its writers and confirm the save before
+        raising; if that cannot complete, raise RuntimeStateSaveRequired so
+        cleanup retains the allocation and its private runtime identity.
+        """
 
         ...
 
