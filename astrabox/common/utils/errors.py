@@ -714,6 +714,12 @@ for _code, _status, _category, _retryable, _owner in (
 
 
 register_error(
+    "AGENT_DISABLED",
+    status_code=409,
+    category="configuration",
+    owner="platform",
+)
+register_error(
     "AGENT_ENVIRONMENT_DISABLED",
     status_code=409,
     category="configuration",
