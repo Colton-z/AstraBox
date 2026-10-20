@@ -5,6 +5,7 @@ import { ArrowDownIcon } from 'lucide-react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import { Button } from '@/components/ui/button';
 import { MessageBubble } from './MessageParts';
+import { inputMetadata, responseMetadata } from '../sessionMessages';
 import {
   ProcessDetailsCache,
   ProcessOpenCache,
@@ -62,10 +63,17 @@ export function VirtualizedMessageList({
   const processOpenCache = useRef(new Map<string, boolean>());
   const [totalHeight, setTotalHeight] = useState(0);
 
+  const additionalInputs = useMemo(() => new Map(messages.flatMap((message) => {
+    if (message.role !== 'assistant') return [];
+    const metadata = responseMetadata(message);
+    const inputs = metadata.input_ids ?? [];
+    return inputs.slice(metadata.origin === 'engine' ? 0 : 1).map((id) => [id, message.id] as const);
+  })), [messages]);
   const itemContext = useMemo(() => ({
     pendingToolCallId,
     writingMessageId,
-  }), [pendingToolCallId, writingMessageId]);
+    additionalInputs,
+  }), [pendingToolCallId, writingMessageId, additionalInputs]);
 
   loadOlderStateRef.current = { hasMore, loadingMore, onLoadOlder };
 
@@ -248,6 +256,7 @@ export function VirtualizedMessageList({
               sessionId={sessionId}
               pendingToolCallId={context.pendingToolCallId}
               isStreaming={message.role === 'assistant' && message.id === context.writingMessageId}
+              includedInResponse={context.additionalInputs.get(inputMetadata(message).input_id ?? '')}
             />
           </div>
         )}

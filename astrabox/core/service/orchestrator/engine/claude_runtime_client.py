@@ -172,12 +172,18 @@ class _Translation:
         ):
             emission = emission_from_translated_frame(translated)
             if isinstance(emission, InputConsumed):
+                additional_input = self.response_id is not None
                 events += [InputAdmitted(None, emission.input_id)]
                 events += self._start(
                     emission.response_message_id, "input", (emission.input_id,),
                     interrupt_target=emission.input_id,
                 )
-                events.append(ResponseOutput(None, self.response_id, emission.as_frame()))
+                consumed = emission.as_frame()
+                consumed["data"]["responseMessageId"] = self.response_id
+                # A queued input can steer the open native response. Keep its
+                # receipt in that response at the point the engine took it.
+                consumed["transient"] = not additional_input
+                events.append(ResponseOutput(None, self.response_id, consumed))
             elif isinstance(emission, PrivateDiagnostic):
                 events.append(RuntimeDiagnostic(None, f"{emission.event_type}.{emission.subtype}", emission.raw))
             elif isinstance(emission, TurnTerminal):

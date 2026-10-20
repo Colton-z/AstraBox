@@ -31,10 +31,15 @@ export const SessionSendContext = createContext<SessionSendState | null>(null);
  * waiting behind the response that runs, or not delivered — with the way to
  * send it again.
  */
-export function UserMessageStatus({ message }: { message: UIMessage }) {
+export function UserMessageStatus({ message, includedInResponse }: { message: UIMessage; includedInResponse?: string }) {
   const { t } = useTranslation();
   const state = useContext(SessionSendContext);
-  if (!state) return null;
+  const included = includedInResponse ? (
+    <p data-testid="input-response-association" data-response-id={includedInResponse} className="text-xs text-muted-foreground">
+      {t('chat:message.included_in_response')}
+    </p>
+  ) : null;
+  if (!state) return included;
   const unsent = state.unsent.get(message.id);
   if (unsent?.status === 'sending') {
     return <p role="status" className="text-xs text-teal-fg">{t('misc:composer.queue_sending')}</p>;
@@ -92,8 +97,8 @@ export function UserMessageStatus({ message }: { message: UIMessage }) {
     );
   }
   const inputId = inputMetadata(message).input_id;
-  if (inputId && state.heldInputIds.has(inputId)) {
+  if (!included && inputId && state.heldInputIds.has(inputId)) {
     return <p role="status" className="text-xs text-muted-foreground">{t('misc:composer.queue_waiting')}</p>;
   }
-  return null;
+  return included;
 }

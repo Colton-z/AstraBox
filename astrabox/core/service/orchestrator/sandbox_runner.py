@@ -7,9 +7,9 @@ only. Host-side code imports this module only in tests.
 
 Duties (docs/design-translation-shell-2026-07.md):
 
-* hold one ``ClaudeSDKClient`` streaming session; accept host-delivered inputs
-  immediately, then feed each one into ``client.query()`` after the preceding
-  SDK Result so a later prompt cannot steer an unfinished response;
+* hold one ``ClaudeSDKClient`` streaming session; feed host-delivered inputs
+  into ``client.query()`` immediately. The native queue decides when to take
+  them, including steering an unfinished response;
 * forward every typed SDK message verbatim to the host under a
   ``(session_id, seq)`` envelope; ``seq`` is one monotonic counter across all
   runner→host frames so the host can detect gaps and refill from the store;
