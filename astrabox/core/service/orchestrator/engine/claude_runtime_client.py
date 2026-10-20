@@ -101,7 +101,7 @@ def interaction_record(
 
 
 class _Translation:
-    """Runner frames to runtime events, holding only what the open response needs."""
+    """Runner frames to runtime events, retaining interrupted stream attribution."""
 
     def __init__(self) -> None:
         self.children = ClaudeChildIdentities()
@@ -110,6 +110,8 @@ class _Translation:
         self.response_id: str | None = None
         self.interrupt_target: str | None = None
         self.input_ids: tuple[str, ...] = ()
+        #: Interrupt ACK ends the response before its native stream can drain.
+        self.interrupted_response_id: str | None = None
         #: The open response's browser message was closed at an interaction and
         #: reopens with its next part.
         self.closed_for_interaction = False
@@ -139,7 +141,10 @@ class _Translation:
         if op == "turn_interrupted":
             if self.response_id is None or frame.get("command_id") != self.interrupt_target:
                 return []
-            return self._end("cancelled", "interrupted", usage=None, error=None, parts=[_finish("other")])
+            response_id = self.response_id
+            events = self._end("cancelled", "interrupted", usage=None, error=None, parts=[_finish("other")])
+            self.interrupted_response_id = response_id
+            return events
         if op == "error":
             error = {"code": str(frame.get("error_class") or "RUNNER_ERROR"), "message": str(frame.get("detail") or "")}
             events: list[RuntimeEvent] = [RuntimeDiagnostic(None, "claude_code.runner_error", dict(frame))]
@@ -189,7 +194,13 @@ class _Translation:
             elif isinstance(emission, TurnTerminal):
                 events += self._result(message, translated)
             else:
-                events += self._output(emission.as_frame())
+                tail_response_id = (
+                    self.interrupted_response_id
+                    if message.get("__sdk_type") in {"StreamEvent", "AssistantMessage"}
+                    and message.get("parent_tool_use_id") is None
+                    else None
+                )
+                events += self._output(emission.as_frame(), tail_response_id=tail_response_id)
         return events
 
     def _interaction(self, frame: dict[str, Any]) -> list[RuntimeEvent]:
@@ -236,6 +247,7 @@ class _Translation:
 
     def _result(self, message: dict[str, Any], terminal: dict[str, Any]) -> list[RuntimeEvent]:
         if self.response_id is None:
+            self.interrupted_response_id = None
             return [RuntimeDiagnostic(None, "claude_code.result_outside_response", dict(message))]
         terminal_reason = str(message.get("terminal_reason") or "").strip()
         finish_reason = str(terminal.get("finishReason") or "")
@@ -304,6 +316,7 @@ class _Translation:
         self.response_id = response_id
         self.interrupt_target = interrupt_target
         self.input_ids = input_ids
+        self.interrupted_response_id = None
         self.closed_for_interaction = False
         self.stream = ClaudeStreamCursor(child_identities=self.children)
         start = {
@@ -337,9 +350,9 @@ class _Translation:
         self.closed_for_interaction = False
         return events
 
-    def _output(self, part: dict[str, Any]) -> list[RuntimeEvent]:
+    def _output(self, part: dict[str, Any], *, tail_response_id: str | None = None) -> list[RuntimeEvent]:
         events = self._reopen()
-        events.append(ResponseOutput(None, self.response_id, part))
+        events.append(ResponseOutput(None, self.response_id or tail_response_id, part))
         return events
 
     def _reopen(self) -> list[RuntimeEvent]:

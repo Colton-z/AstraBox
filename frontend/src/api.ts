@@ -733,6 +733,13 @@ export async function listAgents(): Promise<AgentConfig[]> {
   return expectList<AgentConfig>(await send((wire) => client.GET('/api/v1/agents', wire)), '/agents');
 }
 
+export async function getAgent(agentId: string): Promise<AgentConfig> {
+  return asDeclared<AgentConfig>(await send((wire) => client.GET('/api/v1/agents/{agent_id}', {
+    ...wire,
+    params: { path: { agent_id: agentId } },
+  })));
+}
+
 /** One page of the Agent list, narrowed and counted by the server. */
 export async function listAgentsPage(query: ListPageQuery = {}): Promise<AgentListPage> {
   return expectPage<AgentListPage>(

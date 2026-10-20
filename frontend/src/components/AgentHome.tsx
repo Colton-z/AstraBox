@@ -4,6 +4,7 @@ import type { TFunction } from 'i18next';
 import { Star, X } from 'lucide-react';
 import { toast } from 'sonner';
 import useSWR from 'swr';
+import { Link } from 'react-router-dom';
 
 import { Ellipsis, EmptyState, ErrorNote, TruncatingRow } from '@/components/shell';
 import { Badge } from '@/components/ui/badge';
@@ -404,7 +405,9 @@ function AgentCard({
         >
           <div className="space-y-1">
             <CardTitle className="tracking-[-0.01em]">
-              <Ellipsis>{name}</Ellipsis>
+              <Link to={`/agents/${encodeURIComponent(agent.agent_id)}`} className="block rounded-sm hover:underline">
+                <Ellipsis>{name}</Ellipsis>
+              </Link>
             </CardTitle>
             {/* The model is the agent's defining property, so it is what the
                 card names underneath — not an internal id. */}

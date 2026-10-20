@@ -4,6 +4,15 @@
 
 An Agent runs an installed Agent program with a model, system prompt, extensions, and Environment. Multiple Sessions can share one Agent. Saving an Agent does not interrupt work already in progress; AstraBox resolves the latest saved Agent and Environment when it first prepares or rebuilds a Session runtime.
 
+## Share an Agent
+
+Click an Agent's name in the home catalog to open its detail page, then choose
+**Copy link**. The stable `/agents/{agent_id}` link shows the Agent's introduction,
+tags and model. A recipient signs in when required and returns to that Agent;
+**Start conversation** creates their own new conversation with it. Opening or
+reloading the link does not create a conversation. The link grants no additional
+access, and disabled or inaccessible Agents show an unavailable page.
+
 ## Archive an Agent
 
 Open the Agent in management and choose **Archive agent**. Archiving uses the

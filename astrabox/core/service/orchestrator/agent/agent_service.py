@@ -288,7 +288,10 @@ class AgentService:
 
     async def get_agent(self, user: UserContext, agent_id: str) -> dict[str, Any]:
         agent = await self._must_view(user, agent_id)
-        return self._user_view(user, agent)
+        return {
+            **self._user_view(user, agent),
+            "can_start_conversation": await self._runtime_enabled(agent),
+        }
 
     async def get_agent_access(self, user: UserContext, agent_id: str) -> dict[str, Any]:
         """Read Agent authorization settings through their dedicated service."""

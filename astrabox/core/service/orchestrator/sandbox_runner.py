@@ -1416,6 +1416,9 @@ class RunnerSession:
         # not an unknown command.
         self._engine_response_id: str | None = None
         self._engine_response_ids: set[str] = set()
+        #: The native API message whose first root activity was observed. Keep
+        #: it across interrupt ACKs: complete blocks can arrive after the ACK.
+        self._root_assistant_message_id = ""
         #: Journal sequence of the frame that opened the response running now
         #: (a consumed input or an engine boundary); ``None`` between responses.
         self._run_start_seq: int | None = None
@@ -1745,24 +1748,32 @@ class RunnerSession:
             }
         return {}
 
-    @staticmethod
-    def _is_root_assistant_activity(message: Any, message_type: str) -> bool:
-        """Whether this SDK message starts or is a root assistant message.
+    def _is_root_assistant_activity(self, message: Any, message_type: str) -> bool:
+        """Observe the first activity of a native root assistant message.
 
         A child's activity carries ``parent_tool_use_id`` and never opens a
         root response. With partial messages on, the first root event of a
         response is the ``message_start`` StreamEvent; with them off, the
-        complete AssistantMessage is the first root output there is.
+        first complete block is the first root output. Complete blocks share
+        that native message's id even when their envelope UUIDs differ.
         """
 
         if getattr(message, "parent_tool_use_id", None) is not None:
             return False
         if message_type == "AssistantMessage":
-            return True
-        if message_type != "StreamEvent":
+            message_id = str(getattr(message, "message_id", None) or "").strip()
+        elif message_type == "StreamEvent":
+            event = getattr(message, "event", None)
+            if not isinstance(event, dict) or event.get("type") != "message_start":
+                return False
+            native = event.get("message")
+            message_id = str(native.get("id") or "").strip() if isinstance(native, dict) else ""
+        else:
             return False
-        event = getattr(message, "event", None)
-        return isinstance(event, dict) and str(event.get("type") or "") == "message_start"
+        if message_id and message_id == self._root_assistant_message_id:
+            return False
+        self._root_assistant_message_id = message_id
+        return True
 
     async def _interrupt_engine_response(self, response_id: str) -> None:
         """Stop the response Claude started on its own, named by its address.
