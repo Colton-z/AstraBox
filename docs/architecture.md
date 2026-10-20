@@ -346,6 +346,13 @@ shared. Configure the two independently: database and service access for the
 backend replicas, and suitable compute and workspace storage for sandbox
 workers.
 
+One product database defines one control plane, including its physical runtime
+records. It is not a shared configuration catalog for independently operated
+control planes. Different runtime settings can produce incompatible Agent
+generations and replace the same prepared-capacity records. See
+[sharing a product database](deploy.md#share-a-product-database) for the
+configuration requirements and isolation boundary.
+
 ## Extensions {#plugin-interfaces}
 
 Installed provider packages can connect another Agent program, sandbox

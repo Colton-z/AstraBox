@@ -10,6 +10,22 @@ selection and the reusable MySQL statement component do not by themselves
 establish a supported or complete backend. Validate the actual database,
 dialect, schema and coordination implementation before claiming support.
 
+## Installation boundary {#installation-boundary}
+
+One selected provider serves the control plane's definitions, authorization,
+Sessions, native state, and runtime records through the same repository engine
+and transaction contract. The interface does not split a shared Agent catalog
+from deployment-local runtime storage. Repository joins, foreign keys and
+atomic workflows cross those records; separating them requires a platform
+design beyond supplying a different physical provider.
+
+Agent runtime generations and pool pointers are keyed by Agent, Session
+runtime bindings and reader leases by Session, and Assistant workspaces by
+Assistant. None has a deployment runtime scope. Namespacing provider pools or
+coordination locks does not partition those records. Independent control
+planes require separate product databases; replicas sharing one database must
+follow the [deployment configuration contract](../deploy.md#share-a-product-database).
+
 ## Register and select a provider
 
 Ship the provider in a separate Python distribution and register its class:

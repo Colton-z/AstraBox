@@ -24,6 +24,35 @@ network.
 For Kubernetes and external-service settings, see the
 [OpenSandbox deployment guide](providers/opensandbox.md).
 
+## Share a product database {#share-a-product-database}
+
+Processes sharing an AstraBox product database are replicas of one control
+plane. They share Agent generations, prepared capacity, Session runtime
+bindings and reader ownership, Assistant workspaces, and background recovery
+and cleanup. An Agent's `prepared_capacity` is the total for that control
+plane, not a separate allocation for each replica.
+
+Configure those replicas with the same credentials and runtime settings,
+including the same `ASTRABOX_MCP_PROXY_BASE_URL`. Use a stable callback address
+reachable from every sandbox. Each sandbox backend name must resolve to the
+same service and pool coordination configuration on every replica, so a
+replica can reconnect to and clean up the resources another replica created.
+
+Independent control planes with different callback addresses or sandbox
+services must use separate product databases. They may use the same database
+server, but must not share the product tables. A provider-specific pool
+namespace does not isolate AstraBox's runtime records. The server does not
+check every replica's configuration for agreement; starting with different
+settings can replace shared pool pointers and retire another process's
+prepared capacity.
+
+To share Agents and conversation history among applications, connect them to
+one AstraBox control plane through its API. Separate product databases do not
+automatically share Agent definitions, authorization, or conversation history.
+There is no supported configuration/runtime storage split or deployment runtime
+scope; the [relational persistence interface](providers/relational-persistence.md#installation-boundary)
+supplies physical storage and coordination for the whole control plane.
+
 ## Run on one Docker host {#run-on-one-docker-host}
 
 The stack starts the following components:
