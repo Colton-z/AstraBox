@@ -152,11 +152,12 @@ def runtime_material_path(
 
 @dataclass(frozen=True)
 class SessionPreparationContext:
-    """Persisted owner and resolved placement before the engine initializes.
+    """Persisted owner and resolved placement before engine activation.
 
     Runs on cold start, claim of waiting inventory, reattachment and sandbox
     replacement, each before ``EngineAdapter.activate_runtime``. An initialized
-    engine accepts files and external binding updates, not startup environment.
+    engine accepts files and external binding updates. Environment requires an
+    engine-native activation mechanism; spawn-only consumers remain Session-bound.
     ``model_credential_placeholder`` is the inert model value the provider must
     bind to this persisted owner before returning, when it owns model delivery.
     """
@@ -340,11 +341,11 @@ class RuntimePreparationProvider(ABC):
         return False
 
     async def prepare_session(self, *, context: SessionPreparationContext) -> RuntimeMaterials:
-        """Resolve existing Session materials before the engine initializes.
+        """Resolve existing Session materials before engine activation.
 
         Return files and environment; the platform writes files with workload
-        ownership and mode 0600. The environment stays fixed for the life of
-        the runtime this startup activates.
+        ownership and mode 0600. The engine adapter applies environment through
+        its declared startup or native activation mechanism.
         """
         return RuntimeMaterials()
 

@@ -68,6 +68,9 @@ class ClaudeCodeEngineAdapter(EngineAdapter):
     def startup_environment_scope(self) -> Literal["process", "session"] | None:
         return "process"
 
+    def supports_initialized_environment(self) -> bool:
+        return True
+
     def canonical_child_message_content(
         self, content: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:

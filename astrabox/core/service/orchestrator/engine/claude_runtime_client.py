@@ -613,6 +613,9 @@ class ClaudeRuntimeClient:
     async def set_permission_mode(self, mode: str) -> None:
         await self._link.set_permission_mode(mode)
 
+    async def bind_environment(self, environment: dict[str, str]) -> None:
+        await self._link.apply_flag_settings({"env": environment})
+
     async def stop_child_run(self, control_id: str) -> None:
         await self._link.stop_task(control_id)
 

@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
+import shlex
 import subprocess
 import time
 import uuid
@@ -11,7 +12,7 @@ import httpx
 import pytest
 
 from tests.e2e._sandbox_helpers import (
-    current_profile, data, get_admin_session_detail,
+    current_profile, data, get_admin_session_detail, history,
     poll_until_ready, psql_rows, release_agent, release_session,
     running_sandbox_image, send_and_follow, sql_literal, transcript_entries,
 )
@@ -118,6 +119,45 @@ def _assert_inventory_image(admin: httpx.Client, sandbox_id: str, image: str):
     assert running_sandbox_image(endpoint=descriptor["endpoint"]) == image
 
 
+def _assert_native_session_environment(client, sid, user, execute, identity, processes, marker, deadline):
+    expected = {
+        "ASTRABOX_SESSION_URL": str(client.base_url).rstrip("/") + "/sessions/" + sid,
+        "RUNTIME_IDENTITY_SESSION_ID": sid,
+        "BINDING_FIXTURE_OWNER": user,
+        "PREWARM_ENV_BASELINE": "agent-setting-preserved",
+    }
+    program = (
+        "import os,json; print(json.dumps({'phase':" + repr(marker)
+        + ",**{k:os.environ.get(k) for k in "
+        + repr([*expected, "CLAUDE_PID"]) + "}}))"
+    )
+    reply = send_and_follow(client, sid, "Run this Bash command exactly, then reply " + marker
+                            + ":\npython3 -c " + shlex.quote(program), until="end")
+    assert reply.ended and not reply.error and marker in reply.text
+    # The supplier's committed Bash stdout is independent of the event adapter.
+    records = _until(lambda: transcript_entries(sid), lambda rows: any(
+        isinstance(row["entry"].get("toolUseResult"), dict)
+        and marker in row["entry"]["toolUseResult"].get("stdout", "") for row in rows
+    ), deadline)
+    outputs = [
+        row["entry"].get("toolUseResult", {}).get("stdout", "")
+        for row in records if isinstance(row["entry"].get("toolUseResult"), dict)
+    ]
+    output = next(value for value in reversed(outputs) if marker in value)
+    actual = json.loads(output)
+    assert all(actual.get(key) == value for key, value in expected.items()), actual
+    assert int(actual["CLAUDE_PID"]) in {row["pid"] for row in processes}
+    hooks = _run_json([*execute, "runuser", "-u", identity["linux_user"], "--", "python3", "-c",
+        "import json;from pathlib import Path;"
+        "print(json.dumps([json.loads(line) for line in "
+        "(Path.home()/'.prewarm-session-environment.jsonl').read_text().splitlines()]))"])
+    assert hooks and all(all(row.get(key) == value for key, value in expected.items()) for row in hooks), hooks
+    assert all(int(row["CLAUDE_PID"]) in {p["pid"] for p in processes} for row in hooks)
+    visible = json.dumps(history(client, sid))
+    assert marker in visible and all(value in visible for value in expected.values())
+    return {"native_stdout": actual, "plugin_hooks": hooks}
+
+
 def test_initialized_inventory_binds_each_owner_before_native_input(e2e_client: httpx.Client, live_test_deadline: float):
     admin = e2e_client
     profile = current_profile()
@@ -129,14 +169,26 @@ def test_initialized_inventory_binds_each_owner_before_native_input(e2e_client: 
     clients = [_user_client(admin, user) for user in users]
     source = next(row for row in data(admin.get("/api/v1/admin/environments")) if row["name"] == profile["environment_name"])
     canonical = data(admin.get(f"/api/v1/agents/{profile['agent_id']}"))
-    policy = {"session_bound": False, "users": users[:2], "refuse_binding": False, "startup_environment": False}
+    policy = {"session_bound": False, "users": users[:2], "refuse_binding": False,
+              "startup_environment": True, "console_base_url": str(admin.base_url).rstrip("/")}
+    options = dict(canonical.get("engine_options") or {})
+    options["sdk_options"] = dict(options.get("sdk_options") or {})
+    settings = dict(options["sdk_options"].get("settings") or {})
+    options["sdk_options"]["settings"] = {
+        **settings, "env": {**settings.get("env", {}), "PREWARM_ENV_BASELINE": "agent-setting-preserved"},
+        "extraKnownMarketplaces": {**settings.get("extraKnownMarketplaces", {}), "prewarm-environment-fixture": {
+            "source": {"source": "directory", "path": "/opt/prewarm-session-environment-marketplace"},
+        }},
+        "enabledPlugins": {**settings.get("enabledPlugins", {}),
+                           "prewarm-session-environment@prewarm-environment-fixture": True},
+    }
     agents = []
     environments = []
     sessions = []
     evidence = {"users": users, "environments": [], "inventory": [], "sessions": []}
     succeeded = False
     try:
-        for kind in ("initialized", "session-bound"):
+        for kind in ("initialized", "session-bound", "cold"):
             name = f"binding-{nonce}-{kind}"
             environment = {**source, "name": name, "display_name": name, "sandbox_backend": "binding_fixture"}
             if kind == "session-bound":
@@ -147,7 +199,7 @@ def test_initialized_inventory_binds_each_owner_before_native_input(e2e_client: 
             data(admin.put(f"/api/v1/runtime-preparation-fixture/binding-policies/{name}", json={**policy, "session_bound": kind == "session-bound"}))
             agent = data(admin.post("/api/v1/agents", json={
                 "name": name, "environment_name": name, "model": profile["model"],
-                "engine_options": canonical.get("engine_options") or {}, "prepared_capacity": 0,
+                "engine_options": options, "prepared_capacity": 0,
             }))
             agents.append(agent)
             release_agent(agent["agent_id"])
@@ -156,10 +208,10 @@ def test_initialized_inventory_binds_each_owner_before_native_input(e2e_client: 
             }))
             data(admin.put(f"/api/v1/agents/{agent['agent_id']}", json={
                 "name": name, "environment_name": name, "model": profile["model"],
-                "engine_options": canonical.get("engine_options") or {},
-                "prepared_capacity": 2 if kind == "initialized" else 1,
+                "engine_options": options,
+                "prepared_capacity": 2 if kind == "initialized" else 1 if kind == "session-bound" else 0,
             }))
-        normal, gated = agents
+        normal, gated, cold = agents
         _wait_prepared_count(admin, normal["agent_id"], 2, live_test_deadline)
         gate_inventory = _wait_prepared(admin, gated["agent_id"], live_test_deadline)
         _assert_inventory_image(admin, gate_inventory["sandbox_id"], os.environ[PREPARATION_IMAGE_ENV])
@@ -195,8 +247,10 @@ def test_initialized_inventory_binds_each_owner_before_native_input(e2e_client: 
 
         def answer(index):
             marker = f"BINDING_{nonce}_{index}"
-            reply = send_and_follow(clients[index], sessions[index], f"Reply exactly {marker}. No tools.", until="end")
-            assert marker in reply.text and reply.ended and not reply.error
+            evidence.setdefault("environment", {})[str(index)] = _assert_native_session_environment(
+                clients[index], sessions[index], users[index], executions[index],
+                identities[index], processes[index], marker, live_test_deadline,
+            )
             return marker
 
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -207,8 +261,10 @@ def test_initialized_inventory_binds_each_owner_before_native_input(e2e_client: 
 
         _restart_server_container(require_service_container(SERVER_CONTAINER_HANDLE))
         _wait_health(str(admin.base_url).rstrip("/"))
-        continuation = send_and_follow(clients[0], sessions[0], f"Reply exactly REATTACHED_{nonce}. No tools.", until="end")
-        assert f"REATTACHED_{nonce}" in continuation.text and continuation.ended and not continuation.error
+        evidence["reattached_environment"] = _assert_native_session_environment(
+            clients[0], sessions[0], users[0], executions[0], identities[0], processes[0],
+            f"REATTACHED_{nonce}", live_test_deadline,
+        )
         for index in range(2):
             assert _supplier_processes(executions[index], identities[index], "claude_code") == processes[index]
             assert set(_native_credentials(executions[index], identities[index])) == {receipts[index]["digest"]}
@@ -226,15 +282,15 @@ def test_initialized_inventory_binds_each_owner_before_native_input(e2e_client: 
         assert not psql_rows(f"SELECT input_id FROM session_inputs WHERE session_id={sql_literal(unauthorized)}")
 
         waiting = _wait_prepared(admin, normal["agent_id"], live_test_deadline)
-        data(admin.put(f"/api/v1/runtime-preparation-fixture/binding-policies/{environments[0]['name']}", json={**policy, "startup_environment": True}))
+        data(admin.put(f"/api/v1/runtime-preparation-fixture/binding-policies/{environments[0]['name']}", json={**policy, "refuse_binding": True}))
         refused = data(clients[0].post(f"/api/v1/agents/{normal['agent_id']}/conversations", json={}))['session_id']
         sessions.append(refused)
         release_session(refused)
         failure = _until(lambda: get_admin_session_detail(admin, refused), lambda row: row.get("runtime_unavailable") and row.get("state") == "TERMINATED", live_test_deadline)
         assert "preparation" in str(failure["last_error"]).lower()
         assert not failure.get("sandbox_id"), "the refused inventory claim must be disposed, not replaced silently"
-        assert not any(row["entry"].get("type") == "assistant" for row in transcript_entries(refused)), "ignored startup environment must not reach a model through cold fallback"
-        evidence["refused_initialized_environment"] = {"session_id": refused, "prepared_box": waiting["sandbox_id"], "error": failure["last_error"]}
+        assert not any(row["entry"].get("type") == "assistant" for row in transcript_entries(refused)), "refused identity binding must not reach a model through cold fallback"
+        evidence["refused_binding"] = {"session_id": refused, "prepared_box": waiting["sandbox_id"], "error": failure["last_error"]}
 
         gated_sid = data(clients[1].post(f"/api/v1/agents/{gated['agent_id']}/conversations", json={}))['session_id']
         sessions.append(gated_sid)
@@ -246,8 +302,23 @@ def test_initialized_inventory_binds_each_owner_before_native_input(e2e_client: 
             "from pathlib import Path; import json,sys; print(json.dumps([json.loads(x) for x in (Path(sys.argv[1])/'.runtime-preparation-native.jsonl').read_text().splitlines()]))", gated_identity["home_dir"]])
         assert len(gate_record) == 1 and gate_record[0]["session_id"] == gated_sid and gate_record[0]["principal_id"] == users[1]
         assert gate_record[0]["mode"] == 0o600 and gate_record[0]["uid"] == gated_identity["uid"]
-        gated_reply = send_and_follow(clients[1], gated_sid, f"Reply exactly SESSION_MATERIAL_{nonce}. No tools.", until="end")
-        assert f"SESSION_MATERIAL_{nonce}" in gated_reply.text and gated_reply.ended and not gated_reply.error
+        evidence["session_bound_environment"] = _assert_native_session_environment(
+            clients[1], gated_sid, users[1], gate_execute, gated_identity,
+            _supplier_processes(gate_execute, gated_identity, "claude_code"),
+            f"SESSION_MATERIAL_{nonce}", live_test_deadline,
+        )
+        cold_sid = data(clients[0].post(f"/api/v1/agents/{cold['agent_id']}/conversations", json={}))["session_id"]
+        sessions.append(cold_sid)
+        release_session(cold_sid)
+        poll_until_ready(clients[0], cold_sid)
+        cold_detail = get_admin_session_detail(admin, cold_sid)
+        cold_execute = _sandbox_exec(cold_detail["sandbox_id"])
+        cold_identity = cold_detail["runtime_identity"]
+        evidence["cold_environment"] = _assert_native_session_environment(
+            clients[0], cold_sid, users[0], cold_execute, cold_identity,
+            _supplier_processes(cold_execute, cold_identity, "claude_code"),
+            f"COLD_MATERIAL_{nonce}", live_test_deadline,
+        )
         gateway = []
         for index, sid in enumerate(sessions[:2]):
             facts = _until(lambda: _gateway(sid), lambda facts: bool(facts["requests"]), live_test_deadline)

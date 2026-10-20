@@ -1,0 +1,1 @@
+{"name":"prewarm-environment-fixture","owner":{"name":"AstraBox E2E"},"plugins":[{"name":"prewarm-session-environment","source":"./plugins/prewarm-session-environment","version":"1.0.0"}]}

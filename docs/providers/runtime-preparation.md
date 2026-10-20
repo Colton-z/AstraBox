@@ -20,7 +20,7 @@ you need:
 | --- | --- |
 | `plan` | Asynchronously when resolving a configuration that admits work; reads persisted subject policy |
 | `synchronize`, `recover` | Once per prepared Agent box, before it becomes waiting inventory; for an Assistant, whenever its workspace prepares a revision |
-| `prepare_session` | Before the engine initializes: cold start, claim, reattachment, sandbox replacement |
+| `prepare_session` | Before engine activation: cold start, claim, reattachment, sandbox replacement |
 | `prepare_turn` | Before each input is handed to the engine |
 | `read_user_actions`, `perform_user_action` | When the Session's owner reads or acts on its prerequisites |
 
@@ -233,8 +233,9 @@ without a conversation.
 
 `context.engine_initialized` reports whether activation will attach to an
 existing native process. Such a callback can refresh files, external gateway
-bindings and Session-scoped tool context, but cannot change a frozen process
-environment. Binding or material preparation
+bindings and environment supported by the engine's native activation contract.
+Consumers that read their environment only at process startup still require
+`session_bound=True`. Binding or material preparation
 failure blocks activation and discards the exact failed prepared claim; it never
 silently creates a cold replacement.
 
@@ -247,8 +248,19 @@ values are excluded from their dataclass representations and public errors. A
 Session-bound provider must return material.
 
 An engine adapter declares `startup_environment_scope()`. `"process"` delivers
-`EngineStartupContext.runtime_env` before native initialization and stays fixed
-for that process; Claude Code uses its SDK options. `"session"` delivers
+`EngineStartupContext.runtime_env` before native initialization; Claude Code
+uses its SDK options. An adapter declaring
+`supports_initialized_environment()` also accepts the mapping after native
+initialization. Claude applies the native `apply_flag_settings` control with an
+`env` overlay and verifies `get_settings` before releasing input, retaining the
+same single-use prepared CLI process. Reattachment applies the same native
+contract. The runner image must advertise both controls; an older image is
+refused, never silently treated as updated. Hooks and tools started afterward
+inherit the updated native environment. Already-running child processes and
+startup-only consumers are not retroactively changed; user-bound MCP servers
+retain the native reconnect barrier during activation.
+
+`"session"` delivers
 `EngineStartupContext.session_env` through a native Session context, without
 changing a shared process environment. The Hermes image carries a pinned,
 MIT-licensed extension to its typed `session.create` and `session.resume`
@@ -259,8 +271,8 @@ An image without this extension rejects the RPC parameter explicitly.
 
 Adapters returning `None` refuse the environment. Platform-owned environment
 names cannot be overwritten, and Hermes also refuses native identity and
-credential names. An initialized process refuses new process-scoped startup
-environment. Platform preparation refusals block activation with
+credential names. An initialized process without a native environment activation
+mechanism refuses new process-scoped environment. Platform preparation refusals block activation with
 `RUNTIME_PREPARATION_FAILED`; callback exception text is not exposed. Native
 Session environment validation blocks Hermes attachment with `AGENT_RUNTIME_ERROR`
 and a message that contains no supplied environment values.

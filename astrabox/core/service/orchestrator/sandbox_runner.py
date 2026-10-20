@@ -54,6 +54,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import secrets
 import shlex
 import time
@@ -325,6 +326,7 @@ def _runner_engine_contract() -> dict[str, Any]:
         ) from exc
     return {
         "adapter": "claude_code",
+        "control_request_subtypes": ["apply_flag_settings", "get_settings"],
         "sdk_version": sdk_version,
         "accepted_option_keys": accepted_option_keys,
         "permission_modes": permission_modes,
@@ -477,6 +479,10 @@ class SdkSession(Protocol):
     async def stop_task(self, task_id: str) -> None: ...
 
     async def set_permission_mode(self, mode: str) -> None: ...
+
+    async def apply_flag_settings(self, settings: dict[str, Any]) -> None: ...
+
+    async def get_settings(self) -> dict[str, Any]: ...
 
     async def reconnect_mcp_server(self, server_name: str) -> None: ...
 
@@ -1503,6 +1509,28 @@ class RunnerSession:
         await self._client.connect()
         self._prepared = True
 
+    async def bind_environment(self, environment: dict[str, str]) -> None:
+        """Apply Claude's flag-tier env before input, with native readback."""
+        if not isinstance(environment, dict) or any(
+            not isinstance(key, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key)
+            or not isinstance(value, str) or "\0" in value
+            for key, value in environment.items()
+        ):
+            raise RunnerProtocolError("invalid Session environment")
+        if not environment:
+            return
+        if self._client is None:
+            raise RunnerProtocolError("environment binding before native initialization")
+        try:
+            await self._client.apply_flag_settings({"env": environment})
+            snapshot = await self._client.get_settings()
+            applied = snapshot.get("effective", {}).get("env", {})
+            if any(applied.get(key) != value for key, value in environment.items()):
+                raise RunnerProtocolError("native settings did not accept Session environment")
+        except Exception:
+            # Native errors may quote settings, including credentials.
+            raise RunnerProtocolError("native Session environment binding failed") from None
+
     async def activate(
         self,
         session_id: str,
@@ -1512,6 +1540,7 @@ class RunnerSession:
         permission_mode: str | None = None,
         mcp_servers: list[str] | None = None,
         resume_session_key: str | None = None,
+        environment: dict[str, str] | None = None,
     ) -> None:
         """Bind a prepared SDK process to exactly one platform Session."""
 
@@ -1546,6 +1575,7 @@ class RunnerSession:
             await self._client.disconnect()
             self._client = self._resume_client_factory(self.broker, resume)
             await self._client.connect()
+        await self.bind_environment(environment if environment is not None else {})
         if requested_mode != self._permission_mode:
             await self._client.set_permission_mode(requested_mode)
             self.broker.set_permission_mode(requested_mode)
@@ -2546,6 +2576,7 @@ class RunnerWsServer:
                     or None,
                     mcp_servers=list(raw_mcp_servers),
                     resume_session_key=str(opening.get("resume") or "").strip() or None,
+                    environment=opening.get("environment", {}),
                 )
             except BaseException:
                 # A partially activated Claude process is never returned to
@@ -2713,6 +2744,21 @@ class RunnerWsServer:
             ):
                 raise RunnerProtocolError("event_persisted requires a positive seq")
             await session.sender.acknowledge_event_persistence(sequence)
+        elif op == "apply_flag_settings":
+            request_id = str(frame.get("request_id") or "").strip()
+            settings = frame.get("settings")
+            if not request_id or not isinstance(settings, dict) or set(settings) != {"env"}:
+                raise RunnerProtocolError("apply_flag_settings requires request_id and env settings")
+            try:
+                await session.bind_environment(settings["env"])
+            except Exception:
+                await link.send({
+                    "op": "flag_settings_ack", "request_id": request_id, "applied": False,
+                })
+            else:
+                await link.send({
+                    "op": "flag_settings_ack", "request_id": request_id, "applied": True,
+                })
         elif op == "set_permission_mode":
             request_id = str(frame.get("request_id") or "").strip()
             mode = str(frame.get("mode") or "").strip()
@@ -3263,6 +3309,21 @@ def _real_session_factory(opening: dict[str, Any], link: HostLink) -> RunnerSess
     """Build one unclaimed Claude process and its local transcript spool."""
     from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, HookMatcher
 
+    class NativeClient(ClaudeSDKClient):
+        """Bridge the pinned CLI controls absent from Python SDK0.2.163."""
+
+        async def apply_flag_settings(self, settings: dict[str, Any]) -> None:
+            if self._query is None:
+                raise RunnerProtocolError("native settings before SDK connection")
+            await self._query._send_control_request(cast(Any, {
+                "subtype": "apply_flag_settings", "settings": settings,
+            }))
+
+        async def get_settings(self) -> dict[str, Any]:
+            if self._query is None:
+                raise RunnerProtocolError("native settings before SDK connection")
+            return await self._query._send_control_request(cast(Any, {"subtype": "get_settings"}))
+
     slot_id = str(opening["slot_id"])
     options_in = opening.get("options") or {}
     store_target = _DeferredHttpStoreTarget()
@@ -3369,7 +3430,7 @@ def _real_session_factory(opening: dict[str, Any], link: HostLink) -> RunnerSess
             can_use_tool=broker.can_use_tool,
         )
         _ensure_working_directory(options)
-        return ClaudeSDKClient(options=options)
+        return NativeClient(options=options)
 
     wait_s = float(options_in.get("interaction_wait_s") or DEFAULT_INTERACTION_WAIT_S)
     session = RunnerSession(

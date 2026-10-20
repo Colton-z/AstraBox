@@ -35,6 +35,7 @@ POLICIES = Table(
     Column("users", JSON, nullable=False),
     Column("refuse_binding", Boolean, nullable=False),
     Column("startup_environment", Boolean, nullable=False),
+    Column("console_base_url", Text, nullable=False, server_default=""),
 )
 RECEIPTS = Table(
     "runtime_preparation_binding_receipts", METADATA,
@@ -108,17 +109,24 @@ async def bind(context):
             sandbox_id=context.sandbox_id, placeholder=context.model_credential_placeholder,
             key_digest=hashlib.sha256(key.encode()).hexdigest(), engine_initialized=context.engine_initialized,
         ))
+    environment = {}
     if row["startup_environment"]:
-        return RuntimeMaterials(environment={"BINDING_FIXTURE_STARTUP": "must-not-be-ignored"})
+        assert row["console_base_url"].startswith(("http://", "https://"))
+        environment = {
+            "ASTRABOX_SESSION_URL": row["console_base_url"].rstrip("/") + "/sessions/" + context.session_id,
+            "RUNTIME_IDENTITY_SESSION_ID": context.session_id,
+            "BINDING_FIXTURE_OWNER": context.principal_id,
+        }
     if not row["session_bound"]:
-        return RuntimeMaterials()
+        return RuntimeMaterials(environment=environment)
     material = RuntimeFile("agent-token.json", json.dumps({
         "session_id": context.session_id, "principal_id": context.principal_id,
         "sandbox_id": context.sandbox_id, "phase": "startup",
     }).encode())
-    return RuntimeMaterials(files=(material,), environment=(
-        {} if context.engine_initialized else {"ASTRABOX_CFUSE_AGENT_TOKEN_FILE": context.file_path(material.name)}
-    ))
+    return RuntimeMaterials(files=(material,), environment={
+        **environment,
+        **({} if context.engine_initialized else {"ASTRABOX_CFUSE_AGENT_TOKEN_FILE": context.file_path(material.name)}),
+    })
 
 
 def register_routes(app: FastAPI):
