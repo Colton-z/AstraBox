@@ -2889,6 +2889,7 @@ class _HttpStoreTarget:
                     "entries": entries,
                     "append_id": append_id,
                     "payload_sha256": transcript_payload_digest(key, entries),
+                    "engine_session_key": key["session_id"] if not key.get("subpath") else None,
                 },
             )
             data = resp.get("data") if isinstance(resp, dict) else None

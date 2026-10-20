@@ -353,9 +353,12 @@ class _Translation:
         ]
 
     def _observe_session_key(self, message: dict[str, Any]) -> None:
+        # Init names a process's planned conversation before any transcript
+        # exists. Native output carries a resumable conversation's identity;
+        # SessionStore also commits its main key with the first durable batch.
+        if message.get("__sdk_type") not in {"ResultMessage", "StreamEvent"}:
+            return
         key = str(message.get("session_id") or "").strip()
-        if not key and isinstance(message.get("data"), dict):
-            key = str(message["data"].get("session_id") or "").strip()
         if key:
             self.engine_session_key = key
 
