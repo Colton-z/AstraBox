@@ -276,6 +276,12 @@ saves native state before releasing compute; preserving its workspace files
 also requires persistent workspace storage. See [Files](files.md) and
 [OpenSandbox](providers/opensandbox.md).
 
+Runtime accounts can install user commands in `$HOME/.local/bin`, which is on
+their command search path. Bootstrap gives newly created `.local` and
+`.local/bin` directories to that account and preserves existing ownership.
+Installing a command there does not itself provide persistence after sandbox
+replacement; workspace storage and native SessionStore have their own scopes.
+
 When persistent workspaces are enabled, the storage provider supplies their backing
 filesystem, and the sandbox backend's workspace route brings it into each
 sandbox. The bundled OpenSandbox backend's route is a mergerfs view per

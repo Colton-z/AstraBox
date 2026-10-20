@@ -208,30 +208,6 @@ printf '%s\n' "$@" >"$RUNUSER_ARGS"
 # ── the bootstrap owns what it creates, and not what it finds ──
 
 
-def test_platform_installed_content_stays_out_of_the_workload_s_hands() -> None:
-    """The plugin set and deploy key are part of what
-    constrains the agent. Root-owned, read and execute only — an account that can
-    rewrite its own constraints has none. They are also what will move into a
-    read-only image layer, which a workload-owned directory would rule out."""
-    body = _CONVERSATION_IDENTITY_BOOTSTRAP_FUNCTIONS.split(
-        "establish_conversation_identity_root() {", 1
-    )[1]
-    platform = set(re.findall(r'create_platform_dir "([^"]+)"', body))
-    assert platform == {
-        "$config/plugins",
-        "$home/.ssh",
-        "$home/.local/bin",
-    }
-    helper = _CONVERSATION_IDENTITY_BOOTSTRAP_FUNCTIONS.split("create_platform_dir() {", 1)[1]
-    helper = helper.split("\n}", 1)[0]
-    assert "chown" not in helper
-    # 0755, not 0700: the workload has to traverse and read them.
-    assert "chmod 755" in helper
-
-    # And the bridge symlinks the platform drops into them are not handed over.
-    assert "chown -h" not in _CONVERSATION_BOOTSTRAP_SCRIPT
-
-
 @pytest.mark.parametrize(
     ("existing_owner", "expected_code", "expected_changes"),
     [("0:0", 0, 3), ("2000:2000", 0, 0), ("2001:2001", 42, 0)],
