@@ -45,7 +45,7 @@ def _user_client(admin: httpx.Client, user: str) -> httpx.Client:
 
 
 def _gateway(session_id: str = "") -> dict:
-    # LiteLLM's actual key metadata and request logs are independent of our
+    # LiteLLM's actual key metadata and request logs are independent of the
     # preparation receipts. Return only hashes and usage, never credentials.
     return _server_json("""
 import hashlib,json,os,sys,httpx
