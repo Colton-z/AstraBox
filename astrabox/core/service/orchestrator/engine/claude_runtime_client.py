@@ -13,10 +13,9 @@ journal through one :class:`RunnerLink` and reports it as runtime events:
   transcript, which a replacement runtime resumes.
 * A cursor is the runner process's ``boot_id`` and a position ``(seq, index)``:
   the ``index``-th event translated from journal frame ``seq``. Translation
-  depends only on the frames since the open response began, and the runner
-  keeps every frame since then (it compacts only after a ``ResultMessage``), so
-  reading the retained journal again and skipping through the position yields
-  the same events after it.
+  rebuilds the open response from the retained frames and restores native child
+  identities from the SessionStore mirror. Child Agents can outlive a Result
+  and its compacted journal prefix; their identity does not expire with it.
 """
 
 from __future__ import annotations
@@ -33,6 +32,7 @@ from claude_agent_sdk import PermissionMode
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.core.service.orchestrator.engine.base import EngineCapabilityManifest
 from astrabox.core.service.orchestrator.engine.claude_child_runs import ClaudeChildIdentities
+from astrabox.core.service.orchestrator.engine.claude_code_background import stored_child_identities
 from astrabox.core.service.orchestrator.engine.claude_interaction_codec import (
     build_claude_interaction_contract,
     claude_answer_fields,
@@ -411,6 +411,7 @@ class ClaudeRuntimeClient:
         self._next_sequence: int | None = None
         self._submit_lock = asyncio.Lock()
         self._reading = False
+        self._children_restored = False
 
     @property
     def is_live(self) -> bool:
@@ -450,18 +451,37 @@ class ClaudeRuntimeClient:
             if after is not None
             else (0, _WHOLE_FRAME)
         )
-        async for frame in self._link.frames():
-            if frame.get("op") == "gap":
-                first = frame.get("first_retained_sequence")
-                if not isinstance(first, int) or first > through[0] + 1:
-                    raise RuntimeCursorExpired(f"the runner no longer retains frames after {through[0]}")
-                continue
-            seq = int(frame["seq"])
-            for index, event in enumerate(self._translation.translate(frame)):
-                if (seq, index) <= through:
+        try:
+            async for frame in self._link.frames():
+                if frame.get("op") == "gap":
+                    first = frame.get("first_retained_sequence")
+                    if not isinstance(first, int) or first > through[0] + 1:
+                        raise RuntimeCursorExpired(f"the runner no longer retains frames after {through[0]}")
                     continue
-                cursor = RuntimeCursor(self._boot_id, {"seq": seq, "index": index})
-                yield dataclasses.replace(event, cursor=cursor)
+                if not self._children_restored:
+                    await self._restore_children()
+                seq = int(frame["seq"])
+                for index, event in enumerate(self._translation.translate(frame)):
+                    if (seq, index) <= through:
+                        continue
+                    cursor = RuntimeCursor(self._boot_id, {"seq": seq, "index": index})
+                    yield dataclasses.replace(event, cursor=cursor)
+        finally:
+            self._reading = False
+
+    async def _restore_children(self) -> None:
+        """Read after the ordered replay gap, whose removed prefix is already stored."""
+        from astrabox.persistence.repository.session_read_repository import SessionReadRepository
+        from astrabox.persistence.repository.transcript_entry_repository import TranscriptEntryRepository
+
+        main = await TranscriptEntryRepository().load_subpath_entries_by_platform_session(
+            self._session_id, subpath=None
+        )
+        scopes = await SessionReadRepository().child_transcript_scopes(self._session_id)
+        children = stored_child_identities(main, scopes)
+        self._translation.children = children
+        self._translation.stream.child_identities = children
+        self._children_restored = True
 
     async def state(self) -> RuntimeState:
         snapshot = await self._link.state()
