@@ -240,6 +240,9 @@ for _code, _status, _category, _retryable, _owner in (
     ("DEPLOYMENT_UNAUTHORIZED", 401, "auth", False, "client"),
     ("DEPLOYMENT_MISCONFIGURED", 409, "state", False, "platform"),
     ("DEPLOYMENT_NO_OWNER", 409, "state", False, "platform"),
+    ("EXECUTION_TARGET_MISSING", 500, "state", False, "platform"),
+    ("EXECUTION_TARGET_MISMATCH", 409, "state", False, "client"),
+    ("AGENT_PREWARM_DISABLED", 409, "configuration", False, "platform"),
     # An Environment naming a permission level the platform does not define.
     # `template` because the value is stored on the Environment, which is what
     # a session's runtime is rendered from — the same owner as the other
