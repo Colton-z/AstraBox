@@ -69,7 +69,7 @@ RUN --mount=type=bind,from=hermes-source,source=/hermes-source.tar.gz,target=/tm
 
 # The editable supplier install keeps this typed extension in the image without
 # rebuilding its dependencies or changing its native SessionStore and loop.
-COPY containers/sandbox-hermes/patches/ /opt/astrabox/hermes-patches/
+COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/patches/ /opt/astrabox/hermes-patches/
 RUN git -C /opt/hermes/source apply --check /opt/astrabox/hermes-patches/session-tool-environment.patch \
     && git -C /opt/hermes/source apply /opt/astrabox/hermes-patches/session-tool-environment.patch
 

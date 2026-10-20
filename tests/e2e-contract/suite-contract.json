@@ -42,9 +42,9 @@
   ],
   "playwright": {
     "exclusive": {
-      "files": 182,
-      "parallel_files": 115,
-      "parallel_tests": 209,
+      "files": 183,
+      "parallel_files": 116,
+      "parallel_tests": 210,
       "serial_files": [
         "specs/a-prepared-seat-is-not-a-promise-the-box-can-still-keep.exclusive.spec.ts",
         "specs/a2a-stream-and-interaction.exclusive.spec.ts",
@@ -116,7 +116,7 @@
       ],
       "serial_tests": 108,
       "serial_workers": 1,
-      "tests": 317,
+      "tests": 318,
       "workers": 5
     },
     "parallel": {
