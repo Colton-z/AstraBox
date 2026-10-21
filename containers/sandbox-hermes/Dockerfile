@@ -72,6 +72,8 @@ RUN --mount=type=bind,from=hermes-source,source=/hermes-source.tar.gz,target=/tm
 COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/patches/ /opt/astrabox/hermes-patches/
 RUN git -C /opt/hermes/source apply --check /opt/astrabox/hermes-patches/session-tool-environment.patch \
     && git -C /opt/hermes/source apply /opt/astrabox/hermes-patches/session-tool-environment.patch
+RUN git -C /opt/hermes/source apply --check /opt/astrabox/hermes-patches/a2a-peer-errors.patch \
+    && git -C /opt/hermes/source apply /opt/astrabox/hermes-patches/a2a-peer-errors.patch
 
 # astrabox-hermes-config-merge installs plugin dependencies with Hermes' own
 # installer, and the profile setup writes the owner's configuration to its

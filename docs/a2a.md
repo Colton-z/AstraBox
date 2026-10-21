@@ -26,6 +26,13 @@ subject to its configured peer timeout.
 
 ## Calling a managed Agent
 
+With Hermes' native tools, call `a2a_list` and copy the exact peer key into
+`a2a_call.agent`, for example `astrabox/<agent_id>`. A bare Agent ID is not a
+peer key. The configured key selects the existing credentials; the discovery
+URL is not an interchangeable call name. Passing a direct HTTP(S) URL is an
+independent, unauthenticated call. Agent Card failures stop the call before any
+task is sent; an authentication error does not trigger a POST to the base URL.
+
 An authenticated external client fetches the Agent Card at
 `/api/v1/agents/{agent_id}/.well-known/agent-card.json` and uses the JSON-RPC
 URL advertised there. These routes use the deployment's configured web identity.

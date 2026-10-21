@@ -15,17 +15,17 @@
       "playwright": {
         "parallel": [],
         "exclusive": [
-          "specs/agent-workspace-resume.exclusive.spec.ts › the same Agent conversation reads its persisted workspace after sandbox rebuild",
-          "specs/agent-workspace-resume.exclusive.spec.ts › deepseek_harness: the same Agent conversation reads its persisted workspace after sandbox rebuild",
-          "specs/agent-workspace-resume.exclusive.spec.ts › pi: the same Agent conversation reads its persisted workspace after sandbox rebuild",
-          "specs/agent-workspace-resume.exclusive.spec.ts › codex: the same Agent conversation reads its persisted workspace after sandbox rebuild",
-          "specs/agent-workspace-resume.exclusive.spec.ts › cross-host: the same Agent conversation reads its persisted workspace after sandbox rebuild",
-          "specs/agent-workspace-resume.exclusive.spec.ts › cross-host: deepseek_harness: the same Agent conversation reads its persisted workspace after sandbox rebuild",
-          "specs/agent-workspace-resume.exclusive.spec.ts › cross-host: pi: the same Agent conversation reads its persisted workspace after sandbox rebuild",
-          "specs/agent-workspace-resume.exclusive.spec.ts › cross-host: codex: the same Agent conversation reads its persisted workspace after sandbox rebuild",
-          "specs/assistant-workspace-files-survive-park-and-wake.exclusive.spec.ts › assistant workspace profile survives hibernate and wake on a fresh box",
-          "specs/distributed-prewarm.exclusive.spec.ts › two live backends share prepared capacity without crossing conversation files or history",
-          "specs/cross-host-backend-claim.exclusive.spec.ts › backend on B claims the prepared sandbox on A and serves its files and live turn"
+          "specs/agent-workspace-resume.exclusive.spec.ts \u203a the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/agent-workspace-resume.exclusive.spec.ts \u203a deepseek_harness: the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/agent-workspace-resume.exclusive.spec.ts \u203a pi: the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/agent-workspace-resume.exclusive.spec.ts \u203a codex: the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/agent-workspace-resume.exclusive.spec.ts \u203a cross-host: the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/agent-workspace-resume.exclusive.spec.ts \u203a cross-host: deepseek_harness: the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/agent-workspace-resume.exclusive.spec.ts \u203a cross-host: pi: the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/agent-workspace-resume.exclusive.spec.ts \u203a cross-host: codex: the same Agent conversation reads its persisted workspace after sandbox rebuild",
+          "specs/assistant-workspace-files-survive-park-and-wake.exclusive.spec.ts \u203a assistant workspace profile survives hibernate and wake on a fresh box",
+          "specs/distributed-prewarm.exclusive.spec.ts \u203a two live backends share prepared capacity without crossing conversation files or history",
+          "specs/cross-host-backend-claim.exclusive.spec.ts \u203a backend on B claims the prepared sandbox on A and serves its files and live turn"
         ]
       }
     },
@@ -42,7 +42,7 @@
   ],
   "playwright": {
     "exclusive": {
-      "files": 186,
+      "files": 187,
       "parallel_files": 119,
       "parallel_tests": 213,
       "serial_files": [
@@ -61,6 +61,7 @@
         "specs/an-expired-oauth-credential-is-reported-before-a-conversation-dies-on-it.exclusive.spec.ts",
         "specs/an-exposed-port-outlives-the-idle-window.exclusive.spec.ts",
         "specs/an-idle-assistant-whose-box-dies-comes-back-unprompted.exclusive.spec.ts",
+        "specs/assistant-a2a-peer-auth-errors.exclusive.spec.ts",
         "specs/assistant-channel-cron-result-reaches-the-chat.exclusive.spec.ts",
         "specs/assistant-native-a2a-approval.exclusive.spec.ts",
         "specs/assistant-runtime-availability-status.exclusive.spec.ts",
@@ -114,9 +115,9 @@
         "specs/subagent-replay-recovery.exclusive.spec.ts",
         "specs/untouched-tab-catches-up-after-backend-restart.exclusive.spec.ts"
       ],
-      "serial_tests": 108,
+      "serial_tests": 109,
       "serial_workers": 1,
-      "tests": 321,
+      "tests": 322,
       "workers": 5
     },
     "parallel": {

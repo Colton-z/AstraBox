@@ -5,6 +5,10 @@ AstraBox patch: typed per-Session tool environment carried by the native
 Session ContextVars and existing child-process environment builder.
 The supplier agent loop, SessionDB, queues and lifecycle remain native.
 
+AstraBox patch: distinguish configured A2A peer keys from discovery URLs and
+propagate Agent Card errors before dispatch. Direct URLs do not inherit a
+configured peer's credentials.
+
 MIT License
 
 Copyright (c) 2025 Nous Research
