@@ -5,9 +5,10 @@ every invocation a durable Run ID, calls AstraBox back to start the Run's
 Session and admit its input, retries and recovers invocations, and keeps the Run history
 that the console lists and replays.
 
-AstraBox includes one provider, `dbos`. It embeds DBOS Transact in each server
-process and keeps its state in the PostgreSQL database AstraBox already uses.
-Write another provider when a deployment needs a different engine.
+AstraBox includes one provider, `dbos`. Worker processes embed DBOS Transact;
+control-only processes use its native client without launching workflows. Both
+use the PostgreSQL database AstraBox already uses. Write another provider when
+an installation needs a different durable engine.
 
 ## What AstraBox and the provider each own
 
@@ -19,8 +20,9 @@ Write another provider when a deployment needs a different engine.
 | The public Run status: the Session's response to the Run's input, else the provider's dispatch state | Retries, recovery of interrupted invocations, and the Run ledger |
 
 The Deployment record stays the desired state. When AstraBox starts, it passes
-the provider every stored Schedule (`reconcile`); after a change, it passes the
-one Schedule that changed (`apply` or `delete`). The provider stores the
+each worker the stored Schedules belonging to its Environment (`reconcile`);
+a control-only process does not reconcile worker state. After a change, it
+passes the one Schedule that changed (`apply` or `delete`). The provider stores the
 payload AstraBox gives it — the target and the prompt — and hands it back with
 every invocation, so editing a Schedule never rewrites a Run that already
 exists.
@@ -70,32 +72,38 @@ Engines legitimately differ in three ways. Declare them in
 
 ## Check the deployment's configuration
 
-AstraBox calls `configure(database_url=...)` at startup with the platform's
-PostgreSQL URL, which a provider may use for its own durable state. Raise
-`SchedulerConfigurationError`, naming what is missing, when the provider cannot
-run there: AstraBox then refuses to start and tells the operator to choose
-another provider or set `ASTRABOX_SCHEDULER_PROVIDER=none`. The `dbos` provider
-keeps its schedules and Run ledger in the `dbos` schema of that database.
+AstraBox calls `configure(database_url=..., environment_name=...)` at startup.
+The URL is the selected relational backend's native URL; the provider validates
+whether it can use that store. `environment_name` is the stable namespace whose
+work this process may execute. Raise `SchedulerConfigurationError` for an
+unsupported configuration before any invocation can start.
 
-`start(handler)` begins dispatching and resumes the Runs a lost process left
-behind; `stop()` drains within a bounded time while AstraBox's services are
-still running.
+`start(handler)` opens control operations and starts the Environment's worker.
+`start(None)` opens control operations without firing schedules, claiming
+invocations or recovering workflows. `stop()` drains the worker and closes
+clients while AstraBox's services are still available.
 
-## Build the guarantees on a document store
+`ScheduleDefinition.environment_name` and `RunInvocation.environment_name`
+carry durable ownership. Control methods `delete`, `enqueue`, `get_run` and
+`list_runs` take an explicit Environment and refuse a foreign one. A process
+can manage its local bindings without running their work. Reconciliation is
+limited to that same Environment. The platform validates ownership again
+before starting a Session or admitting a Run input.
 
-A provider over a document store can implement the guarantees with its own
-collections:
+## Use the engine's complete execution capability
 
-- Store one document per invocation, keyed by a unique index on the
-  Deployment ID and the due time in UTC. Every replica that reaches a due time
-  inserts that document, and the index lets exactly one insert win.
-- Claim an invocation with a conditional update that sets a lease expiry, and
-  extend the lease while the handler runs. A process that finds an expired
-  lease takes the invocation over with the same Run ID; this is
-  `recovery_scope="cluster"`.
-- Store the Session ID before calling `admit_input`, so a takeover reuses it.
-  AstraBox's idempotency on the Run ID absorbs a call repeated after a lease
-  expired while the first holder was still running.
+Use a maintained durable engine's supported routing, queueing and recovery
+APIs. The built-in adapter maps Environments to DBOS applications and named
+native queues; all control operations use `DBOSClient`. A control-only process
+initializes its local native schema through the pinned DBOS CLI migration
+entry point, then constructs the client without launching a workflow worker.
+DBOS application names accept 3–30 lowercase letters, digits, underscores and
+hyphens. The default Environment `astrabox` retains its native application and queue
+names. See the fixed dependency's [client interface](https://github.com/dbos-inc/dbos-transact-py/blob/a51254c6c5ab2f1f217444778d306d4c967b1ba8/dbos/_client.py).
+
+Keep generic scheduling machinery in that engine. Document an unmet requirement
+and inspect maintained counterparts before introducing custom leases, retry
+queues, invocation state or recovery.
 
 ## Package the provider
 
@@ -110,7 +118,8 @@ Set the class's `name` to the entry-point name. A deployment selects it with
 `ASTRABOX_SCHEDULER_PROVIDER=example`; `none` is reserved for running without
 scheduled Deployments. AstraBox instantiates and registers the class when it
 starts. The class may also set `seams_api_version`; an incompatible declared
-version fails at startup instead of at the first due time.
+version fails at startup instead of at the first due time. The target-aware
+scheduler contract requires provider API9.
 
 ## Verify the provider
 
@@ -125,7 +134,7 @@ from astrabox_scheduler_example import ExampleSchedulerProvider
 class TestExampleScheduler(SchedulerProviderContractSuite):
     def make_provider(self, store):
         provider = ExampleSchedulerProvider()
-        provider.configure(database_url=...)  # a fresh database for `store`
+        provider.configure(database_url=..., environment_name="astrabox")  # fresh `store`
         return provider
 
     async def fire_due_times(self, provider, deployment_id, start, end):

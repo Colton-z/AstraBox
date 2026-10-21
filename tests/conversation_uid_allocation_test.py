@@ -27,7 +27,7 @@ from astrabox.core.service.orchestrator.runtime.conversation_identity import (
     allocate_agent_scoped_uid,
 )
 from astrabox.persistence.repository.agent_repository import AgentRepository
-from astrabox.persistence.repository.environment_repository import EnvironmentRepository
+from astrabox.persistence.repository.runtime_profile_repository import RuntimeProfileRepository
 from astrabox.persistence.sql import execute
 from astrabox.persistence.sql.models.agents import AgentRuntime
 
@@ -35,7 +35,7 @@ pytestmark = pytest.mark.usefixtures("database")
 
 
 async def _agent(*, cursor: int | None = None, deleted: bool = False) -> AgentRepository:
-    await EnvironmentRepository().put(
+    await RuntimeProfileRepository().put(
         "env",
         {"engine_kind": "claude_code", "idle_action": "terminate", "networking": {"type": "unrestricted"}},
         updated_by="test",
@@ -43,7 +43,7 @@ async def _agent(*, cursor: int | None = None, deleted: bool = False) -> AgentRe
     repo = AgentRepository()
     await repo.create_agent(
         {
-            "agent_id": "a1", "name": "a1", "model": "model", "environment_name": "env",
+            "agent_id": "a1", "name": "a1", "model": "model", "runtime_profile_name": "env",
             "created_by": "owner", "state": "DELETED" if deleted else "ACTIVE",
         }
     )

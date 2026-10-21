@@ -1,6 +1,6 @@
 """Shared thin schema-payload validation for the admin form schemas.
 
-`agent_schema` and `environment_schema` both declare a `list[dict]` field schema
+`agent_schema` and `runtime_profile_schema` both declare a `list[dict]` field schema
 (the JSON the frontend form editor consumes) and validate a write payload against
 it: types / required / enum / nested item-schema only, never rewriting the
 payload or filling defaults. Both schemas call this implementation so nested
@@ -38,7 +38,7 @@ def check_scalar(field_key: str, field_type: str, value: Any, enum: list[str] | 
     """Validate a single declared field value. None is treated as 'absent'."""
     if value is None:
         return
-    if field_type in ("string", "text", "env_ref"):
+    if field_type in ("string", "text", "runtime_profile_ref"):
         if not isinstance(value, str):
             raise invalid_request(f"{field_key} must be a string")
     elif field_type == "boolean":

@@ -65,14 +65,14 @@ test('assistant workspace profile survives hibernate and wake on a fresh box', a
   // seeded agent's environment does not work and is not a near miss: the engine
   // belongs to the environment, and `POST /assistants` rejects `claude_code`
   // with ASSISTANT_ENGINE_UNSUPPORTED before anything else happens.
-  const environmentName = await api.assistantEnvironmentName();
-  expect(environmentName, 'an assistant environment must exist').not.toEqual('');
-  const assistantModel = await api.assistantModelName(environmentName);
+  const runtimeProfileName = await api.assistantEnvironmentName();
+  expect(runtimeProfileName, 'an assistant environment must exist').not.toEqual('');
+  const assistantModel = await api.assistantModelName(runtimeProfileName);
 
   try {
     const assistant = await api.createAssistant({
       display_name: `__e2e_assistant_park_${runId}`,
-      environment_name: environmentName,
+      runtime_profile_name: runtimeProfileName,
       model_config_override: { model_name: assistantModel },
     });
     assistantId = String(assistant.assistant_id || '');

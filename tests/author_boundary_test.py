@@ -1,7 +1,7 @@
 """An Agent's or Assistant's own fields reach only what an administrator made available.
 
 Anyone who may create an Agent writes the fields that decide what its sandbox
-clones and connects to. Those fields once widened a limited Environment to the
+clones and connects to. Those fields once widened a limited RuntimeProfile to the
 Docker bridge gateway (``https://172.17.0.1/x.git`` reached the platform API),
 copied an arbitrary server environment variable into the sandbox as a deploy
 key, and could select the platform's gateway credential for an MCP server. The
@@ -70,15 +70,15 @@ def _agent_service(**networking: dict[str, Any] | None) -> tuple[AgentConfigServ
 
     register_builtin_providers()
     repo = _AgentRepo()
-    environments = networking or {"limited": _LIMITED}
+    runtime_profiles = networking or {"limited": _LIMITED}
     return (
-        AgentConfigService(repo, environment_repo=_EnvironmentRepo(environments)),  # type: ignore[arg-type]
+        AgentConfigService(repo, runtime_profile_repo=_EnvironmentRepo(runtime_profiles)),  # type: ignore[arg-type]
         repo,
     )
 
 
 def _agent(**fields: Any) -> dict[str, Any]:
-    return {"name": "probe", "model": "some-model", "environment_name": "limited", **fields}
+    return {"name": "probe", "model": "some-model", "runtime_profile_name": "limited", **fields}
 
 
 def _user() -> Any:
@@ -103,7 +103,7 @@ async def _refused(call: Any) -> APIError:
     return raised.value
 
 
-# ── egress: an author's hosts on a limited Environment ─────────────────────
+# ── egress: an author's hosts on a limited RuntimeProfile ─────────────────────
 
 
 @pytest.mark.parametrize(
@@ -168,7 +168,7 @@ async def test_moving_an_agent_to_a_limited_environment_rechecks_its_hosts(
     created = await service.create_agent_config(
         _user(),
         _agent(
-            environment_name="open",
+            runtime_profile_name="open",
             packages=[{"kind": "claude-plugin", "url": "https://10.0.0.5/x.git", "protocol": "https"}],
         ),
     )
@@ -177,12 +177,12 @@ async def test_moving_an_agent_to_a_limited_environment_rechecks_its_hosts(
         service.upsert_agent_config(
             _user(),
             created["agent_id"],
-            {"model": "some-model", "environment_name": "limited"},
+            {"model": "some-model", "runtime_profile_name": "limited"},
         )
     )
 
     assert error.code == "AGENT_EGRESS_HOST_REFUSED"
-    assert repo.agent is not None and repo.agent["environment_name"] == "open"
+    assert repo.agent is not None and repo.agent["runtime_profile_name"] == "open"
 
 
 def test_a_stored_definition_cannot_widen_the_policy_at_startup() -> None:
@@ -230,7 +230,7 @@ async def test_a_deploy_key_name_cannot_address_a_server_secret(
         service.create_agent_config(
             _user(),
             _agent(
-                environment_name="limited",
+                runtime_profile_name="limited",
                 default_repo={
                     "url": "git@github.com:org/repo.git",
                     "protocol": "ssh",
@@ -453,7 +453,7 @@ class _Environments:
     def __init__(self, networking: dict[str, Any]) -> None:
         self._networking = networking
 
-    async def get_environment(self, name: str) -> dict[str, Any]:
+    async def get_runtime_profile(self, name: str) -> dict[str, Any]:
         return {
             "name": name,
             "enabled": True,
@@ -503,7 +503,7 @@ async def test_an_assistant_meets_the_same_rule(
             _user(),
             {
                 "display_name": "Jarvis",
-                "environment_name": "env-1",
+                "runtime_profile_name": "env-1",
                 "mcp_servers": {"probe": server},
             },
         )

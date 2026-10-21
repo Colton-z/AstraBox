@@ -54,6 +54,7 @@ def schedule_definition(deployment: dict[str, Any]) -> ScheduleDefinition:
     schedule = deployment.get("schedule") if isinstance(deployment.get("schedule"), dict) else {}
     return ScheduleDefinition(
         deployment_id=str(deployment.get("deployment_id") or "").strip(),
+        environment_name=str(deployment["environment_name"]),
         cron=str(schedule.get("cron") or ""),
         timezone=str(schedule.get("timezone") or ""),
         enabled=deployment.get("enabled") is not False,
@@ -67,6 +68,7 @@ def invocation_context(invocation: RunInvocation) -> dict[str, Any]:
     context: dict[str, Any] = {
         **dict(invocation.payload),
         "deployment_id": invocation.deployment_id,
+        "environment_name": invocation.environment_name,
         "trigger": invocation.trigger,
     }
     if invocation.replayed_from_run_id:
@@ -116,9 +118,13 @@ async def start_deployment_scheduler() -> None:
     """
 
     from astrabox.persistence.repository.deployment_repository import DeploymentRepository
+    from astrabox.config.settings import get_settings
 
     scheduler = configured_scheduler()
     if scheduler is None:
+        if not get_settings().background_execution_enabled:
+            logger.info("scheduler worker disabled for Environment %s", get_settings().environment_name)
+            return
         deployments = await DeploymentRepository().list_scheduled()
         enabled = [row for row in deployments if row.get("enabled") is not False]
         if enabled:
@@ -129,7 +135,12 @@ async def start_deployment_scheduler() -> None:
             )
         logger.info("scheduled Deployments are disabled (ASTRABOX_SCHEDULER_PROVIDER=none)")
         return
-    await scheduler.start(DeploymentRunHandler())
+    await scheduler.start(
+        DeploymentRunHandler() if get_settings().background_execution_enabled else None
+    )
+    if not get_settings().background_execution_enabled:
+        logger.info("scheduler control client ready; worker disabled for Environment %s", get_settings().environment_name)
+        return
     logger.info(
         "scheduler provider %s started: recovery_scope=%s max_active_schedules=%s "
         "pause_visibility_seconds=%s",

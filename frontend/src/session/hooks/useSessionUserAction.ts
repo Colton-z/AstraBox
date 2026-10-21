@@ -19,7 +19,9 @@ export function useSessionUserAction(sessionId: string, principalId: string, inv
     const token = ++generation.current;
     operation.current = { owner, generation: token };
     setView((previous) => ({
-      owner, invalidation, state: previous.owner === owner ? previous.state : null, busy: true, error: null,
+      owner, invalidation,
+      state: actionId !== undefined && previous.owner === owner && previous.invalidation === invalidation ? previous.state : null,
+      busy: true, error: null,
     }));
     try {
       const state = actionId === undefined

@@ -1,6 +1,6 @@
 # OpenSandbox
 
-OpenSandbox 是 AstraBox 内置的沙箱服务。[Environment（运行环境）](../environments.md)
+OpenSandbox 是 AstraBox 内置的沙箱服务。[RuntimeProfile（运行配置）](../runtime-profiles.md)
 决定 Agent 使用的沙箱镜像、网络访问和生命周期选项。Session 启动时，AstraBox 会创建
 或取得一个 OpenSandbox 沙箱，让 Agent 程序在 `/workspace` 中工作；对话和其他产品数据
 保存在沙箱之外。
@@ -95,7 +95,7 @@ Docker 挂载点下的目录；而工作区视图数据卷只有在容器按名�
 后台服务。内置镜像使用 `/workspace` 作为 Session 工作区。
 
 如需增加通用软件，请以对应的内置镜像为基础构建自定义镜像，再到
-**管理台 → Environment → 沙箱镜像或模板**中选择它。
+**管理台 → RuntimeProfile → 沙箱镜像或模板**中选择它。
 不要依赖每个 Session 单独执行的初始化脚本：预热沙箱可能在使用它的 Session 出现之前
 就已经创建。
 
@@ -106,7 +106,7 @@ API。内置镜像需要 AIO，因为它们的启动和工作负载账户生命�
 
 [容器参考](../container-reference.md)说明镜像与工作区约定。AstraBox 创建的每个沙箱都使用
 平台统一的资源规格：运行上限为 `4` CPU 和 `4Gi` 内存，调度请求为 `200m` CPU 和
-`768Mi` 内存。冷创建和预备容量使用同一份配方，而不是为单个 Session 设置 Environment
+`768Mi` 内存。冷创建和预备容量使用同一份配方，而不是为单个 Session 设置 RuntimeProfile
 资源。内置 Lifecycle 服务在本机 Docker 上运行沙箱时，CPU 上限会降到本机的 CPU 数，
 因为 Docker 拒绝超过它的上限；在 Kubernetes 上或连接已有 OpenSandbox 服务时，配方按原样
 发送。磁盘、GPU 和集群准入仍由 OpenSandbox 部署管理。
@@ -131,7 +131,7 @@ tenancy 则由领取的 Session 独享整箱，配置持久化存储时，平台
 平台决定 Agent 版本、持久工作区挂载、凭证和启动要求。OpenSandbox 提供沙箱生命周期
 与池能力，不参与 AstraBox 的用户或 Session 流程。
 
-Environment 可以为每段对话分配独立沙箱，也可以让同一 Agent 的多段对话共用沙箱。
+RuntimeProfile 可以为每段对话分配独立沙箱，也可以让同一 Agent 的多段对话共用沙箱。
 共用模式仍为每段对话提供独立的 Linux 用户和工作区，但它们会共用容器和网络命名空间。
 因此，该模式需要高级沙箱权限，以及已经为 OpenSandbox 隔离 Session 配置好的部署。
 
@@ -140,7 +140,7 @@ Environment 可以为每段对话分配独立沙箱，也可以让同一 Agent �
 
 ## 暂停与恢复沙箱
 
-OpenSandbox 部署支持快照时，Environment 可以在沙箱闲置后暂停它，而不是直接终止。
+OpenSandbox 部署支持快照时，RuntimeProfile 可以在沙箱闲置后暂停它，而不是直接终止。
 暂停会把沙箱根文件系统写入 OCI 镜像并释放计算资源；恢复后沙箱 ID 和文件保持不变，
 但会启动新的进程，普通进程内存不会恢复。
 
@@ -151,7 +151,7 @@ OpenSandbox 部署支持快照时，Environment 可以在沙箱闲置后暂停�
 - 可供快照推送和拉取的 OCI 镜像仓库；
 - 使用私有仓库时，在沙箱命名空间中提供镜像仓库凭证。
 
-在生产 Environment 中启用暂停之前，先验证写入、暂停、恢复和再次读取的完整路径：
+在生产 RuntimeProfile 中启用暂停之前，先验证写入、暂停、恢复和再次读取的完整路径：
 
 ```bash
 astrabox verify-opensandbox-snapshots
@@ -171,7 +171,7 @@ Assistant 休眠保存原生状态后释放沙箱，不等于 OpenSandbox 暂停
 
 ## 配置网络与凭证保护 {#credential-protection}
 
-在**管理台 → Environment → 网络访问**中允许全部出站地址，或只允许 Agent 需要的
+在**管理台 → RuntimeProfile → 网络访问**中允许全部出站地址，或只允许 Agent 需要的
 主机。AstraBox 会将该设置与模型地址、平台回调地址、声明的 Plugin 来源、允许的远程
 MCP 服务，以及已分配 Credential 授权的地址合并。[IP 地址](../networking.md)说明防火墙
 和固定出口的配置方法。
@@ -332,6 +332,6 @@ AstraBox 提供了一份策略：
 ## 相关文档
 
 - [部署 AstraBox](../deploy.md)
-- [Environment](../environments.md)
+- [RuntimeProfile](../runtime-profiles.md)
 - [容器参考](../container-reference.md)
 - [保护 Agent 使用的凭证](../egress-credential-injection.md)

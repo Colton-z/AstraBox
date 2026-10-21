@@ -2,7 +2,7 @@
 
 > 连接已部署的 AstraBox API，并查看它当前提供的准确接口。
 
-AstraBox API 提供完整的自托管云端 Agent 管理能力，涵盖 Agent 创建、Environment 配置、
+AstraBox API 提供完整的自托管云端 Agent 管理能力，涵盖 Agent 创建、RuntimeProfile 配置、
 Session 生命周期、事件流、文件、Deployment 和凭证等功能。REST 接口使用 JSON 作为
 请求和响应格式，流式接口使用 Server-Sent Events。
 
@@ -32,7 +32,7 @@ API 当前为 `v1` 版本。接口使用 `/api/v1` 前缀，无需传递额外�
 | Agents | Agent 的创建、查询、更新、删除和访问授权 | `/agents` |
 | Assistants | Assistant 及其持久工作区管理 | `/assistants` |
 | Artifacts | 持久页面、版本、分享和查看器能力管理 | `/artifacts`, `/artifact-share/{token}/runtime` |
-| Environments | Agent 可用基础设施管理 | `/admin/environments` |
+| RuntimeProfiles | Agent 可用基础设施管理 | `/admin/runtime-profiles` |
 | Sessions | Session 状态读取、消息发送、事件流和生命周期管理 | `/sessions` |
 | Files | Session 工作区文件的查询、上传、移动、下载和删除 | `/sessions/{session_id}/files` |
 | Extensions | 为 Agent 分配远程 MCP 服务器和 Skill | `/agents/{agent_id}/extensions` |

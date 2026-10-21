@@ -26,6 +26,7 @@ from tests.e2e._sandbox_helpers import (
     create_agent_variant_session,
     data,
     destroy_sandbox_pod,
+    destroy_box,
     durable_mounts_of_sandbox,
     get_admin_session_detail,
     history,
@@ -144,7 +145,7 @@ def _assistant_snapshot(
 def _destroy_assistant_box(
     *, pod: str, sandbox_id: str, kubeconfig: str, namespace: str, deadline: float
 ) -> str:
-    """Inject the same whole-sandbox loss as the browser's killSandbox helper."""
+    """Check the owned Pod, then inject the shared abrupt whole-sandbox loss."""
     command = ["kubectl", "--kubeconfig", kubeconfig, "--namespace", namespace]
 
     def kubectl(*args: str) -> str:
@@ -163,14 +164,8 @@ def _destroy_assistant_box(
     resource = "batchsandboxes.sandbox.opensandbox.io"
     batch = json.loads(kubectl("get", resource, sandbox_id, "-o", "json"))
     assert batch["metadata"]["uid"] == owner["uid"], "sandbox owner identity changed"
-    kubectl("delete", resource, sandbox_id, "--cascade=foreground", "--wait=false")
-    while time.monotonic() < deadline:
-        remaining_batch = kubectl("get", resource, sandbox_id, "--ignore-not-found", "-o", "name")
-        remaining_pod = kubectl("get", "pod", pod, "--ignore-not-found", "-o", "name")
-        if not remaining_batch.strip() and not remaining_pod.strip():
-            return str(metadata["uid"])
-        time.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
-    pytest.fail(f"old BatchSandbox {sandbox_id} and Pod {pod} were not physically removed")
+    destroy_box(sandbox_id)
+    return str(metadata["uid"])
 
 
 def _probe(client: httpx.Client, session_id: str, script: str) -> tuple[str, str]:
@@ -313,7 +308,7 @@ def test_an_assistant_remembers_its_conversations_after_its_box_is_destroyed(
                 "/api/v1/assistants",
                 json={
                     "display_name": f"__e2e_durable_{uuid.uuid4().hex[:8]}",
-                    "environment_name": environment,
+                    "runtime_profile_name": environment,
                     "model_config_override": {"model_name": model},
                 },
             )

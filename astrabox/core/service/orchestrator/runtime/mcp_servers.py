@@ -96,7 +96,10 @@ def binding_mcp_server_definitions(
                 status_code=409,
             )
         servers = {**servers, AGENTS_PLATFORM_SERVER: {"platform_server": AGENTS_PLATFORM_SERVER}}
-    else:
+    elif not agent_id:
+        servers = {name: config for name, config in servers.items()
+                   if platform_mcp_server_id(name, config) != AGENTS_PLATFORM_SERVER}
+    if session_source_type == "channel":
         servers = {name: config for name, config in servers.items()
                    if platform_mcp_server_id(name, config) != AGENTS_PLATFORM_SERVER}
     if not personal_connections_enabled(session_source_type, agent_id=agent_id):

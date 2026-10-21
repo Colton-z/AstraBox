@@ -123,7 +123,7 @@ class Assistant(BaseModel):
     icon: str | None = None
     description: str | None = None
     engine_kind: str | None = None
-    environment_name: str | None = None
+    runtime_profile_name: str | None = None
     permission_mode_default: str | None = None
     #: The system prompt, the same field an Agent carries; the Agent program
     #: applies it through its own mechanism (Hermes: its SOUL.md identity).

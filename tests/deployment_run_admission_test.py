@@ -14,11 +14,13 @@ async def test_run_admission_preserves_retryable_errors_and_terminal_refusals() 
     agent_repo = AsyncMock()
     agent_repo.get_agent.return_value = {"agent_id": "agent", "created_by": "owner"}
     runtime = AsyncMock()
+    sessions = AsyncMock()
+    sessions.get_session.return_value = {"environment_name": "astrabox"}
     service = DeploymentService(
         deployment_repo=AsyncMock(),
         agent_repo=agent_repo,
         agent_service_getter=lambda: AsyncMock(),
-        sessions_repo=AsyncMock(),
+        sessions_repo=sessions,
         session_runtime=runtime,
         session_facts=AsyncMock(),
         agent_config=AsyncMock(),
@@ -36,7 +38,7 @@ async def test_run_admission_preserves_retryable_errors_and_terminal_refusals() 
         runtime.send_as.side_effect = refusal
         with pytest.raises((APIError, RunPermanentError)) as raised:
             await service.admit_run_input(
-                {"agent_id": "agent", "input_text": "the scheduled task"},
+                {"agent_id": "agent", "environment_name": "astrabox", "input_text": "the scheduled task"},
                 run_id="run",
                 session_id="session",
             )

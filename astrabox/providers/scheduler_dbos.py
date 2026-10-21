@@ -5,16 +5,15 @@ and the workflow ledger that is the Run ledger. This module adapts its public
 API to :class:`astrabox.seams.scheduler.SchedulerProvider`; nothing outside it
 sees DBOS's workflow and schedule vocabulary.
 
-DBOS keeps its state in a SQL system database, and this provider uses the
-repository's: the ``dbos`` schema of the PostgreSQL database, or the SQLite
-file. :meth:`DbosSchedulerProvider.configure` therefore refuses a repository
-backend that does not declare ``sql_database_url()``, and the process does not
-start.
+DBOS keeps its state in the ``dbos`` schema of the platform's PostgreSQL
+database. Configuration refuses another database dialect. Native applications
+and queues identify Environments. A process without a worker uses
+``DBOSClient`` for control operations and launches no DBOS runtime.
 
 Properties a deployment has to know about (see ``docs/schedules.md``):
 
-* One daemon thread per enabled schedule in every process, each listing every
-  schedule once per polling interval; enabled schedules are capped at
+* One daemon thread per enabled schedule in every worker process of its target,
+  listing that target's schedules once per polling interval; enabled schedules are capped at
   :data:`MAX_ACTIVE_SCHEDULES`.
 * Recovery is scoped to an executor: a restarted process resumes the
   invocations it was running only when it comes back with the same executor id
@@ -30,19 +29,22 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import re
 import uuid
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Any, Literal, cast
 
 from dbos import (
     DBOS,
+    DBOSClient,
+    ClientScheduleInput,
+    EnqueueOptions,
     Queue,
-    ScheduleInput,
-    SetWorkflowAttributes,
-    SetWorkflowID,
     error as dbos_error,
 )
+from dbos.cli.migration import run_dbos_database_migrations
 from sqlalchemy import make_url
 
 from astrabox.common.logger.logger_factory import get_logger
@@ -91,7 +93,30 @@ _DBOS_STATES: dict[str, str] = {
     "CANCELLED": "CANCELLED",
 }
 
-_RUN_QUEUE = Queue(DEPLOYMENT_RUN_QUEUE_NAME)
+_WORKER_ENVIRONMENT: str | None = None
+
+
+def _queue_name(environment_name: str) -> str:
+    return f"{environment_name}-deployment-runs"
+
+
+@lru_cache(maxsize=None)
+def _declare_run_queue(environment_name: str) -> Queue:
+    # DBOS keeps declarations through destroy(); each name can be declared once.
+    return Queue(_queue_name(environment_name), application_name=environment_name)
+
+
+def _worker_environment_name() -> str:
+    if _WORKER_ENVIRONMENT is None:
+        raise RuntimeError("DBOS has no executing application target")
+    return _WORKER_ENVIRONMENT
+
+
+def _record_environment_name(status: Mapping[str, Any]) -> str:
+    owner = status.get("application_name")
+    if not isinstance(owner, str) or not owner:
+        raise SchedulerUnavailable("workflow store omitted its execution owner")
+    return owner
 
 #: The platform's half of every invocation, installed by ``start``. DBOS is a
 #: process-wide runtime, so its workflow functions reach the handler here.
@@ -134,6 +159,7 @@ def _invocation(
     return RunInvocation(
         run_id=workflow_id,
         deployment_id=str(context.get("deployment_id") or ""),
+        environment_name=_worker_environment_name(),
         trigger=trigger,
         payload=dict(context),
         scheduled_for=_aware_utc(scheduled_at) if trigger == "schedule" else None,
@@ -246,6 +272,7 @@ def _record(status: Mapping[str, Any]) -> RunRecord:
             deployment_id=str(
                 attributes.get("deployment_id") or context.get("deployment_id") or ""
             ),
+            environment_name=_record_environment_name(status),
             trigger=trigger,
             payload=context,
             scheduled_for=scheduled_for,
@@ -273,7 +300,7 @@ def _dbos_url(raw_url: str) -> str | None:
 
 
 class DbosSchedulerProvider(SchedulerProvider):
-    """Scheduled Deployments on DBOS, in the repository's SQL database."""
+    """One Environment's native schedules, Run ledger and optional worker."""
 
     name = "dbos"
     properties = SchedulerProperties(
@@ -284,9 +311,24 @@ class DbosSchedulerProvider(SchedulerProvider):
 
     def __init__(self) -> None:
         self._system_database_url: str | None = None
+        self._environment_name: str | None = None
+        self._clients: dict[str, DBOSClient] = {}
+        self._client_lock = asyncio.Lock()
         self._started = False
+        self._worker_started = False
 
-    def configure(self, *, database_url: str) -> None:
+    @staticmethod
+    def _validate_environment(environment_name: str) -> None:
+        # DBOS2.31 application's native name contract (dbos/_dbos_config.py).
+        if re.fullmatch(r"[a-z0-9_-]{3,30}", environment_name) is None:
+            raise SchedulerConfigurationError(
+                "DBOS Environments require 3–30 lowercase letters, digits, underscores or hyphens"
+            )
+
+    def configure(self, *, database_url: str, environment_name: str) -> None:
+        self._validate_environment(environment_name)
+        if self._environment_name is not None and self._environment_name != environment_name:
+            raise SchedulerConfigurationError("a process cannot switch DBOS Environments")
         dbos_url = _dbos_url(database_url)
         if dbos_url is None:
             raise SchedulerConfigurationError(
@@ -294,254 +336,282 @@ class DbosSchedulerProvider(SchedulerProvider):
                 f"the database URL uses {make_url(database_url).drivername!r}"
             )
         self._system_database_url = dbos_url
+        self._environment_name = environment_name
 
-    async def start(self, handler: RunHandler) -> None:
-        global _HANDLER
+    async def _client(self, environment_name: str) -> DBOSClient:
+        self._validate_environment(environment_name)
+        if environment_name != self._environment_name:
+            raise SchedulerConfigurationError("a scheduler cannot access another Environment")
+        if self._system_database_url is None:
+            raise SchedulerNotStarted("the dbos scheduler has no configured system database")
+        async with self._client_lock:
+            client = self._clients.get(environment_name)
+            if client is None:
+                client = await asyncio.to_thread(
+                    DBOSClient,
+                    system_database_url=self._system_database_url,
+                    dbos_system_schema="dbos",
+                    application_name=environment_name,
+                    retry_connection_errors=False,
+                )
+                self._clients[environment_name] = client
+            return client
+
+    async def start(self, handler: RunHandler | None) -> None:
+        global _HANDLER, _WORKER_ENVIRONMENT
         if self._started:
             return
-        if self._system_database_url is None:
-            raise SchedulerConfigurationError(
-                "the dbos scheduler was started before configure() bound its database"
-            )
+        if self._system_database_url is None or self._environment_name is None:
+            raise SchedulerConfigurationError("the dbos scheduler was started before configure()")
         try:
-            DBOS(
-                config={
-                    "name": "astrabox",
+            if handler is not None:
+                _declare_run_queue(self._environment_name)
+                DBOS(config={
+                    "name": self._environment_name,
                     "system_database_url": self._system_database_url,
                     "dbos_system_schema": "dbos",
-                    # One application process per host or container. A stable
-                    # host identity lets a restarted process recover only its
-                    # own interrupted workflows and keeps a new replica from
-                    # taking another live replica's work.
-                    "executor_id": f"astrabox-{socket.gethostname()}",
+                    "executor_id": f"{self._environment_name}-{socket.gethostname()}",
                     "run_admin_server": False,
                     "scheduler_polling_interval_sec": _POLLING_INTERVAL_SECONDS,
                     "log_level": "WARNING",
                     "console_log_level": "WARNING",
-                }
-            )
-            _HANDLER = handler
-            # Called on the server's running loop. DBOS adopts it for async
-            # workflows, so the handler's repositories never cross loops.
-            DBOS.launch()
+                })
+                _HANDLER = handler
+                _WORKER_ENVIRONMENT = self._environment_name
+                # Launch on the server loop; DBOS owns execution and native schema migrations.
+                DBOS.launch()
+                self._worker_started = True
+            else:
+                # DBOSClient does not initialize tables. Use the pinned CLI's
+                # migration entry point without launching a workflow worker.
+                await asyncio.to_thread(
+                    run_dbos_database_migrations,
+                    system_database_url=self._system_database_url,
+                    schema="dbos",
+                )
+            await self._client(self._environment_name)
         except Exception:
-            _HANDLER = None
-            DBOS.destroy()
+            if handler is not None:
+                _HANDLER = None
+                _WORKER_ENVIRONMENT = None
+                DBOS.destroy()
+                self._worker_started = False
             raise
         self._started = True
 
     async def stop(self) -> None:
-        global _HANDLER
+        global _HANDLER, _WORKER_ENVIRONMENT
         if not self._started:
             return
         try:
-            DBOS.destroy(workflow_completion_timeout_sec=5)
+            if self._worker_started:
+                DBOS.destroy(workflow_completion_timeout_sec=5)
         finally:
+            if self._worker_started:
+                _HANDLER = None
+                _WORKER_ENVIRONMENT = None
             self._started = False
-            _HANDLER = None
+            self._worker_started = False
+            clients, self._clients = self._clients, {}
+            for client in clients.values():
+                await asyncio.to_thread(client.destroy)
 
     def _require_started(self) -> None:
         if not self._started:
-            raise SchedulerNotStarted("the dbos scheduler is not started in this process")
+            raise SchedulerNotStarted("the dbos scheduler control client is not started")
 
     @staticmethod
-    def _schedule_input(definition: ScheduleDefinition) -> ScheduleInput:
-        context = {
-            **dict(definition.payload),
-            "deployment_id": definition.deployment_id,
-            "trigger": "schedule",
-        }
+    def _schedule_input(definition: ScheduleDefinition) -> ClientScheduleInput:
         return {
             "schedule_name": _schedule_name(definition.deployment_id),
-            "workflow_fn": run_deployment_workflow,
+            "workflow_name": WORKFLOW_NAME,
             "schedule": definition.cron,
-            "context": context,
+            "context": {**dict(definition.payload), "deployment_id": definition.deployment_id,
+                        "trigger": "schedule"},
             "automatic_backfill": False,
             "cron_timezone": definition.timezone,
-            "queue_name": DEPLOYMENT_RUN_QUEUE_NAME,
+            "queue_name": _queue_name(definition.environment_name),
+            "application_name": definition.environment_name,
         }
 
     @staticmethod
-    def _held_input(schedule: dict[str, Any]) -> ScheduleInput:
-        """Rebuild a schedule definition exactly as DBOS returned it."""
-
+    def _held_input(schedule: dict[str, Any]) -> ClientScheduleInput:
+        """Rebuild the native schedule including its recorded application owner."""
         return {
-            "schedule_name": str(schedule.get("schedule_name") or ""),
-            "workflow_fn": run_deployment_workflow,
-            "schedule": str(schedule.get("schedule") or ""),
+            "schedule_name": str(schedule["schedule_name"]),
+            "workflow_name": str(schedule["workflow_name"]),
+            "schedule": str(schedule["schedule"]),
             "context": schedule.get("context"),
             "automatic_backfill": bool(schedule.get("automatic_backfill", False)),
             "cron_timezone": str(schedule.get("cron_timezone") or "") or None,
             "queue_name": str(schedule.get("queue_name") or "") or None,
+            "application_name": _record_environment_name(schedule),
         }
 
-    async def _restore(self, name: str, previous: dict[str, Any] | None) -> None:
-        """Put back the exact definition a failed write replaced."""
-
+    async def _restore(
+        self, name: str, previous: dict[str, Any] | None, *, environment_name: str,
+    ) -> None:
         try:
+            client = await self._client(environment_name)
             if previous is None:
-                await DBOS.delete_schedule_async(name)
+                await client.delete_schedule_async(name)
                 return
-            await DBOS.apply_schedules_async([self._held_input(previous)])
-            status_change = (
-                DBOS.pause_schedule
-                if str(previous.get("status") or "") == "PAUSED"
-                else DBOS.resume_schedule
-            )
-            await asyncio.to_thread(status_change, name)
+            await client.apply_schedules_async([self._held_input(previous)])
+            change = client.pause_schedule if previous.get("status") == "PAUSED" else client.resume_schedule
+            await asyncio.to_thread(change, name)
         except Exception as exc:
-            logger.exception("could not restore schedule %s", name)
-            raise SchedulerUnavailable(
-                "the schedule store could not restore the prior definition"
-            ) from exc
+            raise SchedulerUnavailable("could not restore the stored schedule") from exc
 
-    async def _active_schedule_names(self) -> list[str]:
-        rows = await DBOS.list_schedules_async(
-            status="ACTIVE", schedule_name_prefix=SCHEDULE_NAME_PREFIX
+    async def _active_schedule_names(self, environment_name: str) -> list[str]:
+        client = await self._client(environment_name)
+        rows = await client.list_schedules_async(
+            status="ACTIVE", schedule_name_prefix=SCHEDULE_NAME_PREFIX,
+            application_name=environment_name,
         )
-        return [str(dict(row).get("schedule_name") or "") for row in rows]
+        return [str(row["schedule_name"]) for row in rows]
 
-    async def _ensure_capacity(self, name: str) -> None:
-        active = await self._active_schedule_names()
+    async def _ensure_capacity(self, name: str, environment_name: str) -> None:
+        active = await self._active_schedule_names(environment_name)
         if name not in active and len(active) >= MAX_ACTIVE_SCHEDULES:
             raise ScheduleCapacityExceeded(MAX_ACTIVE_SCHEDULES)
 
     async def apply(self, definition: ScheduleDefinition) -> None:
         self._require_started()
         name = _schedule_name(definition.deployment_id)
+        target = definition.environment_name
         previous: dict[str, Any] | None = None
         touched = False
         try:
-            existing = await DBOS.get_schedule_async(name)
+            client = await self._client(target)
+            existing = await client.get_schedule_async(name)
             previous = dict(existing) if existing is not None else None
             if previous is not None:
-                # DBOS keeps a schedule's status across an upsert. Pausing the
-                # old definition first means an edit never briefly reopens a
-                # disabled schedule; the final pause or resume is explicit.
+                if _record_environment_name(previous) != target:
+                    raise SchedulerUnavailable("stored schedule belongs to another Environment")
                 touched = True
-                await asyncio.to_thread(DBOS.pause_schedule, name)
+                await asyncio.to_thread(client.pause_schedule, name)
             if definition.enabled:
-                await self._ensure_capacity(name)
+                await self._ensure_capacity(name, target)
             touched = True
-            await DBOS.apply_schedules_async([self._schedule_input(definition)])
-            status_change = DBOS.resume_schedule if definition.enabled else DBOS.pause_schedule
-            await asyncio.to_thread(status_change, name)
-            # The capacity check and the upsert are separate calls, so two
-            # creators can race past the check; re-count after inserting.
-            if (
-                definition.enabled
-                and len(await self._active_schedule_names()) > MAX_ACTIVE_SCHEDULES
-            ):
+            await client.apply_schedules_async([self._schedule_input(definition)])
+            change = client.resume_schedule if definition.enabled else client.pause_schedule
+            await asyncio.to_thread(change, name)
+            if definition.enabled and len(await self._active_schedule_names(target)) > MAX_ACTIVE_SCHEDULES:
                 touched = False
-                await self._restore(name, previous)
+                await self._restore(name, previous, environment_name=target)
                 raise ScheduleCapacityExceeded(MAX_ACTIVE_SCHEDULES)
         except (ScheduleCapacityExceeded, SchedulerUnavailable):
             if touched:
-                await self._restore(name, previous)
+                await self._restore(name, previous, environment_name=target)
             raise
         except dbos_error.DBOSException as exc:
             if touched:
-                await self._restore(name, previous)
+                await self._restore(name, previous, environment_name=target)
             if exc.message.startswith(("Invalid cron schedule:", "Invalid timezone:")):
                 raise InvalidSchedule("schedule cron or timezone is invalid") from exc
             raise SchedulerUnavailable("the schedule store is unavailable") from exc
         except Exception as exc:
             if touched:
-                await self._restore(name, previous)
+                await self._restore(name, previous, environment_name=target)
             raise SchedulerUnavailable("the schedule store is unavailable") from exc
 
-    async def delete(self, deployment_id: str) -> None:
+    async def delete(self, deployment_id: str, *, environment_name: str) -> None:
         self._require_started()
         try:
-            await DBOS.delete_schedule_async(_schedule_name(deployment_id))
+            client = await self._client(environment_name)
+            name = _schedule_name(deployment_id)
+            held = await client.get_schedule_async(name)
+            if held is not None and _record_environment_name(held) != environment_name:
+                raise SchedulerUnavailable("stored schedule belongs to another Environment")
+            await client.delete_schedule_async(name)
+        except SchedulerUnavailable:
+            raise
         except Exception as exc:
             raise SchedulerUnavailable("the schedule store is unavailable") from exc
 
     async def reconcile(self, definitions: Sequence[ScheduleDefinition]) -> None:
         self._require_started()
-        enabled = [definition for definition in definitions if definition.enabled]
+        target = self._environment_name
+        if not self._worker_started or target is None:
+            raise SchedulerNotStarted("a control-only client cannot reconcile worker schedules")
+        if any(d.environment_name != target for d in definitions):
+            raise SchedulerUnavailable("worker reconciliation contains another Environment")
+        enabled = [d for d in definitions if d.enabled]
         if len(enabled) > MAX_ACTIVE_SCHEDULES:
             raise ScheduleCapacityExceeded(MAX_ACTIVE_SCHEDULES)
-        desired = {
-            _schedule_name(definition.deployment_id): definition for definition in definitions
-        }
+        desired = {_schedule_name(d.deployment_id): d for d in definitions}
         try:
+            client = await self._client(target)
             if desired:
-                await DBOS.apply_schedules_async(
-                    [self._schedule_input(definition) for definition in desired.values()]
-                )
-            held = await DBOS.list_schedules_async(schedule_name_prefix=SCHEDULE_NAME_PREFIX)
+                await client.apply_schedules_async([self._schedule_input(d) for d in desired.values()])
+            held = await client.list_schedules_async(
+                schedule_name_prefix=SCHEDULE_NAME_PREFIX, application_name=target,
+            )
             for schedule in held:
-                name = str(schedule.get("schedule_name") or "")
+                name = str(schedule["schedule_name"])
                 if name not in desired:
-                    await DBOS.delete_schedule_async(name)
+                    await client.delete_schedule_async(name)
                     continue
-                status_change = (
-                    DBOS.resume_schedule if desired[name].enabled else DBOS.pause_schedule
-                )
-                await asyncio.to_thread(status_change, name)
+                change = client.resume_schedule if desired[name].enabled else client.pause_schedule
+                await asyncio.to_thread(change, name)
         except dbos_error.DBOSException as exc:
             if exc.message.startswith(("Invalid cron schedule:", "Invalid timezone:")):
-                raise InvalidSchedule(
-                    f"a stored schedule's cron or timezone is invalid: {exc.message}"
-                ) from exc
-            raise SchedulerUnavailable(f"could not reconcile schedules: {exc.message}") from exc
+                raise InvalidSchedule("a stored schedule's cron or timezone is invalid") from exc
+            raise SchedulerUnavailable("could not reconcile stored schedules") from exc
         except Exception as exc:
-            raise SchedulerUnavailable(f"could not reconcile schedules: {exc}") from exc
+            raise SchedulerUnavailable("could not reconcile stored schedules") from exc
 
     async def enqueue(
-        self,
-        *,
-        deployment_id: str,
-        trigger: Literal["manual", "replay"],
-        payload: Mapping[str, Any],
+        self, *, deployment_id: str, environment_name: str,
+        trigger: Literal["manual", "replay"], payload: Mapping[str, Any],
         replayed_from_run_id: str | None = None,
     ) -> RunRecord:
         self._require_started()
         run_id = f"{_run_prefix(deployment_id)}{trigger}-{uuid.uuid4().hex}"
-        context: dict[str, Any] = {
-            **dict(payload),
-            "deployment_id": deployment_id,
-            "trigger": trigger,
-        }
+        context = {**dict(payload), "deployment_id": deployment_id, "trigger": trigger}
         if replayed_from_run_id:
             context["replayed_from_run_id"] = replayed_from_run_id
         scheduled_at = datetime.now(timezone.utc)
+        options: EnqueueOptions = {
+            "workflow_id": run_id, "workflow_name": WORKFLOW_NAME,
+            "queue_name": _queue_name(environment_name), "application_name": environment_name,
+            "attributes": _workflow_attributes(context, scheduled_at),
+        }
         try:
-            with SetWorkflowID(run_id), SetWorkflowAttributes(
-                _workflow_attributes(context, scheduled_at)
-            ):
-                handle = await _RUN_QUEUE.enqueue_async(
-                    run_deployment_workflow, scheduled_at, context
-                )
-            status = await DBOS.get_workflow_status_async(handle.workflow_id)
-            if status is None:
-                raise RuntimeError(f"the workflow store did not persist Run {run_id}")
+            client = await self._client(environment_name)
+            handle: Any = await client.enqueue_async(options, scheduled_at, context)
+            status = await handle.get_status()
         except Exception as exc:
             raise SchedulerUnavailable("the schedule store is unavailable") from exc
         return _record(_status_dict(status))
 
-    async def get_run(self, run_id: str) -> RunRecord | None:
+    async def get_run(self, run_id: str, *, environment_name: str) -> RunRecord | None:
         self._require_started()
         if not str(run_id).startswith(f"{RUN_ID_PREFIX}{SCHEDULE_NAME_PREFIX}"):
             return None
         try:
-            status = await DBOS.get_workflow_status_async(run_id)
+            client = await self._client(environment_name)
+            handle: Any = await client.retrieve_workflow_async(run_id)
+            status = await handle.get_status()
+        except dbos_error.DBOSNonExistentWorkflowError:
+            return None
         except Exception as exc:
             raise SchedulerUnavailable("the schedule store is unavailable") from exc
-        if status is None or str(status.name or "") != WORKFLOW_NAME:
+        if str(status.name or "") != WORKFLOW_NAME:
             return None
-        return _record(_status_dict(status))
+        record = _record(_status_dict(status))
+        return record if record.invocation.environment_name == environment_name else None
 
-    async def list_runs(self, deployment_id: str, *, limit: int) -> Sequence[RunRecord]:
+    async def list_runs(
+        self, deployment_id: str, *, environment_name: str, limit: int,
+    ) -> Sequence[RunRecord]:
         self._require_started()
         try:
-            rows = await DBOS.list_workflows_async(
-                name=WORKFLOW_NAME,
-                workflow_id_prefix=_run_prefix(deployment_id),
-                limit=max(1, min(int(limit), 200)),
-                sort_desc=True,
-                load_input=True,
+            client = await self._client(environment_name)
+            rows = await client.list_workflows_async(
+                name=WORKFLOW_NAME, workflow_id_prefix=_run_prefix(deployment_id),
+                application_name=environment_name, limit=max(1, min(int(limit), 200)),
+                sort_desc=True, load_input=True,
             )
         except Exception as exc:
             raise SchedulerUnavailable("the schedule store is unavailable") from exc

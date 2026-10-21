@@ -115,6 +115,7 @@ def _create_spec(**overrides: Any) -> SandboxCreateSpec:
     # default is here and a test names its own only when the assignment is what
     # the test is about.
     fields: dict[str, Any] = {
+        "environment_name": "astrabox",
         "session_id": "s1",
         "assignment_id": "assignment-s1",
         "resource_limits": {"cpu": "4", "memory": "4Gi"},

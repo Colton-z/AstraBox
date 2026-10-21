@@ -98,7 +98,7 @@ describe('the Agent categories page', () => {
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Delete category' }));
     await waitFor(() => expect(deletions).toEqual(['cat_data']));
-    expect(rowNames()).toEqual(['Writing', 'Legal']);
+    await waitFor(() => expect(rowNames()).toEqual(['Writing', 'Legal']));
   });
 
   it('says in place that a new name is taken', async () => {

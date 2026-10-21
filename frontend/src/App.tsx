@@ -42,6 +42,7 @@ import {
 } from '@/components/ui/sidebar';
 import { AppShell, AppTopbar, BrandBlock, ErrorNote, PageShell, RAIL_ROW_ACTIVE, SurfaceNav, TruncatingRow } from '@/components/shell';
 import { AgentHome } from './components/AgentHome';
+import { AgentPage } from './components/AgentPage';
 import { StatusPill, toneForSession } from './components/AstraConsole';
 import { SessionPage } from './session/SessionPage';
 import { AssistantRail } from './assistant/AssistantRail';
@@ -424,7 +425,7 @@ export default function App() {
         </>
       }
       sidebarFooter={<UserMenu userInfo={userInfo} theme={theme} setTheme={setTheme} />}
-      topbar={isSession || location.pathname.startsWith('/artifacts') || location.pathname.startsWith('/connections') ? undefined : <AppTopbar crumbs={[{ label: crumb }]} trailLabel={t('shell:breadcrumb_navigation')} />}
+      topbar={isSession || location.pathname.startsWith('/agents/') || location.pathname.startsWith('/artifacts') || location.pathname.startsWith('/connections') ? undefined : <AppTopbar crumbs={[{ label: crumb }]} trailLabel={t('shell:breadcrumb_navigation')} />}
       banner={
         error ? (
           /* The margin is this strip's own because `SidebarInset` stacks the
@@ -459,7 +460,7 @@ export default function App() {
             <Route path="/artifacts/:id" element={<ArtifactPage />} />
             <Route path="/sessions/:sessionId" element={<SessionPage onSessionChanged={refreshOverview} />} />
             <Route path="/v1/sessions/:sessionId" element={<Navigate to="/" replace />} />
-            <Route path="/agents/:agentId" element={<Navigate to="/agents" replace />} />
+            <Route path="/agents/:agentId" element={<AgentPage onConversationCreated={onAgentConversationCreated} />} />
             <Route path="/assistants/:assistantId" element={<AssistantMainRoute onOpened={refreshOverview} />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

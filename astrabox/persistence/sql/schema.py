@@ -22,7 +22,7 @@ MYSQL_TABLE_OPTIONS = {
 
 @compiles(ForeignKeyConstraint, "mysql")
 def _mysql_foreign_key(element: ForeignKeyConstraint, compiler: Any, **kw: Any) -> str:
-    if any(reference.info.get("mysql_restrict_environment") for reference in element.elements):
+    if any(reference.info.get("mysql_restrict_runtime_profile") for reference in element.elements):
         # Shared deletion clears tombstones; CHECK forbids clearing live references.
         # Copy so compiling MySQL cannot change PostgreSQL's SET NULL metadata.
         element = copy(element)

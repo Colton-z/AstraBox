@@ -30,7 +30,7 @@
       }
     },
     "tests": {
-      "no_volume_core": 596,
+      "no_volume_core": 602,
       "persistent_files": 19
     }
   },
@@ -42,13 +42,15 @@
   ],
   "playwright": {
     "exclusive": {
-      "files": 179,
-      "parallel_files": 115,
-      "parallel_tests": 209,
+      "files": 189,
+      "parallel_files": 120,
+      "parallel_tests": 214,
       "serial_files": [
         "specs/a-prepared-seat-is-not-a-promise-the-box-can-still-keep.exclusive.spec.ts",
         "specs/a2a-stream-and-interaction.exclusive.spec.ts",
         "specs/admin-native-transcript-batch-export.exclusive.spec.ts",
+        "specs/agent-manager-session-logs.exclusive.spec.ts",
+        "specs/agent-manager-triggers.exclusive.spec.ts",
         "specs/agent-per-session-sandbox.exclusive.spec.ts",
         "specs/agent-workspace-resume.exclusive.spec.ts",
         "specs/an-artifact-an-agent-publishes-outlives-its-sandbox.exclusive.spec.ts",
@@ -59,9 +61,12 @@
         "specs/an-expired-oauth-credential-is-reported-before-a-conversation-dies-on-it.exclusive.spec.ts",
         "specs/an-exposed-port-outlives-the-idle-window.exclusive.spec.ts",
         "specs/an-idle-assistant-whose-box-dies-comes-back-unprompted.exclusive.spec.ts",
+        "specs/assistant-a2a-peer-auth-errors.exclusive.spec.ts",
         "specs/assistant-channel-cron-result-reaches-the-chat.exclusive.spec.ts",
         "specs/assistant-native-a2a-approval.exclusive.spec.ts",
+        "specs/assistant-runtime-availability-status.exclusive.spec.ts",
         "specs/assistant-tool-card-live-and-cold.exclusive.spec.ts",
+        "specs/assistant-tool-errors-live-and-cold.exclusive.spec.ts",
         "specs/assistant-workspace-files-survive-park-and-wake.exclusive.spec.ts",
         "specs/assistant-workspace-oob-death-recovers-on-open.exclusive.spec.ts",
         "specs/backend-restart-rehydrates-resident-session-and-pending-approval.exclusive.spec.ts",
@@ -111,9 +116,9 @@
         "specs/subagent-replay-recovery.exclusive.spec.ts",
         "specs/untouched-tab-catches-up-after-backend-restart.exclusive.spec.ts"
       ],
-      "serial_tests": 105,
+      "serial_tests": 110,
       "serial_workers": 1,
-      "tests": 314,
+      "tests": 324,
       "workers": 5
     },
     "parallel": {

@@ -230,7 +230,7 @@ const config: Config = {
             {label: 'Quickstart', to: '/docs/quickstart'},
             {label: 'Models', to: '/docs/models'},
             {label: 'Deploy', to: '/docs/deploy'},
-            {label: 'Environments', to: '/docs/environments'},
+            {label: 'Runtime profiles', to: '/docs/runtime-profiles'},
           ],
         },
         {

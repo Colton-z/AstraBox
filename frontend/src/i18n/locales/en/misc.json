@@ -228,6 +228,10 @@
       "runtime": {
         "label": "Runtime and availability",
         "description": "Agent program, sandbox setup, entry points, and idle behavior"
+      },
+      "collaboration": {
+        "label": "Agent collaboration",
+        "description": "Which Agents this Agent can contact on behalf of the conversation owner"
       }
     },
     "fields": {
@@ -266,7 +270,7 @@
       "model": {
         "label": "Model",
         "manage_gateway": "Manage models in {{name}}",
-        "help": "Enter the model ID exposed by the model-service connection for the selected runtime environment"
+        "help": "Enter the model ID exposed by the model-service connection for the selected runtime runtime profile"
       },
       "system": {
         "label": "System prompt",
@@ -307,8 +311,8 @@
       "packages": {
         "label": "Packages"
       },
-      "environment_name": {
-        "label": "Runtime environment",
+      "runtime_profile_name": {
+        "label": "Runtime runtime profile",
         "help": "Select the saved runtime setup that provides the Agent program, sandbox settings, network access, and model connection. Credential Vaults are assigned separately."
       },
       "exposure_mode": {
@@ -317,7 +321,7 @@
       },
       "idle_hibernate_seconds": {
         "label": "Idle timeout (seconds)",
-        "help": "After this many idle seconds, AstraBox applies the pause or removal behavior saved in the runtime environment"
+        "help": "After this many idle seconds, AstraBox applies the pause or removal behavior saved in the runtime runtime profile"
       },
       "prepared_capacity": {
         "label": "Prepared capacity",
@@ -326,6 +330,20 @@
       "enabled": {
         "label": "Enabled",
         "help": "When off, users cannot start a new conversation with this Agent"
+      },
+      "a2a_access": {
+        "label": "A2A access",
+        "help": "Discover and message this user's existing conversations. This never grants access to another user's conversations.",
+        "options": {
+          "disabled": "Disabled",
+          "all": "All accessible Agents",
+          "selected": "Selected Agents"
+        }
+      },
+      "a2a_agent_ids": {
+        "label": "Allowed Agents",
+        "help": "The user's existing access to each target Agent still applies.",
+        "unavailable": "Agent unavailable"
       }
     }
   },

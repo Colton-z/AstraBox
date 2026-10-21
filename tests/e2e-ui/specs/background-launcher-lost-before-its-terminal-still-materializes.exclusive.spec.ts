@@ -258,15 +258,15 @@ test('a background launcher lost before its terminal still tracks and materializ
   test.info().annotations.push({ type: 'oracle-db', description: oracleDbPath() });
   test.info().annotations.push({ type: 'e2e_fault_base', description: FRAME_HOLD_FAULT_BASE });
 
-  // ── ENGINE. Read where the engine lives: on the Agent's Environment. ──────
+  // ── ENGINE. Read where the engine lives: on the Agent's RuntimeProfile. ──────
   const agent = await api.defaultAgent();
-  const environmentName = String(agent.environment_name || '').trim();
-  const environments = await platform.listEnvironments();
-  const environment = environments.find((row) => String(row.name || '') === environmentName);
+  const runtimeProfileName = String(agent.runtime_profile_name || '').trim();
+  const runtime_profiles = await platform.listEnvironments();
+  const environment = runtime_profiles.find((row) => String(row.name || '') === runtimeProfileName);
   expect(
     environment,
-    `the selected Agent ${JSON.stringify(String(agent.name || ''))} names Environment `
-      + `${JSON.stringify(environmentName)}, which this deployment does not have`,
+    `the selected Agent ${JSON.stringify(String(agent.name || ''))} names RuntimeProfile `
+      + `${JSON.stringify(runtimeProfileName)}, which this deployment does not have`,
   ).toBeTruthy();
   expect(
     String(environment?.engine_kind || ''),

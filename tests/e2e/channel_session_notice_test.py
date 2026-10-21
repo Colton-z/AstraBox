@@ -59,7 +59,7 @@ def test_startup_notices_stay_in_history_while_channel_replies_continue(
     )
     agent = data(client.post("/api/v1/agents", json={
         "name": f"Channel notice {nonce}", "model": profile["model"],
-        "environment_name": profile["environment_name"], "prepared_capacity": 0,
+        "runtime_profile_name": profile["runtime_profile_name"], "prepared_capacity": 0,
         "engine_options": {"sdk_options": {"include_hook_events": True, "settings": {
             "hooks": {"SessionStart": [{"matcher": "startup|resume", "hooks": [{
                 "type": "command", "timeout": 10, "command": "python3 -c " + shlex.quote(program),

@@ -16,7 +16,7 @@ from astrabox.core.service.orchestrator.credential_binding_service import (
     CredentialBindingService,
 )
 from astrabox.persistence.repository.agent_repository import AgentRepository
-from astrabox.persistence.repository.environment_repository import EnvironmentRepository
+from astrabox.persistence.repository.runtime_profile_repository import RuntimeProfileRepository
 from astrabox.persistence.sql import execute, fetch_value
 from astrabox.persistence.sql.models.agents import AgentCategoryLink, AgentFavorite
 from astrabox.persistence.sql.models.vaults import Vault
@@ -41,8 +41,8 @@ class _Vaults:
 
 async def _service() -> AgentConfigService:
     register_builtin_providers()
-    environments = EnvironmentRepository()
-    await environments.put(
+    runtime_profiles = RuntimeProfileRepository()
+    await runtime_profiles.put(
         "claude-env",
         {"engine_kind": "claude_code", "idle_action": "terminate", "networking": {"type": "unrestricted"}},
         updated_by="test",
@@ -53,16 +53,16 @@ async def _service() -> AgentConfigService:
             "agent_id": "agent-1",
             "name": "researcher",
             "model": "some-model",
-            "environment_name": "claude-env",
+            "runtime_profile_name": "claude-env",
             "created_by": "owner",
             "visibility": "private",
         }
     )
-    return AgentConfigService(repo, environments)
+    return AgentConfigService(repo, runtime_profiles)
 
 
 def _edit(**fields: Any) -> dict[str, Any]:
-    return {"model": "some-model", "environment_name": "claude-env", **fields}
+    return {"model": "some-model", "runtime_profile_name": "claude-env", **fields}
 
 
 async def test_two_cosmetic_edits_of_one_version_cannot_both_be_saved() -> None:

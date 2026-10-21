@@ -223,6 +223,11 @@ def register_transcript_routes(app: Any) -> None:
                 raise ValueError("append_id must be a non-empty string")
             _verify_payload_digest(key, entries, payload.get("payload_sha256"))
             project_key, sdk_session_id, subpath = _scope_from_key(key)
+            engine_session_key = payload.get("engine_session_key")
+            if engine_session_key is not None and (
+                engine_session_key != sdk_session_id or subpath is not None
+            ):
+                raise ValueError("engine_session_key must name this main transcript")
             # The hook registry is empty unless app startup explicitly armed the
             # E2E harness, so ordinary append traffic performs no env or file IO.
             if consume_fault(
@@ -249,6 +254,7 @@ def register_transcript_routes(app: Any) -> None:
                 project_key, sdk_session_id, subpath, entries,
                 append_id=append_id,
                 platform_session_id=session_id,
+                engine_session_key=engine_session_key,
             )
             return success_response(
                 {"ok": True, "count": len(entries), "store_sequence": store_sequence}

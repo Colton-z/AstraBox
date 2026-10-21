@@ -1,8 +1,8 @@
-"""Where an Environment's engine sends its spans, and what reaches the CLI.
+"""Where a RuntimeProfile's engine sends its spans, and what reaches the CLI.
 
 The credential reaches the exporter by reference without being written back to
 storage, an operator's value cannot split the exporter's header or attribute
-list, and prompt recording is the only content capture an Environment turns on.
+list, and prompt recording is the only content capture a RuntimeProfile turns on.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ def test_secret_reference_reaches_native_authorization_without_changing_storage(
     monkeypatch.setenv("TRACING_COLLECTOR_AUTH", token)
     stored = _doc(auth_token_secret_name="tracing-collector-auth")
     original = deepcopy(stored)
-    template = SimpleNamespace(environment_name="traced", tracing=stored)
+    template = SimpleNamespace(runtime_profile_name="traced", tracing=stored)
 
     spec = runtime_tracing_spec(template)
 

@@ -30,6 +30,7 @@ import os
 from typing import Any
 
 from astrabox.common.logger.logger_factory import get_logger
+from astrabox.config.settings import get_settings
 
 logger = get_logger(__name__)
 
@@ -53,6 +54,8 @@ class ChannelSpineReconciler:
     # ── Lifecycle ───────────────────────────────────────────────────────
 
     def ensure_started(self) -> None:
+        if not get_settings().background_execution_enabled:
+            return
         if self._closed:
             logger.warning("channel_spine_reconciler: not starting (closed)")
             return

@@ -44,11 +44,11 @@ test("an Assistant's scheduled reply marks its conversation unread and notifies 
   // can be read while it is still scheduled.
   const dueAt = new Date(Date.now() + 60_000).toISOString().replace(/\.\d{3}Z$/, 'Z');
 
-  const environmentName = await api.assistantEnvironmentName();
+  const runtimeProfileName = await api.assistantEnvironmentName();
   assistantId = String((await api.createAssistant({
     display_name: `__e2e_assistant_unread_${id}`,
-    environment_name: environmentName,
-    model_config_override: { model_name: await api.assistantModelName(environmentName) },
+    runtime_profile_name: runtimeProfileName,
+    model_config_override: { model_name: await api.assistantModelName(runtimeProfileName) },
   })).assistant_id || '');
   const sessionId = String((await api.openMainConversation(assistantId)).session_id || '');
   sessions.push(sessionId);

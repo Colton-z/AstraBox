@@ -221,6 +221,10 @@
       "runtime": {
         "label": "运行设置",
         "description": "Agent 程序、沙箱设置、使用入口和空闲处理方式"
+      },
+      "collaboration": {
+        "label": "Agent 协作",
+        "description": "此 Agent 可以代表对话用户联系哪些 Agent"
       }
     },
     "fields": {
@@ -259,7 +263,7 @@
       "model": {
         "label": "模型",
         "manage_gateway": "在 {{name}} 管理模型",
-        "help": "填写所选运行环境的模型服务连接所提供的模型 ID"
+        "help": "填写所选运行配置的模型服务连接所提供的模型 ID"
       },
       "system": {
         "label": "系统提示词",
@@ -300,8 +304,8 @@
       "packages": {
         "label": "扩展包"
       },
-      "environment_name": {
-        "label": "运行环境",
+      "runtime_profile_name": {
+        "label": "运行配置",
         "help": "选择已经保存的运行设置，其中包含 Agent 程序、沙箱设置、网络访问和模型连接。Credential Vault（凭证库）需要另行分配。"
       },
       "exposure_mode": {
@@ -310,7 +314,7 @@
       },
       "idle_hibernate_seconds": {
         "label": "空闲超时（秒）",
-        "help": "达到此空闲时间后，AstraBox 会按运行环境中保存的方式暂停或回收沙箱"
+        "help": "达到此空闲时间后，AstraBox 会按运行配置中保存的方式暂停或回收沙箱"
       },
       "prepared_capacity": {
         "label": "预备容量",
@@ -319,6 +323,20 @@
       "enabled": {
         "label": "启用",
         "help": "关闭后，用户不能再选择这个 Agent 开始会话"
+      },
+      "a2a_access": {
+        "label": "A2A 访问范围",
+        "help": "发现并联系当前用户已有的对话。此设置不授予访问其他用户对话的权限。",
+        "options": {
+          "disabled": "关闭",
+          "all": "全部可访问的 Agent",
+          "selected": "指定 Agent"
+        }
+      },
+      "a2a_agent_ids": {
+        "label": "允许联系的 Agent",
+        "help": "仍受当前用户对目标 Agent 的访问权限约束。",
+        "unavailable": "Agent 不可用"
       }
     }
   },

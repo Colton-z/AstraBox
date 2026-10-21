@@ -19,10 +19,17 @@ _FOREIGN_KEY_VIOLATION = "23503"
 class PostgresPersistenceProvider:
     """The existing asyncpg pools, schema upgrades and PostgreSQL coordination."""
 
-    def __init__(self, *, database_url: str) -> None:
+    def __init__(self, *, database_url: str, environment_name: str) -> None:
         self._database_url = engine.database_url(database_url)
-        self._coordination = PostgresCoordination(database_url=self._database_url)
+        self._environment_name = environment_name
+        self._coordination = PostgresCoordination(
+            database_url=self._database_url, environment_name=environment_name,
+        )
         self._statements = PostgresStatements()
+
+    @property
+    def environment_name(self) -> str:
+        return self._environment_name
 
     @property
     def database_url(self) -> str:
@@ -37,18 +44,20 @@ class PostgresPersistenceProvider:
         return self._statements
 
     def get_engine(self) -> AsyncEngine:
-        return engine.get_engine(self._database_url)
+        return engine.get_engine(self._database_url, environment_name=self._environment_name)
 
     def pool_report(self, *, holders: int = 5) -> str:
-        return engine.pool_report(self._database_url, holders=holders)
+        return engine.pool_report(
+            self._database_url, environment_name=self._environment_name, holders=holders,
+        )
 
     async def initialize_schema(self) -> None:
         from astrabox.persistence.sql.migrate import upgrade_to_head
 
-        await upgrade_to_head(self._database_url)
+        await upgrade_to_head(self._database_url, environment_name=self._environment_name)
 
     async def dispose(self) -> None:
-        await engine.dispose_engine(self._database_url)
+        await engine.dispose_engine(self._database_url, environment_name=self._environment_name)
 
     def translate_error(self, error: IntegrityError) -> Exception:
         return translate_error(error)

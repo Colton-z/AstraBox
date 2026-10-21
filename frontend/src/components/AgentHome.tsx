@@ -4,6 +4,7 @@ import type { TFunction } from 'i18next';
 import { Star, X } from 'lucide-react';
 import { toast } from 'sonner';
 import useSWR from 'swr';
+import { Link } from 'react-router-dom';
 
 import { Ellipsis, EmptyState, ErrorNote, TruncatingRow } from '@/components/shell';
 import { Badge } from '@/components/ui/badge';
@@ -89,7 +90,7 @@ export function AgentHome({
         listAgents(),
         listAgentCategories(),
       ]);
-      setAgents(nextAgents);
+      setAgents(nextAgents.filter((agent) => agent.can_start_conversation));
       setCategories(nextCategories);
       loadedOnce.current = true;
       setError('');
@@ -363,7 +364,6 @@ function AgentCard({
   const name = agentDisplayName(agent);
   const tags = agentTags(agent);
   const favorited = agent.favorited === true;
-  const unavailable = agent.can_start_conversation === false;
   return (
     <Card
       data-testid="agent-option"
@@ -383,11 +383,10 @@ function AgentCard({
           trail={
             <div className="flex items-center gap-1.5">
               <Badge
-                variant={!unavailable && agent.state === 'ACTIVE' ? 'secondary' : 'outline'}
+                variant={agent.state === 'ACTIVE' ? 'secondary' : 'outline'}
                 className="t-mono text-10 font-normal"
               >
-                {unavailable
-                  ? t('agents:home_unavailable') : agentStateLabel(String(agent.state || ''), t)}
+                {agentStateLabel(String(agent.state || ''), t)}
               </Badge>
               {/* The fill carries the state, not a hue: a filled star and an
                   outline one stay distinct in greyscale
@@ -406,7 +405,9 @@ function AgentCard({
         >
           <div className="space-y-1">
             <CardTitle className="tracking-[-0.01em]">
-              <Ellipsis>{name}</Ellipsis>
+              <Link to={`/agents/${encodeURIComponent(agent.agent_id)}`} className="block rounded-sm hover:underline">
+                <Ellipsis>{name}</Ellipsis>
+              </Link>
             </CardTitle>
             {/* The model is the agent's defining property, so it is what the
                 card names underneath — not an internal id. */}
@@ -458,7 +459,7 @@ function AgentCard({
         <Button
           data-testid="agent-start"
           variant="outline"
-          disabled={starting || unavailable}
+          disabled={starting}
           onClick={onStart}
           className="w-full justify-center"
         >

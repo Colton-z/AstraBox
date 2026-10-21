@@ -10,6 +10,7 @@ elected to build the next box and its startup generation — so a transition
 computed from a row that has since moved changes nothing and returns
 ``False``. ``AssistantWorkspaceService`` documents what each one fences. The
 transitions that retire a box delete its profile rows in the same transaction.
+Confirmed releases also clear the conversations' bindings to that exact box.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from sqlalchemy import (
     Select,
     Text,
     cast,
+    and_,
     delete,
     exists,
     func,
@@ -33,6 +35,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from astrabox.config.settings import get_settings, validate_environment_name
 from astrabox.persistence.repository.assistant_catalog_repository import _ChildObject, _OrderedChildren
 from astrabox.persistence.sql import execute, fetch_all, fetch_one, fetch_value, from_iso, to_iso, transaction
 from astrabox.persistence.sql.statements import insert_if_absent, upsert_primary_key
@@ -42,12 +45,14 @@ from astrabox.persistence.sql.models.assistants import (
     AssistantProfile,
     AssistantWorkspace,
 )
+from astrabox.persistence.sql.models.sessions import Session
 
 __all__ = ["WORKSPACE_STATES", "AssistantWorkspaceRepository", "MaterializerClaim"]
 
 _ASSISTANTS = Assistant.__table__
 _WORKSPACES = AssistantWorkspace.__table__
 _PROFILES = AssistantProfile.__table__
+_SESSIONS = Session.__table__
 _COLUMNS = _WORKSPACES.c
 
 _SWEEP_PAGE_MAX = 500
@@ -79,6 +84,7 @@ def _view(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
         return None
     workspace: dict[str, Any] = {
         "assistant_id": row["assistant_id"],
+        "environment_name": row["environment_name"],
         "created_by_user_id": row["created_by_user_id"],
         "engine_kind": row["engine_kind"],
         "state": row["state"],
@@ -152,6 +158,17 @@ _BOX_RETIRED = {
 class AssistantWorkspaceRepository:
     """One workspace row per Assistant, and the profiles prepared in its box."""
 
+    def __init__(self, *, environment_name: str | None = None) -> None:
+        self.environment_name = validate_environment_name(
+            get_settings().environment_name if environment_name is None else environment_name
+        )
+
+    def _runtime_owner(self, assistant_id: str) -> ColumnElement[bool]:
+        return and_(
+            _COLUMNS.assistant_id == assistant_id,
+            _COLUMNS.environment_name == self.environment_name,
+        )
+
     # ── reads ────────────────────────────────────────────────────────────
 
     async def get_workspace(self, assistant_id: str) -> dict[str, Any] | None:
@@ -174,7 +191,10 @@ class AssistantWorkspaceRepository:
             return []
         rows = await fetch_all(
             select(_WORKSPACES)
-            .where(_COLUMNS.current_sandbox_id == target)
+            .where(
+                _COLUMNS.current_sandbox_id == target,
+                _COLUMNS.environment_name == self.environment_name,
+            )
             .order_by(_COLUMNS.assistant_id)
         )
         return [view for view in map(_view, rows) if view is not None]
@@ -240,7 +260,8 @@ class AssistantWorkspaceRepository:
         self, conditions: Sequence[ColumnElement[bool]], *, after: str | None, limit: int
     ) -> list[dict[str, Any]]:
         statement: Select[Any] = select(_WORKSPACES).where(
-            _COLUMNS.current_sandbox_id.is_not(None), *conditions
+            _COLUMNS.current_sandbox_id.is_not(None),
+            _COLUMNS.environment_name == self.environment_name, *conditions,
         )
         after_id = str(after or "").strip()
         if after_id:
@@ -278,6 +299,7 @@ class AssistantWorkspaceRepository:
                 return None
             created = await insert_if_absent(conn, _WORKSPACES, {
                 "assistant_id": assistant_id,
+                "environment_name": self.environment_name,
                 "created_by_user_id": created_by_user_id,
                 "engine_kind": engine_kind,
                 "state": "MATERIALIZING",
@@ -286,7 +308,7 @@ class AssistantWorkspaceRepository:
             if not created:
                 return None
             row = (await conn.execute(
-                select(_WORKSPACES).where(_COLUMNS.assistant_id == assistant_id)
+                select(_WORKSPACES).where(self._runtime_owner(assistant_id))
             )).mappings().one()
             return _view({**row, "assistant_profiles": None})
 
@@ -301,20 +323,36 @@ class AssistantWorkspaceRepository:
         values: Mapping[str, Any],
         *,
         retire_profiles: bool = False,
+        retired_sandbox_id: str | None = None,
     ) -> bool:
         """Apply ``values`` if the row still satisfies ``conditions``; whether it did."""
         moved = (
             update(_WORKSPACES)
-            .where(_COLUMNS.assistant_id == assistant_id, *conditions)
+            .where(self._runtime_owner(assistant_id), *conditions)
             .values(**values, updated_at=func.now())
         )
-        if not retire_profiles:
+        if not retire_profiles and retired_sandbox_id is None:
             return await execute(moved) == 1
 
         async def retire(conn: AsyncConnection) -> bool:
             if (await conn.execute(moved)).rowcount != 1:
                 return False
-            await conn.execute(delete(_PROFILES).where(_PROFILES.c.assistant_id == assistant_id))
+            if retire_profiles:
+                await conn.execute(delete(_PROFILES).where(_PROFILES.c.assistant_id == assistant_id))
+            if retired_sandbox_id is not None:
+                await conn.execute(
+                    update(_SESSIONS)
+                    .where(
+                        _SESSIONS.c.environment_name == self.environment_name,
+                        _SESSIONS.c.workspace_kind == "assistant",
+                        or_(
+                            _SESSIONS.c.assistant_id == assistant_id,
+                            _SESSIONS.c.owner_id == assistant_id,
+                        ),
+                        _SESSIONS.c.sandbox_id == retired_sandbox_id,
+                    )
+                    .values(sandbox_id=None, updated_at=func.now())
+                )
             return True
 
         return await transaction(retire)
@@ -466,7 +504,7 @@ class AssistantWorkspaceRepository:
             ready = (
                 update(_WORKSPACES)
                 .where(
-                    _COLUMNS.assistant_id == assistant_id,
+                    self._runtime_owner(assistant_id),
                     _COLUMNS.state == "MATERIALIZING",
                     _COLUMNS.provisioning_session_id == provisioning_session_id,
                     _COLUMNS.provisioning_sandbox_generation == provisioning_sandbox_generation,
@@ -498,7 +536,7 @@ class AssistantWorkspaceRepository:
             await fetch_value(
                 select(
                     exists().where(
-                        _COLUMNS.assistant_id == assistant_id,
+                        self._runtime_owner(assistant_id),
                         _COLUMNS.state == "READY",
                         _COLUMNS.current_sandbox_id == sandbox_id,
                         _COLUMNS.provisioning_session_id.is_(None),
@@ -525,7 +563,7 @@ class AssistantWorkspaceRepository:
             current = await conn.scalar(
                 select(_COLUMNS.assistant_id)
                 .where(
-                    _COLUMNS.assistant_id == assistant_id,
+                    self._runtime_owner(assistant_id),
                     _COLUMNS.state == "READY",
                     _COLUMNS.current_sandbox_id == sandbox_id,
                 )
@@ -591,13 +629,14 @@ class AssistantWorkspaceRepository:
                 _COLUMNS.current_sandbox_id == sandbox_id,
             ],
             values,
+            retired_sandbox_id=sandbox_id if cleanup_confirmed else None,
         ):
             return True
         return bool(
             await fetch_value(
                 select(
                     exists().where(
-                        _COLUMNS.assistant_id == assistant_id,
+                        self._runtime_owner(assistant_id),
                         _COLUMNS.state == "RECOVERY_REQUIRED",
                         _COLUMNS.last_error == last_error,
                         _COLUMNS.post_commit_cleanup_pending.is_(not cleanup_confirmed),
@@ -636,6 +675,7 @@ class AssistantWorkspaceRepository:
             ],
             {**_BOX_RETIRED, "state": "HIBERNATING", "last_error": None},
             retire_profiles=True,
+            retired_sandbox_id=destroyed_sandbox_id,
         )
 
     async def adopt_undestroyed_sandbox(
@@ -676,6 +716,7 @@ class AssistantWorkspaceRepository:
                 "provisioning_sandbox_generation": None,
                 "post_commit_cleanup_pending": False,
             },
+            retired_sandbox_id=sandbox_id,
         )
 
     async def mark_materialization_failed(

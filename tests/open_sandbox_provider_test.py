@@ -394,6 +394,7 @@ def _create_spec(**overrides: Any) -> Any:
     from astrabox.seams.sandbox import SandboxCreateSpec
 
     defaults: dict[str, Any] = {
+        "environment_name": "astrabox",
         "session_id": "sess-assistant-1",
         "assignment_id": "assignment-assistant-1",
         "resource_limits": {"cpu": "4", "memory": "4Gi"},
@@ -572,6 +573,7 @@ async def test_secure_access_setting_reaches_the_opensandbox_create_request(
     monkeypatch.setenv("ASTRABOX_SANDBOX_SECURE_ACCESS", "true")
     fake = _FakeLifecycle()
     handle = await create_open_sandbox_box(
+        environment_name="astrabox",
         session_id="sess-secure",
         assignment_id="assignment-secure",
         image="astrabox/agent:1",

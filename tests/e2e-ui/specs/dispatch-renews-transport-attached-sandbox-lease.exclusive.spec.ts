@@ -86,14 +86,14 @@ test('a reattached runtime renews its live box lease and the lapsed database lea
   expect(watcherEnabled, 'the background watcher must not repair this activity-path fault').toBe('False');
   const api = new AstraApi(request);
   const base = await api.defaultAgent();
-  expect(base.environment_name, 'retain the proven shared Environment').toBeTruthy();
+  expect(base.runtime_profile_name, 'retain the proven shared RuntimeProfile').toBeTruthy();
   expect(base.model, 'retain the proven model').toBeTruthy();
   // A dedicated Agent prevents sibling sessions from renewing the measured box
   // between the lease reads.
   const agent = await api.createAgent({
     name: `__e2e_transport_lease_${Date.now()}_${test.info().workerIndex}`,
     model: base.model,
-    environment_name: base.environment_name,
+    runtime_profile_name: base.runtime_profile_name,
     prepared_capacity: 0,
   });
   agentId = agent.agent_id;

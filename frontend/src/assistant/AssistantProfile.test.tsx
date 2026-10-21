@@ -34,7 +34,7 @@ const assistant: AssistantRecord = {
   icon: null,
   description: null,
   engine_kind: 'hermes',
-  environment_name: 'assistants',
+  runtime_profile_name: 'assistants',
   permission_mode_default: '',
   inherited: {
     instructions: false,

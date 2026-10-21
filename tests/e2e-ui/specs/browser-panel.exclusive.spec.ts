@@ -77,11 +77,11 @@ test('Browser controls an exclusive sandbox and refuses shared access', async ({
   const agent = await api.createColdTestAgent(`__e2e_browser_${Date.now()}`);
   agents.push(agent.agent_id);
   const environment = String(process.env.ASTRABOX_E2E_PREWARM_CONVERSATION_ENVIRONMENT || '').trim();
-  expect(environment, 'the deployment must provide a conversation prewarm Environment').not.toBe('');
+  expect(environment, 'the deployment must provide a conversation prewarm RuntimeProfile').not.toBe('');
   expect(await api.listEnvironmentModels(environment)).toContain(agent.model);
   const warm = await api.createAgent({
     name: `__e2e_browser_warm_${Date.now()}`, model: agent.model,
-    environment_name: environment, prepared_capacity: 1,
+    runtime_profile_name: environment, prepared_capacity: 1,
   });
   agents.push(warm.agent_id);
   const conversation = await api.startConversation(agent.agent_id);
@@ -157,7 +157,7 @@ test('Assistant Browser follows the owner workspace across replacement and denie
   const api = new AstraApi(request);
   const environment = process.env.ASTRABOX_E2E_ASSISTANT_ENVIRONMENT || await api.assistantEnvironmentName();
   const assistant = await api.createAssistant({
-    display_name: `__e2e_browser_${Date.now()}`, environment_name: environment,
+    display_name: `__e2e_browser_${Date.now()}`, runtime_profile_name: environment,
     model_config_override: { model_name: await api.assistantModelName(environment) },
   });
   assistants.push(assistant.assistant_id);

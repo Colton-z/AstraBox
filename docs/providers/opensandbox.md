@@ -1,7 +1,7 @@
 # OpenSandbox
 
 OpenSandbox is AstraBox's built-in sandbox service. An
-[Environment](../environments.md) tells AstraBox which sandbox image, network
+[RuntimeProfile](../runtime-profiles.md) tells AstraBox which sandbox image, network
 access, and lifecycle options an Agent uses. When a Session starts, AstraBox
 creates or claims an OpenSandbox sandbox, runs the Agent program in
 `/workspace`, and keeps the conversation and other product records outside the
@@ -118,7 +118,7 @@ background services needed by every Session that uses it. Bundled images use
 
 Add common software to a custom image based on the corresponding bundled image,
 then select that image under **Sandbox image or template** in
-**Management console → Environments**. Do not depend on a per-Session setup
+**Management console → RuntimeProfiles**. Do not depend on a per-Session setup
 script: a prewarmed sandbox can exist before the Session that claims it.
 
 The OpenSandbox provider serves AstraBox's sandbox contract with the execd that
@@ -129,14 +129,19 @@ boot and workload-account lifecycle ends in `/opt/gem/run.sh`; a custom base
 image needs an equivalent lifecycle and a matching entrypoint.
 
 The [Container Reference](../container-reference.md) describes the image and
-workspace layout. Every AstraBox-created sandbox carries the platform's measured
-box envelope: limits of `4` CPU and `4Gi` memory, and requests of `200m` CPU and
-`768Mi` memory. This is one platform recipe for both cold and prewarmed creation,
-not a per-Session Environment setting. When the bundled lifecycle server runs
-sandboxes on this host's Docker, the CPU limit is lowered to the host's CPU
-count, because Docker refuses a limit above it; on Kubernetes, and with an
-existing OpenSandbox service, the recipe is sent as is. Disk, GPU access, and
-cluster admission remain OpenSandbox deployment concerns.
+workspace layout. The deployment selects CPU and memory limits and scheduling
+requests through `ASTRABOX_SANDBOX_*` for conversation-owned boxes,
+`ASTRABOX_SHARED_SANDBOX_*` for Agent-shared boxes, and
+`ASTRABOX_ASSISTANT_SANDBOX_*` for Assistant workspace boxes. See the defaults in
+[Configuration](../configuration.md). Each kind uses its one recipe for cold,
+prepared, and replacement creation; these are not RuntimeProfile fields. The
+provider-fitted limits and requests are part of an Agent's prepared generation,
+so a resource change retires unclaimed capacity without resizing Session-owned
+boxes. When the bundled lifecycle server runs sandboxes on this host's Docker,
+the CPU limit is lowered to the host's CPU count, because Docker refuses a limit
+above it; on Kubernetes, and with an existing OpenSandbox service, the recipe is
+sent as is. Disk, GPU access, and cluster admission remain OpenSandbox deployment
+concerns.
 
 ## Use prewarmed capacity
 
@@ -166,7 +171,7 @@ The platform chooses the Agent version, persistent workspace mount,
 credentials, and startup requirements. OpenSandbox supplies sandbox lifecycle and
 pool machinery; it does not participate in AstraBox's user/session workflow.
 
-An Environment can give each conversation a separate sandbox or let one Agent's
+A RuntimeProfile can give each conversation a separate sandbox or let one Agent's
 conversations share a sandbox. Shared-sandbox mode still gives each conversation
 its own Linux user and workspace, but the conversations share a container and
 network namespace. It therefore requires the advanced sandbox permission level
@@ -178,7 +183,7 @@ isolated-session support; it does not fall back to unisolated execution.
 
 ## Pause and resume sandboxes
 
-An Environment can pause an idle sandbox instead of terminating it when the
+A RuntimeProfile can pause an idle sandbox instead of terminating it when the
 OpenSandbox deployment supports snapshots. Pause commits the sandbox root
 filesystem to an OCI image and releases its compute. Resume keeps the sandbox
 ID and restores the files, but starts new processes; ordinary process memory is
@@ -192,7 +197,7 @@ The supported Kubernetes path requires:
 - registry credentials in the sandbox namespace when the registry is private.
 
 Verify the complete write, pause, resume, and read path before enabling pause
-for production Environments:
+for production RuntimeProfiles:
 
 ```bash
 astrabox verify-opensandbox-snapshots
@@ -217,7 +222,7 @@ saves that state and releases its sandbox; it is not OpenSandbox pause. See
 
 ## Configure networking and credential protection {#credential-protection}
 
-Use **Management console → Environments → Network access** to allow every
+Use **Management console → RuntimeProfiles → Network access** to allow every
 outbound destination or only the hosts an Agent needs. AstraBox combines this
 choice with the model endpoint, platform callback, declared Plugin sources,
 allowed remote MCP servers, and destinations authorized by assigned
@@ -419,6 +424,6 @@ network rules, Credentials, and diagnostics reported for each sandbox.
 ## Related documents
 
 - [Deploy AstraBox](../deploy.md)
-- [Environments](../environments.md)
+- [RuntimeProfiles](../runtime-profiles.md)
 - [Container Reference](../container-reference.md)
 - [Protect credentials used by Agents](../egress-credential-injection.md)

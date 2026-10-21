@@ -1,7 +1,7 @@
 /**
  * MCP-capable Agents report expired OAuth credentials before new work uses
  * them.
- * Each case owns its cold Environment, Agent and credential Vault.
+ * Each case owns its cold RuntimeProfile, Agent and credential Vault.
  */
 import fs from 'node:fs';
 
@@ -88,7 +88,7 @@ onPassOnly(async ({ request }) => {
   }
   if (vaultId) await platform.deleteVault(vaultId);
   if (coldEnvironmentName) {
-    await platform.data('DELETE', `/admin/environments/${encodeURIComponent(coldEnvironmentName)}`);
+    await platform.data('DELETE', `/admin/runtime-profiles/${encodeURIComponent(coldEnvironmentName)}`);
   }
 });
 
@@ -116,14 +116,14 @@ test(`${declared.engine_kind}: ${journey}`, async ({
   await refuseIfNotTheDeployment(async (url, headers) => ({
     status: (await request.get(url, { failOnStatusCode: false, headers })).status(),
   }));
-  const environments = await platform.listEnvironments();
+  const runtime_profiles = await platform.listEnvironments();
   const matrixAgent = await api.getAgent(profile.agent_id);
-  expect(matrixAgent.environment_name).toBe(profile.environment_name);
-  const source = environments.find((row) => row.name === profile.environment_name);
-  expect(source, 'the deployed engine must have its own Environment').toBeTruthy();
+  expect(matrixAgent.runtime_profile_name).toBe(profile.runtime_profile_name);
+  const source = runtime_profiles.find((row) => row.name === profile.runtime_profile_name);
+  expect(source, 'the deployed engine must have its own RuntimeProfile').toBeTruthy();
   expect(source!.engine_kind).toBe(declared.engine_kind);
   const access = source!.provider_access as Record<string, unknown> | undefined;
-  expect(access?.api_key, 'a masked provider key cannot be copied to another Environment').not.toBe('••••••••');
+  expect(access?.api_key, 'a masked provider key cannot be copied to another RuntimeProfile').not.toBe('••••••••');
   const networking = source!.networking as Record<string, unknown>;
   const allowedHosts = Array.isArray(networking.allowed_hosts) ? networking.allowed_hosts : [];
   const fields = new Set((await platform.environmentSchema()).fields!.map((field) => String(field.key)));
@@ -198,7 +198,7 @@ test(`${declared.engine_kind}: ${journey}`, async ({
     name: `__e2e_oauth_weekend_${declared.engine_kind}_${RUN_ID}`,
     model: matrixAgent.model,
     engine_options: matrixAgent.engine_options,
-    environment_name: coldEnvironmentName,
+    runtime_profile_name: coldEnvironmentName,
     prepared_capacity: 0,
   });
   agentId = String(created.agent_id || '');
@@ -210,7 +210,7 @@ test(`${declared.engine_kind}: ${journey}`, async ({
   const configured = await api.updateAgent(agentId, {
     name: beforeServers.name,
     model: beforeServers.model,
-    environment_name: beforeServers.environment_name,
+    runtime_profile_name: beforeServers.runtime_profile_name,
     version: beforeServers.version,
     mcp_servers: { [SERVER_ALIAS]: { type: 'http', url: WEEKEND_URL } },
   });
@@ -401,7 +401,7 @@ test(`${declared.engine_kind}: ${journey}`, async ({
 
   // A5 — a dead credential must not push the Agent into a hibernating
   // fallback. Same property agent-stays-active-on-broken-config pins for a
-  // broken Environment.
+  // broken RuntimeProfile.
   expect(String(agentAfter.state || ''), 'the Agent must still be ACTIVE').toEqual('ACTIVE');
   expect(
     String((agentAfter.sandbox_id as string | null | undefined) || '').trim(),

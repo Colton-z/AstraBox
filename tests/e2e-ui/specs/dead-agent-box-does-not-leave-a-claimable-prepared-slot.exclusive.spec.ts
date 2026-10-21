@@ -23,7 +23,7 @@ import { expectComposerEnabled, sendPrompt } from '../fixtures/sessionPage';
 import { requireServiceContainer, SERVER_CONTAINER_HANDLE } from '../fixtures/serviceContainer';
 
 // Agent tenancy only. Seats outlive a claim in a box the Agent holds only
-// there; under the conversation-tenancy Environment every prepared unit is a
+// there; under the conversation-tenancy RuntimeProfile every prepared unit is a
 // whole pool box the supplier keeps, so the scene would be vacuous rather than
 // merely different — which is why the placement is a loud precondition below
 // and not a silent branch.
@@ -117,7 +117,7 @@ test('an out-of-band Agent box death withdraws its prepared slot and the next co
 }) => {
   expect(
     SHARED_ENVIRONMENT,
-    'ASTRABOX_E2E_PREWARM_SHARED_ENVIRONMENT must name the deployed Agent-tenancy prewarm Environment',
+    'ASTRABOX_E2E_PREWARM_SHARED_ENVIRONMENT must name the deployed Agent-tenancy prewarm RuntimeProfile',
   ).not.toEqual('');
   expect(
     RESEARCH_AGENT,
@@ -156,7 +156,7 @@ test('an out-of-band Agent box death withdraws its prepared slot and the next co
   const created = await api.createAgent({
     name: agentName,
     model: await api.configuredAgentModel(RESEARCH_AGENT, SHARED_ENVIRONMENT),
-    environment_name: SHARED_ENVIRONMENT,
+    runtime_profile_name: SHARED_ENVIRONMENT,
     prepared_capacity: 2,
   });
   agentId = String(created.agent_id || '').trim();

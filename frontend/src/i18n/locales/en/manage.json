@@ -22,7 +22,7 @@
     "assistants": "Assistants",
     "sessions": "Sessions",
     "sandboxes": "Sandboxes",
-    "environments": "Environments",
+    "runtime_profiles": "Runtime profiles",
     "credentials": "Credentials",
     "system": "System",
     "integration_identity": "identity",
@@ -39,7 +39,8 @@
     "group_integrations": "Integrated services",
     "mcp_tokens": "MCP clients",
     "connectors": "Connectors",
-    "assistant_defaults": "Assistant defaults"
+    "assistant_defaults": "Assistant defaults",
+    "environment": "Environment"
   },
   "credentials": {
     "title": "Credentials",
@@ -134,7 +135,7 @@
     "local_runtime": "Local runtime",
     "skills": "Skills",
     "mcp_servers": "MCP servers",
-    "environment": "Environment",
+    "runtime_profile": "Runtime profile",
     "agent": "Agent"
   },
   "filter": {
@@ -199,6 +200,10 @@
     "unnamed_assistant": "Untitled assistant"
   },
   "agents": {
+    "archive": "Archive agent",
+    "archiving": "Archiving…",
+    "archive_title": "Archive “{{name}}”?",
+    "archive_description": "Remove this Agent from use and management lists. Its definition and conversation history stay in the database for audit. This cannot be undone.",
     "title": "Agents",
     "meta": "{{count}} agents · {{enabled}} enabled",
     "description": "Configure each Agent with its model, system prompt, MCP servers, Skills, Plugins, repositories, and runtime setup, then use it from any supported entry point.",
@@ -209,7 +214,7 @@
     "empty_hint": "Create a reusable Agent once, then start it from the web app, an MCP client, or an automated trigger without rebuilding its setup.",
     "no_match": "No agents match “{{query}}”.",
     "err_name_required": "Enter an agent name first.",
-    "col_environment": "Environment",
+    "col_runtime_profile": "Runtime profile",
     "badge_disabled": "Disabled",
     "badge_private": "Private",
     "badge_allowlist": "Allowlist",
@@ -435,16 +440,16 @@
     "deleting": "Deleting…",
     "err_name_required": "Enter an assistant name first.",
     "field_current_sandbox": "Current sandbox",
-    "err_environment_required": "Select the environment this assistant runs on.",
-    "card_note": "Agent program and Environment are fixed when the Assistant is created. Everything here can change at any time.",
+    "err_runtime_profile_required": "Select the runtime profile this assistant runs on.",
+    "card_note": "Agent program and runtime profile are fixed when the Assistant is created. Everything here can change at any time.",
     "create_title": "New assistant"
   },
   "assistant_form": {
     "section_basic": "Basics",
     "section_preferences": "Runtime preferences",
-    "environment_label": "Runtime environment",
-    "environment_select_help": "Select the Environment used by this Assistant. It supplies the Assistant runtime, sandbox settings, and model connection. Credential Vaults are assigned separately.",
-    "environment_select_placeholder": "Select an environment",
+    "runtime_profile_label": "Runtime runtime profile",
+    "runtime_profile_select_help": "Select the runtime profile used by this Assistant. It supplies the Assistant runtime, sandbox settings, and model connection. Credential Vaults are assigned separately.",
+    "runtime_profile_select_placeholder": "Select a runtime profile",
     "name_label": "Name",
     "name_placeholder": "Data Analyst",
     "name_help": "The assistant name shown to users.",
@@ -591,25 +596,25 @@
     "section_security": "Network and credentials",
     "not_found": "No sandbox called “{{id}}”."
   },
-  "environments": {
+  "runtime_profiles": {
     "engine_missing": "Engine not installed",
-    "title": "Environments",
-    "meta": "{{count}} environments · {{enabled}} enabled",
+    "title": "Runtime profiles",
+    "meta": "{{count}} runtime profiles · {{enabled}} enabled",
     "description": "Configure the Agent program, sandbox image, model connection, and network access used by Sessions.",
-    "create": "New environment",
+    "create": "New runtime profile",
     "search_placeholder": "Search by name or Agent program",
-    "error_title": "Couldn't load environments",
-    "empty_title": "No environments yet",
-    "empty_hint": "Create an Environment to make a runtime configuration available when users start a Session.",
-    "no_match": "No environments match “{{query}}”.",
-    "err_name_required": "Enter an environment name first — it's the unique identifier for this environment.",
-    "err_name_exists": "An environment named “{{name}}” already exists. Pick another name.",
-    "not_found": "No environment named {{name}}",
+    "error_title": "Couldn't load runtime profiles",
+    "empty_title": "No runtime profiles yet",
+    "empty_hint": "Create a runtime profile to make a runtime configuration available when users start a Session.",
+    "no_match": "No runtime profiles match “{{query}}”.",
+    "err_name_required": "Enter a runtime profile name first — it's the unique identifier for this runtime profile.",
+    "err_name_exists": "A runtime profile named “{{name}}” already exists. Pick another name.",
+    "not_found": "No runtime profile named {{name}}",
     "card_note": "The identifier is fixed. Every other field can change at any time.",
-    "create_title": "New environment",
-    "confirm_delete": "Delete Environment “{{name}}”?"
+    "create_title": "New runtime profile",
+    "confirm_delete": "Delete runtime profile “{{name}}”?"
   },
-  "env_form": {
+  "runtime_profile_form": {
     "select_placeholder": "Select…",
     "name_placeholder": "e.g. coding-agent",
     "groups": {
@@ -633,19 +638,19 @@
       },
       "description": {
         "label": "Description",
-        "help": "One line on what this environment is good for"
+        "help": "One line on what this runtime profile is good for"
       },
       "engine_kind": {
         "label": "Agent program",
-        "help": "Choose the program that powers this Environment, such as Claude Code or Codex. Assistant runtimes are used by Assistants and cannot be selected for Agents."
+        "help": "Choose the program that powers this runtime profile, such as Claude Code or Codex. Assistant runtimes are used by Assistants and cannot be selected for Agents."
       },
       "enabled": {
         "label": "Enabled",
-        "help": "When off, this environment is hidden from the user's selectable list"
+        "help": "When off, this runtime profile is hidden from the user's selectable list"
       },
       "sandbox_backend": {
         "label": "Sandbox service",
-        "help": "Choose the service that creates and manages this Environment's sandboxes. Leave blank to use the deployment default."
+        "help": "Choose the service that creates and manages this runtime profile's sandboxes. Leave blank to use the deployment default."
       },
       "runtime_template_name": {
         "label": "Sandbox image or template",
@@ -684,7 +689,7 @@
       },
       "sandbox_permission_level": {
         "label": "Sandbox permission level",
-        "help": "How much system privilege this Environment's sandboxes are granted. The default level is the minimum, and the one to keep when users do not trust one another: each conversation already has a sandbox to itself, so nothing needs to be separated inside it. The advanced level additionally allows separate areas to be created inside a sandbox, which two things need — conversations that share one sandbox and must be kept apart from each other, and an Agent program that applies its own restrictions inside (Codex enforces its permission mode that way; without this level it asks for consent each time instead of allowing the action). AstraBox asks the selected sandbox provider for the level and verifies the running sandbox before using it. OpenSandbox does not offer privileged because its lifecycle API exposes no privileged-container attestation. A backend only offers levels it can both deliver and prove.",
+        "help": "How much system privilege this runtime profile's sandboxes are granted. The default level is the minimum, and the one to keep when users do not trust one another: each conversation already has a sandbox to itself, so nothing needs to be separated inside it. The advanced level additionally allows separate areas to be created inside a sandbox, which two things need — conversations that share one sandbox and must be kept apart from each other, and an Agent program that applies its own restrictions inside (Codex enforces its permission mode that way; without this level it asks for consent each time instead of allowing the action). AstraBox asks the selected sandbox provider for the level and verifies the running sandbox before using it. OpenSandbox does not offer privileged because its lifecycle API exposes no privileged-container attestation. A backend only offers levels it can both deliver and prove.",
         "options": {
           "default": "Default — minimum privilege, for users who do not trust one another",
           "advanced": "Advanced — separate areas inside a sandbox",
@@ -693,15 +698,15 @@
       },
       "endpoint_provider": {
         "label": "Model connection",
-        "help": "Choose a registered model connection for Agents in this environment. Leave blank to use the connection declared as the deployment default."
+        "help": "Choose a registered model connection for Agents in this runtime profile. Leave blank to use the connection declared as the deployment default."
       },
       "provider_access": {
         "label": "Connection details",
-        "help": "Set the model or gateway URL and credential used by every Agent in this environment. Changing it affects all of them."
+        "help": "Set the model or gateway URL and credential used by every Agent in this runtime profile. Changing it affects all of them."
       },
       "tracing": {
         "label": "Agent program tracing",
-        "help": "Send the Agent program's own OpenTelemetry spans — the operations it performed, how long each turn took, and where it failed — to a collector you run. This is separate from the deployment's request traces and the model traces recorded by the gateway. An Environment cannot enable tracing when its Agent program does not support it.",
+        "help": "Send the Agent program's own OpenTelemetry spans — the operations it performed, how long each turn took, and where it failed — to a collector you run. This is separate from the deployment's request traces and the model traces recorded by the gateway. A runtime profile cannot enable tracing when its Agent program does not support it.",
         "enabled": {
           "label": "Send Agent program spans",
           "help": "Off by default. Turning it off keeps the endpoint and credential, so switching it back on does not mean entering the secret again."
@@ -738,11 +743,11 @@
     }
   },
   "agent_form": {
-    "select_env_placeholder": "Select a runtime environment",
+    "select_runtime_profile_placeholder": "Select a runtime runtime profile",
     "select_placeholder": "Select…",
     "select_model_placeholder": "Select or enter a model",
     "search_model_placeholder": "Search models or enter a model id",
-    "no_environments": "No environment can run an Agent: each is disabled, or its engine is not installed in this release.",
+    "no_runtime_profiles": "No runtime profile can run an Agent: each is disabled, or its engine is not installed in this release.",
     "no_models": "No models were returned. Enter a model id to continue.",
     "category_unavailable": "Unavailable category",
     "select_categories_placeholder": "Choose categories",
@@ -921,18 +926,31 @@
     "lede": "What every Assistant on this deployment can use. Assistants read these when they start, so a change reaches each on its next start; owners add their own on top.",
     "load_failed": "Could not load the Assistant defaults",
     "section_basic": "New Assistants",
-    "environment_automatic": "Automatic: the only Environment that runs Assistants",
-    "environment_automatic_named": "Automatic: {{name}}",
-    "environment_help": "Where each user's first Assistant is created. Automatic works while exactly one enabled Environment runs Assistants.",
+    "runtime_profile_automatic": "Automatic: the only runtime profile that runs Assistants",
+    "runtime_profile_automatic_named": "Automatic: {{name}}",
+    "runtime_profile_help": "Where each user's first Assistant is created. Automatic works while exactly one enabled runtime profile runs Assistants.",
     "model_label": "Model",
-    "model_help": "Used unless an Assistant names its own. Empty uses the Environment's default.",
+    "model_help": "Used unless an Assistant names its own. Empty uses the runtime profile's default.",
     "instructions_label": "Organization instructions",
     "instructions_help": "Every Assistant receives these before its owner's own instructions.",
     "card_note": "Assistants read these when they start; a running one picks them up on its next start.",
-    "no_environment_title": "No Environment runs Assistants",
-    "no_environment": "Users get no Assistant until an enabled Environment's program runs Assistants. Add one under Environments.",
+    "no_runtime_profile_title": "No runtime profile runs Assistants",
+    "no_runtime_profile": "Users get no Assistant until an enabled runtime profile's program runs Assistants. Add one under runtime profiles.",
     "vaults_label": "Credential Vaults",
     "vaults_help": "Bound to every Assistant, the same way an Assistant's own binding is.",
     "vaults_none": "No Credential Vaults yet. Create one under Credentials."
+  },
+  "environment": {
+    "title": "Environment",
+    "section": "Access and details",
+    "name": "Environment identity",
+    "name_help": "Fixed when the database is first bound. Renaming the display name does not move data or running work.",
+    "members": "Member accounts",
+    "members_help": "Add account IDs that may use this Environment, including channel and schedule execution accounts. Agent and conversation permissions still apply. Platform administrators can manage access without membership.",
+    "lede": "This deployment’s configuration, credentials, conversations and runtime resources belong to this Environment.",
+    "load_failed": "Could not load the Environment",
+    "prewarm": "Agent prewarming",
+    "background": "Automatic channel and schedule work",
+    "description": "Description"
   }
 }

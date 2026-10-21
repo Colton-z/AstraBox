@@ -36,11 +36,11 @@ onPassOnly(async ({ request }) => {
 
 test('an idle Assistant whose box dies is rebuilt without any action and answers on the first try', async ({ request }) => {
   const api = new AstraApi(request);
-  const environmentName = await api.assistantEnvironmentName();
+  const runtimeProfileName = await api.assistantEnvironmentName();
   const assistant = await api.createAssistant({
     display_name: `__e2e_assistant_unprompted_heal_${Date.now()}`,
-    environment_name: environmentName,
-    model_config_override: { model_name: await api.assistantModelName(environmentName) },
+    runtime_profile_name: runtimeProfileName,
+    model_config_override: { model_name: await api.assistantModelName(runtimeProfileName) },
   });
   assistantId = String(assistant.assistant_id || '');
   expect(assistantId).not.toEqual('');

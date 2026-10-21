@@ -74,6 +74,7 @@ async def run(image: str) -> None:
         members.append(member)
         limits, requests = provider.fit_resources(*sandbox_create_resources(shared=False))
         return await create_open_sandbox_box(
+            environment_name="astrabox",
             session_id=member.session_id, assignment_id=member.assignment_id,
             image=image, env={}, resource_limits=limits, resource_requests=requests,
             cwd=None, transport=transport,

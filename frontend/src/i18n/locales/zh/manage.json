@@ -22,7 +22,7 @@
     "assistants": "Assistant",
     "sessions": "会话",
     "sandboxes": "沙箱",
-    "environments": "运行环境",
+    "runtime_profiles": "运行配置",
     "credentials": "凭证",
     "system": "系统状态",
     "integration_identity": "身份管理",
@@ -39,7 +39,8 @@
     "group_integrations": "集成服务",
     "mcp_tokens": "MCP 客户端",
     "connectors": "Connectors",
-    "assistant_defaults": "Assistant 默认配置"
+    "assistant_defaults": "Assistant 默认配置",
+    "environment": "环境"
   },
   "credentials": {
     "title": "凭证",
@@ -134,7 +135,7 @@
     "local_runtime": "本地运行时",
     "skills": "技能",
     "mcp_servers": "MCP 服务",
-    "environment": "运行环境",
+    "runtime_profile": "运行配置",
     "agent": "Agent"
   },
   "filter": {
@@ -199,6 +200,10 @@
     "unnamed_assistant": "未命名 Assistant"
   },
   "agents": {
+    "archive": "归档 Agent",
+    "archiving": "正在归档…",
+    "archive_title": "归档“{{name}}”？",
+    "archive_description": "将此 Agent 从业务入口和管理列表移除。配置和对话历史仍保留在数据库中供审计，归档后无法恢复。",
     "title": "Agent",
     "meta": "{{count}} 个 Agent · {{enabled}} 个已启用",
     "description": "为 Agent 选择模型、系统提示词、MCP 服务、Skill、Plugin、代码仓库和运行设置，再从支持的入口使用它。",
@@ -209,7 +214,7 @@
     "empty_hint": "配置一次可重复使用的 Agent，之后可以从网页、MCP 客户端或自动任务启动，不必重新准备配置。",
     "no_match": "没有匹配「{{query}}」的 Agent。",
     "err_name_required": "请先填写 Agent 名称。",
-    "col_environment": "环境",
+    "col_runtime_profile": "运行配置",
     "badge_disabled": "已停用",
     "badge_private": "私有",
     "badge_allowlist": "白名单",
@@ -435,16 +440,16 @@
     "deleting": "删除中…",
     "err_name_required": "请先填写 Assistant 名称。",
     "field_current_sandbox": "当前沙箱",
-    "err_environment_required": "请选择这个 Assistant 使用的运行环境。",
-    "card_note": "Agent 程序和 Environment 在创建 Assistant 时确定，其他字段可以随时修改。",
+    "err_runtime_profile_required": "请选择这个 Assistant 使用的运行配置。",
+    "card_note": "Agent 程序和 运行配置 在创建 Assistant 时确定，其他字段可以随时修改。",
     "create_title": "创建 Assistant"
   },
   "assistant_form": {
     "section_basic": "基本信息",
     "section_preferences": "运行偏好",
-    "environment_label": "运行环境",
-    "environment_select_help": "选择 Assistant 使用的 Environment（运行环境）。它提供 Assistant 运行程序、沙箱设置和模型连接。Credential Vault（凭证库）需要另行分配。",
-    "environment_select_placeholder": "选择一个运行环境",
+    "runtime_profile_label": "运行配置",
+    "runtime_profile_select_help": "选择 Assistant 使用的 运行配置。它提供 Assistant 运行程序、沙箱设置和模型连接。Credential Vault（凭证库）需要另行分配。",
+    "runtime_profile_select_placeholder": "选择一个运行配置",
     "name_label": "名称",
     "name_placeholder": "数据分析助手",
     "name_help": "展示给用户的 Assistant 名称。",
@@ -591,25 +596,25 @@
     "section_security": "网络与凭证",
     "not_found": "没有名为“{{id}}”的沙箱。"
   },
-  "environments": {
+  "runtime_profiles": {
     "engine_missing": "引擎未安装",
-    "title": "环境",
-    "meta": "{{count}} 个环境 · {{enabled}} 启用",
+    "title": "运行配置",
+    "meta": "{{count}} 个运行配置 · {{enabled}} 启用",
     "description": "配置 Session 使用的 Agent 程序、沙箱镜像、模型连接和网络访问。",
-    "create": "创建环境",
+    "create": "创建运行配置",
     "search_placeholder": "按名称或 Agent 程序搜索",
-    "error_title": "没能加载环境列表",
-    "empty_title": "还没有环境",
-    "empty_hint": "创建 Environment 后，用户启动 Session 时即可选择这套运行配置。",
-    "no_match": "没有匹配「{{query}}」的环境。",
-    "err_name_required": "请先填写环境名称——它是该环境的唯一标识。",
-    "err_name_exists": "已存在名为「{{name}}」的环境，换一个名称。",
-    "not_found": "没有名为 {{name}} 的环境",
+    "error_title": "没能加载运行配置列表",
+    "empty_title": "还没有运行配置",
+    "empty_hint": "创建 运行配置 后，用户启动 Session 时即可选择这套运行配置。",
+    "no_match": "没有匹配「{{query}}」的运行配置。",
+    "err_name_required": "请先填写运行配置名称——它是该运行配置的唯一标识。",
+    "err_name_exists": "已存在名为「{{name}}」的运行配置，换一个名称。",
+    "not_found": "没有名为 {{name}} 的运行配置",
     "card_note": "标识符创建后固定,其余字段随时可改。",
-    "create_title": "创建环境",
-    "confirm_delete": "删除运行环境“{{name}}”？"
+    "create_title": "创建运行配置",
+    "confirm_delete": "删除运行配置“{{name}}”？"
   },
-  "env_form": {
+  "runtime_profile_form": {
     "select_placeholder": "请选择",
     "name_placeholder": "例如 coding-agent",
     "groups": {
@@ -633,19 +638,19 @@
       },
       "description": {
         "label": "描述",
-        "help": "一句话说明这个环境适合什么场景"
+        "help": "一句话说明这个运行配置适合什么场景"
       },
       "engine_kind": {
         "label": "Agent 程序",
-        "help": "选择驱动这个 Environment 的程序，例如 Claude Code 或 Codex。Assistant 运行程序只供 Assistant 使用，Agent 不能选择。"
+        "help": "选择驱动这个 运行配置 的程序，例如 Claude Code 或 Codex。Assistant 运行程序只供 Assistant 使用，Agent 不能选择。"
       },
       "enabled": {
         "label": "启用",
-        "help": "关闭后该环境不会出现在用户可选列表中"
+        "help": "关闭后该运行配置不会出现在用户可选列表中"
       },
       "sandbox_backend": {
         "label": "沙箱服务",
-        "help": "选择负责创建和管理此 Environment 沙箱的服务。留空时使用部署默认设置。"
+        "help": "选择负责创建和管理此 运行配置 沙箱的服务。留空时使用部署默认设置。"
       },
       "runtime_template_name": {
         "label": "沙箱镜像或模板",
@@ -684,7 +689,7 @@
       },
       "sandbox_permission_level": {
         "label": "沙箱权限等级",
-        "help": "这个 Environment 的沙箱被授予多少系统权限。默认等级是最小集，也是用户之间互不信任时应使用的选择：每段对话已经各自独占一个沙箱，不需要在里面再次隔离。高级等级允许在沙箱内部划分隔离区域，用于多个会话共享一个沙箱，或 Agent 程序需要在沙箱内部实施自己的限制（例如 Codex 的权限模式）。AstraBox 会向所选沙箱 Provider 请求该等级，并在使用前验证实际运行的沙箱。OpenSandbox 的生命周期 API 不提供特权容器的可验证信号，因此不提供特权等级。沙箱服务只显示它能够授予并验证的等级。",
+        "help": "这个 运行配置 的沙箱被授予多少系统权限。默认等级是最小集，也是用户之间互不信任时应使用的选择：每段对话已经各自独占一个沙箱，不需要在里面再次隔离。高级等级允许在沙箱内部划分隔离区域，用于多个会话共享一个沙箱，或 Agent 程序需要在沙箱内部实施自己的限制（例如 Codex 的权限模式）。AstraBox 会向所选沙箱 Provider 请求该等级，并在使用前验证实际运行的沙箱。OpenSandbox 的生命周期 API 不提供特权容器的可验证信号，因此不提供特权等级。沙箱服务只显示它能够授予并验证的等级。",
         "options": {
           "default": "默认——最小权限,适用于互不信任的用户",
           "advanced": "高级——允许在沙箱内部划分隔离区域",
@@ -693,15 +698,15 @@
       },
       "endpoint_provider": {
         "label": "模型连接方式",
-        "help": "为本环境中的 Agent 选择已注册的模型连接方式。留空时使用声明为部署默认值的连接方式。"
+        "help": "为本运行配置中的 Agent 选择已注册的模型连接方式。留空时使用声明为部署默认值的连接方式。"
       },
       "provider_access": {
         "label": "连接信息",
-        "help": "设置模型服务或网关的地址和凭证。本环境中的所有 Agent 共用这些设置，修改后会同时生效。"
+        "help": "设置模型服务或网关的地址和凭证。本运行配置中的所有 Agent 共用这些设置，修改后会同时生效。"
       },
       "tracing": {
         "label": "Agent 程序链路追踪",
-        "help": "把 Agent 程序自己的 OpenTelemetry span——它执行了哪些操作、每轮耗时多久、在哪里失败——发送到你部署的采集服务。这与 AstraBox 的请求追踪和模型网关记录的模型调用追踪相互独立。Agent 程序不支持链路追踪时，Environment 不能启用这项设置。",
+        "help": "把 Agent 程序自己的 OpenTelemetry span——它执行了哪些操作、每轮耗时多久、在哪里失败——发送到你部署的采集服务。这与 AstraBox 的请求追踪和模型网关记录的模型调用追踪相互独立。Agent 程序不支持链路追踪时，运行配置 不能启用这项设置。",
         "enabled": {
           "label": "发送 Agent 程序 span",
           "help": "默认关闭。关掉不会清除端点和凭证,重新打开无需再填一遍密钥。"
@@ -738,11 +743,11 @@
     }
   },
   "agent_form": {
-    "select_env_placeholder": "选择运行环境",
+    "select_runtime_profile_placeholder": "选择运行配置",
     "select_placeholder": "请选择",
     "select_model_placeholder": "选择或输入模型",
     "search_model_placeholder": "搜索模型，或输入模型 ID",
-    "no_environments": "没有可运行 Agent 的环境：每个环境都已停用，或其引擎未安装在这个版本里。",
+    "no_runtime_profiles": "没有可运行 Agent 的运行配置：每个运行配置都已停用，或其引擎未安装在这个版本里。",
     "no_models": "没有获取到模型列表，可直接输入模型 ID。",
     "category_unavailable": "不可用的分类",
     "select_categories_placeholder": "选择分类",
@@ -921,18 +926,31 @@
     "lede": "本部署每个 Assistant 都能用的东西。Assistant 启动时读取这里,改动在每个 Assistant 下次启动时生效;用户可以在此之上追加自己的。",
     "load_failed": "无法读取 Assistant 默认配置",
     "section_basic": "新建的 Assistant",
-    "environment_automatic": "自动:唯一一个能运行 Assistant 的 Environment",
-    "environment_automatic_named": "自动:{{name}}",
-    "environment_help": "每个用户的第一个 Assistant 建在哪里。只有一个已启用的 Environment 能运行 Assistant 时,自动选择才生效。",
+    "runtime_profile_automatic": "自动:唯一一个能运行 Assistant 的 运行配置",
+    "runtime_profile_automatic_named": "自动:{{name}}",
+    "runtime_profile_help": "每个用户的第一个 Assistant 建在哪里。只有一个已启用的 运行配置 能运行 Assistant 时,自动选择才生效。",
     "model_label": "模型",
-    "model_help": "Assistant 没有自己指定时使用。留空则用 Environment 的默认模型。",
+    "model_help": "Assistant 没有自己指定时使用。留空则用 运行配置 的默认模型。",
     "instructions_label": "组织指令",
     "instructions_help": "每个 Assistant 都会在其所有者的指令之前收到这些。",
     "card_note": "Assistant 启动时读取;正在运行的会在下次启动时生效。",
-    "no_environment_title": "没有能运行 Assistant 的 Environment",
-    "no_environment": "在有已启用且能运行 Assistant 的 Environment 之前,用户不会有 Assistant。请在 Environments 中添加。",
+    "no_runtime_profile_title": "没有能运行 Assistant 的 运行配置",
+    "no_runtime_profile": "在有已启用且能运行 Assistant 的 运行配置 之前,用户不会有 Assistant。请在 运行配置 中添加。",
     "vaults_label": "Credential Vault",
     "vaults_help": "绑定到每个 Assistant,方式与 Assistant 自己的绑定相同。",
     "vaults_none": "还没有 Credential Vault。请在凭证页创建。"
+  },
+  "environment": {
+    "title": "Environment",
+    "section": "访问权限与详情",
+    "name": "环境标识",
+    "name_help": "数据库首次绑定时确定。修改显示名称不会迁移数据或运行中的任务。",
+    "members": "成员账号",
+    "members_help": "添加允许进入此环境的账号 ID，包括渠道和定时任务的执行账号。Agent 和对话权限仍然生效。平台管理员无需成员授权即可管理访问权限。",
+    "lede": "此部署的配置、凭据、对话和运行资源归属于当前环境。",
+    "load_failed": "无法加载环境",
+    "prewarm": "Agent 预热",
+    "background": "渠道与定时任务自动执行",
+    "description": "说明"
   }
 }

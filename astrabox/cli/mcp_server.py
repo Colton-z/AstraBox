@@ -95,7 +95,7 @@ def tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "astrabox_export",
             "description": (
-                "Project the deployment's environments and Agents into an "
+                "Project the deployment's runtime_profiles and Agents into an "
                 "astrabox.yaml document body. Server-managed state is excluded, "
                 "so the result is a document astrabox_apply accepts."
             ),

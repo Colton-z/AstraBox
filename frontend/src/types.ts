@@ -107,13 +107,15 @@ export interface AgentDraft {
   enabled?: boolean;
   // First-class Agent fields; there is no separate template resource.
   model?: string;
-  environment_name?: string;
+  runtime_profile_name?: string;
   system?: string;
   display_meta?: Record<string, unknown>;
   // Ids of the administrator-defined categories the home page lists it under.
   categories?: string[];
   skills?: SkillDescriptor[];
   mcp_servers?: Record<string, unknown>;
+  a2a_access?: 'disabled' | 'all' | 'selected';
+  a2a_agent_ids?: string[];
   engine_options?: Record<string, unknown>;
   default_repo?: Record<string, unknown>;
   packages?: Record<string, unknown>[];
@@ -333,14 +335,14 @@ export interface PersonalSchedule extends AgentDeployment {
 }
 
 // Admin-authored runtime environment preset. Open shape (validated server-side
-// by environment_schema). Reuses FormSchema/FormFieldSchema for its form.
-export interface EnvironmentConfig {
+// by runtime_profile_schema). Reuses FormSchema/FormFieldSchema for its form.
+export interface RuntimeProfileConfig {
   name: string;
   enabled?: boolean;
   engine_kind?: string;
   engine_available?: boolean;
   supported_session_kinds?: string[];
-  // The permission modes the Environment's Agent program declares; empty when
+  // The permission modes the RuntimeProfile's Agent program declares; empty when
   // it has none, and then no form may offer or send one.
   permission_modes?: string[];
   sandbox_backend?: string;
@@ -380,14 +382,14 @@ export interface EngineExtensions {
 
 // ── Schema-driven forms ─────────────────────────────────────────────────────
 // One grammar, two producers: `GET /api/v1/admin/agent-schema` (agent_schema.py)
-// and `GET /api/v1/admin/environment-schema` (environment_schema.py).
+// and `GET /api/v1/admin/runtime-profile-schema` (runtime_profile_schema.py).
 export type FormFieldType =
   | 'string'
   | 'text'
   | 'boolean'
   | 'integer'
   | 'enum'
-  | 'env_ref'
+  | 'runtime_profile_ref'
   | 'string_list'
   | 'skill_list'
   | 'key_value'
@@ -596,7 +598,7 @@ export interface AdminSessionPage {
 
 export interface AdminNavigationSummary {
   agents: number;
-  environments: number;
+  runtime_profiles: number;
   sessions: number;
 }
 

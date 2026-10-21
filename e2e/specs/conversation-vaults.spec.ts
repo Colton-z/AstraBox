@@ -337,7 +337,7 @@ test("Hermes automatically uses the protected gateway credential for a real mode
 }) => {
 
   const runId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const environmentName = "e2e-hermes-vault";
+  const runtimeProfileName = "e2e-hermes-vault";
   const assistantName = `e2e Hermes Vault ${runId}`;
   let assistantId = "";
   let sessionId = "";
@@ -346,10 +346,10 @@ test("Hermes automatically uses the protected gateway credential for a real mode
 
   try {
     await responseData(
-      await request.put(`/api/v1/admin/environments/${environmentName}`, {
+      await request.put(`/api/v1/admin/runtime-profiles/${runtimeProfileName}`, {
         data: {
           display_name: "Hermes E2E",
-          description: "Environment for the real Hermes browser gate.",
+          description: "RuntimeProfile for the real Hermes browser gate.",
           engine_kind: "assistant",
           enabled: true,
           sandbox_backend: "open_sandbox",
@@ -365,7 +365,7 @@ test("Hermes automatically uses the protected gateway credential for a real mode
 
     const [{ models }, agents] = await Promise.all([
       responseData<{ models: string[] }>(
-        await request.get(`/api/v1/admin/environments/${environmentName}/models`),
+        await request.get(`/api/v1/admin/runtime-profiles/${runtimeProfileName}/models`),
         "enumerate the Hermes environment model routes",
       ),
       responseData<Array<{ model?: string | null }>>(
@@ -402,7 +402,7 @@ test("Hermes automatically uses the protected gateway credential for a real mode
           display_name: assistantName,
           description: "Real protected-delivery browser probe.",
           engine_kind: "assistant",
-          environment_name: environmentName,
+          runtime_profile_name: runtimeProfileName,
           model_config_override: { model_name: model },
         },
       }),
@@ -606,10 +606,10 @@ test("Hermes automatically uses the protected gateway credential for a real mode
         timeout: 180_000,
       }).catch(() => undefined);
     }
-    await request.put(`/api/v1/admin/environments/${environmentName}`, {
+    await request.put(`/api/v1/admin/runtime-profiles/${runtimeProfileName}`, {
       data: {
         display_name: "Hermes E2E",
-        description: "Environment for the real Hermes browser gate.",
+        description: "RuntimeProfile for the real Hermes browser gate.",
         engine_kind: "assistant",
         enabled: false,
         sandbox_backend: "open_sandbox",

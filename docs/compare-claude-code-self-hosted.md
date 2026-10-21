@@ -2,7 +2,7 @@
 
 [Claude Managed Agents](https://platform.claude.com/docs/en/managed-agents/overview)
 provides a prebuilt, configurable Agent runtime and the infrastructure needed
-to run it. An Environment can use an Anthropic-managed sandbox or a self-hosted
+to run it. A RuntimeProfile can use an Anthropic-managed sandbox or a self-hosted
 environment on infrastructure you operate.
 
 AstraBox takes the second idea further: you deploy the Agent service as well as

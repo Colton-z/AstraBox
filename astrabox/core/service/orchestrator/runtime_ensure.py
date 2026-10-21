@@ -34,6 +34,7 @@ from astrabox.core.service.orchestrator.engine_kind_utils import (
     resolve_session_engine_kind,
 )
 from astrabox.core.service.orchestrator.engine.capabilities import require_session_kind
+from astrabox.core.service.orchestrator.runtime.environment_ownership import require_environment_ownership
 
 logger = get_logger(__name__)
 
@@ -546,6 +547,7 @@ class RuntimeEnsure:
         *,
         user: UserContext | None = None,
     ) -> _RuntimeEnsureResult:
+        require_environment_ownership(session)
         session_id = str(session["session_id"])
         session_kind = require_session_kind(session.get("session_kind"))
         if session_kind == "agent_chat":
@@ -612,15 +614,17 @@ class RuntimeEnsure:
             )
         except Exception as lightweight_exc:
             _raise_user_action_refusal(lightweight_exc, session_id)
-            logger.warning(
-                "engine turn transport lightweight attach failed, escalating to full prepare "
-                "engine=%s session=%s sandbox=%s: %s",
-                workspace_plan.engine_kind,
-                session_id,
-                sandbox_id,
-                lightweight_exc,
-            )
             try:
+                if isinstance(lightweight_exc, APIError) and not lightweight_exc.retryable:
+                    raise lightweight_exc
+                logger.warning(
+                    "engine turn transport lightweight attach failed, escalating to full prepare "
+                    "engine=%s session=%s sandbox=%s: %s",
+                    workspace_plan.engine_kind,
+                    session_id,
+                    sandbox_id,
+                    lightweight_exc,
+                )
                 template = await self._agent_config.resolve_session_harness(session)
                 if template is None:
                     raise lightweight_exc
@@ -651,7 +655,7 @@ class RuntimeEnsure:
                 _raise_user_action_refusal(full_exc, session_id)
                 error_text = str(full_exc)
                 logger.warning(
-                    "engine turn transport full prepare also failed "
+                    "engine turn transport attach failed "
                     "engine=%s session=%s sandbox=%s: %s",
                     workspace_plan.engine_kind,
                     session_id,

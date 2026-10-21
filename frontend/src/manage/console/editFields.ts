@@ -142,7 +142,7 @@ export type EditSectionSpec = {
  * Advancedness is the schema's word, not a page's: the server marks a field
  * `advanced` and every console form that folds does it the same way. This lives
  * beside the vocabulary rather than in one form's config module, because the
- * form that needs it (Agent create) and the one that must not fold (Environment,
+ * form that needs it (Agent create) and the one that must not fold (RuntimeProfile,
  * an admin surface whose reader already chose the sandbox backend) are two
  * different callers of the same grammar.
  *

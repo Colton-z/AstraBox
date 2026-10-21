@@ -23,6 +23,7 @@ from astrabox.seams.sandbox import (
     SANDBOX_SESSION_ID_METADATA_KEY,
     SandboxDescriptor,
     SandboxPage,
+    environment_name_metadata,
     sandbox_installation_id,
 )
 from astrabox.seams.sandbox_disposal import SandboxDestruction
@@ -37,6 +38,7 @@ def _box(sandbox_id: str, installation: str) -> SandboxDescriptor:
         state="Running",
         created_at=_LONG_AGO,
         metadata={
+            **environment_name_metadata("astrabox"),
             SANDBOX_MANAGED_BY_METADATA_KEY: SANDBOX_MANAGED_BY_METADATA_VALUE,
             SANDBOX_INSTALLATION_METADATA_KEY: installation,
             SANDBOX_SESSION_ID_METADATA_KEY: f"session-of-{sandbox_id}",

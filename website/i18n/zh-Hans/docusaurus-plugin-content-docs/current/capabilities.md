@@ -14,7 +14,7 @@ Web 控制台和 HTTP API 覆盖从构建 Agent 到交付使用的完整路径�
 
 ## HTTP API
 
-为需要完整控制能力的开发者提供底层接口。无需自建 Agent loop、工具执行沙箱，只需通过 API 定义 Agent、启动 Session，并配置 Environment、Skill 和 Session 文件，即可在云端运行复杂任务并实时接收结果。API 同时提供 Environment、Vault、Deployment、Assistant 和消息渠道等管理接口。
+为需要完整控制能力的开发者提供底层接口。无需自建 Agent loop、工具执行沙箱，只需通过 API 定义 Agent、启动 Session，并配置 RuntimeProfile、Skill 和 Session 文件，即可在云端运行复杂任务并实时接收结果。API 同时提供 RuntimeProfile、Vault、Deployment、Assistant 和消息渠道等管理接口。
 
 ## Web 控制台与 HTTP API 对比
 
@@ -32,5 +32,5 @@ Web 控制台和 HTTP API 覆盖从构建 Agent 到交付使用的完整路径�
 
 ## 下一步
 
-- [Web 控制台](quickstart.md)——Agents · Sessions · Deployments · Channels · Environments
-- [HTTP API](api.md)——Agents · Sessions · Deployments · Assistants · Environments
+- [Web 控制台](quickstart.md)——Agents · Sessions · Deployments · Channels · RuntimeProfiles
+- [HTTP API](api.md)——Agents · Sessions · Deployments · Assistants · RuntimeProfiles

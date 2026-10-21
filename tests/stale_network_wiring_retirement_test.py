@@ -19,10 +19,12 @@ from astrabox.seams.sandbox import (
     SANDBOX_INSTALLATION_METADATA_KEY,
     SANDBOX_MANAGED_BY_METADATA_KEY,
     SANDBOX_MANAGED_BY_METADATA_VALUE,
+    environment_name_metadata,
 )
 from tests.conftest import TEST_SANDBOX_INSTALLATION_ID
 
 _MANAGED = {
+    **environment_name_metadata("astrabox"),
     SANDBOX_MANAGED_BY_METADATA_KEY: SANDBOX_MANAGED_BY_METADATA_VALUE,
     SANDBOX_INSTALLATION_METADATA_KEY: TEST_SANDBOX_INSTALLATION_ID,
 }

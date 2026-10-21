@@ -5,7 +5,7 @@ import { createContext, useContext, useEffect, useState } from 'react';
  *
  * The shell derives the trail from the URL, which is right for every level
  * above the record: those segments are their names. The record segment is not.
- * `/manage/environments/claude-code` ends in something a reader recognises;
+ * `/manage/runtime-profiles/claude-code` ends in something a reader recognises;
  * `/manage/agents/229ba529-e307-427a-a502-7bb7098a6bd2` ends in a value that
  * tells them nothing about where they are — and a trail that does not orient
  * the reader is not doing the one job it has (docs/frontend-design.md §1).

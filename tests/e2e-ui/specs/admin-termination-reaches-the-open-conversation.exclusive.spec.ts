@@ -23,6 +23,20 @@ test('administrator termination reaches an idle open header and preserves readab
   const sandbox = await requireSandboxHandle(api, String(ready.sandbox_id));
   expect(sandboxRunning(sandbox)).toBe(true);
   if (sandbox.runtime !== 'kubernetes') throw new Error('The read-only allocation oracle requires the selected k3s testbed');
+  const kubeconfig = String(process.env.ASTRABOX_E2E_KUBECONFIG || '');
+  expect(kubeconfig, 'the selected worker must provide its native observation credentials').not.toBe('');
+  const kube = (args: string[]) => execFileSync('kubectl', ['--kubeconfig', kubeconfig, ...args], {
+    encoding: 'utf8', timeout: 15_000,
+  });
+  const pod = JSON.parse(kube(['get', 'pod', sandbox.pod, '-n', sandbox.namespace, '-o', 'json']));
+  const owner = pod.metadata.ownerReferences.find((ref: { kind: string; controller?: boolean }) =>
+    ref.kind === 'BatchSandbox' && ref.controller === true);
+  expect(owner?.apiVersion).toContain('/');
+  const collection = `/apis/${owner.apiVersion}/namespaces/${sandbox.namespace}/batchsandboxes`;
+  const inventory = JSON.parse(kube(['get', '--raw', collection]));
+  expect(inventory.metadata.resourceVersion).toBeTruthy();
+  expect(inventory.items.find((item: { metadata: { name: string } }) => item.metadata.name === owner.name)
+    ?.metadata.labels?.['astrabox.session-id'], 'the native allocation filter must identify this Session before termination').toBe(sid);
   const userText = `Synthetic history before termination ${sid}`;
   const replyText = `Saved reply ${sid}`;
   expect(await api.data('POST', `/admin/sessions/${sid}/history-import`, { messages: [
@@ -63,14 +77,6 @@ test('administrator termination reaches an idle open header and preserves readab
     await expect(page.getByTestId('assistant-message')).toContainText(replyText);
     await waitForSandboxStopped(sandbox, 30_000);
 
-    const kubeconfig = String(process.env.ASTRABOX_E2E_KUBECONFIG || '');
-    expect(kubeconfig, 'the selected worker must provide its native observation credentials').not.toBe('');
-    const kube = (args: string[]) => execFileSync('kubectl', ['--kubeconfig', kubeconfig, ...args], {
-      encoding: 'utf8', timeout: 15_000,
-    });
-    const inventory = JSON.parse(kube(['get', 'batchsandbox', '-n', sandbox.namespace, '-o', 'json']));
-    expect(inventory.apiVersion).toContain('/');
-    expect(inventory.metadata.resourceVersion).toBeTruthy();
     await page.reload({ waitUntil: 'domcontentloaded' });
     await expect(page.getByTestId('session-recover')).toBeVisible();
     await expect(page.getByText(userText, { exact: true })).toBeVisible();
@@ -78,7 +84,7 @@ test('administrator termination reaches an idle open header and preserves readab
     expect((await api.getMessages(sid)).messages).toEqual(before.messages);
     expect((await api.getSession(sid)).state).toBe('TERMINATED');
     expect(sandboxRunning(sandbox)).toBe(false);
-    const events = kube(['get', '--raw', `/apis/${inventory.apiVersion}/namespaces/${sandbox.namespace}/batchsandboxes`
+    const events = kube(['get', '--raw', collection
       + `?watch=1&resourceVersion=${inventory.metadata.resourceVersion}&timeoutSeconds=1`])
       .split('\n').filter(Boolean).map((line) => JSON.parse(line));
     expect(events.filter((event) => event.type === 'ERROR'), 'an unavailable native watch cannot prove read-only behavior').toEqual([]);

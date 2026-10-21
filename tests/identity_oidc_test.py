@@ -23,6 +23,11 @@ import astrabox.providers.identity_oidc as oidc
 from astrabox.common.utils.errors import APIError
 from astrabox.identity.session_signing import reset_session_signing_cache
 
+
+@pytest.fixture(autouse=True)
+def _environment_membership(environment_member_accounts: set[str]) -> None:
+    environment_member_accounts.update({'astrabox-admin-id'})
+
 _SESSION_SECRET = "unit-test-session-secret-0123456789abcdef"
 _REAL_ASYNC_CLIENT = httpx.AsyncClient
 
@@ -552,8 +557,8 @@ async def test_a_users_token_carries_the_users_role_not_the_scopes_it_asked_for(
         ([], "GET", "/api/v1/admin/system/overview", "ADMIN_ROLE_REQUIRED"),
         ([], "GET", "/api/v1/agents", "reached"),
         (["astrabox/astrabox-admin"], "GET", "/api/v1/admin/system/overview", "reached"),
-        ([], "DELETE", "/api/v1/admin/environments/research", "ADMIN_ROLE_REQUIRED"),
-        (["astrabox/astrabox-admin"], "DELETE", "/api/v1/admin/environments/research", "reached"),
+        ([], "DELETE", "/api/v1/admin/runtime-profiles/research", "ADMIN_ROLE_REQUIRED"),
+        (["astrabox/astrabox-admin"], "DELETE", "/api/v1/admin/runtime-profiles/research", "reached"),
     ],
     ids=[
         "member-admin-route", "member-own-route", "administrator-admin-route",

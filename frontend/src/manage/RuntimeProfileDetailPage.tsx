@@ -6,12 +6,12 @@ import { mutate } from 'swr';
 import i18n from '@/i18n';
 import {
   adminDescribeSandboxIdleAction,
-  deleteAdminEnvironment,
-  getEnvironmentSchema,
-  listAdminEnvironments,
-  upsertAdminEnvironment,
+  deleteAdminRuntimeProfile,
+  getRuntimeProfileSchema,
+  listAdminRuntimeProfiles,
+  upsertAdminRuntimeProfile,
 } from '@/api';
-import type { EnvironmentConfig, FormSchema } from '@/types';
+import type { RuntimeProfileConfig, FormSchema } from '@/types';
 
 import { ErrorNote } from '@/components/shell';
 import {
@@ -29,8 +29,8 @@ import {
   type EditFieldSpec,
   type EditSectionSpec,
 } from './console';
-import { envDisplayName, formatDateTime } from './environmentConfig';
-import { buildEnvEditSections } from './environmentEditConfig';
+import { runtimeProfileDisplayName, formatDateTime } from './runtimeProfileConfig';
+import { buildEnvEditSections } from './runtimeProfileEditConfig';
 import { useFrontendReleaseHold } from '@/hooks/useFrontendReleaseHold';
 import { MANAGE_NAV_COUNT_KEYS } from './navCounts';
 
@@ -38,7 +38,7 @@ import { MANAGE_NAV_COUNT_KEYS } from './navCounts';
 const draftRecordOf = (v: unknown) => (v ?? null) as Record<string, unknown> | null;
 
 /**
- * One Environment, on its own page.
+ * One RuntimeProfile, on its own page.
  *
  * The list hands the record over completely (docs/frontend-design.md §3): this
  * is a form, and a form wants its labels beside its controls and its controls
@@ -48,18 +48,18 @@ const draftRecordOf = (v: unknown) => (v ?? null) as Record<string, unknown> | n
  * Each schema group is a card that owns its own save (§4). Nothing here has a
  * view mode: the fields are the controls from the moment the page opens.
  */
-export default function EnvironmentDetailPage() {
+export default function RuntimeProfileDetailPage() {
   const { name = '' } = useParams();
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [deleting, setDeleting] = useState(false);
 
-  const [record, setRecord] = useState<EnvironmentConfig | null>(null);
+  const [record, setRecord] = useState<RuntimeProfileConfig | null>(null);
   const [schema, setSchema] = useState<FormSchema | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  const [draft, setDraft] = useState<EnvironmentConfig | null>(null);
+  const [draft, setDraft] = useState<RuntimeProfileConfig | null>(null);
   const [savingSection, setSavingSection] = useState<number | null>(null);
   const [savedSection, setSavedSection] = useState<number | null>(null);
   const [saveError, setSaveError] = useState('');
@@ -67,7 +67,7 @@ export default function EnvironmentDetailPage() {
   const [invalidKeys, setInvalidKeys] = useState<Set<string>>(new Set());
   const savedTimer = useRef<number | null>(null);
 
-  useRecordCrumb(record ? envDisplayName(record) : t('common:environment'));
+  useRecordCrumb(record ? runtimeProfileDisplayName(record) : t('common:runtime_profile'));
 
   const [idleActions, setIdleActions] = useState<string[] | null>(null);
 
@@ -75,13 +75,13 @@ export default function EnvironmentDetailPage() {
     setLoading(true);
     try {
       const [list, sch] = await Promise.all([
-        listAdminEnvironments(),
-        getEnvironmentSchema().catch(() => null),
+        listAdminRuntimeProfiles(),
+        getRuntimeProfileSchema().catch(() => null),
       ]);
       const found = list.find((e) => e.name === name) ?? null;
       setRecord(found);
       setSchema(sch);
-      setError(found ? '' : t('manage:environments.not_found', { name }));
+      setError(found ? '' : t('manage:runtime_profiles.not_found', { name }));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -154,8 +154,8 @@ export default function EnvironmentDetailPage() {
             ? acc
             : f.set(acc, f.get(draft as unknown as Record<string, unknown>)),
         { ...record } as Record<string, unknown>,
-      ) as EnvironmentConfig;
-      const saved = await upsertAdminEnvironment(record.name, { ...payload, name: record.name });
+      ) as RuntimeProfileConfig;
+      const saved = await upsertAdminRuntimeProfile(record.name, { ...payload, name: record.name });
       await load();
       setDraft((current) => {
         if (!current) return current;
@@ -163,7 +163,7 @@ export default function EnvironmentDetailPage() {
           fields,
           draftRecordOf(current)!,
           draftRecordOf(saved)!,
-        ) as unknown as EnvironmentConfig;
+        ) as unknown as RuntimeProfileConfig;
       });
       setSavedSection(index);
       if (savedTimer.current) window.clearTimeout(savedTimer.current);
@@ -182,13 +182,13 @@ export default function EnvironmentDetailPage() {
         fields,
         draftRecordOf(draft)!,
         draftRecordOf(record)!,
-      ) as unknown as EnvironmentConfig,
+      ) as unknown as RuntimeProfileConfig,
     );
   };
 
   if (loading && !record) {
     return (
-      <ConsoleRecordPage title={t('common:environment')}>
+      <ConsoleRecordPage title={t('common:runtime_profile')}>
         <ConsoleRecordLoading />
       </ConsoleRecordPage>
     );
@@ -196,9 +196,9 @@ export default function EnvironmentDetailPage() {
 
   if (!record) {
     return (
-      <ConsoleRecordPage title={t('common:environment')}>
+      <ConsoleRecordPage title={t('common:runtime_profile')}>
         <ConsoleErrorState
-          title={t('manage:environments.error_title')}
+          title={t('manage:runtime_profiles.error_title')}
           detail={error}
           onRetry={() => void load()}
         />
@@ -209,11 +209,11 @@ export default function EnvironmentDetailPage() {
   const draftRecord = draft as unknown as Record<string, unknown> | undefined;
   return (
     <ConsoleRecordPage
-      title={envDisplayName(record)}
+      title={runtimeProfileDisplayName(record)}
       lede={String(record.description || '') || undefined}
       status={
         record.engine_available === false
-          ? { tone: 'failed', label: t('manage:environments.engine_missing') }
+          ? { tone: 'failed', label: t('manage:runtime_profiles.engine_missing') }
           : record.enabled !== false
             ? { tone: 'done', label: t('common:enabled') }
             : { tone: 'idle', label: t('common:disabled') }
@@ -222,16 +222,16 @@ export default function EnvironmentDetailPage() {
         <ConsoleDangerButton
           disabled={deleting || savingSection !== null}
           confirm={{
-            title: t('manage:environments.confirm_delete', { name: envDisplayName(record) }),
+            title: t('manage:runtime_profiles.confirm_delete', { name: runtimeProfileDisplayName(record) }),
             action: <span data-testid="environment-delete">{t('common:confirm_delete')}</span>,
             onConfirm: () => {
               setDeleting(true);
               setSaveErrorSection(null);
               setSaveError('');
-              void deleteAdminEnvironment(record.name)
+              void deleteAdminRuntimeProfile(record.name)
                 .then(() => {
-                  void mutate(MANAGE_NAV_COUNT_KEYS.environments);
-                  navigate('/manage/environments');
+                  void mutate(MANAGE_NAV_COUNT_KEYS.runtime_profiles);
+                  navigate('/manage/runtime-profiles');
                 })
                 .catch((e: Error) => setSaveError(e.message))
                 .finally(() => setDeleting(false));
@@ -254,7 +254,7 @@ export default function EnvironmentDetailPage() {
       <ConsoleEditSections
         sections={sections}
         draft={draftRecord ?? {}}
-        onDraftChange={(d) => setDraft(d as unknown as EnvironmentConfig)}
+        onDraftChange={(d) => setDraft(d as unknown as RuntimeProfileConfig)}
         idPrefix="environment"
         invalidKeys={invalidKeys}
         onInvalidChange={(key, invalid) =>
@@ -267,9 +267,9 @@ export default function EnvironmentDetailPage() {
         }
         cardProps={(section, index) => ({
           intro: schema?.groups[index]?.id
-            ? i18n.t(`manage:env_form.groups.${schema.groups[index].id}.description`, { defaultValue: '' })
+            ? i18n.t(`manage:runtime_profile_form.groups.${schema.groups[index].id}.description`, { defaultValue: '' })
             : undefined,
-          note: t('manage:environments.card_note'),
+          note: t('manage:runtime_profiles.card_note'),
           dirty: isDirty(section.fields),
           blocked:
             deleting || section.fields.some((f) => invalidKeys.has(f.key)) || missingRequired.length > 0,

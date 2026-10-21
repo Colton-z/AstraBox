@@ -20,7 +20,7 @@ const ENGLISH: Array<[string, string]> = [
     "Conversations started from an Agent. Open a Session to review its messages, current status, sandbox, and technical events.",
   ],
   [
-    "/manage/environments",
+    "/manage/runtime-profiles",
     "Configure the Agent program, sandbox image, model connection, and network access used by Sessions.",
   ],
   [
@@ -52,7 +52,7 @@ const CHINESE: Array<[string, string]> = [
     "查看由 Agent 发起的会话。打开 Session 可查看消息、当前状态、沙箱和技术事件。",
   ],
   [
-    "/manage/environments",
+    "/manage/runtime-profiles",
     "配置 Session 使用的 Agent 程序、沙箱镜像、模型连接和网络访问。",
   ],
   [
@@ -152,7 +152,7 @@ test.describe("management copy", () => {
     await expect(page.getByRole("button", { name: "Pause workspace", exact: true })).toBeVisible();
   });
 
-  test("Agent form separates Environment settings from Credential Vaults", async ({ page }) => {
+  test("Agent form separates RuntimeProfile settings from Credential Vaults", async ({ page }) => {
     await stubApi(page);
 
     await page.goto("/manage/agents/new", { waitUntil: "domcontentloaded" });
@@ -173,13 +173,13 @@ test.describe("management copy", () => {
     )).toBeVisible();
   });
 
-  test("Assistant form separates Environment settings from Credential Vaults", async ({ page }) => {
+  test("Assistant form separates RuntimeProfile settings from Credential Vaults", async ({ page }) => {
     await stubApi(page);
 
     await page.goto("/manage/assistants/new", { waitUntil: "domcontentloaded" });
     await settle(page);
     await expect(page.getByText(
-      "Select the Environment used by this Assistant. It supplies the Assistant runtime, sandbox settings, and model connection. Credential Vaults are assigned separately.",
+      "Select the RuntimeProfile used by this Assistant. It supplies the Assistant runtime, sandbox settings, and model connection. Credential Vaults are assigned separately.",
       { exact: true },
     )).toBeVisible();
 
@@ -187,7 +187,7 @@ test.describe("management copy", () => {
     await page.reload({ waitUntil: "domcontentloaded" });
     await settle(page);
     await expect(page.getByText(
-      "选择 Assistant 使用的 Environment（运行环境）。它提供 Assistant 运行程序、沙箱设置和模型连接。Credential Vault（凭证库）需要另行分配。",
+      "选择 Assistant 使用的 RuntimeProfile（运行环境）。它提供 Assistant 运行程序、沙箱设置和模型连接。Credential Vault（凭证库）需要另行分配。",
       { exact: true },
     )).toBeVisible();
   });
@@ -195,14 +195,14 @@ test.describe("management copy", () => {
   test("sandbox sharing explains the security consequence directly", async ({ page }) => {
     await stubApi(page);
 
-    await page.goto("/manage/environments/new", { waitUntil: "domcontentloaded" });
+    await page.goto("/manage/runtime-profiles/new", { waitUntil: "domcontentloaded" });
     await settle(page);
     await expect(page.getByText(
       "Shared mode does not safely isolate conversations belonging to users who do not trust one another.",
       { exact: false },
     )).toBeVisible();
     await expect(page.getByText(
-      "Choose the service that creates and manages this Environment's sandboxes.",
+      "Choose the service that creates and manages this RuntimeProfile's sandboxes.",
       { exact: false },
     )).toBeVisible();
     await expect(page.getByText(
@@ -221,7 +221,7 @@ test.describe("management copy", () => {
       { exact: false },
     )).toBeVisible();
     await expect(page.getByText(
-      "选择负责创建和管理此 Environment 沙箱的服务。",
+      "选择负责创建和管理此 RuntimeProfile 沙箱的服务。",
       { exact: false },
     )).toBeVisible();
     await expect(page.getByText(

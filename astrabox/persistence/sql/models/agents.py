@@ -42,25 +42,26 @@ class Agent(Base):
     ``state`` is ``ACTIVE``, ``DELETING`` while a deletion runs, or ``DELETED``:
     a deleted Agent is kept for the conversations that still name it and is
     hidden from every other read. A live Agent always names an existing
-    Environment; deleting an Environment clears the name on Agents already
-    deleted, and the ``live_environment`` check refuses it for any other.
+    RuntimeProfile; deleting a RuntimeProfile clears the name on Agents already
+    deleted, and the ``live_runtime_profile`` check refuses it for any other.
     """
 
     __tablename__ = "agents"
     __table_args__ = (
         CheckConstraint("state IN ('ACTIVE', 'DELETING', 'DELETED')", name="state"),
         CheckConstraint(
-            "state = 'DELETED' OR environment_name IS NOT NULL", name="live_environment"
+            "state = 'DELETED' OR runtime_profile_name IS NOT NULL", name="live_runtime_profile"
         ),
         CheckConstraint("prepared_capacity BETWEEN 0 AND 1000", name="prepared_capacity"),
+        CheckConstraint("a2a_access IN ('disabled', 'all', 'selected')", name="a2a_access"),
         CheckConstraint(
             "visibility IN ('public', 'private', 'allowlist')", name="visibility"
         ),
         Index(None, "name_key", "agent_id", postgresql_where=_LIVE),
         Index(None, "updated_at", "agent_id", postgresql_where=_LIVE),
-        # Environment deletion's reference check and the Environment's
+        # RuntimeProfile deletion's reference check and the RuntimeProfile's
         # reconciliation pages.
-        Index(None, "environment_name", "agent_id"),
+        Index(None, "runtime_profile_name", "agent_id"),
         # The prepared-capacity sweep's pages.
         Index(
             "ix_agents_prepared_capacity_sweep",
@@ -70,6 +71,7 @@ class Agent(Base):
         *boolean_checks("artifacts_enabled", "terminal_panel", "diff_panel", "enabled"),
         string_list_check("tags"),
         string_list_check("use_cases"),
+        string_list_check("a2a_agent_ids"),
         string_list_check("admins"),
         string_list_check("allowed_user_ids"),
         string_list_check("catalog_skill_ids"),
@@ -88,9 +90,13 @@ class Agent(Base):
     use_cases: Mapped[list[str]] = mapped_column(StringList(), server_default=EmptyListDefault(text_array=True))
     model: Mapped[str] = mapped_column(payload_text())
     system: Mapped[str | None] = mapped_column(payload_text())
-    #: Interpreted only by the Environment's engine adapter.
+    #: Interpreted only by the RuntimeProfile's engine adapter.
     engine_options: Mapped[dict[str, Any] | None] = mapped_column(payload_json())
     artifacts_enabled: Mapped[bool] = mapped_column(server_default=true())
+    a2a_access: Mapped[str] = mapped_column(payload_text(), server_default=TextDefault("disabled"))
+    a2a_agent_ids: Mapped[list[str]] = mapped_column(
+        StringList(), server_default=EmptyListDefault(text_array=True),
+    )
     #: Skill sources, materialized by the runtime as given.
     skills: Mapped[list[Any]] = mapped_column(server_default=EmptyListDefault())
     #: Name-keyed MCP server definitions handed to the engine.
@@ -104,9 +110,9 @@ class Agent(Base):
     idle_hibernate_seconds: Mapped[int | None] = mapped_column(Integer)
     prepared_capacity: Mapped[int] = mapped_column(Integer, server_default="0")
     enabled: Mapped[bool] = mapped_column(server_default=true())
-    environment_name: Mapped[str | None] = mapped_column(
+    runtime_profile_name: Mapped[str | None] = mapped_column(
         KeyText(512), ForeignKey(
-            "environments.name", ondelete="SET NULL", info={"mysql_restrict_environment": True},
+            "runtime_profiles.name", ondelete="SET NULL", info={"mysql_restrict_runtime_profile": True},
         ),
     )
     visibility: Mapped[str] = mapped_column(payload_text(), server_default=TextDefault("private"))
@@ -228,7 +234,7 @@ class AgentConnectorServer(Base):
 
 
 class AgentRuntime(Base):
-    """The runtime record of one Agent, created with it.
+    """The runtime record of one Agent in one Environment.
 
     What the runtime keeps per Agent rather than per box or per slot: its
     resident shared box, the runtime generation its prepared capacity follows,
@@ -236,7 +242,7 @@ class AgentRuntime(Base):
     from and the durable workspace its shared boxes mount.
 
     Every write that changes the Agent's prepared slots or admits a
-    conversation locks this row first, so those writers serialize per Agent
+    conversation locks this row first. Those writers serialize per Agent and target
     without deadlocking each other. ``slots_revision`` moves with every change
     to the slots and ``admissions_revision`` with every new admission; a writer
     whose decision rests on what it read names the revision it read. Releasing
@@ -269,7 +275,10 @@ class AgentRuntime(Base):
     agent_id: Mapped[str] = mapped_column(
         KeyText(128), ForeignKey("agents.agent_id", ondelete="CASCADE"), primary_key=True
     )
-    #: The resident shared box new conversations of the Agent join.
+    environment_name: Mapped[str] = mapped_column(
+        KeyText(128), primary_key=True
+    )
+    #: The resident shared box new conversations of this Agent and target join.
     sandbox_id: Mapped[str | None] = mapped_column(KeyText(128))
     sandbox_backend: Mapped[str | None] = mapped_column(payload_text())
     #: The box generation the resident box was created for.
@@ -308,7 +317,7 @@ class AgentRuntime(Base):
 
 
 class AgentPreparedSlot(Base):
-    """One engine seat prepared in a shared box of the Agent, waiting for a conversation.
+    """One engine seat prepared in a box of this Agent and Environment.
 
     A seat is ``prepared`` until a conversation claims it (``claimed``) or it
     is withdrawn (``retiring``) until its placement is closed. ``manifest``
@@ -324,6 +333,9 @@ class AgentPreparedSlot(Base):
     )
 
     slot_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
+    environment_name: Mapped[str] = mapped_column(
+        KeyText(128), primary_key=True
+    )
     agent_id: Mapped[str] = mapped_column(
         KeyText(128), ForeignKey("agents.agent_id", ondelete="CASCADE")
     )
@@ -341,7 +353,7 @@ class AgentPreparedSlot(Base):
 
 
 class AgentBoxAdmission(Base):
-    """A conversation admitted to one of the Agent's boxes, counted against its memory.
+    """A conversation admitted to a box of this Agent and Environment.
 
     The box's own memory reading does not cover a conversation for a while
     after it is admitted; until then the admission reserves its growth.
@@ -356,13 +368,16 @@ class AgentBoxAdmission(Base):
     agent_id: Mapped[str] = mapped_column(
         KeyText(128), ForeignKey("agents.agent_id", ondelete="CASCADE"), primary_key=True
     )
+    environment_name: Mapped[str] = mapped_column(
+        KeyText(128), primary_key=True
+    )
     sandbox_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
     session_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
     admitted_at: Mapped[datetime]
 
 
 class AgentRetiringClientPool(Base):
-    """A client pool of the Agent that a newer one displaced, until it is retired."""
+    """A displaced client pool, kept under its Agent and Environment until retired."""
 
     __tablename__ = "agent_retiring_client_pools"
     __table_args__ = (
@@ -372,6 +387,9 @@ class AgentRetiringClientPool(Base):
     agent_id: Mapped[str] = mapped_column(
         KeyText(128), ForeignKey("agents.agent_id", ondelete="CASCADE"), primary_key=True
     )
+    environment_name: Mapped[str] = mapped_column(
+        KeyText(128), primary_key=True
+    )
     pool_name: Mapped[str] = mapped_column(KeyText(512), primary_key=True)
     backend: Mapped[str] = mapped_column(payload_text())
     recorded_at: Mapped[datetime] = mapped_column(server_default=func.now())
@@ -380,7 +398,8 @@ class AgentRetiringClientPool(Base):
 class AgentSlotGatewayEntry(Base):
     """Which Session owns the model gateway key a claimed prepared slot spends.
 
-    Kept until the Session ends; removing the entry is what releases the key,
+    Bound to the slot's Environment and kept until the Session ends;
+    removing it releases the key,
     through the endpoint provider that issued it.
     """
 
@@ -392,6 +411,9 @@ class AgentSlotGatewayEntry(Base):
     agent_id: Mapped[str] = mapped_column(
         KeyText(128), ForeignKey("agents.agent_id", ondelete="CASCADE"), primary_key=True
     )
+    environment_name: Mapped[str] = mapped_column(
+        KeyText(128), primary_key=True
+    )
     slot_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
     session_id: Mapped[str] = mapped_column(payload_text())
     #: The model endpoint provider that issued the key; empty for the default one.
@@ -400,7 +422,7 @@ class AgentSlotGatewayEntry(Base):
 
 
 class AgentUndestroyedSandbox(Base):
-    """A sandbox of the Agent whose destruction could not be confirmed.
+    """A sandbox of this Agent and target whose destruction could not be confirmed.
 
     Its name stays here, where it can still be addressed, until something
     confirms the box is gone.
@@ -413,6 +435,9 @@ class AgentUndestroyedSandbox(Base):
 
     agent_id: Mapped[str] = mapped_column(
         KeyText(128), ForeignKey("agents.agent_id", ondelete="CASCADE"), primary_key=True
+    )
+    environment_name: Mapped[str] = mapped_column(
+        KeyText(128), primary_key=True
     )
     sandbox_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
     recorded_at: Mapped[datetime] = mapped_column(server_default=func.now())

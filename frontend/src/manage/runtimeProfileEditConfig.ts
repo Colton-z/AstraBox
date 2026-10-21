@@ -22,7 +22,7 @@ function editType(field: FormFieldSchema): EditFieldType {
     case 'integer':
       return 'number';
     case 'enum':
-    case 'env_ref':
+    case 'runtime_profile_ref':
       return 'select';
     case 'string_list':
       return 'list';
@@ -77,7 +77,7 @@ function accessors(field: FormFieldSchema): Pick<EditFieldSpec, 'get' | 'set'> {
  * sandbox per conversation" / "one sandbox per agent" on screen.
  */
 function optionLabel(key: string, value: string): string {
-  const path = `manage:env_form.fields.${key}.options.${value}`;
+  const path = `manage:runtime_profile_form.fields.${key}.options.${value}`;
   return i18n.exists(path) ? i18n.t(path) : value;
 }
 
@@ -85,24 +85,24 @@ function toFieldSpec(field: FormFieldSchema, opts: { nameEditable: boolean }): E
   const type = editType(field);
   return {
     key: field.key,
-    label: i18n.t(`manage:env_form.fields.${field.key}.label`),
+    label: i18n.t(`manage:runtime_profile_form.fields.${field.key}.label`),
     type,
     ...accessors(field),
     // `name` is the identity key: editable only while creating; locked in edit.
     editable: field.key === 'name' ? opts.nameEditable : true,
     required: field.required,
     idTag: field.key,
-    help: i18n.exists(`manage:env_form.fields.${field.key}.help`)
-      ? i18n.t(`manage:env_form.fields.${field.key}.help`)
+    help: i18n.exists(`manage:runtime_profile_form.fields.${field.key}.help`)
+      ? i18n.t(`manage:runtime_profile_form.fields.${field.key}.help`)
       : undefined,
     options: field.enum?.map((v) => ({ value: v, label: optionLabel(field.key, v) })),
     placeholder:
       field.type === 'enum'
-        ? i18n.t('manage:env_form.select_placeholder')
+        ? i18n.t('manage:runtime_profile_form.select_placeholder')
         : type === 'json'
           ? '{ }'
           : field.key === 'name'
-            ? i18n.t('manage:env_form.name_placeholder')
+            ? i18n.t('manage:runtime_profile_form.name_placeholder')
             : undefined,
     rows: field.type === 'text' ? 3 : type === 'json' ? 5 : undefined,
   };
@@ -114,7 +114,7 @@ function toFieldSpec(field: FormFieldSchema, opts: { nameEditable: boolean }): E
  *
  * `networking` qualifies because its sub-fields are a closed set
  * of product-level scalars. Handing it over as raw JSON would expose a
- * substrate-shaped escape hatch instead of the Environment choices they are.
+ * substrate-shaped escape hatch instead of the RuntimeProfile choices they are.
  *
  * `provider_access` does not qualify: it carries `api_key`, which read views
  * mask. Inlining it would put a masked value in a text input, and saving the
@@ -168,7 +168,7 @@ export function buildEnvEditSections(
   const idleActions = opts.idleActions?.length ? opts.idleActions : null;
   const sections = schema.groups
     .map((group) => ({
-      label: i18n.t(`manage:env_form.groups.${group.id}.label`),
+      label: i18n.t(`manage:runtime_profile_form.groups.${group.id}.label`),
       fields: schema.fields
         .filter((f) => f.group === group.id)
         .flatMap((f) => expandField(f, opts))

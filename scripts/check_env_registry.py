@@ -542,13 +542,13 @@ def evaluate() -> list[tuple[str, list[str]]]:
         "listed in _ALLOWED_UNRESOLVED and not an unresolved read. Update the list",
         [f"{module}:{line}" for module, line in sorted(_ALLOWED_UNRESOLVED - scanned.unresolved)],
     )
-    environments = _compose_server_environments()
-    for compose_file, environment in environments.items():
+    runtime_profiles = _compose_server_environments()
+    for compose_file, environment in runtime_profiles.items():
         report(
             f"forwarded to the server by containers/{compose_file} with no registry row",
             sorted(set(environment) - registered),
         )
-    base = environments.get("compose.yaml", {})
+    base = runtime_profiles.get("compose.yaml", {})
     report(
         "not forwarded by containers/compose.yaml with the setting's own default",
         [

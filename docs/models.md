@@ -159,9 +159,9 @@ calling required by the selected Agent program.
 ## Choose the model on an Agent
 
 Open **Management console → Agents** and create or edit an Agent. Select an
-**Environment** first. The Environment determines which Agent program runs and
+**RuntimeProfile** first. The RuntimeProfile determines which Agent program runs and
 which sandbox settings, network access, and model connection it uses. The model
-field then searches that Environment's model connection; select a result or
+field then searches that RuntimeProfile's model connection; select a result or
 enter the exact route name.
 
 The four parts have separate responsibilities:
@@ -169,16 +169,16 @@ The four parts have separate responsibilities:
 | Part | Responsibility |
 |---|---|
 | Agent | Stores the selected model or route name |
-| Environment | Selects the Agent program and model connection used when AstraBox prepares the runtime |
+| RuntimeProfile | Selects the Agent program and model connection used when AstraBox prepares the runtime |
 | Agent program | Formats the request in its native model protocol |
 | LiteLLM | Maps the route to an upstream model and applies gateway routing, budgets, logging, and failover |
 
 With the built-in LiteLLM connection, deployment settings choose the inference
-gateway. Connection details stored on an Environment are also used when the
-console queries that Environment's model list. If the gateway returns no model
+gateway. Connection details stored on a RuntimeProfile are also used when the
+console queries that RuntimeProfile's model list. If the gateway returns no model
 list, the model field still accepts an exact route name.
 
-Changing the Agent's model or its Environment does not reconfigure an active
+Changing the Agent's model or its RuntimeProfile does not reconfigure an active
 runtime in place. AstraBox resolves the current settings the next time it first
 prepares or rebuilds that Session runtime.
 
@@ -187,7 +187,7 @@ prepares or rebuilds that Session runtime.
 The bundled gateway holds upstream model-service keys. With protected
 credential delivery enabled, the Agent program receives a placeholder gateway
 credential, and the sandbox service adds the real value only to matching model
-requests. The Agent stores no model key, and the Environment editor returns only
+requests. The Agent stores no model key, and the RuntimeProfile editor returns only
 a mask for a saved value.
 
 See [Protect credentials used by Agents](egress-credential-injection.md) for the
@@ -241,7 +241,7 @@ services:
       ASTRABOX_TITLE_MODEL_REQUEST_TIMEOUT_SECONDS: "60"
 ```
 
-Environment values override application YAML. Restart the application after
+RuntimeProfile values override application YAML. Restart the application after
 changing application YAML, or recreate the server container after changing
 Compose environment values. The timeout must be positive and finite; invalid
 values fail settings validation.
@@ -259,11 +259,11 @@ Before making an Agent available:
 - run a normal response and a tool or MCP call;
 - check the errors produced by an invalid key, rate limit, and timeout;
 - confirm usage and cost attribution in LiteLLM; and
-- verify that the Environment's network rules admit the gateway address.
+- verify that the RuntimeProfile's network rules admit the gateway address.
 
 ## Related guides
 
 - [Define an Agent](authoring-agents.md)
-- [Environments](environments.md)
+- [RuntimeProfiles](runtime-profiles.md)
 - [Deploy AstraBox](deploy.md)
 - [Protect credentials used by Agents](egress-credential-injection.md)

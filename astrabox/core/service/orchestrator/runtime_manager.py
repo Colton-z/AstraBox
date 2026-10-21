@@ -23,6 +23,7 @@ from typing import Any
 from astrabox.core.service.orchestrator.session_lifecycle.ownership import current_recovery
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
+from astrabox.core.service.orchestrator.runtime.environment_ownership import require_environment_ownership
 from astrabox.common.utils.settings import load_astrabox_settings
 from astrabox.common.utils.time_utils import parse_iso, utcnow_iso
 from astrabox.core.model import AgentView, SessionState
@@ -225,22 +226,26 @@ def _sandbox_control_deadline_s() -> float:
     return value if value > 0 else 30.0
 
 
-async def _this_installations_boxes() -> dict[str, str]:
-    """The create metadata every box this installation made carries.
+async def _this_environment_names_boxes() -> dict[str, str]:
+    """The create metadata authorizing this target to maintain a physical box.
 
     A path that finds boxes by listing the backend, rather than through a row
     in this installation's database, lists by these pairs and checks them again
-    on each box before acting (:func:`_is_this_installations_box`): another
-    installation sharing the Docker daemon or Kubernetes namespace keeps its
-    boxes' owners, leases and addresses in its own database.
+    on each box before acting (:func:`_is_this_targets_box`). Other targets
+    can share this database and backend while using different callbacks, so
+    installation identity alone does not authorize maintenance.
     """
+    from astrabox.config.settings import get_settings
+    from astrabox.seams.sandbox import environment_name_metadata
+
     return {
         SANDBOX_MANAGED_BY_METADATA_KEY: SANDBOX_MANAGED_BY_METADATA_VALUE,
         SANDBOX_INSTALLATION_METADATA_KEY: await sandbox_installation_id(),
+        **environment_name_metadata(get_settings().environment_name),
     }
 
 
-def _is_this_installations_box(descriptor: Any, ownership: dict[str, str]) -> bool:
+def _is_this_targets_box(descriptor: Any, ownership: dict[str, str]) -> bool:
     metadata = getattr(descriptor, "metadata", None) or {}
     return all(metadata.get(key) == value for key, value in ownership.items())
 
@@ -2482,9 +2487,10 @@ class RemoteAgentRuntimeManager:
         preparation still owns is left to it; the provider refuses a stale
         member when it is acquired.
 
-        Only this installation's boxes are read. Another installation sharing
-        the control plane has its own sandbox edges, so every box it made
-        records wiring that differs from this installation's, and is working.
+        Only this Environment's boxes are read. Other targets in the same
+        installation can have different callbacks and sandbox edges while
+        their boxes remain valid. Unlabelled boxes are outside this census;
+        their persisted owners still drive ordinary lifecycle maintenance.
         """
 
         summary = {
@@ -2495,7 +2501,7 @@ class RemoteAgentRuntimeManager:
         stale: list[str] = []
         page_number = 1
         try:
-            ownership = await _this_installations_boxes()
+            ownership = await _this_environment_names_boxes()
             provider = sandbox_for_name(backend)
         except Exception:
             logger.exception(
@@ -2523,7 +2529,7 @@ class RemoteAgentRuntimeManager:
                     continue
                 summary["stale_wiring_scanned"] += 1
                 if (
-                    not _is_this_installations_box(descriptor, ownership)
+                    not _is_this_targets_box(descriptor, ownership)
                     or provider.owns_unclaimed_sandbox(descriptor)
                     or provider.created_with_current_network_wiring(descriptor)
                 ):
@@ -2573,11 +2579,10 @@ class RemoteAgentRuntimeManager:
         four-hour lease. The grace keeps a box that was created moments ago
         for a session still writing its rows.
 
-        "No row names it" is a judgement only this installation's database can
-        make about this installation's boxes. Another installation sharing the
-        control plane has its own database, so its boxes are never candidates:
-        the inventory is listed by this installation's id and every box is
-        checked for it again before anything is destroyed.
+        "No row names it" requires both installation and environment
+        ownership. Another target can be creating a box whose binding is not
+        published yet. Inventory is filtered by both create-time facts and
+        checked again before any box is destroyed.
 
         The whole inventory is read, every page, before any box is given back.
         The control plane lists newest first, so one page would hold the same
@@ -2600,7 +2605,7 @@ class RemoteAgentRuntimeManager:
         }
         inventory: list[Any] = []
         try:
-            ownership = await _this_installations_boxes()
+            ownership = await _this_environment_names_boxes()
             provider = sandbox_for_name(backend)
             page_number = 1
             while True:
@@ -2624,7 +2629,7 @@ class RemoteAgentRuntimeManager:
             summary["ownerless_scanned"] += 1
             try:
                 if (
-                    not _is_this_installations_box(descriptor, ownership)
+                    not _is_this_targets_box(descriptor, ownership)
                     or provider.owns_unclaimed_sandbox(descriptor)
                 ):
                     summary["ownerless_kept"] += 1
@@ -3661,11 +3666,14 @@ class RemoteAgentRuntimeManager:
                     status_code=502,
                     debug_message="assistant runtime authority is unavailable",
                 )
+            require_environment_ownership(row)
             # The workspace records which box it runs in, not the backend that
             # holds it: the Session that builds or attaches the box carries the
             # persisted backend selected at its admission. No template or
             # request value participates.
             session = await SessionRepository().get_session(session_id)
+            if isinstance(session, dict):
+                require_environment_ownership(session)
             backend = str((session or {}).get("sandbox_backend") or "").strip().lower()
             if not backend:
                 raise APIError(
@@ -3684,6 +3692,7 @@ class RemoteAgentRuntimeManager:
                 status_code=502,
                 debug_message="session runtime authority is unavailable",
             )
+        require_environment_ownership(row)
         backend = str(row.get("sandbox_backend") or "").strip().lower()
         if not backend:
             raise APIError(

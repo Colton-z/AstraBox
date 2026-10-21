@@ -605,6 +605,13 @@ async def attach_platform_runtime(
         vault_enabled=vault_enabled,
     )
     credential_slot_id = str(identity.get("credential_slot_id") or "").strip()
+    from astrabox.seams.runtime_preparation import runtime_preparation_plan
+
+    if identity.get("model_credential_id") and runtime_preparation_plan(template).model_credential_delivery != "provider":
+        raise APIError(
+            code="RUNTIME_PREPARATION_FAILED", status_code=409,
+            message="Model delivery ownership no longer matches this initialized runtime",
+        )
     credential, network_policy, vault_write = resolve_model_credential_delivery(
         template=template,
         backend_adapter=backend_adapter,
@@ -613,6 +620,7 @@ async def attach_platform_runtime(
         required_hosts=tuple(request.required_network_hosts),
         mcp_hosts=tuple(sandbox_mcp_egress_hosts(getattr(template, "mcp_servers", None))),
         slot_id=credential_slot_id or None,
+        workload_id=str(identity.get("model_credential_id") or "").strip() or None,
     )
     vault_write, runtime_env = await resolve_session_environment_credentials(
         platform,

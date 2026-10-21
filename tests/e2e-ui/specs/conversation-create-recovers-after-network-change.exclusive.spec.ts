@@ -25,13 +25,13 @@ test('Agent conversation create survives a lost response without creating a dupl
 }) => {
   const api = new AstraApi(request);
   const base = await api.defaultAgent();
-  const environmentName = String(base.environment_name || '').trim();
-  const models = await api.listEnvironmentModels(environmentName);
+  const runtimeProfileName = String(base.runtime_profile_name || '').trim();
+  const models = await api.listEnvironmentModels(runtimeProfileName);
   const name = `__e2e_idempotent_create_${Date.now()}`;
   const agent = await api.createAgent({
     name,
     model: models.find((model) => model && !model.includes('*')) || 'deepseek-chat',
-    environment_name: environmentName,
+    runtime_profile_name: runtimeProfileName,
     prepared_capacity: 0,
   });
   retainedAgentId = String(agent.agent_id || '');

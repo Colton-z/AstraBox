@@ -98,14 +98,14 @@ const THROTTLE_MARGIN_MS = 1_000;
 // interrupted result keeps it so the scene stays readable — the same rule, in
 // its general form (fixtures/sessionCleanup.ts).
 let agentId = '';
-let environmentName = '';
+let runtimeProfileName = '';
 let environment: Record<string, unknown> = {};
 onPassOnly(async ({ request }) => {
   const api = new AstraApi(request);
   if (agentId) await api.deleteAgent(agentId);
-  if (environmentName) await api.data('DELETE', `/admin/environments/${environmentName}`);
+  if (runtimeProfileName) await api.data('DELETE', `/admin/runtime-profiles/${runtimeProfileName}`);
   agentId = '';
-  environmentName = '';
+  runtimeProfileName = '';
 });
 
 /** Send the picker's tab to the background, observably. */
@@ -190,8 +190,8 @@ test('the open agent picker shows an agent created elsewhere and drops one delet
   const seeded = await api.defaultAgent();
   const seededName = String(seeded.name || '').trim();
   expect(seededName, 'the seeded default Agent must have a name').not.toEqual('');
-  const donorName = String(seeded.environment_name || '').trim();
-  expect(donorName, 'the seeded default Agent must name an Environment').not.toEqual('');
+  const donorName = String(seeded.runtime_profile_name || '').trim();
+  expect(donorName, 'the seeded default Agent must name a RuntimeProfile').not.toEqual('');
   const models = await api.listEnvironmentModels(donorName);
   const model = models.find((item) => item && !item.includes('*'));
   expect(model, `${donorName} must expose a concrete model`).toBeTruthy();
@@ -199,13 +199,13 @@ test('the open agent picker shows an agent created elsewhere and drops one delet
   const donor = (await platform.listEnvironments()).find((row) => row.name === donorName);
   expect(donor).toBeTruthy();
   const fields = new Set((await platform.environmentSchema()).fields!.map((field) => String(field.key)));
-  environmentName = `__e2e_picker_env_${Date.now()}`;
+  runtimeProfileName = `__e2e_picker_env_${Date.now()}`;
   environment = {
     ...Object.fromEntries(Object.entries(donor!).filter(([key]) => fields.has(key))),
-    name: environmentName, display_name: environmentName, enabled: true,
+    name: runtimeProfileName, display_name: runtimeProfileName, enabled: true,
     provider_access: {}, tracing: null,
   };
-  await platform.putEnvironment(environmentName, environment);
+  await platform.putEnvironment(runtimeProfileName, environment);
   // Word characters only: the name is read back through an attribute selector.
   const name = `__e2e_picker_freshness_${Date.now()}`;
 
@@ -262,7 +262,7 @@ test('the open agent picker shows an agent created elsewhere and drops one delet
   const created = await api.createAgent({
     name,
     model,
-    environment_name: environmentName,
+    runtime_profile_name: runtimeProfileName,
     prepared_capacity: 0,
   });
   agentId = String(created.agent_id || '');
@@ -323,7 +323,7 @@ test('the open agent picker shows an agent created elsewhere and drops one delet
       + 'remounted (a tab switch, a route change) refetches for free and proves nothing',
   ).toBe(true);
 
-  // Configuration availability is separate from the Agent's visibility and own switch.
+  // Disabled configuration hides discovery cards while management retains the definitions.
   type ManagementPage = { agents: Array<{ agent_id: string }>; total: number; enabled: number };
   const managementPath = `/agents?page=1&limit=1&q=${encodeURIComponent(name)}`;
   const managementBefore = await api.data<ManagementPage>('GET', managementPath);
@@ -334,44 +334,65 @@ test('the open agent picker shows an agent created elsewhere and drops one delet
     (SELECT count(*) FROM agent_prepared_slots WHERE agent_id=${sqlLiteral(agentId)}) AS prepared`);
   expect(compute()).toEqual([{ sessions: 0, allocations: 0, prepared: 0 }]);
   await leaveTheTab(page);
-  await platform.putEnvironment(environmentName, { ...environment, enabled: false });
-  expect(postgresRows(`SELECT enabled FROM environments WHERE name=${sqlLiteral(environmentName)}`))
+  await platform.putEnvironment(runtimeProfileName, { ...environment, enabled: false });
+  expect(postgresRows(`SELECT enabled FROM runtime_profiles WHERE name=${sqlLiteral(runtimeProfileName)}`))
     .toEqual([{ enabled: false }]);
   const unavailable = (await api.listAgents()).find((agent) => agent.agent_id === agentId);
   expect(unavailable?.can_start_conversation).toBe(false);
   expect(unavailable?.enabled).toBe(true);
   await returnToTheTab(page, lastRead());
-  await expect(newCard.getByText('Unavailable', { exact: true })).toBeVisible({ timeout: PICKER_REFRESH_MS });
-  await expect(newCard.getByTestId('agent-start')).toBeDisabled();
+  await expect(newCard).toHaveCount(0, { timeout: PICKER_REFRESH_MS });
   const cold = await context.newPage();
   await cold.goto(appPath('/agents'));
   await expect(cold.locator(`[data-testid="agent-option"][data-agent-name="${seededName}"]`)).toBeVisible();
   await cold.reload({ waitUntil: 'domcontentloaded' });
   await expect(cold.locator(`[data-testid="agent-option"][data-agent-name="${seededName}"]`)).toBeVisible();
   const coldCard = cold.locator(`[data-testid="agent-option"][data-agent-name="${name}"]`);
-  await expect(coldCard.getByText('Unavailable', { exact: true })).toBeVisible();
-  await expect(coldCard.getByTestId('agent-start')).toBeDisabled();
+  await expect(coldCard).toHaveCount(0);
   await cold.close();
   const refused = await request.post(apiPath(`/agents/${agentId}/conversations`), { data: {} });
   expect(refused.status()).toBe(409);
-  expect((await refused.json()).code).toBe('AGENT_ENVIRONMENT_DISABLED');
+  expect((await refused.json()).code).toBe('AGENT_RUNTIME_PROFILE_DISABLED');
   const managementDisabled = await api.data<ManagementPage>('GET', managementPath);
   expect(managementDisabled.agents.map((agent) => agent.agent_id)).toEqual([agentId]);
   expect([managementDisabled.total, managementDisabled.enabled])
     .toEqual([managementBefore.total, managementBefore.enabled]);
   await other.goto(appPath(`/manage/agents/${agentId}`));
   await expect(other.getByRole('heading', { name, exact: true })).toBeVisible();
-  expect((await api.getAgent(agentId)).environment_name).toBe(environmentName);
+  expect((await api.getAgent(agentId)).runtime_profile_name).toBe(runtimeProfileName);
   await leaveTheTab(page);
-  await platform.putEnvironment(environmentName, environment);
+  await platform.putEnvironment(runtimeProfileName, environment);
   expect((await api.listAgents()).find((agent) => agent.agent_id === agentId)?.can_start_conversation).toBe(true);
+  await returnToTheTab(page, lastRead());
+  await expect(newCard).toBeVisible({ timeout: PICKER_REFRESH_MS });
+  await expect(newCard.getByTestId('agent-start')).toBeEnabled();
+  // The Agent's own switch follows the same discovery rule as its RuntimeProfile.
+  await leaveTheTab(page);
+  await api.updateAgent(agentId, { ...(await api.getAgent(agentId)), enabled: false });
+  expect(postgresRows(`SELECT enabled FROM agents WHERE agent_id=${sqlLiteral(agentId)}`)).toEqual([{ enabled: false }]);
+  await returnToTheTab(page, lastRead());
+  await expect(newCard).toHaveCount(0, { timeout: PICKER_REFRESH_MS });
+  const disabledCold = await context.newPage();
+  await disabledCold.goto(appPath('/agents'));
+  await expect(disabledCold.locator(`[data-testid="agent-option"][data-agent-name="${seededName}"]`)).toBeVisible();
+  await expect(disabledCold.locator(`[data-testid="agent-option"][data-agent-name="${name}"]`)).toHaveCount(0);
+  await disabledCold.close();
+  const agentDisabled = await api.data<ManagementPage>('GET', managementPath);
+  expect(agentDisabled.agents.map((agent) => agent.agent_id)).toEqual([agentId]);
+  expect(agentDisabled.total).toBe(managementBefore.total);
+  expect(agentDisabled.enabled).toBe(managementBefore.enabled - 1);
+  const disabledStart = await request.post(apiPath(`/agents/${agentId}/conversations`), { data: {} });
+  expect(disabledStart.status()).toBe(409);
+  expect((await disabledStart.json()).code).toBe('AGENT_DISABLED');
+  await leaveTheTab(page);
+  await api.updateAgent(agentId, { ...(await api.getAgent(agentId)), enabled: true });
   await returnToTheTab(page, lastRead());
   await expect(newCard).toBeVisible({ timeout: PICKER_REFRESH_MS });
   await expect(newCard.getByTestId('agent-start')).toBeEnabled();
   expect(compute()).toEqual([{ sessions: 0, allocations: 0, prepared: 0 }]);
   await test.info().attach('disabled-environment-picker', {
-    body: JSON.stringify({ agent_id: agentId, environment: environmentName,
-      disabled_picker_unavailable: unavailable, refused_status: refused.status(),
+    body: JSON.stringify({ agent_id: agentId, environment: runtimeProfileName,
+      disabled_picker_hidden: true, disabled_configuration: unavailable, refused_status: refused.status(),
       management_retained: managementDisabled, restored_picker_present: true, compute: compute() }),
     contentType: 'application/json',
   });
@@ -382,8 +403,23 @@ test('the open agent picker shows an agent created elsewhere and drops one delet
   // list's query (`deleted: {$ne: true}`, agent_repository.py:243-251).
   await leaveTheTab(page);
   const asksBeforeDelete = asks.length;
-  const deleted = await api.deleteAgent(agentId);
-  expect(String(deleted.state || ''), 'delete leaves a historical DELETED Agent').toBe('DELETED');
+  const definition = () => postgresRows<{ definition: Record<string, unknown> }>(
+    `SELECT to_jsonb(a)-'state' AS definition FROM agents a WHERE agent_id=${sqlLiteral(agentId)}`,
+  )[0]?.definition;
+  const beforeArchive = definition();
+  await other.reload();
+  await other.getByRole('button', { name: 'Archive agent', exact: true }).click();
+  const dialog = other.getByRole('alertdialog');
+  await expect(dialog).toContainText('stay in the database for audit');
+  const deletedResponse = other.waitForResponse((r) => r.request().method() === 'DELETE'
+    && new URL(r.url()).pathname === apiPath(`/agents/${agentId}`));
+  await dialog.getByRole('button', { name: 'Archive agent', exact: true }).click();
+  const archived = await deletedResponse;
+  expect(archived.ok(), await archived.text()).toBe(true);
+  await expect(other).toHaveURL(new RegExp(`${appPath('/manage/agents')}$`));
+  expect(String((await archived.json()).data.state)).toBe('DELETED');
+  expect(definition(), 'archive retains the authored definition and authorization for audit').toEqual(beforeArchive);
+  expect((await api.data<ManagementPage>('GET', managementPath)).agents).toEqual([]);
   agentId = '';
   expect(
     (await api.listAgents()).map((agent) => agent.name),

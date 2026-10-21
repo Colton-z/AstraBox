@@ -160,7 +160,7 @@ for (const engineKind of ['claude_code', 'codex', 'pi', 'deepseek_harness'] as c
     const config = {
       name: `__e2e_catalog_${engineKind}_${randomUUID().slice(0, 8)}`,
       model: profile.model,
-      environment_name: profile.environment_name,
+      runtime_profile_name: profile.runtime_profile_name,
       prepared_capacity: 0,
     };
     const agentId = (await api.createAgent(config)).agent_id;
@@ -186,11 +186,11 @@ for (const engineKind of ['claude_code', 'codex', 'pi', 'deepseek_harness'] as c
 
 test('hermes: an Assistant uses the catalog MCP server and Skill selected for it', async ({ request }) => {
   const api = new AstraApi(request);
-  const environmentName = await api.assistantEnvironmentName();
+  const runtimeProfileName = await api.assistantEnvironmentName();
   const assistant = await api.createAssistant({
     display_name: `__e2e_catalog_hermes_${randomUUID().slice(0, 8)}`,
-    environment_name: environmentName,
-    model_config_override: { model_name: await api.assistantModelName(environmentName) },
+    runtime_profile_name: runtimeProfileName,
+    model_config_override: { model_name: await api.assistantModelName(runtimeProfileName) },
   });
   const assistantId = String(assistant.assistant_id || '');
   assistantIds.push(assistantId);
@@ -199,7 +199,7 @@ test('hermes: an Assistant uses the catalog MCP server and Skill selected for it
   const helper = (await api.createAgent({
     name: `__e2e_catalog_console_${randomUUID().slice(0, 8)}`,
     model: engineProfileFor('claude_code').model,
-    environment_name: engineProfileFor('claude_code').environment_name,
+    runtime_profile_name: engineProfileFor('claude_code').runtime_profile_name,
     prepared_capacity: 0,
   })).agent_id;
   agentIds.push(helper);

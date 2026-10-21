@@ -22,7 +22,7 @@
  * passes, so no case leaves the quota full for another.
  *
  * Deployment fixtures this reads and never creates: the deployment-proven
- * Agent (`ASTRABOX_E2E_AGENT_NAME`) for its model, an enabled Environment of
+ * Agent (`ASTRABOX_E2E_AGENT_NAME`) for its model, an enabled RuntimeProfile of
  * conversation tenancy for its engine, and kubectl access to the cluster
  * (`KUBECONFIG`, `ASTRABOX_E2E_KUBE_NAMESPACE`).
  */
@@ -78,19 +78,19 @@ function podSandboxes(installation: string): Set<string> {
   return new Set(pods.map((pod: any) => String(pod.metadata.labels['opensandbox.io/id'])));
 }
 
-/** The base Agent's Environment with conversation tenancy: same engine and image. */
+/** The base Agent's RuntimeProfile with conversation tenancy: same engine and image. */
 async function conversationEnvironment(api: AstraApi): Promise<string> {
   const base = await api.defaultAgent();
-  const environments = await api.data<Array<Record<string, unknown>>>('GET', '/admin/environments');
-  const own = environments.find((env) => env.name === base.environment_name);
-  expect(own, `the base Agent's Environment ${base.environment_name}`).toBeTruthy();
-  const names = environments
+  const runtime_profiles = await api.data<Array<Record<string, unknown>>>('GET', '/admin/runtime-profiles');
+  const own = runtime_profiles.find((env) => env.name === base.runtime_profile_name);
+  expect(own, `the base Agent's RuntimeProfile ${base.runtime_profile_name}`).toBeTruthy();
+  const names = runtime_profiles
     .filter((env) => env.enabled === true && env.engine_kind === own?.engine_kind
       && env.runtime_template_name === own?.runtime_template_name
       && env.sandbox_tenancy === 'conversation')
     .map((env) => String(env.name))
     .sort();
-  expect(names.length, 'an enabled conversation-tenancy Environment like the base Agent\'s').toBeGreaterThan(0);
+  expect(names.length, 'an enabled conversation-tenancy RuntimeProfile like the base Agent\'s').toBeGreaterThan(0);
   const counterpart = `${String(own?.name)}-conversation`;
   return names.includes(counterpart) ? counterpart : names[0];
 }
@@ -100,7 +100,7 @@ async function ownBoxAgent(api: AstraApi): Promise<string> {
   const agent = await api.createAgent({
     name: `__e2e_quota_${randomUUID().slice(0, 8)}`,
     model: base.model,
-    environment_name: await conversationEnvironment(api),
+    runtime_profile_name: await conversationEnvironment(api),
     prepared_capacity: 0,
   });
   agentIds.push(agent.agent_id);

@@ -48,7 +48,7 @@ def test_authored_instructions_reach_the_first_reply(
     agent = data(e2e_client.post("/api/v1/agents", json={
         "name": f"Instruction installation {uuid.uuid4().hex[:8]}",
         "model": profile["model"],
-        "environment_name": environment_with_tenancy(e2e_client, tenancy),
+        "runtime_profile_name": environment_with_tenancy(e2e_client, tenancy),
         "prepared_capacity": 1 if prepared else 0,
         "engine_options": canonical.get("engine_options") or {},
         "system": instructions,

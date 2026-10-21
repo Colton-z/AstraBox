@@ -115,7 +115,7 @@ class SchedulerProviderContractSuite:
         deadline = asyncio.get_running_loop().time() + SETTLE_SECONDS
         record: RunRecord | None = None
         while asyncio.get_running_loop().time() < deadline:
-            record = await provider.get_run(run_id)
+            record = await provider.get_run(run_id, environment_name="astrabox")
             if record is not None and record.state in states:
                 return record
             await asyncio.sleep(0.2)
@@ -125,7 +125,7 @@ class SchedulerProviderContractSuite:
     async def _scheduled_runs(provider: SchedulerProvider, deployment_id: str) -> list[RunRecord]:
         return [
             record
-            for record in await provider.list_runs(deployment_id, limit=50)
+            for record in await provider.list_runs(deployment_id, limit=50, environment_name="astrabox")
             if record.invocation.trigger == "schedule"
         ]
 
@@ -133,6 +133,7 @@ class SchedulerProviderContractSuite:
     def _definition(deployment_id: str, **changes: Any) -> ScheduleDefinition:
         values: dict[str, Any] = {
             "deployment_id": deployment_id,
+            "environment_name": "astrabox",
             "cron": "0 0 1 1 *",
             "timezone": "UTC",
             "enabled": True,
@@ -148,6 +149,7 @@ class SchedulerProviderContractSuite:
             deployment_id="deployment-1",
             trigger="manual",
             payload={"agent_id": "agent-1", "input_text": "prepare the report"},
+            environment_name="astrabox",
         )
         run_id = enqueued.invocation.run_id
 
@@ -170,7 +172,8 @@ class SchedulerProviderContractSuite:
         handler.permanent_failure = True
 
         enqueued = await provider.enqueue(
-            deployment_id="deployment-1", trigger="manual", payload={"input_text": "x"}
+            deployment_id="deployment-1", trigger="manual", payload={"input_text": "x"},
+            environment_name="astrabox",
         )
         settled = await self._settled(provider, enqueued.invocation.run_id, states=("FAILED",))
 
@@ -184,7 +187,8 @@ class SchedulerProviderContractSuite:
         handler.transient_failures = 1
 
         enqueued = await provider.enqueue(
-            deployment_id="deployment-1", trigger="manual", payload={"input_text": "x"}
+            deployment_id="deployment-1", trigger="manual", payload={"input_text": "x"},
+            environment_name="astrabox",
         )
         run_id = enqueued.invocation.run_id
         await self._settled(provider, run_id, states=("DISPATCHED",))
@@ -199,12 +203,14 @@ class SchedulerProviderContractSuite:
             deployment_id="deployment-1",
             trigger="manual",
             payload={"input_text": "the original prompt"},
+            environment_name="astrabox",
         )
         replay = await provider.enqueue(
             deployment_id="deployment-1",
             trigger="replay",
             payload={"input_text": "the original prompt"},
             replayed_from_run_id=source.invocation.run_id,
+            environment_name="astrabox",
         )
 
         settled = await self._settled(
@@ -219,23 +225,26 @@ class SchedulerProviderContractSuite:
         self, provider: SchedulerProvider
     ) -> None:
         first = await provider.enqueue(
-            deployment_id="deployment-1", trigger="manual", payload={"input_text": "a"}
+            deployment_id="deployment-1", trigger="manual", payload={"input_text": "a"},
+            environment_name="astrabox",
         )
         await asyncio.sleep(0.01)
         second = await provider.enqueue(
-            deployment_id="deployment-1", trigger="manual", payload={"input_text": "b"}
+            deployment_id="deployment-1", trigger="manual", payload={"input_text": "b"},
+            environment_name="astrabox",
         )
         await provider.enqueue(
-            deployment_id="deployment-2", trigger="manual", payload={"input_text": "c"}
+            deployment_id="deployment-2", trigger="manual", payload={"input_text": "c"},
+            environment_name="astrabox",
         )
 
-        listed = await provider.list_runs("deployment-1", limit=50)
+        listed = await provider.list_runs("deployment-1", limit=50, environment_name="astrabox")
 
         assert [record.invocation.run_id for record in listed] == [
             second.invocation.run_id,
             first.invocation.run_id,
         ]
-        assert await provider.get_run("no-such-run") is None
+        assert await provider.get_run("no-such-run", environment_name="astrabox") is None
 
     async def test_one_due_time_is_one_run_even_when_it_fires_twice(
         self, provider: SchedulerProvider
@@ -335,14 +344,14 @@ class SchedulerProviderContractSuite:
             )
 
         # The orphan is gone and the listed schedule is kept, disabled.
-        assert await provider.list_runs("deployment-orphan", limit=50) == []
+        assert await provider.list_runs("deployment-orphan", limit=50, environment_name="astrabox") == []
         assert await self._scheduled_runs(provider, "deployment-1") == []
 
     async def test_delete_is_idempotent(self, provider: SchedulerProvider) -> None:
         await provider.apply(self._definition("deployment-1"))
 
-        await provider.delete("deployment-1")
-        await provider.delete("deployment-1")
+        await provider.delete("deployment-1", environment_name="astrabox")
+        await provider.delete("deployment-1", environment_name="astrabox")
 
 
 __all__ = ["RecordingHandler", "SchedulerProviderContractSuite"]

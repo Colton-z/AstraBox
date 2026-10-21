@@ -7,7 +7,6 @@
   "home_title": "Start a conversation",
   "home_subtitle": "Choose an Agent to start a conversation.",
   "home_start": "Start conversation",
-  "home_unavailable": "Unavailable",
   "home_starting": "Starting…",
   "home_empty": "No Agents are available.",
   "home_empty_hint": "An administrator must create and enable an Agent before users can start a conversation.",
@@ -24,5 +23,12 @@
   "no_match_hint": "Change the search, or remove the tag filter.",
   "tags_label": "Tags",
   "filter_by_tag": "Show Agents tagged #{{tag}}",
-  "tag_filter_clear": "Remove the #{{tag}} filter"
+  "tag_filter_clear": "Remove the #{{tag}} filter",
+  "detail_title": "Agent",
+  "copy_link": "Copy link",
+  "link_copied": "Agent link copied",
+  "link_copy_failed": "Couldn't copy the link",
+  "unavailable": "This Agent is unavailable",
+  "unavailable_hint": "It may be disabled, removed, or unavailable to your account. Choose another Agent from the catalog.",
+  "model": "Model"
 }

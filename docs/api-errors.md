@@ -166,7 +166,7 @@ The caller is authenticated but not authorized.
 ```bash
 # Example trigger: a read-only token calls an administration API
 curl --fail-with-body --silent --show-error \
-  "$SERVICE_URL/api/v1/admin/environments" \
+  "$SERVICE_URL/api/v1/admin/runtime-profiles" \
   -H "Authorization: Bearer $READ_TOKEN"
 ```
 
@@ -176,7 +176,7 @@ The target resource does not exist or is not visible to the caller.
 
 **Common triggers:**
 
-- Agent, Session, or Environment ID does not exist
+- Agent, Session, or RuntimeProfile ID does not exist
 - The resource was deleted
 - The caller is not authorized to discover another owner's resource
 - URL path typo
@@ -213,7 +213,7 @@ Resource state conflict prevents the operation.
 - Same idempotency key reused for a different conversation
 - The Agent is working while a request deletes or archives the Session, ends
   the conversation, or terminates its sandbox
-- Agent or Environment state does not allow the requested operation
+- Agent or RuntimeProfile state does not allow the requested operation
 
 ```json
 {

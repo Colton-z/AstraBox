@@ -13,7 +13,7 @@ from sqlalchemy import update
 from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator.runtime import preparation as sync
 from astrabox.persistence.repository import agent_repository
-from astrabox.persistence.repository.environment_repository import EnvironmentRepository
+from astrabox.persistence.repository.runtime_profile_repository import RuntimeProfileRepository
 from astrabox.persistence.sql import execute
 from astrabox.persistence.sql.models.agents import Agent
 from astrabox.seams import runtime_preparation as seam
@@ -54,14 +54,14 @@ async def _pending(agent_id: str, *, provider: str, operation_id: str) -> None:
 @pytest.fixture
 async def repo(database):
     template = _template(version=1, prewarm_revision="first")
-    await EnvironmentRepository().put(
+    await RuntimeProfileRepository().put(
         "env",
         {"engine_kind": "claude_code", "idle_action": "terminate", "networking": {"type": "unrestricted"}},
         updated_by="test",
     )
     await agent_repository.AgentRepository().create_agent({
         "agent_id": template.agent_id, "name": template.agent_id, "model": "model",
-        "environment_name": "env", "created_by": "original-creator",
+        "runtime_profile_name": "env", "created_by": "original-creator",
     })
     await _store_generation(template.agent_id, sync._generation(vars(template)))
     return agent_repository.AgentRepository(), template

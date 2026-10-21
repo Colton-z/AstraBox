@@ -1,4 +1,4 @@
-/** A saved Environment card adopts masked values without losing another card's draft. */
+/** A saved RuntimeProfile card adopts masked values without losing another card's draft. */
 import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 
@@ -7,29 +7,29 @@ import { apiPath, appPath } from '../fixtures/env';
 import { onPassOnly } from '../fixtures/sessionCleanup';
 
 test.use({ locale: 'en-US' });
-let environmentName = '';
+let runtimeProfileName = '';
 onPassOnly(async ({ request }) => {
-  if (environmentName) {
-    await new AstraApi(request).data('DELETE', `/admin/environments/${environmentName}`);
+  if (runtimeProfileName) {
+    await new AstraApi(request).data('DELETE', `/admin/runtime-profiles/${runtimeProfileName}`);
   }
 });
 
-test('saving Environment credentials masks both inputs and releases only the saved draft', async ({ page, request }) => {
+test('saving RuntimeProfile credentials masks both inputs and releases only the saved draft', async ({ page, request }) => {
   const api = new AstraApi(request);
   const agent = await api.defaultAgent();
-  const environments = await api.data<Array<Record<string, unknown>>>('GET', '/admin/environments');
-  const donor = environments.find((item) => item.name === agent.environment_name);
+  const runtime_profiles = await api.data<Array<Record<string, unknown>>>('GET', '/admin/runtime-profiles');
+  const donor = runtime_profiles.find((item) => item.name === agent.runtime_profile_name);
   expect(donor).toBeDefined();
-  environmentName = `__e2e_secret_draft_${randomUUID()}`;
-  const route = `/admin/environments/${environmentName}`;
+  runtimeProfileName = `__e2e_secret_draft_${randomUUID()}`;
+  const route = `/admin/runtime-profiles/${runtimeProfileName}`;
   await api.data('PUT', route, {
-    name: environmentName, enabled: false, engine_kind: donor!.engine_kind,
+    name: runtimeProfileName, enabled: false, engine_kind: donor!.engine_kind,
     sandbox_backend: donor!.sandbox_backend,
     networking: { type: 'limited', allowed_hosts: [], allow_mcp_servers: false },
   });
   // This disabled, unbound preset allocates no runtime and uses synthetic credentials.
   await page.addInitScript(() => window.localStorage.setItem('astrabox-lang', 'en'));
-  await page.goto(appPath(`/manage/environments/${environmentName}`));
+  await page.goto(appPath(`/manage/runtime-profiles/${runtimeProfileName}`));
   const provider = page.locator('#environment-provider_access');
   const tracing = page.locator('#environment-tracing');
   const description = page.locator('#environment-description');
@@ -59,8 +59,8 @@ test('saving Environment credentials masks both inputs and releases only the sav
   await expect(runtimeSave, 'the saved card must be clean without a refresh').toHaveCount(0);
   await expect(description).toHaveValue(pendingDescription);
   await expect(basicSave, 'the other card must still own its unsaved draft').toBeEnabled();
-  const readback = async () => (await api.data<Array<Record<string, unknown>>>('GET', '/admin/environments'))
-    .find((item) => item.name === environmentName)!;
+  const readback = async () => (await api.data<Array<Record<string, unknown>>>('GET', '/admin/runtime-profiles'))
+    .find((item) => item.name === runtimeProfileName)!;
   const stored = await readback();
   expect(stored.provider_access).toEqual({ api_key: '••••••••' });
   expect(stored.tracing).toMatchObject({ auth_token: '••••••••' });

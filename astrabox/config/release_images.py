@@ -16,7 +16,7 @@ Two settings move every default image at once:
   gives images built from a checkout.
 
 An image named explicitly still wins: ``ASTRABOX_AGENT_IMAGE``,
-``ASTRABOX_WORKSPACE_MOUNTER_IMAGE`` and an Environment's image pin are read
+``ASTRABOX_WORKSPACE_MOUNTER_IMAGE`` and a RuntimeProfile's image pin are read
 before these defaults.
 """
 

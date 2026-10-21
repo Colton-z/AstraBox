@@ -72,11 +72,11 @@ test('a newer channel message stops the open AskUserQuestion before its own turn
   const runId = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
   const threadId = `e2e-channel-supersede-${runId}`;
   const base = await api.defaultAgent();
-  const environmentName = String(base.environment_name || '').trim();
-  expect(environmentName, 'the seeded Agent must name an environment').not.toEqual('');
+  const runtimeProfileName = String(base.runtime_profile_name || '').trim();
+  expect(runtimeProfileName, 'the seeded Agent must name an environment').not.toEqual('');
   let model = String(base.model || '').trim();
   if (!model || model.includes('*')) {
-    const models = await api.listEnvironmentModels(environmentName);
+    const models = await api.listEnvironmentModels(runtimeProfileName);
     model = models.find((candidate) => candidate && !candidate.includes('*')) || '';
   }
   expect(model, 'the Agent environment must expose a concrete model').not.toEqual('');
@@ -84,7 +84,7 @@ test('a newer channel message stops the open AskUserQuestion before its own turn
   const agent = await api.createAgent({
     name: `__e2e_channel_supersede_${runId}`,
     model,
-    environment_name: environmentName,
+    runtime_profile_name: runtimeProfileName,
     prepared_capacity: 0,
   });
   agentId = String(agent.agent_id || '').trim();

@@ -13,7 +13,7 @@ default names it Hermes. A system prompt that was stored but never reached the
 program answers "Hermes" to the first question; a cleared one that the program
 kept answers the configured name to the second.
 
-Runs in the Assistant lane against a Hermes Environment:
+Runs in the Assistant lane against a Hermes RuntimeProfile:
 
     E2E_LANE=assistant \\
       ASTRABOX_E2E_ASSISTANT_ENVIRONMENT=<assistant environment> \\
@@ -51,7 +51,7 @@ _NAME_QUESTION = "What is your name? Reply with only your name. Do not use any t
 
 
 def _assistant_environment(e2e_client: httpx.Client) -> tuple[str, str, str | None]:
-    """The Hermes Environment and model under test, and the image if pinned."""
+    """The Hermes RuntimeProfile and model under test, and the image if pinned."""
 
     environment = os.getenv("ASTRABOX_E2E_ASSISTANT_ENVIRONMENT", "").strip()
     model = os.getenv("ASTRABOX_E2E_ASSISTANT_MODEL", "").strip()
@@ -62,10 +62,10 @@ def _assistant_environment(e2e_client: httpx.Client) -> tuple[str, str, str | No
     )
     matches = [
         item
-        for item in data(e2e_client.get("/api/v1/admin/environments"))
+        for item in data(e2e_client.get("/api/v1/admin/runtime-profiles"))
         if item.get("name") == environment
     ]
-    assert len(matches) == 1, f"expected one Environment {environment!r}: {matches}"
+    assert len(matches) == 1, f"expected one RuntimeProfile {environment!r}: {matches}"
     assert matches[0].get("engine_kind") == "assistant", matches[0]
     return environment, model, image
 
@@ -120,7 +120,7 @@ def _create(
             "/api/v1/assistants",
             json={
                 "display_name": f"__e2e_system_prompt_{uuid.uuid4().hex[:8]}",
-                "environment_name": environment,
+                "runtime_profile_name": environment,
                 "model_config_override": {"model_name": model},
                 "system": system,
             },

@@ -1,7 +1,7 @@
 """The exact engine profile selected for one live Agent E2E process.
 
 The source matrix names vendor vocabulary and expected capabilities. Deployment
-evidence adds the immutable image, Environment, model and Agent ids that were
+evidence adds the immutable image, RuntimeProfile, model and Agent ids that were
 actually configured. The live runner selects exactly one profile per process;
 tests ask for semantic roles here and never learn another engine's vocabulary.
 """
@@ -67,7 +67,7 @@ def current_profile() -> dict[str, Any]:
         "contracts",
         "decisions",
         "engine_kind",
-        "environment_name",
+        "runtime_profile_name",
         "image",
         "instructions",
         "mirror_entry_types",
@@ -79,7 +79,7 @@ def current_profile() -> dict[str, Any]:
     missing = sorted(required - set(profile))
     if missing:
         raise RuntimeError(f"Agent E2E profile is missing {missing}")
-    for key in ("agent_id", "agent_name", "environment_name", "image", "model"):
+    for key in ("agent_id", "agent_name", "runtime_profile_name", "image", "model"):
         _required_text(profile.get(key), key)
     for key in (
         "child_completion",

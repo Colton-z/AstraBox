@@ -4,7 +4,7 @@
  * One conversation launches a Claude Code background Agent whose Bash command
  * writes a heartbeat every second until this spec releases it; the reply that
  * launched it ends and the user leaves. A second conversation of the same
- * Agent, in the same Environment, does nothing at all. Both are left alone past
+ * Agent, in the same RuntimeProfile, does nothing at all. Both are left alone past
  * the Agent's idle window, then the idle sweep runs
  * (`POST /admin/sandbox-idle-sweep`, the tick `expiration_watcher.py` runs on a
  * timer).
@@ -242,26 +242,26 @@ test('a background Agent still working keeps its box off the idle sweep while no
   const parentMarker = `PARENT_LAUNCHED_${runId}`;
   const doneMarker = `BG_IDLE_DONE_${runId}`;
   const laneAgent = await api.defaultAgent();
-  const sourceName = String(laneAgent.environment_name || '').trim();
+  const sourceName = String(laneAgent.runtime_profile_name || '').trim();
   expect(
     sourceName,
-    `the lane's Agent ${JSON.stringify(laneAgent.name)} must name the Environment this journey clones`,
+    `the lane's Agent ${JSON.stringify(laneAgent.name)} must name the RuntimeProfile this journey clones`,
   ).not.toEqual('');
-  const environments = await platform.listEnvironments();
-  const source = environments.find((item) => String(item.name || '') === sourceName);
+  const runtime_profiles = await platform.listEnvironments();
+  const source = runtime_profiles.find((item) => String(item.name || '') === sourceName);
   expect(
     source,
-    `Environment ${JSON.stringify(sourceName)} is not on this deployment; have: `
-      + environments.map((item) => String(item.name || '')).join(', '),
+    `RuntimeProfile ${JSON.stringify(sourceName)} is not on this deployment; have: `
+      + runtime_profiles.map((item) => String(item.name || '')).join(', '),
   ).toBeTruthy();
   const sourceEnvironment = source as Record<string, unknown>;
   const access = sourceEnvironment.provider_access;
   if (access && typeof access === 'object') {
     expect(
       String((access as Record<string, unknown>).api_key || ''),
-      'the source Environment stores a model key that a clone cannot carry — the server '
+      'the source RuntimeProfile stores a model key that a clone cannot carry — the server '
         + 'returns it masked and a clone under a new name would store nothing. Point this '
-        + 'lane at an Environment using deployment model access.',
+        + 'lane at a RuntimeProfile using deployment model access.',
     ).not.toEqual(ENV_API_KEY_SENTINEL);
   }
   const schema = await platform.environmentSchema();
@@ -288,7 +288,7 @@ test('a background Agent still working keeps its box off the idle sweep while no
   } catch (error) {
     parkingEnvironment = '';
     throw new Error(
-      'this deployment refused an Environment that parks idle boxes, so it has no '
+      'this deployment refused a RuntimeProfile that parks idle boxes, so it has no '
         + 'configuration in which this journey can fail or pass. Under idle_action '
         + '"terminate" the keeper leaves every box alone and the box instead dies at its '
         + `lease, which no 180s spec can reach.\n${error instanceof Error ? error.message : String(error)}`,
@@ -296,7 +296,7 @@ test('a background Agent still working keeps its box off the idle sweep while no
   }
   expect(
     String(stored.idle_action || ''),
-    'the stored Environment must be the one the keeper will read',
+    'the stored RuntimeProfile must be the one the keeper will read',
   ).toEqual('pause');
   expect(
     String(stored.sandbox_tenancy || ''),
@@ -307,13 +307,13 @@ test('a background Agent still working keeps its box off the idle sweep while no
   expect(model, 'the lane-selected Agent must name a model route').not.toEqual('');
   expect(
     await api.listEnvironmentModels(parkingEnvironment),
-    `the parking Environment must expose the lane's model ${JSON.stringify(model)}`,
+    `the parking RuntimeProfile must expose the lane's model ${JSON.stringify(model)}`,
   ).toContain(model);
 
   const agent = await api.createAgent({
     name: `__e2e_idle_bg_${runId}`,
     model,
-    environment_name: parkingEnvironment,
+    runtime_profile_name: parkingEnvironment,
     prepared_capacity: 0,
     idle_hibernate_seconds: IDLE_WINDOW_SECONDS,
   });
@@ -525,7 +525,7 @@ test('a background Agent still working keeps its box off the idle sweep while no
   expect(
     controlParkedAt,
     'the control conversation was never parked, so this run cannot claim the keeper would have '
-      + `parked anything: same Agent, same ${IDLE_WINDOW_SECONDS}s window, same Environment, no `
+      + `parked anything: same Agent, same ${IDLE_WINDOW_SECONDS}s window, same RuntimeProfile, no `
       + `background work. Either the sweep is not parking on this deployment, or pause did not `
       + `commit on this cluster (docs/providers/opensandbox.md names what pausing needs), or the `
       + `two conversations shared a box. control=${control} sandbox=${controlSandbox} `

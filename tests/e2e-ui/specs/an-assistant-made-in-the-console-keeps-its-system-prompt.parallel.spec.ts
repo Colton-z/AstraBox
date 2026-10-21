@@ -2,7 +2,7 @@
  * E2E: an operator gives an Assistant its system prompt in the console, and
  * changes it later from the Assistant's record page.
  *
- * The journey is two forms. New assistant: a name, the Assistant Environment,
+ * The journey is two forms. New assistant: a name, the Assistant RuntimeProfile,
  * a system prompt, Create. Then, on the record page Create lands on, the system
  * prompt is edited and its section saved. Each write must land on the server
  * exactly as typed, read back through the API rather than from the page that
@@ -12,7 +12,7 @@
  * permission modes, and the server refuses any value for a program without
  * them. A form that sent one would fail Create and every section's Save for a
  * Hermes Assistant. A form may offer the field only for a program that
- * declares modes, which the Environment listing carries (`permission_modes`).
+ * declares modes, which the RuntimeProfile listing carries (`permission_modes`).
  * This spec reads that declaration and requires the field to be absent exactly
  * when it is empty, so it holds under whichever Assistant program the
  * deployment runs.
@@ -23,7 +23,7 @@
  * the parallel lane.
  *
  * Deployment fixtures this spec reads and never creates, failing loudly when
- * absent: an enabled Environment running an Assistant program
+ * absent: an enabled RuntimeProfile running an Assistant program
  * (`api.assistantEnvironmentName()`) and `ASTRABOX_E2E_ASSISTANT_MODEL`.
  */
 import { expect, test } from '@playwright/test';
@@ -45,15 +45,15 @@ test('an Assistant created in the console keeps its system prompt, and its recor
 }) => {
   const api = new AstraApi(request);
   const runId = new Date().toISOString().replace(/[:.]/g, '-');
-  const environmentName = await api.assistantEnvironmentName();
-  expect(environmentName, 'an Assistant Environment must exist').not.toEqual('');
+  const runtimeProfileName = await api.assistantEnvironmentName();
+  expect(runtimeProfileName, 'an Assistant RuntimeProfile must exist').not.toEqual('');
 
-  const environments = await request.get(apiPath('/admin/environments'));
-  expect(environments.ok(), 'the Environment listing must answer').toBeTruthy();
-  const listed = ((await environments.json()).data as Array<Record<string, unknown>>).find(
-    (environment) => environment.name === environmentName,
+  const runtime_profiles = await request.get(apiPath('/admin/runtime-profiles'));
+  expect(runtime_profiles.ok(), 'the RuntimeProfile listing must answer').toBeTruthy();
+  const listed = ((await runtime_profiles.json()).data as Array<Record<string, unknown>>).find(
+    (environment) => environment.name === runtimeProfileName,
   );
-  expect(listed, `the listing must include ${environmentName}`).toBeTruthy();
+  expect(listed, `the listing must include ${runtimeProfileName}`).toBeTruthy();
   const declaredModes = (listed?.permission_modes as string[] | undefined) ?? [];
 
   const name = `__e2e_assistant_system_prompt_${runId}`;
@@ -75,12 +75,12 @@ test('an Assistant created in the console keeps its system prompt, and its recor
   await nameField.fill(name);
   await page
     .getByRole('combobox', { name: 'Runtime environment', exact: true })
-    .selectOption(environmentName);
+    .selectOption(runtimeProfileName);
 
   const permission = page.getByRole('combobox', { name: 'Default permission', exact: true });
   await expect(
     permission,
-    `the form offers a permission mode only for a program that declares some (${environmentName} `
+    `the form offers a permission mode only for a program that declares some (${runtimeProfileName} `
       + `declares ${JSON.stringify(declaredModes)})`,
   ).toHaveCount(declaredModes.length > 0 ? 1 : 0);
 

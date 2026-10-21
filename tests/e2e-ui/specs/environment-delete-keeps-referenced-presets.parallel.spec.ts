@@ -1,4 +1,4 @@
-/** Environment deletion uses the real console, API and stored Agent binding.
+/** RuntimeProfile deletion uses the real console, API and stored Agent binding.
  * Owns one preset and one disabled, non-prewarmed Agent; creates no runtime.
  */
 import { randomUUID } from 'node:crypto';
@@ -15,19 +15,19 @@ onPassOnly(async ({ request }) => {
   if (agentId) await new AstraApi(request).deleteAgent(agentId);
 });
 
-test('an Environment can be deleted only after its last Agent moves away', async ({ page, request }) => {
+test('a RuntimeProfile can be deleted only after its last Agent moves away', async ({ page, request }) => {
   const api = new AstraApi(request);
   const seeded = await api.defaultAgent();
-  const originalName = String(seeded.environment_name || '').trim();
+  const originalName = String(seeded.runtime_profile_name || '').trim();
   expect(originalName).not.toBe('');
-  const environments = await api.data<Array<Record<string, unknown>>>('GET', '/admin/environments');
-  const original = environments.find((item) => item.name === originalName);
+  const runtime_profiles = await api.data<Array<Record<string, unknown>>>('GET', '/admin/runtime-profiles');
+  const original = runtime_profiles.find((item) => item.name === originalName);
   expect(original).toBeDefined();
   const model = await api.configuredAgentModel(seeded.name, originalName);
   const name = `__e2e_delete_environment_${randomUUID()}`;
   const ownerName = `__e2e_environment_owner_${randomUUID()}`;
-  const route = `/admin/environments/${encodeURIComponent(name)}`;
-  const recordPath = appPath(`/manage/environments/${encodeURIComponent(name)}`);
+  const route = `/admin/runtime-profiles/${encodeURIComponent(name)}`;
+  const recordPath = appPath(`/manage/runtime-profiles/${encodeURIComponent(name)}`);
   const deletePath = apiPath(route);
   const uncaught: string[] = [];
   const deleteRequests: string[] = [];
@@ -39,28 +39,28 @@ test('an Environment can be deleted only after its last Agent moves away', async
   });
 
   // Only the engine/backend identifiers are borrowed. This authoring fixture
-  // needs no provider credentials, image changes or shared Environment edits.
+  // needs no provider credentials, image changes or shared RuntimeProfile edits.
   await api.data('PUT', route, {
     name, enabled: true, engine_kind: original!.engine_kind,
     sandbox_backend: original!.sandbox_backend || 'open_sandbox',
     networking: { type: 'limited', allowed_hosts: [], allow_mcp_servers: false },
   });
   const agent = await api.createAgent({
-    name: ownerName, model, environment_name: name, enabled: false, prepared_capacity: 0,
+    name: ownerName, model, runtime_profile_name: name, enabled: false, prepared_capacity: 0,
   });
   agentId = agent.agent_id;
-  expect(agent.environment_name).toBe(name);
+  expect(agent.runtime_profile_name).toBe(name);
 
   await page.goto(recordPath);
   await page.getByRole('button', { name: 'Delete', exact: true }).click();
   const dialog = page.getByRole('alertdialog');
-  await expect(dialog).toContainText(`Delete Environment “${name}”?`);
+  await expect(dialog).toContainText(`Delete RuntimeProfile “${name}”?`);
   await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(dialog).toHaveCount(0);
   await page.reload();
   await expect(page.getByRole('button', { name: 'Delete', exact: true })).toBeVisible();
   expect(deleteRequests).toHaveLength(0);
-  expect((await api.data<Array<{ name: string }>>('GET', '/admin/environments'))
+  expect((await api.data<Array<{ name: string }>>('GET', '/admin/runtime-profiles'))
     .some((item) => item.name === name)).toBe(true);
 
   await page.getByRole('button', { name: 'Delete', exact: true }).click();
@@ -70,22 +70,22 @@ test('an Environment can be deleted only after its last Agent moves away', async
   const refusal = await refused;
   expect(refusal.status()).toBe(409);
   const failure = await refusal.json();
-  expect(failure.code).toBe('ENVIRONMENT_IN_USE');
+  expect(failure.code).toBe('RUNTIME_PROFILE_IN_USE');
   expect(failure.data.holders).toEqual([
     { target_type: 'agent', target_id: agentId, target_name: ownerName },
   ]);
   await expect(page.getByRole('alert').filter({ hasText: failure.message })).toBeVisible();
   expect(new URL(page.url()).pathname).toBe(recordPath);
-  expect((await api.getAgent(agentId)).environment_name).toBe(name);
-  expect((await api.data<Array<{ name: string }>>('GET', '/admin/environments'))
+  expect((await api.getAgent(agentId)).runtime_profile_name).toBe(name);
+  expect((await api.data<Array<{ name: string }>>('GET', '/admin/runtime-profiles'))
     .some((item) => item.name === name)).toBe(true);
 
   const current = await api.getAgent(agentId);
   await api.updateAgent(agentId, {
-    name: current.name, model, version: current.version, environment_name: originalName,
+    name: current.name, model, version: current.version, runtime_profile_name: originalName,
     enabled: false, prepared_capacity: 0,
   });
-  expect((await api.getAgent(agentId)).environment_name).toBe(originalName);
+  expect((await api.getAgent(agentId)).runtime_profile_name).toBe(originalName);
   await page.reload();
   await page.getByRole('button', { name: 'Delete', exact: true }).click();
   const deleted = page.waitForResponse((response) =>
@@ -94,14 +94,14 @@ test('an Environment can be deleted only after its last Agent moves away', async
   const success = await deleted;
   expect(success.status()).toBe(200);
   expect((await success.json()).data).toEqual({ name, deleted: true });
-  await expect.poll(() => new URL(page.url()).pathname).toBe(appPath('/manage/environments'));
+  await expect.poll(() => new URL(page.url()).pathname).toBe(appPath('/manage/runtime-profiles'));
   await expect(page.getByRole('row').filter({ hasText: name })).toHaveCount(0);
   await page.reload();
   await expect(page.getByRole('row').filter({ hasText: name })).toHaveCount(0);
-  const remaining = await api.data<Array<{ name: string }>>('GET', '/admin/environments');
+  const remaining = await api.data<Array<{ name: string }>>('GET', '/admin/runtime-profiles');
   expect(remaining.some((item) => item.name === name)).toBe(false);
   expect(remaining.some((item) => item.name === originalName)).toBe(true);
-  expect((await api.getAgent(agentId)).environment_name).toBe(originalName);
+  expect((await api.getAgent(agentId)).runtime_profile_name).toBe(originalName);
   expect(deleteRequests).toHaveLength(2);
   expect(uncaught).toEqual([]);
 });

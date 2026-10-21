@@ -115,7 +115,7 @@ curl --fail --silent --show-error \
 
 # 管理 API
 curl --fail --silent --show-error \
-  "$SERVICE_URL/api/v1/admin/environments" \
+  "$SERVICE_URL/api/v1/admin/runtime-profiles" \
   -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
 

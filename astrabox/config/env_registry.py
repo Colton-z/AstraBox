@@ -250,7 +250,7 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ASTRABOX_SANDBOX_BACKEND",
         "public",
         "open_sandbox",
-        "Name of the default sandbox backend: an Environment that names no "
+        "Name of the default sandbox backend: a RuntimeProfile that names no "
         "backend uses it, and the first Agent is seeded with it. Startup rejects "
         "a name that is not installed or not enabled.",
         "astrabox.config.settings",
@@ -261,7 +261,7 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "derived",
         "Comma-separated names of the sandbox backends this deployment enables. "
         "Empty enables only ASTRABOX_SANDBOX_BACKEND. Installed backends outside "
-        "this list are not offered to Environments, are not swept by background "
+        "this list are not offered to RuntimeProfiles, are not swept by background "
         "inventory or workspace-mount reconciliation, and records that name them "
         "fail with SANDBOX_BACKEND_DISABLED. Startup rejects a name that is not "
         "installed, a repeated name, and a list without ASTRABOX_SANDBOX_BACKEND.",
@@ -271,7 +271,7 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ASTRABOX_SANDBOX_CPU_LIMIT",
         "public",
         "1",
-        "CPU limit of a conversation's own box (Environment "
+        "CPU limit of a conversation's own box (RuntimeProfile "
         "sandbox_tenancy=conversation), as a Kubernetes quantity (2, 0.5, "
         "500m), for every such box: created on demand, prepared in a pool, or "
         "replacing a lost one. A backend that cannot honour it refuses the "
@@ -310,7 +310,7 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ASTRABOX_SHARED_SANDBOX_CPU_LIMIT",
         "public",
         "4",
-        "CPU limit of an Agent's shared box (Environment "
+        "CPU limit of an Agent's shared box (RuntimeProfile "
         "sandbox_tenancy=agent), as a Kubernetes quantity, for every such box. "
         "A shared box admits another conversation while its free memory allows, "
         "so its size decides how many it holds.",
@@ -443,9 +443,9 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ASTRABOX_STATE_DIR",
         "public",
         "./.astrabox",
-        "Root directory for session workspaces, generated deployment keys, "
-        "OpenSandbox metadata, and other local artifacts. Database records live "
-        "in PostgreSQL.",
+        "Private state directory for this Environment's generated keys, OpenSandbox "
+        "metadata and local artifacts. Use a separate directory or volume for each "
+        "Environment; retain its existing directory and keys during upgrades.",
         "astrabox.config.settings",
     ),
     (
@@ -458,6 +458,37 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "'dbos' keeps its state in the platform's PostgreSQL database. Other "
         "providers install through the astrabox.providers.scheduler entry-point "
         "group.",
+        "astrabox.config.settings",
+    ),
+    (
+        "ASTRABOX_ENVIRONMENT_NAME",
+        "public",
+        "astrabox",
+        "Immutable Environment owning this process's Agent/Assistant definitions, "
+        "profiles, credentials, authorization, history, native state and runtime resources. "
+        "Replicas of one Environment use the same name; other Environments use different "
+        "names, separate databases, database credentials, state directories and membership. "
+        "A database accepts one persisted Environment name. Requires 3–30 lowercase "
+        "letters, digits, underscores or hyphens, starting with a letter or digit.",
+        "astrabox.config.settings",
+    ),
+    (
+        "ASTRABOX_AGENT_PREWARM_ENABLED",
+        "public",
+        "true",
+        "Use prepared Agent capacity in this Environment. False selects cold admission "
+        "and disables pool creation, refill and acquisition without changing the "
+        "Agent's configured prepared_capacity. Retirement and cleanup apply only to "
+        "this Environment's inventory.",
+        "astrabox.config.settings",
+    ),
+    (
+        "ASTRABOX_BACKGROUND_EXECUTION_ENABLED",
+        "public",
+        "true",
+        "Run channel and scheduler workers in this Environment. False retains interactive "
+        "work and Environment-owned runtime ingestion, recovery, cleanup and active sandbox keepalive; "
+        "Agent prewarming is controlled separately.",
         "astrabox.config.settings",
     ),
     (
@@ -1014,8 +1045,8 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ASTRABOX_SANDBOX_IDLE_ACTION",
         "internal",
         "terminate",
-        "Seeds an Environment's own idle_action when one is created without "
-        "stating it. Every Environment then carries its own value, and that is "
+        "Seeds a RuntimeProfile's own idle_action when one is created without "
+        "stating it. Every RuntimeProfile then carries its own value, and that is "
         "what a lapsed lease acts on; this setting is not consulted again. "
         "'terminate' destroys the sandbox and its workspace, 'pause' commits "
         "the filesystem and frees the compute so the next turn resumes the same "
@@ -1027,7 +1058,7 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ASTRABOX_SANDBOX_PARKED_RETENTION_SECONDS",
         "internal",
         "604800",
-        "Retention period for a paused sandbox whose Environment uses "
+        "Retention period for a paused sandbox whose RuntimeProfile uses "
         "idle_action=pause. Expiry deletes the sandbox record; configure the OCI "
         "registry with a matching policy for snapshot images.",
         "astrabox.common.utils.settings",
@@ -1809,7 +1840,7 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ASTRABOX_AGENT_IMAGE",
         "public",
         "derived",
-        "Agent sandbox container image, used by every Claude Code Environment "
+        "Agent sandbox container image, used by every Claude Code RuntimeProfile "
         "that pins none of its own. Unset, it is "
         "<ASTRABOX_IMAGE_PREFIX>sandbox-claude-code:<ASTRABOX_IMAGE_TAG>. The "
         "image must include @anthropic-ai/claude-code. Also read by `astrabox "
@@ -2044,7 +2075,7 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "Docker network mode for sandboxes the bundled lifecycle server creates "
         "when ASTRABOX_SANDBOX_SERVER_RUNTIME=docker. OpenSandbox's protected "
         "credential component requires bridge; that is a provider "
-        "topology constraint, not an Environment networking rule. "
+        "topology constraint, not a RuntimeProfile networking rule. "
         "The fixed sandbox service ports make host, container:<id>, and none invalid "
         "for this deployment layout.",
         "astrabox.deploy.sandbox_server",
@@ -2056,7 +2087,7 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "Keeps model, MCP, and assigned outbound credentials outside the sandbox "
         "and gives the Agent process placeholders. Enabled by default; the selected "
         "sandbox backend must implement protected credential delivery independently "
-        "of Environment networking. A false value passes the model credential to "
+        "of RuntimeProfile networking. A false value passes the model credential to "
         "the Agent process and refuses managed outbound credentials.",
         "astrabox.providers.open_sandbox.credential_vault",
     ),

@@ -83,7 +83,7 @@ def test_prepared_plugins_work_after_claim_reconnect_and_recovery(
     )
     agent = data(e2e_client.post("/api/v1/agents", json={
         "name": "Prepared plugin " + uuid.uuid4().hex[:8], "model": profile["model"],
-        "environment_name": environment_with_tenancy(e2e_client, "conversation"),
+        "runtime_profile_name": environment_with_tenancy(e2e_client, "conversation"),
         "prepared_capacity": 1, "packages": packages,
     }))
     aid = agent["agent_id"]

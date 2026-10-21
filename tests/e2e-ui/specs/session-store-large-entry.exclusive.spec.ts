@@ -70,7 +70,7 @@ test('SessionStore round-trips one 17MB entry through the scoped transcript repo
   const api = new AstraApi(request);
   const marker = `LARGE_SESSION_STORE_${Date.now()}_${test.info().workerIndex}`;
   // The fixture writes the box-account runner's spool, so this case needs the
-  // deployment's conversation-tenancy Environment rather than the campaign
+  // deployment's conversation-tenancy RuntimeProfile rather than the campaign
   // Agent's per-conversation account inside a shared box.
   const agent = await api.createColdTestAgent(`__e2e_large_session_store_${marker}`);
   agentId = agent.agent_id;

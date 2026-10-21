@@ -9,7 +9,7 @@ payload validation on the write path (``AgentConfigService.upsert_agent_config``
 The stored Agent carries ``model`` as a first-class required field, ``system``
 as its prompt, ``mcp_servers`` as a name-keyed server map, and
 ``exposure_mode`` / ``idle_hibernate_seconds`` are runtime settings.
-Model-provider *credentials* do not live here — they are an Environment
+Model-provider *credentials* do not live here — they are a RuntimeProfile
 property (``environment.provider_access``), shared across the agents on an
 environment.
 
@@ -19,11 +19,10 @@ Design notes:
   JSON-serializable for the GET endpoint.
 - Validation here is intentionally thin: types / required / enum only. Deep
   normalization (packages, default_repo, mcp) stays in its existing owners.
-  The payload is never rewritten here and defaults are never filled in. Two
+  The payload is never rewritten here and defaults are never filled in. Some
   fields serve a ``default`` so the form shows what an Agent saved without
-  touching them gets: ``prepared_capacity``, which the create path writes from
-  :func:`default_prepared_capacity`, and ``artifacts_enabled``, whose absence
-  :func:`agent_artifacts_enabled` reads as on. The top-level wire shape and
+  touching them gets: ``prepared_capacity`` is written by the create path,
+  ``artifacts_enabled`` reads as on, and ``a2a_access`` reads as disabled. The top-level wire shape and
   fixed nested objects are closed:
   undeclared input fails loud instead of entering the Agent document's open
   storage shape.
@@ -51,8 +50,9 @@ GROUP_RUNTIME = "runtime"
 GROUP_MODEL = "model"
 GROUP_TOOLS = "tools"
 GROUP_WORKSPACE = "workspace"
+GROUP_COLLABORATION = "collaboration"
 
-# Choose the runtime before model options: the Environment determines which
+# Choose the runtime before model options: the RuntimeProfile determines which
 # engine-specific fields the form exposes. Group `id` is the stable contract;
 # the label + subtitle are owned by the frontend i18n catalogue, keyed by this id
 # (misc:agent_form.groups.<id>.{label,description}). The backend schema never
@@ -62,6 +62,7 @@ AGENT_GROUPS: list[dict[str, str]] = [
     {"id": GROUP_RUNTIME},
     {"id": GROUP_MODEL},
     {"id": GROUP_TOOLS},
+    {"id": GROUP_COLLABORATION},
     {"id": GROUP_WORKSPACE},
 ]
 
@@ -88,7 +89,7 @@ _DEFAULT_REPO_ITEM_SCHEMA: list[dict[str, Any]] = [
 ]
 
 _PACKAGE_ITEM_SCHEMA: list[dict[str, Any]] = [
-    # One of the package kinds the Environment's engine declares.
+    # One of the package kinds the RuntimeProfile's engine declares.
     {"key": "kind", "type": "string", "required": True},
     {"key": "url", "type": "string", "required": True},
     {"key": "protocol", "type": "enum", "enum": _REPO_PROTOCOLS, "advanced": True},
@@ -110,7 +111,7 @@ _PACKAGE_ITEM_SCHEMA: list[dict[str, Any]] = [
 # - created_by: server-stamped ownership; admins / visibility /
 #   allowed_user_ids: the dedicated Agent access endpoint. None is accepted by
 #   the general authoring request.
-# - model_config / provider access: model credentials are an Environment
+# - model_config / provider access: model credentials are a RuntimeProfile
 #   property (environment.provider_access), not an agent field.
 AGENT_FIELD_SCHEMA: list[dict[str, Any]] = [
     # ── identity ──────────────────────────────────────────────────────────
@@ -157,6 +158,11 @@ AGENT_FIELD_SCHEMA: list[dict[str, Any]] = [
     # The built-in `artifacts` platform MCP server, which every Agent
     # conversation receives unless its owner turns it off here.
     {"key": "artifacts_enabled", "type": "boolean", "group": GROUP_TOOLS, "default": True},
+    {
+        "key": "a2a_access", "type": "enum", "group": GROUP_COLLABORATION,
+        "enum": ["disabled", "all", "selected"], "default": "disabled",
+    },
+    {"key": "a2a_agent_ids", "type": "string_list", "group": GROUP_COLLABORATION},
     {"key": "skills", "type": "skill_list", "group": GROUP_TOOLS, "complex": True},
     # mcp_servers is a name-keyed map of server definitions; the console edits
     # it as a list and serializes to and from the map.
@@ -171,13 +177,13 @@ AGENT_FIELD_SCHEMA: list[dict[str, Any]] = [
     # AstraBox runs Agent programs of any purpose, and a diff view serves only
     # the ones that edit files; a research or support Agent showing a
     # permanently empty Diff tab is a promise the product does not keep. They
-    # sit on the Agent rather than the Environment because the question is what
-    # the Agent is for, not what substrate it runs on — one Environment serves
+    # sit on the Agent rather than the RuntimeProfile because the question is what
+    # the Agent is for, not what substrate it runs on — one RuntimeProfile serves
     # Agents of different purposes.
     #
     # Hiding the terminal is not an access control and must never be read as
     # one: the sandbox stays reachable through the API, and the Agent can run
-    # commands regardless. `sandbox_permission_level` on the Environment owns
+    # commands regardless. `sandbox_permission_level` on the RuntimeProfile owns
     # that question.
     {"key": "terminal_panel", "type": "boolean", "group": GROUP_WORKSPACE},
     {"key": "diff_panel", "type": "boolean", "group": GROUP_WORKSPACE},
@@ -201,7 +207,7 @@ AGENT_FIELD_SCHEMA: list[dict[str, Any]] = [
     # The environment supplies sandbox/image/install + provider access; the
     # agent only names it. exposure_mode / idle_hibernate_seconds are the
     # agent's own runtime settings.
-    {"key": "environment_name", "type": "env_ref", "group": GROUP_RUNTIME, "required": True},
+    {"key": "runtime_profile_name", "type": "runtime_profile_ref", "group": GROUP_RUNTIME, "required": True},
     {
         "key": "exposure_mode",
         "type": "enum",
@@ -280,7 +286,7 @@ def agent_artifacts_enabled(agent: Mapping[str, Any]) -> bool:
 def default_prepared_capacity(sandbox_backend: str | None = None) -> int:
     """The prepared capacity of an Agent created without choosing one.
 
-    One where the Agent's sandbox backend (its Environment's, or the
+    One where the Agent's sandbox backend (its RuntimeProfile's, or the
     deployment's default) declares a client pool and says this deployment
     gives that pool what it needs, and zero elsewhere: an Agent created with
     capacity on a backend whose pool cannot run would only record
@@ -362,6 +368,9 @@ def validate_agent_payload(
 
     _reject_unknown_fields(payload, allow_version=allow_version)
     validate_payload(payload, AGENT_FIELD_SCHEMA, payload_label="agent payload")
+    from astrabox.core.service.orchestrator.agent.agent_collaboration import collaboration_access
+
+    collaboration_access(payload)
     capacity = payload.get("prepared_capacity")
     if capacity is not None and not 0 <= capacity <= MAX_PREPARED_CAPACITY:
         raise invalid_request(

@@ -6,7 +6,7 @@ FastAPI request spans for the AstraBox server, switched on by a deployment-wide
 running inside a sandbox, emitting its own spans about the work the agent did.
 Two different subjects that may share one destination.
 
-The Environment owns the collector destination and credential. An inline
+The RuntimeProfile owns the collector destination and credential. An inline
 ``auth_token`` supplies the complete Authorization header; an
 ``auth_token_secret_name`` resolves through :class:`astrabox.secrets.SecretProvider`
 from the server process environment when tracing is enabled.
@@ -15,7 +15,7 @@ Claude Code is the adapter that consumes this setting, translating it into
 its native ``OTEL_*`` variables. The resolved credential enters that CLI's
 process environment as plaintext; tracing does not use egress Vault
 substitution. Other engines must declare and implement this configuration input
-before an Environment can select it for them.
+before a RuntimeProfile can select it for them.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ _ALLOWED_SCHEMES = frozenset({"http", "https"})
 #: engine side.
 TRACING_SIGNALS = ("traces", "metrics", "logs")
 
-#: What an Environment gets when it does not choose. Traces and metrics, because
+#: What a RuntimeProfile gets when it does not choose. Traces and metrics, because
 #: every OTLP receiver serves those two and the backend this repository documents
 #: — Langfuse — answers 404 on `/v1/logs`. Turning all three on by default would
 #: mean a rejected request every flush interval against the documented
@@ -136,14 +136,14 @@ def runtime_tracing_spec(template: Any) -> "EngineTracingSpec | None":
     except APIError as exc:
         logger.error(
             "tracing disabled for environment %r: %s",
-            getattr(template, "environment_name", None) or "<unnamed>",
+            getattr(template, "runtime_profile_name", None) or "<unnamed>",
             getattr(exc, "message", exc),
         )
         return None
 
 
 def tracing_egress_hosts(template: Any) -> list[str]:
-    """The collector host a sandbox of this Environment must be allowed to reach.
+    """The collector host a sandbox of this RuntimeProfile must be allowed to reach.
 
     ``runtime.config_resolver`` appends this host to a limited network policy.
     Credential delivery does not grant network access; an unrestricted policy

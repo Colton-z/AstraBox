@@ -91,7 +91,7 @@ def test_a_private_skill_arrives_through_the_agents_vault(e2e_client: httpx.Clie
             "name": f"private-skill-{uuid.uuid4().hex[:10]}",
             "model": source["model"],
             "engine_options": source.get("engine_options") or {},
-            "environment_name": environment_with_tenancy(e2e_client, "conversation"),
+            "runtime_profile_name": environment_with_tenancy(e2e_client, "conversation"),
             "prepared_capacity": 0,
             "skills": [skill],
         }))

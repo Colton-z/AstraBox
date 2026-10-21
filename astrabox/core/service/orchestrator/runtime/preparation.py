@@ -13,6 +13,7 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator.engine.base import EngineStartupContext
 from astrabox.core.service.orchestrator.engine.registry import get_engine_adapter
+from astrabox.core.service.orchestrator.runtime.environment_ownership import require_environment_ownership
 from astrabox.core.service.orchestrator.runtime.packages import template_packages
 from astrabox.core.service.orchestrator.runtime.sandbox_client import get_underlying_sandbox
 from astrabox.core.service.orchestrator.runtime.skill_sources import (
@@ -302,7 +303,7 @@ async def _synchronize_assistant_resources(
     Assistant waits for a running synchronization instead of failing.
     """
     from astrabox.core.service.orchestrator.agent_config_service import AgentConfigService
-    from astrabox.persistence.repository.environment_repository import EnvironmentRepository
+    from astrabox.persistence.repository.runtime_profile_repository import RuntimeProfileRepository
     from astrabox.persistence.repository.assistant_workspace_repository import (
         AssistantWorkspaceRepository,
     )
@@ -320,7 +321,7 @@ async def _synchronize_assistant_resources(
     workspaces = AssistantWorkspaceRepository()
     sessions = SessionRepository()
     configuration = AgentConfigService(
-        AgentRepository(), EnvironmentRepository(), sessions_repo=sessions,
+        AgentRepository(), RuntimeProfileRepository(), sessions_repo=sessions,
     )
     packages, skills_path = _prepared_paths(config)
 
@@ -415,7 +416,8 @@ async def prepare_session_runtime_context(context: EngineStartupContext) -> Engi
     """Finish Session materials before the engine sees its startup context.
 
     Later inputs are prepared by the provider's ``prepare_turn`` under the
-    turn guard; this startup environment stays fixed for the runtime's life.
+    turn guard. Initialized engines accept environment only through an
+    adapter that acknowledges its native activation mechanism.
     """
     provider = runtime_preparation_provider()
     prepared = context.prepared_manifest
@@ -429,9 +431,10 @@ async def prepare_session_runtime_context(context: EngineStartupContext) -> Engi
     session = await SessionRepository().get_session(context.session_id)
     principal = str((session or {}).get("user_id") or "").strip()
     identity = copy.deepcopy(context.runtime_identity or {})
-    if not principal or principal != context.user_id:
+    if session is None or not principal or principal != context.user_id:
         raise APIError(code="RUNTIME_PREPARATION_FAILED", status_code=409,
                        message="Runtime preparation requires the persisted Session owner and workload identity")
+    require_environment_ownership(session)
     config = _config(context.template)
     subject = preparation_subject(session)
     revision = subject_revision(subject, config)
@@ -452,6 +455,12 @@ async def prepare_session_runtime_context(context: EngineStartupContext) -> Engi
         runtime_generation=str(config.get("runtime_generation") or ""),
         sandbox_id=context.sandbox_id, runtime_identity=identity, config=config,
         sandbox=context.sandbox,
+        engine_initialized=bool(prepared and prepared["engine_initialized"]) or context.attach_mode == "lightweight",
+        model_credential_placeholder=(
+            context.model_credential
+            if runtime_preparation_plan(config).model_credential_delivery == "provider"
+            else None
+        ),
     )
     try:
         async with asyncio.timeout(30.0):
@@ -466,8 +475,12 @@ async def prepare_session_runtime_context(context: EngineStartupContext) -> Engi
                 raise ValueError("Session-bound preparation returned no materials")
             if environment:
                 adapter = get_engine_adapter(str(config.get("engine_kind") or ""))
-                if not adapter.supports_startup_environment():
+                scope = adapter.startup_environment_scope()
+                if scope not in {"process", "session"}:
                     raise ValueError("engine cannot deliver Session startup environment")
+                if (scope == "process" and request.engine_initialized
+                        and not adapter.supports_initialized_environment()):
+                    raise ValueError("an initialized engine cannot receive new startup environment")
                 request_env = adapter.sandbox_request(
                     template=context.template, model_access=context.model_access,
                 )
@@ -499,4 +512,6 @@ async def prepare_session_runtime_context(context: EngineStartupContext) -> Engi
                 ) from None
         raise APIError(code="RUNTIME_PREPARATION_FAILED", status_code=502,
                        message="Session runtime preparation failed; inspect the deployment integration") from None
+    if environment and (scope == "session" or request.engine_initialized):
+        return dataclasses.replace(context, session_env=environment)
     return dataclasses.replace(context, runtime_env={**dict(context.runtime_env or {}), **environment})

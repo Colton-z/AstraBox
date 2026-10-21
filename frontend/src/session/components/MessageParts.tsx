@@ -50,6 +50,7 @@ const STANDALONE_DATA_PARTS = new Set([
   'data-api-retry',
   'data-process-block',
   'data-interaction',
+  'data-input-consumed',
   // A platform tool's card is what that call showed the reader.
   'data-tool-card',
 ]);
@@ -60,6 +61,7 @@ const ALERT_DATA_PARTS = new Set([
   'data-result',
   'data-api-retry',
   'data-interaction',
+  'data-input-consumed',
 ]);
 const FAILED_TOOL_STATES = new Set(['output-error', 'output-denied']);
 const UNFINISHED_TOOL_STATES = new Set([
@@ -279,11 +281,13 @@ export function MessageBubble({
   pendingToolCallId,
   isStreaming,
   sessionId,
+  includedInResponse,
 }: {
   message: SDKUIMessage;
   pendingToolCallId?: string;
   isStreaming?: boolean;
   sessionId?: string;
+  includedInResponse?: string;
 }) {
   const { t } = useTranslation();
   // A response that has not ended is still the runtime's: running, or paused
@@ -351,6 +355,7 @@ export function MessageBubble({
   );
   const canCollapseTurn = message.role === 'assistant'
     && !serverFolded
+    && !visibleParts.some((part) => part.type === 'data-input-consumed')
     && !isStreaming
     && !hasPendingPart
     && lastToolGroup >= 0
@@ -513,7 +518,7 @@ export function MessageBubble({
           </div>
         )}
       </MessageContent>
-      {isUser && <UserMessageStatus message={message} />}
+      {isUser && <UserMessageStatus message={message} includedInResponse={includedInResponse} />}
     </Message>
   );
 }
@@ -730,6 +735,9 @@ export function PartRenderer({
     }
     default: {
       const anyPart = part as Record<string, unknown>;
+      if (anyPart.type === 'data-input-consumed' && anyPart.data) {
+        return <AdditionalInputReceipt data={anyPart.data as { inputId: string; content: string }} />;
+      }
       if (anyPart.type === 'data-interaction' && anyPart.data) {
         const interaction = anyPart.data as HistoricalQuestionnaireInteraction;
         return interaction.presentation === 'form' && interaction.status ? <QuestionnaireHistoryCard interaction={interaction} /> : null;
@@ -772,6 +780,16 @@ export function PartRenderer({
       return null;
     }
   }
+}
+
+function AdditionalInputReceipt({ data }: { data: { inputId: string; content: string } }) {
+  const { t } = useTranslation();
+  return (
+    <div data-testid="additional-input-receipt" data-input-id={data.inputId} className="border-l-2 border-border pl-3 text-sm">
+      <p className="text-muted-foreground">{t('chat:message.additional_input')}</p>
+      <p className="whitespace-pre-wrap break-words">{data.content}</p>
+    </div>
+  );
 }
 
 /**

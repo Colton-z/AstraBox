@@ -10,10 +10,10 @@ AstraBox 将管理 Agent 的服务与运行 Agent 程序的沙箱分开。即使
 | --- | --- |
 | **AstraBox 服务** | 提供网页控制台和 API，完成用户认证与资源鉴权，保存 Agent 和 Session 记录，并向客户端实时返回工作进度。 |
 | **OpenSandbox** | 在 Docker 或 Kubernetes 上创建、连接、暂停、恢复和删除隔离沙箱。 |
-| **沙箱** | 包含 Agent 程序及其可用的系统软件。Environment 决定沙箱镜像、网络访问和生命周期。 |
+| **沙箱** | 包含 Agent 程序及其可用的系统软件。RuntimeProfile 决定沙箱镜像、网络访问和生命周期。 |
 | **Agent 程序** | 理解任务，调用模型和可用能力，持续工作直至需要用户输入或完成任务。 |
 
-AstraBox 统一处理鉴权、运行环境分配、凭证、状态保存和输入输出投递。沙箱分配、隔离和
+AstraBox 统一处理鉴权、运行配置分配、凭证、状态保存和输入输出投递。沙箱分配、隔离和
 存储使用所选 Provider 支持的操作；Agent 程序通过适配器运行自己的工具、权限机制和
 对话协议，它自己的对话以它的运行时为准：是否正在工作、已经取走哪些输入，以及每条
 回复从哪里开始、到哪里结束。这些集成都进入同一套平台工作流程。
@@ -21,7 +21,7 @@ AstraBox 统一处理鉴权、运行环境分配、凭证、状态保存和输�
 在内置镜像中，Agent 程序读写 Session 的 `/workspace` 工作区。Agent 在沙箱中启动应用后，可以通过 OpenSandbox 提供的地址在浏览器中打开；这部分流量不经过 AstraBox API。
 
 模型端点可以使用内置 LiteLLM、已有 LiteLLM 部署，或模型 Plugin 提供的端点。
-Environment 表单列出当前部署已安装的 Agent 程序，并校验所选沙箱镜像。发布版本支持的
+RuntimeProfile 表单列出当前部署已安装的 Agent 程序，并校验所选沙箱镜像。发布版本支持的
 Agent 程序和镜像名称统一列在仓库介绍中。
 
 ## 主要组件
@@ -31,7 +31,7 @@ Agent 程序和镜像名称统一列在仓库介绍中。
 React 控制台与其他客户端使用同一个 FastAPI 服务。生产镜像在容器内通过 `8000` 端口
 提供这两个入口。服务负责：
 
-- Agent、Environment、Session、Deployment、Assistant 和管理 API；
+- Agent、RuntimeProfile、Session、Deployment、Assistant 和管理 API；
 - 身份认证和资源鉴权；
 - 已保存的 Session 历史和实时 SSE；
 - 审批和问题的回答；
@@ -58,10 +58,10 @@ React 控制台与其他客户端使用同一个 FastAPI 服务。生产镜像�
 [接入新的沙箱 provider](writing-a-sandbox-provider.md)。
 
 一个部署可以安装多个沙箱 provider，并用 `ASTRABOX_SANDBOX_BACKENDS` 启用实际使用的
-那些；`ASTRABOX_SANDBOX_BACKEND` 是未指定后端的 Environment 使用的默认后端。
-Environment 只能选择已启用的后端。仍指向已安装但未启用后端的记录会返回
+那些；`ASTRABOX_SANDBOX_BACKEND` 是未指定后端的 RuntimeProfile 使用的默认后端。
+RuntimeProfile 只能选择已启用的后端。仍指向已安装但未启用后端的记录会返回
 `SANDBOX_BACKEND_DISABLED`，AstraBox 不会把它交给其他后端；启动时会在日志中列出选择了
-这类后端的已启用 Environment。后台的沙箱清点和工作区
+这类后端的已启用 RuntimeProfile。后台的沙箱清点和工作区
 视图回收按已启用的后端分别进行，一个控制面不可达不会影响其他后端。
 
 内置 `open_sandbox` Plugin 调用 OpenSandbox Lifecycle 服务。服务镜像可以自行运行该服务并使用本机
@@ -90,7 +90,7 @@ AstraBox，仍可使用相对路径资源、SSE 和 WebSocket。
 凭证、恢复已保存的原生状态，然后激活适配器。独占沙箱和 Agent 共享沙箱中的隔离位置
 使用同一套编排流程。
 
-Environment 选择的镜像必须与 `engine_kind` 兼容。需要新增 Agent 程序时，按照
+RuntimeProfile 选择的镜像必须与 `engine_kind` 兼容。需要新增 Agent 程序时，按照
 [接入新的 Agent 程序](writing-an-engine-adapter.md)实现所需接口和检查。
 
 ### 消息平台
@@ -142,7 +142,7 @@ AstraBox Credential Vault 是组织级资源。`local` Secret Store 使用 AES-G
 
 1. 控制台、API 或集成向 Session 发送输入；
 2. AstraBox 认证调用方、检查鉴权、记录输入，并返回回执。客户端持续读取 Session 的输出流；
-3. 同一时间由一个 AstraBox 进程持有 Session 与其运行环境的连接；任何副本都可以接收输入，并通过数据库通知告知该进程。Session 还没有运行环境，或运行环境需要重建时，AstraBox 读取当前 Agent 和 Environment，再请求 OpenSandbox 创建、领取、恢复或重新连接沙箱；
+3. 同一时间由一个 AstraBox 进程持有 Session 与其运行配置的连接；任何副本都可以接收输入，并通过数据库通知告知该进程。Session 还没有运行配置，或运行配置需要重建时，AstraBox 读取当前 Agent 和 RuntimeProfile，再请求 OpenSandbox 创建、领取、恢复或重新连接沙箱；
 4. AstraBox 确认工作区和凭证，按需恢复原生状态，并连接到所选 Agent 程序。部署安装了运行准备流程时，AstraBox 先执行该流程，再把输入交给程序；
 5. Agent 程序在 `/workspace` 中工作，并报告自己的输出、回复的开始和结束、正在等待的审批或问题，以及它是否正在工作；
 6. 每个输出 part 到达后，AstraBox 立即转发给正在跟随该 Session 的客户端，并把这些 part 连同程序的读取位置一起记录到数据库；
@@ -150,7 +150,7 @@ AstraBox Credential Vault 是组织级资源。`local` Secret Store 使用 AES-G
 
 关闭浏览器不会取消任务。客户端可以携带最后收到的 `after_seq` 游标重新连接，先收到断开期间错过的内容，再实时接收后续输出。详见 [SSE 事件流](events-stream.md)。
 
-运行环境可以通过以下路径启动：
+运行配置可以通过以下路径启动：
 
 | 路径 | 接收用户输入前的准备 |
 | --- | --- |
@@ -160,21 +160,21 @@ AstraBox Credential Vault 是组织级资源。`local` Secret Store 使用 AES-G
 
 预热资源可能早于 Session 创建，因此持久工作区在交付前选定。共享沙箱保留已有的根目录，
 每个对话使用自己的隔离目录。如果确认计算资源已经丢失，Agent 程序正在生成的回复会以失败
-结束。程序尚未取走的消息会交给替代运行环境，由它从已保存的原生状态继续对话；程序已经
+结束。程序尚未取走的消息会交给替代运行配置，由它从已保存的原生状态继续对话；程序已经
 取走的消息不会再次发送。
 
 ## 数据保存在哪里
 
 | 数据 | 保存位置 |
 | --- | --- |
-| Agent、Environment 和 Deployment 记录 | AstraBox 的 PostgreSQL 数据库 |
+| Agent、RuntimeProfile 和 Deployment 记录 | AstraBox 的 PostgreSQL 数据库 |
 | 凭证值 | 已配置的 Secret Store |
 | Session 记录：输入、回复、审批和问题，以及输出日志 | AstraBox 的 PostgreSQL 数据库 |
 | Agent 程序原生状态（SessionStore） | AstraBox 的 PostgreSQL 数据库，以程序原生记录或归档格式保存 |
 | Session 和 Assistant 文件 | `/workspace`，可使用持久工作区卷；未配置时随沙箱或受支持的快照保留 |
 
 原生状态包含 Agent 程序恢复对话所需的记录，也包括原生子对话状态。AstraBox 保存这些
-记录，界面展示的消息历史不替代原生状态。替代运行环境恢复对话前，平台通过程序的状态
+记录，界面展示的消息历史不替代原生状态。替代运行配置恢复对话前，平台通过程序的状态
 接口或原生文件还原记录。这项数据库存储不依赖持久工作区卷。
 
 工作区文件的生命周期是独立的。配置持久工作区卷后，替代计算资源访问同一个工作区目录。
@@ -200,7 +200,7 @@ EFS CSI Kubernetes 卷。两者都通过后端的路由进入沙箱。部署者�
 
 ## 隔离与访问
 
-Agent 程序不会收到 AstraBox 登录凭证，也不能直接访问 AstraBox 数据库。Environment 决定沙箱使用 `limited` 还是 `unrestricted` 网络模式。启用凭证保护后，受保护的模型、MCP 及已分配的出站 Vault 凭证保存在沙箱外，只会添加到符合规则的出站请求中。
+Agent 程序不会收到 AstraBox 登录凭证，也不能直接访问 AstraBox 数据库。RuntimeProfile 决定沙箱使用 `limited` 还是 `unrestricted` 网络模式。启用凭证保护后，受保护的模型、MCP 及已分配的出站 Vault 凭证保存在沙箱外，只会添加到符合规则的出站请求中。
 这不代表所有环境变量都受同样保护：原生 tracing 鉴权会传入沙箱内 Agent 程序的
 OpenTelemetry 配置，不经过出站 Vault 注入。参见 [tracing 配置说明](cli/configuration.md#tracing)。
 
@@ -212,7 +212,7 @@ OpenTelemetry 配置，不经过出站 Vault 注入。参见 [tracing 配置说�
 | --- | --- |
 | 单台 Docker 主机 | OpenSandbox 在 AstraBox 主机上为沙箱创建独立容器。 |
 | Kubernetes | OpenSandbox 在已配置的集群中创建沙箱工作负载。 |
-| 已有 OpenSandbox 服务 | AstraBox 使用该服务所管理的 Docker 或 Kubernetes 运行环境。 |
+| 已有 OpenSandbox 服务 | AstraBox 使用该服务所管理的 Docker 或 Kubernetes 运行配置。 |
 
 三种方式使用相同的 AstraBox API 和 Session 行为。安装、安全和备份要求见[部署 AstraBox](deploy.md)。
 
@@ -220,7 +220,7 @@ OpenTelemetry 配置，不经过出站 Vault 注入。参见 [tracing 配置说�
 
 | 选择 | 共享内容 |
 | --- | --- |
-| AstraBox 后端副本 | API 和编排副本使用相同的产品数据库、凭证配置和可访问的沙箱服务。已保存的 Session 与原生状态不依赖某个副本的本机内存。同一时间只有一个副本持有每个 Session 与其运行环境的连接；该副本停止后，由另一个副本接管这个 Session。 |
+| AstraBox 后端副本 | API 和编排副本使用相同的产品数据库、凭证配置和可访问的沙箱服务。已保存的 Session 与原生状态不依赖某个副本的本机内存。同一时间只有一个副本持有每个 Session 与其运行配置的连接；该副本停止后，由另一个副本接管这个 Session。 |
 | 沙箱工作节点 | 沙箱服务在工作节点上分配计算资源。跨节点使用持久工作区需要共享底层存储，每个 mergerfs 目录视图与使用它的沙箱位于同一节点。 |
 
 增加后端副本不会把节点本地文件系统变成共享存储。分别配置后端副本的数据库与服务访问，
@@ -234,7 +234,7 @@ OpenTelemetry 配置，不经过出站 Vault 注入。参见 [tracing 配置说�
 
 ## 相关文档
 
-- [概览](overview.md) — Agent、Environment 和 Session
+- [概览](overview.md) — Agent、RuntimeProfile 和 Session
 - [部署 AstraBox](deploy.md) — 安装与运维
 - [OpenSandbox](providers/opensandbox.md) — 沙箱行为与配置
 - [HTTP API](api.md) — 请求、认证、响应和流式输出

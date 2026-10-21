@@ -24,7 +24,7 @@ Skill、Plugin、凭证或更宽的网络访问范围。
 - 说明缺失或冲突的数据；
 - 将有用的表格、脚本和报告保存到工作区。
 
-选择能够运行所需 Agent 程序并允许访问研究数据源的 Environment。Environment 决定这项
+选择能够运行所需 Agent 程序并允许访问研究数据源的 RuntimeProfile。RuntimeProfile 决定这项
 工作使用的沙箱、网络访问方式和模型连接。
 
 ## 连接研究数据源
@@ -33,7 +33,7 @@ Skill、Plugin、凭证或更宽的网络访问范围。
 无论 Server 定义直接填写在 Agent 中，还是由 Plugin 提供，它都是远程 MCP Server。
 
 数据源需要凭证时，将凭证保存在 Credential Vault 中，并只为数据源的准确目标启用凭证
-保护。Environment 使用受限网络时，还需要允许远程主机。Agent 只能访问管理员和用户有权
+保护。RuntimeProfile 使用受限网络时，还需要允许远程主机。Agent 只能访问管理员和用户有权
 使用的数据。
 
 具体设置见[配置 MCP Server、Plugin 和 Skill](adding-tools.md)、

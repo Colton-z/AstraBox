@@ -127,9 +127,9 @@ AstraBox 会验证签名、过期时间以及配置的 Issuer 和 Audience，再
 
 成功登录不会自动让用户成为管理员。用户组映射提供管理员角色；每项操作还会分别检查资源所有权和 Agent 鉴权。向团队开放前，请同时使用普通用户和管理员账号测试。
 
-开启团队登录之前创建的对话属于本地单用户身份，之后登录的账号看不到它们。Agent、Assistant 和 Environment 不受影响。
+开启团队登录之前创建的对话属于本地单用户身份，之后登录的账号看不到它们。Agent、Assistant 和 RuntimeProfile 不受影响。
 
-每个已登录用户都可以创建 Agent 和 Assistant。Agent 自身字段能让沙箱访问和使用的，仅限管理员提供的内容：管理员列出的仓库 Deploy Key、管理员分配的凭证，以及 Environment 放行或属于公网的主机（参见 [Agent 自身扩展可以访问的范围](adding-tools.md#what-extensions-may-reach)和[访问 GitHub](working-with-repos.md#who-may-use-which-credentials)）。如果用户只应使用管理员发布的 Agent，例如开放或公开的部署，可以只允许管理员创建：
+每个已登录用户都可以创建 Agent 和 Assistant。Agent 自身字段能让沙箱访问和使用的，仅限管理员提供的内容：管理员列出的仓库 Deploy Key、管理员分配的凭证，以及 RuntimeProfile 放行或属于公网的主机（参见 [Agent 自身扩展可以访问的范围](adding-tools.md#what-extensions-may-reach)和[访问 GitHub](working-with-repos.md#who-may-use-which-credentials)）。如果用户只应使用管理员发布的 Agent，例如开放或公开的部署，可以只允许管理员创建：
 
 ```bash
 ASTRABOX_AUTHORING_ADMIN_ONLY=true

@@ -219,7 +219,7 @@ def _claude_tracing_env(spec: Any, *, session_id: str | None = None) -> dict[str
         "OTEL_TRACES_EXPORT_INTERVAL": _OTEL_FLUSH_INTERVAL_MS,
         "CLAUDE_CODE_OTEL_DIAG_STDERR": "1",
     }
-    # One exporter switch per signal the Environment asked for, and `none` for
+    # One exporter switch per signal the RuntimeProfile asked for, and `none` for
     # the rest. Never `console`: that exporter writes to stdout, which is the
     # channel the runner speaks to the CLI over.
     for signal, var in (

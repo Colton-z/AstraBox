@@ -103,6 +103,42 @@ def _is_admin_path(path: str) -> bool:
     return path.startswith("/api/v1/admin")
 
 
+def _is_session_management_path(scope: dict[str, Any], path: str) -> bool:
+    """Session operations whose service checks the caller's resource ACL."""
+    prefix = "/api/v1/admin/sessions/"
+    if not path.startswith(prefix):
+        return False
+    parts = path.removeprefix(prefix).split("/")
+    method = str(scope.get("method") or "GET").upper()
+    if method == "GET":
+        return parts in (["all"], ["transcripts"]) or (
+            len(parts) == 2
+            and bool(parts[0])
+            and parts[1] in {"detail", "trace", "transcript"}
+        )
+    return method == "POST" and len(parts) == 2 and bool(parts[0]) and parts[1] == "kill"
+
+
+def _is_deployment_management_path(scope: dict[str, Any], path: str) -> bool:
+    """Trigger operations whose service checks the target Agent's ACL."""
+    method = str(scope.get("method") or "GET").upper()
+    if path == "/api/v1/admin/deployments":
+        return method == "GET"
+    prefix = "/api/v1/admin/agents/"
+    if not path.startswith(prefix):
+        return False
+    parts = path.removeprefix(prefix).split("/")
+    if len(parts) < 2 or not all(parts) or parts[1] != "deployments":
+        return False
+    if len(parts) == 2:
+        return method in {"GET", "POST"}
+    if len(parts) == 3:
+        return method in {"PUT", "DELETE"}
+    if len(parts) == 4 and parts[3] == "runs":
+        return method in {"GET", "POST"}
+    return len(parts) == 6 and parts[3] == "runs" and parts[5] == "replay" and method == "POST"
+
+
 def _required_api_scope(scope: dict[str, Any], path: str) -> str | None:
     """Return the OAuth scope a machine identity needs for this route."""
 
@@ -214,12 +250,27 @@ class WebIdentityMiddleware:
             )
             return
 
+        if (
+            user is not None and path.startswith("/api/") and not _is_exempt_path(path)
+            and path not in {"/api/v1/user/current", "/api/v1/environments"}
+        ):
+            from astrabox.core.service.environment_access import require_environment_access
+
+            try:
+                await require_environment_access(
+                    user, operation=str(scope.get("method") or "websocket") + " " + path,
+                )
+            except APIError as exc:
+                await self._reject(scope, receive, send, exc)
+                return
+
         # Admin-surface gate. With the no-auth DEFAULT resolver (single-user,
         # host-is-yours) the console stays open. The moment a real resolver is
         # configured, the admin surface hard-gates: anonymous never passes
         # (a strict resolver that returns None instead of raising must not
         # silently reopen the console), and an asserted identity needs the
-        # admin role.
+        # admin role. Session and trigger management check the target's ACL in
+        # their services; unscoped operations and account delegation stay gated.
         if (
             user is None
             and _is_admin_path(path)
@@ -240,6 +291,8 @@ class WebIdentityMiddleware:
             user is not None
             and _is_admin_path(path)
             and PLATFORM_ADMIN_ROLE not in user.roles
+            and not _is_session_management_path(scope, path)
+            and not _is_deployment_management_path(scope, path)
         ):
             await self._reject(
                 scope,

@@ -20,6 +20,11 @@ from astrabox.core.service.orchestrator.agent_access import can_view_agent
 from astrabox.web.identity_middleware import WebIdentityMiddleware, _is_exempt_path
 
 
+@pytest.fixture(autouse=True)
+def _environment_membership(environment_member_accounts: set[str]) -> None:
+    environment_member_accounts.update({'alice'})
+
+
 class _AgentRepository:
     def __init__(self) -> None:
         self.agents = {

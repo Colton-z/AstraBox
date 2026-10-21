@@ -55,7 +55,7 @@ provider 负责四项操作：
 - `validate(source)` 检查其配置和已批准的凭证名称，不读取机密，也不访问网络。遇到
   未知选项时应拒绝。
 - `egress_hosts(source)` 声明获取内容时沙箱需要访问的主机。核心会对这些主机应用已有的
-  Agent 作者/Environment 网络访问规则。
+  Agent 作者/RuntimeProfile 网络访问规则。
 - `resolve(source, sandbox, private_dir)` 授权访问，并返回
   `ResolvedSkillSource(version, content_id)`。两个字段都是公开、不可变的标识。如果
   供应方的标识只在某个租户或命名空间内唯一，请把租户或命名空间包含在来源、配置或内容

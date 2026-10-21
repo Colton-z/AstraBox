@@ -9,7 +9,7 @@ AstraBox is an open-source, self-hosted runtime that turns installed Agent progr
 | Concept         | Description                                                                           | Analogy                   |
 | --------------- | ------------------------------------------------------------------------------------- | ------------------------- |
 | **Agent**       | A cloud Agent powered by an installed Agent program                                    | "Cloud teammate"          |
-| **Environment** | The runtime for a Session, including the Agent program, sandbox, model connection, and network configuration | "Desk and toolbox" |
+| **RuntimeProfile** | The runtime for a Session, including the Agent program, sandbox, model connection, and network configuration | "Desk and toolbox" |
 | **Session**     | One stateful Agent execution, including its messages, Events, and current state         | "A specific piece of work" |
 | **Event**       | The real-time event stream produced by a Session                                      | "Live progress feed"      |
 
@@ -18,7 +18,7 @@ Alongside Agents for teams and automation, AstraBox offers [Assistants](assistan
 ## Workflow
 
 1. **Define an Agent.** Specify the model, system prompt, and extensions.
-2. **Configure an Environment.** Choose the Agent program, sandbox, model connection, and network configuration.
+2. **Configure a RuntimeProfile.** Choose the Agent program, sandbox, model connection, and network configuration.
 3. **Start a Session.** Use the Agent to create a runtime instance.
 4. **Send message + Stream events.** Send a message to the Session and stream the Agent's messages, progress, and status changes over HTTP.
 
@@ -34,7 +34,7 @@ One deployment brings up the pieces a team usually assembles by hand:
 
 ## Manage and Extend AstraBox
 
-- **Command line and MCP.** The [AstraBox CLI](cli/overview.md) declares Environments and Agents in `astrabox.yaml`, applies changes, and sends Agents tasks. It can print JSON with one exit code per kind of failure, so scripts and coding agents can operate a deployment; `astrabox mcp serve` offers the same operations as MCP tools.
+- **Command line and MCP.** The [AstraBox CLI](cli/overview.md) declares RuntimeProfiles and Agents in `astrabox.yaml`, applies changes, and sends Agents tasks. It can print JSON with one exit code per kind of failure, so scripts and coding agents can operate a deployment; `astrabox mcp serve` offers the same operations as MCP tools.
 - **Python plugins.** Installed packages can add Agent programs, sandbox backends, model services, messaging platforms, identity providers, Secret Stores, workspace storage, schedulers, and remote MCP server sources. See [Extensions](architecture.md#plugin-interfaces).
 
 ## Verify Connectivity
@@ -89,11 +89,11 @@ A: The same Agent can run multiple active Sessions. The practical limit is the c
 
 **Q: How is data secured?**
 
-A: By default, each Session runs in an isolated sandbox; an Environment can also use a supported Agent-shared sandbox. Session history is stored outside the sandbox, and workspace lifetime follows the Environment's idle action and storage configuration.
+A: By default, each Session runs in an isolated sandbox; a RuntimeProfile can also use a supported Agent-shared sandbox. Session history is stored outside the sandbox, and workspace lifetime follows the RuntimeProfile's idle action and storage configuration.
 
 ## Next Steps
 
 - [Quickstart](quickstart.md) — get your first Agent running.
 - [Defining an Agent](authoring-agents.md) — dive deeper into Agent configuration.
-- [Environments](environments.md) — configure the runtime environment.
+- [RuntimeProfiles](runtime-profiles.md) — configure the runtime environment.
 - [Sessions](sessions.md) — manage Session lifecycle.

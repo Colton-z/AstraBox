@@ -240,11 +240,17 @@ for _code, _status, _category, _retryable, _owner in (
     ("DEPLOYMENT_UNAUTHORIZED", 401, "auth", False, "client"),
     ("DEPLOYMENT_MISCONFIGURED", 409, "state", False, "platform"),
     ("DEPLOYMENT_NO_OWNER", 409, "state", False, "platform"),
-    # An Environment naming a permission level the platform does not define.
-    # `template` because the value is stored on the Environment, which is what
+    ("ENVIRONMENT_MISSING", 500, "state", False, "platform"),
+    ("ENVIRONMENT_MISMATCH", 409, "state", False, "client"),
+    ("ENVIRONMENT_NOT_FOUND", 404, "request", False, "client"),
+    ("ENVIRONMENT_ACCESS_DENIED", 403, "authorization", False, "client"),
+    ("ENVIRONMENT_VERSION_CONFLICT", 409, "state", True, "client"),
+    ("AGENT_PREWARM_DISABLED", 409, "configuration", False, "platform"),
+    # A RuntimeProfile naming a permission level the platform does not define.
+    # `template` because the value is stored on the RuntimeProfile, which is what
     # a session's runtime is rendered from — the same owner as the other
     # unsupported-value refusals read off a stored definition. Not retryable:
-    # the same Environment produces the same refusal until someone edits it.
+    # the same RuntimeProfile produces the same refusal until someone edits it.
     ("UNSUPPORTED_SANDBOX_PERMISSION_LEVEL", 409, "state", False, "template"),
     (
         "SANDBOX_ISOLATION_UNSUPPORTED",
@@ -324,6 +330,7 @@ for _code, _status, _category, _retryable, _owner in (
     # command id answers this once a newer command has started.
     ("TERMINAL_COMMAND_NOT_FOUND", 404, "request", False, "session"),
     ("SESSION_BUSY", 409, "state", True, "session"),
+    ("SESSION_NOT_READY", 409, "state", True, "session"),
     ("INTERACTION_NOT_FOUND", 404, "request", False, "session"),
     # Answered, withdrawn or expired: answering again cannot succeed.
     ("INTERACTION_NOT_OPEN", 409, "state", False, "session"),
@@ -374,8 +381,8 @@ for _code, _status, _category, _retryable, _owner in (
     ("ARTIFACT_DATA_NOT_FOUND", 404, "request", False, "client"),
     ("MODEL_ENDPOINT_INVALID", 500, "configuration.model", False, "platform"),
     ("MCP_BINDING_NOT_FOUND", 404, "request", False, "client"),
-    ("MCP_PROXY_NOT_CONFIGURED", 503, "configuration.environment", False, "platform"),
-    ("AGENT_COORDINATION_UNAVAILABLE", 503, "configuration.environment", False, "platform"),
+    ("MCP_PROXY_NOT_CONFIGURED", 503, "configuration.runtime_profile", False, "platform"),
+    ("AGENT_COORDINATION_UNAVAILABLE", 503, "configuration.runtime_profile", False, "platform"),
     ("ARTIFACT_NOT_FOUND", 404, "request", False, "client"),
     ("ARTIFACT_VERSION_NOT_FOUND", 404, "request", False, "client"),
     ("ARTIFACT_VERSION_CONFLICT", 409, "request", False, "client"),
@@ -399,14 +406,17 @@ for _code, _status, _category, _retryable, _owner in (
     ("ARTIFACT_ROOM_LIMIT", 413, "request", False, "client"),
     ("ARTIFACT_TITLE_LIMIT", 413, "request", False, "client"),
     ("ARTIFACT_STORE_UNAVAILABLE", 503, "persistence", False, "platform"),
-    ("ENVIRONMENT_NOT_FOUND", 404, "request", False, "client"),
-    # No Environment for Assistants yet: an administrator sets one in the
+    ("RUNTIME_PROFILE_NOT_FOUND", 404, "request", False, "client"),
+    ("AGENT_RUNTIME_PROFILE_REQUIRED", 500, "configuration.runtime_profile", False, "platform"),
+    ("AGENT_RUNTIME_PROFILE_MISSING", 500, "configuration.runtime_profile", False, "platform"),
+    ("ASSISTANT_RUNTIME_PROFILE_MISSING", 403, "configuration.runtime_profile", False, "template"),
+    # No RuntimeProfile for Assistants yet: an administrator sets one in the
     # Assistant defaults, so the user's retry cannot change the answer.
-    ("ASSISTANT_DEFAULTS_UNAVAILABLE", 409, "configuration.environment", False, "template"),
-    ("ENVIRONMENT_IN_USE", 409, "configuration.environment", False, "template"),
+    ("ASSISTANT_DEFAULTS_UNAVAILABLE", 409, "configuration.runtime_profile", False, "template"),
+    ("RUNTIME_PROFILE_IN_USE", 409, "configuration.runtime_profile", False, "template"),
     # The row names a stored credential that is absent from the secret store.
-    ("ENVIRONMENT_SECRET_MISSING", 500, "configuration.environment", False, "platform"),
-    ("ENVIRONMENT_SECRET_STORE_NOT_TRANSACTIONAL", 500, "configuration.environment", False, "platform"),
+    ("RUNTIME_PROFILE_SECRET_MISSING", 500, "configuration.runtime_profile", False, "platform"),
+    ("RUNTIME_PROFILE_SECRET_STORE_NOT_TRANSACTIONAL", 500, "configuration.runtime_profile", False, "platform"),
     # Optional engine protocols are requested by the caller. An engine that
     # does not declare one is healthy; the requested operation is unavailable.
     ("ENGINE_CAPABILITY_UNAVAILABLE", 409, "request", False, "client"),
@@ -429,13 +439,13 @@ for _code, _status, _category, _retryable, _owner in (
     # An engine with a permission-mode vocabulary but no product default needs
     # the caller to choose one explicitly.
     ("ENGINE_PERMISSION_MODE_REQUIRED", 400, "request", False, "client"),
-    # An unpinned Environment follows its adapter only when that adapter has a
-    # real image default. Replaying cannot invent one; the Environment owner
+    # An unpinned RuntimeProfile follows its adapter only when that adapter has a
+    # real image default. Replaying cannot invent one; the RuntimeProfile owner
     # must select an image (or install an adapter that declares its default).
     (
         "ENGINE_RUNTIME_IMAGE_REQUIRED",
         409,
-        "configuration.environment",
+        "configuration.runtime_profile",
         False,
         "template",
     ),
@@ -448,9 +458,9 @@ for _code, _status, _category, _retryable, _owner in (
     # The model provider mapped an engine's native protocol outside the gateway
     # base URL this deployment configured. Only that configuration can fix it.
     ("MODEL_ENDPOINT_INVALID", 500, "configuration.model", False, "platform"),
-    # An enabled Assistant Environment without an engine identity is malformed
+    # An enabled Assistant RuntimeProfile without an engine identity is malformed
     # deployment configuration. Repeating the request cannot repair its record.
-    ("ASSISTANT_ENVIRONMENT_INVALID", 500, "configuration.environment", False, "template"),
+    ("ASSISTANT_RUNTIME_PROFILE_INVALID", 500, "configuration.runtime_profile", False, "template"),
     ("ASSISTANT_RUNTIME_MANAGER_UNAVAILABLE", 500, "state", False, "platform"),
     ("ASSISTANT_LIFECYCLE_UNAVAILABLE", 500, "state", False, "platform"),
     # A workspace disappearing while its Assistant still exists violates the
@@ -661,25 +671,25 @@ for _code, _status, _category, _retryable, _owner in (
     # question of whether the deployment configured a proxy for the bridge to
     # reach at all, which the operator answers and the sandbox cannot. Splitting
     # them is what lets an `owner` be true of every site that raises a code.
-    # The Environment administrator chose whether limited networking admits
-    # Agent-declared MCP destinations. Repeating the same Agent/Environment
+    # The RuntimeProfile administrator chose whether limited networking admits
+    # Agent-declared MCP destinations. Repeating the same Agent/RuntimeProfile
     # pair cannot change that policy.
     (
         "AGENT_MCP_NETWORK_ACCESS_DISABLED",
         409,
-        "configuration.environment",
+        "configuration.runtime_profile",
         False,
         "template",
     ),
     # An Agent's or Assistant's own Skill, Plugin or MCP host would open the
     # deployment's own network (private, loopback, link-local, unresolvable) to
-    # a limited Environment that does not name it. Raised when the definition
+    # a limited RuntimeProfile that does not name it. Raised when the definition
     # is saved and again when a sandbox policy is built from it. Only a changed
-    # host or an administrator's Environment edit changes the answer.
+    # host or an administrator's RuntimeProfile edit changes the answer.
     (
         "AGENT_EGRESS_HOST_REFUSED",
         403,
-        "configuration.environment",
+        "configuration.runtime_profile",
         False,
         "template",
     ),
@@ -714,7 +724,13 @@ for _code, _status, _category, _retryable, _owner in (
 
 
 register_error(
-    "AGENT_ENVIRONMENT_DISABLED",
+    "AGENT_DISABLED",
+    status_code=409,
+    category="configuration",
+    owner="platform",
+)
+register_error(
+    "AGENT_RUNTIME_PROFILE_DISABLED",
     status_code=409,
     category="configuration",
     owner="platform",

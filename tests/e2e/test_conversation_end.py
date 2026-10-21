@@ -24,7 +24,7 @@ Two deployment-specific contracts are proven here:
   marked ``assistant_live``: two messages down one Assistant conversation, the
   second answered from the first.
 
-Run its dedicated lane against the pinned Assistant Environment (deselected in
+Run its dedicated lane against the pinned Assistant RuntimeProfile (deselected in
 the default unit run):
 
     E2E_LANE=assistant ./scripts/e2e_live.sh
@@ -131,14 +131,14 @@ def _assistant_runtime(
     kubeconfig = os.getenv("ASTRABOX_E2E_KUBECONFIG", "").strip()
     namespace = os.getenv("ASTRABOX_E2E_KUBE_NAMESPACE", "").strip()
     assert expected_name and expected_image and expected_digest and expected_model, (
-        "assistant_live requires the exact Assistant Environment, Hermes image digest, "
+        "assistant_live requires the exact Assistant RuntimeProfile, Hermes image digest, "
         "and smoke-proven model"
     )
     assert kubeconfig and namespace, "assistant_live requires Kubernetes proof inputs"
-    environments = data(e2e_client.get("/api/v1/admin/environments"))
-    matches = [item for item in environments if item.get("name") == expected_name]
+    runtime_profiles = data(e2e_client.get("/api/v1/admin/runtime-profiles"))
+    matches = [item for item in runtime_profiles if item.get("name") == expected_name]
     assert len(matches) == 1, (
-        f"expected one Assistant Environment {expected_name!r}, found {len(matches)}"
+        f"expected one Assistant RuntimeProfile {expected_name!r}, found {len(matches)}"
     )
     actual = matches[0]
     assert actual.get("engine_kind") == "assistant", actual
@@ -146,7 +146,7 @@ def _assistant_runtime(
     assert actual.get("runtime_template_name") == expected_image, actual
     model_catalog = data(
         e2e_client.get(
-            f"/api/v1/admin/environments/{expected_name}/models"
+            f"/api/v1/admin/runtime-profiles/{expected_name}/models"
         )
     )
     assert expected_model in model_catalog.get("models", []), model_catalog
@@ -209,7 +209,7 @@ def test_assistant_answers_a_second_message_in_the_same_conversation(
                 "/api/v1/assistants",
                 json={
                     "display_name": f"__e2e_second_message_{uuid.uuid4().hex[:8]}",
-                    "environment_name": assistant_environment,
+                    "runtime_profile_name": assistant_environment,
                     "model_config_override": {"model_name": assistant_model},
                 },
             )
@@ -323,7 +323,7 @@ def test_assistant_conversation_end_starts_fresh_context_on_same_workspace(
                 "/api/v1/assistants",
                 json={
                     "display_name": f"__e2e_conversation_end_{uuid.uuid4().hex[:8]}",
-                    "environment_name": assistant_environment,
+                    "runtime_profile_name": assistant_environment,
                     "model_config_override": {"model_name": assistant_model},
                 },
             )

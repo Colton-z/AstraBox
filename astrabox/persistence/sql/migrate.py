@@ -19,19 +19,24 @@ from astrabox.providers.postgres.engine import database_url
 _SCRIPT_LOCATION = Path(__file__).resolve().parent / "alembic"
 
 
-def alembic_config(url: str | None = None) -> Config:
+def alembic_config(url: str | None = None, *, environment_name: str | None = None) -> Config:
     """An Alembic configuration for this package's revisions and ``url``."""
     config = Config()
     config.set_main_option("script_location", str(_SCRIPT_LOCATION))
     # ConfigParser interpolation treats "%" specially; percent-encoded
     # passwords must reach Alembic unchanged.
     config.set_main_option("sqlalchemy.url", database_url(url).replace("%", "%%"))
+    if environment_name is None:
+        from astrabox.config.settings import get_settings
+
+        environment_name = get_settings().environment_name
+    config.set_main_option("astrabox.environment_name", environment_name.replace("%", "%%"))
     return config
 
 
-async def upgrade_to_head(url: str | None = None) -> None:
+async def upgrade_to_head(url: str | None = None, *, environment_name: str) -> None:
     """Apply every pending revision; returns once the schema is current."""
-    config = alembic_config(url)
+    config = alembic_config(url, environment_name=environment_name)
     # Alembic's command API is synchronous and drives its own event loop for
     # the async engine in env.py, so it runs on a worker thread.
     await asyncio.to_thread(command.upgrade, config, "head")

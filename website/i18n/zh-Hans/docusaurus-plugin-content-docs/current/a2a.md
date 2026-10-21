@@ -14,6 +14,12 @@ Hermes 固定使用 0.21.5 版本，提交
 
 ## 调用 AstraBox 管理的 Agent
 
+使用 Hermes 原生工具时，先调用 `a2a_list`，将完整的 peer key 原样传给
+`a2a_call.agent`，例如 `astrabox/<agent_id>`。裸 Agent ID 不是 peer key。
+配置名会选择已有凭据；发现地址不能替代调用名。直接传入 HTTP(S) URL 是独立的
+无认证调用。Agent Card 获取失败时，调用在发送任务前停止；认证错误不会触发向
+基础地址的 POST 请求。
+
 经过认证的外部客户端从
 `/api/v1/agents/{agent_id}/.well-known/agent-card.json` 获取 Agent Card，并使用其中
 公布的 JSON-RPC URL。这些路由使用部署配置的 Web 身份认证。

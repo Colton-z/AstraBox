@@ -44,7 +44,7 @@ const PAGES = [
   { path: "/manage/assistants", name: "console · assistants" },
   { path: "/manage/sessions", name: "console · sessions" },
   { path: "/manage/sandboxes", name: "console · sandboxes" },
-  { path: "/manage/environments", name: "console · environments" },
+  { path: "/manage/runtime-profiles", name: "console · runtime_profiles" },
   { path: "/manage/agents/new", name: "console · agent create page" },
 ];
 

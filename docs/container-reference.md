@@ -3,7 +3,7 @@
 > Understand the workspace, software, resources, and persistence provided by
 > an Agent sandbox.
 
-An AstraBox Environment runs each Agent in a container. Because AstraBox is
+An AstraBox RuntimeProfile runs each Agent in a container. Because AstraBox is
 self-hosted, the operating system, commands, and resources are determined by
 the sandbox image and deployment.
 
@@ -99,7 +99,7 @@ RUN npm install -g 'typescript@5.8.3'
 | npm | Install Node.js packages with `npm install -g` |
 
 Select the resulting image under **Sandbox image or template** in the
-Environment console. Pin the base image and dependencies for production.
+RuntimeProfile console. Pin the base image and dependencies for production.
 
 AstraBox does not install a general package list or run a general setup script
 when a Session starts. Accounts, Agent programs, and background services
@@ -139,10 +139,10 @@ conversation's own execd. A custom image keeps these files.
 AstraBox's current OpenSandbox create recipe gives every sandbox limits of `4`
 CPU and `4Gi` memory, and scheduling requests of `200m` CPU and `768Mi` memory.
 Cold creation and prepared capacity use the same recipe. These values are
-platform settings, not per-Session Environment options; disk capacity and
+platform settings, not per-Session RuntimeProfile options; disk capacity and
 execution deadlines still depend on the sandbox service and deployment.
 
-If a task has minimum requirements, validate them in the target Environment.
+If a task has minimum requirements, validate them in the target RuntimeProfile.
 Processes can be terminated or writes can fail when memory or disk is exhausted,
 and long tasks must account for the deployment's execution deadlines.
 
@@ -184,11 +184,11 @@ printf 'HOME=%s\nUSER=%s\nSHELL=%s\nLANG=%s\nWORKSPACE=%s\n' \
 ```
 
 Model credentials and credentials from linked Vaults are supplied according to
-the Environment and Credential Vault configuration. Never print secrets in
+the RuntimeProfile and Credential Vault configuration. Never print secrets in
 logs or task output.
 
 ## Related documents
 
-- [Environments](environments.md) - Environment configuration
+- [RuntimeProfiles](runtime-profiles.md) - RuntimeProfile configuration
 - [Files](files.md) - work with files in a Session workspace
 - [Credential Vaults](credentials.md) - credentials and injection

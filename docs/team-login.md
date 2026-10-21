@@ -253,12 +253,12 @@ administrator accounts before opening the deployment to a team.
 
 Conversations created before team login was turned on belong to the local
 single-user identity, so accounts that sign in afterwards do not see them.
-Agents, Assistants and Environments stay available.
+Agents, Assistants and RuntimeProfiles stay available.
 
 Every signed-in user may create Agents and Assistants. What an Agent's own
 fields make its sandbox reach and use is limited to what an administrator made
 available: repository deploy keys an administrator listed, Credentials an
-administrator assigned, and hosts the Environment allows or that are public
+administrator assigned, and hosts the RuntimeProfile allows or that are public
 (see [What an Agent's own extensions may reach](adding-tools.md#what-extensions-may-reach)
 and [Access GitHub](working-with-repos.md#who-may-use-which-credentials)).
 When users should only use the Agents an administrator publishes, as on an open

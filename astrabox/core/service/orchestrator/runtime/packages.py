@@ -1,6 +1,6 @@
 """An Agent's or Assistant's engine-native packages, as stored and fetched.
 
-A package is one Git source of a kind the Environment's engine declares
+A package is one Git source of a kind the RuntimeProfile's engine declares
 (``EngineExtensions.packages``): a Claude Code plugin, a Hermes plugin, and so
 on. This module knows the source, not the kind; what a kind means and where it
 is installed is the engine's declaration.

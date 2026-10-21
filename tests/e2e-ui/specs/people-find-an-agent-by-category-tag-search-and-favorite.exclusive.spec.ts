@@ -59,7 +59,7 @@ test('people find an Agent by category, tag, search and favorite', async ({ page
     const agent = await api.createAgent({
       name: `__e2e_find_${run}_${suffix}`,
       model: base.model,
-      environment_name: base.environment_name,
+      runtime_profile_name: base.runtime_profile_name,
       prepared_capacity: 0,
       ...extra,
     });

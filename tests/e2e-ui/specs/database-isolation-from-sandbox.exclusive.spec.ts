@@ -233,15 +233,15 @@ test('a real Agent sandbox cannot read or connect to the platform database', asy
 
   try {
     const base = await api.defaultAgent();
-    const environmentName = String(base.environment_name || '').trim();
-    expect(environmentName, 'the seeded Agent must identify its environment').not.toEqual('');
-    const models = await api.listEnvironmentModels(environmentName);
+    const runtimeProfileName = String(base.runtime_profile_name || '').trim();
+    expect(runtimeProfileName, 'the seeded Agent must identify its environment').not.toEqual('');
+    const models = await api.listEnvironmentModels(runtimeProfileName);
     const model = models.find((candidate) => candidate && !candidate.includes('*')) || 'deepseek-chat';
 
     const agent = await api.createAgent({
       name: agentName,
       model,
-      environment_name: environmentName,
+      runtime_profile_name: runtimeProfileName,
       prepared_capacity: 0,
     });
     agentId = String(agent.agent_id || '').trim();

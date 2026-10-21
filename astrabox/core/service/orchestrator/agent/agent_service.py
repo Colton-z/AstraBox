@@ -115,7 +115,7 @@ class AgentService:
             self._bootstrapped = True
 
     async def create_agent(self, user: UserContext, config: dict[str, Any]) -> dict[str, Any]:
-        """Create one Agent with its model, prompt, extensions, and Environment.
+        """Create one Agent with its model, prompt, extensions, and RuntimeProfile.
 
         There is no separate template resource. The configuration service
         validates the fields, mints ``agent_id``, and starts ``version`` at 1.
@@ -153,31 +153,31 @@ class AgentService:
 
         return self._schedule_runtime_reconciliation(agent_id)
 
-    async def reconcile_environment_runtimes(self, environment_name: str) -> int:
-        """Refresh prepared runtimes for Agents using an Environment.
+    async def reconcile_runtime_profile_runtimes(self, runtime_profile_name: str) -> int:
+        """Refresh prepared runtimes for Agents using a RuntimeProfile.
 
-        An Environment owns runtime inputs such as the sandbox image, network
+        A RuntimeProfile owns runtime inputs such as the sandbox image, network
         policy and permission. Changing any of them changes an Agent's runtime
         generation even when the Agent document itself is unchanged.
         """
 
-        target = str(environment_name or "").strip()
+        target = str(runtime_profile_name or "").strip()
         if not target or self._quiesced_reason:
             return 0
         scheduled = 0
         async for row in iter_keyset_pages(
-            lambda after: self._environment_agent_ids_page(target, after),
+            lambda after: self._runtime_profile_agent_ids_page(target, after),
             key="agent_id",
         ):
             self._schedule_runtime_reconciliation(str(row["agent_id"]))
             scheduled += 1
         return scheduled
 
-    async def _environment_agent_ids_page(
-        self, environment_name: str, after: str | None
+    async def _runtime_profile_agent_ids_page(
+        self, runtime_profile_name: str, after: str | None
     ) -> list[dict[str, Any]]:
-        ids = await self._agent_repo.list_agent_ids_by_environment(
-            environment_name, after_agent_id=after, limit=SWEEP_PAGE_SIZE
+        ids = await self._agent_repo.list_agent_ids_by_runtime_profile(
+            runtime_profile_name, after_agent_id=after, limit=SWEEP_PAGE_SIZE
         )
         return [{"agent_id": agent_id} for agent_id in ids]
 
@@ -288,7 +288,10 @@ class AgentService:
 
     async def get_agent(self, user: UserContext, agent_id: str) -> dict[str, Any]:
         agent = await self._must_view(user, agent_id)
-        return self._user_view(user, agent)
+        return {
+            **self._user_view(user, agent),
+            "can_start_conversation": await self._runtime_enabled(agent),
+        }
 
     async def get_agent_access(self, user: UserContext, agent_id: str) -> dict[str, Any]:
         """Read Agent authorization settings through their dedicated service."""
@@ -329,10 +332,12 @@ class AgentService:
             or agent.get("state") in {AgentState.DELETING.value, AgentState.DELETED.value}
         ):
             return False
-        environment = await self._agent_config.get_environment(str(agent.get("environment_name") or ""))
+        environment = await self._agent_config.get_runtime_profile(str(agent.get("runtime_profile_name") or ""))
         return environment is not None and environment.get("enabled") is not False
 
     async def _prepared_runtime_status(self, agent_id: str) -> dict[str, Any]:
+        from astrabox.config.settings import get_settings
+        from astrabox.core.service.orchestrator.agent.client_pool import prepared_capacity
         from astrabox.core.service.orchestrator.agent.prepared_capacity import LAST_MISS_FIELD
         from astrabox.core.service.orchestrator.agent.prepared_slots import (
             _manifest_is_reapable, slot_manifests,
@@ -348,7 +353,12 @@ class AgentService:
         agent = await self._agent_repo.read_ledger(agent_id)
         if agent is None:
             raise APIError(code="AGENT_NOT_FOUND", message="agent not found", status_code=404)
-        target = int(agent.get("prepared_capacity") or 0)
+        target = prepared_capacity(agent)
+        policy = {
+            "environment_name": self._agent_repo.environment_name,
+            "prewarm_enabled": get_settings().agent_prewarm_enabled,
+            "configured_target": int(agent.get("prepared_capacity") or 0),
+        }
         enabled = target > 0 and await self._runtime_enabled(agent)
         last_miss_at = str(agent.get(LAST_MISS_FIELD) or "").strip() or None
         pool_name = str(agent.get("_client_pool_name") or "").strip()
@@ -365,6 +375,7 @@ class AgentService:
             )
             if requested_generation != agent.get("_prepared_runtime_generation"):
                 return {
+                    **policy,
                     "enabled": True,
                     "target": target,
                     "ready": False,
@@ -414,6 +425,7 @@ class AgentService:
         prepared_count = pooled + len(usable) if enabled else 0
         idle_box = pool.idle_sandbox_ids[0] if pool is not None and pool.idle_sandbox_ids else None
         return {
+            **policy,
             "enabled": enabled,
             "target": target if enabled else 0,
             "ready": prepared_count > 0,
@@ -451,10 +463,18 @@ class AgentService:
                 message="only an Agent manager or platform admin may refresh prewarming",
                 status_code=403,
             )
+        from astrabox.config.settings import get_settings
+
+        if not get_settings().agent_prewarm_enabled:
+            raise APIError(
+                code="AGENT_PREWARM_DISABLED", status_code=409,
+                message="Agent prewarming is disabled for this Environment",
+                data={"environment_name": self._agent_repo.environment_name},
+            )
         if int(agent.get("prepared_capacity") or 0) <= 0 or not await self._runtime_enabled(agent):
             raise APIError(
                 code="AGENT_PREWARM_CONFIG_INVALID",
-                message="enable the Agent and its Environment and give it prepared capacity before requesting a refresh",
+                message="enable the Agent and its RuntimeProfile and give it prepared capacity before requesting a refresh",
                 status_code=409,
             )
         if not await self._agent_repo.request_prewarm_refresh(
@@ -632,6 +652,7 @@ class AgentService:
             CLIENT_POOL_BACKEND_FIELD,
             CLIENT_POOL_NAME_FIELD,
             ensure_agent_client_pool,
+            prepared_capacity,
             retire_agent_client_pool,
         )
         from astrabox.core.service.orchestrator.agent.prepared_slots import (
@@ -668,7 +689,7 @@ class AgentService:
                         runtime_manager=self._runtime_manager,
                         agent_repo=self._agent_repo,
                     )
-                if not enabled or int(row.get("prepared_capacity") or 0) <= 0:
+                if not enabled or prepared_capacity(row) <= 0:
                     await retire_prepared_runtime(
                         target,
                         reason="Agent runtime preparation is disabled",
@@ -688,13 +709,9 @@ class AgentService:
                         if not cleared:
                             self._reconciliation_requested.add(target)
                 else:
-                    refreshed = await self._agent_config.resolve_agent_harness(target)
-                    if refreshed is None:
-                        return
-                    if isinstance(refreshed, dict):
-                        refreshed["runtime_generation"] = generation
-                    else:
-                        refreshed.runtime_generation = generation
+                    # Prepare the same policy snapshot whose generation was
+                    # published above; a later edit gets its own reconciliation.
+                    refreshed = template
                     # The namespace is recorded, and the one it displaces queued
                     # for retirement, before it starts; an edit landing during
                     # this pass leaves it named for the next pass to retire.
@@ -800,6 +817,10 @@ class AgentService:
         idempotency_key: str | None = None,
         source_type: str = "agent",
     ) -> dict[str, Any]:
+        if agent.get("enabled") is False:
+            raise APIError(
+                code="AGENT_DISABLED", message="agent is disabled", status_code=409
+            )
         create_options: dict[str, Any] = {
             # No permission_mode: creation falls to the product default for
             # (agent_chat, engine) declared once in engine/capabilities.py.

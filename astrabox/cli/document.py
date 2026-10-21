@@ -26,11 +26,11 @@ DOCUMENT_VERSION = 1
 #: Top-level keys the document may carry. An unknown key is refused rather
 #: than ignored: a typo in a resource list name would otherwise apply a
 #: document that silently declares nothing.
-_TOP_LEVEL_KEYS = frozenset({"version", "environments", "agents"})
+_TOP_LEVEL_KEYS = frozenset({"version", "runtime_profiles", "agents"})
 
-#: Resource kinds in apply order. Environments come first because an Agent's
-#: ``environment_name`` is validated against an existing environment.
-KIND_ENVIRONMENT = "environment"
+#: Resource kinds in apply order. RuntimeProfiles come first because an Agent's
+#: ``runtime_profile_name`` is validated against an existing environment.
+KIND_RUNTIME_PROFILE = "runtime_profile"
 KIND_AGENT = "agent"
 
 
@@ -54,13 +54,13 @@ class Document:
     """A parsed, structurally valid ``astrabox.yaml``."""
 
     version: int
-    environments: tuple[ResourceSpec, ...]
+    runtime_profiles: tuple[ResourceSpec, ...]
     agents: tuple[ResourceSpec, ...]
     path: Path | None = None
 
     def resources(self) -> tuple[ResourceSpec, ...]:
         """Every declared resource in apply order."""
-        return self.environments + self.agents
+        return self.runtime_profiles + self.agents
 
 
 def load_document(path: str | Path) -> Document:
@@ -121,7 +121,7 @@ def parse_document(raw: Any, *, path: Path | None = None) -> Document:
 
     return Document(
         version=DOCUMENT_VERSION,
-        environments=_parse_resources(raw.get("environments"), KIND_ENVIRONMENT, where),
+        runtime_profiles=_parse_resources(raw.get("runtime_profiles"), KIND_RUNTIME_PROFILE, where),
         agents=_parse_resources(raw.get("agents"), KIND_AGENT, where),
         path=path,
     )
@@ -166,7 +166,7 @@ __all__ = [
     "DOCUMENT_VERSION",
     "Document",
     "KIND_AGENT",
-    "KIND_ENVIRONMENT",
+    "KIND_RUNTIME_PROFILE",
     "ResourceSpec",
     "load_document",
     "parse_document",

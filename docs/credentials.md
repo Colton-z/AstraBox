@@ -90,7 +90,7 @@ A target can receive multiple Vaults. The Session uses the current assignment
 at creation time. Removing an assignment stops later Sessions from receiving
 that Vault. The platform automatically admits the exact destination hosts named
 by active outbound credential bindings. Those hosts are already part of the
-effective sandbox policy, so the Environment allowlist needs no duplicate
+effective sandbox policy, so the RuntimeProfile allowlist needs no duplicate
 entries.
 
 ```bash
@@ -298,9 +298,9 @@ write-only — you can only rotate, archive, or delete them.
 ## Next steps
 
 - [Sessions](sessions.md) — Run an Agent with its assigned Vaults.
-- [Defining an Agent](authoring-agents.md) — Assign the Environment and
+- [Defining an Agent](authoring-agents.md) — Assign the RuntimeProfile and
   extensions that use credentials.
 - [Protect credentials used by Agents](egress-credential-injection.md) —
   Configure protected delivery and outbound restrictions.
-- [Environments](environments.md) — Configure the runtime and its network
+- [RuntimeProfiles](runtime-profiles.md) — Configure the runtime and its network
   access.

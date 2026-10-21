@@ -66,7 +66,7 @@ for (const [label, source] of [
     const config = {
       name: `__e2e_pi_package_${label}_${randomUUID().slice(0, 8)}`,
       model: profile.model,
-      environment_name: profile.environment_name,
+      runtime_profile_name: profile.runtime_profile_name,
       prepared_capacity: 1,
     };
     const agentId = (await api.createAgent({

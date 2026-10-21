@@ -6,7 +6,7 @@ from astrabox.common.utils.user_context import UserContext
 from astrabox.core.service.orchestrator.admin_service import AdminService
 from astrabox.core.service.orchestrator.agent_config_service import AgentConfigService
 from astrabox.persistence.repository.agent_repository import AgentRepository
-from astrabox.persistence.repository.environment_repository import EnvironmentRepository
+from astrabox.persistence.repository.runtime_profile_repository import RuntimeProfileRepository
 
 pytestmark = pytest.mark.usefixtures("database")
 
@@ -39,9 +39,9 @@ class _Sessions:
 
 
 async def _service() -> tuple[AdminService, _Sessions]:
-    environments = EnvironmentRepository()
+    runtime_profiles = RuntimeProfileRepository()
     for name in ("one", "two", "three", "four", "five", "six", "seven"):
-        await environments.put(
+        await runtime_profiles.put(
             name,
             {"engine_kind": "claude_code", "idle_action": "terminate", "networking": {"type": "unrestricted"}},
             updated_by="test",
@@ -49,11 +49,11 @@ async def _service() -> tuple[AdminService, _Sessions]:
     agents = AgentRepository()
     for index, agent in enumerate(_AGENTS):
         await agents.create_agent(
-            {"agent_id": f"agent-{index}", "model": "model", "environment_name": "one", **agent}
+            {"agent_id": f"agent-{index}", "model": "model", "runtime_profile_name": "one", **agent}
         )
     sessions = _Sessions()
     service = AdminService.__new__(AdminService)
-    service._agent_config = AgentConfigService(agents, environments)  # type: ignore[attr-defined]
+    service._agent_config = AgentConfigService(agents, runtime_profiles)  # type: ignore[attr-defined]
     service._sessions_repo = sessions  # type: ignore[attr-defined]
     return service, sessions
 
@@ -63,7 +63,7 @@ async def test_navigation_summary_keeps_each_collection_read_scope() -> None:
 
     summary = await service.admin_navigation_summary(UserContext(user_id="owner"))
 
-    assert summary == {"agents": 4, "environments": 7, "sessions": 11}
+    assert summary == {"agents": 4, "runtime_profiles": 7, "sessions": 11}
     # The Agents ``owner`` created ("owned") and co-administers ("coadmin").
     assert sessions.scopes == [["agent-1", "agent-4"]]
 
@@ -72,8 +72,8 @@ async def test_a_managers_sessions_leave_out_another_agent_with_the_same_name() 
     """Agent names are not unique; a manager's scope is the Agents they manage, by id."""
     from astrabox.persistence.repository.session_repository import SessionRepository
 
-    environments = EnvironmentRepository()
-    await environments.put(
+    runtime_profiles = RuntimeProfileRepository()
+    await runtime_profiles.put(
         "one",
         {"engine_kind": "claude_code", "idle_action": "terminate", "networking": {"type": "unrestricted"}},
         updated_by="test",
@@ -82,7 +82,7 @@ async def test_a_managers_sessions_leave_out_another_agent_with_the_same_name() 
     for agent_id, creator in (("mine", "owner"), ("theirs", "other")):
         await agents.create_agent({
             "agent_id": agent_id, "name": "Research", "model": "model",
-            "environment_name": "one", "created_by": creator,
+            "runtime_profile_name": "one", "created_by": creator,
         })
     for agent_id in ("mine", "theirs"):
         await SessionRepository().create_session({
@@ -90,7 +90,7 @@ async def test_a_managers_sessions_leave_out_another_agent_with_the_same_name() 
             "session_kind": "agent_chat", "engine_kind": "claude_code", "state": "READY",
         })
     service = AdminService.__new__(AdminService)
-    service._agent_config = AgentConfigService(agents, environments)  # type: ignore[attr-defined]
+    service._agent_config = AgentConfigService(agents, runtime_profiles)  # type: ignore[attr-defined]
     service._sessions_repo = SessionRepository()  # type: ignore[attr-defined]
 
     listed = [

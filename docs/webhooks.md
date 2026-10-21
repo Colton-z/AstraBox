@@ -62,7 +62,7 @@ Without a prefix, the decoded request body is the complete Agent input.
 ### Independent Sessions
 
 Every accepted Webhook request creates a fresh Session with its own conversation
-history and workspace. The Environment's tenancy setting determines whether
+history and workspace. The RuntimeProfile's tenancy setting determines whether
 Sessions share a sandbox. Use the `session_id` in the response to inspect that
 invocation.
 

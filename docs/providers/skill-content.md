@@ -63,7 +63,7 @@ The provider owns four operations:
 - `validate(source)` checks its configuration and approved credential names,
   without reading secrets or accessing the network. Reject unknown options.
 - `egress_hosts(source)` declares the sandbox hosts acquisition needs. Core
-  applies the existing author/Environment network boundary to these hosts.
+  applies the existing author/RuntimeProfile network boundary to these hosts.
 - `resolve(source, sandbox, private_dir)` authorizes access and returns
   `ResolvedSkillSource(version, content_id)`. Both fields are public immutable
   identifiers. Include the tenant or namespace in source/config/content identity

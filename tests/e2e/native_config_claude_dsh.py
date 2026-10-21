@@ -31,11 +31,11 @@ from tests.e2e.test_terminal import _run_terminal
 
 
 def _create(
-    client: httpx.Client, options: dict[str, object], *, environment_name: str | None = None,
+    client: httpx.Client, options: dict[str, object], *, runtime_profile_name: str | None = None,
 ) -> str:
     created = create_agent_variant_session(
         client, name_suffix="native-json", engine_options=options,
-        environment_name=environment_name,
+        runtime_profile_name=runtime_profile_name,
     )
     sid = str(created.get("session_id") or "")
     assert sid, created
@@ -60,14 +60,14 @@ def verify_claude_native_configuration(client: httpx.Client) -> None:
     ).strip()
     assert len(expected_header_sha256) == 64, "server PATH probe returned no SHA-256 digest"
     source_name = environment_with_tenancy(client, "conversation")
-    environments = data(client.get("/api/v1/admin/environments"))
-    source = next(row for row in environments if row.get("name") == source_name)
-    schema = data(client.get("/api/v1/admin/environment-schema"))
+    runtime_profiles = data(client.get("/api/v1/admin/runtime-profiles"))
+    source = next(row for row in runtime_profiles if row.get("name") == source_name)
+    schema = data(client.get("/api/v1/admin/runtime-profile-schema"))
     fields = {field["key"] for field in schema["fields"]}
     environment = {key: value for key, value in source.items() if key in fields}
-    environment_name = "native-tracing-config-" + uuid.uuid4().hex
+    runtime_profile_name = "native-tracing-config-" + uuid.uuid4().hex
     environment.update({
-        "name": environment_name,
+        "name": runtime_profile_name,
         "display_name": "Claude native tracing configuration probe (no model turn)",
         "enabled": True,
         # Replace both credential forms; an admin read's masked key cannot be
@@ -84,16 +84,16 @@ def verify_claude_native_configuration(client: httpx.Client) -> None:
             "signals": ["metrics"],
         },
     })
-    environment_url = f"/api/v1/admin/environments/{environment_name}"
+    environment_url = f"/api/v1/admin/runtime-profiles/{runtime_profile_name}"
     data(client.put(environment_url, json=environment))
     # No environment-delete API exists. Failures retain this unique preset;
     # success retires its dependants before disabling the preset.
-    print(f"Native configuration probe environment (retained on failure): {environment_name}")
+    print(f"Native configuration probe environment (retained on failure): {runtime_profile_name}")
     marker = "claude_native_env_" + uuid.uuid4().hex
     variable = "ASTRABOX_CLAUDE_CONFIG_PROBE"
     sid = _create(
         client, {"sdk_options": {"env": {variable: marker}}},
-        environment_name=environment_name,
+        runtime_profile_name=runtime_profile_name,
     )
     detail = get_admin_session_detail(client, sid)
     variant_agent_id = str(detail.get("agent_id") or "")
@@ -155,7 +155,7 @@ print(json.dumps(found))
     assert matches[0]["header_sha256"] == expected_header_sha256, (
         "SecretProvider PATH must reach native OTEL Authorization verbatim", matches
     )
-    # Agent retirement still resolves its Environment. Keep that dependency
+    # Agent retirement still resolves its RuntimeProfile. Keep that dependency
     # enabled until all test-owned dependants are confirmed deleted.
     data(client.delete(f"/api/v1/sessions/{sid}", timeout=60.0))
     assert client.get(f"/api/v1/sessions/{sid}").status_code == 404
@@ -164,7 +164,7 @@ print(json.dumps(found))
     assert client.get(f"/api/v1/agents/{variant_agent_id}").status_code == 404
     OPEN_AGENTS.remove(variant_agent_id)
     data(client.put(environment_url, json={**environment, "enabled": False}))
-    print(f"Native configuration proved; no telemetry collection asserted. Disabled {environment_name}")
+    print(f"Native configuration proved; no telemetry collection asserted. Disabled {runtime_profile_name}")
 
 
 def verify_dsh_native_configuration(client: httpx.Client) -> None:
@@ -176,7 +176,7 @@ def verify_dsh_native_configuration(client: httpx.Client) -> None:
     sid = _create(client, {"session_create": {"agentPreset": "minimal"}})
     detail = get_admin_session_detail(client, sid)
     expected_model = str(detail.get("model_name") or "")
-    assert expected_model, "the Environment resolved no model for this conversation"
+    assert expected_model, "the RuntimeProfile resolved no model for this conversation"
     home = str((detail.get("runtime_identity") or {}).get("home_dir") or "")
     assert home.startswith("/"), detail
     # Read the supplier catalog independently, without platform translation or
@@ -229,7 +229,7 @@ except Exception as exc:
     assert all(row["data"]["agentPreset"] == "minimal" for row in selections), selections
     # The supplier's own durable record of which model its next request uses.
     # `session/create` carries no model, so without an explicit selection this
-    # conversation runs the image's default and the Environment's choice never
+    # conversation runs the image's default and the RuntimeProfile's choice never
     # reaches the wire — the shape that reached a user as a rejected model name
     # dressed up as a lost engine connection.
     assert models, {"session_id": sid, "native_records": records}

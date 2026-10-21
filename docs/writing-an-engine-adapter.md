@@ -47,7 +47,7 @@ stay outside the image and are supplied through the AstraBox sandbox lifecycle.
 | Purpose | Connects the Agent program's protocol to AstraBox | Provides the environment in which the Agent program runs |
 | Owns | Protocol requests, native events, conversation identity, the resume cursor, and reconnect behavior | Executable, system packages, accounts, startup command, and resident services |
 | Changes when | The Agent program's protocol or supported capabilities change | Its runtime dependencies or operating-system requirements change |
-| Loaded by | Python entry point `astrabox.providers.engine` | The Environment's runtime image |
+| Loaded by | Python entry point `astrabox.providers.engine` | The RuntimeProfile's runtime image |
 | Verified by | Adapter and runtime-client conformance suites, and live conversations | A real sandbox startup and conversation |
 
 Build both parts for a new Agent program. An adapter without its image cannot
@@ -102,25 +102,25 @@ The declaration includes:
 - its conversation placement (`per_conversation_account` when the engine's
   process runs as the conversation's own account, `box_account` while the
   integration still drives one box-scoped service);
-- `default_runtime_image`, if the Environment may omit one;
+- `default_runtime_image`, if the RuntimeProfile may omit one;
 - `permission_modes` and `permission_mode_defaults`, in the engine's own
   vocabulary;
 - `extensions` (`EngineExtensions`): the author MCP transports it accepts, where
   it discovers Skills, its native package kinds, its native configuration
   documents (object blocks whose `protected_keys` name the top-level fields the
-  platform manages), and whether it sends telemetry to an Environment's tracing
+  platform manages), and whether it sends telemetry to a RuntimeProfile's tracing
   endpoint;
 - `session_log` when AstraBox must preserve opaque conversation files outside
   a replaceable sandbox;
 - `requires_process_sessions` when, in a conversation's own box, the engine
   runs as one of the box's long-lived processes driven over its stdin and
-  stdout (`SandboxHandle.processes`); an Environment that pairs the engine
+  stdout (`SandboxHandle.processes`); a RuntimeProfile that pairs the engine
   with conversation tenancy is then refused on a sandbox backend that does not
   declare `supports_process_sessions`.
 
 Registration validates the declaration. When an Agent is saved, any configured
 value the adapter's `extensions` do not accept is rejected instead of being
-stored as an inert setting. Tracing is checked when saving the Environment:
+stored as an inert setting. Tracing is checked when saving the RuntimeProfile:
 enabled tracing requires an adapter that declares support. A valid disabled
 tracing configuration can remain stored when switching to an adapter without
 that capability.
@@ -132,7 +132,7 @@ any product catalog.
 ### Place conversations in a box
 
 Sandbox tenancy is not part of the declaration. How many conversations a box
-carries is an Environment choice, and the runtime identity it implies —
+carries is a RuntimeProfile choice, and the runtime identity it implies —
 account naming, home placement, the account-assembly commands — is composed by
 the platform per `(sandbox_tenancy, session_kind)` from one set of rules for
 every engine. Shared tenancy requires the sandbox's isolated-session capability
@@ -538,4 +538,4 @@ program release changes its protocol or runtime requirements.
 - [Architecture](./architecture.md) — AstraBox responsibilities and extension interfaces
 - [OpenSandbox provider](./providers/opensandbox.md) — sandbox lifecycle and
   runtime behavior
-- [Environments](./environments.md) — images, resources, and network access
+- [RuntimeProfiles](./runtime-profiles.md) — images, resources, and network access

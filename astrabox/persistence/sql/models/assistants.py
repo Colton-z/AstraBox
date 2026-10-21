@@ -18,7 +18,7 @@ WORKSPACE_STATES = ("MATERIALIZING", "READY", "HIBERNATING", "RECOVERY_REQUIRED"
 
 
 class Assistant(Base):
-    """An Assistant: its owner's definition, its Environment, and its bookkeeping.
+    """An Assistant: its owner's definition, its RuntimeProfile, and its bookkeeping.
 
     ``version`` moves with every authored write, and each authored write is a
     compare-and-set on the version it read, so two concurrent edits cannot
@@ -29,26 +29,26 @@ class Assistant(Base):
     A deleted Assistant keeps its row: the identity of a primary Assistant is
     derived from how many its owner has had, deleted ones included
     (``AssistantService.ensure_primary_assistant``), and the cleanup checks of
-    an Environment read deleted Assistants that still own compute. A deleted
+    a RuntimeProfile read deleted Assistants that still own compute. A deleted
     row holds no workspace and binds no Vault.
 
-    ``environment_name`` is set at creation and never changes. Deleting the
-    Environment sets it to NULL on deleted rows only: the check constraint
-    refuses to orphan a live Assistant, so the Environment's delete fails
+    ``runtime_profile_name`` is set at creation and never changes. Deleting the
+    RuntimeProfile sets it to NULL on deleted rows only: the check constraint
+    refuses to orphan a live Assistant, so the RuntimeProfile's delete fails
     while one still runs in it.
     """
 
     __tablename__ = "assistants"
     __table_args__ = (
         Index(None, "owner_id", "updated_at", "assistant_id"),
-        Index(None, "environment_name"),
+        Index(None, "runtime_profile_name"),
         # An owner has at most one live primary Assistant, whichever of two
         # concurrent first opens inserts it.
         *conditional_unique(
             "ix_assistants_live_primary", "owner_id",
             predicate=text("is_primary AND NOT deleted"), marker="_primary_slot",
         ),
-        CheckConstraint("deleted OR environment_name IS NOT NULL", name="live_environment"),
+        CheckConstraint("deleted OR runtime_profile_name IS NOT NULL", name="live_runtime_profile"),
         *boolean_checks("is_primary", "deleted"),
         MYSQL_TABLE_OPTIONS,
     )
@@ -61,9 +61,9 @@ class Assistant(Base):
     icon: Mapped[str | None] = mapped_column(payload_text())
     description: Mapped[str | None] = mapped_column(payload_text())
     engine_kind: Mapped[str] = mapped_column(payload_text())
-    environment_name: Mapped[str | None] = mapped_column(
+    runtime_profile_name: Mapped[str | None] = mapped_column(
         KeyText(512), ForeignKey(
-            "environments.name", ondelete="SET NULL", info={"mysql_restrict_environment": True},
+            "runtime_profiles.name", ondelete="SET NULL", info={"mysql_restrict_runtime_profile": True},
         ),
     )
     permission_mode_default: Mapped[str | None] = mapped_column(payload_text())
@@ -168,6 +168,7 @@ class AssistantWorkspace(Base):
 
     __tablename__ = "assistant_workspaces"
     __table_args__ = (
+        Index(None, "environment_name", "assistant_id"),
         CheckConstraint(
             "state IN ('MATERIALIZING', 'READY', 'HIBERNATING', 'RECOVERY_REQUIRED')",
             name="state",
@@ -187,6 +188,8 @@ class AssistantWorkspace(Base):
     assistant_id: Mapped[str] = mapped_column(
         KeyText(128), ForeignKey("assistants.assistant_id", ondelete="CASCADE"), primary_key=True
     )
+    #: One Assistant workspace retains its physical Environment across box replacement.
+    environment_name: Mapped[str] = mapped_column(KeyText(128))
     created_by_user_id: Mapped[str] = mapped_column(payload_text())
     engine_kind: Mapped[str] = mapped_column(payload_text())
     state: Mapped[str] = mapped_column(payload_text())
@@ -240,8 +243,8 @@ class AssistantProfile(Base):
 class AssistantDefaults(Base):
     """One layer every Assistant beneath it inherits; ``deployment`` covers the deployment.
 
-    Saves are a compare-and-set on ``version``. ``environment_name`` chooses
-    the Environment of new Assistants, so the Environment cannot be deleted
+    Saves are a compare-and-set on ``version``. ``runtime_profile_name`` chooses
+    the RuntimeProfile of new Assistants, so the RuntimeProfile cannot be deleted
     while a layer names it.
     """
 
@@ -251,7 +254,7 @@ class AssistantDefaults(Base):
     )
 
     scope: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
-    environment_name: Mapped[str | None] = mapped_column(KeyText(512), ForeignKey("environments.name"))
+    runtime_profile_name: Mapped[str | None] = mapped_column(KeyText(512), ForeignKey("runtime_profiles.name"))
     model_name: Mapped[str | None] = mapped_column(payload_text())
     instructions: Mapped[str | None] = mapped_column(payload_text())
     skills: Mapped[list[Any] | None] = mapped_column(payload_json())

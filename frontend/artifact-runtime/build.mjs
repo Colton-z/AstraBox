@@ -27,7 +27,7 @@ for (const name of [
     : name === 'bridge'
       ? 'bridge.entry.ts'
       : `${name}.ts`;
-  const external =
+  const provided =
     library && name !== 'lib-react' && name !== 'lib-tailwind'
       ? [
           'react',
@@ -38,16 +38,15 @@ for (const name of [
             : ['react-dom', 'react-dom/client']),
         ]
       : [];
-  const globals = {
-    react: '__artifactReact',
-    'react/jsx-runtime': '__artifactJSX',
-    'react/jsx-dev-runtime': '__artifactJSXDev',
-    'react-dom': '__artifactReactDOM',
-    'react-dom/client': '__artifactReactDOMClient',
-  };
   await build({
     root,
     configFile: resolve(root, 'vite.artifact-runtime.config.ts'),
+    resolve: {
+      alias: provided.map((id) => ({
+        find: new RegExp(`^${id}$`),
+        replacement: resolve(root, 'artifact-runtime/globals', `${id.replaceAll('/', '-')}.cjs`),
+      })),
+    },
     build: {
       lib: {
         entry: resolve(root, 'artifact-runtime', entry),
@@ -56,8 +55,7 @@ for (const name of [
         fileName: () => `${name}.js`,
       },
       rollupOptions: {
-        external,
-        output: { globals, inlineDynamicImports: true },
+        output: { inlineDynamicImports: true },
       },
     },
   });

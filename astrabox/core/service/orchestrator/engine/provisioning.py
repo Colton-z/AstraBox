@@ -21,7 +21,7 @@ else entirely.
   even consults the runtime registry; without it a session reaches READY and
   every turn dies reporting an attach failure.
 * Networking and protected credential delivery are independent create inputs.
-  Every backend must enforce the Environment's reachability and, when enabled,
+  Every backend must enforce the RuntimeProfile's reachability and, when enabled,
   translate the same provider-neutral credential plan without letting either
   input widen, narrow, enable, or disable the other.
 
@@ -81,6 +81,7 @@ from astrabox.core.service.orchestrator.runtime.packages import (
     package_egress_hosts,
 )
 from astrabox.providers.sandbox_image import sandbox_boot_env
+from astrabox.config.settings import get_settings
 from astrabox.seams.egress_credentials import (
     EGRESS_HELD_PLACEHOLDER,
     ModelEgressCredential,
@@ -251,7 +252,7 @@ class EngineSandboxRequest:
     cwd_env_var: str | None = None
     publish_ports: tuple[int, ...] = ()
     #: Hosts required by this engine's image preparation in addition to the
-    #: model endpoint. The platform combines them with Environment policy; the
+    #: model endpoint. The platform combines them with RuntimeProfile policy; the
     #: adapter declares destinations but never applies policy itself.
     required_network_hosts: tuple[str, ...] = ()
     #: An in-box service port whose first accepted connection means the box is
@@ -335,14 +336,15 @@ def resolve_model_credential_delivery(
     required_hosts: tuple[str, ...] = (),
     mcp_hosts: tuple[str, ...] = (),
     slot_id: str | None = None,
+    workload_id: str | None = None,
     substitutions: tuple[ModelEgressCredentialSubstitution, ...] = (),
 ) -> tuple[str, SandboxNetworkPolicy, SandboxEgressCredentialPlan | None]:
     """Resolve independent networking and credential-delivery inputs.
 
-    Networking is derived solely from the Environment plus platform-known
+    Networking is derived solely from the RuntimeProfile plus platform-known
     runtime destinations. Protected delivery independently chooses whether the
     image receives the real credential or a placeholder backed by Vault. No
-    binding host is copied into the Environment-derived policy; the provider
+    binding host is copied into the RuntimeProfile-derived policy; the provider
     later admits only the exact destinations named by attached bindings in its
     effective policy. No network mode enables or disables Vault.
 
@@ -351,16 +353,21 @@ def resolve_model_credential_delivery(
     carries a substitution from it to a per-slot vault credential (written
     with the shared key, so a first call racing the claim's replace still
     authenticates), and the claim swaps that credential for a Session-scoped
-    key without touching the box. Slot preparation is refused outright when
+    key without touching the box. Platform-owned slot preparation is refused when
     the vault is off — that path would fix the real key inside an unclaimed
     box — and when the credential rides a non-Authorization header, because
     header substitution is the only mechanism that can re-point an already
-    -running child's identity.
+    -running child's identity. Provider-owned model delivery instead supplies
+    only a workload placeholder and leaves its protected binding to Session
+    preparation, independently of the platform Vault switch.
     """
 
+    from astrabox.seams.runtime_preparation import runtime_preparation_plan
+
+    preparation = runtime_preparation_plan(template)
     model_api_key = str(credential.access.credential or "").strip()
     model_base_url = str(credential.access.base_url or "").strip()
-    if not model_api_key or not model_base_url:
+    if not model_base_url or (preparation.model_credential_delivery == "platform" and not model_api_key):
         raise APIError(
             code=credential.missing_code,
             message=credential.missing_message,
@@ -382,11 +389,15 @@ def resolve_model_credential_delivery(
     if not bool(getattr(backend_adapter, "supports_create_network_policy", False)):
         raise NotImplementedError(
             f"sandbox backend {backend_adapter.name!r} cannot enforce the "
-            f"{engine_kind} Environment's networking contract"
+            f"{engine_kind} RuntimeProfile's networking contract"
         )
-    from astrabox.seams.runtime_preparation import runtime_preparation_plan
-
-    if target_slot and not vault_enabled and runtime_preparation_plan(template).session_bound:
+    if preparation.model_credential_delivery == "provider":
+        identity = target_slot or str(workload_id or "").strip()
+        if not identity:
+            raise APIError(code="RUNTIME_PREPARATION_FAILED", status_code=409,
+                           message="Provider model delivery requires the runtime's workload identity")
+        return workload_model_placeholder(identity), network_policy, additional_vault_write
+    if target_slot and not vault_enabled and preparation.session_bound:
         return "", network_policy, None
     if target_slot and not vault_enabled:
         raise APIError(
@@ -806,6 +817,15 @@ async def _assemble_provisioned_sandbox(
     anything asks it to rejoin, wherever its home is.
     """
 
+    from astrabox.seams.runtime_preparation import runtime_preparation_plan
+
+    if runtime_preparation_plan(template).model_credential_delivery == "provider":
+        model_identity = (
+            str(prepared_manifest["slot_id"])
+            if prepared_manifest is not None and prepared_manifest["engine_initialized"]
+            else session_id
+        )
+        runtime_identity = {**dict(runtime_identity or {}), "model_credential_id": model_identity}
     resume_key = str(getattr(workspace_plan, "resume_engine_session_key", "") or "").strip()
     honoured_resume_key: str | None = resume_key or None
     if session_log is not None and resume_key:
@@ -1056,7 +1076,7 @@ def engine_create_spec(
     The platform answers the second question — claim a prepared unit, place a
     conversation in its Agent's box, or create a box — and only the create needs
     this recipe. It is composed once for every engine and every placement so
-    boxes of the same Environment cannot disagree on their boot environment or
+    boxes of the same RuntimeProfile cannot disagree on their boot environment or
     durable mounts. ``backend``, the provider that creates the box, fits the
     resource recipe to what its runtime can honour.
     """
@@ -1067,6 +1087,7 @@ def engine_create_spec(
     return SandboxCreateSpec(
         session_id=session_id,
         assignment_id=assignment_id,
+        environment_name=get_settings().environment_name,
         resource_limits=resource_limits,
         resource_requests=resource_requests,
         image=resolve_runtime_template_name(template),
@@ -1345,7 +1366,7 @@ async def _provision_shared_conversation(
                     code="SANDBOX_ISOLATION_UNSUPPORTED",
                     message=(
                         f"sandbox {candidate_id!r} cannot host the Agent-shared "
-                        "conversation requested by this Environment"
+                        "conversation requested by this RuntimeProfile"
                     ),
                     status_code=409,
                 )
@@ -1513,7 +1534,7 @@ async def require_engine_sandbox_permission(
     sandbox_id: str,
     template: Any,
 ) -> None:
-    """Require a connected box to attest the Environment's current grant."""
+    """Require a connected box to attest the RuntimeProfile's current grant."""
 
     from astrabox.seams.sandbox import sandbox_for_sandbox
 
@@ -1592,7 +1613,7 @@ async def connect_engine_sandbox(
 ) -> Any:
     """Reattach an engine only after its running box proves the requested grant.
 
-    A persisted sandbox id proves identity, not posture. The Environment may
+    A persisted sandbox id proves identity, not posture. The RuntimeProfile may
     have changed since this box was created, and a provider pool recipe may
     have drifted independently. Reattachment therefore asks the running box
     the same question the create path asks before an engine can use it.
@@ -1636,6 +1657,9 @@ async def claim_prepared_engine_sandbox(
     re-point, workspace proof, transcript target, and prepared-runner endpoint.
     An adapter receives only the resulting box and its own opaque evidence.
     """
+    from astrabox.seams.runtime_preparation import runtime_preparation_plan
+    from astrabox.core.service.orchestrator.agent.client_pool import prepared_capacity
+
 
     if not artifact_tools_enabled(getattr(template, "session_source_type", None)):
         # Prepared native processes froze personal artifact tools before any Session existed.
@@ -1652,7 +1676,7 @@ async def claim_prepared_engine_sandbox(
         return None
     agent_id = str(getattr(template, "agent_id", "") or "").strip()
     generation = str(getattr(template, "runtime_generation", "") or "").strip()
-    if not agent_id or not generation or int(getattr(template, "prepared_capacity", 0) or 0) <= 0:
+    if not agent_id or not generation or (prepared_claim is None and prepared_capacity(template) <= 0):
         return None
 
     from astrabox.core.service.orchestrator.agent.prepared_boxes import (
@@ -1917,7 +1941,10 @@ async def claim_prepared_engine_sandbox(
                 else {}
             ),
         )
-    if bool(claimed.get("gateway_substitution")):
+    if bool(claimed.get("gateway_substitution")) or (
+        claimed["engine_initialized"]
+        and runtime_preparation_plan(template).model_credential_delivery == "provider"
+    ):
         credential = workload_model_placeholder(str(claimed.get("slot_id") or ""))
     if not claimed["engine_initialized"]:
         await write_engine_env_file(
@@ -2097,6 +2124,9 @@ async def provision_engine_sandbox(
     from astrabox.seams.sandbox import sandbox_for_name
     from astrabox.seams.runtime_preparation import runtime_preparation_plan
 
+    persisted_backend = await manager.resolve_runtime_sandbox_backend(
+        session_id, workspace_plan=workspace_plan
+    )
     composed = {request.credential_env_var, request.cwd_env_var} - {None}
     conflicting = sorted(composed & set(request.env))
     if conflicting:
@@ -2117,9 +2147,6 @@ async def provision_engine_sandbox(
 
         await reconcile_runtime_generation(template, runtime_manager=manager)
 
-    persisted_backend = await manager.resolve_runtime_sandbox_backend(
-        session_id, workspace_plan=workspace_plan
-    )
     backend_adapter = sandbox_for_name(persisted_backend)
 
     # Recovery precedes every placement or pool claim. A worker may have
@@ -2240,6 +2267,7 @@ async def provision_engine_sandbox(
             and not runtime_preparation_plan(template).session_bound
             else None
         ),
+        workload_id=session_id,
     )
     vault_write, runtime_env = await resolve_session_environment_credentials(
         manager,

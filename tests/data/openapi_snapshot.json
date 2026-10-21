@@ -73,7 +73,7 @@
         "title": "AdminAsyncioTasks",
         "type": "object"
       },
-      "AdminDeletedEnvironment": {
+      "AdminDeletedRuntimeProfile": {
         "additionalProperties": true,
         "description": "The identity of the preset removed by an administrator.",
         "properties": {
@@ -90,25 +90,51 @@
           "name",
           "deleted"
         ],
-        "title": "AdminDeletedEnvironment",
+        "title": "AdminDeletedRuntimeProfile",
         "type": "object"
       },
-      "AdminEnvironmentModels": {
+      "AdminEnvironment": {
         "additionalProperties": true,
-        "description": "Model ids an environment's provider can offer.\n\nEmpty when the provider publishes no authoritative catalog; the console\nthen accepts a free-text model id.",
         "properties": {
-          "models": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "member_user_ids": {
             "items": {
               "type": "string"
             },
-            "title": "Models",
+            "title": "Member User Ids",
             "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
           }
         },
         "required": [
-          "models"
+          "name",
+          "display_name",
+          "description",
+          "version",
+          "member_user_ids"
         ],
-        "title": "AdminEnvironmentModels",
+        "title": "AdminEnvironment",
         "type": "object"
       },
       "AdminErrorsPage": {
@@ -218,7 +244,7 @@
       },
       "AdminFormSchema": {
         "additionalProperties": true,
-        "description": "The editable schema an admin form renders.\n\nOne grammar, two producers:\n:func:`~astrabox.core.service.orchestrator.agent_schema.get_agent_schema`\nand\n:func:`~astrabox.core.service.orchestrator.environment_schema.get_environment_schema`.\n``groups`` and ``fields`` are the form's own vocabulary (key, type, enum,\ndefault, help), which the console reads and this module does not interpret.",
+        "description": "The editable schema an admin form renders.\n\nOne grammar, two producers:\n:func:`~astrabox.core.service.orchestrator.agent_schema.get_agent_schema`\nand\n:func:`~astrabox.core.service.orchestrator.runtime_profile_schema.get_runtime_profile_schema`.\n``groups`` and ``fields`` are the form's own vocabulary (key, type, enum,\ndefault, help), which the console reads and this module does not interpret.",
         "properties": {
           "fields": {
             "items": {
@@ -488,8 +514,8 @@
             "title": "Agents",
             "type": "integer"
           },
-          "environments": {
-            "title": "Environments",
+          "runtime_profiles": {
+            "title": "Runtime Profiles",
             "type": "integer"
           },
           "sessions": {
@@ -499,7 +525,7 @@
         },
         "required": [
           "agents",
-          "environments",
+          "runtime_profiles",
           "sessions"
         ],
         "title": "AdminNavigationSummary",
@@ -642,6 +668,24 @@
           "session_feed"
         ],
         "title": "AdminProcessHealth",
+        "type": "object"
+      },
+      "AdminRuntimeProfileModels": {
+        "additionalProperties": true,
+        "description": "Model ids an environment's provider can offer.\n\nEmpty when the provider publishes no authoritative catalog; the console\nthen accepts a free-text model id.",
+        "properties": {
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Models",
+            "type": "array"
+          }
+        },
+        "required": [
+          "models"
+        ],
+        "title": "AdminRuntimeProfileModels",
         "type": "object"
       },
       "AdminRuntimeRow": {
@@ -1873,69 +1917,6 @@
         "title": "AgentConnectorState",
         "type": "object"
       },
-      "AgentEnvironmentModels": {
-        "additionalProperties": true,
-        "description": "The model ids an Environment's gateway offers. Empty when it offers none.",
-        "properties": {
-          "models": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Models",
-            "type": "array"
-          }
-        },
-        "required": [
-          "models"
-        ],
-        "title": "AgentEnvironmentModels",
-        "type": "object"
-      },
-      "AgentEnvironmentOption": {
-        "additionalProperties": true,
-        "description": "One Environment an Agent author may choose, without its secrets.",
-        "properties": {
-          "display_name": {
-            "title": "Display Name",
-            "type": "string"
-          },
-          "enabled": {
-            "title": "Enabled",
-            "type": "boolean"
-          },
-          "engine_kind": {
-            "title": "Engine Kind",
-            "type": "string"
-          },
-          "engine_options_schema": {
-            "default": [],
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Engine Options Schema",
-            "type": "array"
-          },
-          "extensions": {
-            "additionalProperties": true,
-            "default": {},
-            "title": "Extensions",
-            "type": "object"
-          },
-          "name": {
-            "title": "Name",
-            "type": "string"
-          }
-        },
-        "required": [
-          "name",
-          "display_name",
-          "engine_kind",
-          "enabled"
-        ],
-        "title": "AgentEnvironmentOption",
-        "type": "object"
-      },
       "AgentExtensionCatalog": {
         "additionalProperties": true,
         "description": "The provider's catalog with this Agent's selection marked.\n\nThe selected ids are read back from the stored assignments rather than from\nthe request, so what the form shows ticked is what Session start resolves.",
@@ -2305,9 +2286,17 @@
             ],
             "title": "Client Pool Name"
           },
+          "configured_target": {
+            "title": "Configured Target",
+            "type": "integer"
+          },
           "enabled": {
             "title": "Enabled",
             "type": "boolean"
+          },
+          "environment_name": {
+            "title": "Environment Name",
+            "type": "string"
           },
           "last_error": {
             "anyOf": [
@@ -2357,6 +2346,10 @@
             "title": "Prepared Count",
             "type": "integer"
           },
+          "prewarm_enabled": {
+            "title": "Prewarm Enabled",
+            "type": "boolean"
+          },
           "ready": {
             "title": "Ready",
             "type": "boolean"
@@ -2401,6 +2394,9 @@
         },
         "required": [
           "enabled",
+          "environment_name",
+          "prewarm_enabled",
+          "configured_target",
           "target",
           "ready",
           "prepared_count"
@@ -2571,17 +2567,6 @@
             ],
             "title": "Enabled"
           },
-          "environment_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Environment Name"
-          },
           "exposure_mode": {
             "anyOf": [
               {
@@ -2702,6 +2687,17 @@
             ],
             "title": "Prepared Capacity"
           },
+          "runtime_profile_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runtime Profile Name"
+          },
           "skills": {
             "anyOf": [
               {
@@ -2800,6 +2796,69 @@
         "title": "AgentRecord",
         "type": "object"
       },
+      "AgentRuntimeProfileModels": {
+        "additionalProperties": true,
+        "description": "The model ids a RuntimeProfile's gateway offers. Empty when it offers none.",
+        "properties": {
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Models",
+            "type": "array"
+          }
+        },
+        "required": [
+          "models"
+        ],
+        "title": "AgentRuntimeProfileModels",
+        "type": "object"
+      },
+      "AgentRuntimeProfileOption": {
+        "additionalProperties": true,
+        "description": "One RuntimeProfile an Agent author may choose, without its secrets.",
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "engine_kind": {
+            "title": "Engine Kind",
+            "type": "string"
+          },
+          "engine_options_schema": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Engine Options Schema",
+            "type": "array"
+          },
+          "extensions": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Extensions",
+            "type": "object"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "display_name",
+          "engine_kind",
+          "enabled"
+        ],
+        "title": "AgentRuntimeProfileOption",
+        "type": "object"
+      },
       "AgentTag": {
         "properties": {
           "agents": {
@@ -2840,14 +2899,14 @@
         "title": "ApiEnvelope[AdminApiWorkspaceResult]",
         "type": "object"
       },
-      "ApiEnvelope_AdminDeletedEnvironment_": {
+      "ApiEnvelope_AdminDeletedRuntimeProfile_": {
         "properties": {
           "code": {
             "title": "Code",
             "type": "string"
           },
           "data": {
-            "$ref": "#/components/schemas/AdminDeletedEnvironment"
+            "$ref": "#/components/schemas/AdminDeletedRuntimeProfile"
           },
           "message": {
             "title": "Message",
@@ -2859,17 +2918,17 @@
           "message",
           "data"
         ],
-        "title": "ApiEnvelope[AdminDeletedEnvironment]",
+        "title": "ApiEnvelope[AdminDeletedRuntimeProfile]",
         "type": "object"
       },
-      "ApiEnvelope_AdminEnvironmentModels_": {
+      "ApiEnvelope_AdminEnvironment_": {
         "properties": {
           "code": {
             "title": "Code",
             "type": "string"
           },
           "data": {
-            "$ref": "#/components/schemas/AdminEnvironmentModels"
+            "$ref": "#/components/schemas/AdminEnvironment"
           },
           "message": {
             "title": "Message",
@@ -2881,7 +2940,7 @@
           "message",
           "data"
         ],
-        "title": "ApiEnvelope[AdminEnvironmentModels]",
+        "title": "ApiEnvelope[AdminEnvironment]",
         "type": "object"
       },
       "ApiEnvelope_AdminErrorsPage_": {
@@ -3058,6 +3117,28 @@
           "data"
         ],
         "title": "ApiEnvelope[AdminProcessHealth]",
+        "type": "object"
+      },
+      "ApiEnvelope_AdminRuntimeProfileModels_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AdminRuntimeProfileModels"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[AdminRuntimeProfileModels]",
         "type": "object"
       },
       "ApiEnvelope_AdminSandboxDiagnostics_": {
@@ -3368,28 +3449,6 @@
         "title": "ApiEnvelope[AgentConnectorState]",
         "type": "object"
       },
-      "ApiEnvelope_AgentEnvironmentModels_": {
-        "properties": {
-          "code": {
-            "title": "Code",
-            "type": "string"
-          },
-          "data": {
-            "$ref": "#/components/schemas/AgentEnvironmentModels"
-          },
-          "message": {
-            "title": "Message",
-            "type": "string"
-          }
-        },
-        "required": [
-          "code",
-          "message",
-          "data"
-        ],
-        "title": "ApiEnvelope[AgentEnvironmentModels]",
-        "type": "object"
-      },
       "ApiEnvelope_AgentExtensionCatalog_": {
         "properties": {
           "code": {
@@ -3542,6 +3601,28 @@
           "data"
         ],
         "title": "ApiEnvelope[AgentRecord]",
+        "type": "object"
+      },
+      "ApiEnvelope_AgentRuntimeProfileModels_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AgentRuntimeProfileModels"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[AgentRuntimeProfileModels]",
         "type": "object"
       },
       "ApiEnvelope_ArtifactAgentRun_": {
@@ -4070,6 +4151,28 @@
           "data"
         ],
         "title": "ApiEnvelope[CredentialBinding]",
+        "type": "object"
+      },
+      "ApiEnvelope_CurrentEnvironment_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/CurrentEnvironment"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[CurrentEnvironment]",
         "type": "object"
       },
       "ApiEnvelope_CurrentUser_": {
@@ -5446,6 +5549,32 @@
         "title": "ApiEnvelope[list[AdminAgentCategory]]",
         "type": "object"
       },
+      "ApiEnvelope_list_AdminEnvironment__": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/AdminEnvironment"
+            },
+            "title": "Data",
+            "type": "array"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[list[AdminEnvironment]]",
+        "type": "object"
+      },
       "ApiEnvelope_list_AgentCategory__": {
         "properties": {
           "code": {
@@ -5472,32 +5601,6 @@
         "title": "ApiEnvelope[list[AgentCategory]]",
         "type": "object"
       },
-      "ApiEnvelope_list_AgentEnvironmentOption__": {
-        "properties": {
-          "code": {
-            "title": "Code",
-            "type": "string"
-          },
-          "data": {
-            "items": {
-              "$ref": "#/components/schemas/AgentEnvironmentOption"
-            },
-            "title": "Data",
-            "type": "array"
-          },
-          "message": {
-            "title": "Message",
-            "type": "string"
-          }
-        },
-        "required": [
-          "code",
-          "message",
-          "data"
-        ],
-        "title": "ApiEnvelope[list[AgentEnvironmentOption]]",
-        "type": "object"
-      },
       "ApiEnvelope_list_AgentRecord__": {
         "properties": {
           "code": {
@@ -5522,6 +5625,32 @@
           "data"
         ],
         "title": "ApiEnvelope[list[AgentRecord]]",
+        "type": "object"
+      },
+      "ApiEnvelope_list_AgentRuntimeProfileOption__": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/AgentRuntimeProfileOption"
+            },
+            "title": "Data",
+            "type": "array"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[list[AgentRuntimeProfileOption]]",
         "type": "object"
       },
       "ApiEnvelope_list_AgentTag__": {
@@ -5652,6 +5781,32 @@
           "data"
         ],
         "title": "ApiEnvelope[list[DeploymentRecord]]",
+        "type": "object"
+      },
+      "ApiEnvelope_list_EnvironmentView__": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/EnvironmentView"
+            },
+            "title": "Data",
+            "type": "array"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[list[EnvironmentView]]",
         "type": "object"
       },
       "ApiEnvelope_list_SessionRecord__": {
@@ -6636,17 +6791,6 @@
             ],
             "title": "Engine Options"
           },
-          "environment_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Environment Name"
-          },
           "extension_catalog": {
             "anyOf": [
               {
@@ -6778,6 +6922,17 @@
             ],
             "title": "Primary"
           },
+          "runtime_profile_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runtime Profile Name"
+          },
           "skills": {
             "anyOf": [
               {
@@ -6871,13 +7026,13 @@
       },
       "AssistantDefaults": {
         "additionalProperties": false,
-        "description": "The layer as stored, with the Environment new Assistants would use now.",
+        "description": "The layer as stored, with the RuntimeProfile new Assistants would use now.",
         "properties": {
-          "assistant_environment_names": {
+          "assistant_runtime_profile_names": {
             "items": {
               "type": "string"
             },
-            "title": "Assistant Environment Names",
+            "title": "Assistant Runtime Profile Names",
             "type": "array"
           },
           "credential_vault_ids": {
@@ -6894,7 +7049,7 @@
             ],
             "title": "Credential Vault Ids"
           },
-          "effective_environment_name": {
+          "effective_runtime_profile_name": {
             "anyOf": [
               {
                 "type": "string"
@@ -6903,7 +7058,7 @@
                 "type": "null"
               }
             ],
-            "title": "Effective Environment Name"
+            "title": "Effective Runtime Profile Name"
           },
           "engine_options": {
             "anyOf": [
@@ -6916,17 +7071,6 @@
               }
             ],
             "title": "Engine Options"
-          },
-          "environment_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Environment Name"
           },
           "extension_catalog": {
             "anyOf": [
@@ -7004,6 +7148,17 @@
             ],
             "title": "Packages"
           },
+          "runtime_profile_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runtime Profile Name"
+          },
           "skills": {
             "anyOf": [
               {
@@ -7039,7 +7194,7 @@
           }
         },
         "required": [
-          "assistant_environment_names"
+          "assistant_runtime_profile_names"
         ],
         "title": "AssistantDefaults",
         "type": "object"
@@ -7116,17 +7271,6 @@
             ],
             "title": "Engine Options"
           },
-          "environment_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Environment Name"
-          },
           "instructions": {
             "anyOf": [
               {
@@ -7175,6 +7319,17 @@
               }
             ],
             "title": "Packages"
+          },
+          "runtime_profile_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runtime Profile Name"
           },
           "skills": {
             "anyOf": [
@@ -8517,6 +8672,46 @@
         "title": "CredentialRefresh",
         "type": "object"
       },
+      "CurrentEnvironment": {
+        "additionalProperties": true,
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "runtime_policy": {
+            "$ref": "#/components/schemas/EnvironmentRuntimePolicy"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "display_name",
+          "description",
+          "version",
+          "runtime_policy"
+        ],
+        "title": "CurrentEnvironment",
+        "type": "object"
+      },
       "CurrentUser": {
         "additionalProperties": true,
         "description": "The identity the request resolved to, as the console reads it.\n\nThe three optional fields are what an identity provider filled in; the\nno-auth resolver asserts a user id and roles alone, so they arrive as null\nrather than being absent. The obligations that come with declaring a\nresponse model are in :mod:`astrabox.api.routes.response_envelope`.",
@@ -8786,6 +8981,10 @@
             ],
             "title": "Enabled"
           },
+          "environment_name": {
+            "title": "Environment Name",
+            "type": "string"
+          },
           "execution_mode": {
             "anyOf": [
               {
@@ -8909,7 +9108,8 @@
           }
         },
         "required": [
-          "deployment_id"
+          "deployment_id",
+          "environment_name"
         ],
         "title": "DeploymentRecord",
         "type": "object"
@@ -8969,6 +9169,124 @@
           "display_name"
         ],
         "title": "EnsurePrimaryAssistantRequest",
+        "type": "object"
+      },
+      "EnvironmentRuntimePolicy": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_prewarm_enabled": {
+            "title": "Agent Prewarm Enabled",
+            "type": "boolean"
+          },
+          "background_execution_enabled": {
+            "title": "Background Execution Enabled",
+            "type": "boolean"
+          },
+          "custody_scope": {
+            "const": "environment",
+            "title": "Custody Scope",
+            "type": "string"
+          },
+          "scheduler_provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scheduler Provider"
+          },
+          "scheduler_worker_enabled": {
+            "title": "Scheduler Worker Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "agent_prewarm_enabled",
+          "background_execution_enabled",
+          "custody_scope",
+          "scheduler_provider",
+          "scheduler_worker_enabled"
+        ],
+        "title": "EnvironmentRuntimePolicy",
+        "type": "object"
+      },
+      "EnvironmentView": {
+        "additionalProperties": true,
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "display_name",
+          "description",
+          "version"
+        ],
+        "title": "EnvironmentView",
+        "type": "object"
+      },
+      "EnvironmentWrite": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "display_name": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Display Name",
+            "type": "string"
+          },
+          "member_user_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Member User Ids",
+            "type": "array"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "display_name",
+          "version"
+        ],
+        "title": "EnvironmentWrite",
         "type": "object"
       },
       "ExposedPortUrl": {
@@ -12272,7 +12590,7 @@
   "info": {
     "summary": "Self-hosted agent runtime that runs installed Agent programs in isolated sandboxes and streams responses over the AI SDK Data Stream Protocol (SSE).",
     "title": "AstraBox",
-    "version": "0.1.10"
+    "version": "0.1.11"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -13683,35 +14001,15 @@
         "summary": "List Deployments"
       }
     },
-    "/api/v1/admin/environment-schema": {
-      "get": {
-        "description": "Return the authoritative editable schema for the environment form.",
-        "operationId": "get_environment_schema_endpoint_api_v1_admin_environment_schema_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_AdminFormSchema_"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Get Environment Schema Endpoint"
-      }
-    },
     "/api/v1/admin/environments": {
       "get": {
-        "description": "List all environment presets (including disabled entries).",
         "operationId": "list_admin_environments_api_v1_admin_environments_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_list_dict_str__Any___"
+                  "$ref": "#/components/schemas/ApiEnvelope_list_AdminEnvironment__"
                 }
               }
             },
@@ -13722,9 +14020,8 @@
       }
     },
     "/api/v1/admin/environments/{name}": {
-      "delete": {
-        "description": "Delete a preset only after checking its Agent and Assistant references.",
-        "operationId": "delete_admin_environment_api_v1_admin_environments__name__delete",
+      "get": {
+        "operationId": "get_admin_environment_api_v1_admin_environments__name__get",
         "parameters": [
           {
             "in": "path",
@@ -13741,7 +14038,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_AdminDeletedEnvironment_"
+                  "$ref": "#/components/schemas/ApiEnvelope_AdminEnvironment_"
                 }
               }
             },
@@ -13758,11 +14055,10 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Delete Admin Environment"
+        "summary": "Get Admin Environment"
       },
       "put": {
-        "description": "Upsert a single environment preset by name.",
-        "operationId": "upsert_admin_environment_api_v1_admin_environments__name__put",
+        "operationId": "save_admin_environment_api_v1_admin_environments__name__put",
         "parameters": [
           {
             "in": "path",
@@ -13778,9 +14074,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "additionalProperties": true,
-                "title": "Payload",
-                "type": "object"
+                "$ref": "#/components/schemas/EnvironmentWrite"
               }
             }
           },
@@ -13791,7 +14085,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                  "$ref": "#/components/schemas/ApiEnvelope_AdminEnvironment_"
                 }
               }
             },
@@ -13808,47 +14102,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Upsert Admin Environment"
-      }
-    },
-    "/api/v1/admin/environments/{name}/models": {
-      "get": {
-        "description": "Model ids the console can offer for agents on this environment.\n\nEnumerated by the environment's selected model provider. A provider with\nno authoritative catalog returns an empty list and the console accepts a\nfree-text model id.",
-        "operationId": "list_environment_models_api_v1_admin_environments__name__models_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "name",
-            "required": true,
-            "schema": {
-              "title": "Name",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_AdminEnvironmentModels_"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "List Environment Models"
+        "summary": "Save Admin Environment"
       }
     },
     "/api/v1/admin/errors": {
@@ -14108,6 +14362,174 @@
           }
         },
         "summary": "Admin Process Health"
+      }
+    },
+    "/api/v1/admin/runtime-profile-schema": {
+      "get": {
+        "description": "Return the authoritative editable schema for the environment form.",
+        "operationId": "get_runtime_profile_schema_endpoint_api_v1_admin_runtime_profile_schema_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AdminFormSchema_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Runtime Profile Schema Endpoint"
+      }
+    },
+    "/api/v1/admin/runtime-profiles": {
+      "get": {
+        "description": "List all environment presets (including disabled entries).",
+        "operationId": "list_admin_runtime_profiles_api_v1_admin_runtime_profiles_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_list_dict_str__Any___"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Admin Runtime Profiles"
+      }
+    },
+    "/api/v1/admin/runtime-profiles/{name}": {
+      "delete": {
+        "description": "Delete a preset only after checking its Agent and Assistant references.",
+        "operationId": "delete_admin_runtime_profile_api_v1_admin_runtime_profiles__name__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AdminDeletedRuntimeProfile_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Admin Runtime Profile"
+      },
+      "put": {
+        "description": "Upsert a single environment preset by name.",
+        "operationId": "upsert_admin_runtime_profile_api_v1_admin_runtime_profiles__name__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "title": "Payload",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_dict_str__Any__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upsert Admin Runtime Profile"
+      }
+    },
+    "/api/v1/admin/runtime-profiles/{name}/models": {
+      "get": {
+        "description": "Model ids the console can offer for agents on this environment.\n\nEnumerated by the environment's selected model provider. A provider with\nno authoritative catalog returns an empty list and the console accepts a\nfree-text model id.",
+        "operationId": "list_runtime_profile_models_api_v1_admin_runtime_profiles__name__models_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AdminRuntimeProfileModels_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Runtime Profile Models"
       }
     },
     "/api/v1/admin/sandbox-idle-action": {
@@ -15063,29 +15485,29 @@
         "summary": "List Agent Categories"
       }
     },
-    "/api/v1/agent-configuration/environments": {
+    "/api/v1/agent-configuration/runtime-profiles": {
       "get": {
-        "description": "Secret-free Environment choices for the Agent form.",
-        "operationId": "list_agent_configuration_environments_api_v1_agent_configuration_environments_get",
+        "description": "Secret-free RuntimeProfile choices for the Agent form.",
+        "operationId": "list_agent_configuration_runtime_profiles_api_v1_agent_configuration_runtime_profiles_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_list_AgentEnvironmentOption__"
+                  "$ref": "#/components/schemas/ApiEnvelope_list_AgentRuntimeProfileOption__"
                 }
               }
             },
             "description": "Successful Response"
           }
         },
-        "summary": "List Agent Configuration Environments"
+        "summary": "List Agent Configuration Runtime Profiles"
       }
     },
-    "/api/v1/agent-configuration/environments/{name}/models": {
+    "/api/v1/agent-configuration/runtime-profiles/{name}/models": {
       "get": {
-        "description": "Searchable model ids exposed by the chosen Environment's gateway.",
-        "operationId": "list_agent_configuration_models_api_v1_agent_configuration_environments__name__models_get",
+        "description": "Searchable model ids exposed by the chosen RuntimeProfile's gateway.",
+        "operationId": "list_agent_configuration_models_api_v1_agent_configuration_runtime_profiles__name__models_get",
         "parameters": [
           {
             "in": "path",
@@ -15102,7 +15524,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_AgentEnvironmentModels_"
+                  "$ref": "#/components/schemas/ApiEnvelope_AgentRuntimeProfileModels_"
                 }
               }
             },
@@ -19730,6 +20152,42 @@
           }
         },
         "summary": "Trigger Deployment"
+      }
+    },
+    "/api/v1/environments": {
+      "get": {
+        "operationId": "list_accessible_environments_api_v1_environments_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_list_EnvironmentView__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Accessible Environments"
+      }
+    },
+    "/api/v1/environments/current": {
+      "get": {
+        "operationId": "get_current_environment_api_v1_environments_current_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_CurrentEnvironment_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Current Environment"
       }
     },
     "/api/v1/exposed-ports/{deployment_id}/{port}/url": {

@@ -33,13 +33,13 @@ export interface StartupSkillGate {
   close(keepFiles?: boolean): Promise<void>;
 }
 
-/** Keep this private Git listener's admission on a test-owned Environment. */
+/** Keep this private Git listener's admission on a test-owned RuntimeProfile. */
 export function startupSkillEnvironment(
   source: Record<string, unknown>, fields: string[], name: string, descriptor: string,
 ): Record<string, unknown> {
   const networking = source.networking as Record<string, unknown>;
   if (source.enabled !== true || source.engine_kind !== 'claude_code' || networking.type !== 'limited') {
-    throw new Error('startup Skill requires the deployed enabled, limited Claude Code Environment');
+    throw new Error('startup Skill requires the deployed enabled, limited Claude Code RuntimeProfile');
   }
   return {
     ...Object.fromEntries(Object.entries(source).filter(([key]) => fields.includes(key))),

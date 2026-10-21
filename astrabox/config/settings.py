@@ -53,6 +53,16 @@ _REMOVED_LOCAL_SANDBOX_BACKEND = "direct_docker"
 _CURRENT_LOCAL_SANDBOX_BACKEND = "open_sandbox"
 
 
+def validate_environment_name(value: str) -> str:
+    """A stable Environment key accepted by native application and resource names."""
+    if re.fullmatch(r"[a-z0-9][a-z0-9_-]{2,29}", value) is None:
+        raise ValueError(
+            "environment_name requires 3–30 lowercase letters, digits, underscores or hyphens, "
+            "starting with a letter or digit"
+        )
+    return value
+
+
 _CPU_QUANTITY = re.compile(r"(\d+(?:\.\d+)?)(m?)")
 _MEMORY_QUANTITY = re.compile(r"(\d+(?:\.\d+)?)(Ki|Mi|Gi|Ti|Pi|Ei|k|M|G|T|P|E)?")
 _MEMORY_UNITS = {
@@ -445,10 +455,29 @@ class AstraBoxSettings(BaseSettings):
     )
 
     def resolved_state_dir(self) -> Path:
-        """Return the state root with a configured home-directory alias expanded."""
+        """This deployment's private state, retained in place across upgrades."""
         return self.state_dir.expanduser()
 
     # --- persistence -------------------------------------------------------
+    environment_name: str = Field(
+        default="astrabox", min_length=3, max_length=30,
+        description="Immutable Environment owning this process's data, access and runtime resources.",
+    )
+
+    @field_validator("environment_name")
+    @classmethod
+    def _validate_environment_name(cls, value: str) -> str:
+        return validate_environment_name(value)
+
+    agent_prewarm_enabled: bool = Field(
+        default=True,
+        description="Use prepared Agent capacity in this Environment; false selects cold admission.",
+    )
+    background_execution_enabled: bool = Field(
+        default=True,
+        description="Run channel and scheduler workers in this Environment.",
+    )
+
     scheduler_provider: str = Field(
         default="dbos",
         description=(

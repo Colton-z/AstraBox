@@ -4,7 +4,7 @@ title: Configuration File Reference
 
 # Configuration File Reference
 
-`astrabox.yaml` is the core configuration file for an AstraBox deployment. It declares the Environments and Agents you want the deployment to provide.
+`astrabox.yaml` is the core configuration file for an AstraBox deployment. It declares the RuntimeProfiles and Agents you want the deployment to provide.
 
 ## Configuration system overview
 
@@ -12,7 +12,7 @@ AstraBox uses one declarative file with two resource types:
 
 | Resource | Purpose |
 | :--- | :--- |
-| **Environment** | Selects the Agent program, model-service connection, sandbox behavior, credentials, and runtime defaults that Agents can share. |
+| **RuntimeProfile** | Selects the Agent program, model-service connection, sandbox behavior, credentials, and runtime defaults that Agents can share. |
 | **Agent** | Defines the model, system prompt, MCP Servers, Skills, Plugins, repository, visibility mode, and other settings for one Agent. |
 
 The file is applied to the deployment named by `--endpoint` or `ASTRABOX_ENDPOINT`. It does not contain the deployment address or CLI credential.
@@ -26,7 +26,7 @@ The configuration file has three top-level keys:
 ```yaml
 version: 1
 
-environments:
+runtime_profiles:
   - name: default
     engine_kind: <agent-program-id>
     endpoint_provider: <model-connection-id>
@@ -35,7 +35,7 @@ environments:
 agents:
   - name: researcher
     model: <model-name>
-    environment_name: default
+    runtime_profile_name: default
     system: |
       Research the requested topic and cite the sources you use.
     enabled: true
@@ -44,7 +44,7 @@ agents:
 **The three sections**:
 
 - **version** - configuration document version; the current and only accepted value is `1`
-- **environments** - optional list of Environment declarations
+- **environments** - optional list of RuntimeProfile declarations
 - **agents** - optional list of Agent declarations
 
 ---
@@ -58,7 +58,7 @@ The document root defines the configuration version and the two resource lists.
 ```yaml
 version: 1
 
-environments:
+runtime_profiles:
   - name: default
     engine_kind: <agent-program-id>
     endpoint_provider: <model-connection-id>
@@ -67,7 +67,7 @@ environments:
 agents:
   - name: researcher
     model: <model-name>
-    environment_name: default
+    runtime_profile_name: default
     system: |
       Research the requested topic and cite the sources you use.
     enabled: true
@@ -93,24 +93,24 @@ This is the `astrabox.yaml` document version. It is not the AstraBox release num
 
 #### `environments` (optional)
 
-**Environment declarations**
+**RuntimeProfile declarations**
 
 - 📝 **What it does**: lists the reusable runtime and model-service settings that should exist
 - ✅ **Rules**: must be a list of mappings; every item needs a non-empty `name`
 - ✅ **Default**: an empty list when omitted
-- 🎯 **Used for**: creating or updating Environments before Agents are processed
+- 🎯 **Used for**: creating or updating RuntimeProfiles before Agents are processed
 
 **Example**:
 
 ```yaml
-environments:
+runtime_profiles:
   - name: default
     engine_kind: <agent-program-id>
     endpoint_provider: <model-connection-id>
     enabled: true
 ```
 
-Each Environment is a complete replacement when written. Include all required fields for that Environment, preferably by starting from `astrabox init --from-deployment`.
+Each RuntimeProfile is a complete replacement when written. Include all required fields for that RuntimeProfile, preferably by starting from `astrabox init --from-deployment`.
 
 #### `agents` (optional)
 
@@ -127,7 +127,7 @@ Each Environment is a complete replacement when written. Include all required fi
 agents:
   - name: researcher
     model: <model-name>
-    environment_name: default
+    runtime_profile_name: default
     system: |
       Research the requested topic and cite the sources you use.
     enabled: true
@@ -142,14 +142,14 @@ Agent updates include only the declared fields. The CLI sends the stored Agent v
 - 📝 **What it does**: identifies a declaration before the deployment has assigned an ID
 - ✅ **Rules**: must contain a non-empty value and may appear only once within the same resource list
 - 🎯 **Used for**:
-  - matching an existing Environment
+  - matching an existing RuntimeProfile
   - matching an existing Agent
   - reporting each `diff`, `apply`, or `destroy` action
 
 **Examples**:
 
 ```yaml
-environments:
+runtime_profiles:
   - name: default
 
 agents:
@@ -167,18 +167,18 @@ version: 1
 agent: []  # Invalid: the accepted key is agents
 ```
 
-Resource fields are also validated, but their accepted keys come from the Agent and Environment definitions described below.
+Resource fields are also validated, but their accepted keys come from the Agent and RuntimeProfile definitions described below.
 
 ---
 
-## Environment configuration
+## RuntimeProfile configuration
 
-An Environment is a reusable set of Agent-program, model-service, sandbox, networking, credential, and tracing settings. Agents select it by `environment_name`.
+A RuntimeProfile is a reusable set of Agent-program, model-service, sandbox, networking, credential, and tracing settings. Agents select it by `runtime_profile_name`.
 
 ### Example
 
 ```yaml
-environments:
+runtime_profiles:
   - name: default
     display_name: Default
     description: General-purpose Agent environment
@@ -205,13 +205,13 @@ Selects the Agent program that runs inside the sandbox.
 
 - **Required**: Yes
 - **Candidate values**: Agent programs installed in the target deployment
-- **Inspect with**: `astrabox schema environment`
+- **Inspect with**: `astrabox schema runtime_profile`
 
 Do not copy a value from another deployment without checking it; Plugins can add Agent programs to one deployment without adding them to another.
 
 #### `endpoint_provider`
 
-Selects the model-service connection type used by this Environment.
+Selects the model-service connection type used by this RuntimeProfile.
 
 - **Required**: No
 - **Candidate values**: model connections registered in the target deployment
@@ -228,7 +228,7 @@ Selects the sandbox backend that creates Agent sandboxes.
 
 #### `provider_access`
 
-Configures how Agents on this Environment reach the model service:
+Configures how Agents on this RuntimeProfile reach the model service:
 
 ```yaml
 provider_access:
@@ -270,7 +270,7 @@ Controls what happens to an idle sandbox. The deployment accepts only actions su
 
 `sandbox_tenancy` selects whether a sandbox belongs to one conversation or can serve the Agent more broadly. `sandbox_permission_level` selects the permission level granted inside the sandbox.
 
-Agent-level tenancy requires a permission level that can enforce its isolation model. Unsupported combinations fail when the Environment is written.
+Agent-level tenancy requires a permission level that can enforce its isolation model. Unsupported combinations fail when the RuntimeProfile is written.
 
 #### `tracing` {#tracing}
 
@@ -289,16 +289,16 @@ The block declares `endpoint`, `headers`, inline authentication, an environment 
 
 For an authenticated collector, supply either `auth_token` or `auth_token_secret_name`. Both use the complete `Authorization` value, such as `Bearer your-token` or `Basic base64-value`. A secret name resolves from the AstraBox server's environment: `otel-auth` reads `OTEL_AUTH` (uppercase, with hyphens replaced by underscores). It does not refer to a Web-console Vault entry.
 
-Tracing is consumed by Claude Code. Its resolved credential is passed to the CLI through `OTEL_EXPORTER_OTLP_HEADERS`, without egress Vault substitution; use HTTPS to protect it in transit. Disabled tracing does not read the secret. If an enabled reference is missing or empty, AstraBox logs the Environment and reference name and disables tracing for that runtime configuration without failing the conversation or exporting anonymously. The stored Environment remains unchanged.
+Tracing is consumed by Claude Code. Its resolved credential is passed to the CLI through `OTEL_EXPORTER_OTLP_HEADERS`, without egress Vault substitution; use HTTPS to protect it in transit. Disabled tracing does not read the secret. If an enabled reference is missing or empty, AstraBox logs the RuntimeProfile and reference name and disables tracing for that runtime configuration without failing the conversation or exporting anonymously. The stored RuntimeProfile remains unchanged.
 
 #### Display and state fields
 
 | Field | Description |
 | :--- | :--- |
-| `name` | Stable name used by Agent `environment_name`; required. |
+| `name` | Stable name used by Agent `runtime_profile_name`; required. |
 | `display_name` | Name shown to users. |
-| `description` | What the Environment is intended for. |
-| `enabled` | Whether the Environment can be selected for use. |
+| `description` | What the RuntimeProfile is intended for. |
+| `enabled` | Whether the RuntimeProfile can be selected for use. |
 
 ### Auto-managed fields
 
@@ -310,7 +310,7 @@ IDs, timestamps, ownership, and other server-managed state are excluded from `as
 
 ## Agent configuration
 
-An Agent combines a model, system prompt, MCP Servers, Skills, Plugins, repository settings, and an Environment into a cloud Agent that is available whenever the AstraBox deployment is running.
+An Agent combines a model, system prompt, MCP Servers, Skills, Plugins, repository settings, and a RuntimeProfile into a cloud Agent that is available whenever the AstraBox deployment is running.
 
 ### Example
 
@@ -322,7 +322,7 @@ agents:
     model: <model-name>
     system: |
       Research the requested topic and cite the sources you use.
-    environment_name: default
+    runtime_profile_name: default
     skills:
       - <skill-reference>
     mcp_servers: {}
@@ -345,7 +345,7 @@ model: <model-name>       # Documentation placeholder: replace it
 model: ${MODEL_NAME}      # Literal text, not environment-variable expansion
 ```
 
-Set the deployment address and CLI credential through command flags or environment variables. Keep runtime credentials in the Environment's `provider_access` or AstraBox Vault instead of interpolating them into the file.
+Set the deployment address and CLI credential through command flags or environment variables. Keep runtime credentials in the RuntimeProfile's `provider_access` or AstraBox Vault instead of interpolating them into the file.
 
 ### No `Auto` keyword
 
@@ -359,7 +359,7 @@ Required stable name used by `astrabox.yaml` to match an existing Agent. Server-
 
 #### `model`
 
-Required model or model-route name used by the selected Environment. It is a free-text value because a self-hosted model gateway can provide names that AstraBox cannot enumerate globally.
+Required model or model-route name used by the selected RuntimeProfile. It is a free-text value because a self-hosted model gateway can provide names that AstraBox cannot enumerate globally.
 
 ```yaml
 model: <model-name>
@@ -375,9 +375,9 @@ system: |
   Explain the evidence for each conclusion.
 ```
 
-#### `environment_name`
+#### `runtime_profile_name`
 
-Required name of an existing Environment. Environments in the same file are applied first, so one document can create an Environment and then create Agents that use it.
+Required name of an existing RuntimeProfile. RuntimeProfiles in the same file are applied first, so one document can create a RuntimeProfile and then create Agents that use it.
 
 #### `engine_options`
 
@@ -389,7 +389,7 @@ engine_options:
     <native-option>: <value>
 ```
 
-Use the JSON blocks declared by the Environment's engine. Their contents follow
+Use the JSON blocks declared by the RuntimeProfile's engine. Their contents follow
 the installed supplier's native configuration, not a platform field whitelist.
 See [Native runtime JSON](../authoring-agents.md#native-runtime-json).
 
@@ -418,7 +418,7 @@ The setting shape follows the selected Agent program's MCP support. Remote MCP S
 
 #### `default_repo` / `packages`
 
-`default_repo` checks out the Agent's main repository. `packages` adds the engine's native packages; each names a `kind` the Environment's engine declares, such as `claude-plugin` for a Claude Code plugin repository.
+`default_repo` checks out the Agent's main repository. `packages` adds the engine's native packages; each names a `kind` the RuntimeProfile's engine declares, such as `claude-plugin` for a Claude Code plugin repository.
 
 ```yaml
 default_repo:
@@ -472,14 +472,14 @@ The deployment assigns `agent_id`, timestamps, ownership, and optimistic-concurr
 
 ## Applying both resource types
 
-One file can declare Environments and the Agents that use them. The CLI applies the dependency in the correct order.
+One file can declare RuntimeProfiles and the Agents that use them. The CLI applies the dependency in the correct order.
 
 ### Example
 
 ```yaml
 version: 1
 
-environments:
+runtime_profiles:
   - name: research
     engine_kind: <agent-program-id>
     endpoint_provider: <model-connection-id>
@@ -488,7 +488,7 @@ environments:
 agents:
   - name: researcher
     model: <model-name>
-    environment_name: research
+    runtime_profile_name: research
     system: |
       Research the requested topic and cite the sources you use.
     enabled: true
@@ -496,10 +496,10 @@ agents:
 
 ### How the two resource types differ
 
-| Behavior | Environment | Agent |
+| Behavior | RuntimeProfile | Agent |
 | :--- | :--- | :--- |
 | Identity in the file | `name` | `name` |
-| Apply order | First | After Environments |
+| Apply order | First | After RuntimeProfiles |
 | Create or update | One PUT upserts by name | Create or update after matching by name |
 | Update body | Complete replacement | Declared fields, plus stored version |
 | Concurrent edit | Latest complete document is written | Stale version is refused |
@@ -509,13 +509,13 @@ agents:
 
 #### Apply order
 
-Environments are always processed before Agents, regardless of their visual position within their separate YAML lists. An Agent's `environment_name` can therefore refer to an Environment created by the same apply.
+RuntimeProfiles are always processed before Agents, regardless of their visual position within their separate YAML lists. An Agent's `runtime_profile_name` can therefore refer to a RuntimeProfile created by the same apply.
 
 #### Resource matching
 
 IDs are created by the deployment and are not stored in `astrabox.yaml`. The CLI matches resources by `name`.
 
-Environment names are the resource key. Agent names are not required to be globally unique by the API, so several matching Agents produce a conflict instead of an arbitrary choice.
+RuntimeProfile names are the resource key. Agent names are not required to be globally unique by the API, so several matching Agents produce a conflict instead of an arbitrary choice.
 
 `astrabox init --from-deployment` applies the same rule before writing: if the visible Agents contain a duplicate name, it exits with conflict code `5`, reports every matching Agent ID, and leaves the destination file untouched. Rename or remove the ambiguous Agents, then export again.
 
@@ -540,17 +540,17 @@ When an Agent is updated, the CLI reads and sends its stored `version`. When a r
 
 ## Resource field definitions
 
-The three top-level keys in `astrabox.yaml` are fixed. Fields inside an Environment or Agent follow the authoring definitions of the deployment that receives the file.
+The three top-level keys in `astrabox.yaml` are fixed. Fields inside a RuntimeProfile or Agent follow the authoring definitions of the deployment that receives the file.
 
 ### Example
 
 ```bash
 # Human-readable tables
-astrabox schema environment
+astrabox schema runtime_profile
 astrabox schema agent
 
 # Complete descriptors for scripts and nested objects
-astrabox schema environment --output json
+astrabox schema runtime_profile --output json
 astrabox schema agent --output json
 ```
 
@@ -567,15 +567,15 @@ endpoint_provider enum      false     <installed model connections>
 
 #### `key`
 
-The YAML field name to place in an Environment or Agent declaration.
+The YAML field name to place in a RuntimeProfile or Agent declaration.
 
 #### `type`
 
-The value shape expected by the deployment. Common types include strings, text, integers, booleans, enums, string lists, objects, object lists, and Environment references.
+The value shape expected by the deployment. Common types include strings, text, integers, booleans, enums, string lists, objects, object lists, and RuntimeProfile references.
 
 #### `required`
 
-Whether the field must be present when that resource is written. Because Environment writes are complete replacements, all required Environment fields need to remain in the declaration.
+Whether the field must be present when that resource is written. Because RuntimeProfile writes are complete replacements, all required RuntimeProfile fields need to remain in the declaration.
 
 #### `enum`
 
@@ -583,7 +583,7 @@ Candidate values for a fixed choice. Agent-program, sandbox-backend, permission,
 
 #### `item_schema`
 
-Field definitions for a structured object or list item. It describes nested values such as Environment networking, model access, tracing, and repository settings.
+Field definitions for a structured object or list item. It describes nested values such as RuntimeProfile networking, model access, tracing, and repository settings.
 
 #### `path`
 
@@ -707,7 +707,7 @@ default_repo:
 
 For these examples, set `PRODUCTION_MODEL_KEY` and `APPLICATION_DEPLOY_KEY` on the AstraBox service through the deployment's protected secret configuration. Web-console Vault assignments are a separate credential mechanism. CLI authentication belongs in `ASTRABOX_TOKEN` or OAuth environment variables, not in `astrabox.yaml`.
 
-When an Environment contains an inline credential, read views and `astrabox init --from-deployment` return a masked value. Applying that mask unchanged to the same Environment keeps its stored credential.
+When a RuntimeProfile contains an inline credential, read views and `astrabox init --from-deployment` return a masked value. Applying that mask unchanged to the same RuntimeProfile keeps its stored credential.
 
 If a file contains plaintext secrets while you are preparing it locally, exclude it from version control:
 
@@ -729,7 +729,7 @@ provider_access:
 YAML comments can explain why a setting exists:
 
 ```yaml
-environments:
+runtime_profiles:
   - name: restricted
     # Only the model gateway and configured remote MCP Servers are reachable.
     networking:
@@ -745,7 +745,7 @@ environments:
 
 ```bash
 # Option 1: inspect the accepted fields
-astrabox schema environment
+astrabox schema runtime_profile
 astrabox schema agent
 
 # Option 2: parse, validate, and preview without writes
@@ -766,7 +766,7 @@ The CLI validates the complete document before sending any write, then the deplo
 ```yaml
 version: 1
 
-environments:
+runtime_profiles:
   - name: local
     display_name: Local
     engine_kind: <agent-program-id>
@@ -785,7 +785,7 @@ agents:
   - name: developer
     display_name: Developer
     model: <model-name>
-    environment_name: local
+    runtime_profile_name: local
     system: |
       Help with the repository and explain each change.
     enabled: true
@@ -801,7 +801,7 @@ agents:
     display_name: Reviewer
     description: Reviews changes in the application repository
     model: <model-name>
-    environment_name: default
+    runtime_profile_name: default
     system: |
       Review the change for correctness, tests, and operational risk.
     default_repo:
@@ -828,7 +828,7 @@ agents:
 ```yaml
 version: 1
 
-environments:
+runtime_profiles:
   - name: production
     display_name: Production
     description: Restricted production Agent environment
@@ -857,7 +857,7 @@ agents:
     display_name: Incident reviewer
     description: Collects evidence and drafts incident reviews
     model: <model-name>
-    environment_name: production
+    runtime_profile_name: production
     system: |
       Collect evidence before drawing conclusions.
       Cite every log, change, and timeline item you use.
@@ -868,11 +868,11 @@ agents:
 
 ### 🎯 Minimal configuration examples
 
-**Minimal Environment**:
+**Minimal RuntimeProfile**:
 
 ```yaml
 version: 1
-environments:
+runtime_profiles:
   - name: default
     engine_kind: <agent-program-id>
 ```
@@ -884,10 +884,10 @@ version: 1
 agents:
   - name: assistant
     model: <model-name>
-    environment_name: default
+    runtime_profile_name: default
 ```
 
-The Environment referenced by a minimal Agent must already exist when it is not declared in the same file.
+The RuntimeProfile referenced by a minimal Agent must already exist when it is not declared in the same file.
 
 ---
 
@@ -929,14 +929,14 @@ astrabox diff --file config/production.astrabox.yaml
 
 ```bash
 # Read the target deployment's required fields
-astrabox schema environment
+astrabox schema runtime_profile
 astrabox schema agent
 
 # Export complete current resources before editing
 astrabox init --from-deployment --force
 ```
 
-Every resource needs `name`. The current Agent definition also requires `model` and `environment_name`; the current Environment definition requires `engine_kind`. The target deployment's field definitions and candidate values remain authoritative.
+Every resource needs `name`. The current Agent definition also requires `model` and `runtime_profile_name`; the current RuntimeProfile definition requires `engine_kind`. The target deployment's field definitions and candidate values remain authoritative.
 
 ### ❓ Placeholders or environment variables were not replaced
 
@@ -967,14 +967,14 @@ astrabox apply -f astrabox.yaml
 
 # 3) Read the stored resource
 astrabox get agents <agent-name> --output json
-astrabox get environments <environment-name> --output json
+astrabox get runtime_profiles <environment-name> --output json
 ```
 
 - `unchanged` means the declared values already match.
 - A resource removed from the file is retained; `apply` never deletes.
-- An Agent uses the Environment named by `environment_name`.
+- An Agent uses the RuntimeProfile named by `runtime_profile_name`.
 - An Agent-program option only has an effect when the selected Agent program supports it.
-- A masked Environment secret sent back unchanged preserves the stored value.
+- A masked RuntimeProfile secret sent back unchanged preserves the stored value.
 
 ### ❓ Field names are incompatible
 
@@ -984,7 +984,7 @@ Do not rename a rejected field or add a compatibility key. Export the current sh
 
 ```bash
 astrabox init --from-deployment --force
-astrabox schema environment --output json
+astrabox schema runtime_profile --output json
 astrabox schema agent --output json
 ```
 
@@ -997,18 +997,18 @@ astrabox schema agent --output json
 | Field | Required | Description |
 | :--- | :--- | :--- |
 | `version` | ✅ | Must be `1`. |
-| `environments` | ❌ | List of Environment declarations. |
+| `environments` | ❌ | List of RuntimeProfile declarations. |
 | `agents` | ❌ | List of Agent declarations. |
 
-### Environment fields
+### RuntimeProfile fields
 
 | Field | Required | Description |
 | :--- | :--- | :--- |
-| `name` | ✅ | Environment name and file identity. |
+| `name` | ✅ | RuntimeProfile name and file identity. |
 | `display_name` | ❌ | User-facing name. |
 | `description` | ❌ | Intended use. |
 | `engine_kind` | ✅ | Agent program. |
-| `enabled` | ❌ | Whether the Environment can be used. |
+| `enabled` | ❌ | Whether the RuntimeProfile can be used. |
 | `sandbox_backend` | ❌ | Sandbox backend. |
 | `runtime_template_name` | ❌ | Backend runtime template. |
 | `networking` | ❌ | Sandbox outbound network policy. |
@@ -1039,7 +1039,7 @@ astrabox schema agent --output json
 | `diff_panel` | ❌ | Boolean; show the file-diff panel. This does not control permission to change files. |
 | `default_repo` | ❌ | Main repository checkout. |
 | `packages` | ❌ | Engine-native packages, each with the `kind` its engine declares. |
-| `environment_name` | ✅ | Environment used by the Agent. |
+| `runtime_profile_name` | ✅ | RuntimeProfile used by the Agent. |
 | `exposure_mode` | ❌ | Conversation/MCP exposure. |
 | `idle_hibernate_seconds` | ❌ | Idle time before hibernation. |
 | `prepared_capacity` | ❌ | New conversations that can start at once on a prepared runtime, 0 to 1000; 0 is off. Omitted on create: 1 where the deployment can prewarm. |

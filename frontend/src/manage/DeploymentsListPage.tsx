@@ -60,7 +60,7 @@ export default function DeploymentsListPage() {
         listDeployments(),
       ]);
       const agentNames = new Map(agentList.map((agent) => [agent.agent_id, agent.name]));
-      setAgents(agentList);
+      setAgents(agentList.filter((agent) => agent.can_manage));
       setRows(deployments.map((deployment) => ({
         deployment,
         agentName: deployment.assistant_id

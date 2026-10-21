@@ -37,6 +37,11 @@ from astrabox.config.settings import get_settings
 from astrabox.core.service.orchestrator.session_service import SessionService
 from astrabox.core.service.orchestrator.vault_service import VaultService
 
+
+@pytest.fixture(autouse=True)
+def _environment_membership(environment_member_accounts: set[str]) -> None:
+    environment_member_accounts.update({'alice'})
+
 # Deterministic 32-byte master key (urlsafe b64) so the local secret store needs
 # no key file when a VaultService is constructed.
 _MASTER_KEY = base64.urlsafe_b64encode(b"k" * 32).decode()

@@ -198,7 +198,7 @@ def test_assistant_interrupt_stops_a_running_command_and_the_next_message_is_ans
                 "/api/v1/assistants",
                 json={
                     "display_name": f"__e2e_interrupt_{uuid.uuid4().hex[:8]}",
-                    "environment_name": environment,
+                    "runtime_profile_name": environment,
                     "model_config_override": {"model_name": model},
                 },
             )

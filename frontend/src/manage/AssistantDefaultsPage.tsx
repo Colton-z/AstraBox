@@ -13,7 +13,7 @@ import type { AssistantDefaults, AssistantDefaultsExtensionCatalog } from '@/ass
 import { ErrorNote } from '@/components/shell';
 import { getAdminVaultCatalog } from '@/api';
 import { Checkbox } from '@/components/ui/checkbox';
-import type { EnvironmentConfig, VaultSummary } from '@/types';
+import type { RuntimeProfileConfig, VaultSummary } from '@/types';
 import { useFrontendReleaseHold } from '@/hooks/useFrontendReleaseHold';
 import { useExtensionProvider } from '@/hooks/useExtensionProvider';
 
@@ -33,14 +33,14 @@ import {
   type EditFieldSpec,
   type EditSectionSpec,
 } from './console';
-import { loadAssistantEnvironments } from './assistantConfig';
+import { loadAssistantRuntimeProfiles } from './assistantConfig';
 import { buildAssistantExtensionSection } from './assistantEditConfig';
 
-/** The select's value for "no Environment named": the layer leaves the choice to the rule. */
+/** The select's value for "no RuntimeProfile named": the layer leaves the choice to the rule. */
 const AUTOMATIC = '__automatic__';
 
 interface DefaultsDraft {
-  environment_name: string;
+  runtime_profile_name: string;
   model_name: string;
   instructions: string;
   skills: SkillDescriptor[];
@@ -52,7 +52,7 @@ interface DefaultsDraft {
 
 function draftOf(view: AssistantDefaults): DefaultsDraft {
   return {
-    environment_name: view.environment_name || AUTOMATIC,
+    runtime_profile_name: view.runtime_profile_name || AUTOMATIC,
     model_name: view.model_name ?? '',
     instructions: view.instructions ?? '',
     skills: view.skills ?? [],
@@ -71,23 +71,23 @@ function field<K extends keyof DefaultsDraft>(key: K) {
 }
 
 function baseSection(view: AssistantDefaults): EditSectionSpec {
-  const automatic = view.effective_environment_name && !view.environment_name
-    ? i18n.t('manage:assistant_defaults.environment_automatic_named', { name: view.effective_environment_name })
-    : i18n.t('manage:assistant_defaults.environment_automatic');
+  const automatic = view.effective_runtime_profile_name && !view.runtime_profile_name
+    ? i18n.t('manage:assistant_defaults.runtime_profile_automatic_named', { name: view.effective_runtime_profile_name })
+    : i18n.t('manage:assistant_defaults.runtime_profile_automatic');
   return {
     label: i18n.t('manage:assistant_defaults.section_basic'),
     fields: [
       {
-        key: 'environment_name',
-        label: i18n.t('common:environment'),
+        key: 'runtime_profile_name',
+        label: i18n.t('common:runtime_profile'),
         type: 'select',
-        ...field('environment_name'),
-        idTag: 'environment_name',
+        ...field('runtime_profile_name'),
+        idTag: 'runtime_profile_name',
         options: [
           { value: AUTOMATIC, label: automatic },
-          ...view.assistant_environment_names.map((name) => ({ value: name, label: name })),
+          ...view.assistant_runtime_profile_names.map((name) => ({ value: name, label: name })),
         ],
-        help: i18n.t('manage:assistant_defaults.environment_help'),
+        help: i18n.t('manage:assistant_defaults.runtime_profile_help'),
       },
       {
         key: 'model_name',
@@ -124,12 +124,12 @@ function baseSection(view: AssistantDefaults): EditSectionSpec {
  * The deployment's Assistant defaults: what every Assistant inherits.
  *
  * What an Assistant can do is decided here, by whoever runs the deployment:
- * the Environment and model new Assistants use, instructions that come before
+ * the RuntimeProfile and model new Assistants use, instructions that come before
  * each owner's, and the Skills, MCP servers, packages and native options every
  * Assistant gets, the deployment's own or picked from the extension catalog.
  * Assistants read this live, so a save reaches each on its next start. The
- * extension fields are the ones the chosen Environment's program reads, so
- * they wait for an Environment. Without an extension catalog the layer's own
+ * extension fields are the ones the chosen RuntimeProfile's program reads, so
+ * they wait for a RuntimeProfile. Without an extension catalog the layer's own
  * fields stand alone, and a selection it still holds is shown as unavailable.
  */
 export default function AssistantDefaultsPage() {
@@ -141,7 +141,7 @@ export default function AssistantDefaultsPage() {
   const [saving, setSaving] = useState<number | null>(null);
   const [saved, setSaved] = useState<number | null>(null);
   const [invalidKeys, setInvalidKeys] = useState<Set<string>>(new Set());
-  const [environments, setEnvironments] = useState<EnvironmentConfig[]>([]);
+  const [runtime_profiles, setRuntimeProfiles] = useState<RuntimeProfileConfig[]>([]);
   const [catalog, setCatalog] = useState<AssistantDefaultsExtensionCatalog | null>(null);
   const [mcpIds, setMcpIds] = useState<string[]>([]);
   const [skillIds, setSkillIds] = useState<string[]>([]);
@@ -185,13 +185,13 @@ export default function AssistantDefaultsPage() {
     if (extensionProvider) void loadCatalog();
   }, [extensionProvider, loadCatalog]);
   useEffect(() => {
-    void loadAssistantEnvironments().then(setEnvironments, (e: Error) => setSaveError(e.message));
+    void loadAssistantRuntimeProfiles().then(setRuntimeProfiles, (e: Error) => setSaveError(e.message));
   }, []);
 
-  const chosen = draft && draft.environment_name !== AUTOMATIC
-    ? draft.environment_name
-    : view?.effective_environment_name ?? null;
-  const environment = environments.find((candidate) => candidate.name === chosen);
+  const chosen = draft && draft.runtime_profile_name !== AUTOMATIC
+    ? draft.runtime_profile_name
+    : view?.effective_runtime_profile_name ?? null;
+  const environment = runtime_profiles.find((candidate) => candidate.name === chosen);
   const sections = useMemo(() => {
     if (!view) return [];
     const extensions = buildAssistantExtensionSection(environment);
@@ -214,7 +214,7 @@ export default function AssistantDefaultsPage() {
     setSaveError('');
     try {
       const next = await setAssistantDefaults({
-        environment_name: draft.environment_name === AUTOMATIC ? null : draft.environment_name,
+        runtime_profile_name: draft.runtime_profile_name === AUTOMATIC ? null : draft.runtime_profile_name,
         model_name: draft.model_name.trim() || null,
         instructions: draft.instructions.trim() || null,
         skills: draft.skills,
@@ -297,9 +297,9 @@ export default function AssistantDefaultsPage() {
           onRemove={() => void removeCatalogSelection()}
         />
       )}
-      {view.assistant_environment_names.length === 0 && (
-        <ErrorNote title={t('manage:assistant_defaults.no_environment_title')}>
-          {t('manage:assistant_defaults.no_environment')}
+      {view.assistant_runtime_profile_names.length === 0 && (
+        <ErrorNote title={t('manage:assistant_defaults.no_runtime_profile_title')}>
+          {t('manage:assistant_defaults.no_runtime_profile')}
         </ErrorNote>
       )}
       <ConsoleEditSections

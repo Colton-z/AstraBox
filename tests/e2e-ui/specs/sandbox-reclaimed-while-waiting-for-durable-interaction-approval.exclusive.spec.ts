@@ -91,7 +91,7 @@ test('sandbox reclaim settles an orphaned interaction and the next browser messa
     //    sharing an Agent box. ─────────────────────────────────────────────────
     expect(
       CONVERSATION_PREWARM_ENVIRONMENT,
-      'the reclaim SLO requires the deployment-proven conversation-prewarm Environment',
+      'the reclaim SLO requires the deployment-proven conversation-prewarm RuntimeProfile',
     ).not.toEqual('');
     const model = await api.configuredAgentModel(
       process.env.ASTRABOX_E2E_AGENT_NAME || 'Claude Code',
@@ -100,7 +100,7 @@ test('sandbox reclaim settles an orphaned interaction and the next browser messa
     const agent = await api.createAgent({
       name: `__e2e_reclaim_waiting_${runId}`,
       model,
-      environment_name: CONVERSATION_PREWARM_ENVIRONMENT,
+      runtime_profile_name: CONVERSATION_PREWARM_ENVIRONMENT,
       prepared_capacity: 0,
     });
     agentId = String(agent.agent_id || '');

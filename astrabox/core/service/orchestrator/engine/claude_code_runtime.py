@@ -347,7 +347,7 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
             runtime_identity=context.runtime_identity,
             capability_scope=context.capability_scope,
             model_runtime_creds=model_runtime_creds,
-            runtime_env=dict(context.runtime_env or {}),
+            runtime_env={**dict(context.runtime_env or {}), **dict(context.session_env or {})},
         )
         runner_uri = str(context.runner_uri or "").strip()
         if not runner_uri:
@@ -389,6 +389,8 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
                 context.sandbox_id,
                 bool(context.resume_session_key),
             )
+            if how == "attached" and context.session_env:
+                await engine_client.bind_environment(context.session_env)
         elif is_prepared:
             engine_client = await _activate_runner_engine_client(
                 runner_uri,
@@ -404,6 +406,7 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
                 ],
                 transcript_store=context.transcript_store,
                 sandbox_death_notice=context.sandbox_death_notice,
+                environment=context.session_env,
             )
         else:
             runner_options = _disable_plugin_mcp_autostart(
@@ -766,16 +769,17 @@ async def _activate_runner_engine_client(
     activation_mcp_servers: list[str],
     transcript_store: dict[str, Any] | None,
     sandbox_death_notice: dict[str, Any] | None,
+    environment: dict[str, str] | None = None,
 ) -> Any:
     """Claim a prepared slot's runner for one platform Session.
 
     The activation frame carries what preparation could not know: the Session
     id, its transcript store target, the box death notice, the Session's
-    permission mode, and the user-bound MCP servers whose reconnect must prove
-    ``connected`` before input is released. Store and notice are built the
-    same way ``_connect_runner_engine_client`` builds them; the difference is
-    that engine configuration was fixed at prepare and fingerprinted. Resume
-    names the old native Session and reconnects its SDK process in this box.
+    permission mode, native environment, and the user-bound MCP servers. Native
+    environment acknowledgement and MCP ``connected`` status precede input.
+    Store and notice match ``_connect_runner_engine_client``; spawn-only engine
+    configuration was fixed at prepare and fingerprinted. Resume names the old
+    native Session and reconnects its SDK process in this box.
     """
 
     from astrabox.core.service.orchestrator.engine.claude_runtime_client import ClaudeRuntimeClient
@@ -812,6 +816,7 @@ async def _activate_runner_engine_client(
             mcp_servers=activation_mcp_servers,
             store={"base_url": store_base_url},
             death_notice={"url": death_notice_url},
+            environment=environment,
         )
     except BaseException:
         with contextlib.suppress(Exception):

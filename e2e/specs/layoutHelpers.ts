@@ -33,7 +33,7 @@ export const CONSOLE_ROUTES = [
   { id: "assistants", path: "/manage/assistants" },
   { id: "sessions", path: "/manage/sessions" },
   { id: "sandboxes", path: "/manage/sandboxes" },
-  { id: "environments", path: "/manage/environments" },
+  { id: "runtime_profiles", path: "/manage/runtime-profiles" },
   { id: "credentials", path: "/manage/credentials" },
   { id: "errors", path: "/manage/errors" },
 ] as const;
@@ -60,7 +60,7 @@ const agents = range(ROWS, (i) => ({
   display_meta: { display_name: `Release Notes Writer ${i}` },
   description: "Drafts the release notes for each tagged build.",
   model: "claude-opus-5",
-  environment_name: "production-us-west-2",
+  runtime_profile_name: "production-us-west-2",
   enabled: i % 5 !== 0,
   visibility: "public",
   version: i,
@@ -136,9 +136,9 @@ const sandboxes = range(ROWS, (i) => ({
   session_id: `s-${String(i).padStart(3, "0")}`,
 }));
 
-const environments = range(ROWS, (i) => ({
+const runtime_profiles = range(ROWS, (i) => ({
   name: `environment-${i}`,
-  display_name: `Environment ${i}`,
+  display_name: `RuntimeProfile ${i}`,
   enabled: i % 4 !== 0,
   engine_kind: i === ROWS - 1 ? "assistant" : "claude_code",
   sandbox_backend: "open_sandbox",
@@ -152,7 +152,7 @@ const environments = range(ROWS, (i) => ({
   engine_available: true,
 }));
 
-/** Model ids the selected Environment's gateway advertises to the Agent form. */
+/** Model ids the selected RuntimeProfile's gateway advertises to the Agent form. */
 const MODELS = ["claude-opus-5", "claude-sonnet-5"];
 
 // Bindings spread over four of the eight agents, two each. The `+ 1` puts them
@@ -175,7 +175,7 @@ const assistants = range(ROWS, (i) => ({
   icon: null,
   description: "Keeps a long-lived workspace for on-call triage.",
   engine_kind: "assistant",
-  environment_name: "production-us-west-2",
+  runtime_profile_name: "production-us-west-2",
   permission_mode_default: "acceptEdits",
   workspace_state: ["READY", "NOT_MATERIALIZED", "HIBERNATING"][i % 3],
   current_sandbox_id: `sbx-${String(i).padStart(6, "0")}-a3f9c2e1b7d4`,
@@ -279,12 +279,12 @@ const AGENT_FORM_SCHEMA = {
     // cannot name, so a schema without one lets that case pass untested.
     { key: "tags", type: "string_list", group: "identity" },
     { key: "model", type: "string", group: "model", required: true },
-    { key: "environment_name", type: "env_ref", group: "runtime", required: true },
+    { key: "runtime_profile_name", type: "runtime_profile_ref", group: "runtime", required: true },
     { key: "enabled", type: "boolean", group: "runtime" },
   ],
 };
 
-const ENVIRONMENT_FORM_SCHEMA = {
+const RUNTIME_PROFILE_FORM_SCHEMA = {
   version: 1,
   groups: [{ id: "basic" }, { id: "runtime" }],
   fields: [
@@ -456,9 +456,9 @@ function resolve(pathname: string, query: URLSearchParams): unknown {
       })),
     };
   }
-  // The Agent form reads its schema, its Environment choices and that
-  // Environment's models from the secret-free agent-configuration surface — not
-  // from `admin/*`, which is the Environment form's. `listAgentEnvironments`
+  // The Agent form reads its schema, its RuntimeProfile choices and that
+  // RuntimeProfile's models from the secret-free agent-configuration surface — not
+  // from `admin/*`, which is the RuntimeProfile form's. `listAgentRuntimeProfiles`
   // rejects a non-array (`expectList`), so an unmapped path here is not a page
   // with an empty picker: it is the create page's whole load failing.
   // The record pages read the deployment's extension provider before laying
@@ -468,8 +468,8 @@ function resolve(pathname: string, query: URLSearchParams): unknown {
     return { provider: { name: "litellm", display_name: "LiteLLM", management_console: true } };
   }
   if (at("agent-configuration", "schema")) return AGENT_FORM_SCHEMA;
-  if (at("agent-configuration", "environments")) return environments;
-  if (at("agent-configuration", "environments", "*", "models")) return { models: MODELS };
+  if (at("agent-configuration", "runtime-profiles")) return runtime_profiles;
+  if (at("agent-configuration", "runtime-profiles", "*", "models")) return { models: MODELS };
   if (at("admin", "integrations")) return {
     services: [
       {
@@ -492,8 +492,8 @@ function resolve(pathname: string, query: URLSearchParams): unknown {
       },
     ],
   };
-  if (at("admin", "environment-schema")) return ENVIRONMENT_FORM_SCHEMA;
-  if (at("admin", "environments")) return environments;
+  if (at("admin", "runtime-profile-schema")) return RUNTIME_PROFILE_FORM_SCHEMA;
+  if (at("admin", "runtime-profiles")) return runtime_profiles;
   // The paginated envelope the guarded client requires: a bare array reads as
   // malformed now, which turned every stubbed console-sessions surface into the
   // error card and left layout.tone with zero pills to measure.
@@ -594,7 +594,7 @@ function stress(value: unknown): unknown {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>).map(([k, v]) => [
         k,
-        ["name", "title", "display_name", "description", "model", "environment_name"].includes(k)
+        ["name", "title", "display_name", "description", "model", "runtime_profile_name"].includes(k)
           ? stress(v)
           : v,
       ]),

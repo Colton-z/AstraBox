@@ -90,7 +90,8 @@ async def prepare_pool_runtime(sandbox: Any, *, template: Any, manager: Any) -> 
                 model_access=model_access, model_credential=credential, runtime_env=runtime_env,
                 runner_uri=runner_uri, preparation_fingerprint=template.runtime_generation,
                 deployment_settings=manager.deployment_settings, workspace_id=workspace_id,
-                gateway_substitution=credential == workload_model_placeholder(slot_id),
+                gateway_substitution=bool(vault_plan is not None and vault_plan.model)
+                and credential == workload_model_placeholder(slot_id),
                 service_credential=engine_service_credential(request, identity),
             ),
             sandbox_backend=str(provider.name), environment_contract=environment_credential_contract(vault_plan),

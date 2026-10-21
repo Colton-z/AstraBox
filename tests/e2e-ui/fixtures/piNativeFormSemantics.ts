@@ -128,11 +128,11 @@ export class PiNativeFormScene {
     const profiles = engineProfiles().filter((profile) => profile.engine_kind === 'pi');
     expect(profiles).toHaveLength(1);
     const profile = profiles[0]!;
-    const environments = await this.api.data<Array<Record<string, unknown>>>('GET', '/admin/environments');
-    const environment = environments.find((item) => item.enabled === true
+    const runtime_profiles = await this.api.data<Array<Record<string, unknown>>>('GET', '/admin/runtime-profiles');
+    const environment = runtime_profiles.find((item) => item.enabled === true
       && item.sandbox_tenancy === 'conversation' && item.engine_kind === 'pi'
       && item.runtime_template_name === profile.image);
-    expect(environment, 'reuse the deployment-proven cold Pi Environment').toBeTruthy();
+    expect(environment, 'reuse the deployment-proven cold Pi RuntimeProfile').toBeTruthy();
     const base = await this.api.getAgent(profile.agent_id);
     const options = object(base.engine_options);
     const settings = object(options.settings);
@@ -141,7 +141,7 @@ export class PiNativeFormScene {
     const reloadExtension = '/opt/pi/node_modules/@earendil-works/pi-coding-agent/examples/extensions/reload-runtime.ts';
     this.agentId = (await this.api.createAgent({
       name: `__e2e_${this.marker}`, model: base.model,
-      environment_name: environment!.name, prepared_capacity: 0,
+      runtime_profile_name: environment!.name, prepared_capacity: 0,
       engine_options: { ...options, settings: {
         ...settings, extensions: [...extensions as unknown[], reloadExtension],
       } },

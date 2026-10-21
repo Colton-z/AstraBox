@@ -34,7 +34,7 @@ from astrabox.persistence.repository.artifact_viewer_repository import ArtifactV
 from astrabox.persistence.repository.artifact_budget_repository import ArtifactBudgetRepository
 from astrabox.persistence.repository.agent_repository import AgentRepository
 from astrabox.persistence.repository.deployment_repository import DeploymentRepository
-from astrabox.persistence.repository.environment_repository import EnvironmentRepository
+from astrabox.persistence.repository.runtime_profile_repository import RuntimeProfileRepository
 from astrabox.persistence.repository.platform_mcp_binding_repository import PlatformMCPBindingRepository
 from astrabox.persistence.repository.session_repository import SessionRepository
 from astrabox.common.logger.logger_factory import get_logger
@@ -132,7 +132,7 @@ class AgentPlatformService:
         return override(build_default) if override is not None else build_default()
 
     def _build_repositories(self) -> None:
-        self._environment_repo = EnvironmentRepository()
+        self._runtime_profile_repo = RuntimeProfileRepository()
         self._sessions_repo = SessionRepository()
         self._artifact_records_repo = ArtifactRecordRepository()
         self._artifact_versions_repo = ArtifactVersionRepository()
@@ -147,7 +147,7 @@ class AgentPlatformService:
     def _build_core_singletons(self, settings: Any) -> None:
         self._agent_config = AgentConfigService(
             self._agent_repo,
-            self._environment_repo,
+            self._runtime_profile_repo,
             sessions_repo=self._sessions_repo,
             spawn_background_task=self._spawn_background_task,
         )
@@ -616,50 +616,50 @@ class AgentPlatformService:
     ) -> dict[str, Any]:
         return await self._agent_config.upsert_agent_config(user, agent_id, payload)
 
-    async def list_environment_configs(self, user: UserContext) -> list[dict[str, Any]]:
-        return await self._agent_config.list_environment_configs(user)
+    async def list_runtime_profile_configs(self, user: UserContext) -> list[dict[str, Any]]:
+        return await self._agent_config.list_runtime_profile_configs(user)
 
-    async def list_agent_environment_options(self) -> list[dict[str, Any]]:
-        return await self._agent_config.list_agent_environment_options()
+    async def list_agent_runtime_profile_options(self) -> list[dict[str, Any]]:
+        return await self._agent_config.list_agent_runtime_profile_options()
 
-    async def delete_environment_config(
+    async def delete_runtime_profile_config(
         self, user: UserContext, name: str,
     ) -> dict[str, Any]:
-        return await self._agent_config.delete_environment_config(user, name)
+        return await self._agent_config.delete_runtime_profile_config(user, name)
 
-    async def list_agent_environment_models(self, name: str) -> list[str]:
-        return await self._agent_config.list_agent_environment_models(name)
+    async def list_agent_runtime_profile_models(self, name: str) -> list[str]:
+        return await self._agent_config.list_agent_runtime_profile_models(name)
 
-    async def list_environment_models(self, name: str) -> list[str]:
-        return await self._agent_config.list_environment_models(name)
+    async def list_runtime_profile_models(self, name: str) -> list[str]:
+        return await self._agent_config.list_runtime_profile_models(name)
 
-    async def upsert_environment_config(
+    async def upsert_runtime_profile_config(
         self,
         user: UserContext,
         name: str,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        result = await self._agent_config.upsert_environment_config(user, name, payload)
+        result = await self._agent_config.upsert_runtime_profile_config(user, name, payload)
         if self._agent_service_getter is not None:
             try:
-                scheduled = await self._agent_service_getter().reconcile_environment_runtimes(
+                scheduled = await self._agent_service_getter().reconcile_runtime_profile_runtimes(
                     name
                 )
                 if scheduled:
                     logger.info(
-                        "scheduled Agent runtime reconciliation after Environment update: "
+                        "scheduled Agent runtime reconciliation after RuntimeProfile update: "
                         "environment=%s agents=%s",
                         name,
                         scheduled,
                     )
             except Exception as exc:
-                # The Environment write has committed. Prepared capacity is an
+                # The RuntimeProfile write has committed. Prepared capacity is an
                 # optimization and authoritative Session startup resolves the
                 # same generation, so a transient controller failure must not
                 # turn this into a misleading failed write.
                 logger.warning(
                     "could not schedule Agent runtime reconciliation after "
-                    "Environment update: "
+                    "RuntimeProfile update: "
                     "environment=%s error=%s",
                     name,
                     exc,
@@ -706,14 +706,14 @@ class AgentPlatformService:
         Agent was deleted must still render; both resolve to nothing declared
         rather than to an error, because a missing declaration is the same
         answer as a declaration of `false`. Reading the declaration starts
-        nothing, so a disabled Environment does not stop the Session rendering
+        nothing, so a disabled RuntimeProfile does not stop the Session rendering
         either; what it refuses is new work.
         """
 
         agent_id = str(session.get("agent_id") or "").strip()
         agent = (
             await self._agent_config.resolve_agent_harness(
-                agent_id, require_enabled_environment=False
+                agent_id, require_enabled_runtime_profile=False
             )
             if agent_id
             else None

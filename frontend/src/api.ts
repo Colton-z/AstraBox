@@ -56,7 +56,7 @@ import type {
   PersonalSchedule,
   AgentDraft,
   ApiResponse,
-  EnvironmentConfig,
+  RuntimeProfileConfig,
   ExtensionProviderView,
   FormSchema,
   InteractionResponse,
@@ -724,13 +724,40 @@ export async function getCurrentUser(): Promise<UserInfo> {
   return send((wire) => client.GET('/api/v1/user/current', wire));
 }
 
+export type CurrentEnvironment = components['schemas']['CurrentEnvironment'];
+export type AdminEnvironment = components['schemas']['AdminEnvironment'];
+export type EnvironmentWrite = components['schemas']['EnvironmentWrite'];
+
+export async function getCurrentEnvironment(): Promise<CurrentEnvironment> {
+  return send((wire) => client.GET('/api/v1/environments/current', wire));
+}
+
+export async function getAdminEnvironment(name: string): Promise<AdminEnvironment> {
+  return send((wire) => client.GET('/api/v1/admin/environments/{name}', {
+    ...wire, params: { path: { name } },
+  }));
+}
+
+export async function setAdminEnvironment(name: string, body: EnvironmentWrite): Promise<AdminEnvironment> {
+  return send((wire) => client.PUT('/api/v1/admin/environments/{name}', {
+    ...wire, params: { path: { name } }, body,
+  }));
+}
+
 // ── Agents ──────────────────────────────────────────────────────────────────
-// One Agent resource carries its model, prompt, extensions, and Environment.
+// One Agent resource carries its model, prompt, extensions, and RuntimeProfile.
 // Every write addresses it by
 // `agent_id` — the name is a label the operator can change.
 
 export async function listAgents(): Promise<AgentConfig[]> {
   return expectList<AgentConfig>(await send((wire) => client.GET('/api/v1/agents', wire)), '/agents');
+}
+
+export async function getAgent(agentId: string): Promise<AgentConfig> {
+  return asDeclared<AgentConfig>(await send((wire) => client.GET('/api/v1/agents/{agent_id}', {
+    ...wire,
+    params: { path: { agent_id: agentId } },
+  })));
 }
 
 /** One page of the Agent list, narrowed and counted by the server. */
@@ -894,20 +921,20 @@ export async function getAgentSchema(): Promise<FormSchema> {
   return asDeclared<FormSchema>(await send((wire) => client.GET('/api/v1/agent-configuration/schema', wire)));
 }
 
-/** Secret-free Environment choices available to any signed-in Agent author. */
-export async function listAgentEnvironments(): Promise<EnvironmentConfig[]> {
-  return expectList<EnvironmentConfig>(
-    await send((wire) => client.GET('/api/v1/agent-configuration/environments', wire)),
-    '/agent-configuration/environments',
+/** Secret-free RuntimeProfile choices available to any signed-in Agent author. */
+export async function listAgentRuntimeProfiles(): Promise<RuntimeProfileConfig[]> {
+  return expectList<RuntimeProfileConfig>(
+    await send((wire) => client.GET('/api/v1/agent-configuration/runtime-profiles', wire)),
+    '/agent-configuration/runtime-profiles',
   );
 }
 
-/** Model routing ids advertised by the selected Environment's gateway. */
-export async function listAgentEnvironmentModels(environmentName: string): Promise<string[]> {
-  if (!environmentName.trim()) return [];
+/** Model routing ids advertised by the selected RuntimeProfile's gateway. */
+export async function listAgentRuntimeProfileModels(runtimeProfileName: string): Promise<string[]> {
+  if (!runtimeProfileName.trim()) return [];
   const result = await send((wire) => client.GET(
-    '/api/v1/agent-configuration/environments/{name}/models',
-    { ...wire, params: { path: { name: environmentName } } },
+    '/api/v1/agent-configuration/runtime-profiles/{name}/models',
+    { ...wire, params: { path: { name: runtimeProfileName } } },
   ));
   return Array.isArray(result.models)
     ? [...new Set(result.models.map(String).filter(Boolean))].sort((a, b) => a.localeCompare(b))
@@ -1251,33 +1278,33 @@ export async function deleteAdminAgentCategory(categoryId: string): Promise<Dele
   }));
 }
 
-export async function listAdminEnvironments(): Promise<EnvironmentConfig[]> {
-  return expectList<EnvironmentConfig>(
-    await send((wire) => client.GET('/api/v1/admin/environments', wire)),
-    '/admin/environments',
+export async function listAdminRuntimeProfiles(): Promise<RuntimeProfileConfig[]> {
+  return expectList<RuntimeProfileConfig>(
+    await send((wire) => client.GET('/api/v1/admin/runtime-profiles', wire)),
+    '/admin/runtime-profiles',
   );
 }
 
-export async function getEnvironmentSchema(): Promise<FormSchema> {
-  return asDeclared<FormSchema>(await send((wire) => client.GET('/api/v1/admin/environment-schema', wire)));
+export async function getRuntimeProfileSchema(): Promise<FormSchema> {
+  return asDeclared<FormSchema>(await send((wire) => client.GET('/api/v1/admin/runtime-profile-schema', wire)));
 }
 
-export async function deleteAdminEnvironment(name: string): Promise<void> {
-  await send((wire) => client.DELETE('/api/v1/admin/environments/{name}', {
+export async function deleteAdminRuntimeProfile(name: string): Promise<void> {
+  await send((wire) => client.DELETE('/api/v1/admin/runtime-profiles/{name}', {
     ...wire,
     params: { path: { name } },
   }));
 }
 
-export async function upsertAdminEnvironment(
+export async function upsertAdminRuntimeProfile(
   name: string,
-  payload: EnvironmentConfig
-): Promise<EnvironmentConfig> {
-  return send((wire) => client.PUT('/api/v1/admin/environments/{name}', {
+  payload: RuntimeProfileConfig
+): Promise<RuntimeProfileConfig> {
+  return send((wire) => client.PUT('/api/v1/admin/runtime-profiles/{name}', {
     ...wire,
     params: { path: { name } },
     body: undeclared(payload),
-  })) as Promise<EnvironmentConfig>;
+  })) as Promise<RuntimeProfileConfig>;
 }
 
 // ── Admin session console (management surface) ──────────────────────────────
@@ -1661,8 +1688,8 @@ export async function replayPersonalScheduleRun(deploymentId: string, runId: str
 
 export async function listChannelProviders(): Promise<ChannelProviderDescriptor[]> {
   return expectList<ChannelProviderDescriptor>(
-    await send((wire) => client.GET('/api/v1/admin/channel-providers', { ...wire })),
-    '/admin/channel-providers',
+    await send((wire) => client.GET('/api/v1/channel-providers', { ...wire })),
+    '/channel-providers',
   );
 }
 

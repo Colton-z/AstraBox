@@ -9,6 +9,8 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator.agent_schema import agent_artifacts_enabled
 from astrabox.core.service.orchestrator.agent.assistant_agent_tools import agent_tools, call_agent_tool
+from astrabox.core.service.orchestrator.agent.agent_collaboration import CONVERSATION_TOOLS, collaboration_access
+from astrabox.persistence.repository.agent_repository import AgentRepository
 from astrabox.persistence.repository.assistant_catalog_repository import AssistantCatalogRepository
 from astrabox.core.service.orchestrator.runtime.mcp_servers import (
     AGENTS_PLATFORM_SERVER,
@@ -69,12 +71,15 @@ class PlatformMCPService:
 
     async def resolve_server(self, deployment_id: str, server_name: str) -> dict[str, Any] | None:
         if server_name == AGENTS_PLATFORM_SERVER:
-            binding = await self._assistant_agent_binding(deployment_id)
+            binding = await self._coordination_binding(deployment_id)
             if binding is None:
                 return None
+            names = {tool["name"] for tool in agent_tools()}
+            if binding.get("agent_id"):
+                names &= CONVERSATION_TOOLS
             return {"deployment_id": deployment_id, "server_name": server_name,
                     "platform_server": AGENTS_PLATFORM_SERVER,
-                    "allowed_tools": {tool["name"] for tool in agent_tools()}}
+                    "allowed_tools": names, "coordination_binding": binding}
         if server_name == ARTIFACTS_PLATFORM_SERVER:
             binding = await self._binding_repo.get_binding(deployment_id)
             sid = (binding or {}).get("session_id") or (deployment_id if not binding else None)
@@ -143,14 +148,16 @@ class PlatformMCPService:
         assistant = await AssistantCatalogRepository().get_assistant(assistant_id)
         if assistant is None or assistant.get("owner_id") != owner_id:
             return None
-        return {**binding, "org_id": assistant.get("org_id")}
+        return {**binding, "org_id": assistant.get("org_id"), "title": assistant.get("display_name")}
 
     async def _handle_agent_tool(
         self, server: dict[str, Any], name: str, args: dict[str, Any],
     ) -> dict[str, Any]:
-        binding = await self._assistant_agent_binding(server["deployment_id"])
+        binding = server["coordination_binding"]
         if binding is None:
-            raise APIError(code="MCP_BINDING_NOT_FOUND", message="Assistant binding not found", status_code=404)
+            raise APIError(code="MCP_BINDING_NOT_FOUND", message="Conversation binding not found", status_code=404)
+        if not binding.get("user_id"):
+            raise APIError(code="MCP_BINDING_NOT_FOUND", message="Conversation has not been claimed", status_code=404)
         if self._deployment_service_getter is None:
             raise APIError(code="AGENT_COORDINATION_UNAVAILABLE", message="Agent coordination unavailable", status_code=503)
         return await call_agent_tool(
@@ -160,7 +167,29 @@ class PlatformMCPService:
             ),
             assistant_id=str(binding["assistant_id"]),
             deployments=self._deployment_service_getter(),
+            source_binding=binding,
         )
+
+    async def _coordination_binding(self, deployment_id: str) -> dict[str, Any] | None:
+        """Resolve the caller and the Agent configuration used by its tools."""
+        assistant = await self._assistant_agent_binding(deployment_id)
+        if assistant is not None:
+            return assistant
+        try:
+            binding = await self._session_binding(deployment_id)
+        except APIError as exc:
+            if exc.code == "MCP_BINDING_NOT_FOUND":
+                return None
+            raise
+        if binding.get("source_type") == "channel":
+            return None
+        agent_id = str(binding.get("agent_id") or binding.get("template_name") or "")
+        if not agent_id:
+            return None
+        agent = await AgentRepository().get_agent(agent_id)
+        if not agent or agent.get("deleted") or collaboration_access(agent)[0] == "disabled":
+            return None
+        return {**binding, "agent_id": agent_id, "source_agent": agent, "assistant_id": ""}
 
     async def _origin_agent_artifacts_enabled(
         self, binding: dict[str, Any] | None, session: dict[str, Any] | None,

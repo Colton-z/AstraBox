@@ -1,6 +1,6 @@
 # 定义 Agent
 
-Agent 会在 AstraBox 中运行已安装的 Agent 程序，并使用所选模型、系统提示词、扩展和运行环境。一个 Agent 可被多个 Session 复用。保存 Agent 不会打断正在执行的任务；AstraBox 在首次准备或重建 Session 运行实例时，会读取最新保存的 Agent 和运行环境。
+Agent 会在 AstraBox 中运行已安装的 Agent 程序，并使用所选模型、系统提示词、扩展和运行配置。一个 Agent 可被多个 Session 复用。保存 Agent 不会打断正在执行的任务；AstraBox 在首次准备或重建 Session 运行实例时，会读取最新保存的 Agent 和运行配置。
 
 ## 核心要素
 
@@ -27,15 +27,15 @@ Agent 在 Session 中执行任务。AstraBox 让 Agent 随时可用，创建或�
 | `categories` | array | 否 | Agent 在主页上所属分类的 ID，取自管理员定义的分类（`GET /api/v1/agent-categories`）；不存在的 ID 会被拒绝 |
 | `model` | string | 是 | 模型标识，详见下文 |
 | `system` | string | 否 | 系统提示词 |
-| `engine_options` | object | 否 | 运行环境所选 Agent 程序定义的高级配置 |
+| `engine_options` | object | 否 | 运行配置所选 Agent 程序定义的高级配置 |
 | `skills` | array | 否 | 加载到 Session 沙箱中的 Skill 来源 |
 | `mcp_servers` | object | 否 | MCP 服务器配置，以服务器名称为键 |
 | `artifacts_enabled` | boolean | 否 | Agent 的对话是否提供内置 `artifacts` 工具。创建时省略则为 `true`；参见 [Artifacts](artifacts.md#create-an-artifact) |
 | `default_repo` | object | 否 | 每个新 Session 默认克隆的代码仓库 |
 | `packages` | array | 否 | 要安装的引擎原生扩展包及经过审核的版本；每项用 `kind` 写明环境所用引擎声明的类型，例如 Claude Code 插件仓库是 `claude-plugin` |
-| `environment_name` | string | 是 | 提供 Agent 程序、沙箱、网络策略和模型连接的运行环境 |
+| `runtime_profile_name` | string | 是 | 提供 Agent 程序、沙箱、网络策略和模型连接的运行配置 |
 | `exposure_mode` | string | 否 | Agent 的使用入口：`chat_only`、`mcp_only` 或 `both` |
-| `idle_hibernate_seconds` | integer | 否 | Session 运行实例空闲多久后执行运行环境设置的暂停或回收方式 |
+| `idle_hibernate_seconds` | integer | 否 | Session 运行实例空闲多久后执行运行配置设置的暂停或回收方式 |
 | `prepared_capacity` | integer | 否 | 同一时刻能在已准备好的运行时上开始的新对话数量，范围 0 到 1000，0 表示关闭预热。创建时省略则由部署决定：能够预热的部署为 1，否则为 0；参见[预热](#prewarming) |
 | `enabled` | boolean | 否 | Agent 是否可以启动新 Session |
 | `visibility` | string | — | Agent 鉴权模式：`public`、`private` 或 `allowlist`，通过 Agent access 接口管理 |
@@ -48,7 +48,7 @@ Agent 在 Session 中执行任务。AstraBox 让 Agent 随时可用，创建或�
 
 ### model
 
-`model` 为字符串类型，指定 Agent 使用的模型。AstraBox 会把这个标识传给所选运行环境配置的模型服务：
+`model` 为字符串类型，指定 Agent 使用的模型。AstraBox 会把这个标识传给所选运行配置配置的模型服务：
 
 | 值 | 说明 |
 | --- | --- |
@@ -59,7 +59,7 @@ Agent 在 Session 中执行任务。AstraBox 让 Agent 随时可用，创建或�
 
 ### 原生运行配置 JSON {#native-runtime-json}
 
-先选择运行环境：对应的 Agent 程序会声明可覆盖的 JSON 配置块。每个编辑器都会说明
+先选择运行配置：对应的 Agent 程序会声明可覆盖的 JSON 配置块。每个编辑器都会说明
 原生目标及合并规则。平台校验块名称、JSON 对象格式和平台管理的字段；块内厂商配置的
 含义及未知字段的处理方式，由已安装的 Agent 程序决定。适配器将配置传给程序自身的
 文件或 API。凭证通过受管理的模型连接和 Credential Vault 分配，不作为运行配置 JSON
@@ -94,7 +94,7 @@ Agent 管理页面上的 **Connectors** 卡片向 Agent 的调用者提供 Gmail
 
 ### 创建
 
-打开「管理台 > Agent」，点击「创建 Agent」，填写名称、运行环境和模型。系统提示词和所有扩展都可以不配置；根据这个 Agent 要完成的任务选择即可。完成后点击「创建」。
+打开「管理台 > Agent」，点击「创建 Agent」，填写名称、运行配置和模型。系统提示词和所有扩展都可以不配置；根据这个 Agent 要完成的任务选择即可。完成后点击「创建」。
 
 ![在 AstraBox 控制台创建 Agent](./img/agent-create-console-zh.png)
 
@@ -119,14 +119,14 @@ Agent 页面中的**预热状态**会显示是否已有就绪资源，或准备�
 「预备容量」卡片会显示最近一次发生这种情况的时间。请按预计同时开始的对话数设置。修改数值
 立即生效，不会丢弃已经准备好的单位。
 
-预备容量大于 0 且 Agent 及其运行环境处于启用状态时，会一直占用资源。各种部署下每份容量
+预备容量大于 0 且 Agent 及其运行配置处于启用状态时，会一直占用资源。各种部署下每份容量
 的占用见[为已准备沙箱规划容量](deploy.md#plan-capacity-for-prepared-sandboxes)。
 要为某个 Agent 关闭预热，把「预备容量」设为 0（创建时在高级设置中，创建后在 Agent
 页面的「运行设置」中），或在创建、更新时传入 `"prepared_capacity": 0`。
 
 ### 查看
 
-打开「管理台 > Agent」可以查看当前账号有权访问的 Agent。选择一个 Agent，即可查看它的模型、运行环境和能力；拥有管理权限时，还可以修改配置和鉴权设置。
+打开「管理台 > Agent」可以查看当前账号有权访问的 Agent。选择一个 Agent，即可查看它的模型、运行配置和能力；拥有管理权限时，还可以修改配置和鉴权设置。
 
 ### 更新
 
@@ -191,11 +191,11 @@ A：
 `allow_mcp_servers` 为 true 时才允许 Agent 声明的远程 MCP。Agent 自己的 Skill、Plugin
 和 MCP 服务所在的主机，只有是公网地址或已被列出时才会放行，参见
 [Agent 自身扩展可以访问的范围](adding-tools.md#what-extensions-may-reach)。Credential
-Vault 分配保持 Environment 记录原样，并把 binding 地址加入沙箱的有效策略。
+Vault 分配保持 RuntimeProfile 记录原样，并把 binding 地址加入沙箱的有效策略。
 
 **Q：更新 Agent 后，正在运行的 Session 会受影响吗？**
 
-A：保存不会打断正在执行的任务。Session 会继续使用当前运行实例；需要首次准备或重建运行实例时，AstraBox 会读取最新保存的 Agent 和运行环境。
+A：保存不会打断正在执行的任务。Session 会继续使用当前运行实例；需要首次准备或重建运行实例时，AstraBox 会读取最新保存的 Agent 和运行配置。
 
 **Q：MCP 服务器、Skill 和 Plugin 列表可以为空吗？**
 
@@ -211,7 +211,7 @@ A：AstraBox 不保存可选择的历史配置。建议在更新前自行保存 
 
 ## 下一步
 
-- [运行环境](environments.md) — 配置 Agent 的运行位置
+- [运行配置](runtime-profiles.md) — 配置 Agent 的运行位置
 - [启动 Session](sessions.md) — 使用 Agent 创建 Session
 - [MCP 服务器、Skill 和 Plugin](adding-tools.md) — 配置扩展和凭证
 - [Multiagent 编排](multi-agents.md) — 查看和控制委派的 child run

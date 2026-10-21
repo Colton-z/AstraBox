@@ -135,9 +135,9 @@ model_list:
 
 ## 为 Agent 选择模型
 
-打开**管理台 → Agent**，创建或编辑 Agent。先选择 **Environment（运行环境）**。
-Environment 决定运行哪个 Agent 程序，以及使用哪些沙箱设置、网络访问方式和模型连接。
-模型输入框随后会搜索该 Environment 的模型连接；可以选择搜索结果，也可以输入准确的路由
+打开**管理台 → Agent**，创建或编辑 Agent。先选择 **RuntimeProfile（运行配置）**。
+RuntimeProfile 决定运行哪个 Agent 程序，以及使用哪些沙箱设置、网络访问方式和模型连接。
+模型输入框随后会搜索该 RuntimeProfile 的模型连接；可以选择搜索结果，也可以输入准确的路由
 名称。
 
 各部分的职责如下：
@@ -145,21 +145,21 @@ Environment 决定运行哪个 Agent 程序，以及使用哪些沙箱设置、�
 | 部分 | 职责 |
 |---|---|
 | Agent | 保存所选模型或路由名称 |
-| Environment | 选择 AstraBox 准备运行实例时使用的 Agent 程序和模型连接 |
+| RuntimeProfile | 选择 AstraBox 准备运行实例时使用的 Agent 程序和模型连接 |
 | Agent 程序 | 按照自身原生模型协议组织请求 |
 | LiteLLM | 把路由映射到上游模型，并执行网关路由、预算、日志和故障切换 |
 
-使用内置 LiteLLM 连接时，部署设置决定推理网关。Environment 中保存的连接信息也用于让
-管理台查询该 Environment 的模型列表。网关没有返回模型列表时，模型输入框仍然支持直接
+使用内置 LiteLLM 连接时，部署设置决定推理网关。RuntimeProfile 中保存的连接信息也用于让
+管理台查询该 RuntimeProfile 的模型列表。网关没有返回模型列表时，模型输入框仍然支持直接
 填写准确的路由名称。
 
-修改 Agent 的模型或 Environment 不会直接重新配置正在运行的实例。AstraBox 会在首次
+修改 Agent 的模型或 RuntimeProfile 不会直接重新配置正在运行的实例。AstraBox 会在首次
 准备或重建该 Session 运行实例时读取当前设置。
 
 ## 让模型凭证留在 Agent 程序之外
 
 内置网关保存上游模型服务密钥。启用凭证保护后，Agent 程序拿到的是网关凭证占位符；只有
-匹配的模型请求经过沙箱服务时，才会添加真实凭证。Agent 不保存模型密钥，Environment
+匹配的模型请求经过沙箱服务时，才会添加真实凭证。Agent 不保存模型密钥，RuntimeProfile
 编辑页面也只会返回掩码，不会返回已保存的原始值。
 
 具体的请求匹配过程见[保护 Agent 使用的凭证](egress-credential-injection.md)。
@@ -217,11 +217,11 @@ server 容器。超时时间必须是有限的正数，无效值会导致设置�
 - 分别运行一次普通回复和一次工具或 MCP 调用；
 - 检查无效密钥、限流和超时产生的错误；
 - 在 LiteLLM 中确认用量与费用归属；
-- 确认 Environment 的网络规则允许访问网关地址。
+- 确认 RuntimeProfile 的网络规则允许访问网关地址。
 
 ## 相关指南
 
 - [定义 Agent](authoring-agents.md)
-- [Environment](environments.md)
+- [RuntimeProfile](runtime-profiles.md)
 - [部署 AstraBox](deploy.md)
 - [保护 Agent 使用的凭证](egress-credential-injection.md)

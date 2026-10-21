@@ -2,7 +2,35 @@
 
 > Create a reusable Agent configuration for a self-hosted runtime.
 
-An Agent runs an installed Agent program with a model, system prompt, extensions, and Environment. Multiple Sessions can share one Agent. Saving an Agent does not interrupt work already in progress; AstraBox resolves the latest saved Agent and Environment when it first prepares or rebuilds a Session runtime.
+An Agent runs an installed Agent program with a model, system prompt, extensions, and RuntimeProfile. Multiple Sessions can share one Agent. Saving an Agent does not interrupt work already in progress; AstraBox resolves the latest saved Agent and RuntimeProfile when it first prepares or rebuilds a Session runtime.
+
+## Share an Agent
+
+Click an Agent's name in the home catalog to open its detail page, then choose
+**Copy link**. The stable `/agents/{agent_id}` link shows the Agent's introduction,
+tags and model. A recipient signs in when required and returns to that Agent;
+**Start conversation** creates their own new conversation with it. Opening or
+reloading the link does not create a conversation. The link grants no additional
+access, and disabled or inaccessible Agents show an unavailable page.
+
+## Archive an Agent
+
+Open the Agent in management and choose **Archive agent**. Archiving uses the
+Agent deletion operation: it removes the Agent from business and management
+lists, stops its triggers, and retires prepared capacity. Its definition stays
+in the database as `DELETED`; conversation history remains readable. There
+is no restore operation. Disabling an Agent is reversible and keeps it in
+management.
+
+## View and export Agent conversations
+
+Open **Console > Sessions** to see the conversations for every Agent you manage
+as creator or assigned administrator. Managing three Agents includes all three
+in this page. Select an Agent or date range to narrow the list, then choose
+**Export transcripts** to download the matching native transcripts together.
+The server applies the same Agent permissions to the list, conversation detail,
+and export; public use access alone does not grant access to other users' logs.
+Instance-wide administration remains restricted to platform administrators.
 
 ## Core elements
 
@@ -29,17 +57,17 @@ The Agent executes tasks inside a Session. AstraBox keeps the Agent available, s
 | `categories` | array | No | Ids of the categories the Agent is listed under on the home page, from those an administrator defines (`GET /api/v1/agent-categories`). An unknown id is refused. |
 | `model` | string | Yes | The model identifier. See details below. |
 | `system` | string | No | The system prompt. |
-| `engine_options` | object | No | Advanced options defined by the Agent program selected through the Environment. |
+| `engine_options` | object | No | Advanced options defined by the Agent program selected through the RuntimeProfile. |
 | `skills` | array | No | Skill sources loaded into the Session sandbox. |
 | `mcp_servers` | object | No | MCP server configurations, keyed by server name. |
 | `artifacts_enabled` | boolean | No | Whether the Agent's conversations receive the built-in `artifacts` tools. Omitted on create, it is `true`; see [Artifacts](artifacts.md#create-an-artifact). |
 | `default_repo` | object | No | The source repository cloned for each new Session. |
-| `packages` | array | No | Engine-native packages and the reviewed revisions to install. Each names a `kind` the Environment's engine declares, such as `claude-plugin` for a Claude Code plugin repository. |
-| `environment_name` | string | Yes | The Environment that supplies the Agent program, sandbox, network policy, and model connection. |
+| `packages` | array | No | Engine-native packages and the reviewed revisions to install. Each names a `kind` the RuntimeProfile's engine declares, such as `claude-plugin` for a Claude Code plugin repository. |
+| `runtime_profile_name` | string | Yes | The RuntimeProfile that supplies the Agent program, sandbox, network policy, and model connection. |
 | `exposure_mode` | string | No | Where the Agent is available: `chat_only`, `mcp_only`, or `both`. |
-| `idle_hibernate_seconds` | integer | No | How long the Session runtime may remain idle before the Environment's pause or removal behavior applies. |
+| `idle_hibernate_seconds` | integer | No | How long the Session runtime may remain idle before the RuntimeProfile's pause or removal behavior applies. |
 | `prepared_capacity` | integer | No | How many new conversations can start at the same moment on a prepared runtime, from 0 to 1000; 0 turns prewarming off. Omitted on create, it is 1 where the deployment can prewarm and 0 where it cannot; see [Prewarming](#prewarming). |
-| `enabled` | boolean | No | Whether the Agent can start new Sessions. |
+| `enabled` | boolean | No | Whether the Agent can start new Sessions. Disabled Agents are hidden from the user-facing picker and retained in management. |
 | `visibility` | string | — | Agent authorization mode: `public`, `private`, or `allowlist`. Managed through the Agent access endpoint. |
 | `admins` | array | — | Accounts allowed to manage the Agent. Managed through the Agent access endpoint. |
 | `allowed_user_ids` | array | — | Accounts allowed by `allowlist` authorization. Managed through the Agent access endpoint. |
@@ -50,7 +78,7 @@ The Agent executes tasks inside a Session. AstraBox keeps the Agent available, s
 
 ### model
 
-The `model` field specifies the model that the Agent uses. AstraBox passes this identifier to the model endpoint configured by the selected Environment:
+The `model` field specifies the model that the Agent uses. AstraBox passes this identifier to the model endpoint configured by the selected RuntimeProfile:
 
 | Value | Description |
 | --- | --- |
@@ -61,7 +89,7 @@ A self-hosted deployment is not limited to a fixed vendor catalog. See [Connect 
 
 ### Native runtime JSON {#native-runtime-json}
 
-Select the Environment first: its engine declares which JSON blocks the Agent
+Select the RuntimeProfile first: its engine declares which JSON blocks the Agent
 can override. Each editor identifies the native target and its merge rules.
 The platform validates block names, JSON object shape and platform-managed
 keys, not a catalog of vendor options inside each block. The installed runtime
@@ -110,7 +138,7 @@ The web console covers the following common workflows. For programmatic manageme
 
 ### Create
 
-Open **Console > Agents**, click **New agent**, then enter a name, Environment, and model. The system prompt and every extension are optional. Click **Create** when the Agent has the capabilities it needs.
+Open **Console > Agents**, click **New agent**, then enter a name, RuntimeProfile, and model. The system prompt and every extension are optional. Click **Create** when the Agent has the capabilities it needs.
 
 ![Create an Agent in the AstraBox console](./img/agent-create-console-en.png)
 
@@ -147,7 +175,7 @@ the same time. Changing it takes effect without discarding the units already
 prepared.
 
 Prepared capacity holds resources for as long as it is above 0 and the Agent
-and its Environment are enabled. What one unit costs on each deployment is in
+and its RuntimeProfile are enabled. What one unit costs on each deployment is in
 [Plan capacity for prepared sandboxes](deploy.md#plan-capacity-for-prepared-sandboxes).
 To turn prewarming off for one Agent, set **Prepared capacity** to 0 (under the
 advanced settings when creating the Agent, or in **Runtime and availability**
@@ -155,7 +183,7 @@ on its page), or send `"prepared_capacity": 0` when creating or updating it.
 
 ### Read
 
-Open **Console > Agents** to list the Agents available to your account. Select an Agent to view its model, Environment, and capabilities. If you are allowed to manage it, the page also shows editable configuration and authorization settings.
+Open **Console > Agents** to list the Agents available to your account. Select an Agent to view its model, RuntimeProfile, and capabilities. If you are allowed to manage it, the page also shows editable configuration and authorization settings.
 
 ### Update
 
@@ -221,12 +249,12 @@ callbacks, and Plugin repositories; remote Agent MCP servers are admitted only
 when `allow_mcp_servers` is true. Hosts from the Agent's own Skills, Plugins
 and MCP servers are admitted only when they are public or already listed; see
 [What an Agent's own extensions may reach](adding-tools.md#what-extensions-may-reach).
-Credential Vault assignments leave the Environment record unchanged; their
+Credential Vault assignments leave the RuntimeProfile record unchanged; their
 binding hosts are added to the effective sandbox policy.
 
 **Q: Does updating an Agent affect currently running Sessions?**
 
-A: Saving does not interrupt work already executing. A Session keeps using its current runtime until AstraBox has to prepare or rebuild it; that preparation resolves the latest saved Agent and Environment.
+A: Saving does not interrupt work already executing. A Session keeps using its current runtime until AstraBox has to prepare or rebuild it; that preparation resolves the latest saved Agent and RuntimeProfile.
 
 **Q: Can the MCP server, Skill, and Plugin lists be empty?**
 
@@ -242,7 +270,7 @@ A: AstraBox does not keep selectable configuration history. Save the Agent confi
 
 ## Next steps
 
-- [Environment](environments.md) — Configure where the Agent runs.
+- [RuntimeProfile](runtime-profiles.md) — Configure where the Agent runs.
 - [Start a Session](sessions.md) — Create a Session with an Agent.
 - [MCP servers, Skills, and Plugins](adding-tools.md) — Configure extensions and credentials.
 - [Multiagent orchestration](multi-agents.md) — Inspect and control delegated child runs.

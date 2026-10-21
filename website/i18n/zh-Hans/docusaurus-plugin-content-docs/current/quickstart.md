@@ -2,7 +2,7 @@
 
 > 通过 5 个步骤运行你的第一个 AstraBox Agent。
 
-5 步跑通你的第一个 AstraBox Agent：启动 AstraBox、选择运行环境、创建 Agent、创建 Session、收发消息。自托管服务启动后，无需安装任何 SDK。
+5 步跑通你的第一个 AstraBox Agent：启动 AstraBox、选择运行配置、创建 Agent、创建 Session、收发消息。自托管服务启动后，无需安装任何 SDK。
 
 ## 前置条件
 
@@ -18,7 +18,7 @@
 
 Agent 的模型请求统一经过内置网关
 [LiteLLM](https://docs.litellm.ai/)。安装脚本会写入你选择的模型服务的设置；之后可以按
-[连接模型](models.md)添加更多路由，包括 OpenAI 兼容服务和本地模型，再由 Environment
+[连接模型](models.md)添加更多路由，包括 OpenAI 兼容服务和本地模型，再由 RuntimeProfile
 选择端点和管理员管理的凭证。
 
 受保护凭证传递默认启用：Agent 只看到占位符，内置 OpenSandbox provider 会在沙箱进程
@@ -47,17 +47,17 @@ curl -fsSL https://raw.githubusercontent.com/Colton-z/AstraBox/main/scripts/inst
 本地部署不启用认证，并且只监听本机回环地址。将 AstraBox 暴露到共享或公网地址前，请先配置[团队登录](team-login.md)和 TLS。
 :::
 
-## 第 2 步：选择运行环境
+## 第 2 步：选择运行配置
 
-打开「管理台 > 运行环境」，选择一个已启用、并提供你要使用的 Agent 程序、沙箱、网络访问和模型连接的运行环境。
+打开「管理台 > 运行配置」，选择一个已启用、并提供你要使用的 Agent 程序、沙箱、网络访问和模型连接的运行配置。
 
 :::note
-如果没有合适的运行环境，请先创建一个。可配置项参见[运行环境](environments.md)。
+如果没有合适的运行配置，请先创建一个。可配置项参见[运行配置](runtime-profiles.md)。
 :::
 
 ## 第 3 步：创建 Agent
 
-打开「管理台 > Agent」，点击「创建 Agent」。填写名称，选择第 2 步中的运行环境，再选择或填写模型。系统提示词、MCP 服务、Skill、Plugin、代码仓库和其他设置都是可选项，只需配置当前 Agent 需要的能力。点击「创建」。
+打开「管理台 > Agent」，点击「创建 Agent」。填写名称，选择第 2 步中的运行配置，再选择或填写模型。系统提示词、MCP 服务、Skill、Plugin、代码仓库和其他设置都是可选项，只需配置当前 Agent 需要的能力。点击「创建」。
 
 ![在 AstraBox 控制台创建 Agent](./img/agent-create-console-zh.png)
 
@@ -79,7 +79,7 @@ curl -fsSL https://raw.githubusercontent.com/Colton-z/AstraBox/main/scripts/inst
 
 ## 端到端脚本
 
-Agent 的可写字段由其 Environment 所选的 Agent 程序声明，因此 AstraBox 无法为所有部署
+Agent 的可写字段由其 RuntimeProfile 所选的 Agent 程序声明，因此 AstraBox 无法为所有部署
 使用同一个固定的 Agent JSON 对象。完成第 1–3 步后，下面的脚本会按名称找到该 Agent，
 创建 Session，发送一条消息，并以流式方式接收结果：
 
@@ -124,7 +124,7 @@ A: 用 `cd ~/astrabox/containers && docker compose ps` 检查服务状态，并�
 
 **Q: 为什么无法创建 Agent？**
 
-A: 确认已经填写名称、选择运行环境并设置模型。所选运行环境必须已启用，并且支持 Agent 对话。
+A: 确认已经填写名称、选择运行配置并设置模型。所选运行配置必须已启用，并且支持 Agent 对话。
 
 **Q: 为什么 Session 收不到事件？**
 
@@ -134,12 +134,12 @@ A: 必须发送消息才会触发 Agent 执行。如果任务失败，请打开�
 
 A: 从侧边栏重新打开 Session。AstraBox 会保存 Session 及其事件流，页面可以加载已有记录并继续接收新的事件。
 
-**Q: 创建 Agent 时为什么没有可选的运行环境？**
+**Q: 创建 Agent 时为什么没有可选的运行配置？**
 
-A: 当前部署没有已启用且支持 Agent 对话的运行环境。请按照第 2 步创建或启用一个。
+A: 当前部署没有已启用且支持 Agent 对话的运行配置。请按照第 2 步创建或启用一个。
 
 ## 下一步
 
 - [定义 Agent](authoring-agents.md) — 了解 Agent 配置的全部字段
-- [运行环境](environments.md) — 自定义运行环境
+- [运行配置](runtime-profiles.md) — 自定义运行配置
 - [启动 Session](sessions.md) — 深入管理 Session

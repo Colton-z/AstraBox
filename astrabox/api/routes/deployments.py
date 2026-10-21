@@ -28,6 +28,7 @@ class DeploymentRecord(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     deployment_id: str
+    environment_name: str
     agent_id: str | None = None
     agent_name: str | None = None
     assistant_id: str | None = None

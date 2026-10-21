@@ -53,7 +53,7 @@ def test_a_conversation_own_box_at_the_default_size_finishes_a_working_turn(
         name_suffix="own box size",
         engine_options={},
         permission_mode=permission_mode("unattended"),
-        environment_name=environment_with_tenancy(e2e_client, "conversation"),
+        runtime_profile_name=environment_with_tenancy(e2e_client, "conversation"),
     )
     sid = str(detail.get("session_id") or "")
     poll_until_agent_ready(e2e_client, sid)

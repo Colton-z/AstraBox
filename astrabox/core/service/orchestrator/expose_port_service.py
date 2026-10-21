@@ -114,9 +114,7 @@ class ExposePortService:
                 message="port must be between 1 and 65535",
                 status_code=400,
             )
-        context = await self._resolve_binding_context(deployment_id)
-        if user is not None:
-            self._assert_user_can_refresh(context, user)
+        context = await self._resolve_binding_context(deployment_id, user=user)
         sandbox_id = context["sandbox_id"]
         backend = context.get("sandbox_backend")
         settings = load_astrabox_settings()
@@ -190,7 +188,9 @@ class ExposePortService:
                 status_code=404,
             )
 
-    async def _resolve_binding_context(self, deployment_id: str) -> dict[str, Any]:
+    async def _resolve_binding_context(
+        self, deployment_id: str, *, user: UserContext | None = None,
+    ) -> dict[str, Any]:
         """Resolve the sandbox_id + backend from a binding or session id."""
         normalized = str(deployment_id or "").strip()
         if not normalized:
@@ -209,9 +209,13 @@ class ExposePortService:
             if bound_session:
                 session = await self._sessions_repo.get_session(bound_session)
                 if isinstance(session, dict):
+                    if user is not None:
+                        self._assert_user_can_refresh(session, user)
                     return await self._session_context(normalized, bound_session, session)
             sandbox_id = str(binding.get("sandbox_id") or "").strip()
             if sandbox_id:
+                if user is not None:
+                    self._assert_user_can_refresh(binding, user)
                 return {
                     "deployment_id": normalized,
                     "sandbox_id": sandbox_id,
@@ -227,11 +231,16 @@ class ExposePortService:
                 message=f"no binding or session found for id={normalized!r}",
                 status_code=404,
             )
+        if user is not None:
+            self._assert_user_can_refresh(session, user)
         return await self._session_context(normalized, normalized, session)
 
     async def _session_context(
         self, deployment_id: str, session_id: str, session: dict[str, Any]
     ) -> dict[str, Any]:
+        from astrabox.core.service.orchestrator.runtime.environment_ownership import require_environment_ownership
+
+        require_environment_ownership(session)
         sandbox_id = str(session.get("sandbox_id") or "").strip()
         if is_assistant_user_conversation(session):
             reference = session["workspace_ref"]

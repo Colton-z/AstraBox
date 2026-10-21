@@ -33,6 +33,7 @@ from astrabox.seams.runtime_preparation import (
     RuntimePreparationProvider,
     SessionUserActionCommand,
     SessionUserActionState,
+    runtime_preparation_plan,
 )
 
 STATE = Path("/data")
@@ -45,6 +46,7 @@ USER_ACTION_RECEIPTS = STATE / "runtime-preparation-user-action-calls.jsonl"
 USER_ACTION_READ_RECEIPTS = STATE / "runtime-preparation-user-action-reads.jsonl"
 USER_ACTION_READ_FAILURES = STATE / "runtime-preparation-user-action-read-failures.json"
 SYNCHRONIZED = STATE / "runtime-preparation-synchronized.jsonl"
+SESSION_ENVIRONMENT_REFUSALS = STATE / "runtime-preparation-session-env-refusals.json"
 ACTION_URL = "https://example.com/authorize"
 
 _GUARD_METADATA = MetaData()
@@ -168,8 +170,15 @@ class PreparationFixture(RuntimePreparationProvider):
     def __init__(self):
         self.revisions = {}
 
-    def plan(self, *, config):
-        return RuntimePreparationPlan(session_bound=str(config.get("name", "")).startswith("Material "))
+    async def plan(self, *, config):
+        if config.get("sandbox_backend") == "binding_fixture":
+            from credential_binding_fixture import plan
+
+            return await plan(config)
+        return RuntimePreparationPlan(session_bound=(
+            str(config.get("name", "")).startswith("Material ")
+            or str(config.get("runtime_profile_name", "")).startswith("session-env-")
+        ))
 
     async def synchronize(self, *, context):
         nonce = _GUARD_WATCHES.pop((context.operation.subject.kind, context.operation.subject.id), None)
@@ -213,6 +222,19 @@ class PreparationFixture(RuntimePreparationProvider):
         }).encode())
 
     async def prepare_session(self, *, context):
+        if context.config.get("sandbox_backend") == "binding_fixture":
+            from credential_binding_fixture import bind
+
+            return await bind(context)
+        if context.subject.kind == "assistant" and str(context.config.get("runtime_profile_name", "")).startswith("session-env-"):
+            environment = {
+                "RUNTIME_IDENTITY_SESSION_ID": context.session_id,
+                "ASTRABOX_SESSION_URL": f"https://console.example.test/session/{context.session_id}?from=context&view=full",
+                "ASTRABOX_CFUSE_AGENT_TOKEN_FILE": context.file_path("agent-token.json"),
+            }
+            if _listed(SESSION_ENVIRONMENT_REFUSALS, context.subject.id):
+                environment["OPENAI_API_KEY"] = "SECRET_SENTINEL_MUST_NOT_APPEAR"
+            return RuntimeMaterials(files=(self._material(context, "startup"),), environment=environment)
         if _listed(STARTUP_USER_ACTIONS, context.subject.id):
             raise PreparationUserActionRequired(message="Authorize this Agent to continue", url=ACTION_URL)
         hold = STATE / f"runtime-preparation-ui-startup-{context.subject.id}"
@@ -221,11 +243,14 @@ class PreparationFixture(RuntimePreparationProvider):
             async with asyncio.timeout(20):
                 while hold.is_file():
                     await asyncio.sleep(0.05)
-        if not self.plan(config=context.config).session_bound:
+        if not runtime_preparation_plan(context.config).session_bound:
             return RuntimeMaterials()
         return RuntimeMaterials(
             files=(self._material(context, "startup"),),
-            environment={"ASTRABOX_CFUSE_AGENT_TOKEN_FILE": context.file_path("agent-token.json")},
+            environment=(
+                {} if context.engine_initialized
+                else {"ASTRABOX_CFUSE_AGENT_TOKEN_FILE": context.file_path("agent-token.json")}
+            ),
         )
 
     async def prepare_turn(self, *, context):
@@ -246,6 +271,11 @@ class PreparationFixture(RuntimePreparationProvider):
         return RuntimeMaterials(files=(self._material(context, "turn"),))
 
     async def read_user_actions(self, *, context):
+        from credential_binding_fixture import prerequisites
+
+        binding = await prerequisites(context)
+        if binding is not None:
+            return binding
         with USER_ACTION_READ_RECEIPTS.open("a") as receipts:
             receipts.write(json.dumps({"session_id": context.session_id, "at": time.time()}) + "\n")
         if _listed(USER_ACTION_READ_FAILURES, context.session_id):

@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import type { EnvironmentConfig } from '@/types';
+import type { RuntimeProfileConfig } from '@/types';
 
-import { envEngineLabel } from './environmentConfig';
+import { envEngineLabel } from './runtimeProfileConfig';
 
-const environment = (engine_kind: string): EnvironmentConfig => ({
+const environment = (engine_kind: string): RuntimeProfileConfig => ({
   name: `${engine_kind || 'blank'}-environment`,
   engine_kind,
 });
