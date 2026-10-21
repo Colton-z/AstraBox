@@ -175,7 +175,7 @@ Agent 程序定义自身的原生状态，AstraBox 将其保存到平台数据�
 
 Assistant 可以有自己的触发配置，和 Agent 的 Deployment 一样：Telegram、Slack 等消息渠道、定时计划或 Webhook。打开**管理台 → 触发配置**，选择**新建触发配置**，在 **Agent 或 Assistant** 中选择这个 Assistant。只有 Assistant 的归属用户可以创建或修改它的触发配置，由此开始的每次对话都以归属用户身份运行。
 
-消息平台的机器人谁都能私聊，所以 Assistant 的消息渠道触发配置必须在**允许的发送者**中填写归属用户自己的账号，每行一个，格式为 `platform:user-id`（例如 `telegram:123456789`）。其他账号的消息会被忽略，不会进入 Assistant，也不会成为之后回复的上下文。
+消息平台的机器人谁都能私聊，所以 Assistant 的消息渠道触发配置必须在**允许的发送者**中填写归属用户自己的账号，每行一个，原样使用所选适配器的发送者格式和示例。例如，Satori 的 Telegram 适配器使用 `telegram:123456789`；其他适配器可能使用不带前缀的账号，参见[允许的发送者](channels.md#允许的发送者)。其他账号的消息会被忽略，不会进入 Assistant，也不会成为之后回复的上下文。
 
 每个消息渠道会话对应共享工作区中的一次 Assistant 对话。回复会发回这个聊天；之后 Assistant 在这次对话里主动产生的内容也会发回去，例如定时任务的结果、完成的后台任务，或 Hermes 自己发起的回复。定时计划在每个到期时刻开始一次新的 Assistant 对话，参见 [Schedule](schedules.md)。
 
