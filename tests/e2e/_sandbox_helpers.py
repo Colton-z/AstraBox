@@ -1167,7 +1167,7 @@ class SessionStream:
             assert message_id, f"a start part names no message: {part}"
             metadata = part.get("messageMetadata")
             response = self.responses.get(message_id)
-            if isinstance(metadata, dict):
+            if isinstance(metadata, dict) and "response_id" in metadata:
                 assert response is None, (
                     f"response {message_id} was announced twice on one stream: {part}"
                 )
