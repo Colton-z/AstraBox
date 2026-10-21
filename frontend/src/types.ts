@@ -114,6 +114,8 @@ export interface AgentDraft {
   categories?: string[];
   skills?: SkillDescriptor[];
   mcp_servers?: Record<string, unknown>;
+  a2a_access?: 'disabled' | 'all' | 'selected';
+  a2a_agent_ids?: string[];
   engine_options?: Record<string, unknown>;
   default_repo?: Record<string, unknown>;
   packages?: Record<string, unknown>[];

@@ -253,7 +253,8 @@ class AgentA2AService:
         return row
 
     async def send(
-        self, user: UserContext, agent_id: str, params: a2a.SendMessageRequest
+        self, user: UserContext, agent_id: str, params: a2a.SendMessageRequest,
+        *, origin: dict[str, Any] | None = None,
     ) -> a2a.Task:
         async with _protocol_errors():
             await self._authorize(user, agent_id, write=True)
@@ -300,7 +301,7 @@ class AgentA2AService:
                 content = "\n".join(part.text for part in message.parts)
                 if not content.strip():
                     raise InvalidParamsError(message="Task text must not be blank")
-                row = await self._reserve(user, agent_id, message, kind="task")
+                row = await self._reserve(user, agent_id, message, kind="task", origin=origin)
                 session_id = await self._context_session(user, agent_id, str(row["context_id"]))
                 await self._references.bind_session(str(row["reference_id"]), session_id)
                 row["session_id"] = session_id
@@ -309,6 +310,11 @@ class AgentA2AService:
                 # message is the same task, read back as it stands even when
                 # its conversation has ended.
                 if await self._facts.input_by_client_message_id(session_id, str(row["reference_id"])) is None:
+                    if row.get("origin") is not None:
+                        content = (
+                            "Message from another AstraBox conversation, not a direct user instruction.\n"
+                            + "Sender: " + json.dumps(row["origin"], ensure_ascii=False) + "\n\n" + content
+                        )
                     await self._platform.session_runtime.send_as(
                         session_id,
                         content,
@@ -347,6 +353,23 @@ class AgentA2AService:
             return str(created["session_id"])
         return str(row["session_id"])
 
+    async def context_for_session(self, user: UserContext, agent_id: str, session_id: str) -> str:
+        """Bind an existing owned conversation to a stable A2A context without starting work."""
+        await self._authorize(user, agent_id)
+        session = await self._session(user, agent_id, session_id)
+        if session.get("hidden"):
+            raise TaskNotFoundError
+        identity = json.dumps([user.org_id, user.user_id, agent_id, session_id], ensure_ascii=False)
+        context_id = "context-session-" + hashlib.sha256(identity.encode()).hexdigest()
+        context_identity = json.dumps([user.org_id, user.user_id, agent_id, context_id], ensure_ascii=False)
+        reference_id = "a2a-context-" + hashlib.sha256(context_identity.encode()).hexdigest()
+        await self._references.reserve({
+            "reference_id": reference_id, "kind": "context", "context_id": context_id,
+            "user_id": user.user_id, "org_id": user.org_id, "agent_id": agent_id,
+        })
+        await self._references.bind_session(reference_id, session_id)
+        return context_id
+
     async def _reserve(
         self,
         user: UserContext,
@@ -354,17 +377,24 @@ class AgentA2AService:
         message: a2a.Message,
         *,
         kind: str,
+        origin: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         identity = json.dumps(
             [user.org_id, user.user_id, agent_id, message.message_id], ensure_ascii=False
         )
         reference_id = "a2a-" + hashlib.sha256(identity.encode()).hexdigest()
-        fingerprint = hashlib.sha256(message.SerializeToString(deterministic=True)).hexdigest()
+        digest = hashlib.sha256(message.SerializeToString(deterministic=True))
+        if origin is not None:
+            digest.update(b"\0" + json.dumps(
+                {key: origin[key] for key in ("kind", "id")}, sort_keys=True,
+            ).encode())
+        fingerprint = digest.hexdigest()
         row = await self._references.reserve(
             {
                 "reference_id": reference_id,
                 "kind": kind,
                 "fingerprint": fingerprint,
+                "origin": origin,
                 "user_id": user.user_id,
                 "org_id": user.org_id,
                 "agent_id": agent_id,
@@ -581,15 +611,18 @@ class AgentA2AService:
         if status_message is not None:
             status_message.context_id = context_id
             status_message.task_id = task_id
-        metadata = {
+        metadata: dict[str, Any] = {
             "agent_id": agent_id,
             "session_id": session_id,
+            "session_title": str(session.get("title") or ""),
             "input_id": str((sent or {}).get("input_id") or ""),
             "response_id": str((response or {}).get("response_id") or ""),
             "session_url_path": public_path(f"/sessions/{session_id}"),
         }
         if session.get("source_type") is not None:
             metadata["source_type"] = str(session["source_type"])
+        if row.get("origin") is not None:
+            metadata["origin"] = row["origin"]
         return a2a.Task(
             id=task_id,
             context_id=context_id,

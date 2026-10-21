@@ -53,6 +53,7 @@ class Agent(Base):
             "state = 'DELETED' OR runtime_profile_name IS NOT NULL", name="live_runtime_profile"
         ),
         CheckConstraint("prepared_capacity BETWEEN 0 AND 1000", name="prepared_capacity"),
+        CheckConstraint("a2a_access IN ('disabled', 'all', 'selected')", name="a2a_access"),
         CheckConstraint(
             "visibility IN ('public', 'private', 'allowlist')", name="visibility"
         ),
@@ -70,6 +71,7 @@ class Agent(Base):
         *boolean_checks("artifacts_enabled", "terminal_panel", "diff_panel", "enabled"),
         string_list_check("tags"),
         string_list_check("use_cases"),
+        string_list_check("a2a_agent_ids"),
         string_list_check("admins"),
         string_list_check("allowed_user_ids"),
         string_list_check("catalog_skill_ids"),
@@ -91,6 +93,10 @@ class Agent(Base):
     #: Interpreted only by the RuntimeProfile's engine adapter.
     engine_options: Mapped[dict[str, Any] | None] = mapped_column(payload_json())
     artifacts_enabled: Mapped[bool] = mapped_column(server_default=true())
+    a2a_access: Mapped[str] = mapped_column(payload_text(), server_default=TextDefault("disabled"))
+    a2a_agent_ids: Mapped[list[str]] = mapped_column(
+        StringList(), server_default=EmptyListDefault(text_array=True),
+    )
     #: Skill sources, materialized by the runtime as given.
     skills: Mapped[list[Any]] = mapped_column(server_default=EmptyListDefault())
     #: Name-keyed MCP server definitions handed to the engine.

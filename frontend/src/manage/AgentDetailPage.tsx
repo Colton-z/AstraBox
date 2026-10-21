@@ -115,6 +115,7 @@ export default function AgentDetailPage() {
 
   const [runtime_profiles, setRuntimeProfiles] = useState<RuntimeProfileConfig[]>([]);
   const [categories, setCategories] = useState<AgentCategory[]>([]);
+  const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [tagSuggestions, setTagSuggestions] = useState<string[]>([]);
   const [models, setModels] = useState<string[]>([]);
 
@@ -139,6 +140,7 @@ export default function AgentDetailPage() {
       setSchema(sch);
       setRuntimeProfiles(envs);
       setCategories(cats);
+      setAgents(list);
       setTagSuggestions(tags.map((entry) => entry.tag));
       setError(found ? '' : t('manage:agents.not_found', { name: agentId }));
     } catch (e) {
@@ -202,9 +204,10 @@ export default function AgentDetailPage() {
         models,
         catalogName: extensionProvider?.display_name,
         categories,
+        agents,
         tagSuggestions,
       }).sections,
-    [schema, draft, runtime_profiles, models, extensionProvider, categories, tagSuggestions, t],
+    [schema, draft, runtime_profiles, models, extensionProvider, categories, agents, tagSuggestions, t],
   );
 
   const isDirty = (fields: EditFieldSpec[]) =>
