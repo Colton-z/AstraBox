@@ -50,7 +50,7 @@ test('an Agent finds current titles and messages an existing native context with
 }, info) => {
   const api = new AstraApi(request);
   const marker = randomUUID().replace(/-/g, '');
-  const secret = `MEMORY_${marker}`;
+  const reference = `REPORT_${randomUUID().replace(/-/g, '')}`;
   const target = await api.createColdTestAgent(`__e2e_a2a_target_${marker}`);
   const other = await api.createColdTestAgent(`__e2e_a2a_other_${marker}`);
   const source = await api.createColdTestAgent(`__e2e_a2a_source_${marker}`);
@@ -78,7 +78,7 @@ test('an Agent finds current titles and messages an existing native context with
   sessions.push(targetId, otherId, sourceId);
   await api.waitForSessionReady(targetId, 90_000);
   const first = await api.sendTurn(targetId,
-    `We are preparing a quarterly invoice and payment reconciliation report. Remember this report tracking secret for our conversation: ${secret}. Explain in three sentences how to identify unpaid invoices, match bank payments and report discrepancies. Do not use tools.`, 60_000);
+    `We are preparing a quarterly invoice and payment reconciliation report. Remember this public report tracking code for our conversation: ${reference}. Explain in three sentences how to identify unpaid invoices, match bank payments and report discrepancies. For this first reply, do not use tools. I authorize my other AstraBox conversations to request that you write this public report code to a workspace file and report it back.`, 60_000);
   expect(first.errorText).toBeNull();
   await expect.poll(() => postgresRows<Obj>(`SELECT title_source, title FROM sessions WHERE session_id=${sqlLiteral(targetId)}`)[0]?.title_source,
     { timeout: 30_000 }).toBe('generated');
@@ -93,7 +93,7 @@ test('an Agent finds current titles and messages an existing native context with
   expect((await tool(sourceId, 'list_agent_conversations', { agent_id: other.agent_id })).conversations).toEqual([]);
 
   const messageId = `message-${marker}`;
-  const message = `Write the secret remembered earlier in this conversation, without a newline, to ${marker}.txt in your workspace using one foreground tool. Then report that secret. Do not delegate or contact another conversation.`;
+  const message = `Write the public report tracking code remembered earlier in this conversation, without a newline, to ${marker}.txt in your workspace using one foreground tool. Then report that code. Do not delegate or contact another conversation.`;
   const sent = await api.sendTurn(sourceId, [
     'Use your agents MCP tools for this task. Do not use terminal, curl, or create a conversation.',
     `First call list_agent_conversations with query ${JSON.stringify(title)} and use its returned Agent and Session IDs.`,
@@ -113,10 +113,10 @@ test('an Agent finds current titles and messages an existing native context with
     result = await tool(sourceId, 'get_agent_task', { agent_id: target.agent_id, task_id: taskId });
     return result.task?.status?.state;
   }, { timeout: 90_000, intervals: [1000] }).toBe('TASK_STATE_COMPLETED');
-  expect(JSON.stringify(result.task.artifacts)).toContain(secret);
+  expect(JSON.stringify(result.task.artifacts)).toContain(reference);
   expect(result.task.metadata).toMatchObject({ session_id: targetId,
     origin: { kind: 'session', id: sourceId } });
-  expect(await api.downloadFileText(targetId, `/workspace/${marker}.txt`)).toBe(secret);
+  expect(await api.downloadFileText(targetId, `/workspace/${marker}.txt`)).toBe(reference);
   expect((await api.adminSessionDetail(targetId)).engine_session_key).toBe(nativeKey);
   const repeated = await tool(sourceId, 'send_agent_message', {
     agent_id: target.agent_id, session_id: targetId, message_id: messageId, message,
@@ -129,10 +129,10 @@ test('an Agent finds current titles and messages an existing native context with
   expect(messageText(received[0]!)).toContain('not a direct user instruction');
   expect(messageText(received[0]!)).toContain(sourceId);
   await openSessionView(page, targetId);
-  await expect(page.getByTestId('assistant-message').last()).toContainText(secret);
+  await expect(page.getByTestId('assistant-message').last()).toContainText(reference);
   await page.reload();
   await expect(page.getByTestId('run-view')).toContainText('not a direct user instruction');
-  await expect(page.getByTestId('assistant-message').last()).toContainText(secret);
+  await expect(page.getByTestId('assistant-message').last()).toContainText(reference);
 
   const denied = await mcp(sourceId, 'tools/call', { name: 'send_agent_message', arguments: {
     agent_id: other.agent_id, session_id: otherId, message_id: `denied-${marker}`, message: 'Must not run',
@@ -156,7 +156,7 @@ test('an Agent finds current titles and messages an existing native context with
       storageState: { cookies: [], origins: [] }, extraHTTPHeaders: { Authorization: `Bearer ${token.value}` } });
     foreignSession = (await new AstraApi(foreign).startConversation(target.agent_id)).session_id;
   } finally { await issuer.dispose(); }
-  await api.updateAgent(source.agent_id, { a2a_access: 'all' });
+  await api.updateAgent(source.agent_id, { ...await api.getAgent(source.agent_id), a2a_access: 'all' });
   const allId = sourceId;
   const all = await tool(allId, 'list_agent_conversations');
   const ids = all.conversations.map((row: Obj) => row.session_id);
@@ -167,7 +167,7 @@ test('an Agent finds current titles and messages an existing native context with
     agent_id: target.agent_id, session_id: foreignSession, message_id: `foreign-${marker}`, message: 'Must not run',
   } });
   expect(foreignDenied.error, JSON.stringify(foreignDenied)).toBeDefined();
-  await api.updateAgent(source.agent_id, { a2a_access: 'disabled' });
+  await api.updateAgent(source.agent_id, { ...await api.getAgent(source.agent_id), a2a_access: 'disabled' });
   const disabledId = sourceId;
   expect((await mcp(disabledId, 'tools/list')).http_status).toBe(404);
   await info.attach('existing-conversation-a2a-evidence', { body: JSON.stringify({ title, nativeKey,
