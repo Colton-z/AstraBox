@@ -36,11 +36,15 @@ async def assistant_a2a_peers(
     peers = {}
     for agent in agents:
         agent_id = str(agent["agent_id"])
-        peers[f"{PEER_PREFIX}{agent_id}"] = {
+        peer_key = f"{PEER_PREFIX}{agent_id}"
+        peers[peer_key] = {
             "url": f"{proxy_base_url.rstrip('/')}/api/v1/assistant-a2a/"
             f"{quote(str(binding_id), safe='')}/agents/{quote(agent_id, safe='')}",
             "auth": {"type": "bearer", "token": mint_assistant_a2a_capability(str(binding_id), agent_id)},
-            "capabilities": [f"{agent.get('name') or agent_id} (agent_id: {agent_id})"],
+            "capabilities": [
+                f"{agent.get('name') or agent_id}; call exactly "
+                f'a2a_call(agent="{peer_key}", message=...)',
+            ],
         }
     return peers
 

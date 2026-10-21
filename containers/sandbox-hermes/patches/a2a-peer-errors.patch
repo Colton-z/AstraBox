@@ -1,0 +1,43 @@
+--- a/plugins/platforms/a2a/tools.py
++++ b/plugins/platforms/a2a/tools.py
+@@ -99,10 +99,7 @@
+     base_url = peer.get("url", "")
+     headers = _auth_header(peer.get("auth", {}) or {})
+     timeout = int(peer.get("timeout", _DEFAULT_TIMEOUT))
+-    try:
+-        card = _fetch_card(base_url, headers, min(timeout, 30))  # best-effort, to learn the rpc URL
+-    except Exception:
+-        card = None
++    card = _fetch_card(base_url, headers, min(timeout, 30))
+     ctx = context_id or protocol.new_context_id()
+     safe_message = security.redact_outbound(message)
+     # v1.0: contextId lives inside the Message, not at the params top level.
+@@ -180,7 +177,9 @@
+         return "Error: both 'agent' and 'message' are required."
+     peer = _resolve_peer(agent)
+     if not peer or not peer.get("url"):
+-        return f"Error: unknown agent '{agent}'. Configure it under 'a2a_agents' in config.yaml or pass a full http(s):// URL."
++        names = ", ".join(repr(name) for name in _configured_peers()) or "(none)"
++        return (f"Error: unknown agent '{agent}'. Use an exact configured peer key from a2a_list. "
++                f"Configured peer keys: {names}. Direct URLs do not inherit configured credentials.")
+     try:
+         reply, reply_ctx, state = _send_task(agent, peer, message, context_id)
+     except urllib.error.HTTPError as e:
+@@ -205,7 +204,7 @@
+         lines.append(f"Configured peers ({len(peers)}):")
+         for name, entry in peers.items():
+             caps = entry.get("capabilities", [])
+-            lines.append(f"  - {name}: {entry.get('url', '?')} (auth: {(entry.get('auth') or {}).get('type', 'none')})"
++            lines.append(f"  - peer key: {name}; discovery URL: {entry.get('url', '?')} (auth: {(entry.get('auth') or {}).get('type', 'none')})"
+                          + (f" caps: {', '.join(caps)}" if caps else ""))
+     else:
+         lines.append("No peers configured. Add them under 'a2a_agents' in config.yaml.")
+@@ -304,7 +303,7 @@
+                  "Send a natural-language task to a remote A2A agent and return its reply. The agent is a peer "
+                  "(any A2A-compliant framework), not a sub-agent you control. Pass 'context_id' from a previous "
+                  "reply to continue a multi-turn exchange.",
+-                 {"agent": _str("Configured peer name (from a2a_agents) or a full http(s):// URL."),
++                 {"agent": _str("Exact configured peer key from a2a_list (uses that peer's credentials), or an independent full http(s):// URL (no configured credentials)."),
+                   "message": _str("The task / message to send the peer, in natural language."),
+                   "context_id": _str("Optional: context id from a prior reply, to continue the conversation.")},
+                  ["agent", "message"]),
