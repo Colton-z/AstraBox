@@ -31,6 +31,7 @@ from typing import Any
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.settings import load_astrabox_settings
+from astrabox.config.settings import get_settings
 from astrabox.core.service.orchestrator.runtime.preparation import (
     assert_prepared_resources_current, synchronize_prepared_resources,
 )
@@ -105,8 +106,10 @@ def _value(subject: Any, key: str, default: Any = None) -> Any:
 
 
 def prepared_capacity(template: Any) -> int:
-    """How many new conversations of the Agent can start at once on prepared units."""
+    """The prepared capacity this execution target actually uses, preserving authored capacity."""
 
+    if not get_settings().agent_prewarm_enabled:
+        return 0
     return int(_value(template, "prepared_capacity", 0) or 0)
 
 
@@ -341,6 +344,7 @@ async def build_agent_client_pool_plan(
         create_spec = SandboxCreateSpec(
             session_id=member.session_id,
             assignment_id=member.assignment_id,
+            execution_target=get_settings().execution_target,
             resource_limits=resource_limits,
             resource_requests=resource_requests,
             image=spec.creation_image,

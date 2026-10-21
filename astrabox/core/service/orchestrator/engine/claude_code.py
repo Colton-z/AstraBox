@@ -7,7 +7,7 @@ protocol after the platform hands it a prepared runtime.
 Self-registers as engine_kind="claude_code" on import.
 """
 
-from typing import Any, get_args
+from typing import Any, Literal, get_args
 
 from claude_agent_sdk import PermissionMode
 from claude_agent_sdk.types import TERMINAL_TASK_STATUSES, TaskUpdatedStatus
@@ -65,7 +65,10 @@ class ClaudeCodeEngineAdapter(EngineAdapter):
     therefore moves only unpinned Environments.
     """
 
-    def supports_startup_environment(self) -> bool:
+    def startup_environment_scope(self) -> Literal["process", "session"] | None:
+        return "process"
+
+    def supports_initialized_environment(self) -> bool:
         return True
 
     def canonical_child_message_content(

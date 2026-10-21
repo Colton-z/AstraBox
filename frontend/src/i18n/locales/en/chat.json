@@ -94,7 +94,9 @@
     "imported_without_ending": "Imported history: the original record does not show how this reply ended.",
     "thinking": "Thinking…",
     "thought_process": "Reasoning",
-    "pasted_image": "Pasted image"
+    "pasted_image": "Pasted image",
+    "additional_input": "Additional input received",
+    "included_in_response": "Added to the response above"
   },
   "process": {
     "title": "Process",

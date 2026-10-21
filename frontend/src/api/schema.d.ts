@@ -2443,6 +2443,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/execution-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Execution Policy
+         * @description Read this process's policy without starting workers or touching runtime resources.
+         */
+        get: operations["get_execution_policy_api_v1_execution_policy_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/exposed-ports/{deployment_id}/{port}/url": {
         parameters: {
             query?: never;
@@ -4704,8 +4724,12 @@ export interface components {
         AgentPreparedRuntimeStatus: {
             /** Client Pool Name */
             client_pool_name?: string | null;
+            /** Configured Target */
+            configured_target: number;
             /** Enabled */
             enabled: boolean;
+            /** Execution Target */
+            execution_target: string;
             /** Last Error */
             last_error?: string | null;
             /** Last Miss At */
@@ -4716,6 +4740,8 @@ export interface components {
             prepared_at?: string | null;
             /** Prepared Count */
             prepared_count: number;
+            /** Prewarm Enabled */
+            prewarm_enabled: boolean;
             /** Ready */
             ready: boolean;
             /** Runtime Generation */
@@ -5344,6 +5370,14 @@ export interface components {
             /** Code */
             code: string;
             data: components["schemas"]["DeploymentTriggerAck"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[ExecutionPolicy] */
+        ApiEnvelope_ExecutionPolicy_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["ExecutionPolicy"];
             /** Message */
             message: string;
         };
@@ -6942,6 +6976,8 @@ export interface components {
             enabled?: boolean | null;
             /** Execution Mode */
             execution_mode?: string | null;
+            /** Execution Target */
+            execution_target: string;
             /** Execution User Id */
             execution_user_id?: string | null;
             /** Owner Org Id */
@@ -6992,6 +7028,29 @@ export interface components {
             display_name: string;
             /** Timezone */
             timezone?: string | null;
+        };
+        /**
+         * ExecutionPolicy
+         * @description Policy for new automatic work, distinct from custody of accepted runtime work.
+         */
+        ExecutionPolicy: {
+            /** Agent Prewarm Enabled */
+            agent_prewarm_enabled: boolean;
+            /** Background Execution Enabled */
+            background_execution_enabled: boolean;
+            /** Execution Target */
+            execution_target: string;
+            /**
+             * Runtime Recovery Scope
+             * @constant
+             */
+            runtime_recovery_scope: "owned_target";
+            /** Scheduler Control Configured */
+            scheduler_control_configured: boolean;
+            /** Scheduler Provider */
+            scheduler_provider: string | null;
+            /** Scheduler Worker Enabled */
+            scheduler_worker_enabled: boolean;
         };
         /**
          * ExposedPortUrl
@@ -13707,6 +13766,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_execution_policy_api_v1_execution_policy_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_ExecutionPolicy_"];
                 };
             };
         };

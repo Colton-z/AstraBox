@@ -368,6 +368,10 @@ class AgentConfigService:
             ),
         )
         self._overlay_environment_runtime(view, env)
+        if require_enabled_environment:
+            from astrabox.seams.runtime_preparation import resolve_runtime_preparation_plan
+
+            view.runtime_preparation = await resolve_runtime_preparation_plan(view)
         return view
 
     @staticmethod
@@ -503,6 +507,10 @@ class AgentConfigService:
             ),
         )
         self._overlay_environment_runtime(view, env)
+        if require_enabled_environment:
+            from astrabox.seams.runtime_preparation import resolve_runtime_preparation_plan
+
+            view.runtime_preparation = await resolve_runtime_preparation_plan(view)
         return view
 
     def _overlay_environment_runtime(self, view: AgentView, env: dict[str, Any]) -> None:
@@ -1044,14 +1052,15 @@ class AgentConfigService:
 
     @staticmethod
     def _check_prepared_capacity_backend(capacity: int, *, sandbox_backend: str) -> None:
-        """Refuse prepared capacity where the Agent's backend cannot pool boxes.
+        """Check pool support when this execution target uses prepared capacity.
 
-        Checked when capacity is set or the Agent moves to another Environment,
-        so an Agent is never saved with capacity its backend cannot prepare,
-        which would only record ``AGENT_PREWARM_CONFIG_INVALID`` on every try.
+        A cold-only target can edit shared authored capacity without requiring
+        pool credentials. A target that uses that capacity validates its own
+        backend again when it builds the pool plan.
         """
+        from astrabox.config.settings import get_settings
 
-        if capacity <= 0:
+        if capacity <= 0 or not get_settings().agent_prewarm_enabled:
             return
         from astrabox.seams.sandbox import sandbox_for_name, unsupported_sandbox_feature
 

@@ -101,6 +101,11 @@ def _validate_runner_engine_contract(
     contract = hello.get("engine_contract")
     if not isinstance(contract, dict):
         raise RunnerLinkError("runner hello has no engine_contract")
+    required_controls = set(requirements.get("required_control_requests", ()))
+    if required_controls:
+        controls = contract.get("control_request_subtypes")
+        if not isinstance(controls, list) or not required_controls.issubset(controls):
+            raise RunnerLinkError("runner image does not support required native settings controls")
     if contract.get("adapter") != requirements["adapter"]:
         raise RunnerLinkError(
             "runner engine adapter mismatch "
@@ -166,6 +171,7 @@ class RunnerLink:
         self._input_acks: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._answer_acks: dict[str, asyncio.Future[bool]] = {}
         self._permission_mode_acks: dict[str, asyncio.Future[str]] = {}
+        self._flag_settings_acks: dict[str, asyncio.Future[bool]] = {}
         self._init_info: asyncio.Future[dict[str, Any] | None] | None = None
         self._state_requests: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._events: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
@@ -348,6 +354,7 @@ class RunnerLink:
         permission_mode: str | None = None,
         mcp_servers: Collection[str] | None = None,
         resume_session_key: str | None = None,
+        environment: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Bind one prepared slot to one platform Session."""
 
@@ -366,6 +373,8 @@ class RunnerLink:
         activation_mode = str(
             permission_mode or requirements["permission_mode"]
         ).strip()
+        if environment:
+            requirements["required_control_requests"] = ["apply_flag_settings", "get_settings"]
         return await self._open_session({
             "op": "activate",
             "slot_id": target_slot,
@@ -381,6 +390,7 @@ class RunnerLink:
             **({"store": store} if store is not None else {}),
             **({"death_notice": death_notice} if death_notice is not None else {}),
             **({"resume": resume_session_key} if resume_session_key else {}),
+            **({"environment": environment} if environment else {}),
         })
 
     async def configure(
@@ -722,6 +732,27 @@ class RunnerLink:
             action="background task stop",
         )
 
+    async def apply_flag_settings(self, settings: dict[str, Any], *, timeout_s: float = 30.0) -> None:
+        if self._ws is None:
+            raise RunnerLinkError("link not connected")
+        if self._hello is None or not self._hello.done():
+            raise RunnerLinkError("native settings before runner handshake")
+        _validate_runner_engine_contract(self._hello.result(), {
+            **dict(self._opening_engine_requirements or {}),
+            "required_control_requests": ["apply_flag_settings", "get_settings"],
+        })
+        request_id = uuid.uuid4().hex
+        future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+        self._flag_settings_acks[request_id] = future
+        try:
+            await self._send_wire(json.dumps({
+                "op": "apply_flag_settings", "request_id": request_id, "settings": settings,
+            }), action="Session environment binding")
+            if not await asyncio.wait_for(future, timeout=timeout_s):
+                raise RuntimeControlRefused("RUNTIME_PREPARATION_FAILED", "native Session environment binding failed")
+        finally:
+            self._flag_settings_acks.pop(request_id, None)
+
     async def set_permission_mode(self, mode: str, *, timeout_s: float = 10.0) -> None:
         if self._ws is None:
             raise RunnerLinkError("link not connected")
@@ -862,6 +893,11 @@ class RunnerLink:
                     state_future.set_exception(
                         EngineStreamDetached("runner link closed before a state reply")
                     )
+            for settings_future in self._flag_settings_acks.values():
+                if not settings_future.done():
+                    settings_future.set_exception(
+                        EngineStreamDetached("runner link closed during Session environment binding")
+                    )
             for future in self._permission_mode_acks.values():
                 if not future.done():
                     future.set_exception(
@@ -935,6 +971,13 @@ class RunnerLink:
             if state_future is None or state_future.done() or not isinstance(snapshot, dict):
                 raise RunnerLinkError(f"unexpected state reply for {request_id!r}")
             state_future.set_result(snapshot)
+            return
+        if op == "flag_settings_ack":
+            request_id = str(frame.get("request_id") or "")
+            future = self._flag_settings_acks.get(request_id)
+            if future is None or future.done() or type(frame.get("applied")) is not bool:
+                raise RunnerLinkError("invalid native settings acknowledgement")
+            future.set_result(frame["applied"])
             return
         if op == "permission_mode_ack":
             request_id = str(frame.get("request_id") or "").strip()

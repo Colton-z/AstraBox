@@ -94,7 +94,9 @@
     "imported_without_ending": "导入的历史：原记录未显示这条回复如何结束。",
     "thinking": "思考中…",
     "thought_process": "思考过程",
-    "pasted_image": "粘贴的图片"
+    "pasted_image": "粘贴的图片",
+    "additional_input": "已接收追加消息",
+    "included_in_response": "已并入上方回复"
   },
   "process": {
     "title": "执行过程",

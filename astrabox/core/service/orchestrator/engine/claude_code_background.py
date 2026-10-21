@@ -134,6 +134,23 @@ def agent_stop_reason_is_active(stop_reason: str) -> bool:
     return not stop_reason or stop_reason == "tool_use"
 
 
+def stored_child_identities(
+    main_entries: list[dict[str, Any]], raw_scopes: list[dict[str, Any]]
+) -> ClaudeChildIdentities:
+    """Restore native Agent aliases and lineage independently of journal retention."""
+    identities = ClaudeChildIdentities.from_messages(main_entries)
+    for raw_scope in raw_scopes:
+        scope = _agent_scope(raw_scope)
+        if scope is None:
+            continue
+        agent_id = str(scope["agent_id"])
+        identities.bind(str(scope["tool_use_id"]), agent_id)
+        parent_id = str(scope["parent_agent_id"])
+        if parent_id:
+            identities.bind_parent(agent_id, parent_id)
+    return identities
+
+
 def _agent_transcript_lifecycle(entries: list[dict[str, Any]]) -> tuple[str, str]:
     """Return the structural edge and native stop reason in one Agent scope."""
 

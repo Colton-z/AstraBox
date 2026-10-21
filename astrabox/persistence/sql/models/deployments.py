@@ -81,6 +81,8 @@ class Deployment(Base):
     )
 
     deployment_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
+    #: The execution target whose workers own this binding's automatic work.
+    execution_target: Mapped[str] = mapped_column(KeyText(128), server_default="astrabox")
     agent_id: Mapped[str | None] = mapped_column(
         KeyText(128), ForeignKey("agents.agent_id", ondelete="CASCADE")
     )

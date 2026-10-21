@@ -120,11 +120,9 @@ export default function SessionsListPage() {
   }, [load, reloadKey]);
   useKeepCurrent(load);
 
-  // The agent list is the filter's vocabulary, and it is the deployment's, not
-  // this page's: picking from the agents that happen to appear on page one
-  // would hide every agent whose conversations are further down.
+  // Include every manageable Agent, even when its Sessions are on later pages.
   useEffect(() => {
-    void listAgents().then(setAgents).catch(() => {});
+    void listAgents().then((items) => setAgents(items.filter((agent) => agent.can_manage))).catch(() => {});
   }, []);
 
   // A narrowing that leaves the reader on page 7 of 2 shows an empty table and

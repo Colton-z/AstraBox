@@ -61,7 +61,10 @@ async def set_runtime(agent_id: str, **columns: Any) -> None:
 
 async def put_slots(agent_id: str, *manifests: dict[str, Any]) -> None:
     """Record slot manifests for the Agent."""
-    await execute(insert(_SLOTS).values([_slot_values(agent_id, manifest) for manifest in manifests]))
+    target = AgentRepository().execution_target
+    await execute(insert(_SLOTS).values([
+        _slot_values(agent_id, manifest, execution_target=target) for manifest in manifests
+    ]))
 
 
 async def put_admissions(agent_id: str, *admissions: dict[str, Any]) -> None:
@@ -71,6 +74,7 @@ async def put_admissions(agent_id: str, *admissions: dict[str, Any]) -> None:
             [
                 {
                     "agent_id": agent_id,
+                    "execution_target": AgentRepository().execution_target,
                     "sandbox_id": admission["sandbox_id"],
                     "session_id": admission["session_id"],
                     "admitted_at": datetime.fromtimestamp(float(admission["at"]), timezone.utc),

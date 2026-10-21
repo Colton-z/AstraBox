@@ -68,11 +68,12 @@ export default function DeploymentCreatePage() {
     setLoading(true);
     setLoadError('');
     try {
-      const [agentList, assistantList, providers] = await Promise.all([
+      const [visibleAgents, assistantList, providers] = await Promise.all([
         listAgents(),
         listAssistants(),
         listChannelProviders(),
       ]);
+      const agentList = visibleAgents.filter((agent) => agent.can_manage);
       setAgents(agentList);
       setAssistants(assistantList);
       setChannelProviders(providers);

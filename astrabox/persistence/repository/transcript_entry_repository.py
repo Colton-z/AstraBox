@@ -101,6 +101,7 @@ class TranscriptEntryRepository:
         *,
         append_id: str,
         platform_session_id: str,
+        engine_session_key: str | None = None,
     ) -> int:
         """Store one batch; the scope's entry count after it.
 
@@ -108,6 +109,9 @@ class TranscriptEntryRepository:
         current count without storing anything. Re-sending a batch under an
         ``append_id`` already stored returns the count that batch reached and
         stores nothing.
+
+        A supplier may declare this main transcript's native resume key. It
+        commits with the batch, including before any response has completed.
 
         Raises:
             TranscriptBatchConflict: ``append_id`` names a batch already
@@ -124,7 +128,8 @@ class TranscriptEntryRepository:
         texts = [json.dumps(entry, ensure_ascii=False) for entry in entries]
         try:
             stored = await self._store(
-                platform_session_id, project_key, native_session_id, subpath, batch, texts
+                platform_session_id, project_key, native_session_id, subpath, batch, texts,
+                engine_session_key,
             )
         except UniqueViolation as exc:
             if (exc.constraint or "").rsplit(".", 1)[-1] != _BATCH_KEY:
@@ -148,6 +153,7 @@ class TranscriptEntryRepository:
         subpath: str | None,
         append_id: str,
         texts: list[str],
+        engine_session_key: str | None,
     ) -> int | None:
         """Store one atomic batch under its Session and native scope locks.
 
@@ -192,6 +198,15 @@ class TranscriptEntryRepository:
                  "append_id": append_id, "batch_index": index, "entry_json": text}
                 for index, text in enumerate(texts)
             ])
+            if engine_session_key is not None:
+                await conn.execute(
+                    update(_SESSIONS)
+                    .where(
+                        _SESSIONS.c.session_id == platform_session_id,
+                        _SESSIONS.c.engine_session_key.is_distinct_from(engine_session_key),
+                    )
+                    .values(engine_session_key=engine_session_key)
+                )
             await get_persistence().coordination.notify(
                 conn, SessionNotice(session_id=platform_session_id, kind="transcript", seq=0),
             )

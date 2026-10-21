@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import i18n from '@/i18n';
 import {
   agentAccessPayload,
   createAgentExtensionConsoleSession,
+  deleteAgent,
   getAgentAccess,
   getAgentExtensions,
   getAgentSchema,
@@ -30,6 +31,7 @@ import type {
 import { ErrorNote } from '@/components/shell';
 import {
   ConsoleEditSections,
+  ConsoleDangerButton,
   ConsoleFact,
   ConsoleFactRail,
   ConsoleRecordLoading,
@@ -81,11 +83,14 @@ type SaveRefusal = { section: number; message: string; field: string | null };
 export default function AgentDetailPage() {
   const { agentId = '' } = useParams();
   const { t } = useTranslation();
+  const navigate = useNavigate();
 
   const [record, setRecord] = useState<AgentConfig | null>(null);
   const [schema, setSchema] = useState<FormSchema | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [archiving, setArchiving] = useState(false);
+  const [archiveError, setArchiveError] = useState('');
 
   const [draft, setDraft] = useState<AgentConfig | null>(null);
   const [savingSection, setSavingSection] = useState<number | null>(null);
@@ -368,6 +373,19 @@ export default function AgentDetailPage() {
     );
   };
 
+  const archive = async () => {
+    if (archiving) return;
+    setArchiving(true);
+    setArchiveError('');
+    try {
+      await deleteAgent(agentId);
+      navigate('/manage/agents');
+    } catch (e) {
+      setArchiveError((e as Error).message);
+      setArchiving(false);
+    }
+  };
+
   if (loading && !record) {
     return (
       <ConsoleRecordPage title={t('common:agent')}>
@@ -444,6 +462,19 @@ export default function AgentDetailPage() {
           ? { tone: 'done', label: t('common:enabled') }
           : { tone: 'idle', label: t('common:disabled') }
       }
+      actions={canManage && (
+        <ConsoleDangerButton
+          disabled={archiving || savingSection !== null || extensionOpening !== null || removingSelection}
+          confirm={{
+            title: t('manage:agents.archive_title', { name: agentDisplayName(record) }),
+            description: t('manage:agents.archive_description'),
+            action: t('manage:agents.archive'),
+            onConfirm: () => void archive(),
+          }}
+        >
+          {t(archiving ? 'manage:agents.archiving' : 'manage:agents.archive')}
+        </ConsoleDangerButton>
+      )}
       rail={
         <ConsoleFactRail>
           <ConsoleFact label={t('common:model')} value={agentModel(record) || '—'} />
@@ -458,6 +489,7 @@ export default function AgentDetailPage() {
         </ConsoleFactRail>
       }
     >
+      {archiveError && <ErrorNote>{archiveError}</ErrorNote>}
       {extensionError && <ErrorNote>{extensionError}</ErrorNote>}
       {canManage && staleSelection && hasCatalogSelection(staleSelection) && (
         <UnavailableCatalogSelection

@@ -20,6 +20,7 @@ import asyncio
 from typing import Any
 
 from astrabox.common.logger.logger_factory import get_logger
+from astrabox.config.settings import get_settings
 from astrabox.core.service.orchestrator.channel_credentials import (
     ChannelCredentialService,
 )
@@ -64,6 +65,8 @@ class ChannelSourceHost:
     # ── Lifecycle ───────────────────────────────────────────────────────
 
     def ensure_started(self) -> None:
+        if not get_settings().background_execution_enabled:
+            return
         if self._closed:
             logger.warning("channel_source_host: not starting (closed)")
             return
@@ -221,6 +224,11 @@ class ChannelSourceHost:
             ):
                 return
             try:
+                from astrabox.core.service.orchestrator.runtime.execution_target import (
+                    require_execution_target,
+                )
+
+                require_execution_target(binding)
                 hydrated = await self._channel_credentials.hydrate(binding, provider)
                 async for envelope in provider.open_source(binding=hydrated):
                     if not await self._handle_envelope(name, envelope):

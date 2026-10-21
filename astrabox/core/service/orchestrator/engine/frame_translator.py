@@ -36,6 +36,7 @@ message dicts carry ``__sdk_type`` stamps from the runner's serializer):
     SystemMessage                      → data-raw-event {subtype}
     StreamEvent (live cursor given)    → text/reasoning start+delta+end, tool-input-start/delta
     StreamEvent (no cursor)            → data-raw-event (caller opted out of live translation)
+    ConversationResetMessage           → reset stream cache + native diagnostic
     ResultMessage                      → result {finishReason: "stop"|"error"}
       (``cancelled`` is the EngineClient's call — the SDK reports an interrupt
       as an error subtype and only the client knows it asked for it)
@@ -576,6 +577,7 @@ CLAUDE_SDK_MESSAGE_TYPES: frozenset[str] = (
             "HookEventMessage",
             "StreamEvent",
             "ResultMessage",
+            "ConversationResetMessage",
         }
     )
     | CLAUDE_SDK_TASK_MESSAGE_TYPES
@@ -884,6 +886,11 @@ def translate_claude_sdk_message(
         cursor = ClaudeStreamCursor()
     cursor.child_identities.observe(message)
 
+    if sdk_type == "ConversationResetMessage":
+        cursor.reset()
+        yield _claude_raw_frame("conversation_reset", message)
+        return
+
     lifecycle_frame = _translate_claude_subagent_lifecycle(
         message,
         cursor=cursor,
@@ -1058,6 +1065,13 @@ class ClaudeStreamCursor:
     across events."""
 
     def __init__(self, *, child_identities: ClaudeChildIdentities | None = None) -> None:
+        self.child_identities = (
+            child_identities if child_identities is not None else ClaudeChildIdentities()
+        )
+        self.reset()
+
+    def reset(self) -> None:
+        """Forget discarded stream previews; retain independently owned child identities."""
         self.blocks: dict[int, dict[str, str]] = {}
         self.streamed_text = False
         self.stream_message_id = ""
@@ -1067,9 +1081,6 @@ class ClaudeStreamCursor:
         self.retracted_part_ids: list[str] = []
         self.retry: dict[str, Any] | None = None
         self.started_tool_ids: set[str] = set()
-        self.child_identities = (
-            child_identities if child_identities is not None else ClaudeChildIdentities()
-        )
 
     def discard_partial_content(self) -> Iterator[dict[str, Any]]:
         """Retract previews not confirmed by a native AssistantMessage.

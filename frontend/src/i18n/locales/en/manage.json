@@ -199,6 +199,10 @@
     "unnamed_assistant": "Untitled assistant"
   },
   "agents": {
+    "archive": "Archive agent",
+    "archiving": "Archiving…",
+    "archive_title": "Archive “{{name}}”?",
+    "archive_description": "Remove this Agent from use and management lists. Its definition and conversation history stay in the database for audit. This cannot be undone.",
     "title": "Agents",
     "meta": "{{count}} agents · {{enabled}} enabled",
     "description": "Configure each Agent with its model, system prompt, MCP servers, Skills, Plugins, repositories, and runtime setup, then use it from any supported entry point.",

@@ -161,6 +161,7 @@ async def runtime_generations(
         "runtime_preparation": {
             "provider": integration.name if integration is not None else None,
             "session_bound": runtime_preparation_plan(template).session_bound,
+            "model_credential_delivery": runtime_preparation_plan(template).model_credential_delivery,
         },
         "agent_id": agent_id,
         "prewarm_revision": _value(template, "prewarm_revision"),
@@ -274,6 +275,7 @@ async def reconcile_runtime_generation(
         template.runtime_generation = generation
         template.sandbox_generation = sandbox_generation
     repo = agent_repo if agent_repo is not None else AgentRepository()
+    await repo.ensure_runtime(agent_id)
 
     def _publish_pool_epoch(epoch: str) -> None:
         if isinstance(template, dict):

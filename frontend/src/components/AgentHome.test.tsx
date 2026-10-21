@@ -2,6 +2,7 @@
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { SWRConfig } from 'swr';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import i18n from '@/i18n';
@@ -71,6 +72,7 @@ function agent(over: Partial<AgentConfig> & { agent_id: string; name: string }):
     display_meta: {},
     favorited: false,
     can_manage: false,
+    can_start_conversation: true,
     ...over,
   };
 }
@@ -84,7 +86,9 @@ function renderHome() {
   // reads it rather than left over from the test before.
   return render(
     <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-      <AgentHome onConversationCreated={() => {}} />
+      <MemoryRouter>
+        <AgentHome onConversationCreated={() => {}} />
+      </MemoryRouter>
     </SWRConfig>,
   );
 }

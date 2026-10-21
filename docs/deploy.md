@@ -24,6 +24,66 @@ network.
 For Kubernetes and external-service settings, see the
 [OpenSandbox deployment guide](providers/opensandbox.md).
 
+## Share a product database {#share-a-product-database}
+
+One product database defines one logical control plane. Agent and Assistant
+definitions, identity, authorization and conversation history are shared.
+`ASTRABOX_EXECUTION_TARGET` identifies the physical environment that owns
+runtime bindings, prepared inventory, quota ledgers and automatic trigger work.
+It is a stable name, independent of process IDs, host names and code versions.
+
+Replicas in the same target must use the same credentials, reachable sandbox
+service, pool coordination and `ASTRABOX_MCP_PROXY_BASE_URL`. Use a stable
+callback address reachable from their sandboxes. Different physical targets
+may use different sandbox endpoints and callback addresses while keeping the
+same business database and Agent identities. They must agree on schema,
+identity, credential encryption and shared product configuration.
+
+For a gray environment that accepts interactive tests without preparing stock
+or running channel and scheduler workers:
+
+```dotenv
+ASTRABOX_EXECUTION_TARGET=gray
+ASTRABOX_AGENT_PREWARM_ENABLED=false
+ASTRABOX_BACKGROUND_EXECUTION_ENABLED=false
+```
+
+Keep the existing environment on the initial target `astrabox`. Stop versions
+that do not understand execution targets before applying these schema changes;
+upgrade every participant before enabling another target. Schema revisions
+assign existing resources and bindings to `astrabox`. Do not rename that target
+to relocate compute. A Session and an Assistant workspace retain their target
+across host and sandbox replacement; a physical operation from another target
+returns `EXECUTION_TARGET_MISMATCH`. Authorized history and configuration reads
+remain available across targets.
+
+An Agent's authored `prepared_capacity` stays shared. A target with prewarming
+disabled uses an effective capacity of zero and admits new work through cold
+placement; it neither creates nor acquires prepared units. Cleanup can retire
+only its own inventory. Accepted runtime work still has target-owned readers,
+native SessionStore custody, cleanup and active sandbox keepalive when channel
+and scheduler workers are disabled.
+
+Read `GET /api/v1/execution-policy` for the serving process's policy. Agent
+prepared-runtime status reports both configured and effective capacity. A
+trigger binding retains its creation target: incoming triggers go to that
+target, while authorized schedule management uses a native control client.
+The built-in DBOS provider uses the target as its native application name,
+which accepts 3–30 lowercase letters, digits, underscores and hyphens. A
+control-only DBOS client needs a system database initialized by a worker;
+it does not initialize the native schema or execute workflows.
+
+Retiring outdated network configurations and cleaning orphan resources require the sandbox's
+create-time execution-target marker. A box without that marker is outside these
+automatic inventories; its persisted Session or Assistant owner still drives
+ordinary recovery, renewal and disposal. Unattributed resources require explicit
+operator inspection rather than an assumed target.
+
+This is runtime ownership inside one control plane, not a second runtime
+database or a copy of business records. The
+[relational persistence interface](providers/relational-persistence.md#installation-boundary)
+supplies storage and coordination for the whole control plane.
+
 ## Run on one Docker host {#run-on-one-docker-host}
 
 The stack starts the following components:

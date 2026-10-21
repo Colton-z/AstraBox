@@ -76,8 +76,9 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.ext.asyncio import AsyncConnection
-from sqlalchemy.sql import ColumnElement
+from sqlalchemy.sql import ColumnElement, Select
 
+from astrabox.config.settings import get_settings, validate_execution_target
 from astrabox.persistence.sql import (
     execute,
     fetch_all,
@@ -460,6 +461,16 @@ def _context_candidates(
 class ChannelRepository:
     """Inbound work items, conversations, subscriptions, deliveries and their marks."""
 
+    def __init__(self, *, execution_target: str | None = None) -> None:
+        self.execution_target = validate_execution_target(
+            get_settings().execution_target if execution_target is None else execution_target
+        )
+
+    def _owned_deployments(self) -> Select[Any]:
+        return select(_DEPLOYMENTS.c.deployment_id).where(
+            _DEPLOYMENTS.c.execution_target == self.execution_target
+        )
+
     # ── inbound work items ───────────────────────────────────────────────
 
     async def claim_inbound(
@@ -535,11 +546,16 @@ class ChannelRepository:
         async def claim(conn: AsyncConnection) -> tuple[dict[str, Any], str]:
             # Serialize dedup insertion before it can retain a shared duplicate
             # lock that a concurrent takeover would need to upgrade.
-            await conn.execute(
+            binding = await conn.scalar(
                 select(_DEPLOYMENTS.c.deployment_id)
-                .where(_DEPLOYMENTS.c.deployment_id == deployment_id)
+                .where(
+                    _DEPLOYMENTS.c.deployment_id == deployment_id,
+                    _DEPLOYMENTS.c.execution_target == self.execution_target,
+                )
                 .with_for_update()
             )
+            if binding is None:
+                raise ValueError("channel binding is absent from this execution target")
             inserted = await insert_if_absent(
                 conn, _INBOUND, values, index_columns=("deployment_id", "dedup_key"),
             )
@@ -722,6 +738,7 @@ class ChannelRepository:
             select(c.item_id)
             .where(
                 c.state == _const(INBOUND_AUTHORIZED),
+                c.deployment_id.in_(self._owned_deployments()),
                 c.authorization_expires_at <= _instant(now),
             )
             .order_by(c.authorization_expires_at)
@@ -1105,6 +1122,7 @@ class ChannelRepository:
             select(_INBOUND)
             .where(
                 c.state.in_(_states(*_INBOUND_LIVE_STATES)),
+                c.deployment_id.in_(self._owned_deployments()),
                 c.lease_expires_at <= _instant(now),
             )
             .order_by(c.lease_expires_at, c.item_id)
@@ -1129,6 +1147,7 @@ class ChannelRepository:
                 update(_INBOUND)
                 .where(
                     c.item_id == item_id,
+                    c.deployment_id.in_(self._owned_deployments()),
                     c.state.in_(_states(*_INBOUND_LIVE_STATES)),
                     c.generation == int(expected_generation),
                     c.lease_expires_at <= _instant(now),
@@ -1549,7 +1568,10 @@ class ChannelRepository:
         rows = await fetch_all(
             select(_SUBSCRIPTIONS)
             .join(_DEPLOYMENTS, _DEPLOYMENTS.c.deployment_id == s.deployment_id)
-            .where(s.session_id == session_id, _DEPLOYMENTS.c.enabled)
+            .where(
+                s.session_id == session_id, _DEPLOYMENTS.c.enabled,
+                _DEPLOYMENTS.c.execution_target == self.execution_target,
+            )
             .order_by(s.deployment_id)
         )
         return [_times(row, "created_at") for row in rows]
@@ -1581,6 +1603,7 @@ class ChannelRepository:
             )
             .join(_DEPLOYMENTS, _DEPLOYMENTS.c.deployment_id == s.deployment_id)
             .join(_SESSIONS, _SESSIONS.c.session_id == s.session_id)
+            .where(_DEPLOYMENTS.c.execution_target == self.execution_target)
             .where(or_(
                 ~_DEPLOYMENTS.c.enabled, _SESSIONS.c.deleted, output_past,
                 select(_INTERACTIONS.c.ref).where(
@@ -1752,7 +1775,10 @@ class ChannelRepository:
         async def change(conn: AsyncConnection) -> dict[str, Any] | None:
             eligible = (await conn.execute(
                 select(o.outbox_id)
-                .where(o.outbox_id == outbox_id, _outbox_due(now), _outbox_head())
+                .where(
+                    o.outbox_id == outbox_id, _outbox_due(now), _outbox_head(),
+                    o.deployment_id.in_(self._owned_deployments()),
+                )
                 .with_for_update()
             )).first()
             if eligible is None:
@@ -1992,7 +2018,9 @@ class ChannelRepository:
         due_at = case(
             (o.state == _const(OUTBOX_PENDING), o.next_attempt_at), else_=o.lease_expires_at,
         )
-        statement = select(_OUTBOX).where(_outbox_due(now), _outbox_head())
+        statement = select(_OUTBOX).where(
+            _outbox_due(now), _outbox_head(), o.deployment_id.in_(self._owned_deployments()),
+        )
         if deployment_id is not None:
             statement = statement.where(o.deployment_id == deployment_id)
         if session_id is not None:

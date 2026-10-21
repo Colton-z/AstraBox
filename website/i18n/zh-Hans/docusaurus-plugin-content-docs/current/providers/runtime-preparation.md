@@ -17,9 +17,9 @@ enterprise = "my_deployment.preparation:PreparationProvider"
 
 | 方法 | 平台何时调用 |
 | --- | --- |
-| `plan` | 每次为 Agent 规划运行时；同步调用，不执行 I/O |
+| `plan` | 每次解析允许接收任务的配置时异步调用，读取已持久化的主体策略 |
 | `synchronize`、`recover` | 每个预先准备的 Agent 沙箱一次，在它成为待领取库存之前；对 Assistant，在其工作区每次准备一个修订版本时 |
-| `prepare_session` | 引擎初始化之前：冷启动、领取、重新接入、替换沙箱 |
+| `prepare_session` | 引擎激活之前：冷启动、领取、重新接入、替换沙箱 |
 | `prepare_turn` | 每条输入交给引擎之前 |
 | `read_user_actions`、`perform_user_action` | Session 所有者读取或处理其前置条件时 |
 
@@ -107,11 +107,22 @@ Session。
 保持不变。材料字节和环境变量值不会出现在对应 dataclass 的表示形式和公开错误中。与
 Session 绑定的 provider 必须返回材料。
 
-环境变量在它所启动的运行时的整个生命周期内保持不变。引擎适配器必须声明
-`supports_startup_environment()`，并在原生初始化之前交付
-`EngineStartupContext.runtime_env`。内置 Claude Code 适配器通过其 SDK 选项完成这一步；
-其他内置适配器会拒绝 Session 环境变量，而不是忽略它。由平台负责的环境变量名不能被覆盖。
-拒绝会以 `RUNTIME_PREPARATION_FAILED` 阻止激活；异常文本不会公开。
+引擎适配器声明 `startup_environment_scope()`。`"process"` 在原生初始化之前交付
+`EngineStartupContext.runtime_env`；Claude Code 冷启动通过 SDK 选项交付。
+声明 `supports_initialized_environment()` 的适配器也能在初始化后交付环境。
+Claude 使用原生 `apply_flag_settings` 的 `env` 覆盖，并通过 `get_settings`
+核对实际映射，确认后才释放输入，领取时保留同一个预初始化 CLI 进程；重连使用同一契约。
+镜像必须声明支持这两个控制请求，旧镜像会明确拒绝。之后启动的 hook 和工具继承新值；
+已经运行的子进程及仅在启动时读取值的功能不会被追溯更新。依赖启动材料的插件或包装
+程序仍须声明 `session_bound=True`；用户绑定的 MCP 保留激活时的原生重连屏障。
+`"session"` 通过原生会话上下文交付 `EngineStartupContext.session_env`，不改变共享进程
+环境。Hermes 镜像包含固定上游提交、保留 MIT 许可的扩展，在原生 `session.create` 和
+`session.resume` 中绑定映射，再由原生上下文传到工具子进程。重连和换箱时重新交付；
+没有会话的 Assistant 工作区准备不接收这些值。缺少扩展的旧镜像会明确拒绝 RPC 参数。
+返回 `None` 的适配器拒绝 Session 环境变量。由平台负责的环境变量名不能被覆盖；
+Hermes 也拒绝原生身份和凭据变量。没有原生环境更新能力的已初始化进程拒绝新的进程作用域环境。
+平台准备阶段的拒绝会以 `RUNTIME_PREPARATION_FAILED` 阻止激活，回调异常文本不会公开。
+原生会话环境校验以 `AGENT_RUNTIME_ERROR` 阻止 Hermes 连接，消息不包含传入的环境变量值。
 
 Claude Agent SDK 在启动 CLI 之前会先用 `claude -v` 探测它，此时不带选项中的环境变量。
 如果镜像中的包装程序要求有 Session 材料才放行 CLI，应原样透传 `-v` 和 `--version`。

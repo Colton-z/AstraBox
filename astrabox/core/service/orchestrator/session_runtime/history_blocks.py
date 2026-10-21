@@ -39,10 +39,10 @@ PROCESS_BLOCK_PART = "data-process-block"
 #: Data parts the console shows on their own: an outcome, a decision, a fold or
 #: a platform tool's card. They never join a process group.
 _STANDALONE_PARTS = frozenset(
-    {"data-result", "data-api-retry", "data-interaction", "data-tool-card", PROCESS_BLOCK_PART}
+    {"data-result", "data-api-retry", "data-interaction", "data-tool-card", "data-input-consumed", PROCESS_BLOCK_PART}
 )
 #: Standalone parts a fold leaves in view wherever they sit.
-_ALERT_PARTS = frozenset({"data-result", "data-api-retry", "data-interaction"})
+_ALERT_PARTS = frozenset({"data-result", "data-api-retry", "data-interaction", "data-input-consumed"})
 _FAILED_TOOL_STATES = frozenset({"output-error", "output-denied"})
 #: A call that never returned: the one a stop landed on, or one waiting on a person.
 _UNFINISHED_TOOL_STATES = frozenset(
@@ -163,7 +163,8 @@ def fold_parts(
     waiting = any(_is_tool(part) and _tool_state(part) == "approval-requested" for part in parts)
     folded = [group for group in groups[: last_tool + 1] if not alert(group)]
     headers: list[tuple[list[int], bool]] = []
-    if last_tool >= 0 and not waiting and folded and ((completed and conclusion) or stopped):
+    has_input_boundary = any(_type(part) == "data-input-consumed" for part in parts)
+    if last_tool >= 0 and not waiting and folded and not has_input_boundary and ((completed and conclusion) or stopped):
         headers = [(sorted(i for group in folded for i in group.indexes), True)]
     elif completed or stopped:
         headers = [(group.indexes, False) for group in groups if group.process]

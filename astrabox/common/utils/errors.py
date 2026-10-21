@@ -240,6 +240,9 @@ for _code, _status, _category, _retryable, _owner in (
     ("DEPLOYMENT_UNAUTHORIZED", 401, "auth", False, "client"),
     ("DEPLOYMENT_MISCONFIGURED", 409, "state", False, "platform"),
     ("DEPLOYMENT_NO_OWNER", 409, "state", False, "platform"),
+    ("EXECUTION_TARGET_MISSING", 500, "state", False, "platform"),
+    ("EXECUTION_TARGET_MISMATCH", 409, "state", False, "client"),
+    ("AGENT_PREWARM_DISABLED", 409, "configuration", False, "platform"),
     # An Environment naming a permission level the platform does not define.
     # `template` because the value is stored on the Environment, which is what
     # a session's runtime is rendered from — the same owner as the other
@@ -324,6 +327,7 @@ for _code, _status, _category, _retryable, _owner in (
     # command id answers this once a newer command has started.
     ("TERMINAL_COMMAND_NOT_FOUND", 404, "request", False, "session"),
     ("SESSION_BUSY", 409, "state", True, "session"),
+    ("SESSION_NOT_READY", 409, "state", True, "session"),
     ("INTERACTION_NOT_FOUND", 404, "request", False, "session"),
     # Answered, withdrawn or expired: answering again cannot succeed.
     ("INTERACTION_NOT_OPEN", 409, "state", False, "session"),
@@ -713,6 +717,12 @@ for _code, _status, _category, _retryable, _owner in (
     )
 
 
+register_error(
+    "AGENT_DISABLED",
+    status_code=409,
+    category="configuration",
+    owner="platform",
+)
 register_error(
     "AGENT_ENVIRONMENT_DISABLED",
     status_code=409,

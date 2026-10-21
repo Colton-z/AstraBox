@@ -107,6 +107,7 @@ class ScheduleDefinition:
     """
 
     deployment_id: str
+    execution_target: str
     cron: str
     timezone: str
     enabled: bool
@@ -125,6 +126,7 @@ class RunInvocation:
 
     run_id: str
     deployment_id: str
+    execution_target: str
     trigger: RunTrigger
     payload: Mapping[str, Any]
     scheduled_for: datetime | None = None
@@ -219,7 +221,7 @@ class SchedulerProvider(ABC):
     properties: SchedulerProperties
 
     @abstractmethod
-    def configure(self, *, database_url: str) -> None:
+    def configure(self, *, database_url: str, execution_target: str) -> None:
         """Validate and bind this deployment's configuration; called at startup.
 
         ``database_url`` is the platform's PostgreSQL URL, which a provider may
@@ -227,11 +229,17 @@ class SchedulerProvider(ABC):
         :class:`SchedulerConfigurationError` naming what is missing when the
         provider cannot run here, so the process refuses to start instead of
         failing the first schedule a user creates.
+        ``execution_target`` is this process's durable execution namespace;
+        workers may dispatch only invocations belonging to that target.
         """
 
     @abstractmethod
-    async def start(self, handler: RunHandler) -> None:
-        """Start dispatching; invocations a lost process left behind resume here."""
+    async def start(self, handler: RunHandler | None) -> None:
+        """Open control operations and, with a handler, start this target's worker.
+
+        ``handler=None`` must not dispatch, recover or fire any invocation.
+        Control operations still manage the explicitly named target's records.
+        """
 
     @abstractmethod
     async def stop(self) -> None:
@@ -257,7 +265,7 @@ class SchedulerProvider(ABC):
         """
 
     @abstractmethod
-    async def delete(self, deployment_id: str) -> None:
+    async def delete(self, deployment_id: str, *, execution_target: str) -> None:
         """Remove a Deployment's schedule; a missing schedule is not an error."""
 
     @abstractmethod
@@ -265,6 +273,7 @@ class SchedulerProvider(ABC):
         self,
         *,
         deployment_id: str,
+        execution_target: str,
         trigger: Literal["manual", "replay"],
         payload: Mapping[str, Any],
         replayed_from_run_id: str | None = None,
@@ -272,11 +281,13 @@ class SchedulerProvider(ABC):
         """Store and start a Run that no due time produced; return its record."""
 
     @abstractmethod
-    async def get_run(self, run_id: str) -> RunRecord | None:
+    async def get_run(self, run_id: str, *, execution_target: str) -> RunRecord | None:
         """The Run with ``run_id``, or ``None`` when this provider holds none."""
 
     @abstractmethod
-    async def list_runs(self, deployment_id: str, *, limit: int) -> Sequence[RunRecord]:
+    async def list_runs(
+        self, deployment_id: str, *, execution_target: str, limit: int,
+    ) -> Sequence[RunRecord]:
         """A Deployment's Runs, newest first, at most ``limit`` (1 to 200)."""
 
 

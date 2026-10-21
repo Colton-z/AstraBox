@@ -8,6 +8,7 @@ Agent per Session or dispatches work. A deployment installs at most one.
 from __future__ import annotations
 
 import inspect
+import asyncio
 import copy
 import dataclasses
 import hashlib
@@ -108,9 +109,17 @@ class RuntimePreparationPlan:
 
     A Session-bound engine is not initialized in unclaimed inventory. The
     platform still prepares its image, workspace identity and Agent resources.
+    ``model_credential_delivery="provider"`` delegates model protection and
+    claim binding to this integration. The engine receives only a unique inert
+    placeholder; MCP and environment credential protection stay independent.
     This declaration contains no credentials and participates in generation.
     """
     session_bound: bool = False
+    model_credential_delivery: Literal["platform", "provider"] = "platform"
+
+    def __post_init__(self) -> None:
+        if type(self.session_bound) is not bool or self.model_credential_delivery not in ("platform", "provider"):
+            raise TypeError("runtime preparation requires session_bound and a model credential delivery owner")
 
 
 @dataclass(frozen=True)
@@ -143,10 +152,14 @@ def runtime_material_path(
 
 @dataclass(frozen=True)
 class SessionPreparationContext:
-    """Persisted owner and resolved placement before the engine initializes.
+    """Persisted owner and resolved placement before engine activation.
 
     Runs on cold start, claim of waiting inventory, reattachment and sandbox
-    replacement, each before ``EngineAdapter.activate_runtime``.
+    replacement, each before ``EngineAdapter.activate_runtime``. An initialized
+    engine accepts files and external binding updates. Environment requires an
+    engine-native activation mechanism; spawn-only consumers remain Session-bound.
+    ``model_credential_placeholder`` is the inert model value the provider must
+    bind to this persisted owner before returning, when it owns model delivery.
     """
     session_id: str
     principal_id: str
@@ -157,6 +170,8 @@ class SessionPreparationContext:
     runtime_identity: Mapping[str, Any]
     config: Mapping[str, Any] = field(repr=False)
     sandbox: SandboxHandle = field(repr=False)
+    engine_initialized: bool = False
+    model_credential_placeholder: str | None = None
 
     def file_path(self, name: str) -> str:
         return runtime_material_path(
@@ -296,8 +311,8 @@ class RuntimePreparationProvider(ABC):
     """
     name: str
 
-    def plan(self, *, config: Mapping[str, Any]) -> RuntimePreparationPlan:
-        """Declare preparation requirements without I/O or personal identity."""
+    async def plan(self, *, config: Mapping[str, Any]) -> RuntimePreparationPlan:
+        """Read persisted subject policy without personal identity or side effects."""
         return RuntimePreparationPlan()
 
     async def synchronize(self, *, context: ResourcePreparationContext) -> None:
@@ -326,11 +341,11 @@ class RuntimePreparationProvider(ABC):
         return False
 
     async def prepare_session(self, *, context: SessionPreparationContext) -> RuntimeMaterials:
-        """Resolve existing Session materials before the engine initializes.
+        """Resolve existing Session materials before engine activation.
 
         Return files and environment; the platform writes files with workload
-        ownership and mode 0600. The environment stays fixed for the life of
-        the runtime this startup activates.
+        ownership and mode 0600. The engine adapter applies environment through
+        its declared startup or native activation mechanism.
         """
         return RuntimeMaterials()
 
@@ -364,7 +379,7 @@ class RuntimePreparationProvider(ABC):
 
 _PROVIDER: RuntimePreparationProvider | None = None
 _ASYNC_METHODS = (
-    "synchronize", "recover", "prepare_session", "prepare_turn",
+    "plan", "synchronize", "recover", "prepare_session", "prepare_turn",
     "read_user_actions", "perform_user_action",
 )
 
@@ -395,15 +410,28 @@ def prepares_turns(provider: RuntimePreparationProvider | None) -> bool:
     )
 
 
-def runtime_preparation_plan(config: Mapping[str, Any] | Any) -> RuntimePreparationPlan:
-    """Read the declaration used by all preparation and startup paths."""
+async def resolve_runtime_preparation_plan(config: Any) -> RuntimePreparationPlan:
+    """Resolve one immutable runtime view's declaration from persisted policy."""
     provider = runtime_preparation_provider()
     if provider is None:
         return RuntimePreparationPlan()
     values = dataclasses.asdict(config) if dataclasses.is_dataclass(config) and not isinstance(config, type) else (
         dict(config) if isinstance(config, Mapping) else vars(config).copy()
     )
-    result = provider.plan(config=copy.deepcopy(values))
-    if not isinstance(result, RuntimePreparationPlan) or type(result.session_bound) is not bool:
-        raise TypeError("runtime preparation plan must declare a boolean session_bound")
+    async with asyncio.timeout(30.0):
+        result = await provider.plan(config=copy.deepcopy(values))
+    if not isinstance(result, RuntimePreparationPlan):
+        raise TypeError("runtime preparation plan requires RuntimePreparationPlan")
     return result
+
+
+def runtime_preparation_plan(config: Mapping[str, Any] | Any) -> RuntimePreparationPlan:
+    """Read the resolved declaration; never call the provider again during startup."""
+    result = config.get("runtime_preparation") if isinstance(config, Mapping) else getattr(config, "runtime_preparation", None)
+    if isinstance(result, RuntimePreparationPlan):
+        return result
+    if isinstance(result, Mapping):
+        return RuntimePreparationPlan(**dict(result))
+    if runtime_preparation_provider() is None:
+        return RuntimePreparationPlan()
+    raise TypeError("runtime preparation plan has not been resolved for this runtime view")

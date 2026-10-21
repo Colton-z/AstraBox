@@ -13,6 +13,7 @@ vi.mock('@/api', () => ({
 }));
 
 const prepared: AgentPreparedRuntimeStatus = {
+  execution_target: 'astrabox', prewarm_enabled: true, configured_target: 1,
   enabled: true, target: 1, ready: true, prepared_count: 1, state: 'prepared',
   sandbox_id: 'box-prepared-123', prepared_at: '2026-09-28T09:00:00Z',
 };

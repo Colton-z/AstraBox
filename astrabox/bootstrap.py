@@ -445,7 +445,9 @@ def _select_scheduler_provider() -> None:
     except ValueError as exc:
         raise BootstrapConfigError(str(exc)) from exc
     try:
-        scheduler.configure(database_url=database_url)
+        scheduler.configure(
+            database_url=database_url, execution_target=get_settings().execution_target,
+        )
     except SchedulerConfigurationError as exc:
         raise BootstrapConfigError(
             f"ASTRABOX_SCHEDULER_PROVIDER={scheduler.name} cannot run with this "

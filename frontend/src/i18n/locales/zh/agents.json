@@ -7,7 +7,6 @@
   "home_title": "开始一个对话",
   "home_subtitle": "选择一个 Agent，开始新的会话。",
   "home_start": "开始对话",
-  "home_unavailable": "不可用",
   "home_starting": "正在启动…",
   "home_empty": "暂无可用的 Agent。",
   "home_empty_hint": "管理员创建并启用 Agent 后，用户才能开始会话。",
@@ -24,5 +23,12 @@
   "no_match_hint": "换个搜索词，或移除标签筛选。",
   "tags_label": "标签",
   "filter_by_tag": "只看带有 #{{tag}} 标签的 Agent",
-  "tag_filter_clear": "移除 #{{tag}} 筛选"
+  "tag_filter_clear": "移除 #{{tag}} 筛选",
+  "detail_title": "Agent",
+  "copy_link": "复制链接",
+  "link_copied": "已复制 Agent 链接",
+  "link_copy_failed": "未能复制链接",
+  "unavailable": "该 Agent 暂不可用",
+  "unavailable_hint": "它可能已停用、移除，或你的账号没有访问权限。请从列表选择其他 Agent。",
+  "model": "模型"
 }

@@ -23,6 +23,7 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.model import SessionState
+from astrabox.core.service.orchestrator.runtime.execution_target import require_execution_target
 from astrabox.core.service.orchestrator.runtime.preparation import require_session_user_prerequisites
 from astrabox.core.service.orchestrator.engine_kind_utils import resolve_session_engine_kind
 from astrabox.core.service.orchestrator.runtime_binding import (
@@ -172,6 +173,7 @@ class SessionLifecycleService:
         A row whose startup another create already claimed, or that left
         ``CREATING``, is not started again.
         """
+        require_execution_target(session)
         session_id = str(session["session_id"])
         generation = str(session.get("sandbox_generation") or "")
         if str(session.get("state") or "") != SessionState.CREATING.value or not generation:
@@ -236,6 +238,7 @@ class SessionLifecycleService:
         await self._recover(session)
 
     async def _recover(self, session: dict[str, Any]) -> None:
+        require_execution_target(session)
         session_id = str(session["session_id"])
         session, _binding = await reconcile_session_runtime_binding(
             session=session,
@@ -307,6 +310,7 @@ class SessionLifecycleService:
 
     async def delete_session(self, user: UserContext, session_id: str) -> dict[str, Any]:
         session = await self._session_service.must_get_owned_session(user, session_id)
+        require_execution_target(session)
         _refuse_while_working(session, "delete session")
         if is_assistant_user_conversation(session):
             sandbox_id = str(session.get("sandbox_id") or "").strip() or None
@@ -361,12 +365,26 @@ class SessionLifecycleService:
                 "a leaking sandbox destruction must be UNCONFIRMED or REFUSED, "
                 f"not {destruction.outcome!r}"
             )
-        await self._sessions.soft_delete(session_id, user.user_id)
+        deleted = await self._sessions.soft_delete(
+            session_id, user.user_id,
+            expected={
+                "sandbox_id": {"$in": [session.get("sandbox_id"), None]},
+                "undestroyed_sandbox_ids": session.get("undestroyed_sandbox_ids", []),
+            },
+            updates=release_name_updates(destruction, sandbox_id=sandbox_id, row=session),
+        )
+        if not deleted:
+            raise APIError(
+                code="SESSION_NOT_READY",
+                message="session runtime binding changed during deletion",
+                status_code=409,
+            )
         return {"session_id": session_id, "deleted": True}
 
     async def archive_session(self, user: UserContext, session_id: str) -> dict[str, Any]:
         async with get_persistence().coordination.runtime_lock(session_id) as check_lock:
             session = await self._session_service.must_get_owned_session(user, session_id)
+            require_execution_target(session)
             if is_assistant_user_conversation(session):
                 _refuse_while_working(session, "archive session")
                 sandbox_id = str(session.get("sandbox_id") or "").strip() or None
@@ -393,6 +411,7 @@ class SessionLifecycleService:
     async def end_conversation(self, user: UserContext, session_id: str) -> dict[str, Any]:
         async with get_persistence().coordination.runtime_lock(session_id) as check_lock:
             session = await self._session_service.must_get_owned_session(user, session_id)
+            require_execution_target(session)
             if not is_assistant_user_conversation(session):
                 raise APIError(
                     code="INVALID_REQUEST",
@@ -425,6 +444,7 @@ class SessionLifecycleService:
         whose destruction is not confirmed goes onto the row's undestroyed
         ledger in the same write and is reported to the operator.
         """
+        require_execution_target(session)
         session_id = str(session["session_id"])
         if is_assistant_user_conversation(session):
             raise APIError(
@@ -486,6 +506,7 @@ class SessionLifecycleService:
         on a new box, which resumes the engine's session. Only archive and
         delete take a conversation out of the active set.
         """
+        require_execution_target(session)
         session_id = str(session["session_id"])
         _refuse_while_working(session, "terminate sandbox")
         if is_assistant_user_conversation(session):

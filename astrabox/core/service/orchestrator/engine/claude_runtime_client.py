@@ -13,10 +13,9 @@ journal through one :class:`RunnerLink` and reports it as runtime events:
   transcript, which a replacement runtime resumes.
 * A cursor is the runner process's ``boot_id`` and a position ``(seq, index)``:
   the ``index``-th event translated from journal frame ``seq``. Translation
-  depends only on the frames since the open response began, and the runner
-  keeps every frame since then (it compacts only after a ``ResultMessage``), so
-  reading the retained journal again and skipping through the position yields
-  the same events after it.
+  rebuilds the open response from the retained frames and restores native child
+  identities from the SessionStore mirror. Child Agents can outlive a Result
+  and its compacted journal prefix; their identity does not expire with it.
 """
 
 from __future__ import annotations
@@ -33,6 +32,7 @@ from claude_agent_sdk import PermissionMode
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.core.service.orchestrator.engine.base import EngineCapabilityManifest
 from astrabox.core.service.orchestrator.engine.claude_child_runs import ClaudeChildIdentities
+from astrabox.core.service.orchestrator.engine.claude_code_background import stored_child_identities
 from astrabox.core.service.orchestrator.engine.claude_interaction_codec import (
     build_claude_interaction_contract,
     claude_answer_fields,
@@ -101,7 +101,7 @@ def interaction_record(
 
 
 class _Translation:
-    """Runner frames to runtime events, holding only what the open response needs."""
+    """Runner frames to runtime events, retaining interrupted stream attribution."""
 
     def __init__(self) -> None:
         self.children = ClaudeChildIdentities()
@@ -110,6 +110,8 @@ class _Translation:
         self.response_id: str | None = None
         self.interrupt_target: str | None = None
         self.input_ids: tuple[str, ...] = ()
+        #: Interrupt ACK ends the response before its native stream can drain.
+        self.interrupted_response_id: str | None = None
         #: The open response's browser message was closed at an interaction and
         #: reopens with its next part.
         self.closed_for_interaction = False
@@ -139,7 +141,10 @@ class _Translation:
         if op == "turn_interrupted":
             if self.response_id is None or frame.get("command_id") != self.interrupt_target:
                 return []
-            return self._end("cancelled", "interrupted", usage=None, error=None, parts=[_finish("other")])
+            response_id = self.response_id
+            events = self._end("cancelled", "interrupted", usage=None, error=None, parts=[_finish("other")])
+            self.interrupted_response_id = response_id
+            return events
         if op == "error":
             error = {"code": str(frame.get("error_class") or "RUNNER_ERROR"), "message": str(frame.get("detail") or "")}
             events: list[RuntimeEvent] = [RuntimeDiagnostic(None, "claude_code.runner_error", dict(frame))]
@@ -160,6 +165,11 @@ class _Translation:
         if not isinstance(message, dict):
             return [RuntimeDiagnostic(None, "claude_code.unserialized_event", dict(frame))]
         self._observe_session_key(message)
+        if message.get("__sdk_type") == "ConversationResetMessage":
+            # session_id is outgoing; new_conversation_id is a UI identity,
+            # not a resume key. The next native message supplies the new key.
+            self.engine_session_key = None
+            self.interrupted_response_id = None
         greeting = _session_start_message(message)
         if greeting is not None:
             return self._greeting(*greeting)
@@ -172,18 +182,30 @@ class _Translation:
         ):
             emission = emission_from_translated_frame(translated)
             if isinstance(emission, InputConsumed):
+                additional_input = self.response_id is not None
                 events += [InputAdmitted(None, emission.input_id)]
                 events += self._start(
                     emission.response_message_id, "input", (emission.input_id,),
                     interrupt_target=emission.input_id,
                 )
-                events.append(ResponseOutput(None, self.response_id, emission.as_frame()))
+                consumed = emission.as_frame()
+                consumed["data"]["responseMessageId"] = self.response_id
+                # A queued input can steer the open native response. Keep its
+                # receipt in that response at the point the engine took it.
+                consumed["transient"] = not additional_input
+                events.append(ResponseOutput(None, self.response_id, consumed))
             elif isinstance(emission, PrivateDiagnostic):
                 events.append(RuntimeDiagnostic(None, f"{emission.event_type}.{emission.subtype}", emission.raw))
             elif isinstance(emission, TurnTerminal):
                 events += self._result(message, translated)
             else:
-                events += self._output(emission.as_frame())
+                tail_response_id = (
+                    self.interrupted_response_id
+                    if message.get("__sdk_type") in {"StreamEvent", "AssistantMessage"}
+                    and message.get("parent_tool_use_id") is None
+                    else None
+                )
+                events += self._output(emission.as_frame(), tail_response_id=tail_response_id)
         return events
 
     def _interaction(self, frame: dict[str, Any]) -> list[RuntimeEvent]:
@@ -230,6 +252,7 @@ class _Translation:
 
     def _result(self, message: dict[str, Any], terminal: dict[str, Any]) -> list[RuntimeEvent]:
         if self.response_id is None:
+            self.interrupted_response_id = None
             return [RuntimeDiagnostic(None, "claude_code.result_outside_response", dict(message))]
         terminal_reason = str(message.get("terminal_reason") or "").strip()
         finish_reason = str(terminal.get("finishReason") or "")
@@ -298,6 +321,7 @@ class _Translation:
         self.response_id = response_id
         self.interrupt_target = interrupt_target
         self.input_ids = input_ids
+        self.interrupted_response_id = None
         self.closed_for_interaction = False
         self.stream = ClaudeStreamCursor(child_identities=self.children)
         start = {
@@ -331,9 +355,9 @@ class _Translation:
         self.closed_for_interaction = False
         return events
 
-    def _output(self, part: dict[str, Any]) -> list[RuntimeEvent]:
+    def _output(self, part: dict[str, Any], *, tail_response_id: str | None = None) -> list[RuntimeEvent]:
         events = self._reopen()
-        events.append(ResponseOutput(None, self.response_id, part))
+        events.append(ResponseOutput(None, self.response_id or tail_response_id, part))
         return events
 
     def _reopen(self) -> list[RuntimeEvent]:
@@ -347,9 +371,12 @@ class _Translation:
         ]
 
     def _observe_session_key(self, message: dict[str, Any]) -> None:
+        # Init names a process's planned conversation before any transcript
+        # exists. Native output carries a resumable conversation's identity;
+        # SessionStore also commits its main key with the first durable batch.
+        if message.get("__sdk_type") not in {"ResultMessage", "StreamEvent"}:
+            return
         key = str(message.get("session_id") or "").strip()
-        if not key and isinstance(message.get("data"), dict):
-            key = str(message["data"].get("session_id") or "").strip()
         if key:
             self.engine_session_key = key
 
@@ -411,6 +438,7 @@ class ClaudeRuntimeClient:
         self._next_sequence: int | None = None
         self._submit_lock = asyncio.Lock()
         self._reading = False
+        self._children_restored = False
 
     @property
     def is_live(self) -> bool:
@@ -450,18 +478,37 @@ class ClaudeRuntimeClient:
             if after is not None
             else (0, _WHOLE_FRAME)
         )
-        async for frame in self._link.frames():
-            if frame.get("op") == "gap":
-                first = frame.get("first_retained_sequence")
-                if not isinstance(first, int) or first > through[0] + 1:
-                    raise RuntimeCursorExpired(f"the runner no longer retains frames after {through[0]}")
-                continue
-            seq = int(frame["seq"])
-            for index, event in enumerate(self._translation.translate(frame)):
-                if (seq, index) <= through:
+        try:
+            async for frame in self._link.frames():
+                if frame.get("op") == "gap":
+                    first = frame.get("first_retained_sequence")
+                    if not isinstance(first, int) or first > through[0] + 1:
+                        raise RuntimeCursorExpired(f"the runner no longer retains frames after {through[0]}")
                     continue
-                cursor = RuntimeCursor(self._boot_id, {"seq": seq, "index": index})
-                yield dataclasses.replace(event, cursor=cursor)
+                if not self._children_restored:
+                    await self._restore_children()
+                seq = int(frame["seq"])
+                for index, event in enumerate(self._translation.translate(frame)):
+                    if (seq, index) <= through:
+                        continue
+                    cursor = RuntimeCursor(self._boot_id, {"seq": seq, "index": index})
+                    yield dataclasses.replace(event, cursor=cursor)
+        finally:
+            self._reading = False
+
+    async def _restore_children(self) -> None:
+        """Read after the ordered replay gap, whose removed prefix is already stored."""
+        from astrabox.persistence.repository.session_read_repository import SessionReadRepository
+        from astrabox.persistence.repository.transcript_entry_repository import TranscriptEntryRepository
+
+        main = await TranscriptEntryRepository().load_subpath_entries_by_platform_session(
+            self._session_id, subpath=None
+        )
+        scopes = await SessionReadRepository().child_transcript_scopes(self._session_id)
+        children = stored_child_identities(main, scopes)
+        self._translation.children = children
+        self._translation.stream.child_identities = children
+        self._children_restored = True
 
     async def state(self) -> RuntimeState:
         snapshot = await self._link.state()
@@ -570,6 +617,9 @@ class ClaudeRuntimeClient:
 
     async def set_permission_mode(self, mode: str) -> None:
         await self._link.set_permission_mode(mode)
+
+    async def bind_environment(self, environment: dict[str, str]) -> None:
+        await self._link.apply_flag_settings({"env": environment})
 
     async def stop_child_run(self, control_id: str) -> None:
         await self._link.stop_task(control_id)

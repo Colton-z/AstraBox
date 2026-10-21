@@ -81,6 +81,7 @@ from astrabox.core.service.orchestrator.runtime.packages import (
     package_egress_hosts,
 )
 from astrabox.providers.sandbox_image import sandbox_boot_env
+from astrabox.config.settings import get_settings
 from astrabox.seams.egress_credentials import (
     EGRESS_HELD_PLACEHOLDER,
     ModelEgressCredential,
@@ -335,6 +336,7 @@ def resolve_model_credential_delivery(
     required_hosts: tuple[str, ...] = (),
     mcp_hosts: tuple[str, ...] = (),
     slot_id: str | None = None,
+    workload_id: str | None = None,
     substitutions: tuple[ModelEgressCredentialSubstitution, ...] = (),
 ) -> tuple[str, SandboxNetworkPolicy, SandboxEgressCredentialPlan | None]:
     """Resolve independent networking and credential-delivery inputs.
@@ -351,16 +353,21 @@ def resolve_model_credential_delivery(
     carries a substitution from it to a per-slot vault credential (written
     with the shared key, so a first call racing the claim's replace still
     authenticates), and the claim swaps that credential for a Session-scoped
-    key without touching the box. Slot preparation is refused outright when
+    key without touching the box. Platform-owned slot preparation is refused when
     the vault is off — that path would fix the real key inside an unclaimed
     box — and when the credential rides a non-Authorization header, because
     header substitution is the only mechanism that can re-point an already
-    -running child's identity.
+    -running child's identity. Provider-owned model delivery instead supplies
+    only a workload placeholder and leaves its protected binding to Session
+    preparation, independently of the platform Vault switch.
     """
 
+    from astrabox.seams.runtime_preparation import runtime_preparation_plan
+
+    preparation = runtime_preparation_plan(template)
     model_api_key = str(credential.access.credential or "").strip()
     model_base_url = str(credential.access.base_url or "").strip()
-    if not model_api_key or not model_base_url:
+    if not model_base_url or (preparation.model_credential_delivery == "platform" and not model_api_key):
         raise APIError(
             code=credential.missing_code,
             message=credential.missing_message,
@@ -384,9 +391,13 @@ def resolve_model_credential_delivery(
             f"sandbox backend {backend_adapter.name!r} cannot enforce the "
             f"{engine_kind} Environment's networking contract"
         )
-    from astrabox.seams.runtime_preparation import runtime_preparation_plan
-
-    if target_slot and not vault_enabled and runtime_preparation_plan(template).session_bound:
+    if preparation.model_credential_delivery == "provider":
+        identity = target_slot or str(workload_id or "").strip()
+        if not identity:
+            raise APIError(code="RUNTIME_PREPARATION_FAILED", status_code=409,
+                           message="Provider model delivery requires the runtime's workload identity")
+        return workload_model_placeholder(identity), network_policy, additional_vault_write
+    if target_slot and not vault_enabled and preparation.session_bound:
         return "", network_policy, None
     if target_slot and not vault_enabled:
         raise APIError(
@@ -806,6 +817,15 @@ async def _assemble_provisioned_sandbox(
     anything asks it to rejoin, wherever its home is.
     """
 
+    from astrabox.seams.runtime_preparation import runtime_preparation_plan
+
+    if runtime_preparation_plan(template).model_credential_delivery == "provider":
+        model_identity = (
+            str(prepared_manifest["slot_id"])
+            if prepared_manifest is not None and prepared_manifest["engine_initialized"]
+            else session_id
+        )
+        runtime_identity = {**dict(runtime_identity or {}), "model_credential_id": model_identity}
     resume_key = str(getattr(workspace_plan, "resume_engine_session_key", "") or "").strip()
     honoured_resume_key: str | None = resume_key or None
     if session_log is not None and resume_key:
@@ -1067,6 +1087,7 @@ def engine_create_spec(
     return SandboxCreateSpec(
         session_id=session_id,
         assignment_id=assignment_id,
+        execution_target=get_settings().execution_target,
         resource_limits=resource_limits,
         resource_requests=resource_requests,
         image=resolve_runtime_template_name(template),
@@ -1636,6 +1657,9 @@ async def claim_prepared_engine_sandbox(
     re-point, workspace proof, transcript target, and prepared-runner endpoint.
     An adapter receives only the resulting box and its own opaque evidence.
     """
+    from astrabox.seams.runtime_preparation import runtime_preparation_plan
+    from astrabox.core.service.orchestrator.agent.client_pool import prepared_capacity
+
 
     if not artifact_tools_enabled(getattr(template, "session_source_type", None)):
         # Prepared native processes froze personal artifact tools before any Session existed.
@@ -1652,7 +1676,7 @@ async def claim_prepared_engine_sandbox(
         return None
     agent_id = str(getattr(template, "agent_id", "") or "").strip()
     generation = str(getattr(template, "runtime_generation", "") or "").strip()
-    if not agent_id or not generation or int(getattr(template, "prepared_capacity", 0) or 0) <= 0:
+    if not agent_id or not generation or (prepared_claim is None and prepared_capacity(template) <= 0):
         return None
 
     from astrabox.core.service.orchestrator.agent.prepared_boxes import (
@@ -1917,7 +1941,10 @@ async def claim_prepared_engine_sandbox(
                 else {}
             ),
         )
-    if bool(claimed.get("gateway_substitution")):
+    if bool(claimed.get("gateway_substitution")) or (
+        claimed["engine_initialized"]
+        and runtime_preparation_plan(template).model_credential_delivery == "provider"
+    ):
         credential = workload_model_placeholder(str(claimed.get("slot_id") or ""))
     if not claimed["engine_initialized"]:
         await write_engine_env_file(
@@ -2097,6 +2124,9 @@ async def provision_engine_sandbox(
     from astrabox.seams.sandbox import sandbox_for_name
     from astrabox.seams.runtime_preparation import runtime_preparation_plan
 
+    persisted_backend = await manager.resolve_runtime_sandbox_backend(
+        session_id, workspace_plan=workspace_plan
+    )
     composed = {request.credential_env_var, request.cwd_env_var} - {None}
     conflicting = sorted(composed & set(request.env))
     if conflicting:
@@ -2117,9 +2147,6 @@ async def provision_engine_sandbox(
 
         await reconcile_runtime_generation(template, runtime_manager=manager)
 
-    persisted_backend = await manager.resolve_runtime_sandbox_backend(
-        session_id, workspace_plan=workspace_plan
-    )
     backend_adapter = sandbox_for_name(persisted_backend)
 
     # Recovery precedes every placement or pool claim. A worker may have
@@ -2240,6 +2267,7 @@ async def provision_engine_sandbox(
             and not runtime_preparation_plan(template).session_bound
             else None
         ),
+        workload_id=session_id,
     )
     vault_write, runtime_env = await resolve_session_environment_credentials(
         manager,

@@ -1,4 +1,4 @@
-"""Each sandbox backend's quota ledger: its inventory and its reservations, one row per box.
+"""Each execution target and sandbox backend's quota ledger: its inventory and its reservations, one row per box.
 
 A backend's usage is what its last inventory charges plus the reservations for
 boxes that inventory does not charge. Two operations can raise that usage and
@@ -17,6 +17,8 @@ from typing import Any, TypeVar
 
 from sqlalchemy import (
     BigInteger,
+    ColumnElement,
+    Table,
     Select,
     and_,
     cast,
@@ -32,6 +34,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from astrabox.config.settings import get_settings, validate_execution_target
 from astrabox.persistence.sql import execute, fetch_all, fetch_one, fetch_value, to_iso, transaction
 from astrabox.persistence.sql.statements import insert_if_absent_primary_key, upsert_primary_key
 from astrabox.persistence.sql.models.sandboxes import (
@@ -55,17 +58,22 @@ class InventoryNotTaken(Exception):
     """
 
 
+def _backend_owner(table: Table, backend: str, execution_target: str) -> ColumnElement[bool]:
+    return and_(table.c.backend == backend, table.c.execution_target == execution_target)
+
+
 def _held_by_inventory() -> Any:
     """Whether the backend's inventory charges a reservation's box itself."""
     box = _INVENTORY.alias("held_box")
     return exists().where(
         box.c.backend == _RESERVATIONS.c.backend,
+        box.c.execution_target == _RESERVATIONS.c.execution_target,
         box.c.sandbox_id == _RESERVATIONS.c.sandbox_id,
         box.c.released.is_(False),
     )
 
 
-def _usage_statement(backend: str) -> Select[Any]:
+def _usage_statement(backend: str, *, execution_target: str) -> Select[Any]:
     """The backend's usage: the boxes its inventory charges plus pending reservations."""
     charged = (
         select(
@@ -73,7 +81,7 @@ def _usage_statement(backend: str) -> Select[Any]:
             cast(func.coalesce(func.sum(_INVENTORY.c.memory_bytes), 0), BigInteger).label("memory"),
             cast(func.coalesce(func.sum(_INVENTORY.c.cpu_millicores), 0), BigInteger).label("cpu"),
         )
-        .where(_INVENTORY.c.backend == backend, _INVENTORY.c.released.is_(False))
+        .where(_backend_owner(_INVENTORY, backend, execution_target), _INVENTORY.c.released.is_(False))
         .subquery()
     )
     pending = (
@@ -87,7 +95,7 @@ def _usage_statement(backend: str) -> Select[Any]:
             ),
             func.count(case((_RESERVATIONS.c.state == "creating", 1))).label("creating"),
         )
-        .where(_RESERVATIONS.c.backend == backend, ~_held_by_inventory())
+        .where(_backend_owner(_RESERVATIONS, backend, execution_target), ~_held_by_inventory())
         .subquery()
     )
     return select(
@@ -99,6 +107,11 @@ def _usage_statement(backend: str) -> Select[Any]:
 
 
 class SandboxQuotaRepository:
+    def __init__(self, *, execution_target: str | None = None) -> None:
+        self.execution_target = validate_execution_target(
+            get_settings().execution_target if execution_target is None else execution_target
+        )
+
     async def admit(
         self,
         backend: str,
@@ -116,7 +129,9 @@ class SandboxQuotaRepository:
         """
 
         async def work(conn: AsyncConnection) -> T | None:
-            ledger = select(_CAPACITY.c.inventory_at).where(_CAPACITY.c.backend == backend)
+            ledger = select(_CAPACITY.c.inventory_at).where(
+                _backend_owner(_CAPACITY, backend, self.execution_target)
+            )
             if refuse is not None:
                 # FOR NO KEY UPDATE orders admissions and inventory folds on the
                 # ledger row, and lets reservation inserts take the key-share
@@ -128,11 +143,15 @@ class SandboxQuotaRepository:
             if refuse is not None:
                 # A statement after the lock reads every reservation committed
                 # by the admission that held it before.
-                usage = (await conn.execute(_usage_statement(backend))).one()
+                usage = (await conn.execute(
+                    _usage_statement(backend, execution_target=self.execution_target)
+                )).one()
                 refusal = refuse(dict(usage._mapping))
                 if refusal is not None:
                     return refusal
-            await conn.execute(insert(_RESERVATIONS).values(backend=backend, **reservation))
+            await conn.execute(insert(_RESERVATIONS).values({
+                **reservation, "backend": backend, "execution_target": self.execution_target,
+            }))
             return None
 
         return await transaction(work)
@@ -140,14 +159,17 @@ class SandboxQuotaRepository:
     async def mark_created(self, backend: str, key: str, sandbox_id: str) -> None:
         await execute(
             update(_RESERVATIONS)
-            .where(_RESERVATIONS.c.backend == backend, _RESERVATIONS.c.reservation_key == key)
+            .where(
+                _backend_owner(_RESERVATIONS, backend, self.execution_target),
+                _RESERVATIONS.c.reservation_key == key,
+            )
             .values(state="created", sandbox_id=sandbox_id, box_created_at=func.now())
         )
 
     async def release(self, backend: str, key: str) -> None:
         await execute(
             delete(_RESERVATIONS).where(
-                _RESERVATIONS.c.backend == backend, _RESERVATIONS.c.reservation_key == key
+                _backend_owner(_RESERVATIONS, backend, self.execution_target), _RESERVATIONS.c.reservation_key == key
             )
         )
 
@@ -179,17 +201,22 @@ class SandboxQuotaRepository:
         which case nothing changes.
         """
         listed = {str(box["sandbox_id"]): box for box in boxes}
-        rows = [{"backend": backend, **box, "sandbox_id": key} for key, box in listed.items()]
+        rows = [
+            {**box, "backend": backend, "sandbox_id": key, "execution_target": self.execution_target}
+            for key, box in listed.items()
+        ]
 
         async def work(conn: AsyncConnection) -> int | None:
             await conn.execute(
-                insert_if_absent_primary_key(conn, _CAPACITY, {"backend": backend})
+                insert_if_absent_primary_key(conn, _CAPACITY, {
+                    "execution_target": self.execution_target, "backend": backend,
+                })
             )
             newer = (
                 await conn.execute(
                     update(_CAPACITY)
                     .where(
-                        _CAPACITY.c.backend == backend,
+                        _backend_owner(_CAPACITY, backend, self.execution_target),
                         or_(
                             _CAPACITY.c.inventory_at.is_(None),
                             _CAPACITY.c.inventory_at < taken_at,
@@ -202,7 +229,7 @@ class SandboxQuotaRepository:
                 return None
             await conn.execute(
                 delete(_INVENTORY).where(
-                    _INVENTORY.c.backend == backend,
+                    _backend_owner(_INVENTORY, backend, self.execution_target),
                     _INVENTORY.c.sandbox_id.not_in(list(listed)),
                 )
             )
@@ -210,7 +237,9 @@ class SandboxQuotaRepository:
                 # Every inventory writer holds this ledger, so the comparison
                 # and upsert cannot lose a concurrent inventory change.
                 existing = {row["sandbox_id"]: row for row in (
-                    await conn.execute(select(_INVENTORY).where(_INVENTORY.c.backend == backend))
+                    await conn.execute(select(_INVENTORY).where(
+                        _backend_owner(_INVENTORY, backend, self.execution_target)
+                    ))
                 ).mappings()}
                 columns = ("cpu_millicores", "memory_bytes", "released", "state", "session_id")
                 changed = [row for row in rows if row["sandbox_id"] not in existing or any(
@@ -223,12 +252,12 @@ class SandboxQuotaRepository:
             # Charged by the inventory from now on: moved, not released.
             await conn.execute(
                 delete(_RESERVATIONS).where(
-                    _RESERVATIONS.c.backend == backend, _held_by_inventory()
+                    _backend_owner(_RESERVATIONS, backend, self.execution_target), _held_by_inventory()
                 )
             )
             released = await conn.execute(
                 delete(_RESERVATIONS).where(
-                    _RESERVATIONS.c.backend == backend,
+                    _backend_owner(_RESERVATIONS, backend, self.execution_target),
                     or_(
                         and_(
                             _RESERVATIONS.c.state == "created",
@@ -248,18 +277,18 @@ class SandboxQuotaRepository:
     async def inventory_box(self, backend: str, sandbox_id: str) -> dict[str, Any] | None:
         return await fetch_one(
             select(_INVENTORY).where(
-                _INVENTORY.c.backend == backend, _INVENTORY.c.sandbox_id == sandbox_id
+                _backend_owner(_INVENTORY, backend, self.execution_target), _INVENTORY.c.sandbox_id == sandbox_id
             )
         )
 
     async def ledger(self, backend: str) -> dict[str, Any]:
         """The backend's usage and when its inventory was taken, read together."""
-        usage = _usage_statement(backend).subquery()
+        usage = _usage_statement(backend, execution_target=self.execution_target).subquery()
         row = await fetch_one(
             select(
                 usage,
                 select(_CAPACITY.c.inventory_at)
-                .where(_CAPACITY.c.backend == backend)
+                .where(_backend_owner(_CAPACITY, backend, self.execution_target))
                 .scalar_subquery()
                 .label("inventory_at"),
             )
@@ -270,7 +299,7 @@ class SandboxQuotaRepository:
     async def list_inventory(self, backend: str) -> list[dict[str, Any]]:
         return await fetch_all(
             select(_INVENTORY)
-            .where(_INVENTORY.c.backend == backend)
+            .where(_backend_owner(_INVENTORY, backend, self.execution_target))
             .order_by(_INVENTORY.c.sandbox_id)
         )
 
@@ -278,7 +307,7 @@ class SandboxQuotaRepository:
         """Reservations whose box the inventory does not charge, oldest first."""
         rows = await fetch_all(
             select(_RESERVATIONS)
-            .where(_RESERVATIONS.c.backend == backend, ~_held_by_inventory())
+            .where(_backend_owner(_RESERVATIONS, backend, self.execution_target), ~_held_by_inventory())
             .order_by(_RESERVATIONS.c.reserved_at, _RESERVATIONS.c.reservation_key)
         )
         return [{**row, "reserved_at": to_iso(row["reserved_at"])} for row in rows]

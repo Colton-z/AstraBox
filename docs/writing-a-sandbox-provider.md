@@ -232,3 +232,12 @@ another message.
 - [OpenSandbox backend](providers/opensandbox.md) — the built-in provider
 - [Container Reference](container-reference.md) — what a sandbox image carries
 - [Embed AstraBox](embedding.md) — entry points and startup
+
+Execution ownership is part of provider interface API9. Every `SandboxCreateSpec`
+carries `execution_target`. Add `execution_target_metadata(spec.execution_target)`
+to the provider-owned create metadata before allocating a resource, and preserve
+that mapping through adoption and inventory readback. Its opaque value uses the
+complete target digest in a label-safe representation; the readable target name
+lives in the platform records. Do not replace or truncate it. Inventory-based
+cleanup selects the installation and this token together, because a Session
+binding can still be absent while creation is in progress.

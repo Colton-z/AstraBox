@@ -276,6 +276,12 @@ saves native state before releasing compute; preserving its workspace files
 also requires persistent workspace storage. See [Files](files.md) and
 [OpenSandbox](providers/opensandbox.md).
 
+Runtime accounts can install user commands in `$HOME/.local/bin`, which is on
+their command search path. Bootstrap gives newly created `.local` and
+`.local/bin` directories to that account and preserves existing ownership.
+Installing a command there does not itself provide persistence after sandbox
+replacement; workspace storage and native SessionStore have their own scopes.
+
 When persistent workspaces are enabled, the storage provider supplies their backing
 filesystem, and the sandbox backend's workspace route brings it into each
 sandbox. The bundled OpenSandbox backend's route is a mergerfs view per
@@ -338,13 +344,22 @@ Two separate choices determine how work is distributed:
 
 | Choice | What is shared |
 | --- | --- |
-| AstraBox backend replicas | API and orchestration replicas use the same product database, credential configuration, and reachable sandbox service. Saved Session and native state are available independently of a replica's local memory. One replica at a time holds each Session's connection to its runtime; when it stops, another replica takes the Session over. |
+| AstraBox backend replicas | API and orchestration replicas within one execution target use the same product database, credential configuration, and reachable sandbox service. Saved Session and native state are available independently of a replica's local memory. One replica at a time holds each Session's connection to its runtime; when it stops, another replica takes the Session over. |
 | Sandbox worker nodes | The sandbox service places compute on its workers. Persistent workspaces spanning workers require shared backing storage; each mergerfs view runs beside its consuming sandbox. |
 
 Increasing backend replicas does not make a node-local workspace filesystem
 shared. Configure the two independently: database and service access for the
 backend replicas, and suitable compute and workspace storage for sandbox
 workers.
+
+One product database defines one logical control plane. Physical execution
+targets share its definitions, authorization and history while retaining their
+own compute ledgers and worker ownership. Replicas within one target use
+compatible runtime settings and callbacks; a different target does not reconcile
+or clean up their compute. Native SessionStore custody and runtime transport
+remain target-owned core work even when automatic triggers are disabled. See
+[sharing a product database](deploy.md#share-a-product-database) for the
+configuration and rollout requirements.
 
 ## Extensions {#plugin-interfaces}
 

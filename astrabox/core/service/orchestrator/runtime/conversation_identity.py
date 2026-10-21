@@ -194,12 +194,14 @@ establish_conversation_identity_root() {
   # The CLI's scratch space for tool I/O, and where the git askpass helper lands.
   create_workload_dir "$tmpdir"
 
-  # Platform-installed, root-owned: plugin symlinks into the shared cache and
-  # the deploy key. The key file
+  # User-installed commands belong to the workload, as does their XDG parent.
+  create_workload_dir "$home/.local"
+  create_workload_dir "$home/.local/bin"
+
+  # The deploy key's directory stays root-owned. The key file
   # itself is written by root and handed to the workload at 0600 because ssh
   # demands that; the directory holding it is not the workload's to refill.
   create_platform_dir "$home/.ssh"
-  create_platform_dir "$home/.local/bin"
 }"""
 
 _CONVERSATION_SKILLS_BOOTSTRAP_FUNCTIONS = r"""replace_skills_target_with_symlink() {

@@ -733,6 +733,13 @@ export async function listAgents(): Promise<AgentConfig[]> {
   return expectList<AgentConfig>(await send((wire) => client.GET('/api/v1/agents', wire)), '/agents');
 }
 
+export async function getAgent(agentId: string): Promise<AgentConfig> {
+  return asDeclared<AgentConfig>(await send((wire) => client.GET('/api/v1/agents/{agent_id}', {
+    ...wire,
+    params: { path: { agent_id: agentId } },
+  })));
+}
+
 /** One page of the Agent list, narrowed and counted by the server. */
 export async function listAgentsPage(query: ListPageQuery = {}): Promise<AgentListPage> {
   return expectPage<AgentListPage>(
@@ -1661,8 +1668,8 @@ export async function replayPersonalScheduleRun(deploymentId: string, runId: str
 
 export async function listChannelProviders(): Promise<ChannelProviderDescriptor[]> {
   return expectList<ChannelProviderDescriptor>(
-    await send((wire) => client.GET('/api/v1/admin/channel-providers', { ...wire })),
-    '/admin/channel-providers',
+    await send((wire) => client.GET('/api/v1/channel-providers', { ...wire })),
+    '/channel-providers',
   );
 }
 

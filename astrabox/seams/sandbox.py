@@ -64,6 +64,8 @@ dragging the host in.
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import time
 import contextlib
 import inspect
@@ -418,6 +420,11 @@ class SandboxCreateSpec:
     publishing its sandbox id. It is not the Session id: a Session may replace
     its sandbox, and each replacement command receives another assignment.
 
+    ``execution_target`` declares the physical owner before any database binding
+    can be published. Providers persist :func:`execution_target_metadata` in
+    create metadata and preserve it on adoption. Inventory maintenance uses this
+    positive ownership fact even while creation is still in progress.
+
     ``resource_limits`` and ``resource_requests`` are the platform's explicit
     workload envelope. Both are required and non-empty: letting either fall
     through would hand scheduling policy to a provider default and, on
@@ -463,6 +470,7 @@ class SandboxCreateSpec:
 
     session_id: str
     assignment_id: str
+    execution_target: str
     resource_limits: dict[str, str]
     resource_requests: dict[str, str]
     image: str | None = None
@@ -643,6 +651,22 @@ SANDBOX_ASSIGNMENT_ID_METADATA_KEY = "astrabox.assignment-id"
 #: it found by listing the backend, rather than by a row in its own database,
 #: acts only on boxes carrying this installation's value.
 SANDBOX_INSTALLATION_METADATA_KEY = "astrabox.installation"
+
+#: Physical execution ownership, present before a create can publish its database binding.
+SANDBOX_EXECUTION_TARGET_METADATA_KEY = "astrabox.execution-target"
+
+
+def execution_target_metadata(execution_target: str) -> dict[str, str]:
+    """The full target identity as an opaque, label-safe ownership token.
+
+    A backend carries this mapping unchanged from creation through adoption.
+    Inventory sweeps use the same token before touching unbound resources.
+    The readable target name remains on the platform's persistent records.
+    """
+    if not execution_target or execution_target != execution_target.strip():
+        raise ValueError("sandbox execution target must be non-empty and unpadded")
+    token = base64.b32encode(hashlib.sha256(execution_target.encode()).digest())
+    return {SANDBOX_EXECUTION_TARGET_METADATA_KEY: token.decode().rstrip("=").lower()}
 
 #: The diagnostic scopes the inventory face accepts. Each names one report a
 #: backend may be able to produce about one sandbox; nothing here promises a
@@ -2685,6 +2709,8 @@ __all__ = [
     "SANDBOX_MANAGED_BY_METADATA_VALUE",
     "SANDBOX_ASSIGNMENT_ID_METADATA_KEY",
     "SANDBOX_INSTALLATION_METADATA_KEY",
+    "SANDBOX_EXECUTION_TARGET_METADATA_KEY",
+    "execution_target_metadata",
     "SANDBOX_SESSION_ID_METADATA_KEY",
     "SandboxClaim",
     "SandboxDestruction",

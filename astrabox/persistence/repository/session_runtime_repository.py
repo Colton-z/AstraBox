@@ -40,6 +40,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from astrabox.config.settings import get_settings, validate_execution_target
 from astrabox.core.model import SessionState
 from astrabox.core.service.orchestrator.engine.interaction_contract import public_interaction_view
 from astrabox.persistence.sql import (
@@ -214,6 +215,11 @@ class HistoryEntry:
 
 
 class SessionRuntimeRepository:
+    def __init__(self, *, execution_target: str | None = None) -> None:
+        self.execution_target = validate_execution_target(
+            get_settings().execution_target if execution_target is None else execution_target
+        )
+
     # -- inputs ------------------------------------------------------------
 
     async def accept_input(
@@ -459,11 +465,16 @@ class SessionRuntimeRepository:
         that is still running are refused from this point on. A workspace's
         own Session gets no lease (``_WORKSPACE_OWN``).
         """
-        if await fetch_value(
-            select(_SESSIONS.c.session_id).where(_SESSIONS.c.session_id == session_id, _WORKSPACE_OWN)
-        ) is not None:
-            return None
         async def claim(conn: AsyncConnection) -> ReaderLease | None:
+            eligible = await conn.scalar(
+                select(_SESSIONS.c.session_id).where(
+                    _SESSIONS.c.session_id == session_id,
+                    _SESSIONS.c.execution_target == self.execution_target,
+                    ~_WORKSPACE_OWN,
+                )
+            )
+            if eligible is None:
+                return None
             # Seed the missing row without changing an existing incarnation.
             # The conditional update owns the row through the generation read.
             await conn.execute(insert_if_absent_primary_key(
@@ -559,7 +570,10 @@ class SessionRuntimeRepository:
         )
         rows = await fetch_all(
             select(_SESSIONS.c.session_id)
-            .where(~reader_live, ~_WORKSPACE_OWN, or_(ready, responses_open, ended_holding))
+            .where(
+                _SESSIONS.c.execution_target == self.execution_target,
+                ~reader_live, ~_WORKSPACE_OWN, or_(ready, responses_open, ended_holding),
+            )
             .limit(limit)
         )
         return [str(row["session_id"]) for row in rows]

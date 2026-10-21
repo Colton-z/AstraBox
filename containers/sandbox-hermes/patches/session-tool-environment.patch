@@ -1,0 +1,221 @@
+--- a/gateway/session_context.py
++++ b/gateway/session_context.py
+@@ -56,6 +56,30 @@
+ # or child-process export: a bound id alone cannot authorize detached delivery.
+ _SESSION_HISTORY_DELIVERY = ContextVar("HERMES_SESSION_HISTORY_DELIVERY", default=_UNSET)
+
++# Tool children inherit this task-local mapping, never the resident process.
++_SESSION_TOOL_ENVIRONMENT = ContextVar("HERMES_SESSION_TOOL_ENVIRONMENT", default=None)
++
++
++def validate_tool_environment(value: dict[str, str]) -> dict[str, str]:
++    """Validate caller context without allowing native credentials or identity overrides."""
++    import re
++    from tools.environments.local_env_policy import _is_hermes_internal_secret, _is_provider_env_blocklisted
++    if not isinstance(value, dict):
++        raise ValueError("tool environment must be a string mapping")
++    for key, item in value.items():
++        if (not isinstance(key, str) or not isinstance(item, str)
++                or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) or "\0" in item
++                or key.upper().startswith(("HERMES_", "_HERMES_"))
++                or key.upper() in {"HOME", "USER", "LOGNAME", "PATH", "PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "CONDA_PREFIX"}
++                or _is_hermes_internal_secret(key) or _is_provider_env_blocklisted(key)):
++            raise ValueError("tool environment conflicts with the native runtime")
++    return dict(value)
++
++
++def get_tool_environment() -> dict[str, str]:
++    """Current Session's tool context; callers cannot mutate the bound mapping."""
++    return dict(_SESSION_TOOL_ENVIRONMENT.get() or {})
++
+ # Cron auto-delivery vars, set per-job in run_job() so concurrent jobs don't clobber.
+ _CRON_AUTO_DELIVER_PLATFORM = ContextVar("HERMES_CRON_AUTO_DELIVER_PLATFORM", default=_UNSET)
+ _CRON_AUTO_DELIVER_CHAT_ID = ContextVar("HERMES_CRON_AUTO_DELIVER_CHAT_ID", default=_UNSET)
+@@ -120,6 +144,7 @@
+     browser_control_transport_family: str = "", cwd: str = "", async_delivery: bool = True,
+     ui_session_id: str = "", cron_session: Any = _UNSET, parent_chat_id: str = "",
+     session_history_delivery: str | None = None,
++    tool_environment: Any = _UNSET,
+ ) -> list:
+     """Set all session context variables and return reset tokens.  Call
+     ``clear_session_vars(tokens)`` in a ``finally``; not nestable, clearing resets every var
+@@ -140,6 +165,8 @@
+     tokens = [var.set(value) for var, value in zip(_SESSION_VARS, values)]
+     tokens.append(_SESSION_ASYNC_DELIVERY.set(bool(async_delivery)))
+     tokens.append(_SESSION_HISTORY_DELIVERY.set(_UNSET if session_history_delivery is None else session_history_delivery))
++    if tool_environment is not _UNSET:
++        tokens.append(_SESSION_TOOL_ENVIRONMENT.set(dict(tool_environment)))
+     _runtime_cwd("set_session_cwd", cwd)
+     return tokens
+
+@@ -154,6 +181,7 @@
+         var.set("")
+     _SESSION_ASYNC_DELIVERY.set(_UNSET)
+     _SESSION_HISTORY_DELIVERY.set(_UNSET)
++    _SESSION_TOOL_ENVIRONMENT.set(None)
+     _runtime_cwd("clear_session_cwd")
+
+
+@@ -167,6 +195,7 @@
+         var.set(_UNSET)
+     _SESSION_ASYNC_DELIVERY.set(_UNSET)
+     _SESSION_HISTORY_DELIVERY.set(_UNSET)
++    _SESSION_TOOL_ENVIRONMENT.set(None)
+     _runtime_cwd("clear_session_cwd")
+
+
+--- a/tui_gateway/contracts/sessions.py
++++ b/tui_gateway/contracts/sessions.py
+@@ -116,6 +116,8 @@
+
+
+ class SessionCreateParams(ProfileParams):
++    tool_environment: dict[str, str] | None = None
++
+     cols: int | None = None
+     source: str | None = None
+     cwd: str | None = None
+@@ -172,6 +174,8 @@
+     """``session_id`` is the STORED id (or an exact title); the reply's ``session_id`` is the runtime id."""
+
+     cols: int | None = None
++    tool_environment: dict[str, str] | None = None
++
+     source: str | None = None
+     lazy: bool = False
+     defer_history: bool = False
+--- a/tui_gateway/methods_session.py
++++ b/tui_gateway/methods_session.py
+@@ -75,9 +75,9 @@
+     return _session_profile_runtime_scope({"profile_home": str(profile_home) if profile_home else None})
+
+
+-def _make_agent_in_context(sid: str, key: str, **kwargs):
++def _make_agent_in_context(sid: str, key: str, *, tool_environment=None, **kwargs):
+     """``_make_agent`` with the session context bound for the build and cleared after."""
+-    tokens = _set_session_context(key, cwd=kwargs.get("cwd_override"))
++    tokens = _set_session_context(key, cwd=kwargs.get("cwd_override"), tool_environment=tool_environment)
+     try:
+         return _make_agent(sid, key, session_id=key, **kwargs)
+     finally:
+@@ -334,6 +334,12 @@
+ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> dict:
+     """``session.create``; ``copy_parent_history`` (``session.branch_stored``) reads the parent's
+     transcript server-side and omits it from the reply."""
++    if params.get("tool_environment") is not None:
++        from gateway.session_context import validate_tool_environment
++        try:
++            params["tool_environment"] = validate_tool_environment(params["tool_environment"])
++        except ValueError:
++            return _err(rid, -32602, "invalid Session tool environment")
+     # ``profile`` (app-global remote mode): stored so the build and every turn re-bind HERMES_HOME.
+     profile_home = _profile_home(profile := (params.get("profile") or "").strip() or None)
+     # Reject an incoherent model×provider pair BEFORE any state exists: minting it only defers the
+@@ -371,6 +377,7 @@
+     now = time.time()
+     with _sessions_lock:
+         _sessions[sid] = {
++            "tool_environment": dict(params.get("tool_environment") or {}),
+             "agent": None, "agent_error": None, "agent_ready": threading.Event(), "attached_images": [],
+             "close_on_disconnect": _flag(params, "close_on_disconnect"),
+             "active_session_lease": None,  # claimed lazily on the first turn (_ensure_active_session_slot)
+@@ -575,6 +582,7 @@
+             self.target, cols=self.cols, cwd=cwd, history=history, lease=None, source=source,
+             close_on_disconnect=_flag(self.params, "close_on_disconnect"),
+             profile_home=self.profile_home, explicit_cwd=bool(self.profile_resume_cwd), **extra)
++        record["tool_environment"] = dict(self.params.get("tool_environment") or {})
+         if follows_profile:
+             record.update(
+                 follow_profile_config=True,
+@@ -634,6 +642,8 @@
+         _release_db(ctx.db)
+     with _session_resume_lock:
+         if (refusal := _reattach_refusal(ctx.rid, live_sid, live)) is not None:
++            return refusal
++        if (refusal := _replace_tool_environment(ctx, live)) is not None:
+             return refusal
+         live["last_active"] = time.time()
+         if (transport := current_transport()) is not None:
+@@ -747,9 +757,20 @@
+         return _resume_reuse_live_locked(ctx, sid, session)
+
+
++def _replace_tool_environment(ctx: _Resume, session: dict) -> dict | None:
++    if ctx.params.get("tool_environment") is not None:
++        environment = dict(ctx.params["tool_environment"])
++        if session.get("running") and environment != session.get("tool_environment", {}):
++            return _err(ctx.rid, 4009, "cannot replace tool environment during an active turn")
++        session["tool_environment"] = environment
++    return None
++
++
+ def _resume_reuse_live_locked(ctx: _Resume, sid: str, session: dict) -> dict:
+     """Reuse with _session_resume_lock already held (including the eager double-check)."""
+     if (refusal := _reattach_refusal(ctx.rid, sid, session)) is not None:
++        return refusal
++    if (refusal := _replace_tool_environment(ctx, session)) is not None:
+         return refusal
+     _cancel_ws_orphan_reap(sid)  # unconditionally: the fast path must never race the reap Timer
+     payload = _live_session_payload(sid, session, cols=ctx.cols, touch=True, omit_messages=ctx.omit_messages,
+@@ -863,6 +884,7 @@
+             stored_runtime_overrides = _stored_session_runtime_overrides(ctx.found)
+             agent = _make_agent_in_context(
+                 sid, ctx.target, session_db=ctx.db, platform_override=source,
++                tool_environment=dict(ctx.params.get("tool_environment") or {}),
+                 cwd_override=ctx.profile_resume_cwd or None,
+                 context_cwd_is_launch_artifact=(source in _LAUNCH_CWD_NOT_A_WORKSPACE and not ctx.profile_resume_cwd),
+                 auth_user_id=_transport_auth_user_id(current_transport()), **stored_runtime_overrides)
+@@ -886,6 +908,7 @@
+                     _transfer_db_to_agent(agent, ctx.db)
+                 ctx.owns_db = False
+             if (session := _sessions.get(sid)) is not None:
++                session["tool_environment"] = dict(ctx.params.get("tool_environment") or {})
+                 if stored_runtime_overrides.get("model_override") is not None:
+                     session["model_override"] = stored_runtime_overrides["model_override"]
+                 model_config = _parse_model_config(ctx.found.get("model_config"), quiet=True)
+@@ -916,6 +939,12 @@
+ def _(rid, params: dict) -> dict:
+     if not (target := params.get("session_id", "")):
+         return _err(rid, 4006, "session_id required")
++    if params.get("tool_environment") is not None:
++        from gateway.session_context import validate_tool_environment
++        try:
++            params["tool_environment"] = validate_tool_environment(params["tool_environment"])
++        except ValueError:
++            return _err(rid, -32602, "invalid Session tool environment")
+     ctx = _Resume(rid, params, target)
+     # Profile scope: a DEDICATED handle we own until the agent takes it; else the shared launch db.
+     ctx.db, ctx.owns_db = _profile_session_db(ctx.profile_home)
+--- a/tui_gateway/server.py
++++ b/tui_gateway/server.py
+@@ -1270,7 +1270,7 @@
+         return next((s for s in list(_sessions.values()) if s.get("session_key") == session_key), None)
+
+
+-def _set_session_context(session_key: str, cwd: str | None = None, *, ui_session_id: str = "") -> list:
++def _set_session_context(session_key: str, cwd: str | None = None, *, ui_session_id: str = "", tool_environment=None) -> list:
+     with contextlib.suppress(Exception):
+         from gateway.session_context import set_session_vars
+         sess = _session_for_key(session_key) if session_key else None
+@@ -1297,7 +1297,9 @@
+             profile=profile,
+             browser_control_principal=browser_control_principal,
+             browser_control_transport_family=browser_control_transport_family, cwd=resolved,
+-            ui_session_id=ui_session_id, cron_session="")
++            ui_session_id=ui_session_id, cron_session="",
++            tool_environment=(tool_environment if tool_environment is not None else
++                              dict((sess or {}).get("tool_environment") or {})))
+     return []
+
+
+--- a/tools/environments/local.py
++++ b/tools/environments/local.py
+@@ -277,6 +277,8 @@
+     """Guards shared by every spawn surface: profile-home propagation, session-context
+     bridging, Hermes-owned PYTHONPATH + venv-marker strip, MSYS defaults, delegate_task
+     Kanban scrub. Returns the (possibly new) dict."""
++    from gateway.session_context import get_tool_environment
++    env.update(get_tool_environment())
+     _apply_profile_home(env)
+     _inject_session_context_env(env)
+     _strip_hermes_owned_pythonpath_and_runtime_markers(env)

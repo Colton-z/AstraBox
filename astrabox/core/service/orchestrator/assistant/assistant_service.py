@@ -363,7 +363,7 @@ class AssistantService:
             last_error="sandbox terminated",
             reason=f"{reason_prefix}:{evidence}",
         )
-        refreshed = await self._workspace_service.get_workspace(
+        refreshed = await self._workspace_service.get_owned_workspace(
             user_id=str(workspace.get("created_by_user_id") or "").strip(),
             assistant_id=assistant_id,
         )
@@ -791,7 +791,7 @@ class AssistantService:
 
         assistant = await self._must_use_assistant(user, assistant_id)
         adapter = get_engine_adapter(self._require_engine_kind(assistant))
-        workspace = await self._workspace_service.get_workspace(
+        workspace = await self._workspace_service.get_owned_workspace(
             user_id=user.user_id, assistant_id=assistant_id
         )
         state = str((workspace or {}).get("state") or "").strip() or "NOT_MATERIALIZED"
@@ -1127,7 +1127,7 @@ class AssistantService:
         deletes with no destroy at all.
         """
         await self._must_use_assistant(user, assistant_id)
-        workspace = await self._workspace_service.get_workspace(
+        workspace = await self._workspace_service.get_owned_workspace(
             user_id=user.user_id,
             assistant_id=assistant_id,
         )
@@ -1266,7 +1266,7 @@ class AssistantService:
                 message="Assistant runtime publication requires owner and runtime identities",
                 status_code=500,
             )
-        workspace = await self._workspace_service.get_workspace(
+        workspace = await self._workspace_service.get_owned_workspace(
             user_id=user.user_id,
             assistant_id=assistant_id,
         )
@@ -1333,7 +1333,7 @@ class AssistantService:
         """Converge owner state after common startup cleanup has settled."""
 
         session_id = str(provisioning_session_id or "").strip()
-        workspace = await self._workspace_service.get_workspace(
+        workspace = await self._workspace_service.get_owned_workspace(
             user_id=user.user_id,
             assistant_id=assistant_id,
         )
@@ -1467,7 +1467,7 @@ class AssistantService:
         its owner, or awaiting recovery is left to that lifecycle.
         """
 
-        workspace = await self._workspace_service.get_workspace(
+        workspace = await self._workspace_service.get_owned_workspace(
             user_id=user.user_id, assistant_id=assistant_id,
         )
         if str((workspace or {}).get("state") or "").strip() != "READY":
@@ -1548,7 +1548,7 @@ class AssistantService:
                 assistant_id=assistant_id,
                 sandbox_id=sandbox_id,
             )
-            refreshed = await self._workspace_service.get_workspace(
+            refreshed = await self._workspace_service.get_owned_workspace(
                 user_id=user.user_id,
                 assistant_id=assistant_id,
             )
@@ -1606,7 +1606,7 @@ class AssistantService:
                 )
             # Completing a pending native save uses hibernation release, which
             # changes the state as well as clearing the old sandbox pointer.
-            refreshed = await self._workspace_service.get_workspace(
+            refreshed = await self._workspace_service.get_owned_workspace(
                 user_id=user.user_id,
                 assistant_id=assistant_id,
             )
@@ -1674,7 +1674,7 @@ class AssistantService:
                 provisioning_session_id=provisioning_session_id,
             )
         if not owns_materialization:
-            current = await self._workspace_service.get_workspace(
+            current = await self._workspace_service.get_owned_workspace(
                 user_id=user.user_id,
                 assistant_id=assistant_id,
             )
@@ -1693,7 +1693,7 @@ class AssistantService:
                 owns_materialization=False,
                 response=response,
             )
-        current = await self._workspace_service.get_workspace(
+        current = await self._workspace_service.get_owned_workspace(
             user_id=user.user_id,
             assistant_id=assistant_id,
         )
@@ -1813,7 +1813,7 @@ class AssistantService:
         box = None
         phase = "runtime_identity"
         try:
-            workspace = await self._workspace_service.get_workspace(
+            workspace = await self._workspace_service.get_owned_workspace(
                 user_id=user_id,
                 assistant_id=assistant_id,
             )
@@ -1851,7 +1851,7 @@ class AssistantService:
             sandbox_id=sandbox_id,
         )
         if not owns_release:
-            current = await self._workspace_service.get_workspace(
+            current = await self._workspace_service.get_owned_workspace(
                 user_id=user_id,
                 assistant_id=assistant_id,
             )
@@ -2125,7 +2125,7 @@ class AssistantService:
         unconfirmed survivor.
         """
         await self._must_use_assistant(user, assistant_id)
-        workspace = await self._workspace_service.get_workspace(
+        workspace = await self._workspace_service.get_owned_workspace(
             user_id=user.user_id,
             assistant_id=assistant_id,
         )
@@ -2271,7 +2271,7 @@ class AssistantService:
         pointing at it and the call fails retryably.
         """
         await self._must_use_assistant(user, assistant_id)
-        workspace = await self._workspace_service.get_workspace(
+        workspace = await self._workspace_service.get_owned_workspace(
             user_id=user.user_id,
             assistant_id=assistant_id,
         )

@@ -412,6 +412,9 @@ class SandboxLifecycleService:
         if expected_generation != generation or expected_token != token:
             return {"handled": False, "ignored": "stale_callback"}
 
+        from astrabox.core.service.orchestrator.runtime.execution_target import require_execution_target
+
+        require_execution_target(current)
         status = normalize_sandbox_callback_status(payload.get("status"))
         if not status:
             raise APIError(

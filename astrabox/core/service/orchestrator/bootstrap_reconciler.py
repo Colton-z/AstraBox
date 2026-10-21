@@ -15,6 +15,7 @@ from typing import Any
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.time_utils import parse_iso, utcnow
+from astrabox.config.settings import get_settings
 from astrabox.core.model import SessionState
 from astrabox.persistence.repository.keyset import SWEEP_PAGE_SIZE, iter_keyset_pages
 
@@ -55,6 +56,8 @@ class BootstrapReconciler:
                 logger.warning("bootstrap deferred (the database may be temporarily unavailable): %s", exc)
             with contextlib.suppress(Exception):
                 platform._expiration_watcher.ensure_started()
+            if not get_settings().background_execution_enabled:
+                return
             # The channel spine's recovery owner: its first tick re-drives
             # expired inbound work items and re-delivers abandoned outbox
             # rows (docs/channel-spine.md), covering boot-time recovery.

@@ -228,7 +228,7 @@ class AgentConnectorServer(Base):
 
 
 class AgentRuntime(Base):
-    """The runtime record of one Agent, created with it.
+    """The runtime record of one Agent in one execution target.
 
     What the runtime keeps per Agent rather than per box or per slot: its
     resident shared box, the runtime generation its prepared capacity follows,
@@ -236,7 +236,7 @@ class AgentRuntime(Base):
     from and the durable workspace its shared boxes mount.
 
     Every write that changes the Agent's prepared slots or admits a
-    conversation locks this row first, so those writers serialize per Agent
+    conversation locks this row first. Those writers serialize per Agent and target
     without deadlocking each other. ``slots_revision`` moves with every change
     to the slots and ``admissions_revision`` with every new admission; a writer
     whose decision rests on what it read names the revision it read. Releasing
@@ -269,7 +269,10 @@ class AgentRuntime(Base):
     agent_id: Mapped[str] = mapped_column(
         KeyText(128), ForeignKey("agents.agent_id", ondelete="CASCADE"), primary_key=True
     )
-    #: The resident shared box new conversations of the Agent join.
+    execution_target: Mapped[str] = mapped_column(
+        KeyText(128), primary_key=True, server_default="astrabox"
+    )
+    #: The resident shared box new conversations of this Agent and target join.
     sandbox_id: Mapped[str | None] = mapped_column(KeyText(128))
     sandbox_backend: Mapped[str | None] = mapped_column(payload_text())
     #: The box generation the resident box was created for.
@@ -308,7 +311,7 @@ class AgentRuntime(Base):
 
 
 class AgentPreparedSlot(Base):
-    """One engine seat prepared in a shared box of the Agent, waiting for a conversation.
+    """One engine seat prepared in a box of this Agent and execution target.
 
     A seat is ``prepared`` until a conversation claims it (``claimed``) or it
     is withdrawn (``retiring``) until its placement is closed. ``manifest``
@@ -324,6 +327,9 @@ class AgentPreparedSlot(Base):
     )
 
     slot_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
+    execution_target: Mapped[str] = mapped_column(
+        KeyText(128), primary_key=True, server_default="astrabox"
+    )
     agent_id: Mapped[str] = mapped_column(
         KeyText(128), ForeignKey("agents.agent_id", ondelete="CASCADE")
     )
@@ -341,7 +347,7 @@ class AgentPreparedSlot(Base):
 
 
 class AgentBoxAdmission(Base):
-    """A conversation admitted to one of the Agent's boxes, counted against its memory.
+    """A conversation admitted to a box of this Agent and execution target.
 
     The box's own memory reading does not cover a conversation for a while
     after it is admitted; until then the admission reserves its growth.
@@ -356,13 +362,16 @@ class AgentBoxAdmission(Base):
     agent_id: Mapped[str] = mapped_column(
         KeyText(128), ForeignKey("agents.agent_id", ondelete="CASCADE"), primary_key=True
     )
+    execution_target: Mapped[str] = mapped_column(
+        KeyText(128), primary_key=True, server_default="astrabox"
+    )
     sandbox_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
     session_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
     admitted_at: Mapped[datetime]
 
 
 class AgentRetiringClientPool(Base):
-    """A client pool of the Agent that a newer one displaced, until it is retired."""
+    """A displaced client pool, kept under its Agent and execution target until retired."""
 
     __tablename__ = "agent_retiring_client_pools"
     __table_args__ = (
@@ -372,6 +381,9 @@ class AgentRetiringClientPool(Base):
     agent_id: Mapped[str] = mapped_column(
         KeyText(128), ForeignKey("agents.agent_id", ondelete="CASCADE"), primary_key=True
     )
+    execution_target: Mapped[str] = mapped_column(
+        KeyText(128), primary_key=True, server_default="astrabox"
+    )
     pool_name: Mapped[str] = mapped_column(KeyText(512), primary_key=True)
     backend: Mapped[str] = mapped_column(payload_text())
     recorded_at: Mapped[datetime] = mapped_column(server_default=func.now())
@@ -380,7 +392,8 @@ class AgentRetiringClientPool(Base):
 class AgentSlotGatewayEntry(Base):
     """Which Session owns the model gateway key a claimed prepared slot spends.
 
-    Kept until the Session ends; removing the entry is what releases the key,
+    Bound to the slot's execution target and kept until the Session ends;
+    removing it releases the key,
     through the endpoint provider that issued it.
     """
 
@@ -392,6 +405,9 @@ class AgentSlotGatewayEntry(Base):
     agent_id: Mapped[str] = mapped_column(
         KeyText(128), ForeignKey("agents.agent_id", ondelete="CASCADE"), primary_key=True
     )
+    execution_target: Mapped[str] = mapped_column(
+        KeyText(128), primary_key=True, server_default="astrabox"
+    )
     slot_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
     session_id: Mapped[str] = mapped_column(payload_text())
     #: The model endpoint provider that issued the key; empty for the default one.
@@ -400,7 +416,7 @@ class AgentSlotGatewayEntry(Base):
 
 
 class AgentUndestroyedSandbox(Base):
-    """A sandbox of the Agent whose destruction could not be confirmed.
+    """A sandbox of this Agent and target whose destruction could not be confirmed.
 
     Its name stays here, where it can still be addressed, until something
     confirms the box is gone.
@@ -413,6 +429,9 @@ class AgentUndestroyedSandbox(Base):
 
     agent_id: Mapped[str] = mapped_column(
         KeyText(128), ForeignKey("agents.agent_id", ondelete="CASCADE"), primary_key=True
+    )
+    execution_target: Mapped[str] = mapped_column(
+        KeyText(128), primary_key=True, server_default="astrabox"
     )
     sandbox_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
     recorded_at: Mapped[datetime] = mapped_column(server_default=func.now())
