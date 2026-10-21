@@ -10,6 +10,7 @@ elected to build the next box and its startup generation — so a transition
 computed from a row that has since moved changes nothing and returns
 ``False``. ``AssistantWorkspaceService`` documents what each one fences. The
 transitions that retire a box delete its profile rows in the same transaction.
+Confirmed releases also clear the conversations' bindings to that exact box.
 """
 
 from __future__ import annotations
@@ -44,12 +45,14 @@ from astrabox.persistence.sql.models.assistants import (
     AssistantProfile,
     AssistantWorkspace,
 )
+from astrabox.persistence.sql.models.sessions import Session
 
 __all__ = ["WORKSPACE_STATES", "AssistantWorkspaceRepository", "MaterializerClaim"]
 
 _ASSISTANTS = Assistant.__table__
 _WORKSPACES = AssistantWorkspace.__table__
 _PROFILES = AssistantProfile.__table__
+_SESSIONS = Session.__table__
 _COLUMNS = _WORKSPACES.c
 
 _SWEEP_PAGE_MAX = 500
@@ -320,6 +323,7 @@ class AssistantWorkspaceRepository:
         values: Mapping[str, Any],
         *,
         retire_profiles: bool = False,
+        retired_sandbox_id: str | None = None,
     ) -> bool:
         """Apply ``values`` if the row still satisfies ``conditions``; whether it did."""
         moved = (
@@ -327,13 +331,28 @@ class AssistantWorkspaceRepository:
             .where(self._runtime_owner(assistant_id), *conditions)
             .values(**values, updated_at=func.now())
         )
-        if not retire_profiles:
+        if not retire_profiles and retired_sandbox_id is None:
             return await execute(moved) == 1
 
         async def retire(conn: AsyncConnection) -> bool:
             if (await conn.execute(moved)).rowcount != 1:
                 return False
-            await conn.execute(delete(_PROFILES).where(_PROFILES.c.assistant_id == assistant_id))
+            if retire_profiles:
+                await conn.execute(delete(_PROFILES).where(_PROFILES.c.assistant_id == assistant_id))
+            if retired_sandbox_id is not None:
+                await conn.execute(
+                    update(_SESSIONS)
+                    .where(
+                        _SESSIONS.c.execution_target == self.execution_target,
+                        _SESSIONS.c.workspace_kind == "assistant",
+                        or_(
+                            _SESSIONS.c.assistant_id == assistant_id,
+                            _SESSIONS.c.owner_id == assistant_id,
+                        ),
+                        _SESSIONS.c.sandbox_id == retired_sandbox_id,
+                    )
+                    .values(sandbox_id=None, updated_at=func.now())
+                )
             return True
 
         return await transaction(retire)
@@ -610,6 +629,7 @@ class AssistantWorkspaceRepository:
                 _COLUMNS.current_sandbox_id == sandbox_id,
             ],
             values,
+            retired_sandbox_id=sandbox_id if cleanup_confirmed else None,
         ):
             return True
         return bool(
@@ -655,6 +675,7 @@ class AssistantWorkspaceRepository:
             ],
             {**_BOX_RETIRED, "state": "HIBERNATING", "last_error": None},
             retire_profiles=True,
+            retired_sandbox_id=destroyed_sandbox_id,
         )
 
     async def adopt_undestroyed_sandbox(
@@ -695,6 +716,7 @@ class AssistantWorkspaceRepository:
                 "provisioning_sandbox_generation": None,
                 "post_commit_cleanup_pending": False,
             },
+            retired_sandbox_id=sandbox_id,
         )
 
     async def mark_materialization_failed(
