@@ -50,8 +50,7 @@ test('native local output closes input custody and survives following turns and 
     expect(input.failure).toBeNull();
   }
 
-  // Compare the rendered result with the supplier's own stored output, rather
-  // than treating our Result adapter's fields as the expected business output.
+  // Compare the visible result with the supplier's stored output.
   await expect.poll(() => nativeEntries(sessionId).filter((row) =>
     row.type === 'system' && row.subtype === 'local_command'
     && String(row.content || '').includes('local-command-stdout')).length,
