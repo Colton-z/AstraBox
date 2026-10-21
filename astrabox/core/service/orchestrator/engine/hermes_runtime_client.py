@@ -46,6 +46,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
@@ -720,6 +721,15 @@ class _Translation:
         response = self.state.response
         assert response is not None
         tool_id = str(payload.get("tool_id") or response.tool or "").strip()
+        is_error = payload.get("is_error")
+        if not isinstance(is_error, bool):
+            raise ValueError("Hermes tool.complete omitted its native is_error classification")
+        if is_error:
+            result = payload.get("result")
+            error_text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+            return events + [ResponseOutput(None, response.id, {
+                "type": "tool-output-error", "toolCallId": tool_id, "errorText": error_text,
+            })]
         output = {key: value for key, value in payload.items() if key not in {"tool_id", "name"}}
         part = {
             "type": "tool-output-available",

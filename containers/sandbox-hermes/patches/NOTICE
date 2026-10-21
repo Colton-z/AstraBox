@@ -9,6 +9,10 @@ AstraBox patch: distinguish configured A2A peer keys from discovery URLs and
 propagate Agent Card errors before dispatch. Direct URLs do not inherit a
 configured peer's credentials.
 
+AstraBox patch: carry Hermes' existing tool failure classification in its typed
+TUI completion event. The platform maps that native flag to the public tool
+error state without reinterpreting business result fields.
+
 MIT License
 
 Copyright (c) 2025 Nous Research
