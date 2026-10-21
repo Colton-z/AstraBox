@@ -25,11 +25,15 @@ test('native A2A rejects an unknown key and preserves Card authentication errors
     runtime_profile_name: profile,
     model_config_override: { model_name: await api.assistantModelName(profile) },
   })).assistant_id;
+  await api.waitForWorkspaceReady(assistantId, 90_000);
   const sourceId = (await api.startAssistantConversation(assistantId)).session_id;
   sessions.push(sourceId);
   await api.waitForSessionReady(sourceId, 90_000);
-  const home = String((await api.adminSessionDetail(sourceId)).runtime_identity?.config_dir || '');
-  expect(home).toMatch(/^\/home\//);
+  let home = '';
+  await expect.poll(async () => {
+    home = String((await api.adminSessionDetail(sourceId)).runtime_identity?.config_dir || '');
+    return home;
+  }, { timeout: 30_000 }).toMatch(/^\/home\//);
   const key = `astrabox/${agentId}`;
   const invoke = async (positive: boolean) => {
     // Observe the pinned native tool's real HTTP, without replacing responses or credentials.
@@ -94,6 +98,7 @@ test('native A2A rejects an unknown key and preserves Card authentication errors
   expect(agentTaskReferences(agentId), 'refused calls must create neither target tasks nor their Sessions').toEqual([]);
 
   const accepted = await invoke(true);
+  await info.attach('native-peer-call', { body: JSON.stringify(accepted), contentType: 'application/json' });
   const tasks = agentTaskReferences(agentId).filter((row) => row.kind === 'task');
   expect(tasks).toHaveLength(1);
   const targetId = String(tasks[0]!.session_id || '');
