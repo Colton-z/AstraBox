@@ -37,7 +37,7 @@ it('requires named confirmation and allows cancellation without deleting', async
   show();
   fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
   expect(await screen.findByRole('alertdialog')).toBeTruthy();
-  expect(screen.getByText('Delete RuntimeProfile “research”?')).toBeTruthy();
+  expect(screen.getByText('Delete runtime profile “research”?')).toBeTruthy();
   expect(deleteAdminRuntimeProfile).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
   expect(deleteAdminRuntimeProfile).not.toHaveBeenCalled();

@@ -61,8 +61,9 @@ _SESSIONS = ("s1", "creator", "alice", "bob", *(f"sess-{n}" for n in range(1, 21
 
 
 @pytest.fixture(autouse=True)
-async def _channel_store(database: str) -> None:
+async def _channel_store(database: str, environment_member_accounts: set[str]) -> None:
     """The bindings and Sessions every test here writes channel records of."""
+    environment_member_accounts.update({"creator", "alice", "bob"})
     for deployment_id in ("wh", "wh-1"):
         await seed_binding(deployment_id)
     await seed_sessions(*_SESSIONS)

@@ -23,6 +23,11 @@ import astrabox.providers.identity_oidc as oidc
 from astrabox.common.utils.errors import APIError
 from astrabox.identity.session_signing import reset_session_signing_cache
 
+
+@pytest.fixture(autouse=True)
+def _environment_membership(environment_member_accounts: set[str]) -> None:
+    environment_member_accounts.update({'astrabox-admin-id'})
+
 _SESSION_SECRET = "unit-test-session-secret-0123456789abcdef"
 _REAL_ASYNC_CLIENT = httpx.AsyncClient
 

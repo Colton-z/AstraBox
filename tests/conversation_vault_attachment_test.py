@@ -21,6 +21,11 @@ from astrabox.common.utils.user_context import UserContext
 from astrabox.core.service.orchestrator.session_service import SessionService
 
 
+@pytest.fixture(autouse=True)
+def _environment_membership(environment_member_accounts: set[str]) -> None:
+    environment_member_accounts.update({'user-1'})
+
+
 _USER = UserContext(user_id="user-1")
 
 
