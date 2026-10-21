@@ -30,7 +30,7 @@
       }
     },
     "tests": {
-      "no_volume_core": 601,
+      "no_volume_core": 602,
       "persistent_files": 19
     }
   },
@@ -42,9 +42,9 @@
   ],
   "playwright": {
     "exclusive": {
-      "files": 188,
-      "parallel_files": 119,
-      "parallel_tests": 213,
+      "files": 189,
+      "parallel_files": 120,
+      "parallel_tests": 214,
       "serial_files": [
         "specs/a-prepared-seat-is-not-a-promise-the-box-can-still-keep.exclusive.spec.ts",
         "specs/a2a-stream-and-interaction.exclusive.spec.ts",
@@ -118,7 +118,7 @@
       ],
       "serial_tests": 110,
       "serial_workers": 1,
-      "tests": 323,
+      "tests": 324,
       "workers": 5
     },
     "parallel": {
