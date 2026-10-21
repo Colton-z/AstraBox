@@ -573,20 +573,20 @@ class AdminService:
         last_error = str(session.get("last_error") or "").strip()
         runtime_unavailable = bool(session.get("runtime_unavailable"))
         state = str(session.get("state") or "").strip()
-        if not last_error and not runtime_unavailable:
+        if not last_error:
             return None
         session_id = str(session.get("session_id") or "").strip()
         display_row = dict(session)
         self._apply_user_display(display_row, nick_map)
         return {
             "source": "session",
-            "severity": "error" if runtime_unavailable or last_error else "warning",
+            "severity": "error",
             "state": state or None,
             "session_id": session_id,
             "sandbox_id": str(session.get("sandbox_id") or "").strip() or None,
             "user_id": str(session.get("user_id") or "").strip() or None,
             "display_name": str(display_row.get("display_name") or "").strip() or None,
-            "message": _truncate_admin_text(last_error or state, limit=500),
+            "message": _truncate_admin_text(last_error, limit=500),
             "last_error": last_error or None,
             "runtime_unavailable": runtime_unavailable,
             "created_at": str(session.get("created_at") or ""),

@@ -2,8 +2,8 @@
  * An incident record follows a recovering Session and either follows its later
  * incident or discloses when it was read with an effective Refresh control.
  *
- * Reclaiming this test's sandbox creates the first incident; a turn restores
- * compute. The second incident keeps the current sandbox binding intact so
+ * Normal sandbox reclaim creates no incident; an explicit fault then creates
+ * the first incident and a turn restores compute. The second incident keeps the current sandbox binding intact so
  * cleanup can still reach it. Every verdict checks that the incident remains
  * authoritative: a turn that overwrites it is a fixture failure, not a pass.
  * No model wording or running-response field is part of this contract.
@@ -158,6 +158,10 @@ test('an incident record follows its session while the turn runs, or says when i
   const firstSandboxId = String(ready.sandbox_id || '').trim();
   expect(firstSandboxId, 'a READY conversation names the box it claimed').not.toEqual('');
 
+  const completed = await api.sendTurn(sessionId, 'Reply with exactly: ready for reclaim', 60_000);
+  expect(completed.errorText).toBeNull();
+  expect((await api.adminSessionDetail(sessionId)).current_responses).toEqual([]);
+
   // ── incident 1: a product action, not an injected fault ───────────────────
   const reclaim = await api.terminateSandbox(sessionId);
   expect(
@@ -174,6 +178,17 @@ test('an incident record follows its session while the turn runs, or says when i
     timeout: MECHANISM_MS,
     message: 'the reclaimed runtime reader must release its lease before incident injection',
   }).toEqual([]);
+
+  const reclaimed = await api.adminSessionDetail(sessionId);
+  expect(reclaimed.runtime_unavailable).toBe(true);
+  expect(reclaimed.last_error).toBeNull();
+  const errors = await api.data<{ errors: Array<{ source: string; session_id?: string }> }>(
+    'GET', '/admin/errors?limit=500',
+  );
+  expect(errors.errors.filter((row) => row.source === 'session' && row.session_id === sessionId),
+    'normal compute reclaim is not a failed conversation').toEqual([]);
+  expect((await api.adminSessionDetail(sessionId)).sandbox_id,
+    'reading error records must not wake the reclaimed conversation').toBeNull();
 
   // The incident's words. The single synthetic write in this spec, and the
   // field the death-convergence writer sets — see the header for why terminate
