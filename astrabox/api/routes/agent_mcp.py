@@ -11,6 +11,8 @@ from fastapi.responses import JSONResponse, Response
 from mcp_types.version import LATEST_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS
 
 from astrabox import __version__
+from astrabox.api.documentation import object_schema, request_body
+from astrabox.api.routes.request_schemas import MCP_REQUEST, MCP_RESPONSE
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext, get_asserted_user_context
@@ -147,7 +149,33 @@ def register_agent_mcp_routes(
             )
         return user, None
 
-    @app.get("/api/v1/mcp", include_in_schema=False)
+    @app.get(
+        "/api/v1/mcp",
+        include_in_schema=False,
+        openapi_extra={
+            "tags": ["Agent MCP"],
+            "x-mcp-client-token": True,
+            "summary": "Decline the optional standalone MCP event stream",
+            "description": "After authenticating the caller and checking Origin, returns 405; use POST for the stateless MCP facade.",
+            "responses": {
+                "default": {
+                    "description": "Caller or Origin rejected; code/message transport error or platform identity error envelope.",
+                    "content": {
+                        "application/json": {
+                            "schema": object_schema(
+                                {"code": {"type": "string"}, "message": {"type": "string"}},
+                                required=("code", "message"),
+                            )
+                        }
+                    },
+                },
+                "405": {
+                    "description": "Standalone SSE is not supported.",
+                    "headers": {"Allow": {"schema": {"const": "POST"}}},
+                },
+            },
+        },
+    )
     async def agent_mcp_event_stream(request: Request) -> Response:
         """Decline the optional standalone SSE stream as Streamable HTTP specifies."""
 
@@ -162,7 +190,50 @@ def register_agent_mcp_routes(
             return _mcp_auth_error_response(exc)
         return Response(status_code=405, headers={"Allow": "POST"})
 
-    @app.post("/api/v1/mcp")
+    @app.post(
+        "/api/v1/mcp",
+        openapi_extra={
+            **request_body(MCP_REQUEST),
+            "x-mcp-client-token": True,
+            "parameters": [
+                {
+                    "name": "MCP-Protocol-Version",
+                    "in": "header",
+                    "required": False,
+                    "schema": {"type": "string"},
+                    "description": "Required after initialization; use a version negotiated by initialize.",
+                }
+            ],
+        },
+        response_class=JSONResponse,
+        responses={
+            **{
+                200: {
+                    "description": "Native MCP JSON-RPC result or error.",
+                    "content": {"application/json": {"schema": MCP_RESPONSE}},
+                },
+                202: {"description": "Notification accepted without a response body."},
+            },
+            **{
+                "default": {
+                    "description": "Transport rejection: code/message; framework and identity rejections may use the platform error envelope. Native method failures use JSON-RPC responses.",
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "anyOf": [
+                                    {"$ref": "#/components/schemas/ErrorResponse"},
+                                    object_schema(
+                                        {"code": {"type": "string"}, "message": {"type": "string"}},
+                                        required=("code", "message"),
+                                    ),
+                                ]
+                            }
+                        }
+                    },
+                }
+            },
+        },
+    )
     async def agent_mcp_endpoint(
         request: Request,
         payload: dict[str, Any] = Body(...),

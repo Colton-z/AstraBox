@@ -1,4 +1,5 @@
 import i18n from '@/i18n';
+import type { paths } from '../api/schema';
 
 import type { ListPageQuery } from '@/types';
 
@@ -63,7 +64,9 @@ export async function getAssistant(assistantId: string): Promise<AssistantRecord
   );
 }
 
-export function createAssistant(config: Record<string, unknown>): Promise<AssistantRecord> {
+type AssistantCreateRequest = paths['/api/v1/assistants']['post']['requestBody']['content']['application/json'];
+
+export function createAssistant(config: AssistantCreateRequest): Promise<AssistantRecord> {
   return sendApi((wire) => apiClient.POST('/api/v1/assistants', {
     ...wire,
     body: config,

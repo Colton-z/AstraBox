@@ -27,6 +27,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from jwt import PyJWKClient
 
+from astrabox.api.documentation import object_schema, query_parameter
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.deploy.public_path import public_path, public_path_prefix, public_url
@@ -135,7 +136,31 @@ def register_auth_routes(app: FastAPI) -> None:
     config = OidcProviderConfig.load()
     _require_callback_at_public_path(config)
 
-    @app.get(_LOGIN_PATH)
+    @app.get(
+        _LOGIN_PATH,
+        status_code=302,
+        response_class=RedirectResponse,
+        openapi_extra={
+            "x-configuration": "ASTRABOX_WEB_IDENTITY=oidc",
+            "parameters": [
+                query_parameter(
+                    "next",
+                    "string",
+                    "Console path to visit after login; external URLs are refused.",
+                    default="/",
+                )
+            ],
+        },
+        responses={
+            302: {
+                "description": "Redirect to the IdP; sets the signed astrabox_auth_flow PKCE/state cookie.",
+                "headers": {
+                    "Location": {"schema": {"type": "string"}},
+                    "Set-Cookie": {"schema": {"type": "string"}},
+                },
+            }
+        },
+    )
     async def auth_login(request: Request) -> Response:
         document = await discover(config)
         state = secrets.token_urlsafe(24)
@@ -163,7 +188,50 @@ def register_auth_routes(app: FastAPI) -> None:
         )
         return response
 
-    @app.get(_CALLBACK_PATH)
+    @app.get(
+        _CALLBACK_PATH,
+        status_code=302,
+        response_class=RedirectResponse,
+        openapi_extra={
+            "x-configuration": "ASTRABOX_WEB_IDENTITY=oidc",
+            "parameters": [
+                query_parameter(name, "string", "OIDC authorization response parameter.")
+                for name in ("code", "state", "error", "error_description")
+            ]
+            + [
+                {
+                    "name": FLOW_COOKIE,
+                    "in": "cookie",
+                    "required": False,
+                    "schema": {"type": "string"},
+                    "description": "Signed state/PKCE flow cookie required on successful callbacks.",
+                }
+            ],
+        },
+        responses={
+            302: {
+                "description": "Redirect to the console; sets astrabox_session and deletes the flow cookie."
+            },
+            **{
+                status: {
+                    "description": "OIDC flow failed.",
+                    "content": {
+                        "application/json": {
+                            "schema": object_schema(
+                                {
+                                    "success": {"type": "boolean", "const": False},
+                                    "code": {"const": "AUTH_FLOW_FAILED"},
+                                    "message": {"type": "string"},
+                                },
+                                required=("success", "code", "message"),
+                            )
+                        }
+                    },
+                }
+                for status in (400, 401, 502)
+            },
+        },
+    )
     async def auth_callback(request: Request) -> Response:
         error = str(request.query_params.get("error") or "").strip()
         if error:
@@ -271,13 +339,52 @@ def register_auth_routes(app: FastAPI) -> None:
         response.delete_cookie(FLOW_COOKIE, path=public_path(_FLOW_COOKIE_PATH))
         return response
 
-    @app.post("/api/v1/auth/logout")
+    @app.post(
+        "/api/v1/auth/logout",
+        status_code=204,
+        response_class=Response,
+        openapi_extra={"x-configuration": "ASTRABOX_WEB_IDENTITY=oidc"},
+    )
     async def auth_logout(request: Request) -> Response:
         response = Response(status_code=204)
         response.delete_cookie(SESSION_COOKIE, path=public_path_prefix() or "/")
         return response
 
-    @app.get("/api/v1/auth/session")
+    @app.get(
+        "/api/v1/auth/session",
+        response_class=JSONResponse,
+        openapi_extra={"x-configuration": "ASTRABOX_WEB_IDENTITY=oidc"},
+        responses={
+            200: {
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "oneOf": [
+                                object_schema(
+                                    {"authenticated": {"const": False}}, required=("authenticated",)
+                                ),
+                                object_schema(
+                                    {
+                                        "authenticated": {"const": True},
+                                        "user": object_schema(
+                                            {
+                                                "user_id": {"type": "string"},
+                                                "display_name": {"type": ["string", "null"]},
+                                                "email": {"type": ["string", "null"]},
+                                                "roles": {"type": "array", "items": {"type": "string"}},
+                                            },
+                                            required=("user_id", "display_name", "email", "roles"),
+                                        ),
+                                    },
+                                    required=("authenticated", "user"),
+                                ),
+                            ]
+                        }
+                    }
+                }
+            }
+        },
+    )
     async def auth_session(request: Request) -> JSONResponse:
         """Session probe for the console: which user, if any. Never 401s —
         the frontend uses it to decide whether to show the sign-in state."""

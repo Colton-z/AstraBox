@@ -1,0 +1,68 @@
+---
+title: API reference
+description: Complete generated HTTP API reference for the current AstraBox release.
+toc_max_heading_level: 2
+---
+
+import ApiReference from '@site/src/components/ApiReference';
+
+Browse every built-in HTTP operation below. Expand an operation for its path,
+query and header parameters, request body, success responses, errors and
+authentication. The download and this catalog use the same generated OpenAPI
+snapshot as the console client.
+
+This is the release reference. A deployment's `/openapi.json` and `/docs`
+describe its installed routes and offer authenticated requests against that
+instance. OIDC login routes require `ASTRABOX_WEB_IDENTITY=oidc`; Agent routes
+require the Agent feature. Installed providers determine channel configuration,
+program options and available tools.
+
+## Authentication and protocol contracts
+
+Ordinary protected routes accept the deployment's browser identity or access
+token. The `x-required-api-scope` extension states the scope an API token needs;
+admin routes also require the administrator role. Local identity deployments
+assert the local administrator without a credential. The `admin-api` family
+also checks `ASTRABOX_ADMIN_API_TOKEN` when configured.
+
+JWT identity deployments use their verified bearer contract. Trusted-header
+deployments use the authenticating gateway's configured user/group headers and,
+when configured, its gateway secret. Their deployed OpenAPI describes those
+actual header names. See [team login](team-login.md) for the identity modes.
+
+Capability routes authorize their own credentials: share and artifact-share
+links use their token, `sbxcap` uses the sandbox capability, sandbox callbacks
+use their signed callback path, and platform MCP uses the HMAC in its URL.
+Assistant A2A requires its workspace-and-target-bound bearer. Deployment triggers
+use the configured scene's HMAC or native provider authentication.
+
+JSON REST success responses use `code`, `message`, and `data`. Errors carry the
+platform envelope where documented; use the HTTP status as authoritative.
+Downloads return bytes. Conversation and terminal streams, Artifact live
+updates, sampling, and streaming A2A calls return SSE. MCP and A2A use their
+native protocol messages and errors rather than a REST success envelope.
+
+A2A 1.0 types come from the [official protobuf-derived schema](https://a2a-protocol.org/v1.0.0/spec/a2a.json);
+its [protocol specification](https://a2a-protocol.org/v1.0.0/specification/)
+is authoritative. Push notifications and tenant routing are unsupported.
+MCP negotiates its protocol version at `initialize`; tool inputs and results
+are discovered with `tools/list`. Program-owned parts, interactions, capabilities,
+configuration and SessionStore entries retain their native fields. Provider
+catalog responses describe the supported configuration fields. Open objects
+in those positions are extension contracts.
+
+Provider callback proxies forward their native path, query, headers, bytes and
+status. The catalog includes those integration entry points. Third-party
+management UI assets and their internal API proxies, `/docs`, `/redoc`, and the
+console's static files are outside AstraBox's product API; use the relevant
+vendor's API documentation for those services.
+
+See [authentication](api-authentication.md), [pagination](api-pagination.md),
+[errors](api-errors.md), [event streams](events-stream.md), [A2A](a2a.md),
+[Agent MCP](agent-mcp.md), and [Artifacts](artifacts.md) for workflows and examples.
+
+## HTTP operations
+
+Filter by path or tag; expand an operation to inspect its complete schema.
+
+<ApiReference />

@@ -1327,6 +1327,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agents/{agent_id}/.well-known/agent-card.json": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Discover Agent card
+         * @description A2A 1.0, implemented by a2a-sdk 1.2.2. Native protobuf JSON fields and error codes apply. Tenant routing and push notifications are refused. Requires an identity allowed to use the target Agent.
+         */
+        get: operations["agent_card__api_v1_agents__agent_id___well_known_agent_card_json_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agents/{agent_id}/a2a": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Call Agent through A2A
+         * @description A2A 1.0, implemented by a2a-sdk 1.2.2. Native protobuf JSON fields and error codes apply. Tenant routing and push notifications are refused. Requires an identity allowed to use the target Agent.
+         */
+        post: operations["agent_a2a_rpc__api_v1_agents__agent_id__a2a_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents/{agent_id}/access": {
         parameters: {
             query?: never;
@@ -2061,6 +2101,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/assistant-a2a/{binding_id}/agents/{agent_id}/.well-known/agent-card.json": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Discover Agent card
+         * @description A2A 1.0, implemented by a2a-sdk 1.2.2. Native protobuf JSON fields and error codes apply. Tenant routing and push notifications are refused. Requires the workspace-and-target-bound Assistant capability bearer.
+         */
+        get: operations["agent_card__api_v1_assistant_a2a__binding_id__agents__agent_id___well_known_agent_card_json_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assistant-a2a/{binding_id}/agents/{agent_id}/a2a": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Call Agent through A2A
+         * @description A2A 1.0, implemented by a2a-sdk 1.2.2. Native protobuf JSON fields and error codes apply. Tenant routing and push notifications are refused. Requires the workspace-and-target-bound Assistant capability bearer.
+         */
+        post: operations["assistant_a2a_rpc__api_v1_assistant_a2a__binding_id__agents__agent_id__a2a_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/assistants": {
         parameters: {
             query?: never;
@@ -2341,6 +2421,78 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Auth Callback */
+        get: operations["auth_callback_api_v1_auth_callback_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Auth Login */
+        get: operations["auth_login_api_v1_auth_login_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Auth Logout */
+        post: operations["auth_logout_api_v1_auth_logout_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Auth Session
+         * @description Session probe for the console: which user, if any. Never 401s —
+         *     the frontend uses it to decide whether to show the sign-in state.
+         */
+        get: operations["auth_session_api_v1_auth_session_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/channel-providers": {
         parameters: {
             query?: never;
@@ -2426,6 +2578,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/deployments/{deployment_id}/callback/{callback_path}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Forward a channel provider callback
+         * @description Provider-owned callback path, query, headers, authentication, body and status. Bytes are forwarded unchanged to the provider advertised by /api/v1/channel-providers; use its documentation_url and callback_path.
+         */
+        get: operations["channel_callback__api_v1_deployments__deployment_id__callback__callback_path__get"];
+        /**
+         * Forward a channel provider callback
+         * @description Provider-owned callback path, query, headers, authentication, body and status. Bytes are forwarded unchanged to the provider advertised by /api/v1/channel-providers; use its documentation_url and callback_path.
+         */
+        put: operations["channel_callback__api_v1_deployments__deployment_id__callback__callback_path__put"];
+        /**
+         * Forward a channel provider callback
+         * @description Provider-owned callback path, query, headers, authentication, body and status. Bytes are forwarded unchanged to the provider advertised by /api/v1/channel-providers; use its documentation_url and callback_path.
+         */
+        post: operations["channel_callback__api_v1_deployments__deployment_id__callback__callback_path__post"];
+        /**
+         * Forward a channel provider callback
+         * @description Provider-owned callback path, query, headers, authentication, body and status. Bytes are forwarded unchanged to the provider advertised by /api/v1/channel-providers; use its documentation_url and callback_path.
+         */
+        delete: operations["channel_callback__api_v1_deployments__deployment_id__callback__callback_path__delete"];
+        /**
+         * Forward a channel provider callback
+         * @description Provider-owned callback path, query, headers, authentication, body and status. Bytes are forwarded unchanged to the provider advertised by /api/v1/channel-providers; use its documentation_url and callback_path.
+         */
+        options: operations["channel_callback__api_v1_deployments__deployment_id__callback__callback_path__options"];
+        /**
+         * Forward a channel provider callback
+         * @description Provider-owned callback path, query, headers, authentication, body and status. Bytes are forwarded unchanged to the provider advertised by /api/v1/channel-providers; use its documentation_url and callback_path.
+         */
+        head: operations["channel_callback__api_v1_deployments__deployment_id__callback__callback_path__head"];
+        /**
+         * Forward a channel provider callback
+         * @description Provider-owned callback path, query, headers, authentication, body and status. Bytes are forwarded unchanged to the provider advertised by /api/v1/channel-providers; use its documentation_url and callback_path.
+         */
+        patch: operations["channel_callback__api_v1_deployments__deployment_id__callback__callback_path__patch"];
+        trace?: never;
+    };
     "/api/v1/deployments/{deployment_id}/trigger": {
         parameters: {
             query?: never;
@@ -2435,7 +2631,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Trigger Deployment */
+        /**
+         * Trigger Deployment
+         * @description Authenticate with the configured trigger scene: HMAC webhook headers or the native channel provider credential. Request bytes follow that scene; see the webhook and channel guides.
+         */
         post: operations["trigger_deployment_api_v1_deployments__deployment_id__trigger_post"];
         delete?: never;
         options?: never;
@@ -2497,7 +2696,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * Decline the optional standalone MCP event stream
+         * @description After authenticating the caller and checking Origin, returns 405; use POST for the stateless MCP facade.
+         */
+        get: operations["agent_mcp_event_stream__api_v1_mcp_get"];
         put?: never;
         /** Agent Mcp Endpoint */
         post: operations["agent_mcp_endpoint_api_v1_mcp_post"];
@@ -3638,6 +3841,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/connector-hub/oauth/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Receive connector OAuth callback
+         * @description Query parameters and response belong to the connector hub OAuth flow; forwarded verbatim. The hub returns the browser to the console.
+         */
+        get: operations["connector_hub_callback__connector_hub_oauth_callback_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/healthz": {
         parameters: {
             query?: never;
@@ -3659,6 +3882,22 @@ export interface paths {
          *     in-flight turns.
          */
         get: operations["healthz_healthz_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["metrics__metrics_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3695,6 +3934,1088 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * API Key Security Scheme
+         * @description Defines a security scheme using an API key.
+         */
+        A2AAPIKeySecurityScheme: {
+            /**
+             * @description An optional description for the security scheme.
+             * @default
+             */
+            description: string;
+            /**
+             * @description The location of the API key. Valid values are "query", "header", or "cookie".
+             * @default
+             */
+            location: string;
+            /**
+             * @description The name of the header, query, or cookie parameter to be used.
+             * @default
+             */
+            name: string;
+        };
+        /**
+         * Agent Capabilities
+         * @description Defines optional capabilities supported by an agent.
+         */
+        A2AAgentCapabilities: {
+            /** @description Indicates if the agent supports providing an extended agent card when authenticated. */
+            extendedAgentCard?: boolean;
+            /** @description A list of protocol extensions supported by the agent. */
+            extensions?: components["schemas"]["A2AAgentExtension"][];
+            /** @description Indicates if the agent supports sending push notifications for asynchronous task updates. */
+            pushNotifications?: boolean;
+            /** @description Indicates if the agent supports streaming responses. */
+            streaming?: boolean;
+        } & {
+            [key: string]: boolean;
+        };
+        /**
+         * Agent Card
+         * @description A self-describing manifest for an agent. It provides essential
+         *      metadata including the agent's identity, capabilities, skills, supported
+         *      communication methods, and security requirements.
+         *      Next ID: 20
+         */
+        A2AAgentCard: {
+            /** @description A2A Capability set supported by the agent. */
+            capabilities?: components["schemas"]["A2AAgentCapabilities"];
+            /**
+             * @description The set of interaction modes that the agent supports across all skills.
+             *      This can be overridden per skill. Defined as media types.
+             */
+            defaultInputModes?: string[];
+            /** @description The media types supported as outputs from this agent. */
+            defaultOutputModes?: string[];
+            /**
+             * @description A human-readable description of the agent, assisting users and other agents
+             *      in understanding its purpose.
+             *      Example: "Agent that helps users with recipes and cooking."
+             * @default
+             */
+            description: string;
+            /** @description A URL providing additional documentation about the agent. */
+            documentationUrl?: string;
+            /** @description Optional. A URL to an icon for the agent. */
+            iconUrl?: string;
+            /**
+             * @description A human readable name for the agent.
+             *      Example: "Recipe Agent"
+             * @default
+             */
+            name: string;
+            /** @description The service provider of the agent. */
+            provider?: components["schemas"]["A2AAgentProvider"];
+            /** @description Security requirements for contacting the agent. */
+            securityRequirements?: components["schemas"]["A2ASecurityRequirement"][];
+            /** @description The security scheme details used for authenticating with this agent. */
+            securitySchemes?: {
+                [key: string]: components["schemas"]["A2ASecurityScheme"];
+            };
+            /** @description JSON Web Signatures computed for this `AgentCard`. */
+            signatures?: components["schemas"]["A2AAgentCardSignature"][];
+            /**
+             * @description Skills represent the abilities of an agent.
+             *      It is largely a descriptive concept but represents a more focused set of behaviors that the
+             *      agent is likely to succeed at.
+             */
+            skills?: components["schemas"]["A2AAgentSkill"][];
+            /** @description Ordered list of supported interfaces. The first entry is preferred. */
+            supportedInterfaces?: components["schemas"]["A2AAgentInterface"][];
+            /**
+             * @description The version of the agent.
+             *      Example: "1.0.0"
+             * @default
+             */
+            version: string;
+        } & {
+            [key: string]: string[] | string[] | string | components["schemas"]["A2ASecurityRequirement"][] | {
+                [key: string]: components["schemas"]["A2ASecurityScheme"];
+            } | components["schemas"]["A2AAgentInterface"][];
+        };
+        /**
+         * Agent Card Signature
+         * @description AgentCardSignature represents a JWS signature of an AgentCard.
+         *      This follows the JSON format of an RFC 7515 JSON Web Signature (JWS).
+         */
+        A2AAgentCardSignature: {
+            /** @description The unprotected JWS header values. */
+            header?: components["schemas"]["A2AStruct"];
+            /**
+             * @description (-- api-linter: core::0140::reserved-words=disabled
+             *          aip.dev/not-precedent: Backwards compatibility --)
+             *      Required. The protected JWS header for the signature. This is always a
+             *      base64url-encoded JSON object.
+             * @default
+             */
+            protected: string;
+            /**
+             * @description Required. The computed signature, base64url-encoded.
+             * @default
+             */
+            signature: string;
+        };
+        /**
+         * Agent Extension
+         * @description A declaration of a protocol extension supported by an Agent.
+         */
+        A2AAgentExtension: {
+            /**
+             * @description A human-readable description of how this agent uses the extension.
+             * @default
+             */
+            description: string;
+            /** @description Optional. Extension-specific configuration parameters. */
+            params?: components["schemas"]["A2AStruct"];
+            /**
+             * @description If true, the client must understand and comply with the extension's requirements.
+             * @default false
+             */
+            required: boolean;
+            /**
+             * @description The unique URI identifying the extension.
+             * @default
+             */
+            uri: string;
+        };
+        /**
+         * Agent Interface
+         * @description Declares a combination of a target URL, transport and protocol version for interacting with the agent.
+         *      This allows agents to expose the same functionality over multiple protocol binding mechanisms.
+         */
+        A2AAgentInterface: {
+            /**
+             * @description The protocol binding supported at this URL. This is an open form string, to be
+             *      easily extended for other protocol bindings. The core ones officially
+             *      supported are `JSONRPC`, `GRPC` and `HTTP+JSON`.
+             * @default
+             */
+            protocolBinding: string;
+            /**
+             * @description The version of the A2A protocol this interface exposes.
+             *      Use the latest supported minor version per major version.
+             *      Examples: "0.3", "1.0"
+             * @default
+             */
+            protocolVersion: string;
+            /**
+             * @description Tenant ID to be used in the request when calling the agent.
+             * @default
+             */
+            tenant: string;
+            /**
+             * @description The URL where this interface is available. Must be a valid absolute HTTPS URL in production.
+             *      Example: "https://api.example.com/a2a/v1", "https://grpc.example.com/a2a"
+             * @default
+             */
+            url: string;
+        } & {
+            [key: string]: string;
+        };
+        /**
+         * Agent Provider
+         * @description Represents the service provider of an agent.
+         */
+        A2AAgentProvider: {
+            /**
+             * @description The name of the agent provider's organization.
+             *      Example: "Google"
+             * @default
+             */
+            organization: string;
+            /**
+             * @description A URL for the agent provider's website or relevant documentation.
+             *      Example: "https://ai.google.dev"
+             * @default
+             */
+            url: string;
+        };
+        /**
+         * Agent Skill
+         * @description Represents a distinct capability or function that an agent can perform.
+         */
+        A2AAgentSkill: {
+            /**
+             * @description A detailed description of the skill.
+             * @default
+             */
+            description: string;
+            /** @description Example prompts or scenarios that this skill can handle. */
+            examples?: string[];
+            /**
+             * @description A unique identifier for the agent's skill.
+             * @default
+             */
+            id: string;
+            /** @description The set of supported input media types for this skill, overriding the agent's defaults. */
+            inputModes?: string[];
+            /**
+             * @description A human-readable name for the skill.
+             * @default
+             */
+            name: string;
+            /** @description The set of supported output media types for this skill, overriding the agent's defaults. */
+            outputModes?: string[];
+            /** @description Security schemes necessary for this skill. */
+            securityRequirements?: components["schemas"]["A2ASecurityRequirement"][];
+            /** @description A set of keywords describing the skill's capabilities. */
+            tags?: string[];
+        } & {
+            [key: string]: string[] | string[] | components["schemas"]["A2ASecurityRequirement"][];
+        };
+        /**
+         * Artifact
+         * @description Artifacts represent task outputs.
+         */
+        A2AArtifact: {
+            /**
+             * @description Unique identifier (e.g. UUID) for the artifact. It must be unique within a task.
+             * @default
+             */
+            artifactId: string;
+            /**
+             * @description Optional. A human readable description of the artifact.
+             * @default
+             */
+            description: string;
+            /** @description The URIs of extensions that are present or contributed to this Artifact. */
+            extensions?: string[];
+            /** @description Optional. Metadata included with the artifact. */
+            metadata?: components["schemas"]["A2AStruct"];
+            /**
+             * @description A human readable name for the artifact.
+             * @default
+             */
+            name: string;
+            /** @description The content of the artifact. Must contain at least one part. */
+            parts?: components["schemas"]["A2APart"][];
+        } & {
+            [key: string]: string;
+        };
+        /**
+         * Authentication Info
+         * @description Defines authentication details, used for push notifications.
+         */
+        A2AAuthenticationInfo: {
+            /**
+             * @description Push Notification credentials. Format depends on the scheme (e.g., token for Bearer).
+             * @default
+             */
+            credentials: string;
+            /**
+             * @description HTTP Authentication Scheme from the [IANA registry](https://www.iana.org/assignments/http-authschemes/).
+             *      Examples: `Bearer`, `Basic`, `Digest`.
+             *      Scheme names are case-insensitive per [RFC 9110 Section 11.1](https://www.rfc-editor.org/rfc/rfc9110#section-11.1).
+             * @default
+             */
+            scheme: string;
+        };
+        /**
+         * Authorization CodeO Auth Flow
+         * @description Defines configuration details for the OAuth 2.0 Authorization Code flow.
+         */
+        A2AAuthorizationCodeOAuthFlow: {
+            /**
+             * @description The authorization URL to be used for this flow.
+             * @default
+             */
+            authorizationUrl: string;
+            /**
+             * @description Indicates if PKCE (RFC 7636) is required for this flow.
+             *      PKCE should always be used for public clients and is recommended for all clients.
+             * @default false
+             */
+            pkceRequired: boolean;
+            /**
+             * @description The URL to be used for obtaining refresh tokens.
+             * @default
+             */
+            refreshUrl: string;
+            /** @description The available scopes for the OAuth2 security scheme. */
+            scopes?: {
+                [key: string]: string;
+            };
+            /**
+             * @description The token URL to be used for this flow.
+             * @default
+             */
+            tokenUrl: string;
+        } & {
+            [key: string]: string | boolean;
+        };
+        /**
+         * Cancel Task Request
+         * @description Represents a request for the `CancelTask` method.
+         */
+        A2ACancelTaskRequest: {
+            /**
+             * @description The resource ID of the task to cancel.
+             * @default
+             */
+            id: string;
+            /** @description A flexible key-value map for passing additional context or parameters. */
+            metadata?: components["schemas"]["A2AStruct"];
+            /**
+             * @description Optional. Tenant ID, provided as a path parameter.
+             * @default
+             */
+            tenant: string;
+        };
+        /**
+         * Client CredentialsO Auth Flow
+         * @description Defines configuration details for the OAuth 2.0 Client Credentials flow.
+         */
+        A2AClientCredentialsOAuthFlow: {
+            /**
+             * @description The URL to be used for obtaining refresh tokens.
+             * @default
+             */
+            refreshUrl: string;
+            /** @description The available scopes for the OAuth2 security scheme. */
+            scopes?: {
+                [key: string]: string;
+            };
+            /**
+             * @description The token URL to be used for this flow.
+             * @default
+             */
+            tokenUrl: string;
+        } & {
+            [key: string]: string;
+        };
+        /**
+         * Delete Task Push Notification Config Request
+         * @description Represents a request for the `DeleteTaskPushNotificationConfig` method.
+         */
+        A2ADeleteTaskPushNotificationConfigRequest: {
+            /**
+             * @description The resource ID of the configuration to delete.
+             * @default
+             */
+            id: string;
+            /**
+             * @description The parent task resource ID.
+             * @default
+             */
+            taskId: string;
+            /**
+             * @description Optional. Tenant ID, provided as a path parameter.
+             * @default
+             */
+            tenant: string;
+        } & {
+            [key: string]: string;
+        };
+        /**
+         * Device CodeO Auth Flow
+         * @description Defines configuration details for the OAuth 2.0 Device Code flow (RFC 8628).
+         *      This flow is designed for input-constrained devices such as IoT devices,
+         *      and CLI tools where the user authenticates on a separate device.
+         */
+        A2ADeviceCodeOAuthFlow: {
+            /**
+             * @description The device authorization endpoint URL.
+             * @default
+             */
+            deviceAuthorizationUrl: string;
+            /**
+             * @description The URL to be used for obtaining refresh tokens.
+             * @default
+             */
+            refreshUrl: string;
+            /** @description The available scopes for the OAuth2 security scheme. */
+            scopes?: {
+                [key: string]: string;
+            };
+            /**
+             * @description The token URL to be used for this flow.
+             * @default
+             */
+            tokenUrl: string;
+        } & {
+            [key: string]: string;
+        };
+        /**
+         * Get Extended Agent Card Request
+         * @description Represents a request for the `GetExtendedAgentCard` method.
+         */
+        A2AGetExtendedAgentCardRequest: {
+            /**
+             * @description Optional. Tenant ID, provided as a path parameter.
+             * @default
+             */
+            tenant: string;
+        };
+        /**
+         * Get Task Push Notification Config Request
+         * @description Represents a request for the `GetTaskPushNotificationConfig` method.
+         */
+        A2AGetTaskPushNotificationConfigRequest: {
+            /**
+             * @description The resource ID of the configuration to retrieve.
+             * @default
+             */
+            id: string;
+            /**
+             * @description The parent task resource ID.
+             * @default
+             */
+            taskId: string;
+            /**
+             * @description Optional. Tenant ID, provided as a path parameter.
+             * @default
+             */
+            tenant: string;
+        } & {
+            [key: string]: string;
+        };
+        /**
+         * Get Task Request
+         * @description Represents a request for the `GetTask` method.
+         */
+        A2AGetTaskRequest: {
+            /**
+             * @description The maximum number of most recent messages from the task's history to retrieve. An
+             *      unset value means the client does not impose any limit. A value of zero is
+             *      a request to not include any messages. The server MUST NOT return more
+             *      messages than the provided value, but MAY apply a lower limit.
+             */
+            historyLength?: number | string;
+            /**
+             * @description The resource ID of the task to retrieve.
+             * @default
+             */
+            id: string;
+            /**
+             * @description Optional. Tenant ID, provided as a path parameter.
+             * @default
+             */
+            tenant: string;
+        } & {
+            [key: string]: number | string;
+        };
+        /**
+         * HTTP Auth Security Scheme
+         * @description Defines a security scheme using HTTP authentication.
+         */
+        A2AHTTPAuthSecurityScheme: {
+            /**
+             * @description A hint to the client to identify how the bearer token is formatted (e.g., "JWT").
+             *      Primarily for documentation purposes.
+             * @default
+             */
+            bearerFormat: string;
+            /**
+             * @description An optional description for the security scheme.
+             * @default
+             */
+            description: string;
+            /**
+             * @description The name of the HTTP Authentication scheme to be used in the Authorization header,
+             *      as defined in RFC7235 (e.g., "Bearer").
+             *      This value should be registered in the IANA Authentication Scheme registry.
+             * @default
+             */
+            scheme: string;
+        } & {
+            [key: string]: string;
+        };
+        /**
+         * ImplicitO Auth Flow
+         * @description Deprecated: Use Authorization Code + PKCE instead.
+         */
+        A2AImplicitOAuthFlow: {
+            /**
+             * @description The authorization URL to be used for this flow. This MUST be in the
+             *      form of a URL. The OAuth2 standard requires the use of TLS
+             * @default
+             */
+            authorizationUrl: string;
+            /**
+             * @description The URL to be used for obtaining refresh tokens. This MUST be in the
+             *      form of a URL. The OAuth2 standard requires the use of TLS.
+             * @default
+             */
+            refreshUrl: string;
+            /**
+             * @description The available scopes for the OAuth2 security scheme. A map between the
+             *      scope name and a short description for it. The map MAY be empty.
+             */
+            scopes?: {
+                [key: string]: string;
+            };
+        } & {
+            [key: string]: string;
+        };
+        /**
+         * List Task Push Notification Configs Request
+         * @description Represents a request for the `ListTaskPushNotificationConfigs` method.
+         */
+        A2AListTaskPushNotificationConfigsRequest: {
+            /**
+             * @description The maximum number of configurations to return.
+             * @default 0
+             */
+            pageSize: number | string;
+            /**
+             * @description A page token received from a previous `ListTaskPushNotificationConfigsRequest` call.
+             * @default
+             */
+            pageToken: string;
+            /**
+             * @description The parent task resource ID.
+             * @default
+             */
+            taskId: string;
+            /**
+             * @description Optional. Tenant ID, provided as a path parameter.
+             * @default
+             */
+            tenant: string;
+        } & {
+            [key: string]: (number | string) | string;
+        };
+        /**
+         * List Task Push Notification Configs Response
+         * @description Represents a successful response for the `ListTaskPushNotificationConfigs`
+         *      method.
+         */
+        A2AListTaskPushNotificationConfigsResponse: {
+            /** @description The list of push notification configurations. */
+            configs?: components["schemas"]["A2ATaskPushNotificationConfig"][];
+            /**
+             * @description A token to retrieve the next page of results, or empty if there are no more results in the list.
+             * @default
+             */
+            nextPageToken: string;
+        } & {
+            [key: string]: string;
+        };
+        /**
+         * List Tasks Request
+         * @description Parameters for listing tasks with optional filtering criteria.
+         */
+        A2AListTasksRequest: {
+            /**
+             * @description Filter tasks by context ID to get tasks from a specific conversation or session.
+             * @default
+             */
+            contextId: string;
+            /** @description The maximum number of messages to include in each task's history. */
+            historyLength?: number | string;
+            /**
+             * @description Whether to include artifacts in the returned tasks.
+             *      Defaults to false to reduce payload size.
+             */
+            includeArtifacts?: boolean;
+            /**
+             * @description The maximum number of tasks to return. The service may return fewer than this value.
+             *      If unspecified, at most 50 tasks will be returned.
+             *      The minimum value is 1.
+             *      The maximum value is 100.
+             */
+            pageSize?: number | string;
+            /**
+             * @description A page token, received from a previous `ListTasks` call.
+             *      `ListTasksResponse.next_page_token`.
+             *      Provide this to retrieve the subsequent page.
+             * @default
+             */
+            pageToken: string;
+            /**
+             * Task State
+             * @description Filter tasks by their current status state.
+             * @default 0
+             */
+            status: string | ("TASK_STATE_SUBMITTED" | "TASK_STATE_WORKING" | "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED" | "TASK_STATE_CANCELED" | "TASK_STATE_INPUT_REQUIRED" | "TASK_STATE_REJECTED" | "TASK_STATE_AUTH_REQUIRED") | number;
+            /**
+             * @description Filter tasks which have a status updated after the provided timestamp in ISO 8601 format (e.g., "2023-10-27T10:00:00Z").
+             *      Only tasks with a status timestamp time greater than or equal to this value will be returned.
+             */
+            statusTimestampAfter?: components["schemas"]["A2ATimestamp"];
+            /**
+             * @description Tenant ID, provided as a path parameter.
+             * @default
+             */
+            tenant: string;
+        } & {
+            [key: string]: string | (number | string) | boolean | (number | string) | components["schemas"]["A2ATimestamp"];
+        };
+        /**
+         * List Tasks Response
+         * @description Result object for `ListTasks` method containing an array of tasks and pagination information.
+         */
+        A2AListTasksResponse: {
+            /**
+             * @description A token to retrieve the next page of results, or empty if there are no more results in the list.
+             * @default
+             */
+            nextPageToken: string;
+            /**
+             * @description The page size used for this response.
+             * @default 0
+             */
+            pageSize: number | string;
+            /** @description Array of tasks matching the specified criteria. */
+            tasks?: components["schemas"]["A2ATask"][];
+            /**
+             * @description Total number of tasks available (before pagination).
+             * @default 0
+             */
+            totalSize: number | string;
+        } & {
+            [key: string]: string | (number | string) | (number | string);
+        };
+        /**
+         * Message
+         * @description `Message` is one unit of communication between client and server. It can be
+         *      associated with a context and/or a task. For server messages, `context_id` must
+         *      be provided, and `task_id` only if a task was created. For client messages, both
+         *      fields are optional, with the caveat that if both are provided, they have to
+         *      match (the `context_id` has to be the one that is set on the task). If only
+         *      `task_id` is provided, the server will infer `context_id` from it.
+         */
+        A2AMessage: {
+            /**
+             * @description Optional. The context id of the message. If set, the message will be associated with the given context.
+             * @default
+             */
+            contextId: string;
+            /** @description The URIs of extensions that are present or contributed to this Message. */
+            extensions?: string[];
+            /**
+             * @description The unique identifier (e.g. UUID) of the message. This is created by the message creator.
+             * @default
+             */
+            messageId: string;
+            /** @description Optional. Any metadata to provide along with the message. */
+            metadata?: components["schemas"]["A2AStruct"];
+            /** @description Parts is the container of the message content. */
+            parts?: components["schemas"]["A2APart"][];
+            /** @description A list of task IDs that this message references for additional context. */
+            referenceTaskIds?: string[];
+            /**
+             * Role
+             * @description Identifies the sender of the message.
+             * @default 0
+             */
+            role: string | ("ROLE_USER" | "ROLE_AGENT") | number;
+            /**
+             * @description Optional. The task id of the message. If set, the message will be associated with the given task.
+             * @default
+             */
+            taskId: string;
+        } & {
+            [key: string]: string | string[];
+        };
+        /**
+         * Mutual Tls Security Scheme
+         * @description Defines a security scheme using mTLS authentication.
+         */
+        A2AMutualTlsSecurityScheme: {
+            /**
+             * @description An optional description for the security scheme.
+             * @default
+             */
+            description: string;
+        };
+        /**
+         * O Auth2 Security Scheme
+         * @description Defines a security scheme using OAuth 2.0.
+         */
+        A2AOAuth2SecurityScheme: {
+            /**
+             * @description An optional description for the security scheme.
+             * @default
+             */
+            description: string;
+            /** @description An object containing configuration information for the supported OAuth 2.0 flows. */
+            flows?: components["schemas"]["A2AOAuthFlows"];
+            /**
+             * @description URL to the OAuth2 authorization server metadata [RFC 8414](https://datatracker.ietf.org/doc/html/rfc8414).
+             *      TLS is required.
+             * @default
+             */
+            oauth2MetadataUrl: string;
+        } & {
+            [key: string]: string;
+        };
+        /**
+         * O Auth Flows
+         * @description Defines the configuration for the supported OAuth 2.0 flows.
+         */
+        A2AOAuthFlows: {
+            /** @description Configuration for the OAuth Authorization Code flow. */
+            authorizationCode?: components["schemas"]["A2AAuthorizationCodeOAuthFlow"];
+            /** @description Configuration for the OAuth Client Credentials flow. */
+            clientCredentials?: components["schemas"]["A2AClientCredentialsOAuthFlow"];
+            /** @description Configuration for the OAuth Device Code flow. */
+            deviceCode?: components["schemas"]["A2ADeviceCodeOAuthFlow"];
+            /** @description Deprecated: Use Authorization Code + PKCE instead. */
+            implicit?: components["schemas"]["A2AImplicitOAuthFlow"];
+            /** @description Deprecated: Use Authorization Code + PKCE or Device Code. */
+            password?: components["schemas"]["A2APasswordOAuthFlow"];
+        } & {
+            [key: string]: components["schemas"]["A2AAuthorizationCodeOAuthFlow"] | components["schemas"]["A2AClientCredentialsOAuthFlow"] | components["schemas"]["A2ADeviceCodeOAuthFlow"];
+        };
+        /**
+         * Open Id Connect Security Scheme
+         * @description Defines a security scheme using OpenID Connect.
+         */
+        A2AOpenIdConnectSecurityScheme: {
+            /**
+             * @description An optional description for the security scheme.
+             * @default
+             */
+            description: string;
+            /**
+             * @description The [OpenID Connect Discovery URL](https://openid.net/specs/openid-connect-discovery-1_0.html) for the OIDC provider's metadata.
+             * @default
+             */
+            openIdConnectUrl: string;
+        } & {
+            [key: string]: string;
+        };
+        /**
+         * Part
+         * @description `Part` represents a container for a section of communication content.
+         *      Parts can be purely textual, some sort of file (image, video, etc) or
+         *      a structured data blob (i.e. JSON).
+         */
+        A2APart: {
+            /** @description Arbitrary structured `data` as a JSON value (object, array, string, number, boolean, or null). */
+            data?: components["schemas"]["A2AValue"];
+            /**
+             * @description An optional `filename` for the file (e.g., "document.pdf").
+             * @default
+             */
+            filename: string;
+            /**
+             * @description The `media_type` (MIME type) of the part content (e.g., "text/plain", "application/json", "image/png").
+             *      This field is available for all part types.
+             * @default
+             */
+            mediaType: string;
+            /** @description Optional. metadata associated with this part. */
+            metadata?: components["schemas"]["A2AStruct"];
+            /** @description The `raw` byte content of a file. In JSON serialization, this is encoded as a base64 string. */
+            raw?: string;
+            /** @description The string content of the `text` part. */
+            text?: string;
+            /** @description A `url` pointing to the file's content. */
+            url?: string;
+        } & {
+            [key: string]: string;
+        };
+        /**
+         * PasswordO Auth Flow
+         * @description Deprecated: Use Authorization Code + PKCE or Device Code.
+         */
+        A2APasswordOAuthFlow: {
+            /**
+             * @description The URL to be used for obtaining refresh tokens. This MUST be in the
+             *      form of a URL. The OAuth2 standard requires the use of TLS.
+             * @default
+             */
+            refreshUrl: string;
+            /**
+             * @description The available scopes for the OAuth2 security scheme. A map between the
+             *      scope name and a short description for it. The map MAY be empty.
+             */
+            scopes?: {
+                [key: string]: string;
+            };
+            /**
+             * @description The token URL to be used for this flow. This MUST be in the form of a URL.
+             *      The OAuth2 standard requires the use of TLS.
+             * @default
+             */
+            tokenUrl: string;
+        } & {
+            [key: string]: string;
+        };
+        /**
+         * Security Requirement
+         * @description Defines the security requirements for an agent.
+         */
+        A2ASecurityRequirement: {
+            /** @description A map of security schemes to the required scopes. */
+            schemes?: {
+                [key: string]: components["schemas"]["A2AStringList"];
+            };
+        };
+        /**
+         * Security Scheme
+         * @description Defines a security scheme that can be used to secure an agent's endpoints.
+         *      This is a discriminated union type based on the OpenAPI 3.2 Security Scheme Object.
+         *      See: https://spec.openapis.org/oas/v3.2.0.html#security-scheme-object
+         */
+        A2ASecurityScheme: {
+            /** @description API key-based authentication. */
+            apiKeySecurityScheme?: components["schemas"]["A2AAPIKeySecurityScheme"];
+            /** @description HTTP authentication (Basic, Bearer, etc.). */
+            httpAuthSecurityScheme?: components["schemas"]["A2AHTTPAuthSecurityScheme"];
+            /** @description Mutual TLS authentication. */
+            mtlsSecurityScheme?: components["schemas"]["A2AMutualTlsSecurityScheme"];
+            /** @description OAuth 2.0 authentication. */
+            oauth2SecurityScheme?: components["schemas"]["A2AOAuth2SecurityScheme"];
+            /** @description OpenID Connect authentication. */
+            openIdConnectSecurityScheme?: components["schemas"]["A2AOpenIdConnectSecurityScheme"];
+        } & {
+            [key: string]: components["schemas"]["A2AAPIKeySecurityScheme"] | components["schemas"]["A2AHTTPAuthSecurityScheme"] | components["schemas"]["A2AMutualTlsSecurityScheme"] | components["schemas"]["A2AOAuth2SecurityScheme"] | components["schemas"]["A2AOpenIdConnectSecurityScheme"];
+        };
+        /**
+         * Send Message Configuration
+         * @description Configuration of a send message request.
+         */
+        A2ASendMessageConfiguration: {
+            /**
+             * @description A list of media types the client is prepared to accept for response parts.
+             *      Agents SHOULD use this to tailor their output.
+             */
+            acceptedOutputModes?: string[];
+            /**
+             * @description The maximum number of most recent messages from the task's history to retrieve in
+             *      the response. An unset value means the client does not impose any limit. A
+             *      value of zero is a request to not include any messages. The server MUST NOT
+             *      return more messages than the provided value, but MAY apply a lower limit.
+             */
+            historyLength?: number | string;
+            /**
+             * @description If `true`, the operation returns immediately after creating the task,
+             *      even if processing is still in progress.
+             *      If `false` (default), the operation MUST wait until the task reaches a
+             *      terminal (`COMPLETED`, `FAILED`, `CANCELED`, `REJECTED`) or interrupted
+             *      (`INPUT_REQUIRED`, `AUTH_REQUIRED`) state before returning.
+             * @default false
+             */
+            returnImmediately: boolean;
+            /**
+             * @description Configuration for the agent to send push notifications for task updates.
+             *      Task id should be empty when sending this configuration in a `SendMessage` request.
+             */
+            taskPushNotificationConfig?: components["schemas"]["A2ATaskPushNotificationConfig"];
+        } & {
+            [key: string]: string[] | (number | string) | boolean | components["schemas"]["A2ATaskPushNotificationConfig"];
+        };
+        /**
+         * Send Message Request
+         * @description Represents a request for the `SendMessage` method.
+         */
+        A2ASendMessageRequest: {
+            /** @description Configuration for the send request. */
+            configuration?: components["schemas"]["A2ASendMessageConfiguration"];
+            /** @description The message to send to the agent. */
+            message?: components["schemas"]["A2AMessage"];
+            /** @description A flexible key-value map for passing additional context or parameters. */
+            metadata?: components["schemas"]["A2AStruct"];
+            /**
+             * @description Optional. Tenant ID, provided as a path parameter.
+             * @default
+             */
+            tenant: string;
+        };
+        /**
+         * Send Message Response
+         * @description Represents the response for the `SendMessage` method.
+         */
+        A2ASendMessageResponse: {
+            /** @description A message from the agent. */
+            message?: components["schemas"]["A2AMessage"];
+            /** @description The task created or updated by the message. */
+            task?: components["schemas"]["A2ATask"];
+        };
+        /**
+         * Stream Response
+         * @description A wrapper object used in streaming operations to encapsulate different types of response data.
+         */
+        A2AStreamResponse: {
+            /** @description An event indicating a task artifact update. */
+            artifactUpdate?: components["schemas"]["A2ATaskArtifactUpdateEvent"];
+            /** @description A Message object containing a message from the agent. */
+            message?: components["schemas"]["A2AMessage"];
+            /** @description An event indicating a task status update. */
+            statusUpdate?: components["schemas"]["A2ATaskStatusUpdateEvent"];
+            /** @description A Task object containing the current state of the task. */
+            task?: components["schemas"]["A2ATask"];
+        } & {
+            [key: string]: components["schemas"]["A2ATaskArtifactUpdateEvent"] | components["schemas"]["A2ATaskStatusUpdateEvent"];
+        };
+        /**
+         * String List
+         * @description A list of strings.
+         */
+        A2AStringList: {
+            /** @description The individual string values. */
+            list?: string[];
+        };
+        /** Struct */
+        A2AStruct: Record<string, never>;
+        /**
+         * Subscribe To Task Request
+         * @description Represents a request for the `SubscribeToTask` method.
+         */
+        A2ASubscribeToTaskRequest: {
+            /**
+             * @description The resource ID of the task to subscribe to.
+             * @default
+             */
+            id: string;
+            /**
+             * @description Optional. Tenant ID, provided as a path parameter.
+             * @default
+             */
+            tenant: string;
+        };
+        /**
+         * Task
+         * @description `Task` is the core unit of action for A2A. It has a current status
+         *      and when results are created for the task they are stored in the
+         *      artifact. If there are multiple turns for a task, these are stored in
+         *      history.
+         */
+        A2ATask: {
+            /** @description A set of output artifacts for a `Task`. */
+            artifacts?: components["schemas"]["A2AArtifact"][];
+            /**
+             * @description Unique identifier (e.g. UUID) for the contextual collection of interactions
+             *      (tasks and messages).
+             * @default
+             */
+            contextId: string;
+            /** @description The history of interactions from a `Task`. */
+            history?: components["schemas"]["A2AMessage"][];
+            /**
+             * @description Unique identifier (e.g. UUID) for the task, generated by the server for a
+             *      new task.
+             * @default
+             */
+            id: string;
+            /** @description A key/value object to store custom metadata about a task. */
+            metadata?: components["schemas"]["A2AStruct"];
+            /** @description The current status of a `Task`, including `state` and a `message`. */
+            status?: components["schemas"]["A2ATaskStatus"];
+        } & {
+            [key: string]: string;
+        };
+        /**
+         * Task Artifact Update Event
+         * @description A task delta where an artifact has been generated.
+         */
+        A2ATaskArtifactUpdateEvent: {
+            /**
+             * @description If true, the content of this artifact should be appended to a previously
+             *      sent artifact with the same ID.
+             * @default false
+             */
+            append: boolean;
+            /** @description The artifact that was generated or updated. */
+            artifact?: components["schemas"]["A2AArtifact"];
+            /**
+             * @description The ID of the context that this task belongs to.
+             * @default
+             */
+            contextId: string;
+            /**
+             * @description If true, this is the final chunk of the artifact.
+             * @default false
+             */
+            lastChunk: boolean;
+            /** @description Optional. Metadata associated with the artifact update. */
+            metadata?: components["schemas"]["A2AStruct"];
+            /**
+             * @description The ID of the task for this artifact.
+             * @default
+             */
+            taskId: string;
+        } & {
+            [key: string]: string | boolean;
+        };
+        /**
+         * Task Push Notification Config
+         * @description A container associating a push notification configuration with a specific task.
+         */
+        A2ATaskPushNotificationConfig: {
+            /** @description Authentication information required to send the notification. */
+            authentication?: components["schemas"]["A2AAuthenticationInfo"];
+            /**
+             * @description The push notification configuration details.
+             *      A unique identifier (e.g. UUID) for this push notification configuration.
+             * @default
+             */
+            id: string;
+            /**
+             * @description The ID of the task this configuration is associated with.
+             * @default
+             */
+            taskId: string;
+            /**
+             * @description Optional. Tenant ID.
+             * @default
+             */
+            tenant: string;
+            /**
+             * @description A token unique for this task or session.
+             * @default
+             */
+            token: string;
+            /**
+             * @description The URL where the notification should be sent.
+             * @default
+             */
+            url: string;
+        } & {
+            [key: string]: string;
+        };
+        /**
+         * Task Status
+         * @description A container for the status of a task
+         */
+        A2ATaskStatus: {
+            /** @description A message associated with the status. */
+            message?: components["schemas"]["A2AMessage"];
+            /**
+             * Task State
+             * @description The current state of this task.
+             * @default 0
+             */
+            state: string | ("TASK_STATE_SUBMITTED" | "TASK_STATE_WORKING" | "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED" | "TASK_STATE_CANCELED" | "TASK_STATE_INPUT_REQUIRED" | "TASK_STATE_REJECTED" | "TASK_STATE_AUTH_REQUIRED") | number;
+            /**
+             * @description ISO 8601 Timestamp when the status was recorded.
+             *      Example: "2023-10-27T10:00:00Z"
+             */
+            timestamp?: components["schemas"]["A2ATimestamp"];
+        };
+        /**
+         * Task Status Update Event
+         * @description An event sent by the agent to notify the client of a change in a task's status.
+         */
+        A2ATaskStatusUpdateEvent: {
+            /**
+             * @description The ID of the context that the task belongs to.
+             * @default
+             */
+            contextId: string;
+            /** @description Optional. Metadata associated with the task update. */
+            metadata?: components["schemas"]["A2AStruct"];
+            /** @description The new status of the task. */
+            status?: components["schemas"]["A2ATaskStatus"];
+            /**
+             * @description The ID of the task that has changed.
+             * @default
+             */
+            taskId: string;
+        } & {
+            [key: string]: string;
+        };
+        /**
+         * Timestamp
+         * Format: date-time
+         */
+        A2ATimestamp: string;
+        /** Value */
+        A2AValue: unknown;
         /**
          * AdminAgentCategory
          * @description A category with the number of Agents it holds.
@@ -4300,6 +5621,109 @@ export interface components {
             session_id: string | null;
             /** State */
             state: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * AdminSessionDetail
+         * @description A sanitized stored session plus the operator's runtime projection.
+         */
+        AdminSessionDetail: {
+            /** Agent Id */
+            agent_id?: string | null;
+            /** Agent State */
+            agent_state?: string | null;
+            /** Assistant Id */
+            assistant_id?: string | null;
+            /** Conversation State */
+            conversation_state: string;
+            /** Created At */
+            created_at?: string | null;
+            /** Current Responses */
+            current_responses?: components["schemas"]["ResponseView"][] | null;
+            /** Deployment Name */
+            deployment_name?: string | null;
+            /** Engine Available */
+            engine_available?: boolean | null;
+            /** Engine Capabilities */
+            engine_capabilities?: {
+                [key: string]: unknown;
+            } | null;
+            /** Engine Kind */
+            engine_kind?: string | null;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Has Local Runtime */
+            has_local_runtime: boolean;
+            /** Held Inputs */
+            held_inputs?: components["schemas"]["HeldInputView"][] | null;
+            /** Last Error */
+            last_error?: string | null;
+            /** Last Output At */
+            last_output_at?: string | null;
+            last_response?: components["schemas"]["ResponseView"] | null;
+            /** Mcp Connections */
+            mcp_connections: unknown[];
+            /** Model Name */
+            model_name?: string | null;
+            /** Output Seq */
+            output_seq?: number | null;
+            /** Pending Interaction */
+            pending_interaction?: {
+                [key: string]: unknown;
+            } | null;
+            /** Permission Mode */
+            permission_mode?: string | null;
+            /** Read At */
+            read_at?: string | null;
+            /** Recovery Reason */
+            recovery_reason?: string | null;
+            /** Runtime Status */
+            runtime_status?: string | null;
+            /** Runtime Unavailable */
+            runtime_unavailable?: boolean | null;
+            /** Runtime Versions */
+            runtime_versions: {
+                [key: string]: unknown;
+            };
+            /** Sandbox Id */
+            sandbox_id?: string | null;
+            /** Session Id */
+            session_id: string;
+            /** Session Kind */
+            session_kind?: string | null;
+            /** Slash Command Details */
+            slash_command_details?: {
+                [key: string]: unknown;
+            }[] | null;
+            /** Slash Commands */
+            slash_commands?: unknown[] | null;
+            /** Source Type */
+            source_type?: string | null;
+            /** Startup Progress */
+            startup_progress?: string | null;
+            /** State */
+            state?: string | null;
+            /** Template Mcp Config */
+            template_mcp_config: {
+                [key: string]: unknown;
+            } | null;
+            /** Template Mcp Servers */
+            template_mcp_servers: string[];
+            /** Template Skills */
+            template_skills: unknown[];
+            /** Terminal Cwd */
+            terminal_cwd?: string | null;
+            /** Title */
+            title?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
+            /** User Id */
+            user_id?: string | null;
+            /** Workspace Panels */
+            workspace_panels?: {
+                [key: string]: boolean;
+            } | null;
         } & {
             [key: string]: unknown;
         };
@@ -4979,6 +6403,14 @@ export interface components {
             /** Message */
             message: string;
         };
+        /** ApiEnvelope[AdminSessionDetail] */
+        ApiEnvelope_AdminSessionDetail_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["AdminSessionDetail"];
+            /** Message */
+            message: string;
+        };
         /** ApiEnvelope[AdminSessionPage] */
         ApiEnvelope_AdminSessionPage_: {
             /** Code */
@@ -5112,6 +6544,14 @@ export interface components {
             /** Code */
             code: string;
             data: components["schemas"]["ArtifactAgentStatus"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[ArtifactDetail] */
+        ApiEnvelope_ArtifactDetail_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["ArtifactDetail"];
             /** Message */
             message: string;
         };
@@ -5336,6 +6776,14 @@ export interface components {
             /** Code */
             code: string;
             data: components["schemas"]["DeploymentRecord"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[DeploymentRun] */
+        ApiEnvelope_DeploymentRun_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["DeploymentRun"];
             /** Message */
             message: string;
         };
@@ -5830,6 +7278,15 @@ export interface components {
             /** Message */
             message: string;
         };
+        /** ApiEnvelope[list[ArtifactVersionRecord]] */
+        ApiEnvelope_list_ArtifactVersionRecord__: {
+            /** Code */
+            code: string;
+            /** Data */
+            data: components["schemas"]["ArtifactVersionRecord"][];
+            /** Message */
+            message: string;
+        };
         /** ApiEnvelope[list[Assistant]] */
         ApiEnvelope_list_Assistant__: {
             /** Code */
@@ -5848,6 +7305,15 @@ export interface components {
             /** Message */
             message: string;
         };
+        /** ApiEnvelope[list[ChannelProviderRecord]] */
+        ApiEnvelope_list_ChannelProviderRecord__: {
+            /** Code */
+            code: string;
+            /** Data */
+            data: components["schemas"]["ChannelProviderRecord"][];
+            /** Message */
+            message: string;
+        };
         /** ApiEnvelope[list[Connector]] */
         ApiEnvelope_list_Connector__: {
             /** Code */
@@ -5863,6 +7329,15 @@ export interface components {
             code: string;
             /** Data */
             data: components["schemas"]["DeploymentRecord"][];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[list[DeploymentRun]] */
+        ApiEnvelope_list_DeploymentRun__: {
+            /** Code */
+            code: string;
+            /** Data */
+            data: components["schemas"]["DeploymentRun"][];
             /** Message */
             message: string;
         };
@@ -5936,6 +7411,48 @@ export interface components {
             data: {
                 [key: string]: unknown;
             };
+        };
+        /** ArtifactDetail */
+        ArtifactDetail: {
+            /** Artifact Id */
+            artifact_id: string;
+            /** Astrabox Artifact */
+            astrabox_artifact: {
+                [key: string]: unknown;
+            };
+            /** Content */
+            content: string;
+            /** Created At */
+            created_at: string;
+            /** Current Version */
+            current_version: number;
+            /** Description */
+            description: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "html" | "react" | "svg" | "markdown" | "mermaid" | "code";
+            /** Language */
+            language?: string | null;
+            /** Manifest */
+            manifest: {
+                [key: string]: unknown;
+            };
+            /** Origin */
+            origin: {
+                [key: string]: unknown;
+            };
+            share: components["schemas"]["ArtifactShare"];
+            /** Title */
+            title: string;
+            /** Updated At */
+            updated_at: string;
+            /** Url */
+            url: string;
+            version: components["schemas"]["ArtifactVersionRecord"];
+        } & {
+            [key: string]: unknown;
         };
         /** ArtifactMetadataPatch */
         ArtifactMetadataPatch: {
@@ -6180,6 +7697,40 @@ export interface components {
             audience: "anyone" | "signed_in";
             /** Version */
             version: number | null;
+        };
+        /**
+         * ArtifactVersionRecord
+         * @description One stored version; content is returned only by a detail read.
+         */
+        ArtifactVersionRecord: {
+            /** Artifact Id */
+            artifact_id: string;
+            /** Author Kind */
+            author_kind: string;
+            /** Author User Id */
+            author_user_id: string | null;
+            /** Byte Size */
+            byte_size: number;
+            /** Content */
+            content?: string | null;
+            /** Created At */
+            created_at: string;
+            /** Kind */
+            kind: string;
+            /** Language */
+            language: string | null;
+            /** Manifest */
+            manifest: {
+                [key: string]: unknown;
+            };
+            /** Sha256 */
+            sha256: string;
+            /** Title */
+            title: string;
+            /** Version */
+            version: number;
+        } & {
+            [key: string]: unknown;
         };
         /** ArtifactWhere */
         ArtifactWhere: {
@@ -6554,6 +8105,118 @@ export interface components {
             participant: string;
             /** User Id */
             user_id: string;
+        };
+        /**
+         * ChannelField
+         * @description One provider-owned field in the channel binding form.
+         *
+         *     Provider fields cannot be hard-coded in the console: an installed native
+         *     provider must be able to replace a bundled adapter without teaching the
+         *     frontend another schema. ``secret`` controls storage as well as rendering;
+         *     secret fields are write-only and never enter the deployment repository.
+         */
+        ChannelField: {
+            /** Default */
+            default?: unknown;
+            /**
+             * Help
+             * @default
+             */
+            help: string;
+            /** Key */
+            key: string;
+            /**
+             * Kind
+             * @default string
+             */
+            kind: string;
+            /** Label */
+            label: string;
+            /**
+             * Options
+             * @default []
+             */
+            options: string[];
+            /**
+             * Placeholder
+             * @default
+             */
+            placeholder: string;
+            /**
+             * Required
+             * @default true
+             */
+            required: boolean;
+            /**
+             * Secret
+             * @default false
+             */
+            secret: boolean;
+        };
+        /**
+         * ChannelProviderRecord
+         * @description The native provider descriptor plus platform configuration permissions.
+         */
+        ChannelProviderRecord: {
+            /** Callback Path */
+            callback_path?: string | null;
+            /**
+             * Can Configure Execution User
+             * @default false
+             */
+            can_configure_execution_user: boolean;
+            /**
+             * Config Fields
+             * @default []
+             */
+            config_fields: components["schemas"]["ChannelField"][];
+            /**
+             * Credential Fields
+             * @default []
+             */
+            credential_fields: components["schemas"]["ChannelField"][];
+            /** Documentation Url */
+            documentation_url?: string | null;
+            /**
+             * Execution Modes
+             * @default [
+             *       "owner",
+             *       "account",
+             *       "linked"
+             *     ]
+             */
+            execution_modes: string[];
+            /** Label */
+            label: string;
+            /** Name */
+            name: string;
+            /**
+             * Participant Example
+             * @default
+             */
+            participant_example: string;
+            /**
+             * Participant Format
+             * @default
+             */
+            participant_format: string;
+            /**
+             * Scene
+             * @default
+             */
+            scene: string;
+            /** Setup Url */
+            setup_url?: string | null;
+            /**
+             * Supports Source
+             * @default false
+             */
+            supports_source: boolean;
+            /**
+             * Uses Trigger Secret
+             * @default false
+             */
+            uses_trigger_secret: boolean;
         };
         /**
          * ChildRunMessagePage
@@ -6966,6 +8629,36 @@ export interface components {
             [key: string]: unknown;
         };
         /**
+         * DeploymentRun
+         * @description The public Run projection produced by DeploymentService._render_run.
+         */
+        DeploymentRun: {
+            /** Agent Id */
+            agent_id: string | null;
+            /** Assistant Id */
+            assistant_id: string | null;
+            /** Created At */
+            created_at: string | null;
+            /** Deployment Id */
+            deployment_id: string;
+            /** Error */
+            error: string | null;
+            /** Input Id */
+            input_id: string | null;
+            /** Replayed From Run Id */
+            replayed_from_run_id: string | null;
+            /** Run Id */
+            run_id: string;
+            /** Scheduled For */
+            scheduled_for: string | null;
+            /** Session Id */
+            session_id: string | null;
+            /** Status */
+            status: string;
+            /** Trigger */
+            trigger: string;
+        };
+        /**
          * DeploymentTriggerAck
          * @description What an inbound trigger is told once the work is durable.
          *
@@ -6992,6 +8685,47 @@ export interface components {
             display_name: string;
             /** Timezone */
             timezone?: string | null;
+        };
+        /**
+         * ErrorDetails
+         * @description The structured diagnostics emitted by ``APIError.to_error_envelope``.
+         */
+        ErrorDetails: {
+            /** Category */
+            category: string;
+            /** Cause Code */
+            cause_code?: string | null;
+            /** Code */
+            code: string;
+            /** Debug Message */
+            debug_message?: string | null;
+            /** Evidence */
+            evidence?: {
+                [key: string]: unknown;
+            } | null;
+            /** Owner */
+            owner: string;
+            /** Retryable */
+            retryable: boolean;
+            /** Status Code */
+            status_code: number;
+            /** User Message */
+            user_message: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * ErrorResponse
+         * @description The JSON body emitted by the shared API exception handlers.
+         */
+        ErrorResponse: {
+            /** Code */
+            code: string;
+            /** Data */
+            data: unknown;
+            error: components["schemas"]["ErrorDetails"];
+            /** Message */
+            message: string;
         };
         /**
          * ExposedPortUrl
@@ -7052,11 +8786,6 @@ export interface components {
             management_console: boolean;
             /** Name */
             name: string;
-        };
-        /** HTTPValidationError */
-        HTTPValidationError: {
-            /** Detail */
-            detail?: components["schemas"]["ValidationError"][];
         };
         /**
          * HeldInputView
@@ -7182,6 +8911,246 @@ export interface components {
             path?: string | null;
         };
         /**
+         * Annotations
+         * @description Optional annotations the client can use to inform how objects are used or displayed.
+         */
+        MCPAnnotations: {
+            /**
+             * Audience
+             * @default null
+             */
+            audience: ("user" | "assistant")[] | null;
+            /**
+             * Lastmodified
+             * @default null
+             */
+            lastModified: string | null;
+            /**
+             * Priority
+             * @default null
+             */
+            priority: number | null;
+        };
+        /**
+         * AudioContent
+         * @description Audio provided to or from an LLM.
+         */
+        MCPAudioContent: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /** @default null */
+            annotations: components["schemas"]["MCPAnnotations"] | null;
+            /** Data */
+            data: string;
+            /** Mimetype */
+            mimeType: string;
+            /**
+             * Type
+             * @default audio
+             * @constant
+             */
+            type: "audio";
+        };
+        /**
+         * BlobResourceContents
+         * @description Binary contents of a resource.
+         */
+        MCPBlobResourceContents: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /** Blob */
+            blob: string;
+            /**
+             * Mimetype
+             * @default null
+             */
+            mimeType: string | null;
+            /** Uri */
+            uri: string;
+        };
+        /**
+         * CallToolRequest
+         * @description Used by the client to invoke a tool provided by the server.
+         */
+        MCPCallToolRequest: {
+            /**
+             * Method
+             * @default tools/call
+             * @constant
+             */
+            method: "tools/call";
+            params: components["schemas"]["MCPCallToolRequestParams"];
+        };
+        /** CallToolRequestParams */
+        MCPCallToolRequestParams: {
+            /** @default null */
+            _meta: components["schemas"]["MCPRequestParamsMeta"] | null;
+            /**
+             * Arguments
+             * @default null
+             */
+            arguments: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Inputresponses
+             * @default null
+             */
+            inputResponses: {
+                [key: string]: components["schemas"]["MCPCreateMessageResult"] | components["schemas"]["MCPCreateMessageResultWithTools"] | components["schemas"]["MCPListRootsResult"] | components["schemas"]["MCPElicitResult"];
+            } | null;
+            /** Name */
+            name: string;
+            /**
+             * Requeststate
+             * @default null
+             */
+            requestState: string | null;
+            /** @default null */
+            task: components["schemas"]["MCPTaskMetadata"] | null;
+        };
+        /**
+         * CallToolResult
+         * @description The server's response to a tool call.
+         *
+         *     Errors that originate from the tool SHOULD be reported inside the result
+         *     with `is_error` set to true, not as an MCP protocol-level error, so the LLM
+         *     can see and self-correct. Errors in finding the tool, or any other
+         *     exceptional condition, should be reported as an MCP error response.
+         */
+        MCPCallToolResult: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /** Content */
+            content: (components["schemas"]["MCPTextContent"] | components["schemas"]["MCPImageContent"] | components["schemas"]["MCPAudioContent"] | components["schemas"]["MCPResourceLink"] | components["schemas"]["MCPEmbeddedResource"])[];
+            /**
+             * Iserror
+             * @default false
+             */
+            isError: boolean;
+            /**
+             * Resulttype
+             * @default complete
+             */
+            resultType: ("complete" | "input_required") | string;
+            /**
+             * Structuredcontent
+             * @default null
+             */
+            structuredContent: unknown;
+        };
+        /**
+         * CancelledNotification
+         * @description This notification can be sent by either side to indicate that it is canceling a
+         *     previously-issued request.
+         *
+         *     The request SHOULD still be in-flight, but due to communication latency, it
+         *     is always possible that this notification MAY arrive after the request has
+         *     already finished. A client MUST NOT attempt to cancel its `initialize` request.
+         */
+        MCPCancelledNotification: {
+            /**
+             * Method
+             * @default notifications/cancelled
+             * @constant
+             */
+            method: "notifications/cancelled";
+            params: components["schemas"]["MCPCancelledNotificationParams"];
+        };
+        /** CancelledNotificationParams */
+        MCPCancelledNotificationParams: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Reason
+             * @default null
+             */
+            reason: string | null;
+            /**
+             * Requestid
+             * @default null
+             */
+            requestId: number | string | null;
+        };
+        MCPClientCall: components["schemas"]["MCPInitializeRequest"] | components["schemas"]["MCPPingRequest"] | components["schemas"]["MCPListToolsRequest"] | components["schemas"]["MCPCallToolRequest"] | components["schemas"]["MCPCancelledNotification"] | components["schemas"]["MCPProgressNotification"] | components["schemas"]["MCPInitializedNotification"] | components["schemas"]["MCPRootsListChangedNotification"];
+        /**
+         * ClientCapabilities
+         * @description Capabilities a client may support.
+         *
+         *     Not a closed set: any client can define additional capabilities. Sent once in
+         *     `initialize` through 2025-11-25; per-request in `_meta` on 2026-07-28.
+         */
+        MCPClientCapabilities: {
+            /** @default null */
+            elicitation: components["schemas"]["MCPElicitationCapability"] | null;
+            /**
+             * Experimental
+             * @default null
+             */
+            experimental: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            } | null;
+            /**
+             * Extensions
+             * @default null
+             */
+            extensions: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            } | null;
+            /** @default null */
+            roots: components["schemas"]["MCPRootsCapability"] | null;
+            /** @default null */
+            sampling: components["schemas"]["MCPSamplingCapability"] | null;
+            /** @default null */
+            tasks: components["schemas"]["MCPClientTasksCapability"] | null;
+        };
+        /**
+         * ClientTasksCapability
+         * @description Capability for client tasks operations (2025-11-25 only).
+         */
+        MCPClientTasksCapability: {
+            /** @default null */
+            cancel: components["schemas"]["MCPTasksCancelCapability"] | null;
+            /** @default null */
+            list: components["schemas"]["MCPTasksListCapability"] | null;
+            /** @default null */
+            requests: components["schemas"]["MCPClientTasksRequestsCapability"] | null;
+        };
+        /**
+         * ClientTasksRequestsCapability
+         * @description Specifies which request types the client can augment with tasks (2025-11-25 only).
+         */
+        MCPClientTasksRequestsCapability: {
+            /** @default null */
+            elicitation: components["schemas"]["MCPTasksElicitationCapability"] | null;
+            /** @default null */
+            sampling: components["schemas"]["MCPTasksSamplingCapability"] | null;
+        };
+        /**
          * MCPClientToken
          * @description One key, as ``mcp_client_token_service.public_view`` renders it.
          *
@@ -7214,6 +9183,1310 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /**
+         * CompleteResult
+         * @description The server's response to a completion/complete request.
+         */
+        MCPCompleteResult: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            completion: components["schemas"]["MCPCompletion"];
+            /**
+             * Resulttype
+             * @default complete
+             */
+            resultType: ("complete" | "input_required") | string;
+        };
+        /**
+         * Completion
+         * @description Completion information.
+         */
+        MCPCompletion: {
+            /**
+             * Hasmore
+             * @default null
+             */
+            hasMore: boolean | null;
+            /**
+             * Total
+             * @default null
+             */
+            total: number | null;
+            /** Values */
+            values: string[];
+        };
+        /**
+         * CompletionsCapability
+         * @description Capability for completions operations.
+         */
+        MCPCompletionsCapability: Record<string, never>;
+        /**
+         * CreateMessageRequest
+         * @description A request from the server to sample an LLM via the client.
+         *
+         *     The client has full discretion over which model to select and should inform
+         *     the user before sampling (human in the loop). A standalone JSON-RPC request
+         *     through 2025-11-25; on 2026-07-28 it is embedded in
+         *     `InputRequiredResult.input_requests` instead. Deprecated in 2026-07-28 (SEP-2577).
+         */
+        MCPCreateMessageRequest: {
+            /**
+             * Method
+             * @default sampling/createMessage
+             * @constant
+             */
+            method: "sampling/createMessage";
+            params: components["schemas"]["MCPCreateMessageRequestParams"];
+        };
+        /** CreateMessageRequestParams */
+        MCPCreateMessageRequestParams: {
+            /** @default null */
+            _meta: components["schemas"]["MCPRequestParamsMeta"] | null;
+            /**
+             * Includecontext
+             * @default null
+             */
+            includeContext: ("none" | "thisServer" | "allServers") | null;
+            /** Maxtokens */
+            maxTokens: number;
+            /** Messages */
+            messages: components["schemas"]["MCPSamplingMessage"][];
+            /**
+             * Metadata
+             * @default null
+             */
+            metadata: {
+                [key: string]: unknown;
+            } | null;
+            /** @default null */
+            modelPreferences: components["schemas"]["MCPModelPreferences"] | null;
+            /**
+             * Stopsequences
+             * @default null
+             */
+            stopSequences: string[] | null;
+            /**
+             * Systemprompt
+             * @default null
+             */
+            systemPrompt: string | null;
+            /** @default null */
+            task: components["schemas"]["MCPTaskMetadata"] | null;
+            /**
+             * Temperature
+             * @default null
+             */
+            temperature: number | null;
+            /** @default null */
+            toolChoice: components["schemas"]["MCPToolChoice"] | null;
+            /**
+             * Tools
+             * @default null
+             */
+            tools: components["schemas"]["MCPTool"][] | null;
+        };
+        /**
+         * CreateMessageResult
+         * @description The client's response to a sampling/createMessage request from the server.
+         *
+         *     This is the backwards-compatible version that returns single content (no arrays).
+         *     Used when the request does not include tools.
+         *
+         *     On 2026-07-28 this travels embedded in an `InputResponses` map rather than
+         *     as a top-level JSON-RPC result. Deprecated in 2026-07-28 (SEP-2577).
+         */
+        MCPCreateMessageResult: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /** Content */
+            content: components["schemas"]["MCPTextContent"] | components["schemas"]["MCPImageContent"] | components["schemas"]["MCPAudioContent"];
+            /** Model */
+            model: string;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "user" | "assistant";
+            /**
+             * Stopreason
+             * @default null
+             */
+            stopReason: ("endTurn" | "stopSequence" | "maxTokens" | "toolUse") | string | null;
+        };
+        /**
+         * CreateMessageResultWithTools
+         * @description The client's response to a sampling/createMessage request when tools were provided.
+         *
+         *     This version supports array content for tool use flows (2025-11-25 and later).
+         */
+        MCPCreateMessageResultWithTools: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /** Content */
+            content: components["schemas"]["MCPTextContent"] | components["schemas"]["MCPImageContent"] | components["schemas"]["MCPAudioContent"] | components["schemas"]["MCPToolUseContent"] | components["schemas"]["MCPToolResultContent"] | (components["schemas"]["MCPTextContent"] | components["schemas"]["MCPImageContent"] | components["schemas"]["MCPAudioContent"] | components["schemas"]["MCPToolUseContent"] | components["schemas"]["MCPToolResultContent"])[];
+            /** Model */
+            model: string;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "user" | "assistant";
+            /**
+             * Stopreason
+             * @default null
+             */
+            stopReason: ("endTurn" | "stopSequence" | "maxTokens" | "toolUse") | string | null;
+        };
+        /**
+         * DiscoverResult
+         * @description The result returned by the server for a `server/discover` request (2026-07-28).
+         */
+        MCPDiscoverResult: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Cachescope
+             * @default private
+             * @enum {string}
+             */
+            cacheScope: "public" | "private";
+            capabilities: components["schemas"]["MCPServerCapabilities"];
+            /**
+             * Instructions
+             * @default null
+             */
+            instructions: string | null;
+            /**
+             * Resulttype
+             * @default complete
+             */
+            resultType: ("complete" | "input_required") | string;
+            /** Supportedversions */
+            supportedVersions: string[];
+            /**
+             * Ttlms
+             * @default 0
+             */
+            ttlMs: number;
+        };
+        /**
+         * ElicitRequest
+         * @description A request from the server to elicit additional information from the user via the client.
+         */
+        MCPElicitRequest: {
+            /**
+             * Method
+             * @default elicitation/create
+             * @constant
+             */
+            method: "elicitation/create";
+            /** Params */
+            params: components["schemas"]["MCPElicitRequestURLParams"] | components["schemas"]["MCPElicitRequestFormParams"];
+        };
+        /**
+         * ElicitRequestFormParams
+         * @description Parameters for form mode elicitation requests.
+         *
+         *     Form mode collects non-sensitive information from the user via an in-band form
+         *     rendered by the client.
+         */
+        MCPElicitRequestFormParams: {
+            /** @default null */
+            _meta: components["schemas"]["MCPRequestParamsMeta"] | null;
+            /** Message */
+            message: string;
+            /**
+             * Mode
+             * @default form
+             * @constant
+             */
+            mode: "form";
+            /** Requestedschema */
+            requestedSchema: {
+                [key: string]: unknown;
+            };
+            /** @default null */
+            task: components["schemas"]["MCPTaskMetadata"] | null;
+        };
+        /**
+         * ElicitRequestURLParams
+         * @description Parameters for URL mode elicitation requests.
+         *
+         *     URL mode directs users to external URLs for sensitive out-of-band interactions
+         *     like OAuth flows, credential collection, or payment processing. New in 2025-11-25.
+         */
+        MCPElicitRequestURLParams: {
+            /** @default null */
+            _meta: components["schemas"]["MCPRequestParamsMeta"] | null;
+            /**
+             * Elicitationid
+             * @default null
+             */
+            elicitationId: string | null;
+            /** Message */
+            message: string;
+            /**
+             * Mode
+             * @default url
+             * @constant
+             */
+            mode: "url";
+            /** @default null */
+            task: components["schemas"]["MCPTaskMetadata"] | null;
+            /** Url */
+            url: string;
+        };
+        /**
+         * ElicitResult
+         * @description The client's response to an elicitation request.
+         */
+        MCPElicitResult: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "accept" | "decline" | "cancel";
+            /**
+             * Content
+             * @default null
+             */
+            content: {
+                [key: string]: string | number | boolean | string[] | null;
+            } | null;
+        };
+        /**
+         * ElicitationCapability
+         * @description Capability for elicitation operations.
+         *
+         *     Clients must support at least one mode (form or url).
+         */
+        MCPElicitationCapability: {
+            /** @default null */
+            form: components["schemas"]["MCPFormElicitationCapability"] | null;
+            /** @default null */
+            url: components["schemas"]["MCPUrlElicitationCapability"] | null;
+        };
+        /**
+         * EmbeddedResource
+         * @description The contents of a resource, embedded into a prompt or tool call result.
+         *
+         *     It is up to the client how best to render embedded resources for the benefit
+         *     of the LLM and/or the user.
+         */
+        MCPEmbeddedResource: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /** @default null */
+            annotations: components["schemas"]["MCPAnnotations"] | null;
+            /** Resource */
+            resource: components["schemas"]["MCPTextResourceContents"] | components["schemas"]["MCPBlobResourceContents"];
+            /**
+             * Type
+             * @default resource
+             * @constant
+             */
+            type: "resource";
+        };
+        /**
+         * EmptyResult
+         * @description A result that indicates success but carries no data.
+         *
+         *     `result_type` defaults to None so this dumps as `{}`: deployed TypeScript
+         *     and Rust SDK peers (clients and servers) validate empty results strictly
+         *     and reject extra keys. The 2026-07-28 schema requires `resultType`, so code
+         *     answering an empty result on a 2026-07-28+ session must pass
+         *     `result_type="complete"`.
+         */
+        MCPEmptyResult: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Resulttype
+             * @default null
+             */
+            resultType: ("complete" | "input_required") | string | null;
+        };
+        /**
+         * FormElicitationCapability
+         * @description Capability for form mode elicitation.
+         */
+        MCPFormElicitationCapability: Record<string, never>;
+        /**
+         * GetPromptResult
+         * @description The server's response to a prompts/get request from the client.
+         */
+        MCPGetPromptResult: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Description
+             * @default null
+             */
+            description: string | null;
+            /** Messages */
+            messages: components["schemas"]["MCPPromptMessage"][];
+            /**
+             * Resulttype
+             * @default complete
+             */
+            resultType: ("complete" | "input_required") | string;
+        };
+        /**
+         * Icon
+         * @description An optionally-sized icon for display in a user interface (2025-11-25+).
+         */
+        MCPIcon: {
+            /**
+             * Mimetype
+             * @default null
+             */
+            mimeType: string | null;
+            /**
+             * Sizes
+             * @default null
+             */
+            sizes: string[] | null;
+            /** Src */
+            src: string;
+            /**
+             * Theme
+             * @default null
+             */
+            theme: ("light" | "dark") | null;
+        };
+        /**
+         * ImageContent
+         * @description An image provided to or from an LLM.
+         */
+        MCPImageContent: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /** @default null */
+            annotations: components["schemas"]["MCPAnnotations"] | null;
+            /** Data */
+            data: string;
+            /** Mimetype */
+            mimeType: string;
+            /**
+             * Type
+             * @default image
+             * @constant
+             */
+            type: "image";
+        };
+        /**
+         * Implementation
+         * @description Describes the name and version of an MCP implementation (`clientInfo` / `serverInfo`).
+         */
+        MCPImplementation: {
+            /**
+             * Description
+             * @default null
+             */
+            description: string | null;
+            /**
+             * Icons
+             * @default null
+             */
+            icons: components["schemas"]["MCPIcon"][] | null;
+            /** Name */
+            name: string;
+            /**
+             * Title
+             * @default null
+             */
+            title: string | null;
+            /** Version */
+            version: string;
+            /**
+             * Websiteurl
+             * @default null
+             */
+            websiteUrl: string | null;
+        };
+        /**
+         * InitializeRequest
+         * @description This request is sent from the client to the server when it first connects, asking it
+         *     to begin initialization.
+         *
+         *     Removed in protocol 2026-07-28; sent/received on sessions negotiating <= 2025-11-25.
+         *     On 2026-07-28 the handshake is `server/discover` plus per-request `_meta`.
+         */
+        MCPInitializeRequest: {
+            /**
+             * Method
+             * @default initialize
+             * @constant
+             */
+            method: "initialize";
+            params: components["schemas"]["MCPInitializeRequestParams"];
+        };
+        /**
+         * InitializeRequestParams
+         * @description Parameters for the `initialize` request.
+         *
+         *     Removed in protocol 2026-07-28; sent/received on sessions negotiating <= 2025-11-25.
+         */
+        MCPInitializeRequestParams: {
+            /** @default null */
+            _meta: components["schemas"]["MCPRequestParamsMeta"] | null;
+            capabilities: components["schemas"]["MCPClientCapabilities"];
+            clientInfo: components["schemas"]["MCPImplementation"];
+            /** Protocolversion */
+            protocolVersion: string;
+        };
+        /**
+         * InitializeResult
+         * @description After receiving an initialize request from the client, the server sends this response.
+         *
+         *     Removed in protocol 2026-07-28; sent/received on sessions negotiating <= 2025-11-25.
+         */
+        MCPInitializeResult: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            capabilities: components["schemas"]["MCPServerCapabilities"];
+            /**
+             * Instructions
+             * @default null
+             */
+            instructions: string | null;
+            /** Protocolversion */
+            protocolVersion: string;
+            serverInfo: components["schemas"]["MCPImplementation"];
+        };
+        /**
+         * InitializedNotification
+         * @description This notification is sent from the client to the server after initialization has
+         *     finished.
+         *
+         *     Removed in protocol 2026-07-28; sent/received on sessions negotiating <= 2025-11-25.
+         */
+        MCPInitializedNotification: {
+            /**
+             * Method
+             * @default notifications/initialized
+             * @constant
+             */
+            method: "notifications/initialized";
+            /** @default null */
+            params: components["schemas"]["MCPNotificationParams"] | null;
+        };
+        /**
+         * InputRequiredResult
+         * @description The server needs additional input before the original request can complete (2026-07-28).
+         *
+         *     Returned in place of the normal result of an interactive client request
+         *     (`tools/call`, `prompts/get`, `resources/read`). The client fulfills
+         *     `input_requests` and retries the original request, carrying the responses
+         *     and the echoed `request_state`. At least one of those two fields is
+         *     present on the wire (spec MUST).
+         */
+        MCPInputRequiredResult: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Inputrequests
+             * @default null
+             */
+            inputRequests: {
+                [key: string]: components["schemas"]["MCPCreateMessageRequest"] | components["schemas"]["MCPListRootsRequest"] | components["schemas"]["MCPElicitRequest"];
+            } | null;
+            /**
+             * Requeststate
+             * @default null
+             */
+            requestState: string | null;
+            /**
+             * Resulttype
+             * @default input_required
+             * @constant
+             */
+            resultType: "input_required";
+        };
+        /**
+         * ListPromptsResult
+         * @description The server's response to a prompts/list request from the client.
+         */
+        MCPListPromptsResult: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Cachescope
+             * @default private
+             * @enum {string}
+             */
+            cacheScope: "public" | "private";
+            /**
+             * Nextcursor
+             * @default null
+             */
+            nextCursor: string | null;
+            /** Prompts */
+            prompts: components["schemas"]["MCPPrompt"][];
+            /**
+             * Resulttype
+             * @default complete
+             */
+            resultType: ("complete" | "input_required") | string;
+            /**
+             * Ttlms
+             * @default 0
+             */
+            ttlMs: number;
+        };
+        /**
+         * ListResourceTemplatesResult
+         * @description The server's response to a resources/templates/list request from the client.
+         */
+        MCPListResourceTemplatesResult: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Cachescope
+             * @default private
+             * @enum {string}
+             */
+            cacheScope: "public" | "private";
+            /**
+             * Nextcursor
+             * @default null
+             */
+            nextCursor: string | null;
+            /** Resourcetemplates */
+            resourceTemplates: components["schemas"]["MCPResourceTemplate"][];
+            /**
+             * Resulttype
+             * @default complete
+             */
+            resultType: ("complete" | "input_required") | string;
+            /**
+             * Ttlms
+             * @default 0
+             */
+            ttlMs: number;
+        };
+        /**
+         * ListResourcesResult
+         * @description The server's response to a resources/list request from the client.
+         */
+        MCPListResourcesResult: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Cachescope
+             * @default private
+             * @enum {string}
+             */
+            cacheScope: "public" | "private";
+            /**
+             * Nextcursor
+             * @default null
+             */
+            nextCursor: string | null;
+            /** Resources */
+            resources: components["schemas"]["MCPResource"][];
+            /**
+             * Resulttype
+             * @default complete
+             */
+            resultType: ("complete" | "input_required") | string;
+            /**
+             * Ttlms
+             * @default 0
+             */
+            ttlMs: number;
+        };
+        /**
+         * ListRootsRequest
+         * @description Sent from the server to request a list of root URIs from the client. Roots allow
+         *     servers to ask for specific directories or files to operate on. A common example
+         *     for roots is providing a set of repositories or directories a server should operate
+         *     on.
+         *
+         *     This request is typically used when the server needs to understand the file system
+         *     structure or access specific locations that the client has permission to read from.
+         *
+         *     A standalone JSON-RPC request through 2025-11-25; on 2026-07-28 it is
+         *     embedded in `InputRequiredResult.input_requests`. Deprecated in 2026-07-28 (SEP-2577).
+         */
+        MCPListRootsRequest: {
+            /**
+             * Method
+             * @default roots/list
+             * @constant
+             */
+            method: "roots/list";
+            /** @default null */
+            params: components["schemas"]["MCPRequestParams"] | null;
+        };
+        /**
+         * ListRootsResult
+         * @description The client's response to a roots/list request from the server.
+         *
+         *     This result contains an array of Root objects, each representing a root
+         *     directory or file that the server can operate on.
+         *
+         *     On 2026-07-28 this is carried as an `InputResponses` entry, not a JSON-RPC
+         *     result. Deprecated in 2026-07-28 (SEP-2577).
+         */
+        MCPListRootsResult: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /** Roots */
+            roots: components["schemas"]["MCPRoot"][];
+        };
+        /**
+         * ListToolsRequest
+         * @description Sent from the client to request a list of tools the server has.
+         */
+        MCPListToolsRequest: {
+            /**
+             * Method
+             * @default tools/list
+             * @constant
+             */
+            method: "tools/list";
+            /** @default null */
+            params: components["schemas"]["MCPPaginatedRequestParams"] | null;
+        };
+        /**
+         * ListToolsResult
+         * @description The server's response to a tools/list request from the client.
+         */
+        MCPListToolsResult: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Cachescope
+             * @default private
+             * @enum {string}
+             */
+            cacheScope: "public" | "private";
+            /**
+             * Nextcursor
+             * @default null
+             */
+            nextCursor: string | null;
+            /**
+             * Resulttype
+             * @default complete
+             */
+            resultType: ("complete" | "input_required") | string;
+            /** Tools */
+            tools: components["schemas"]["MCPTool"][];
+            /**
+             * Ttlms
+             * @default 0
+             */
+            ttlMs: number;
+        };
+        /**
+         * LoggingCapability
+         * @description Capability for logging operations.
+         */
+        MCPLoggingCapability: Record<string, never>;
+        /**
+         * ModelHint
+         * @description Hints to use for model selection.
+         *
+         *     Keys not declared here are up to the client to interpret. Deprecated in
+         *     2026-07-28 (SEP-2577) with the rest of sampling.
+         */
+        MCPModelHint: {
+            /**
+             * Name
+             * @default null
+             */
+            name: string | null;
+        };
+        /**
+         * ModelPreferences
+         * @description The server's preferences for model selection, requested of the client during
+         *     sampling.
+         *
+         *     Because LLMs can vary along multiple dimensions, choosing the "best" model is
+         *     rarely straightforward. Different models excel in different areas—some are
+         *     faster but less capable, others are more capable but more expensive, and so
+         *     on. This interface allows servers to express their priorities across multiple
+         *     dimensions to help clients make an appropriate selection for their use case.
+         *
+         *     These preferences are always advisory. The client MAY ignore them. It is also
+         *     up to the client to decide how to interpret these preferences and how to
+         *     balance them against other considerations.
+         *
+         *     Deprecated in 2026-07-28 (SEP-2577) with the rest of sampling.
+         */
+        MCPModelPreferences: {
+            /**
+             * Costpriority
+             * @default null
+             */
+            costPriority: number | null;
+            /**
+             * Hints
+             * @default null
+             */
+            hints: components["schemas"]["MCPModelHint"][] | null;
+            /**
+             * Intelligencepriority
+             * @default null
+             */
+            intelligencePriority: number | null;
+            /**
+             * Speedpriority
+             * @default null
+             */
+            speedPriority: number | null;
+        };
+        /** NotificationParams */
+        MCPNotificationParams: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+        };
+        /** PaginatedRequestParams */
+        MCPPaginatedRequestParams: {
+            /** @default null */
+            _meta: components["schemas"]["MCPRequestParamsMeta"] | null;
+            /**
+             * Cursor
+             * @default null
+             */
+            cursor: string | null;
+        };
+        /**
+         * PingRequest
+         * @description A ping, issued by either the server or the client, to check that the other party is
+         *     still alive. The receiver must promptly respond, or else may be disconnected.
+         *
+         *     Removed in protocol 2026-07-28; sent/received on sessions negotiating <= 2025-11-25.
+         */
+        MCPPingRequest: {
+            /**
+             * Method
+             * @default ping
+             * @constant
+             */
+            method: "ping";
+            /** @default null */
+            params: components["schemas"]["MCPRequestParams"] | null;
+        };
+        /**
+         * ProgressNotification
+         * @description An out-of-band notification used to inform the receiver of a progress update for a long-running request.
+         */
+        MCPProgressNotification: {
+            /**
+             * Method
+             * @default notifications/progress
+             * @constant
+             */
+            method: "notifications/progress";
+            params: components["schemas"]["MCPProgressNotificationParams"];
+        };
+        /**
+         * ProgressNotificationParams
+         * @description Parameters for progress notifications.
+         */
+        MCPProgressNotificationParams: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Message
+             * @default null
+             */
+            message: string | null;
+            /** Progress */
+            progress: number;
+            /** Progresstoken */
+            progressToken: string | number;
+            /**
+             * Total
+             * @default null
+             */
+            total: number | null;
+        };
+        /**
+         * Prompt
+         * @description A prompt or prompt template that the server offers.
+         */
+        MCPPrompt: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Arguments
+             * @default null
+             */
+            arguments: components["schemas"]["MCPPromptArgument"][] | null;
+            /**
+             * Description
+             * @default null
+             */
+            description: string | null;
+            /**
+             * Icons
+             * @default null
+             */
+            icons: components["schemas"]["MCPIcon"][] | null;
+            /** Name */
+            name: string;
+            /**
+             * Title
+             * @default null
+             */
+            title: string | null;
+        };
+        /**
+         * PromptArgument
+         * @description Describes an argument that a prompt can accept.
+         */
+        MCPPromptArgument: {
+            /**
+             * Description
+             * @default null
+             */
+            description: string | null;
+            /** Name */
+            name: string;
+            /**
+             * Required
+             * @default null
+             */
+            required: boolean | null;
+            /**
+             * Title
+             * @default null
+             */
+            title: string | null;
+        };
+        /**
+         * PromptMessage
+         * @description Describes a message returned as part of a prompt.
+         *
+         *     Similar to `SamplingMessage`, but also supports embedded resources.
+         */
+        MCPPromptMessage: {
+            /** Content */
+            content: components["schemas"]["MCPTextContent"] | components["schemas"]["MCPImageContent"] | components["schemas"]["MCPAudioContent"] | components["schemas"]["MCPResourceLink"] | components["schemas"]["MCPEmbeddedResource"];
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "user" | "assistant";
+        };
+        /**
+         * PromptsCapability
+         * @description Capability for prompts operations.
+         */
+        MCPPromptsCapability: {
+            /**
+             * Listchanged
+             * @default null
+             */
+            listChanged: boolean | null;
+        };
+        /**
+         * ReadResourceResult
+         * @description The server's response to a resources/read request from the client.
+         */
+        MCPReadResourceResult: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Cachescope
+             * @default private
+             * @enum {string}
+             */
+            cacheScope: "public" | "private";
+            /** Contents */
+            contents: (components["schemas"]["MCPTextResourceContents"] | components["schemas"]["MCPBlobResourceContents"])[];
+            /**
+             * Resulttype
+             * @default complete
+             */
+            resultType: ("complete" | "input_required") | string;
+            /**
+             * Ttlms
+             * @default 0
+             */
+            ttlMs: number;
+        };
+        /** RequestParams */
+        MCPRequestParams: {
+            /** @default null */
+            _meta: components["schemas"]["MCPRequestParamsMeta"] | null;
+        };
+        /**
+         * RequestParamsMeta
+         * @description The `_meta` object on request params (schema name: `RequestMetaObject`).
+         *
+         *     An open map: arbitrary keys round-trip via `extra_items=Any`. Read or set
+         *     the reserved `io.modelcontextprotocol/*` keys via the `*_META_KEY` constants.
+         */
+        MCPRequestParamsMeta: {
+            /** Progresstoken */
+            progressToken?: string | number;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * Resource
+         * @description A known resource that the server is capable of reading.
+         */
+        MCPResource: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /** @default null */
+            annotations: components["schemas"]["MCPAnnotations"] | null;
+            /**
+             * Description
+             * @default null
+             */
+            description: string | null;
+            /**
+             * Icons
+             * @default null
+             */
+            icons: components["schemas"]["MCPIcon"][] | null;
+            /**
+             * Mimetype
+             * @default null
+             */
+            mimeType: string | null;
+            /** Name */
+            name: string;
+            /**
+             * Size
+             * @default null
+             */
+            size: number | null;
+            /**
+             * Title
+             * @default null
+             */
+            title: string | null;
+            /** Uri */
+            uri: string;
+        };
+        /**
+         * ResourceLink
+         * @description A resource that the server is capable of reading, included in a prompt or tool call result.
+         *
+         *     Note: resource links returned by tools are not guaranteed to appear in the results of `resources/list` requests.
+         */
+        MCPResourceLink: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /** @default null */
+            annotations: components["schemas"]["MCPAnnotations"] | null;
+            /**
+             * Description
+             * @default null
+             */
+            description: string | null;
+            /**
+             * Icons
+             * @default null
+             */
+            icons: components["schemas"]["MCPIcon"][] | null;
+            /**
+             * Mimetype
+             * @default null
+             */
+            mimeType: string | null;
+            /** Name */
+            name: string;
+            /**
+             * Size
+             * @default null
+             */
+            size: number | null;
+            /**
+             * Title
+             * @default null
+             */
+            title: string | null;
+            /**
+             * Type
+             * @default resource_link
+             * @constant
+             */
+            type: "resource_link";
+            /** Uri */
+            uri: string;
+        };
+        /**
+         * ResourceTemplate
+         * @description A template description for resources available on the server.
+         */
+        MCPResourceTemplate: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /** @default null */
+            annotations: components["schemas"]["MCPAnnotations"] | null;
+            /**
+             * Description
+             * @default null
+             */
+            description: string | null;
+            /**
+             * Icons
+             * @default null
+             */
+            icons: components["schemas"]["MCPIcon"][] | null;
+            /**
+             * Mimetype
+             * @default null
+             */
+            mimeType: string | null;
+            /** Name */
+            name: string;
+            /**
+             * Title
+             * @default null
+             */
+            title: string | null;
+            /** Uritemplate */
+            uriTemplate: string;
+        };
+        /**
+         * ResourcesCapability
+         * @description Capability for resources operations.
+         */
+        MCPResourcesCapability: {
+            /**
+             * Listchanged
+             * @default null
+             */
+            listChanged: boolean | null;
+            /**
+             * Subscribe
+             * @default null
+             */
+            subscribe: boolean | null;
+        };
+        /**
+         * Root
+         * @description Represents a root directory or file that the server can operate on.
+         *
+         *     Deprecated in 2026-07-28 (SEP-2577) with the rest of roots.
+         */
+        MCPRoot: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Name
+             * @default null
+             */
+            name: string | null;
+            /**
+             * Uri
+             * Format: uri
+             */
+            uri: string;
+        };
+        /**
+         * RootsCapability
+         * @description Capability for root operations.
+         *
+         *     Deprecated in protocol 2026-07-28 (SEP-2577) but still carried there as an
+         *     empty object (`list_changed` exists only through 2025-11-25).
+         */
+        MCPRootsCapability: {
+            /**
+             * Listchanged
+             * @default null
+             */
+            listChanged: boolean | null;
+        };
+        /**
+         * RootsListChangedNotification
+         * @description A notification from the client to the server, informing it that the list of
+         *     roots has changed.
+         *
+         *     This notification should be sent whenever the client adds, removes, or
+         *     modifies any root. The server should then request an updated list of roots
+         *     using the ListRootsRequest.
+         *
+         *     Removed in protocol 2026-07-28; sent/received on sessions negotiating <= 2025-11-25.
+         */
+        MCPRootsListChangedNotification: {
+            /**
+             * Method
+             * @default notifications/roots/list_changed
+             * @constant
+             */
+            method: "notifications/roots/list_changed";
+            /** @default null */
+            params: components["schemas"]["MCPNotificationParams"] | null;
+        };
+        /**
+         * SamplingCapability
+         * @description Sampling capability structure. Deprecated in 2026-07-28 (SEP-2577); shape unchanged.
+         */
+        MCPSamplingCapability: {
+            /** @default null */
+            context: components["schemas"]["MCPSamplingContextCapability"] | null;
+            /** @default null */
+            tools: components["schemas"]["MCPSamplingToolsCapability"] | null;
+        };
+        /**
+         * SamplingContextCapability
+         * @description Capability for context inclusion during sampling.
+         *
+         *     Indicates support for non-'none' values in the includeContext parameter.
+         *     SOFT-DEPRECATED: New implementations should use tools parameter instead.
+         */
+        MCPSamplingContextCapability: Record<string, never>;
+        /**
+         * SamplingMessage
+         * @description Describes a message issued to or received from an LLM API.
+         */
+        MCPSamplingMessage: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /** Content */
+            content: components["schemas"]["MCPTextContent"] | components["schemas"]["MCPImageContent"] | components["schemas"]["MCPAudioContent"] | components["schemas"]["MCPToolUseContent"] | components["schemas"]["MCPToolResultContent"] | (components["schemas"]["MCPTextContent"] | components["schemas"]["MCPImageContent"] | components["schemas"]["MCPAudioContent"] | components["schemas"]["MCPToolUseContent"] | components["schemas"]["MCPToolResultContent"])[];
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "user" | "assistant";
+        };
+        /**
+         * SamplingToolsCapability
+         * @description Capability indicating support for tool calling during sampling.
+         *
+         *     When present in ClientCapabilities.sampling, indicates that the client
+         *     supports the tools and toolChoice parameters in sampling requests.
+         */
+        MCPSamplingToolsCapability: Record<string, never>;
         /**
          * MCPServer
          * @description One registered remote MCP server.
@@ -7248,6 +10521,42 @@ export interface components {
             [key: string]: unknown;
         };
         /**
+         * ServerCapabilities
+         * @description Capabilities that a server may support. Not a closed set.
+         */
+        MCPServerCapabilities: {
+            /** @default null */
+            completions: components["schemas"]["MCPCompletionsCapability"] | null;
+            /**
+             * Experimental
+             * @default null
+             */
+            experimental: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            } | null;
+            /**
+             * Extensions
+             * @default null
+             */
+            extensions: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            } | null;
+            /** @default null */
+            logging: components["schemas"]["MCPLoggingCapability"] | null;
+            /** @default null */
+            prompts: components["schemas"]["MCPPromptsCapability"] | null;
+            /** @default null */
+            resources: components["schemas"]["MCPResourcesCapability"] | null;
+            /** @default null */
+            tasks: components["schemas"]["MCPServerTasksCapability"] | null;
+            /** @default null */
+            tools: components["schemas"]["MCPToolsCapability"] | null;
+        };
+        /**
          * MCPServerList
          * @description Every MCP server registered in the organization.
          */
@@ -7257,6 +10566,351 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        MCPServerResult: components["schemas"]["MCPEmptyResult"] | components["schemas"]["MCPInitializeResult"] | components["schemas"]["MCPDiscoverResult"] | components["schemas"]["MCPCompleteResult"] | components["schemas"]["MCPGetPromptResult"] | components["schemas"]["MCPListPromptsResult"] | components["schemas"]["MCPListResourcesResult"] | components["schemas"]["MCPListResourceTemplatesResult"] | components["schemas"]["MCPReadResourceResult"] | components["schemas"]["MCPCallToolResult"] | components["schemas"]["MCPListToolsResult"] | components["schemas"]["MCPSubscriptionsListenResult"] | components["schemas"]["MCPInputRequiredResult"];
+        /**
+         * ServerTasksCapability
+         * @description Capability for server tasks operations (2025-11-25 only).
+         */
+        MCPServerTasksCapability: {
+            /** @default null */
+            cancel: components["schemas"]["MCPTasksCancelCapability"] | null;
+            /** @default null */
+            list: components["schemas"]["MCPTasksListCapability"] | null;
+            /** @default null */
+            requests: components["schemas"]["MCPServerTasksRequestsCapability"] | null;
+        };
+        /**
+         * ServerTasksRequestsCapability
+         * @description Specifies which request types the server can augment with tasks (2025-11-25 only).
+         */
+        MCPServerTasksRequestsCapability: {
+            /** @default null */
+            tools: components["schemas"]["MCPTasksToolsCapability"] | null;
+        };
+        /**
+         * SubscriptionsListenResult
+         * @description Signals that a `subscriptions/listen` stream has ended gracefully (2026-07-28).
+         *
+         *     Because the listen stream is long-lived, this result is sent only when the
+         *     server tears the subscription down (for example during shutdown); an abrupt
+         *     transport close carries no response. The body is otherwise empty: the
+         *     `_meta["io.modelcontextprotocol/subscriptionId"]` key is required on the
+         *     wire and equals the JSON-RPC id of the originating `subscriptions/listen`
+         *     request.
+         */
+        MCPSubscriptionsListenResult: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Resulttype
+             * @default complete
+             */
+            resultType: ("complete" | "input_required") | string;
+        };
+        /**
+         * TaskMetadata
+         * @description Metadata for augmenting a request with task execution (the `task` params field; 2025-11-25 only).
+         */
+        MCPTaskMetadata: {
+            /**
+             * Ttl
+             * @default null
+             */
+            ttl: number | null;
+        };
+        /**
+         * TasksCallCapability
+         * @description Capability for task-augmented tools/call requests (2025-11-25 only).
+         */
+        MCPTasksCallCapability: Record<string, never>;
+        /**
+         * TasksCancelCapability
+         * @description Capability for tasks cancel operations (2025-11-25 only).
+         */
+        MCPTasksCancelCapability: Record<string, never>;
+        /**
+         * TasksCreateElicitationCapability
+         * @description Capability for task-augmented elicitation/create requests (2025-11-25 only).
+         */
+        MCPTasksCreateElicitationCapability: Record<string, never>;
+        /**
+         * TasksCreateMessageCapability
+         * @description Capability for task-augmented sampling/createMessage requests (2025-11-25 only).
+         */
+        MCPTasksCreateMessageCapability: Record<string, never>;
+        /**
+         * TasksElicitationCapability
+         * @description Capability for task-augmented elicitation operations (2025-11-25 only).
+         */
+        MCPTasksElicitationCapability: {
+            /** @default null */
+            create: components["schemas"]["MCPTasksCreateElicitationCapability"] | null;
+        };
+        /**
+         * TasksListCapability
+         * @description Capability for tasks listing operations (2025-11-25 only).
+         */
+        MCPTasksListCapability: Record<string, never>;
+        /**
+         * TasksSamplingCapability
+         * @description Capability for task-augmented sampling operations (2025-11-25 only).
+         */
+        MCPTasksSamplingCapability: {
+            /** @default null */
+            createMessage: components["schemas"]["MCPTasksCreateMessageCapability"] | null;
+        };
+        /**
+         * TasksToolsCapability
+         * @description Capability for task-augmented tool operations (2025-11-25 only).
+         */
+        MCPTasksToolsCapability: {
+            /** @default null */
+            call: components["schemas"]["MCPTasksCallCapability"] | null;
+        };
+        /**
+         * TextContent
+         * @description Text provided to or from an LLM.
+         */
+        MCPTextContent: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /** @default null */
+            annotations: components["schemas"]["MCPAnnotations"] | null;
+            /** Text */
+            text: string;
+            /**
+             * Type
+             * @default text
+             * @constant
+             */
+            type: "text";
+        };
+        /**
+         * TextResourceContents
+         * @description Text contents of a resource.
+         */
+        MCPTextResourceContents: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Mimetype
+             * @default null
+             */
+            mimeType: string | null;
+            /** Text */
+            text: string;
+            /** Uri */
+            uri: string;
+        };
+        /**
+         * Tool
+         * @description Definition for a tool the client can call.
+         */
+        MCPTool: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /** @default null */
+            annotations: components["schemas"]["MCPToolAnnotations"] | null;
+            /**
+             * Description
+             * @default null
+             */
+            description: string | null;
+            /** @default null */
+            execution: components["schemas"]["MCPToolExecution"] | null;
+            /**
+             * Icons
+             * @default null
+             */
+            icons: components["schemas"]["MCPIcon"][] | null;
+            /** Inputschema */
+            inputSchema: {
+                [key: string]: unknown;
+            };
+            /** Name */
+            name: string;
+            /**
+             * Outputschema
+             * @default null
+             */
+            outputSchema: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Title
+             * @default null
+             */
+            title: string | null;
+        };
+        /**
+         * ToolAnnotations
+         * @description Additional properties describing a Tool to clients.
+         *
+         *     NOTE: all properties in ToolAnnotations are **hints**.
+         *     They are not guaranteed to provide a faithful description of
+         *     tool behavior (including descriptive properties like `title`).
+         *
+         *     Clients should never make tool use decisions based on ToolAnnotations
+         *     received from untrusted servers.
+         */
+        MCPToolAnnotations: {
+            /**
+             * Destructivehint
+             * @default null
+             */
+            destructiveHint: boolean | null;
+            /**
+             * Idempotenthint
+             * @default null
+             */
+            idempotentHint: boolean | null;
+            /**
+             * Openworldhint
+             * @default null
+             */
+            openWorldHint: boolean | null;
+            /**
+             * Readonlyhint
+             * @default null
+             */
+            readOnlyHint: boolean | null;
+            /**
+             * Title
+             * @default null
+             */
+            title: string | null;
+        };
+        /**
+         * ToolChoice
+         * @description Controls tool selection behavior for sampling requests (2025-11-25+).
+         *
+         *     The client MUST return an error if this is received without the
+         *     `sampling.tools` capability. Absent means `{"mode": "auto"}`.
+         */
+        MCPToolChoice: {
+            /**
+             * Mode
+             * @default null
+             */
+            mode: ("auto" | "required" | "none") | null;
+        };
+        /**
+         * ToolExecution
+         * @description Execution-related properties for a tool (2025-11-25 only).
+         */
+        MCPToolExecution: {
+            /**
+             * Tasksupport
+             * @default null
+             */
+            taskSupport: ("forbidden" | "optional" | "required") | null;
+        };
+        /**
+         * ToolResultContent
+         * @description The result of a tool use, provided by the user back to the assistant (2025-11-25+).
+         *
+         *     Appears in sampling messages as a response to a `ToolUseContent` block.
+         *     Requires the `sampling.tools` client capability. Deprecated in 2026-07-28 (SEP-2577).
+         */
+        MCPToolResultContent: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Content
+             * @default []
+             */
+            content: (components["schemas"]["MCPTextContent"] | components["schemas"]["MCPImageContent"] | components["schemas"]["MCPAudioContent"] | components["schemas"]["MCPResourceLink"] | components["schemas"]["MCPEmbeddedResource"])[];
+            /**
+             * Iserror
+             * @default null
+             */
+            isError: boolean | null;
+            /**
+             * Structuredcontent
+             * @default null
+             */
+            structuredContent: unknown;
+            /** Tooluseid */
+            toolUseId: string;
+            /**
+             * Type
+             * @default tool_result
+             * @constant
+             */
+            type: "tool_result";
+        };
+        /**
+         * ToolUseContent
+         * @description An assistant's request to invoke a tool during sampling (2025-11-25+).
+         *
+         *     Appears in `sampling/createMessage` results and replayed assistant messages.
+         *     The server should execute the tool and return a `ToolResultContent` in the
+         *     next user message. Deprecated in 2026-07-28 (SEP-2577).
+         */
+        MCPToolUseContent: {
+            /**
+             * Meta
+             * @default null
+             */
+            _meta: {
+                [key: string]: unknown;
+            } | null;
+            /** Id */
+            id: string;
+            /** Input */
+            input: {
+                [key: string]: unknown;
+            };
+            /** Name */
+            name: string;
+            /**
+             * Type
+             * @default tool_use
+             * @constant
+             */
+            type: "tool_use";
+        };
+        /**
+         * ToolsCapability
+         * @description Capability for tools operations.
+         */
+        MCPToolsCapability: {
+            /**
+             * Listchanged
+             * @default null
+             */
+            listChanged: boolean | null;
+        };
+        /**
+         * UrlElicitationCapability
+         * @description Capability for URL mode elicitation (2025-11-25+).
+         */
+        MCPUrlElicitationCapability: Record<string, never>;
         /**
          * MkdirSessionFilesRequest
          * @description Body for ``POST /sessions/{id}/files/mkdir``.
@@ -8205,19 +11859,6 @@ export interface components {
             /** Url */
             url?: string | null;
         };
-        /** ValidationError */
-        ValidationError: {
-            /** Context */
-            ctx?: Record<string, never>;
-            /** Input */
-            input?: unknown;
-            /** Location */
-            loc: (string | number)[];
-            /** Message */
-            msg: string;
-            /** Error Type */
-            type: string;
-        };
         /**
          * Vault
          * @description One Vault. ``credentials`` accompanies the catalog and binding reads.
@@ -8336,6 +11977,9 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    /** @description Owner whose Assistant workspace the administrator operates. */
+                    user_id: string;
+                } & {
                     [key: string]: unknown;
                 };
             };
@@ -8350,13 +11994,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AdminApiWorkspaceResult_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -8373,6 +12026,9 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    /** @description Owner whose Assistant workspace the administrator operates. */
+                    user_id: string;
+                } & {
                     [key: string]: unknown;
                 };
             };
@@ -8387,20 +12043,32 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AdminApiWorkspaceResult_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
     };
     admin_api_list_errors_api_v1_admin_api_errors_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Maximum errors, capped at 500. */
+                limit?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -8414,6 +12082,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_AdminErrorsPage_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -8436,11 +12122,32 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AdminProcessHealth_"];
                 };
             };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
         };
     };
     admin_api_list_sessions_api_v1_admin_api_sessions_all_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Maximum unscoped session records, capped at 500. */
+                limit?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -8453,7 +12160,25 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiEnvelope_list_dict_str__Any___"];
+                    "application/json": components["schemas"]["ApiEnvelope_list_SessionRecord__"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -8474,6 +12199,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_list_AdminAgentCategory__"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -8500,13 +12243,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AgentCategory_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -8533,13 +12285,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_list_AgentCategory__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -8568,13 +12329,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AgentCategory_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -8599,13 +12369,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_DeletedAgentCategory_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -8626,6 +12405,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_AdminFormSchema_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -8650,13 +12447,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_CredentialBinding_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -8685,13 +12491,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_CredentialBinding_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -8716,13 +12531,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_list_DeploymentRecord__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -8736,7 +12560,44 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    allowed_participants?: string[];
+                    /** @description Attention policy supported by the installed channel provider. */
+                    attention_policy?: string;
+                    /** @description Fields from the selected channel provider's config_fields catalog. */
+                    channel_config?: {
+                        [key: string]: unknown;
+                    };
+                    /** @description Private values from that provider's credential_fields catalog; reads return masks. */
+                    credentials?: {
+                        [key: string]: string;
+                    };
+                    enabled?: boolean;
+                    /** @description One execution_modes value from the selected channel provider. */
+                    execution_mode?: string;
+                    /** @description Account execution subject; configuring it requires platform administration. */
+                    execution_user_id?: string;
+                    name?: string;
+                    prompt_prefix?: string;
+                    response_instruction?: string;
+                    /** @description Installed trigger scene: a webhook, schedule, or channel provider's advertised scene. */
+                    scene: string;
+                    /** @description Recurring schedule: five cron fields and an IANA timezone. */
+                    schedule?: {
+                        cron?: string;
+                        timezone?: string;
+                    } & {
+                        [key: string]: unknown;
+                    };
+                    /** @description Trigger secret where the selected scene uses one. */
+                    secret?: string | null;
+                } & {
+                    [key: string]: unknown;
+                };
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -8747,13 +12608,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_DeploymentRecord_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -8768,7 +12638,44 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    allowed_participants?: string[];
+                    /** @description Attention policy supported by the installed channel provider. */
+                    attention_policy?: string;
+                    /** @description Fields from the selected channel provider's config_fields catalog. */
+                    channel_config?: {
+                        [key: string]: unknown;
+                    };
+                    /** @description Private values from that provider's credential_fields catalog; reads return masks. */
+                    credentials?: {
+                        [key: string]: string;
+                    };
+                    enabled?: boolean;
+                    /** @description One execution_modes value from the selected channel provider. */
+                    execution_mode?: string;
+                    /** @description Account execution subject; configuring it requires platform administration. */
+                    execution_user_id?: string;
+                    name?: string;
+                    prompt_prefix?: string;
+                    response_instruction?: string;
+                    /** @description Installed trigger scene: a webhook, schedule, or channel provider's advertised scene. */
+                    scene?: string;
+                    /** @description Recurring schedule: five cron fields and an IANA timezone. */
+                    schedule?: {
+                        cron?: string;
+                        timezone?: string;
+                    } & {
+                        [key: string]: unknown;
+                    };
+                    /** @description Trigger secret where the selected scene uses one. */
+                    secret?: string | null;
+                } & {
+                    [key: string]: unknown;
+                };
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -8779,13 +12686,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_DeploymentRecord_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -8811,13 +12727,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_DeletedDeployment_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -8843,13 +12768,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_list_ChannelAccountLinkRecord__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -8864,7 +12798,16 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    participant: string;
+                    user_id: string;
+                } & {
+                    [key: string]: unknown;
+                };
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -8875,13 +12818,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_ChannelAccountLinkRecord_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -8909,13 +12861,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_DeletedChannelAccountLink_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -8940,16 +12901,25 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ApiEnvelope_list_DeploymentRun__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -8972,16 +12942,25 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ApiEnvelope_DeploymentRun_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -9005,16 +12984,25 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ApiEnvelope_DeploymentRun_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -9039,13 +13027,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AgentMCPServerAssignment_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -9074,13 +13071,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AgentMCPServerAssignment_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -9101,6 +13107,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_AssistantDefaults_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -9127,13 +13151,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AssistantDefaults_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -9154,6 +13187,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_AssistantDefaultsExtensionCatalog_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -9180,13 +13231,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AssistantDefaultsExtensionCatalog_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -9211,13 +13271,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_CredentialBinding_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -9246,13 +13315,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_CredentialBinding_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -9272,7 +13350,25 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ApiEnvelope_list_ChannelProviderRecord__"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -9293,6 +13389,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_list_Connector__"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -9321,13 +13435,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_Connector_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -9349,16 +13472,37 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        code: string;
+                        data: {
+                            /** @constant */
+                            configured: false;
+                            connector_id: string;
+                        } & {
+                            [key: string]: unknown;
+                        };
+                        message: string;
+                    } & {
+                        [key: string]: unknown;
+                    };
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -9383,13 +13527,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_Connector_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -9414,13 +13567,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AuthorizeResponse_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -9443,6 +13605,24 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_list_DeploymentRecord__"];
                 };
             };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
         };
     };
     get_environment_schema_endpoint_api_v1_admin_environment_schema_get: {
@@ -9461,6 +13641,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_AdminFormSchema_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -9483,6 +13681,24 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_list_dict_str__Any___"];
                 };
             };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
         };
     };
     upsert_admin_environment_api_v1_admin_environments__name__put: {
@@ -9497,7 +13713,49 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    [key: string]: unknown;
+                    description?: string | null;
+                    display_name?: string | null;
+                    enabled?: boolean | null;
+                    endpoint_provider?: string | null;
+                    engine_kind: string;
+                    idle_action?: ("terminate" | "pause") | null;
+                    name?: string;
+                    /**
+                     * @default {
+                     *       "allow_mcp_servers": false,
+                     *       "allowed_hosts": [],
+                     *       "type": "limited"
+                     *     }
+                     */
+                    networking?: {
+                        allow_mcp_servers?: boolean | null;
+                        allowed_hosts?: string[] | null;
+                        /** @enum {string} */
+                        type: "unrestricted" | "limited";
+                    } | null;
+                    provider_access?: {
+                        api_key?: string | null;
+                        api_key_secret_name?: string | null;
+                        base_url?: string | null;
+                    } | null;
+                    runtime_template_name?: string | null;
+                    sandbox_backend?: string | null;
+                    /** @default default */
+                    sandbox_permission_level?: ("default" | "advanced" | "privileged") | null;
+                    /** @default conversation */
+                    sandbox_tenancy?: ("conversation" | "agent") | null;
+                    tracing?: {
+                        auth_token?: string | null;
+                        auth_token_secret_name?: string | null;
+                        enabled?: boolean | null;
+                        endpoint?: string | null;
+                        environment?: string | null;
+                        headers?: {
+                            [key: string]: string;
+                        } | null;
+                        log_user_prompt?: boolean | null;
+                        signals?: string[] | null;
+                    } | null;
                 };
             };
         };
@@ -9511,13 +13769,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_dict_str__Any__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -9542,13 +13809,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AdminDeletedEnvironment_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -9573,20 +13849,32 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AdminEnvironmentModels_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
     };
     admin_list_errors_api_v1_admin_errors_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Maximum errors, capped at 500. */
+                limit?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -9600,6 +13888,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_AdminErrorsPage_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -9619,14 +13925,58 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        code: string;
+                        data: {
+                            services: ({
+                                admin_url: string;
+                                category: string;
+                                id: string;
+                                name: string;
+                            } & {
+                                [key: string]: unknown;
+                            })[];
+                        } & {
+                            [key: string]: unknown;
+                        };
+                        message: string;
+                    } & {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
     };
     admin_logs_api_v1_admin_logs_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Maximum log lines, capped at 2000. */
+                lines?: number;
+                /** @description Log severity filter. */
+                level?: string;
+                /** @description Log text filter. */
+                keyword?: string;
+                /** @description One label from the returned available files. */
+                file?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -9640,6 +13990,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_AdminLogsPage_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -9660,6 +14028,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_MCPServerList_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -9686,13 +14072,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_MCPServer_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -9717,13 +14112,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_MCPServer_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -9746,13 +14150,22 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -9781,13 +14194,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_MCPServer_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -9810,6 +14232,24 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AdminNavigationSummary_"];
                 };
             };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
         };
     };
     admin_process_health_api_v1_admin_process_health_get: {
@@ -9830,11 +14270,32 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AdminProcessHealth_"];
                 };
             };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
         };
     };
     describe_sandbox_idle_action_api_v1_admin_sandbox_idle_action_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Enabled sandbox backend; omitted selects the configured default. */
+                backend?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -9848,6 +14309,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_AdminSandboxIdleAction_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -9870,6 +14349,24 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AdminSandboxIdleSweep_"];
                 };
             };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
         };
     };
     describe_sandbox_quota_api_v1_admin_sandbox_quota_get: {
@@ -9890,11 +14387,36 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AdminSandboxQuota_"];
                 };
             };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
         };
     };
     list_sandboxes_api_v1_admin_sandboxes_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Enabled sandbox backend; omitted selects the configured default. */
+                backend?: string;
+                /** @description Backend page number. */
+                page?: number;
+                /** @description Backend page size. */
+                page_size?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -9910,11 +14432,32 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AdminSandboxPage_"];
                 };
             };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
         };
     };
     describe_sandbox_api_v1_admin_sandboxes__sandbox_id__get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Enabled sandbox backend; omitted selects the configured default. */
+                backend?: string;
+            };
             header?: never;
             path: {
                 sandbox_id: string;
@@ -9932,20 +14475,32 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AdminSandboxSummary_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
     };
     read_sandbox_diagnostics_api_v1_admin_sandboxes__sandbox_id__diagnostics__scope__get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Enabled sandbox backend; omitted selects the configured default. */
+                backend?: string;
+            };
             header?: never;
             path: {
                 sandbox_id: string;
@@ -9964,20 +14519,32 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AdminSandboxDiagnostics_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
     };
     read_sandbox_security_api_v1_admin_sandboxes__sandbox_id__security_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Enabled sandbox backend; omitted selects the configured default. */
+                backend?: string;
+            };
             header?: never;
             path: {
                 sandbox_id: string;
@@ -9995,20 +14562,40 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AdminSandboxSecurity_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
     };
     admin_list_all_sessions_api_v1_admin_sessions_all_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Page number. */
+                page?: number;
+                /** @description Rows per page. */
+                page_size?: number;
+                /** @description Only this Agent's conversations. */
+                agent_id?: string;
+                /** @description Inclusive Session creation-time lower bound (ISO 8601). */
+                since?: string;
+                /** @description Inclusive Session creation-time upper bound (ISO 8601). */
+                until?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -10024,11 +14611,36 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AdminSessionPage_"];
                 };
             };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
         };
     };
     admin_batch_session_transcripts_api_v1_admin_sessions_transcripts_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Only this Agent's conversations. */
+                agent_id?: string;
+                /** @description Inclusive Session creation-time lower bound (ISO 8601). */
+                since?: string;
+                /** @description Inclusive Session creation-time upper bound (ISO 8601). */
+                until?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -10041,7 +14653,25 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/gzip": string;
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -10063,16 +14693,25 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiEnvelope_dict_str__Any__"];
+                    "application/json": components["schemas"]["ApiEnvelope_AdminSessionDetail_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -10097,13 +14736,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AdminEvictResult_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -10132,13 +14780,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AdminHistoryImportResult_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -10163,20 +14820,36 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AdminKillResult_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
     };
     admin_session_trace_api_v1_admin_sessions__session_id__trace_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Limit trace to this response. */
+                response_id?: string;
+                /** @description Maximum messages in the trace. */
+                message_limit?: number;
+                /** @description Maximum output parts in the trace. */
+                part_limit?: number;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -10194,13 +14867,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AdminSessionTrace_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -10216,22 +14898,32 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description One native JSONL transcript, or a gzip tar archive preserving all subagent transcripts. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/gzip": string;
+                    "application/x-ndjson": string;
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -10254,6 +14946,24 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AdminSystemOverview_"];
                 };
             };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
         };
     };
     list_vaults_api_v1_admin_vaults_get: {
@@ -10272,6 +14982,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_VaultCatalog_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -10298,13 +15026,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_Vault_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -10329,13 +15066,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_Vault_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -10358,13 +15104,22 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -10389,13 +15144,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_Vault_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -10420,13 +15184,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_list_VaultBindingHolder__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -10451,13 +15224,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_VaultCredentialList_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -10486,13 +15268,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_VaultCredential_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -10516,13 +15307,22 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -10552,13 +15352,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_VaultCredential_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -10584,13 +15393,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_VaultCredential_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -10613,6 +15431,24 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_list_AgentCategory__"];
                 };
             };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
         };
     };
     list_agent_configuration_environments_api_v1_agent_configuration_environments_get: {
@@ -10631,6 +15467,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_list_AgentEnvironmentOption__"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -10655,13 +15509,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AgentEnvironmentModels_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -10684,6 +15547,24 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AgentFormSchema_"];
                 };
             };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
         };
     };
     list_agent_tags_api_v1_agent_tags_get: {
@@ -10704,11 +15585,40 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_list_AgentTag__"];
                 };
             };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
         };
     };
     list_agents_api_v1_agents_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Set to 1 for a cursor page; omitted returns all visible Agents. */
+                page?: 1;
+                /** @description Page size, clamped to 1..100. */
+                limit?: number;
+                /** @description Opaque next_cursor from the previous page. */
+                cursor?: string;
+                /** @description Case-insensitive Agent search. */
+                q?: string;
+                /** @description Agent availability filter. */
+                status?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -10724,6 +15634,24 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AgentListPage_"] | components["schemas"]["ApiEnvelope_list_AgentRecord__"];
                 };
             };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
         };
     };
     create_agent_api_v1_agents_post: {
@@ -10736,7 +15664,70 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    [key: string]: unknown;
+                    /** @default true */
+                    artifacts_enabled?: boolean | null;
+                    categories?: string[] | null;
+                    default_repo?: {
+                        branch?: string | null;
+                        deploy_key_secret_name?: string | null;
+                        depth?: number | null;
+                        protocol?: ("ssh" | "https") | null;
+                        url?: string | null;
+                    } | null;
+                    description?: string | null;
+                    diff_panel?: boolean | null;
+                    display_meta?: {
+                        display_name?: string | null;
+                        icon?: string | null;
+                        tags?: string[] | null;
+                    } & {
+                        [key: string]: unknown;
+                    };
+                    enabled?: boolean | null;
+                    engine_options?: {
+                        [key: string]: unknown;
+                    } | null;
+                    environment_name: string;
+                    exposure_mode?: ("chat_only" | "mcp_only" | "both") | null;
+                    idle_hibernate_seconds?: number | null;
+                    mcp_servers?: {
+                        [key: string]: unknown;
+                    } | null;
+                    model: string;
+                    name: string;
+                    packages?: {
+                        branch?: string | null;
+                        deploy_key_secret_name?: string | null;
+                        depth?: number | null;
+                        kind: string;
+                        paths?: string[] | null;
+                        protocol?: ("ssh" | "https") | null;
+                        sha?: string | null;
+                        url: string;
+                    }[] | null;
+                    prepared_capacity?: number | null;
+                    skills?: (string | {
+                        /** Config */
+                        config?: {
+                            [key: string]: string;
+                        };
+                        /** Name */
+                        name: string;
+                        /**
+                         * Path
+                         * @default
+                         */
+                        path?: string;
+                        /** Provider */
+                        provider: string;
+                        /** Source */
+                        source: string;
+                        /** Version */
+                        version: string;
+                    })[] | null;
+                    system?: string | null;
+                    terminal_panel?: boolean | null;
+                    use_cases?: string[] | null;
                 };
             };
         };
@@ -10750,13 +15741,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AgentRecord_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -10781,13 +15781,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AgentRecord_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -10804,7 +15813,72 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    [key: string]: unknown;
+                    /** @default true */
+                    artifacts_enabled?: boolean | null;
+                    categories?: string[] | null;
+                    default_repo?: {
+                        branch?: string | null;
+                        deploy_key_secret_name?: string | null;
+                        depth?: number | null;
+                        protocol?: ("ssh" | "https") | null;
+                        url?: string | null;
+                    } | null;
+                    description?: string | null;
+                    diff_panel?: boolean | null;
+                    display_meta?: {
+                        display_name?: string | null;
+                        icon?: string | null;
+                        tags?: string[] | null;
+                    } & {
+                        [key: string]: unknown;
+                    };
+                    enabled?: boolean | null;
+                    engine_options?: {
+                        [key: string]: unknown;
+                    } | null;
+                    environment_name: string;
+                    exposure_mode?: ("chat_only" | "mcp_only" | "both") | null;
+                    idle_hibernate_seconds?: number | null;
+                    mcp_servers?: {
+                        [key: string]: unknown;
+                    } | null;
+                    model: string;
+                    name: string;
+                    packages?: {
+                        branch?: string | null;
+                        deploy_key_secret_name?: string | null;
+                        depth?: number | null;
+                        kind: string;
+                        paths?: string[] | null;
+                        protocol?: ("ssh" | "https") | null;
+                        sha?: string | null;
+                        url: string;
+                    }[] | null;
+                    prepared_capacity?: number | null;
+                    skills?: (string | {
+                        /** Config */
+                        config?: {
+                            [key: string]: string;
+                        };
+                        /** Name */
+                        name: string;
+                        /**
+                         * Path
+                         * @default
+                         */
+                        path?: string;
+                        /** Provider */
+                        provider: string;
+                        /** Source */
+                        source: string;
+                        /** Version */
+                        version: string;
+                    })[] | null;
+                    system?: string | null;
+                    terminal_panel?: boolean | null;
+                    use_cases?: string[] | null;
+                    /** @description Current optimistic-concurrency version from the Agent read. */
+                    version?: number;
                 };
             };
         };
@@ -10818,13 +15892,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AgentRecord_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -10849,13 +15932,184 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AgentRecord_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    agent_card__api_v1_agents__agent_id___well_known_agent_card_json_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Native AgentCard; capability fields describe what this Agent supports. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["A2AAgentCard"];
+                };
+            };
+            /** @description Authentication/authorization rejection or native protocol error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    agent_a2a_rpc__api_v1_agents__agent_id__a2a_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "A2A-Version": "1.0";
+            };
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": ({
+                    id: string | number;
+                    /** @constant */
+                    jsonrpc: "2.0";
+                    /** @constant */
+                    method: "SendMessage";
+                    params: components["schemas"]["A2ASendMessageRequest"];
+                } & {
+                    [key: string]: unknown;
+                }) | ({
+                    id: string | number;
+                    /** @constant */
+                    jsonrpc: "2.0";
+                    /** @constant */
+                    method: "SendStreamingMessage";
+                    params: components["schemas"]["A2ASendMessageRequest"];
+                } & {
+                    [key: string]: unknown;
+                }) | ({
+                    id: string | number;
+                    /** @constant */
+                    jsonrpc: "2.0";
+                    /** @constant */
+                    method: "GetTask";
+                    params: components["schemas"]["A2AGetTaskRequest"];
+                } & {
+                    [key: string]: unknown;
+                }) | ({
+                    id: string | number;
+                    /** @constant */
+                    jsonrpc: "2.0";
+                    /** @constant */
+                    method: "ListTasks";
+                    params: components["schemas"]["A2AListTasksRequest"];
+                } & {
+                    [key: string]: unknown;
+                }) | ({
+                    id: string | number;
+                    /** @constant */
+                    jsonrpc: "2.0";
+                    /** @constant */
+                    method: "CancelTask";
+                    params: components["schemas"]["A2ACancelTaskRequest"];
+                } & {
+                    [key: string]: unknown;
+                }) | ({
+                    id: string | number;
+                    /** @constant */
+                    jsonrpc: "2.0";
+                    /** @constant */
+                    method: "SubscribeToTask";
+                    params: components["schemas"]["A2ASubscribeToTaskRequest"];
+                } & {
+                    [key: string]: unknown;
+                }) | ({
+                    id: string | number;
+                    /** @constant */
+                    jsonrpc: "2.0";
+                    /** @constant */
+                    method: "GetExtendedAgentCard";
+                    params: components["schemas"]["A2AGetExtendedAgentCardRequest"];
+                } & {
+                    [key: string]: unknown;
+                });
+            };
+        };
+        responses: {
+            /** @description JSON-RPC result/error, or SSE StreamResponse events for streaming methods. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: {
+                            code: number;
+                            data?: unknown;
+                            message: string;
+                        } & {
+                            [key: string]: unknown;
+                        };
+                        id: string | number | null;
+                        /** @constant */
+                        jsonrpc: "2.0";
+                        result?: components["schemas"]["A2ASendMessageResponse"] | components["schemas"]["A2ATask"] | components["schemas"]["A2AListTasksResponse"] | components["schemas"]["A2AAgentCard"];
+                    } & {
+                        [key: string]: unknown;
+                    };
+                    "text/event-stream": string;
+                };
+            };
+            /** @description Native JSON-RPC error or platform authentication/authorization rejection. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": ({
+                        error?: {
+                            code: number;
+                            data?: unknown;
+                            message: string;
+                        } & {
+                            [key: string]: unknown;
+                        };
+                        id: string | number | null;
+                        /** @constant */
+                        jsonrpc: "2.0";
+                        result?: components["schemas"]["A2ASendMessageResponse"] | components["schemas"]["A2ATask"] | components["schemas"]["A2AListTasksResponse"] | components["schemas"]["A2AAgentCard"];
+                    } & {
+                        [key: string]: unknown;
+                    }) | components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -10880,13 +16134,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AgentAccess_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -10915,13 +16178,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AgentAccess_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -10946,13 +16218,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AgentConnectorState_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -10978,13 +16259,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AgentConnectorState_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -11010,13 +16300,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AgentConnectorState_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -11048,13 +16347,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_StartedAgentConversation_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -11083,13 +16391,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_ExtensionConsoleSession_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -11114,13 +16431,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AgentExtensionCatalog_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -11149,13 +16475,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AgentExtensionCatalog_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -11180,13 +16515,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AgentFavorite_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -11211,13 +16555,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AgentFavorite_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -11242,13 +16595,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AgentRecord_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -11273,13 +16635,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AgentPreparedRuntimeStatus_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -11304,20 +16675,32 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AgentPreparedRuntimeStatus_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
     };
     list_agent_sessions_api_v1_agents__agent_id__sessions_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Maximum visible conversations to return, capped at 1000. */
+                limit?: number;
+            };
             header?: never;
             path: {
                 agent_id: string;
@@ -11332,16 +16715,25 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiEnvelope_list_dict_str__Any___"];
+                    "application/json": components["schemas"]["ApiEnvelope_list_SessionRecord__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -11366,13 +16758,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AgentRecord_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -11399,13 +16800,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_ArtifactRuntime_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -11436,13 +16846,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_ArtifactAgentRun_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -11470,13 +16889,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_ArtifactAgentStatus_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -11507,13 +16935,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_dict_str__Any__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -11544,13 +16981,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_dict_str__Any__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -11578,13 +17024,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_dict_str__Any__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -11616,13 +17071,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_dict_str__Any__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -11650,13 +17114,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_dict_str__Any__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -11688,13 +17161,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_dict_str__Any__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -11713,22 +17195,31 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description Server-sent events. See the Artifact runtime guide for event payloads and lifecycle. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/event-stream": unknown;
+                    "text/event-stream": string;
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -11759,13 +17250,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_ArtifactRecord_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -11797,13 +17297,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_dict_str__Any__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -11835,13 +17344,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_dict_str__Any__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -11863,22 +17381,31 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Successful Response */
+            /** @description Server-sent events. See the Artifact runtime guide for event payloads and lifecycle. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/event-stream": unknown;
+                    "text/event-stream": string;
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -11906,13 +17433,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_dict_str__Any__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -11941,13 +17477,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_ArtifactPage_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -11969,16 +17514,25 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiEnvelope_dict_str__Any__"];
+                    "application/json": components["schemas"]["ApiEnvelope_ArtifactDetail_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -12003,13 +17557,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_dict_str__bool__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -12038,13 +17601,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_ArtifactRecord_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -12071,13 +17643,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_ArtifactRuntime_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -12108,13 +17689,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_ArtifactAgentRun_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -12142,13 +17732,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_ArtifactAgentStatus_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -12179,13 +17778,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_dict_str__Any__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -12216,13 +17824,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_dict_str__Any__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -12250,13 +17867,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_dict_str__Any__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -12288,13 +17914,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_dict_str__Any__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -12322,13 +17957,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_dict_str__Any__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -12360,13 +18004,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_dict_str__Any__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -12385,22 +18038,31 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description Server-sent events. See the Artifact runtime guide for event payloads and lifecycle. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/event-stream": unknown;
+                    "text/event-stream": string;
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -12431,13 +18093,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_ArtifactRecord_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -12469,13 +18140,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_dict_str__Any__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -12507,13 +18187,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_dict_str__Any__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -12535,22 +18224,31 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Successful Response */
+            /** @description Server-sent events. See the Artifact runtime guide for event payloads and lifecycle. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/event-stream": unknown;
+                    "text/event-stream": string;
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -12578,13 +18276,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_dict_str__Any__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -12609,13 +18316,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_ArtifactShare_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -12644,13 +18360,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_ArtifactShare_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -12675,13 +18400,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_ArtifactShare_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -12703,16 +18437,25 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiEnvelope_list_dict_str__Any___"];
+                    "application/json": components["schemas"]["ApiEnvelope_list_ArtifactVersionRecord__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -12735,16 +18478,25 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiEnvelope_dict_str__Any__"];
+                    "application/json": components["schemas"]["ApiEnvelope_ArtifactDetail_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -12770,20 +18522,204 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_ArtifactRecord_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    agent_card__api_v1_assistant_a2a__binding_id__agents__agent_id___well_known_agent_card_json_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                binding_id: string;
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Native AgentCard; capability fields describe what this Agent supports. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["A2AAgentCard"];
+                };
+            };
+            /** @description Authentication/authorization rejection or native protocol error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    assistant_a2a_rpc__api_v1_assistant_a2a__binding_id__agents__agent_id__a2a_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "A2A-Version": "1.0";
+            };
+            path: {
+                binding_id: string;
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": ({
+                    id: string | number;
+                    /** @constant */
+                    jsonrpc: "2.0";
+                    /** @constant */
+                    method: "SendMessage";
+                    params: components["schemas"]["A2ASendMessageRequest"];
+                } & {
+                    [key: string]: unknown;
+                }) | ({
+                    id: string | number;
+                    /** @constant */
+                    jsonrpc: "2.0";
+                    /** @constant */
+                    method: "SendStreamingMessage";
+                    params: components["schemas"]["A2ASendMessageRequest"];
+                } & {
+                    [key: string]: unknown;
+                }) | ({
+                    id: string | number;
+                    /** @constant */
+                    jsonrpc: "2.0";
+                    /** @constant */
+                    method: "GetTask";
+                    params: components["schemas"]["A2AGetTaskRequest"];
+                } & {
+                    [key: string]: unknown;
+                }) | ({
+                    id: string | number;
+                    /** @constant */
+                    jsonrpc: "2.0";
+                    /** @constant */
+                    method: "ListTasks";
+                    params: components["schemas"]["A2AListTasksRequest"];
+                } & {
+                    [key: string]: unknown;
+                }) | ({
+                    id: string | number;
+                    /** @constant */
+                    jsonrpc: "2.0";
+                    /** @constant */
+                    method: "CancelTask";
+                    params: components["schemas"]["A2ACancelTaskRequest"];
+                } & {
+                    [key: string]: unknown;
+                }) | ({
+                    id: string | number;
+                    /** @constant */
+                    jsonrpc: "2.0";
+                    /** @constant */
+                    method: "SubscribeToTask";
+                    params: components["schemas"]["A2ASubscribeToTaskRequest"];
+                } & {
+                    [key: string]: unknown;
+                }) | ({
+                    id: string | number;
+                    /** @constant */
+                    jsonrpc: "2.0";
+                    /** @constant */
+                    method: "GetExtendedAgentCard";
+                    params: components["schemas"]["A2AGetExtendedAgentCardRequest"];
+                } & {
+                    [key: string]: unknown;
+                });
+            };
+        };
+        responses: {
+            /** @description JSON-RPC result/error, or SSE StreamResponse events for streaming methods. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: {
+                            code: number;
+                            data?: unknown;
+                            message: string;
+                        } & {
+                            [key: string]: unknown;
+                        };
+                        id: string | number | null;
+                        /** @constant */
+                        jsonrpc: "2.0";
+                        result?: components["schemas"]["A2ASendMessageResponse"] | components["schemas"]["A2ATask"] | components["schemas"]["A2AListTasksResponse"] | components["schemas"]["A2AAgentCard"];
+                    } & {
+                        [key: string]: unknown;
+                    };
+                    "text/event-stream": string;
+                };
+            };
+            /** @description Native JSON-RPC error or platform authentication/authorization rejection. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": ({
+                        error?: {
+                            code: number;
+                            data?: unknown;
+                            message: string;
+                        } & {
+                            [key: string]: unknown;
+                        };
+                        id: string | number | null;
+                        /** @constant */
+                        jsonrpc: "2.0";
+                        result?: components["schemas"]["A2ASendMessageResponse"] | components["schemas"]["A2ATask"] | components["schemas"]["A2AListTasksResponse"] | components["schemas"]["A2AAgentCard"];
+                    } & {
+                        [key: string]: unknown;
+                    }) | components["schemas"]["ErrorResponse"];
                 };
             };
         };
     };
     list_assistants_api_v1_assistants_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Set to 1 for a cursor page; omitted returns all owned Assistants. */
+                page?: 1;
+                /** @description Page size, clamped to 1..100. */
+                limit?: number;
+                /** @description Opaque next_cursor from the previous page. */
+                cursor?: string;
+                /** @description Assistant search. */
+                q?: string;
+                /** @description Workspace-state filter. */
+                status?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -12799,6 +18735,24 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AssistantListPage_"] | components["schemas"]["ApiEnvelope_list_Assistant__"];
                 };
             };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
         };
     };
     create_assistant_api_v1_assistants_post: {
@@ -12811,6 +18765,52 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    description?: string | null;
+                    display_name: string;
+                    /** @description If supplied, must match the Environment's Assistant-capable program. */
+                    engine_kind?: string;
+                    /** @description Configuration owned and validated by the selected program. */
+                    engine_options?: {
+                        [key: string]: unknown;
+                    };
+                    environment_name: string;
+                    icon?: string | null;
+                    /** @description Name-keyed native MCP server declarations. */
+                    mcp_servers?: {
+                        [key: string]: unknown;
+                    };
+                    model_config_override?: {
+                        model_name?: string;
+                    };
+                    /** @description Package declarations accepted by the installed program. */
+                    packages?: {
+                        [key: string]: unknown;
+                    }[];
+                    /** @description A permission mode declared by the Environment's program. */
+                    permission_mode_default?: string;
+                    /** @description Skill Git URLs or provider source descriptors; a single URL is accepted as shorthand for one entry. */
+                    skills?: string | null | (string | {
+                        /** Config */
+                        config?: {
+                            [key: string]: string;
+                        };
+                        /** Name */
+                        name: string;
+                        /**
+                         * Path
+                         * @default
+                         */
+                        path?: string;
+                        /** Provider */
+                        provider: string;
+                        /** Source */
+                        source: string;
+                        /** Version */
+                        version: string;
+                    })[];
+                    system?: string | null;
+                    timezone?: string;
+                } & {
                     [key: string]: unknown;
                 };
             };
@@ -12825,13 +18825,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_Assistant_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -12858,13 +18867,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_Assistant_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -12889,13 +18907,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_Assistant_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -12920,13 +18947,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AssistantDeletion_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -12943,6 +18979,49 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    description?: string | null;
+                    display_name?: string;
+                    /** @description Configuration owned and validated by the selected program. */
+                    engine_options?: {
+                        [key: string]: unknown;
+                    };
+                    icon?: string | null;
+                    /** @description Name-keyed native MCP server declarations. */
+                    mcp_servers?: {
+                        [key: string]: unknown;
+                    };
+                    model_config_override?: {
+                        model_name?: string;
+                    };
+                    /** @description Package declarations accepted by the installed program. */
+                    packages?: {
+                        [key: string]: unknown;
+                    }[];
+                    /** @description A permission mode declared by the Environment's program. */
+                    permission_mode_default?: string;
+                    /** @description Skill Git URLs or provider source descriptors; a single URL is accepted as shorthand for one entry. */
+                    skills?: string | null | (string | {
+                        /** Config */
+                        config?: {
+                            [key: string]: string;
+                        };
+                        /** Name */
+                        name: string;
+                        /**
+                         * Path
+                         * @default
+                         */
+                        path?: string;
+                        /** Provider */
+                        provider: string;
+                        /** Source */
+                        source: string;
+                        /** Version */
+                        version: string;
+                    })[];
+                    system?: string | null;
+                    timezone?: string;
+                } & {
                     [key: string]: unknown;
                 };
             };
@@ -12957,13 +19036,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_Assistant_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -12988,13 +19076,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AssistantConnectorState_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -13020,13 +19117,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AssistantConnectorState_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -13052,13 +19158,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AssistantConnectorState_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -13090,13 +19205,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_StartedAssistantConversation_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -13121,13 +19245,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_list_DeploymentRecord__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -13141,7 +19274,44 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    allowed_participants?: string[];
+                    /** @description Attention policy supported by the installed channel provider. */
+                    attention_policy?: string;
+                    /** @description Fields from the selected channel provider's config_fields catalog. */
+                    channel_config?: {
+                        [key: string]: unknown;
+                    };
+                    /** @description Private values from that provider's credential_fields catalog; reads return masks. */
+                    credentials?: {
+                        [key: string]: string;
+                    };
+                    enabled?: boolean;
+                    /** @description One execution_modes value from the selected channel provider. */
+                    execution_mode?: string;
+                    /** @description Account execution subject; configuring it requires platform administration. */
+                    execution_user_id?: string;
+                    name?: string;
+                    prompt_prefix?: string;
+                    response_instruction?: string;
+                    /** @description Installed trigger scene: a webhook, schedule, or channel provider's advertised scene. */
+                    scene: string;
+                    /** @description Recurring schedule: five cron fields and an IANA timezone. */
+                    schedule?: {
+                        cron?: string;
+                        timezone?: string;
+                    } & {
+                        [key: string]: unknown;
+                    };
+                    /** @description Trigger secret where the selected scene uses one. */
+                    secret?: string | null;
+                } & {
+                    [key: string]: unknown;
+                };
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -13152,13 +19322,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_DeploymentRecord_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -13173,7 +19352,44 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    allowed_participants?: string[];
+                    /** @description Attention policy supported by the installed channel provider. */
+                    attention_policy?: string;
+                    /** @description Fields from the selected channel provider's config_fields catalog. */
+                    channel_config?: {
+                        [key: string]: unknown;
+                    };
+                    /** @description Private values from that provider's credential_fields catalog; reads return masks. */
+                    credentials?: {
+                        [key: string]: string;
+                    };
+                    enabled?: boolean;
+                    /** @description One execution_modes value from the selected channel provider. */
+                    execution_mode?: string;
+                    /** @description Account execution subject; configuring it requires platform administration. */
+                    execution_user_id?: string;
+                    name?: string;
+                    prompt_prefix?: string;
+                    response_instruction?: string;
+                    /** @description Installed trigger scene: a webhook, schedule, or channel provider's advertised scene. */
+                    scene?: string;
+                    /** @description Recurring schedule: five cron fields and an IANA timezone. */
+                    schedule?: {
+                        cron?: string;
+                        timezone?: string;
+                    } & {
+                        [key: string]: unknown;
+                    };
+                    /** @description Trigger secret where the selected scene uses one. */
+                    secret?: string | null;
+                } & {
+                    [key: string]: unknown;
+                };
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -13184,13 +19400,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_DeploymentRecord_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -13216,13 +19441,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_DeletedDeployment_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -13247,16 +19481,25 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ApiEnvelope_list_DeploymentRun__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -13279,16 +19522,25 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ApiEnvelope_DeploymentRun_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -13312,16 +19564,25 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ApiEnvelope_DeploymentRun_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -13346,13 +19607,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AssistantExtensionCatalog_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -13381,13 +19651,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AssistantExtensionCatalog_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -13412,13 +19691,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_StartedAssistantConversation_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -13443,13 +19731,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AssistantScheduledJobs_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -13474,13 +19771,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AssistantWorkspaceDestruction_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -13505,13 +19811,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AssistantWorkspaceHibernation_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -13536,13 +19851,254 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AssistantWorkspace_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    auth_callback_api_v1_auth_callback_get: {
+        parameters: {
+            query?: {
+                /** @description OIDC authorization response parameter. */
+                code?: string;
+                /** @description OIDC authorization response parameter. */
+                state?: string;
+                /** @description OIDC authorization response parameter. */
+                error?: string;
+                /** @description OIDC authorization response parameter. */
+                error_description?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: {
+                /** @description Signed state/PKCE flow cookie required on successful callbacks. */
+                astrabox_auth_flow?: string;
+            };
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redirect to the console; sets astrabox_session and deletes the flow cookie. */
+            302: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description OIDC flow failed. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        code: "AUTH_FLOW_FAILED";
+                        message: string;
+                        /** @constant */
+                        success: false;
+                    } & {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description OIDC flow failed. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        code: "AUTH_FLOW_FAILED";
+                        message: string;
+                        /** @constant */
+                        success: false;
+                    } & {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description OIDC flow failed. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        code: "AUTH_FLOW_FAILED";
+                        message: string;
+                        /** @constant */
+                        success: false;
+                    } & {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    auth_login_api_v1_auth_login_get: {
+        parameters: {
+            query?: {
+                /** @description Console path to visit after login; external URLs are refused. */
+                next?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redirect to the IdP; sets the signed astrabox_auth_flow PKCE/state cookie. */
+            302: {
+                headers: {
+                    Location?: string;
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    auth_logout_api_v1_auth_logout_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    auth_session_api_v1_auth_session_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": ({
+                        /** @constant */
+                        authenticated: false;
+                    } & {
+                        [key: string]: unknown;
+                    }) | ({
+                        /** @constant */
+                        authenticated: true;
+                        user: {
+                            display_name: string | null;
+                            email: string | null;
+                            roles: string[];
+                            user_id: string;
+                        } & {
+                            [key: string]: unknown;
+                        };
+                    } & {
+                        [key: string]: unknown;
+                    });
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -13562,7 +20118,25 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ApiEnvelope_list_ChannelProviderRecord__"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -13583,6 +20157,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_list_Connector__"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -13607,13 +20199,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AdoptedConnector_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -13638,13 +20239,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_AuthorizeResponse_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -13666,16 +20276,225 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        code: string;
+                        data: {
+                            connector_id: string;
+                            removed: boolean;
+                        } & {
+                            [key: string]: unknown;
+                        };
+                        message: string;
+                    } & {
+                        [key: string]: unknown;
+                    };
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    channel_callback__api_v1_deployments__deployment_id__callback__callback_path__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                deployment_id: string;
+                callback_path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "*/*": string;
+            };
+        };
+        responses: {
+            /** @description Provider-owned status, headers and raw response body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": string;
+                };
+            };
+        };
+    };
+    channel_callback__api_v1_deployments__deployment_id__callback__callback_path__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                deployment_id: string;
+                callback_path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "*/*": string;
+            };
+        };
+        responses: {
+            /** @description Provider-owned status, headers and raw response body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": string;
+                };
+            };
+        };
+    };
+    channel_callback__api_v1_deployments__deployment_id__callback__callback_path__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                deployment_id: string;
+                callback_path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "*/*": string;
+            };
+        };
+        responses: {
+            /** @description Provider-owned status, headers and raw response body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": string;
+                };
+            };
+        };
+    };
+    channel_callback__api_v1_deployments__deployment_id__callback__callback_path__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                deployment_id: string;
+                callback_path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "*/*": string;
+            };
+        };
+        responses: {
+            /** @description Provider-owned status, headers and raw response body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": string;
+                };
+            };
+        };
+    };
+    channel_callback__api_v1_deployments__deployment_id__callback__callback_path__options: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                deployment_id: string;
+                callback_path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "*/*": string;
+            };
+        };
+        responses: {
+            /** @description Provider-owned status, headers and raw response body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": string;
+                };
+            };
+        };
+    };
+    channel_callback__api_v1_deployments__deployment_id__callback__callback_path__head: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                deployment_id: string;
+                callback_path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "*/*": string;
+            };
+        };
+        responses: {
+            /** @description Provider-owned status, headers and raw response body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": string;
+                };
+            };
+        };
+    };
+    channel_callback__api_v1_deployments__deployment_id__callback__callback_path__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                deployment_id: string;
+                callback_path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "*/*": string;
+            };
+        };
+        responses: {
+            /** @description Provider-owned status, headers and raw response body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": string;
                 };
             };
         };
@@ -13683,13 +20502,23 @@ export interface operations {
     trigger_deployment_api_v1_deployments__deployment_id__trigger_post: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Required by the HMAC webhook scene. */
+                "X-Webhook-Timestamp"?: string;
+                /** @description Required by the HMAC webhook scene. */
+                "X-Webhook-Signature"?: string;
+            };
             path: {
                 deployment_id: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "*/*": string;
+                "application/json": unknown;
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -13700,13 +20529,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_DeploymentTriggerAck_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -13732,13 +20570,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_ExposedPortUrl_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -13761,12 +20608,66 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_DeploymentExtensionProvider_"];
                 };
             };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    agent_mcp_event_stream__api_v1_mcp_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Standalone SSE is not supported. */
+            405: {
+                headers: {
+                    Allow?: "POST";
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller or Origin rejected; code/message transport error or platform identity error envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        code: string;
+                        message: string;
+                    } & {
+                        [key: string]: unknown;
+                    };
+                };
+            };
         };
     };
     agent_mcp_endpoint_api_v1_mcp_post: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Required after initialization; use a version negotiated by initialize. */
+                "MCP-Protocol-Version"?: string;
+            };
             path?: never;
             cookie?: never;
         };
@@ -13774,26 +20675,74 @@ export interface operations {
             content: {
                 "application/json": {
                     [key: string]: unknown;
-                };
+                } & (({
+                    /** @description Absent for a notification. */
+                    id?: string | number | null;
+                    /** @constant */
+                    jsonrpc: "2.0";
+                    method: string;
+                    /** @description Parameters defined by the selected native protocol method. */
+                    params?: {
+                        [key: string]: unknown;
+                    };
+                } & {
+                    [key: string]: unknown;
+                }) & components["schemas"]["MCPClientCall"]);
             };
         };
         responses: {
-            /** @description Successful Response */
+            /** @description Native MCP JSON-RPC result or error. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        error?: {
+                            code: number;
+                            /** @description A JSON value defined by the named tool, program, or data document. */
+                            data?: unknown;
+                            message: string;
+                        } & {
+                            [key: string]: unknown;
+                        };
+                        id: string | number | null;
+                        /** @constant */
+                        jsonrpc: "2.0";
+                        result?: components["schemas"]["MCPServerResult"];
+                    } & {
+                        [key: string]: unknown;
+                    };
                 };
             };
-            /** @description Validation Error */
+            /** @description Notification accepted without a response body. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Transport rejection: code/message; framework and identity rejections may use the platform error envelope. Native method failures use JSON-RPC responses. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"] | ({
+                        code: string;
+                        message: string;
+                    } & {
+                        [key: string]: unknown;
+                    });
                 };
             };
         };
@@ -13816,6 +20765,24 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_MCPClientTokenList_"];
                 };
             };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
         };
     };
     issue_mcp_token_api_v1_mcp_tokens_post: {
@@ -13828,6 +20795,15 @@ export interface operations {
         requestBody?: {
             content: {
                 "application/json": {
+                    /** @description Lifetime in days; null uses the token service's no-expiry behavior. */
+                    expires_in_days?: number | null;
+                    name?: string;
+                    /**
+                     * @default converse
+                     * @enum {string}
+                     */
+                    scope?: "read" | "converse";
+                } & {
                     [key: string]: unknown;
                 };
             };
@@ -13842,13 +20818,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_IssuedMCPClientToken_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -13871,13 +20856,22 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -13902,13 +20896,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_list_DeploymentRecord__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -13935,13 +20938,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_DeploymentRecord_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -13958,6 +20970,17 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    enabled?: boolean;
+                    name?: string;
+                    prompt_prefix?: string;
+                    /** @description Recurring schedule: five cron fields and an IANA timezone. */
+                    schedule?: {
+                        cron?: string;
+                        timezone?: string;
+                    } & {
+                        [key: string]: unknown;
+                    };
+                } & {
                     [key: string]: unknown;
                 };
             };
@@ -13972,13 +20995,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_DeploymentRecord_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14003,13 +21035,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_DeletedDeployment_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14033,16 +21074,25 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ApiEnvelope_list_DeploymentRun__"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14064,16 +21114,25 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ApiEnvelope_DeploymentRun_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14096,16 +21155,25 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ApiEnvelope_DeploymentRun_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14113,7 +21181,12 @@ export interface operations {
     platform_mcp_streamable_http_api_v1_platform_mcp__deployment_id___server_name___capability__mcp_post: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Session identifier returned by the native MCP server. */
+                "Mcp-Session-Id"?: string;
+                /** @description Negotiated native MCP protocol version. */
+                "MCP-Protocol-Version"?: string;
+            };
             path: {
                 deployment_id: string;
                 server_name: string;
@@ -14121,24 +21194,78 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": ({
+                    /** @description Absent for a notification. */
+                    id?: string | number | null;
+                    /** @constant */
+                    jsonrpc: "2.0";
+                    method: string;
+                    /** @description Parameters defined by the selected native protocol method. */
+                    params?: {
+                        [key: string]: unknown;
+                    };
+                } & {
+                    [key: string]: unknown;
+                }) & components["schemas"]["MCPClientCall"];
+            };
+        };
         responses: {
-            /** @description Successful Response */
+            /** @description Native MCP JSON-RPC response. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": {
+                        error?: {
+                            code: number;
+                            /** @description A JSON value defined by the named tool, program, or data document. */
+                            data?: unknown;
+                            message: string;
+                        } & {
+                            [key: string]: unknown;
+                        };
+                        id: string | number | null;
+                        /** @constant */
+                        jsonrpc: "2.0";
+                        result?: components["schemas"]["MCPServerResult"];
+                    } & {
+                        [key: string]: unknown;
+                    };
                 };
             };
-            /** @description Validation Error */
+            /** @description Accepted native notification, with no response body. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Native MCP server returned no content. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14158,6 +21285,11 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    /** @description Provider expiry observation, parsed as a timestamp. */
+                    expireTime?: string | number | null;
+                    /** @description Sandbox provider lifecycle status. */
+                    status: string;
+                } & {
                     [key: string]: unknown;
                 };
             };
@@ -14172,13 +21304,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_SandboxCallbackResult_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14207,13 +21348,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_RuntimeStateLoadResult_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14242,13 +21392,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_RuntimeStateLoadResult_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14277,13 +21436,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_RuntimeStateSaveResult_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14312,13 +21480,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_RuntimeStateSaveResult_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14350,13 +21527,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_SandboxTerminatingResult_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14374,6 +21560,20 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    append_id: string;
+                    entries: {
+                        [key: string]: unknown;
+                    }[];
+                    key: {
+                        project_key: string;
+                        session_id: string;
+                        subpath?: string;
+                    } & {
+                        [key: string]: unknown;
+                    };
+                    /** @description Digest of the canonical key/entries batch. */
+                    payload_sha256: string;
+                } & {
                     [key: string]: unknown;
                 };
             };
@@ -14388,13 +21588,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_TranscriptAppendResult_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14412,6 +21621,8 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    project_key: string;
+                } & {
                     [key: string]: unknown;
                 };
             };
@@ -14426,13 +21637,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_TranscriptSessionList_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14450,6 +21670,14 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    key: {
+                        project_key: string;
+                        session_id: string;
+                        subpath?: string;
+                    } & {
+                        [key: string]: unknown;
+                    };
+                } & {
                     [key: string]: unknown;
                 };
             };
@@ -14464,13 +21692,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_TranscriptSubkeyList_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14488,6 +21725,14 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    key: {
+                        project_key: string;
+                        session_id: string;
+                        subpath?: string;
+                    } & {
+                        [key: string]: unknown;
+                    };
+                } & {
                     [key: string]: unknown;
                 };
             };
@@ -14502,20 +21747,36 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_TranscriptLoadResult_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
     };
     list_sessions_api_v1_sessions_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Set to 1 for a cursor page; omitted returns the complete visible list. */
+                page?: 1;
+                /** @description Page size, clamped to 1..100; used only with page=1. */
+                limit?: number;
+                /** @description Opaque next_cursor from the preceding page. */
+                cursor?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -14529,6 +21790,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_SessionListPage_"] | components["schemas"]["ApiEnvelope_list_SessionRecord__"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14553,13 +21832,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_SessionRecord_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14584,13 +21872,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_SessionDeletion_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14615,13 +21912,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_SessionArchival_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14646,13 +21952,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_SessionBrowserAccess_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14677,13 +21992,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_SessionChildRunPage_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14709,13 +22033,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_ChildRunMessagePage_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14741,13 +22074,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_ChildRunStopResult_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14772,13 +22114,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_ConversationEndResult_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14805,13 +22156,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_SessionFileChanges_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14840,13 +22200,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_SessionFilesDeleted_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14864,22 +22233,33 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description Raw attachment bytes; Content-Disposition supplies the filename and Content-Length the byte count. */
             200: {
                 headers: {
+                    "Content-Disposition"?: string;
+                    "Content-Length"?: number;
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/octet-stream": string;
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14908,13 +22288,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_SessionFileListing_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14943,13 +22332,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_SessionDirectoryCreated_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -14978,13 +22376,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_SessionFileMoved_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -15013,13 +22420,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_SessionFilePreview_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -15048,20 +22464,34 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_SessionFileUploadResult_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
     };
     get_session_history_blocks_api_v1_sessions__session_id__history_blocks_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Opaque cursor for older history blocks. */
+                before?: string;
+                /** @description History page size, capped at 50. */
+                limit?: number;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -15079,20 +22509,32 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_SessionHistoryBlockPage_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
     };
     get_session_history_block_details_api_v1_sessions__session_id__history_blocks__block_id__get: {
         parameters: {
-            query?: never;
+            query: {
+                /** @description Recorded process-block position from the header. */
+                cursor: string;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -15111,13 +22553,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_SessionHistoryBlockDetails_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -15134,6 +22585,31 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    /** @description Optional caller identifier for input deduplication. */
+                    client_message_id?: string;
+                    /** @description Text or a nonempty text/image block list. The selected program must support every supplied block type. */
+                    content: string | (({
+                        text: string;
+                        /** @constant */
+                        type: "text";
+                    } & {
+                        [key: string]: unknown;
+                    }) | ({
+                        source: {
+                            data: string;
+                            /** @enum {string} */
+                            media_type: "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+                            /** @constant */
+                            type: "base64";
+                        } & {
+                            [key: string]: unknown;
+                        };
+                        /** @constant */
+                        type: "image";
+                    } & {
+                        [key: string]: unknown;
+                    }))[];
+                } & {
                     [key: string]: unknown;
                 };
             };
@@ -15148,13 +22624,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_InputReceipt_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -15172,6 +22657,28 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    /** @description Use the pending interaction's presentation and declared options. Forms accept answers or decline; decisions and tool approvals require decision. */
+                    answer: {
+                        /** @description One answer per question, using its declared ID and selection/free-text rules. */
+                        answers?: ({
+                            free_text?: string;
+                            option_label?: string;
+                            option_labels?: string[];
+                            question_id: string;
+                        } & {
+                            [key: string]: unknown;
+                        })[];
+                        comment?: string;
+                        /** @description Tool approval: approve or reject. A decision presentation requires an exact declared option ID. */
+                        decision?: string;
+                        /** @description Decline a form instead of submitting answers. */
+                        decline?: boolean;
+                        /** @description A native mode from the selected decision option's permission_mode_choices. */
+                        permission_mode?: string;
+                    } & {
+                        [key: string]: unknown;
+                    };
+                } & {
                     [key: string]: unknown;
                 };
             };
@@ -15186,13 +22693,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_InteractionAnswerReceipt_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -15217,20 +22733,34 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_InterruptReceipt_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
     };
     get_messages_api_v1_sessions__session_id__messages_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Opaque cursor for older messages. */
+                before?: string;
+                /** @description Message page size, capped at 50. */
+                limit?: number;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -15248,20 +22778,32 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_SessionMessagePage_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
     };
     generate_session_process_summary_api_v1_sessions__session_id__messages__message_id__process_summary_post: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Set to true to request regeneration after a recorded summary failure. */
+                retry?: string;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -15280,13 +22822,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_ProcessSummaryState_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -15303,6 +22854,9 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    /** @description One mode from the current runtime capability manifest. */
+                    permission_mode: string;
+                } & {
                     [key: string]: unknown;
                 };
             };
@@ -15317,13 +22871,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_PermissionModeUpdate_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -15348,13 +22911,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_SessionRead_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -15379,13 +22951,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_SessionRecord_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -15410,13 +22991,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_SandboxTermination_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -15441,13 +23031,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_ShareLink_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -15461,7 +23060,17 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @default false */
+                    allow_download?: boolean;
+                    expires_in_seconds?: number | null;
+                } & {
+                    [key: string]: unknown;
+                };
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -15472,13 +23081,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_ShareLink_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -15503,13 +23121,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_ShareRevoked_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -15534,13 +23161,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_SpeechInputOptions_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -15569,20 +23205,32 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_SpeechInputTranscript_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
     };
     follow_stream_api_v1_sessions__session_id__stream_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Output cursor to resume after; negative or malformed values return INVALID_REQUEST. */
+                after_seq?: number;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -15591,22 +23239,31 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description AI SDK UI message chunks as SSE; resume with data-resume-cursor. One response per connection. See /docs/events-stream on the documentation site. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "text/event-stream": string;
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -15631,20 +23288,34 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_TerminalInterruptResult_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
     };
     follow_terminal_stream_api_v1_sessions__session_id__terminal_stream_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Recorded terminal command; omitted follows the running command. */
+                command_id?: string;
+                /** @description Replay events after this terminal sequence. */
+                after_seq?: number;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -15653,22 +23324,38 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description Recorded terminal events after after_seq, then live. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "text/event-stream": string;
                 };
             };
-            /** @description Validation Error */
+            /** @description No command is running and no command_id was supplied. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -15685,27 +23372,42 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    command: string;
+                    /** @description Alternate working-directory field; working_directory takes precedence. */
+                    cwd?: string;
+                    /** @description Working directory inside this conversation's workspace. */
+                    working_directory?: string;
+                } & {
                     [key: string]: unknown;
                 };
             };
         };
         responses: {
-            /** @description Successful Response */
+            /** @description Terminal ack, stdout, stderr, cwd and exit events, followed by stream closure. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "text/event-stream": string;
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -15730,13 +23432,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_SessionUserActionView_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -15765,13 +23476,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_SessionUserActionView_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -15796,13 +23516,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_WebshellAccess_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -15827,13 +23556,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_SharedSession_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -15851,29 +23589,43 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description Raw attachment bytes; Content-Disposition supplies the filename and Content-Length the byte count. */
             200: {
                 headers: {
+                    "Content-Disposition"?: string;
+                    "Content-Length"?: number;
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/octet-stream": string;
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
     };
     shared_files_list_api_v1_share__token__files_list_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Workspace directory to list. */
+                path?: string;
+            };
             header?: never;
             path: {
                 token: string;
@@ -15891,13 +23643,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_SessionFileListing_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -15925,13 +23686,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_SessionHistoryBlockPage_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -15959,20 +23729,34 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_SessionHistoryBlockDetails_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
     };
     shared_messages_api_v1_share__token__messages_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Opaque cursor for older shared messages. */
+                before?: string;
+                /** @description Message page size, capped at 50. */
+                limit?: number;
+            };
             header?: never;
             path: {
                 token: string;
@@ -15990,13 +23774,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_SharedMessagePage_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -16013,6 +23806,20 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    append_id: string;
+                    entries: {
+                        [key: string]: unknown;
+                    }[];
+                    key: {
+                        project_key: string;
+                        session_id: string;
+                        subpath?: string;
+                    } & {
+                        [key: string]: unknown;
+                    };
+                    /** @description Digest of the canonical key/entries batch. */
+                    payload_sha256: string;
+                } & {
                     [key: string]: unknown;
                 };
             };
@@ -16027,13 +23834,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_TranscriptAppendResult_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -16050,6 +23866,8 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    project_key: string;
+                } & {
                     [key: string]: unknown;
                 };
             };
@@ -16064,13 +23882,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_TranscriptSessionList_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -16087,6 +23914,14 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    key: {
+                        project_key: string;
+                        session_id: string;
+                        subpath?: string;
+                    } & {
+                        [key: string]: unknown;
+                    };
+                } & {
                     [key: string]: unknown;
                 };
             };
@@ -16101,13 +23936,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_TranscriptSubkeyList_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -16124,6 +23968,14 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    key: {
+                        project_key: string;
+                        session_id: string;
+                        subpath?: string;
+                    } & {
+                        [key: string]: unknown;
+                    };
+                } & {
                     [key: string]: unknown;
                 };
             };
@@ -16138,13 +23990,22 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_TranscriptLoadResult_"];
                 };
             };
-            /** @description Validation Error */
+            /** @description Request validation failed (INVALID_REQUEST). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -16165,6 +24026,50 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_CurrentUser_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    connector_hub_callback__connector_hub_oauth_callback_get: {
+        parameters: {
+            query?: {
+                code?: string;
+                state?: string;
+                error?: string;
+                error_description?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Connector hub response; may redirect with Location. */
+            default: {
+                headers: {
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": string;
                 };
             };
         };
@@ -16189,6 +24094,58 @@ export interface operations {
                     };
                 };
             };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    metrics__metrics_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Prometheus text exposition. ASTRABOX_METRICS_TOKEN, when configured, requires its own bearer credential. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Metrics bearer missing or invalid; no body. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Metrics are disabled; no body. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     readyz_readyz_get: {
@@ -16209,6 +24166,24 @@ export interface operations {
                     "application/json": {
                         [key: string]: string;
                     };
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };

@@ -20,13 +20,14 @@ from typing import Any, Literal
 from fastapi import APIRouter, Body, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from astrabox.common.utils.api_response import success_response
-from astrabox.common.utils.errors import APIError
+from astrabox.api.documentation import object_schema, query_parameter, request_body
 from astrabox.api.routes._shared import (
     _resolve_user,
     _svc,
 )
 from astrabox.api.routes.response_envelope import ApiEnvelope
+from astrabox.common.utils.api_response import success_response
+from astrabox.common.utils.errors import APIError
 
 router = APIRouter()
 
@@ -403,6 +404,23 @@ class SessionFileChanges(BaseModel):
     # (frontend/src/api.ts).
     response_model=ApiEnvelope[SessionListPage] | ApiEnvelope[list[SessionRecord]],
     response_model_exclude_unset=True,
+    openapi_extra={
+        "parameters": [
+            query_parameter(
+                "page",
+                "integer",
+                "Set to 1 for a cursor page; omitted returns the complete visible list.",
+                enum=[1],
+            ),
+            query_parameter(
+                "limit",
+                "integer",
+                "Page size, clamped to 1..100; used only with page=1.",
+                default=50,
+            ),
+            query_parameter("cursor", "string", "Opaque next_cursor from the preceding page."),
+        ]
+    },
 )
 async def list_sessions(request: Request):
     user = await _resolve_user(request)
@@ -430,6 +448,12 @@ async def get_session(session_id: str, request: Request):
     "/api/v1/sessions/{session_id}/messages",
     response_model=ApiEnvelope[SessionMessagePage],
     response_model_exclude_unset=True,
+    openapi_extra={
+        "parameters": [
+            query_parameter("before", "string", "Opaque cursor for older messages."),
+            query_parameter("limit", "integer", "Message page size, capped at 50.", default=20),
+        ]
+    },
 )
 async def get_messages(session_id: str, request: Request):
     user = await _resolve_user(request)
@@ -454,6 +478,12 @@ async def get_session_file_changes(
     "/api/v1/sessions/{session_id}/history-blocks",
     response_model=ApiEnvelope[SessionHistoryBlockPage],
     response_model_exclude_unset=True,
+    openapi_extra={
+        "parameters": [
+            query_parameter("before", "string", "Opaque cursor for older history blocks."),
+            query_parameter("limit", "integer", "History page size, capped at 50.", default=50),
+        ]
+    },
 )
 async def get_session_history_blocks(session_id: str, request: Request):
     """Read the conversation with each ended response's work folded away.
@@ -478,6 +508,16 @@ async def get_session_history_blocks(session_id: str, request: Request):
     "/api/v1/sessions/{session_id}/history-blocks/{block_id}",
     response_model=ApiEnvelope[SessionHistoryBlockDetails],
     response_model_exclude_unset=True,
+    openapi_extra={
+        "parameters": [
+            query_parameter(
+                "cursor",
+                "string",
+                "Recorded process-block position from the header.",
+                required=True,
+            )
+        ]
+    },
 )
 async def get_session_history_block_details(
     session_id: str,
@@ -511,6 +551,15 @@ async def get_session_history_block_details(
     "/api/v1/sessions/{session_id}/messages/{message_id}/process-summary",
     response_model=ApiEnvelope[ProcessSummaryState],
     response_model_exclude_unset=True,
+    openapi_extra={
+        "parameters": [
+            query_parameter(
+                "retry",
+                "string",
+                "Set to true to request regeneration after a recorded summary failure.",
+            )
+        ]
+    },
 )
 async def generate_session_process_summary(
     session_id: str,
@@ -584,6 +633,17 @@ async def stop_session_child_run(
     "/api/v1/sessions/{session_id}/permission-mode",
     response_model=ApiEnvelope[PermissionModeUpdate],
     response_model_exclude_unset=True,
+    openapi_extra=request_body(
+        object_schema(
+            {
+                "permission_mode": {
+                    "type": "string",
+                    "description": "One mode from the current runtime capability manifest.",
+                }
+            },
+            required=("permission_mode",),
+        )
+    ),
 )
 async def update_session_permission_mode(
     session_id: str,

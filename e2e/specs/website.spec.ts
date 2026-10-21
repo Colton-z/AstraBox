@@ -1,3 +1,6 @@
+import {execFileSync, spawn} from "node:child_process";
+import path from "node:path";
+import {fileURLToPath} from "node:url";
 import { devices, expect, test, type Locator } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 
@@ -43,6 +46,118 @@ function staticHrefs(html: string): string[] {
 }
 
 test.describe("public website", () => {
+  test("API reference covers registered operations and documents real wire contracts in both languages", async ({page, request}) => {
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+    const python = path.join(repoRoot, ".venv/bin/python");
+    const apiUrl = "http://127.0.0.1:5198";
+    const backend = spawn(python, ["-m", "uvicorn", "gen_openapi_snapshot:build_app", "--factory", "--app-dir", "scripts", "--host", "127.0.0.1", "--port", "5198", "--lifespan", "off"], {cwd: repoRoot});
+    let backendLog = "";
+    backend.stdout.on("data", (chunk) => { backendLog += chunk; });
+    backend.stderr.on("data", (chunk) => { backendLog += chunk; });
+    try {
+      await expect.poll(async () => {
+        if (backend.exitCode !== null) throw new Error(backendLog);
+        try { return (await request.get(`${apiUrl}/healthz`)).status(); }
+        catch { return 0; }
+      }).toBe(200);
+      const live = await (await request.get(`${apiUrl}/openapi.json`)).json();
+      const published = await (await request.get("./openapi.json")).json();
+      expect(published).toEqual(live);
+
+      // This inventory comes from actual router registrations, independently
+      // of include_in_schema and of the schema-producing adapter.
+      const inventory = JSON.parse(execFileSync(python, ["-c", String.raw`
+import sys,json,re
+sys.path.insert(0,"scripts")
+from gen_openapi_snapshot import build_app
+from check_http_surface import effective_routes
+rows=[]
+for methods,path,name in effective_routes(build_app()):
+    if path.startswith("/api/") or path in {"/healthz","/readyz","/metrics","/connector-hub/oauth/callback"}:
+        for method in methods:
+            if method == "HEAD" and "GET" in methods and "callback_path" not in path: continue
+            rows.append([method.lower(),re.sub(r"\{(\w+):[^}]+\}",r"{\1}",path)])
+print(json.dumps(rows))
+`], {cwd: repoRoot, encoding: "utf8"}));
+      expect(inventory.length).toBeGreaterThan(253);
+      for (const [method, route] of inventory) expect(published.paths[route]?.[method], `${method} ${route}`).toBeTruthy();
+      const operations = Object.entries(published.paths).flatMap(([route, item]) => Object.entries(item as Record<string, unknown>).map(([method]) => `${method} ${route}`));
+      expect(operations.sort()).toEqual(inventory.map(([method, route]: string[]) => `${method} ${route}`).sort());
+      const ids = Object.values(published.paths).flatMap((item) => Object.values(item as Record<string, {operationId: string}>).map((operation) => operation.operationId));
+      expect(new Set(ids).size).toBe(inventory.length);
+
+      const input = published.paths["/api/v1/sessions/{session_id}/inputs"].post;
+      expect(input.requestBody.content["application/json"].schema.properties).toHaveProperty("content");
+      const answer = published.paths["/api/v1/sessions/{session_id}/interactions/{interaction_id}/answer"].post;
+      expect(answer.requestBody.content["application/json"].schema.properties.answer.properties.answers.type).toBe("array");
+      expect(published.paths["/api/v1/sessions"].get.parameters.map((value: {name: string}) => value.name)).toEqual(expect.arrayContaining(["page", "limit", "cursor"]));
+      expect(published.paths["/api/v1/sessions/{session_id}/stream"].get.responses["200"].content).toHaveProperty("text/event-stream");
+      expect(published.paths["/api/v1/sessions/{session_id}/files/download"].get.responses["200"].content).toHaveProperty("application/octet-stream");
+      expect(published.paths["/api/v1/auth/logout"].post.responses["204"]).toBeTruthy();
+      expect(published.paths["/api/v1/agents/{agent_id}/a2a"].post.requestBody).toBeTruthy();
+      expect(published.paths["/api/v1/admin/environments/{name}"].put["x-required-api-scope"]).toBe("astrabox:admin");
+
+      const token = execFileSync(python, ["-c", String.raw`
+import sys
+sys.path.insert(0,"scripts")
+from gen_openapi_snapshot import build_app
+build_app()
+from astrabox.providers.identity_oidc import mint_session_token
+print(mint_session_token(user_id="api-reference-reader",email=None,display_name=None,roles=["admin"],casdoor_organization=""))
+`], {cwd: repoRoot, encoding: "utf8"}).trim();
+      const headers = {Cookie: `astrabox_session=${token}`};
+      for (const route of ["/api/v1/sessions/reference/inputs", "/api/v1/sessions/reference/interactions/pending/answer", "/api/v1/sessions/reference/terminal/stream"]) {
+        const refused = await request.post(apiUrl + route, {headers, data: {}});
+        expect(refused.status()).toBe(400);
+        expect(await refused.json()).toMatchObject({code: "INVALID_REQUEST", error: {code: "INVALID_REQUEST", retryable: false}});
+      }
+      const invalid = await request.post(`${apiUrl}/api/v1/sessions/reference/inputs`, {headers, data: []});
+      expect(invalid.status()).toBe(422);
+      expect((await invalid.json()).code).toBe("INVALID_REQUEST");
+      const probe = await request.get(`${apiUrl}/api/v1/auth/session`);
+      expect(await probe.json()).toEqual({authenticated: false});
+      const init = await request.post(`${apiUrl}/api/v1/mcp`, {headers, data: {jsonrpc: "2.0", id: 1, method: "initialize", params: {protocolVersion: "2025-11-25", capabilities: {}, clientInfo: {name: "reference-e2e", version: "1"}}}});
+      expect(init.status()).toBe(200);
+      expect(await init.json()).toMatchObject({jsonrpc: "2.0", id: 1, result: {serverInfo: {name: "astrabox-agents"}}});
+      const a2a = await request.post(`${apiUrl}/api/v1/agents/reference/a2a`, {headers: {...headers, "A2A-Version": "1.0"}, data: {jsonrpc: "2.0", id: "reference", method: "GetTask", params: {}}});
+      expect(await a2a.json()).toMatchObject({jsonrpc: "2.0", id: "reference", error: {code: expect.any(Number)}});
+
+      for (const prefix of ["", "/zh-Hans"]) {
+        await page.goto(`.${prefix}/docs/api-reference`);
+        await expect(page.getByTestId("api-reference-summary")).toContainText(String(inventory.length));
+        // Swagger virtualizes large catalogs. Searching each actual route
+        // verifies that every method is reachable, including rows off screen.
+        const filter = page.locator(".swagger-ui .operation-filter-input");
+        for (const [route, methods] of Object.entries(published.paths)) {
+          await filter.fill(route);
+          for (const method of Object.keys(methods as Record<string, unknown>)) {
+            await expect(page.locator(`.swagger-ui .opblock-${method} .opblock-summary-path[data-path="${route}"]`)).toHaveCount(1);
+          }
+        }
+        const download = page.getByRole("link", {name: /Download OpenAPI JSON|下载 OpenAPI JSON/});
+        expect(await (await request.get((await download.getAttribute("href"))!)).json()).toEqual(published);
+        await page.locator(".swagger-ui .operation-filter-input").fill("/api/v1/sessions/{session_id}/inputs");
+        const operation = page.locator(".swagger-ui .opblock").filter({hasText: "/api/v1/sessions/{session_id}/inputs"});
+        await operation.locator(".opblock-summary-control").click();
+        await expect(operation).toContainText("Request body");
+        await expect(operation).toContainText("content");
+        await page.locator(".swagger-ui .operation-filter-input").fill("/api/v1/agents/{agent_id}/a2a");
+        const native = page.locator(".swagger-ui .opblock").filter({hasText: "/api/v1/agents/{agent_id}/a2a"});
+        await native.locator(".opblock-summary-control").click();
+        await expect(native).toContainText("A2A-Version");
+        const nativeBody = native.locator(".opblock-section-request-body");
+        await nativeBody.getByRole("button", {name: "Expand all", exact: true}).first().click();
+        await expect(nativeBody).toContainText("SendMessage");
+        await expect(nativeBody).toContainText("params");
+      }
+    } finally {
+      if (backend.exitCode === null) {
+        backend.kill("SIGTERM");
+        await new Promise<void>((resolve) => backend.once("close", () => resolve()));
+      }
+    }
+  });
+
   test("readers can choose current workflows and read complete release guidance in either language", async ({
     page,
     request,

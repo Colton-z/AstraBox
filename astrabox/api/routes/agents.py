@@ -2,26 +2,27 @@
 
 from __future__ import annotations
 
-from astrabox.seams.skills import SkillDescriptor
-
 from typing import Any, Literal
 
 from fastapi import Body, Header, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from astrabox.api.documentation import form_schema, query_parameter, request_body
 from astrabox.api.routes._shared import list_page_limit
 from astrabox.api.routes.conversation_models import (
     StartConversationRequest,
     conversation_idempotency_key,
 )
 from astrabox.api.routes.response_envelope import ApiEnvelope
+from astrabox.api.routes.sessions import SessionRecord
 from astrabox.common.utils.api_response import success_response
 from astrabox.common.utils.user_context import get_current_user_context
+from astrabox.core.service.orchestrator.agent_schema import AGENT_FIELD_SCHEMA, get_agent_schema
 from astrabox.core.service.orchestrator.service_registry import (
     get_agent_service,
     get_platform_service,
 )
-from astrabox.core.service.orchestrator.agent_schema import get_agent_schema
+from astrabox.seams.skills import SkillDescriptor
 
 _registered_on: int | None = None
 
@@ -255,6 +256,7 @@ def register_agent_routes(app: Any) -> None:
         "/api/v1/agents",
         response_model=ApiEnvelope[AgentRecord],
         response_model_exclude_unset=True,
+        openapi_extra=request_body(form_schema(AGENT_FIELD_SCHEMA)),
     )
     async def create_agent(request: Request, payload: dict[str, Any] = Body(...)):
         user = await _resolve_user(request)
@@ -269,6 +271,20 @@ def register_agent_routes(app: Any) -> None:
         # for pickers and scripts that want the whole list.
         response_model=ApiEnvelope[AgentListPage] | ApiEnvelope[list[AgentRecord]],
         response_model_exclude_unset=True,
+        openapi_extra={
+            "parameters": [
+                query_parameter(
+                    "page",
+                    "integer",
+                    "Set to 1 for a cursor page; omitted returns all visible Agents.",
+                    enum=[1],
+                ),
+                query_parameter("limit", "integer", "Page size, clamped to 1..100.", default=50),
+                query_parameter("cursor", "string", "Opaque next_cursor from the previous page."),
+                query_parameter("q", "string", "Case-insensitive Agent search."),
+                query_parameter("status", "string", "Agent availability filter.", default="all"),
+            ]
+        },
     )
     async def list_agents(request: Request):
         user = await _resolve_user(request)
@@ -381,6 +397,19 @@ def register_agent_routes(app: Any) -> None:
         "/api/v1/agents/{agent_id}",
         response_model=ApiEnvelope[AgentRecord],
         response_model_exclude_unset=True,
+        openapi_extra=request_body(
+            {
+                **form_schema(AGENT_FIELD_SCHEMA),
+                "properties": {
+                    **form_schema(AGENT_FIELD_SCHEMA)["properties"],
+                    "version": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Current optimistic-concurrency version from the Agent read.",
+                    },
+                },
+            }
+        ),
     )
     async def update_agent(agent_id: str, request: Request, payload: dict[str, Any] = Body(...)):
         # This is the Agent authoring path. Its version check prevents one
@@ -419,13 +448,22 @@ def register_agent_routes(app: Any) -> None:
         result = await _service.delete_agent(user, agent_id)
         return success_response(result)
 
-    # The rows are session records, the same projection the admin session
-    # surfaces answer with. Typing them belongs with that model rather than
-    # forking a second Agent-local copy of it, so this pins the envelope only.
+    # Reuse the session projection as metadata without rewriting stored rows.
     @app.get(
         "/api/v1/agents/{agent_id}/sessions",
         response_model=ApiEnvelope[list[dict[str, Any]]],
         response_model_exclude_unset=True,
+        openapi_extra={
+            "parameters": [
+                query_parameter(
+                    "limit",
+                    "integer",
+                    "Maximum visible conversations to return, capped at 1000.",
+                    default=500,
+                )
+            ]
+        },
+        responses={200: {"model": ApiEnvelope[list[SessionRecord]]}},
     )
     async def list_agent_sessions(agent_id: str, request: Request):
         # All conversations under one agent (agent_id-keyed). Requires the caller

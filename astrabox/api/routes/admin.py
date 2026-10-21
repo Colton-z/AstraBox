@@ -22,15 +22,26 @@ from fastapi import APIRouter, Body, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
+from astrabox.api.documentation import (
+    form_schema,
+    json_response,
+    object_schema,
+    query_parameter,
+    request_body,
+)
+from astrabox.api.routes._shared import _resolve_user, _svc
 from astrabox.api.routes.response_envelope import ApiEnvelope
+from astrabox.api.routes.sessions import SessionRecord
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.api_response import success_response
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.http_headers import build_attachment_headers
 from astrabox.common.utils.time_utils import utcnow_iso
-from astrabox.core.service.orchestrator.environment_schema import get_environment_schema
 from astrabox.core.service.orchestrator.agent_schema import get_agent_schema
-from astrabox.api.routes._shared import _resolve_user, _svc
+from astrabox.core.service.orchestrator.environment_schema import (
+    ENV_FIELD_SCHEMA,
+    get_environment_schema,
+)
 from astrabox.deploy.admin_integrations import configured_management_links
 
 logger = get_logger(__name__)
@@ -70,6 +81,19 @@ class AdminFormSchema(BaseModel):
     version: int
     groups: list[dict[str, Any]]
     fields: list[dict[str, Any]]
+
+
+class AdminSessionDetail(SessionRecord):
+    """A sanitized stored session plus the operator's runtime projection."""
+
+    model_config = ConfigDict(extra="allow")
+    conversation_state: str
+    has_local_runtime: bool
+    runtime_versions: dict[str, Any]
+    template_skills: list[Any]
+    template_mcp_servers: list[str]
+    template_mcp_config: dict[str, Any] | None
+    mcp_connections: list[Any]
 
 
 class AdminEnvironmentModels(BaseModel):
@@ -422,6 +446,28 @@ async def get_environment_schema_endpoint(request: Request):
     # `/api/v1/admin/environment-schema`.
     response_model=ApiEnvelope[list[dict[str, Any]]],
     response_model_exclude_unset=True,
+    responses=json_response(
+        {
+            "type": "array",
+            "items": object_schema(
+                {
+                    **form_schema(ENV_FIELD_SCHEMA, update=True)["properties"],
+                    **{
+                        "name": {"type": "string"},
+                        "engine_available": {"type": "boolean"},
+                        "supported_session_kinds": {"type": "array", "items": {"type": "string"}},
+                        "permission_modes": {"type": "array", "items": {"type": "string"}},
+                        "engine_options_schema": {
+                            "type": "array",
+                            "items": {"type": "object", "additionalProperties": True},
+                        },
+                        "extensions": {"type": "object", "additionalProperties": True},
+                    },
+                },
+                description="Environment document; credentials are masked. Native extension and option schemas come from the installed program.",
+            ),
+        }
+    ),
 )
 async def list_admin_environments(request: Request):
     """List all environment presets (including disabled entries)."""
@@ -434,6 +480,33 @@ async def list_admin_environments(request: Request):
     "/api/v1/admin/environments/{name}",
     response_model=ApiEnvelope[dict[str, Any]],
     response_model_exclude_unset=True,
+    openapi_extra=request_body(
+        {
+            **form_schema(ENV_FIELD_SCHEMA),
+            "required": [
+                name for name in form_schema(ENV_FIELD_SCHEMA).get("required", []) if name != "name"
+            ],
+        }
+    ),
+    responses=json_response(
+        object_schema(
+            {
+                **form_schema(ENV_FIELD_SCHEMA, update=True)["properties"],
+                **{
+                    "name": {"type": "string"},
+                    "engine_available": {"type": "boolean"},
+                    "supported_session_kinds": {"type": "array", "items": {"type": "string"}},
+                    "permission_modes": {"type": "array", "items": {"type": "string"}},
+                    "engine_options_schema": {
+                        "type": "array",
+                        "items": {"type": "object", "additionalProperties": True},
+                    },
+                    "extensions": {"type": "object", "additionalProperties": True},
+                },
+            },
+            description="Environment document; credentials are masked. Native extension and option schemas come from the installed program.",
+        )
+    ),
 )
 async def upsert_admin_environment(
     name: str,
@@ -487,7 +560,26 @@ async def admin_navigation_summary(request: Request):
     return success_response(await _svc().admin_navigation_summary(user))
 
 
-@router.get("/api/v1/admin/integrations")
+@router.get(
+    "/api/v1/admin/integrations",
+    responses=json_response(
+        object_schema(
+            {
+                "services": {
+                    "type": "array",
+                    "items": object_schema(
+                        {
+                            key: {"type": "string"}
+                            for key in ("id", "name", "category", "admin_url")
+                        },
+                        required=("id", "name", "category", "admin_url"),
+                    ),
+                }
+            },
+            required=("services",),
+        )
+    ),
+)
 async def admin_integrations(request: Request):
     """List management consoles enabled for this deployment."""
     await _resolve_user(request)
@@ -546,6 +638,19 @@ def _session_filters(request: Request) -> dict[str, Any]:
     "/api/v1/admin/sessions/all",
     response_model=ApiEnvelope[AdminSessionPage],
     response_model_exclude_unset=True,
+    openapi_extra={
+        "parameters": [
+            query_parameter("page", "integer", "Page number.", default=1),
+            query_parameter("page_size", "integer", "Rows per page.", default=50),
+            query_parameter("agent_id", "string", "Only this Agent's conversations."),
+            query_parameter(
+                "since", "string", "Inclusive Session creation-time lower bound (ISO 8601)."
+            ),
+            query_parameter(
+                "until", "string", "Inclusive Session creation-time upper bound (ISO 8601)."
+            ),
+        ]
+    },
 )
 async def admin_list_all_sessions(request: Request):
     # One page of the caller's sessions, narrowed in the query — paged and
@@ -582,6 +687,11 @@ async def _errors_payload(limit_param: str) -> dict[str, Any]:
     "/api/v1/admin/errors",
     response_model=ApiEnvelope[AdminErrorsPage],
     response_model_exclude_unset=True,
+    openapi_extra={
+        "parameters": [
+            query_parameter("limit", "integer", "Maximum errors, capped at 500.", default=200)
+        ]
+    },
 )
 async def admin_list_errors(request: Request):
     _ = await _resolve_user(request)
@@ -610,6 +720,7 @@ async def admin_process_health(request: Request):
     # ``AdminService.admin_get_session_detail``.
     response_model=ApiEnvelope[dict[str, Any]],
     response_model_exclude_unset=True,
+    responses={200: {"model": ApiEnvelope[AdminSessionDetail]}},
 )
 async def admin_session_detail(session_id: str, request: Request):
     user = await _resolve_user(request)
@@ -621,6 +732,17 @@ async def admin_session_detail(session_id: str, request: Request):
     "/api/v1/admin/sessions/{session_id}/trace",
     response_model=ApiEnvelope[AdminSessionTrace],
     response_model_exclude_unset=True,
+    openapi_extra={
+        "parameters": [
+            query_parameter("response_id", "string", "Limit trace to this response."),
+            query_parameter(
+                "message_limit", "integer", "Maximum messages in the trace.", default=100
+            ),
+            query_parameter(
+                "part_limit", "integer", "Maximum output parts in the trace.", default=500
+            ),
+        ]
+    },
 )
 async def admin_session_trace(session_id: str, request: Request):
     user = await _resolve_user(request)
@@ -665,7 +787,24 @@ class _TarSink:
         return out
 
 
-@router.get("/api/v1/admin/sessions/transcripts")
+@router.get(
+    "/api/v1/admin/sessions/transcripts",
+    openapi_extra={
+        "parameters": [
+            query_parameter("agent_id", "string", "Only this Agent's conversations."),
+            query_parameter(
+                "since", "string", "Inclusive Session creation-time lower bound (ISO 8601)."
+            ),
+            query_parameter(
+                "until", "string", "Inclusive Session creation-time upper bound (ISO 8601)."
+            ),
+        ]
+    },
+    response_class=StreamingResponse,
+    responses={
+        200: {"content": {"application/gzip": {"schema": {"type": "string", "format": "binary"}}}}
+    },
+)
 async def admin_batch_session_transcripts(request: Request):
     """Stream every transcript the caller may manage as one gzip tar archive.
 
@@ -705,7 +844,19 @@ async def admin_batch_session_transcripts(request: Request):
     )
 
 
-@router.get("/api/v1/admin/sessions/{session_id}/transcript")
+@router.get(
+    "/api/v1/admin/sessions/{session_id}/transcript",
+    response_class=Response,
+    responses={
+        200: {
+            "description": "One native JSONL transcript, or a gzip tar archive preserving all subagent transcripts.",
+            "content": {
+                mime: {"schema": {"type": "string", "format": "binary"}}
+                for mime in ("application/x-ndjson", "application/gzip")
+            },
+        }
+    },
+)
 async def admin_session_transcript(session_id: str, request: Request):
     """The session's transcript as the Claude Agent SDK stores it.
 
@@ -812,6 +963,14 @@ async def admin_evict_runtime(session_id: str, request: Request):
     "/api/v1/admin/logs",
     response_model=ApiEnvelope[AdminLogsPage],
     response_model_exclude_unset=True,
+    openapi_extra={
+        "parameters": [
+            query_parameter("lines", "integer", "Maximum log lines, capped at 2000.", default=200),
+            query_parameter("level", "string", "Log severity filter."),
+            query_parameter("keyword", "string", "Log text filter."),
+            query_parameter("file", "string", "One label from the returned available files."),
+        ]
+    },
 )
 async def admin_logs(request: Request):
     import socket

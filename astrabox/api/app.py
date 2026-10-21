@@ -654,8 +654,11 @@ def create_app() -> FastAPI:
 
     install_access_log_token_mask()
 
+    from astrabox.api.documentation import ERROR_RESPONSES, configure_openapi
+
     app = FastAPI(
         title="AstraBox",
+        responses=ERROR_RESPONSES,
         version=__version__,
         summary=(
             "Self-hosted agent runtime that runs installed Agent programs in isolated "
@@ -669,6 +672,7 @@ def create_app() -> FastAPI:
         redoc_url=None,
         servers=[{"url": prefix}] if prefix else None,
     )
+    configure_openapi(app)
     _register_api_docs(app, prefix)
 
     # Extension middlewares are added first, which puts them innermost under
@@ -760,7 +764,23 @@ def create_app() -> FastAPI:
         """
         return {"status": "ok", "service": "astrabox", "version": __version__}
 
-    @app.get("/metrics", tags=["meta"], summary="Prometheus metrics", include_in_schema=False)
+    @app.get(
+        "/metrics",
+        tags=["meta"],
+        summary="Prometheus metrics",
+        include_in_schema=False,
+        openapi_extra={
+            "security": [{"BearerAuth": []}, {}],
+            "responses": {
+                "200": {
+                    "description": "Prometheus text exposition. ASTRABOX_METRICS_TOKEN, when configured, requires its own bearer credential.",
+                    "content": {"text/plain": {"schema": {"type": "string"}}},
+                },
+                "401": {"description": "Metrics bearer missing or invalid; no body."},
+                "404": {"description": "Metrics are disabled; no body."},
+            },
+        },
+    )
     async def metrics(request: Request) -> Response:
         """Prometheus text-exposition of the in-process metric registry.
 

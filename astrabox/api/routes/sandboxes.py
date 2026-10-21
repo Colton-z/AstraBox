@@ -47,6 +47,8 @@ from typing import Any
 from fastapi import Request
 from pydantic import BaseModel, ConfigDict
 
+from astrabox.api.documentation import query_parameter
+from astrabox.api.routes._shared import _resolve_user, _svc
 from astrabox.api.routes.response_envelope import ApiEnvelope
 from astrabox.bootstrap import SANDBOX_IDLE_ACTIONS
 from astrabox.common.utils.api_response import success_response
@@ -60,7 +62,6 @@ from astrabox.seams.sandbox import (
     enabled_sandbox_names,
     sandbox_for_name,
 )
-from astrabox.api.routes._shared import _resolve_user, _svc
 
 _registered_on: int | None = None
 
@@ -439,6 +440,26 @@ def register_sandbox_routes(app: Any) -> None:
         "/api/v1/admin/sandboxes",
         response_model=ApiEnvelope[AdminSandboxPage],
         response_model_exclude_unset=True,
+        openapi_extra={
+            "parameters": [
+                query_parameter(
+                    "backend",
+                    "string",
+                    "Enabled sandbox backend; omitted selects the configured default.",
+                ),
+                query_parameter(
+                    "page", "integer", "Backend page number.", default=1, minimum=1, maximum=1000000
+                ),
+                query_parameter(
+                    "page_size",
+                    "integer",
+                    "Backend page size.",
+                    default=_DEFAULT_PAGE_SIZE,
+                    minimum=1,
+                    maximum=_MAX_PAGE_SIZE,
+                ),
+            ]
+        },
     )
     async def list_sandboxes(request: Request):
         """One page of the backend's sandbox inventory.
@@ -503,6 +524,15 @@ def register_sandbox_routes(app: Any) -> None:
         "/api/v1/admin/sandbox-idle-action",
         response_model=ApiEnvelope[AdminSandboxIdleAction],
         response_model_exclude_unset=True,
+        openapi_extra={
+            "parameters": [
+                query_parameter(
+                    "backend",
+                    "string",
+                    "Enabled sandbox backend; omitted selects the configured default.",
+                )
+            ]
+        },
     )
     async def describe_sandbox_idle_action(request: Request):
         """Which idle actions a backend can carry out, and which one is in force.
@@ -587,6 +617,15 @@ def register_sandbox_routes(app: Any) -> None:
         "/api/v1/admin/sandboxes/{sandbox_id}",
         response_model=ApiEnvelope[AdminSandboxSummary],
         response_model_exclude_unset=True,
+        openapi_extra={
+            "parameters": [
+                query_parameter(
+                    "backend",
+                    "string",
+                    "Enabled sandbox backend; omitted selects the configured default.",
+                )
+            ]
+        },
     )
     async def describe_sandbox(sandbox_id: str, request: Request):
         """One sandbox as its backend's control plane describes it."""
@@ -599,6 +638,15 @@ def register_sandbox_routes(app: Any) -> None:
         "/api/v1/admin/sandboxes/{sandbox_id}/security",
         response_model=ApiEnvelope[AdminSandboxSecurity],
         response_model_exclude_unset=True,
+        openapi_extra={
+            "parameters": [
+                query_parameter(
+                    "backend",
+                    "string",
+                    "Enabled sandbox backend; omitted selects the configured default.",
+                )
+            ]
+        },
     )
     async def read_sandbox_security(sandbox_id: str, request: Request):
         """What this box reports about its own containment.
@@ -640,6 +688,15 @@ def register_sandbox_routes(app: Any) -> None:
         "/api/v1/admin/sandboxes/{sandbox_id}/diagnostics/{scope}",
         response_model=ApiEnvelope[AdminSandboxDiagnostics],
         response_model_exclude_unset=True,
+        openapi_extra={
+            "parameters": [
+                query_parameter(
+                    "backend",
+                    "string",
+                    "Enabled sandbox backend; omitted selects the configured default.",
+                )
+            ]
+        },
     )
     async def read_sandbox_diagnostics(
         sandbox_id: str,

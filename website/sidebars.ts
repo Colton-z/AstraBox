@@ -71,6 +71,7 @@ const sidebars: SidebarsConfig = {
       label: 'API conventions',
       items: [
         'api',
+        'api-reference',
         'api-authentication',
         'api-pagination',
         'api-errors',

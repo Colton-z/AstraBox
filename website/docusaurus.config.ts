@@ -3,6 +3,7 @@ import type {Config, Plugin} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
 import path from 'node:path';
+import {copyFile} from 'node:fs/promises';
 
 import inlineDiagram, {figurePaths} from './src/remark/inlineDiagram';
 
@@ -36,6 +37,18 @@ function figuresAreBuildInputs(): Plugin {
       } as unknown as ReturnType<NonNullable<Plugin['configureWebpack']>>;
     },
     getPathsToWatch: () => FIGURE_DIRECTORIES,
+  };
+}
+
+// Serve the same canonical snapshot the viewer and generated console client read.
+function apiReferenceDownload(): Plugin {
+  const snapshot = path.resolve(__dirname, '../tests/data/openapi_snapshot.json');
+  return {
+    name: 'astrabox-api-reference-download',
+    getPathsToWatch: () => [snapshot],
+    async postBuild({outDir}) {
+      await copyFile(snapshot, path.join(outDir, 'openapi.json'));
+    },
   };
 }
 
@@ -75,7 +88,7 @@ const config: Config = {
     },
   },
 
-  plugins: [figuresAreBuildInputs],
+  plugins: [figuresAreBuildInputs, apiReferenceDownload],
 
   themes: [
     '@docusaurus/theme-mermaid',
@@ -238,7 +251,7 @@ const config: Config = {
           items: [
             {label: 'GitHub', href: 'https://github.com/Colton-z/AstraBox'},
             {label: 'Architecture', to: '/docs/architecture'},
-            {label: 'API reference', to: '/docs/api'},
+            {label: 'API reference', to: '/docs/api-reference'},
           ],
         },
       ],

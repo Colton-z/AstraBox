@@ -42,6 +42,8 @@ from fastapi import Body
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
+from astrabox.api.documentation import request_body
+from astrabox.api.routes.request_schemas import TRANSCRIPT_APPEND, TRANSCRIPT_LIST, TRANSCRIPT_LOAD
 from astrabox.api.routes.response_envelope import ApiEnvelope
 from astrabox.common.fault_injection import consume_fault
 from astrabox.common.logger.logger_factory import get_logger
@@ -359,6 +361,7 @@ def register_transcript_routes(app: Any) -> None:
         _cap + "/{cap_token}/api/v1/transcript/{session_id}/append",
         response_model=ApiEnvelope[TranscriptAppendResult],
         response_model_exclude_unset=True,
+        openapi_extra=request_body(TRANSCRIPT_APPEND),
     )
     async def transcript_append_scoped(
         cap_token: str, session_id: str, payload: dict[str, Any] = Body(...)
@@ -370,6 +373,7 @@ def register_transcript_routes(app: Any) -> None:
         _cap + "/{cap_token}/api/v1/transcript/{session_id}/load",
         response_model=ApiEnvelope[TranscriptLoadResult],
         response_model_exclude_unset=True,
+        openapi_extra=request_body(TRANSCRIPT_LOAD),
     )
     async def transcript_load_scoped(
         cap_token: str, session_id: str, payload: dict[str, Any] = Body(...)
@@ -384,6 +388,7 @@ def register_transcript_routes(app: Any) -> None:
         _cap + "/{cap_token}/api/v1/transcript/{session_id}/list-sessions",
         response_model=ApiEnvelope[TranscriptSessionList],
         response_model_exclude_unset=True,
+        openapi_extra=request_body(TRANSCRIPT_LIST),
     )
     async def transcript_list_sessions_scoped(
         cap_token: str, session_id: str, payload: dict[str, Any] = Body(...)
@@ -395,6 +400,7 @@ def register_transcript_routes(app: Any) -> None:
         _cap + "/{cap_token}/api/v1/transcript/{session_id}/list-subkeys",
         response_model=ApiEnvelope[TranscriptSubkeyList],
         response_model_exclude_unset=True,
+        openapi_extra=request_body(TRANSCRIPT_LOAD),
     )
     async def transcript_list_subkeys_scoped(
         cap_token: str, session_id: str, payload: dict[str, Any] = Body(...)
@@ -412,6 +418,7 @@ def register_transcript_routes(app: Any) -> None:
         "/api/v1/transcript/{session_id}/append",
         response_model=ApiEnvelope[TranscriptAppendResult],
         response_model_exclude_unset=True,
+        openapi_extra=request_body(TRANSCRIPT_APPEND),
     )
     async def transcript_append(session_id: str, payload: dict[str, Any] = Body(...)):
         if not legacy_open:
@@ -422,6 +429,7 @@ def register_transcript_routes(app: Any) -> None:
         "/api/v1/transcript/{session_id}/load",
         response_model=ApiEnvelope[TranscriptLoadResult],
         response_model_exclude_unset=True,
+        openapi_extra=request_body(TRANSCRIPT_LOAD),
     )
     async def transcript_load(session_id: str, payload: dict[str, Any] = Body(...)):
         if not legacy_open:
@@ -432,6 +440,7 @@ def register_transcript_routes(app: Any) -> None:
         "/api/v1/transcript/{session_id}/list-sessions",
         response_model=ApiEnvelope[TranscriptSessionList],
         response_model_exclude_unset=True,
+        openapi_extra=request_body(TRANSCRIPT_LIST),
     )
     async def transcript_list_sessions(session_id: str, payload: dict[str, Any] = Body(...)):
         if not legacy_open:
@@ -442,6 +451,7 @@ def register_transcript_routes(app: Any) -> None:
         "/api/v1/transcript/{session_id}/list-subkeys",
         response_model=ApiEnvelope[TranscriptSubkeyList],
         response_model_exclude_unset=True,
+        openapi_extra=request_body(TRANSCRIPT_LOAD),
     )
     async def transcript_list_subkeys(
         session_id: str, payload: dict[str, Any] = Body(...)

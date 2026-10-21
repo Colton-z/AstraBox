@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -86,6 +87,26 @@ def collisions(rows: list[tuple[tuple[str, ...], str, str]]) -> list[str]:
                 found.append(f"{method} {path}: {seen[key]!r} vs {name!r}")
             else:
                 seen[key] = name
+    return found
+
+
+def undocumented_operations(app: Any) -> list[str]:
+    """Compare the published catalog with the actual product route table."""
+    paths = app.openapi()["paths"]
+    found: list[str] = []
+    for methods, path, name in effective_routes(app):
+        if not (
+            path.startswith("/api/")
+            or path in {"/healthz", "/readyz", "/metrics", "/connector-hub/oauth/callback"}
+        ):
+            continue
+        canonical = re.sub(r"\{(\w+):[^}]+\}", r"{\1}", path)
+        for method in methods:
+            # Starlette adds HEAD to its native GET card/callback routes.
+            if method == "HEAD" and "GET" in methods:
+                continue
+            if method.lower() not in paths.get(canonical, {}):
+                found.append(f"{method} {canonical} [{name}]")
     return found
 
 
@@ -150,6 +171,16 @@ def evaluate() -> list[tuple[str, list[str]]]:
             failures.append((reason, items))
 
     report("claimed by two different routes", collisions(rows))
+    report("missing from the OpenAPI reference", undocumented_operations(app))
+    operation_ids: dict[str, str] = {}
+    duplicated_ids: list[str] = []
+    for path, methods in app.openapi()["paths"].items():
+        for method, operation in methods.items():
+            operation_id = operation["operationId"]
+            if operation_id in operation_ids:
+                duplicated_ids.append(f"{method.upper()} {path}: {operation_id}")
+            operation_ids[operation_id] = path
+    report("reuse an OpenAPI operation ID", duplicated_ids)
     second = sorted(effective_routes(generator.build_app()))
     if sorted(rows) != second:
         report(

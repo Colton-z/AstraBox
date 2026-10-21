@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
 
+from astrabox.api.documentation import object_schema, request_body
+from astrabox.api.routes.request_schemas import DEPLOYMENT_CREATE, DEPLOYMENT_UPDATE
 from astrabox.api.routes.response_envelope import ApiEnvelope
 from astrabox.common.utils.api_response import error_response, success_response
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import get_current_user_context
 from astrabox.core.service.orchestrator.service_registry import get_platform_service
 from astrabox.deploy.public_path import public_url
+from astrabox.seams.channel import ChannelDescriptor
 
 _registered_on: int | None = None
 
@@ -48,6 +52,33 @@ class DeploymentRecord(BaseModel):
     secret: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+
+
+class DeploymentRun(BaseModel):
+    """The public Run projection produced by DeploymentService._render_run."""
+
+    run_id: str
+    deployment_id: str
+    agent_id: str | None
+    assistant_id: str | None
+    trigger: str
+    status: str
+    scheduled_for: str | None
+    replayed_from_run_id: str | None
+    session_id: str | None
+    input_id: str | None
+    error: str | None
+    created_at: str | None
+
+
+@dataclass(frozen=True)
+class ChannelProviderRecord(ChannelDescriptor):
+    """The native provider descriptor plus platform configuration permissions."""
+
+    scene: str = ""
+    supports_source: bool = False
+    uses_trigger_secret: bool = False
+    can_configure_execution_user: bool = False
 
 
 class PersonalScheduleCreate(BaseModel):
@@ -115,6 +146,21 @@ def register_deployment_routes(app: Any) -> None:
         # This is a byte-preserving platform callback, not a JSON API for
         # AstraBox clients. Each provider owns its request and response shape.
         include_in_schema=False,
+        openapi_extra={
+            "tags": ["Channels"],
+            "summary": "Forward a channel provider callback",
+            "description": "Provider-owned callback path, query, headers, authentication, body and status. Bytes are forwarded unchanged to the provider advertised by /api/v1/channel-providers; use its documentation_url and callback_path.",
+            "requestBody": {
+                "required": False,
+                "content": {"*/*": {"schema": {"type": "string", "format": "binary"}}},
+            },
+            "responses": {
+                "default": {
+                    "description": "Provider-owned status, headers and raw response body.",
+                    "content": {"*/*": {"schema": {"type": "string", "format": "binary"}}},
+                }
+            },
+        },
     )
     async def channel_callback(
         deployment_id: str, callback_path: str, request: Request
@@ -163,6 +209,30 @@ def register_deployment_routes(app: Any) -> None:
         "/api/v1/deployments/{deployment_id}/trigger",
         response_model=ApiEnvelope[DeploymentTriggerAck],
         response_model_exclude_unset=True,
+        openapi_extra={
+            "description": "Authenticate with the configured trigger scene: HMAC webhook headers or the native channel provider credential. Request bytes follow that scene; see the webhook and channel guides.",
+            "parameters": [
+                {
+                    "name": name,
+                    "in": "header",
+                    "required": False,
+                    "schema": {"type": "string"},
+                    "description": "Required by the HMAC webhook scene.",
+                }
+                for name in ("X-Webhook-Timestamp", "X-Webhook-Signature")
+            ],
+            "requestBody": {
+                "required": False,
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "description": "Webhook JSON event; provider scenes define their own payload."
+                        }
+                    },
+                    "*/*": {"schema": {"type": "string", "format": "binary"}},
+                },
+            },
+        },
     )
     async def trigger_deployment(deployment_id: str, request: Request):
         try:
@@ -190,7 +260,20 @@ def register_deployment_routes(app: Any) -> None:
             name=payload.name, prompt_prefix=payload.prompt_prefix, schedule=payload.schedule,
         ))
 
-    @app.put("/api/v1/me/schedules/{deployment_id}", response_model=ApiEnvelope[DeploymentRecord])
+    @app.put(
+        "/api/v1/me/schedules/{deployment_id}",
+        response_model=ApiEnvelope[DeploymentRecord],
+        openapi_extra=request_body(
+            object_schema(
+                {
+                    "name": {"type": "string"},
+                    "prompt_prefix": {"type": "string"},
+                    "enabled": {"type": "boolean"},
+                    "schedule": DEPLOYMENT_UPDATE["properties"]["schedule"],
+                }
+            )
+        ),
+    )
     async def update_personal_schedule(deployment_id: str, patch: dict[str, Any], request: Request):
         user = await get_current_user_context(request)
         return success_response(await _service.update_personal_schedule(user, deployment_id, patch=patch))
@@ -200,17 +283,26 @@ def register_deployment_routes(app: Any) -> None:
         user = await get_current_user_context(request)
         return success_response(await _service.delete_personal_schedule(user, deployment_id))
 
-    @app.get("/api/v1/me/schedules/{deployment_id}/runs")
+    @app.get(
+        "/api/v1/me/schedules/{deployment_id}/runs",
+        responses={200: {"model": ApiEnvelope[list[DeploymentRun]]}},
+    )
     async def list_personal_schedule_runs(deployment_id: str, request: Request, limit: int = 50):
         user = await get_current_user_context(request)
         return success_response(await _service.list_personal_schedule_runs(user, deployment_id, limit=limit))
 
-    @app.post("/api/v1/me/schedules/{deployment_id}/runs")
+    @app.post(
+        "/api/v1/me/schedules/{deployment_id}/runs",
+        responses={200: {"model": ApiEnvelope[DeploymentRun]}},
+    )
     async def trigger_personal_schedule(deployment_id: str, request: Request):
         user = await get_current_user_context(request)
         return success_response(await _service.trigger_personal_schedule(user, deployment_id))
 
-    @app.post("/api/v1/me/schedules/{deployment_id}/runs/{run_id}/replay")
+    @app.post(
+        "/api/v1/me/schedules/{deployment_id}/runs/{run_id}/replay",
+        responses={200: {"model": ApiEnvelope[DeploymentRun]}},
+    )
     async def replay_personal_schedule_run(deployment_id: str, run_id: str, request: Request):
         user = await get_current_user_context(request)
         return success_response(await _service.replay_personal_schedule_run(user, deployment_id, run_id))
@@ -236,7 +328,10 @@ def register_deployment_routes(app: Any) -> None:
         result = await _service.list_agent_deployments(user, agent_id)
         return success_response(result)
 
-    @app.get("/api/v1/admin/channel-providers")
+    @app.get(
+        "/api/v1/admin/channel-providers",
+        responses={200: {"model": ApiEnvelope[list[ChannelProviderRecord]]}},
+    )
     async def list_channel_providers(request: Request):
         user = await get_current_user_context(request)
         result = await _service.list_channel_providers(user)
@@ -244,7 +339,10 @@ def register_deployment_routes(app: Any) -> None:
 
     # The provider catalog is not administrator data: an Assistant owner needs
     # it to bind their own channel.
-    @app.get("/api/v1/channel-providers")
+    @app.get(
+        "/api/v1/channel-providers",
+        responses={200: {"model": ApiEnvelope[list[ChannelProviderRecord]]}},
+    )
     async def list_channel_providers_for_owner(request: Request):
         user = await get_current_user_context(request)
         result = await _service.list_channel_providers(user)
@@ -254,6 +352,7 @@ def register_deployment_routes(app: Any) -> None:
         "/api/v1/admin/agents/{agent_id}/deployments",
         response_model=ApiEnvelope[DeploymentRecord],
         response_model_exclude_unset=True,
+        openapi_extra=request_body(DEPLOYMENT_CREATE),
     )
     async def create_agent_deployment(agent_id: str, request: Request):
         user = await get_current_user_context(request)
@@ -270,6 +369,7 @@ def register_deployment_routes(app: Any) -> None:
         "/api/v1/admin/agents/{agent_id}/deployments/{deployment_id}",
         response_model=ApiEnvelope[DeploymentRecord],
         response_model_exclude_unset=True,
+        openapi_extra=request_body(DEPLOYMENT_UPDATE),
     )
     async def update_agent_deployment(agent_id: str, deployment_id: str, request: Request):
         user = await get_current_user_context(request)
@@ -303,6 +403,12 @@ def register_deployment_routes(app: Any) -> None:
     @app.put(
         "/api/v1/admin/agents/{agent_id}/deployments/{deployment_id}/account-links",
         response_model=ApiEnvelope[ChannelAccountLinkRecord],
+        openapi_extra=request_body(
+            object_schema(
+                {"participant": {"type": "string"}, "user_id": {"type": "string"}},
+                required=("participant", "user_id"),
+            )
+        ),
     )
     async def put_agent_deployment_account_link(
         agent_id: str, deployment_id: str, request: Request
@@ -328,7 +434,8 @@ def register_deployment_routes(app: Any) -> None:
         return success_response(result)
 
     @app.get(
-        "/api/v1/admin/agents/{agent_id}/deployments/{deployment_id}/runs"
+        "/api/v1/admin/agents/{agent_id}/deployments/{deployment_id}/runs",
+        responses={200: {"model": ApiEnvelope[list[DeploymentRun]]}},
     )
     async def list_deployment_runs(
         agent_id: str,
@@ -343,7 +450,8 @@ def register_deployment_routes(app: Any) -> None:
         return success_response(result)
 
     @app.post(
-        "/api/v1/admin/agents/{agent_id}/deployments/{deployment_id}/runs"
+        "/api/v1/admin/agents/{agent_id}/deployments/{deployment_id}/runs",
+        responses={200: {"model": ApiEnvelope[DeploymentRun]}},
     )
     async def trigger_deployment_run(
         agent_id: str, deployment_id: str, request: Request
@@ -355,7 +463,8 @@ def register_deployment_routes(app: Any) -> None:
         return success_response(result)
 
     @app.post(
-        "/api/v1/admin/agents/{agent_id}/deployments/{deployment_id}/runs/{run_id}/replay"
+        "/api/v1/admin/agents/{agent_id}/deployments/{deployment_id}/runs/{run_id}/replay",
+        responses={200: {"model": ApiEnvelope[DeploymentRun]}},
     )
     async def replay_deployment_run(
         agent_id: str,
@@ -384,6 +493,7 @@ def register_deployment_routes(app: Any) -> None:
         "/api/v1/assistants/{assistant_id}/deployments",
         response_model=ApiEnvelope[DeploymentRecord],
         response_model_exclude_unset=True,
+        openapi_extra=request_body(DEPLOYMENT_CREATE),
     )
     async def create_assistant_deployment(assistant_id: str, request: Request):
         user = await get_current_user_context(request)
@@ -400,6 +510,7 @@ def register_deployment_routes(app: Any) -> None:
         "/api/v1/assistants/{assistant_id}/deployments/{deployment_id}",
         response_model=ApiEnvelope[DeploymentRecord],
         response_model_exclude_unset=True,
+        openapi_extra=request_body(DEPLOYMENT_UPDATE),
     )
     async def update_assistant_deployment(
         assistant_id: str, deployment_id: str, request: Request
@@ -425,7 +536,10 @@ def register_deployment_routes(app: Any) -> None:
         )
         return success_response(result)
 
-    @app.get("/api/v1/assistants/{assistant_id}/deployments/{deployment_id}/runs")
+    @app.get(
+        "/api/v1/assistants/{assistant_id}/deployments/{deployment_id}/runs",
+        responses={200: {"model": ApiEnvelope[list[DeploymentRun]]}},
+    )
     async def list_assistant_deployment_runs(
         assistant_id: str, deployment_id: str, request: Request, limit: int = 50,
     ):
@@ -435,7 +549,10 @@ def register_deployment_routes(app: Any) -> None:
         )
         return success_response(result)
 
-    @app.post("/api/v1/assistants/{assistant_id}/deployments/{deployment_id}/runs")
+    @app.post(
+        "/api/v1/assistants/{assistant_id}/deployments/{deployment_id}/runs",
+        responses={200: {"model": ApiEnvelope[DeploymentRun]}},
+    )
     async def trigger_assistant_deployment_run(
         assistant_id: str, deployment_id: str, request: Request
     ):
@@ -446,7 +563,8 @@ def register_deployment_routes(app: Any) -> None:
         return success_response(result)
 
     @app.post(
-        "/api/v1/assistants/{assistant_id}/deployments/{deployment_id}/runs/{run_id}/replay"
+        "/api/v1/assistants/{assistant_id}/deployments/{deployment_id}/runs/{run_id}/replay",
+        responses={200: {"model": ApiEnvelope[DeploymentRun]}},
     )
     async def replay_assistant_deployment_run(
         assistant_id: str, deployment_id: str, run_id: str, request: Request

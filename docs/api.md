@@ -11,6 +11,8 @@ JSON for requests and responses; streaming endpoints use Server-Sent Events.
 `/docs`; the OpenAPI document at `/openapi.json` describes the exact API
 surface of the deployed release.</Note>
 
+See the [complete API reference](api-reference.mdx) for every operation, parameter, request body and response, with an OpenAPI JSON download.
+
 ## Gateway URL
 
 | Environment | URL |
@@ -26,8 +28,8 @@ below it as well; see
 
 ## Versioning
 
-The API is currently at version `v1`. Endpoints use the `/api/v1` prefix; no
-additional version header is required. Health, readiness, metrics, and generated
+The API is currently at version `v1`. Endpoints use the `/api/v1` prefix; REST routes require no additional version header. A2A calls require
+`A2A-Version: 1.0`; MCP negotiates its version at initialization. Health, readiness, metrics, and generated
 API documentation use top-level paths.
 
 ## Available APIs

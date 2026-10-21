@@ -3,14 +3,16 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
 
+from astrabox.api.documentation import BINARY_RESPONSE, object_schema, query_parameter, request_body
 from astrabox.api.routes.response_envelope import ApiEnvelope
-from astrabox.api.routes.sessions import (
-    SessionHistoryBlockPage, SessionHistoryBlockDetails,
-)
 from astrabox.api.routes.session_files import FileDownloadResponse, SessionFileListing
+from astrabox.api.routes.sessions import (
+    SessionHistoryBlockDetails,
+    SessionHistoryBlockPage,
+)
 from astrabox.common.utils.api_response import error_response, success_response
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import get_current_user_context
@@ -104,6 +106,15 @@ def register_share_routes(app: Any) -> None:
         "/api/v1/sessions/{session_id}/share",
         response_model=ApiEnvelope[ShareLink],
         response_model_exclude_unset=True,
+        openapi_extra=request_body(
+            object_schema(
+                {
+                    "expires_in_seconds": {"type": ["integer", "null"]},
+                    "allow_download": {"type": "boolean", "default": False},
+                }
+            ),
+            required=False,
+        ),
     )
     async def create_share(session_id: str, request: Request):
         user = await get_current_user_context(request)
@@ -164,6 +175,12 @@ def register_share_routes(app: Any) -> None:
         "/api/v1/share/{token}/messages",
         response_model=ApiEnvelope[SharedMessagePage],
         response_model_exclude_unset=True,
+        openapi_extra={
+            "parameters": [
+                query_parameter("before", "string", "Opaque cursor for older shared messages."),
+                query_parameter("limit", "integer", "Message page size, capped at 50.", default=20),
+            ]
+        },
     )
     async def shared_messages(token: str, request: Request):
         before = str(request.query_params.get("before", "") or "").strip() or None
@@ -212,6 +229,9 @@ def register_share_routes(app: Any) -> None:
         "/api/v1/share/{token}/files/list",
         response_model=ApiEnvelope[SessionFileListing],
         response_model_exclude_unset=True,
+        openapi_extra={
+            "parameters": [query_parameter("path", "string", "Workspace directory to list.")]
+        },
     )
     async def shared_files_list(token: str, request: Request):
         path = str(request.query_params.get("path", "") or "").strip() or None
@@ -222,7 +242,7 @@ def register_share_routes(app: Any) -> None:
 
     # No response model: the answer is the file's bytes under an attachment
     # header, not the JSON envelope.
-    @app.get("/api/v1/share/{token}/files/download")
+    @app.get("/api/v1/share/{token}/files/download", response_class=Response, responses=BINARY_RESPONSE)
     async def shared_file_download(token: str, request: Request, path: str):
         try:
             download = await _service.download_shared_file(token, path=path)
