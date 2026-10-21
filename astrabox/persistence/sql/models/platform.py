@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Index, func, true
 from sqlalchemy.orm import Mapped, mapped_column
@@ -136,6 +137,7 @@ class AgentTaskReference(Base):
     #: Digest of the request a message id first named, so a different request
     #: reusing the id is refused.
     fingerprint: Mapped[str | None] = mapped_column(payload_text())
+    origin: Mapped[dict[str, Any] | None]
     session_id: Mapped[str | None] = mapped_column(
         KeyText(128), ForeignKey("sessions.session_id", ondelete="CASCADE")
     )

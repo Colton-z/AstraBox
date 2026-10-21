@@ -244,9 +244,11 @@ owner.
 
 A channel bot accepts direct messages from anyone who finds it, so a channel
 trigger on an Assistant must list the owner's own account under **Allowed
-senders**, one per line, written as `platform:user-id` (for example
-`telegram:123456789`). Messages from any other account are ignored and never
-reach the Assistant or its later context.
+senders**, one per line, using the selected adapter's exact sender format and
+example. For Satori's Telegram adapter, an example is `telegram:123456789`;
+other adapters may use an unprefixed identity. See
+[Allowed senders](channels.md#allowed-senders). Messages from any other account
+are ignored and never reach the Assistant or its later context.
 
 Each channel conversation is one Assistant conversation in the shared
 workspace. Replies go back to the chat, and so does anything the Assistant

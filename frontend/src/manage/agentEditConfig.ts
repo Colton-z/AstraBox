@@ -10,7 +10,7 @@
 //      the schema. It is appended as its own section in the same edit grammar.
 import { createElement, Fragment } from 'react';
 import i18n from '@/i18n';
-import type { AgentCategory, RuntimeProfileConfig, FormFieldSchema, FormSchema } from '@/types';
+import type { AgentCategory, AgentConfig, RuntimeProfileConfig, FormFieldSchema, FormSchema } from '@/types';
 import { deleteByPath, getByPath, setByPath } from '@/components/form/paths';
 
 import type {
@@ -119,6 +119,7 @@ export type AgentEditOpts = {
   catalogName?: string;
   /** The categories a platform administrator defined, for the `categories` picker. */
   categories?: AgentCategory[];
+  agents?: AgentConfig[];
   /** Tags the reader's Agents already carry, most used first, offered while typing one. */
   tagSuggestions?: string[];
 };
@@ -173,6 +174,16 @@ function fieldExample(field: FormFieldSchema, type: EditFieldType): string | und
  * the tag is typed.
  */
 function catalogControl(field: FormFieldSchema, opts: AgentEditOpts): Partial<EditFieldSpec> {
+  if (field.key === 'a2a_agent_ids') {
+    return {
+      type: 'multi_select',
+      options: (opts.agents ?? []).map((agent) => ({
+        value: agent.agent_id,
+        label: String(agent.display_meta?.display_name || agent.name),
+      })),
+      unknownOptionLabel: () => i18n.t('misc:agent_form.fields.a2a_agent_ids.unavailable'),
+    };
+  }
   if (field.key === 'categories') {
     return {
       type: 'multi_select',
@@ -249,7 +260,8 @@ function toFieldSpec(field: FormFieldSchema, opts: AgentEditOpts): EditFieldSpec
         : undefined),
     options: isModel
       ? (opts.models ?? []).map((model) => ({ value: model, label: model }))
-      : envOptions ?? field.enum?.map((v) => ({ value: v, label: v })),
+      : envOptions ?? field.enum?.map((v) => ({ value: v, label: field.key === 'a2a_access'
+        ? i18n.t(`misc:agent_form.fields.a2a_access.options.${v}`) : v })),
     example,
     placeholder: field.placeholder ?? example ?? (
       field.type === 'runtime_profile_ref'
@@ -421,6 +433,7 @@ export function buildAgentEditSections(
     .map((group) => ({
       label: i18n.t(`misc:agent_form.groups.${group.id}.label`),
       fields: catalogFieldsTogether(schema.fields.filter((f) => f.group === group.id))
+        .filter((f) => f.key !== 'a2a_agent_ids' || draft?.a2a_access === 'selected')
         .flatMap((f) => expandField(f, opts)),
     }))
     .filter((s) => s.fields.length > 0);

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "astrabox"
-version = "0.1.10"
+version = "0.1.11"
 description = "AstraBox Community — an open, self-hosted agent runtime that streams a sandboxed coding agent to your frontend over the AI-SDK Data-Stream-Protocol."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -51,8 +51,8 @@ dependencies = [
   "mcp==2.1.1",
   # Official A2A HTTP transport; tasks project the existing Session/turn ledger.
   "a2a-sdk[http-server]==1.2.2",
-  # persistence: PostgreSQL through SQLAlchemy 2.0, schema migrated by Alembic
-  "sqlalchemy==2.0.52",
+  # persistence: PostgreSQL through SQLAlchemy, schema migrated by Alembic
+  "sqlalchemy==2.1.4",
   "asyncpg==0.31.0",
   "alembic==1.20.0",
   # Embedded durable schedule/run engine. DBOS owns cron dispatch, distributed
@@ -81,11 +81,11 @@ aws-kms = ["aws-encryption-sdk[MPL]==4.0.6"]
 # OTEL_EXPORTER_OTLP_ENDPOINT-driven tracing (BYO Langfuse / any OTLP backend).
 # OFF unless OTEL_EXPORTER_OTLP_ENDPOINT is set (see astrabox/observability/tracing.py).
 otel = [
-  "opentelemetry-api==1.44.0",
-  "opentelemetry-sdk==1.44.0",
-  "opentelemetry-exporter-otlp==1.44.0",
+  "opentelemetry-api==1.45.1",
+  "opentelemetry-sdk==1.45.1",
+  "opentelemetry-exporter-otlp==1.45.1",
   # FastAPI request-span instrumentation — the tracing foundation's span source.
-  "opentelemetry-instrumentation-fastapi==0.65b0",
+  "opentelemetry-instrumentation-fastapi==0.66b1",
 ]
 # The OpenSandbox lifecycle API server, run as AstraBox's own sandbox control
 # plane by `python -m astrabox.deploy.sandbox_server` (the container image
@@ -120,7 +120,7 @@ dev = [
   # both CI (installs `.[dev]`, runs `python -m ruff`/`python -m mypy`) and local
   # `make test`. The lint/type gate is calibrated to these versions, so a float
   # could silently change lint/type output between a laptop and CI. Bump both here.
-  "ruff==0.16.10",
+  "ruff==0.17.1",
   "mypy==2.4.0",
 ]
 # Live end-to-end smoke (tests/e2e/): drives a real turn against a real Docker

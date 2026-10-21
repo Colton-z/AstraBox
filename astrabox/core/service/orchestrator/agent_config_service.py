@@ -456,6 +456,16 @@ class AgentConfigService:
             ],
             ref=agent_ref,
         )
+        from astrabox.core.service.orchestrator.agent.agent_collaboration import collaboration_access
+        from astrabox.core.service.orchestrator.runtime.mcp_servers import AGENTS_PLATFORM_SERVER
+
+        if collaboration_access(item)[0] != "disabled":
+            if AGENTS_PLATFORM_SERVER in resolved_mcp_servers:
+                raise APIError(
+                    code="AGENT_MCP_NAME_CONFLICT", message="The MCP name agents belongs to A2A collaboration",
+                    status_code=409,
+                )
+            resolved_mcp_servers[AGENTS_PLATFORM_SERVER] = {"platform_server": AGENTS_PLATFORM_SERVER}
         catalog_skills = (
             self._normalize_skills(extension_catalog.get("skills")) if selecting else []
         )

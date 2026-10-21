@@ -10,8 +10,9 @@ import {
   listAgentRuntimeProfileModels,
   listAgentRuntimeProfiles,
   listAgentTags,
+  listAgents,
 } from '@/api';
-import type { AgentCategory, AgentDraft, RuntimeProfileConfig, FormSchema } from '@/types';
+import type { AgentCategory, AgentConfig, AgentDraft, RuntimeProfileConfig, FormSchema } from '@/types';
 
 import {
   ConsoleCreatePage,
@@ -41,6 +42,7 @@ export default function AgentCreatePage() {
   const [schema, setSchema] = useState<FormSchema | null>(null);
   const [runtime_profiles, setRuntimeProfiles] = useState<RuntimeProfileConfig[]>([]);
   const [categories, setCategories] = useState<AgentCategory[]>([]);
+  const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [tagSuggestions, setTagSuggestions] = useState<string[]>([]);
   const [models, setModels] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -64,15 +66,17 @@ export default function AgentCreatePage() {
       // picker offers no environment, and without the categories the category
       // picker offers none. Absorbing any would report a fetch that failed as a
       // product that has nothing to show.
-      const [sch, envs, cats, tags] = await Promise.all([
+      const [sch, envs, cats, tags, peers] = await Promise.all([
         getAgentSchema(),
         listAgentRuntimeProfiles(),
         listAgentCategories(),
         listAgentTags(),
+        listAgents(),
       ]);
       setSchema(sch);
       setRuntimeProfiles(envs);
       setCategories(cats);
+      setAgents(peers);
       setTagSuggestions(tags.map((entry) => entry.tag));
       setDraft(buildAgentDraft(sch));
     } catch (e) {
@@ -116,16 +120,17 @@ export default function AgentCreatePage() {
   // name.
   const { sections, advancedKeys } = useMemo(
     () =>
-      buildAgentEditSections(schema, { visibility: draftVisibility }, {
+      buildAgentEditSections(schema, { visibility: draftVisibility, a2a_access: draft?.a2a_access }, {
         nameEditable: true,
         runtime_profiles,
         models,
         engineOptionsSchema: runtime_profiles.find((e) => e.name === runtimeProfileName)
           ?.engine_options_schema,
         categories,
+        agents,
         tagSuggestions,
       }),
-    [schema, draftVisibility, runtime_profiles, models, runtimeProfileName, categories, tagSuggestions, t],
+    [schema, draftVisibility, draft?.a2a_access, runtime_profiles, models, runtimeProfileName, categories, agents, tagSuggestions, t],
   );
 
   if (loading) {

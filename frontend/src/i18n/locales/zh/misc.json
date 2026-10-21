@@ -221,6 +221,10 @@
       "runtime": {
         "label": "运行设置",
         "description": "Agent 程序、沙箱设置、使用入口和空闲处理方式"
+      },
+      "collaboration": {
+        "label": "Agent 协作",
+        "description": "此 Agent 可以代表对话用户联系哪些 Agent"
       }
     },
     "fields": {
@@ -319,6 +323,20 @@
       "enabled": {
         "label": "启用",
         "help": "关闭后，用户不能再选择这个 Agent 开始会话"
+      },
+      "a2a_access": {
+        "label": "A2A 访问范围",
+        "help": "发现并联系当前用户已有的对话。此设置不授予访问其他用户对话的权限。",
+        "options": {
+          "disabled": "关闭",
+          "all": "全部可访问的 Agent",
+          "selected": "指定 Agent"
+        }
+      },
+      "a2a_agent_ids": {
+        "label": "允许联系的 Agent",
+        "help": "仍受当前用户对目标 Agent 的访问权限约束。",
+        "unavailable": "Agent 不可用"
       }
     }
   },

@@ -74,7 +74,11 @@ export async function startArtifactScene(
 
 export async function sendArtifactPrompt(page: Page, scene: ArtifactScene, prompt: string) {
   const previousResponse = (await scene.api.getSession(scene.sessionId)).last_response?.response_id ?? null;
-  await page.getByTestId('composer-prompt').fill(prompt);
+  const composer = page.getByTestId('composer-prompt');
+  await composer.focus();
+  await expect(composer).toBeEditable();
+  await composer.fill(prompt);
+  await expect(composer).toHaveValue(prompt);
   await page.getByTestId('composer-submit').click();
   const answered = new Set<string>();
   await expect.poll(async () => {
@@ -107,14 +111,14 @@ export function exactToolPrompt(tool: string, input: Record<string, unknown>) {
     + `Preserve the title, kind, content and every marker verbatim. Do not create workspace files or use other tools. `
     + `After the tool succeeds, reply briefly.\n${JSON.stringify(input)}`;
 }
-export async function publishArtifact(page: Page, scene: ArtifactScene, title: string, content: string, capabilities: Manifest = {}) {
-  await sendArtifactPrompt(page, scene, exactToolPrompt('create_artifact', { title, kind: 'html', content, capabilities }));
+export async function publishArtifact(page: Page, scene: ArtifactScene, title: string, content: string, capabilities: Manifest = {}, kind = 'html') {
+  await sendArtifactPrompt(page, scene, exactToolPrompt('create_artifact', { title, kind, content, capabilities }));
   const matches = (await scene.artifacts.list({ q: title })).items.filter((item) => item.title === title);
   expect(matches, 'one durable artifact must match this exact title').toHaveLength(1);
   const artifact = matches[0]!;
   scene.resources.artifacts.push(artifact.artifact_id);
   test.info().annotations.push({ type: 'e2e_artifact_id', description: artifact.artifact_id });
-  expect(artifact).toMatchObject({ title, kind: 'html', current_version: 1, manifest: capabilities });
+  expect(artifact).toMatchObject({ title, kind, current_version: 1, manifest: capabilities });
   expect(artifact.artifact_id).toMatch(/^art_[0-9a-f]{24}$/);
   if (scene.assistantId) expect(artifact.origin.assistant_id).toBe(scene.assistantId);
   else expect(artifact.origin).toMatchObject({ session_id: scene.sessionId, agent_id: scene.agentId });
