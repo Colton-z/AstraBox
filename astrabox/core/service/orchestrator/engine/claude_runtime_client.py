@@ -165,6 +165,11 @@ class _Translation:
         if not isinstance(message, dict):
             return [RuntimeDiagnostic(None, "claude_code.unserialized_event", dict(frame))]
         self._observe_session_key(message)
+        if message.get("__sdk_type") == "ConversationResetMessage":
+            # session_id is outgoing; new_conversation_id is a UI identity,
+            # not a resume key. The next native message supplies the new key.
+            self.engine_session_key = None
+            self.interrupted_response_id = None
         greeting = _session_start_message(message)
         if greeting is not None:
             return self._greeting(*greeting)

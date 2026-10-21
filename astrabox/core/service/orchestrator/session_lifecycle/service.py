@@ -365,7 +365,20 @@ class SessionLifecycleService:
                 "a leaking sandbox destruction must be UNCONFIRMED or REFUSED, "
                 f"not {destruction.outcome!r}"
             )
-        await self._sessions.soft_delete(session_id, user.user_id)
+        deleted = await self._sessions.soft_delete(
+            session_id, user.user_id,
+            expected={
+                "sandbox_id": {"$in": [session.get("sandbox_id"), None]},
+                "undestroyed_sandbox_ids": session.get("undestroyed_sandbox_ids", []),
+            },
+            updates=release_name_updates(destruction, sandbox_id=sandbox_id, row=session),
+        )
+        if not deleted:
+            raise APIError(
+                code="SESSION_NOT_READY",
+                message="session runtime binding changed during deletion",
+                status_code=409,
+            )
         return {"session_id": session_id, "deleted": True}
 
     async def archive_session(self, user: UserContext, session_id: str) -> dict[str, Any]:

@@ -133,6 +133,8 @@ def _condition(key: str, value: Any) -> ColumnElement[bool]:
     if key not in _COLUMNS:
         raise KeyError(f"sessions has no column {key!r}")
     column = _COLUMNS[key]
+    if isinstance(value, dict) and set(value) == {"$in"}:
+        return or_(*(_condition(key, item) for item in value["$in"]))
     if isinstance(value, dict) and set(value) == {"$exists"} and value["$exists"] is False:
         return column.is_(None)
     if isinstance(value, dict) and set(value) == {"$ne"}:
@@ -834,6 +836,7 @@ class SessionRepository:
         """Set columns only while the live row still holds ``expected``.
 
         Each expected value is an equality, ``None`` (the column is null),
+        ``{"$in": [...]}`` (any of those values, including SQL null),
         ``{"$exists": False}`` (the same) or ``{"$ne": value}``. Returns whether
         the row matched. With ``notify``, a matching row sends that session
         notice from the same transaction, so the notice exists only if the
@@ -868,21 +871,30 @@ class SessionRepository:
             session_id, {"hidden": True, "archived_at": utcnow_iso(), "archived_by": user_id}
         )
 
-    async def soft_delete(self, session_id: str, user_id: str) -> bool:
-        """Mark the Session deleted and remove its MCP routes atomically."""
+    async def soft_delete(
+        self, session_id: str, user_id: str, *,
+        expected: dict[str, Any] | None = None, updates: dict[str, Any] | None = None,
+    ) -> bool:
+        """Retire bindings, mark deleted and remove routes while expected fields match."""
+        if updates and "execution_target" in updates:
+            raise ValueError("a Session's execution target is immutable")
+        conditions = [_SESSIONS.c.session_id == session_id]
+        conditions.extend(_condition(key, value) for key, value in (expected or {}).items())
+        values = _column_values(updates or {})
+        values.update(
+            deleted=True, state=SessionState.DELETED.value,
+            deleted_at=func.now(), deleted_by=user_id, updated_at=func.now(),
+        )
+
         async def write(conn: AsyncConnection) -> bool:
-            await conn.execute(delete(_MCP_BINDINGS).where(_MCP_BINDINGS.c.session_id == session_id))
             result = await conn.execute(
                 update(_SESSIONS)
-                .where(_SESSIONS.c.session_id == session_id)
-                .values(
-                    deleted=True,
-                    state=SessionState.DELETED.value,
-                    deleted_at=func.now(),
-                    deleted_by=user_id,
-                    updated_at=func.now(),
-                )
+                .where(*conditions)
+                .values(**values)
             )
-            return result.rowcount > 0
+            if not result.rowcount:
+                return False
+            await conn.execute(delete(_MCP_BINDINGS).where(_MCP_BINDINGS.c.session_id == session_id))
+            return True
 
         return await transaction(write)
