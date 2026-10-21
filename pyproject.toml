@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "astrabox"
-version = "0.1.10"
+version = "0.1.11"
 description = "AstraBox Community — an open, self-hosted agent runtime that streams a sandboxed coding agent to your frontend over the AI-SDK Data-Stream-Protocol."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -51,7 +51,7 @@ dependencies = [
   "mcp==2.1.1",
   # Official A2A HTTP transport; tasks project the existing Session/turn ledger.
   "a2a-sdk[http-server]==1.2.2",
-  # persistence: PostgreSQL through SQLAlchemy 2.0, schema migrated by Alembic
+  # persistence: PostgreSQL through SQLAlchemy, schema migrated by Alembic
   "sqlalchemy==2.1.4",
   "asyncpg==0.31.0",
   "alembic==1.20.0",
