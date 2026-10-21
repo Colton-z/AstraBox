@@ -2,6 +2,20 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { ErrorNote } from '@/components/shell';
 
+/** Native presentation data for which no dedicated card has been defined. */
+export function RawEventCard({ data }: { data: Record<string, unknown> }) {
+  return (
+    <details data-testid="raw-event-card" className="rounded-md border border-border px-3 py-2 text-sm">
+      <summary className="cursor-pointer font-mono text-xs text-muted-foreground">
+        {[data.event_type, data.subtype].filter(Boolean).map(String).join(' / ')}
+      </summary>
+      <pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-words text-xs">
+        {JSON.stringify(data.raw, null, 2)}
+      </pre>
+    </details>
+  );
+}
+
 // Maps the SDK stop_reason to an i18n key; '' means "normal stop, show nothing".
 const STOP_REASON_LABEL_KEYS: Record<string, string> = {
   end_turn: '',

@@ -60,7 +60,7 @@ export interface InputFailure {
 export interface InputMetadata {
   input_id?: string;
   created_at?: string | null;
-  /** `pending`, `delivered`, `admitted` or `failed`. */
+  /** `pending`, `delivered`, `admitted`, `completed` or `failed`. */
   state?: string | null;
   author_user_id?: string | null;
   source?: string | null;

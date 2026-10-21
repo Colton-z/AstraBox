@@ -56,6 +56,7 @@ from astrabox.core.service.orchestrator.engine.interaction_contract import (
 from astrabox.core.service.orchestrator.engine.runner_link import DeliveryCommand, RunnerLink
 from astrabox.core.service.orchestrator.engine.runtime import (
     InputAdmitted,
+    InputRefused,
     InteractionClosed,
     InteractionNotOpen,
     InteractionOpened,
@@ -156,6 +157,13 @@ class _Translation:
             return events
         if op == "input_ack":
             return []
+        if op in {"input_completed", "input_refused"}:
+            input_id = str(frame.get("input_id") or "").strip()
+            if not input_id:
+                raise ValueError("native command receipt has no platform input identity")
+            if op == "input_completed":
+                return [InputAdmitted(None, input_id)]
+            return [InputRefused(None, input_id, _command_failure(frame.get("native")))]
         return [RuntimeDiagnostic(None, f"claude_code.unknown_op.{op}", dict(frame))]
 
     # -- frames ------------------------------------------------------------
@@ -173,6 +181,18 @@ class _Translation:
         greeting = _session_start_message(message)
         if greeting is not None:
             return self._greeting(*greeting)
+        if message.get("__sdk_type") == "ResultMessage" and (
+            self.response_id is None or frame.get("unadmitted_result_input_ids")
+        ):
+            return self._standalone_result(message, frame)
+        if (
+            message.get("__sdk_type") == "AssistantMessage"
+            and message.get("parent_tool_use_id") is None
+            and self.response_id is None and frame.get("engine_boundary") is not True
+        ):
+            return self._native_output({"type": "data-raw-event", "data": {
+                "event_type": "claude_code.sdk", "subtype": "assistant", "raw": dict(message),
+            }}, message, frame, standalone=True)
         events: list[RuntimeEvent] = []
         if frame.get("engine_boundary") is True:
             response_id = str(message.get("uuid") or "").strip()
@@ -195,7 +215,12 @@ class _Translation:
                 consumed["transient"] = not additional_input
                 events.append(ResponseOutput(None, self.response_id, consumed))
             elif isinstance(emission, PrivateDiagnostic):
-                events.append(RuntimeDiagnostic(None, f"{emission.event_type}.{emission.subtype}", emission.raw))
+                if message.get("__sdk_type") in {"SystemMessage", "NativeSDKMessage"} and emission.subtype not in {
+                    "init", "status", "hook_started", "hook_progress", "hook_response",
+                }:
+                    events += self._native_output(emission.as_frame(), message, frame)
+                else:
+                    events.append(RuntimeDiagnostic(None, f"{emission.event_type}.{emission.subtype}", emission.raw))
             elif isinstance(emission, TurnTerminal):
                 events += self._result(message, translated)
             else:
@@ -207,6 +232,49 @@ class _Translation:
                 )
                 events += self._output(emission.as_frame(), tail_response_id=tail_response_id)
         return events
+
+    def _standalone_result(self, message: dict[str, Any], frame: dict[str, Any]) -> list[RuntimeEvent]:
+        """Present a native result without inventing a model turn or an input association."""
+        parts: list[dict[str, Any]] = []
+        text = message.get("result")
+        if not text and isinstance(message.get("errors"), list):
+            text = "\n".join(item for item in message["errors"] if isinstance(item, str))
+        if isinstance(text, str) and text:
+            block = str(message.get("uuid") or frame["seq"]) + ":text"
+            parts += [
+                {"type": "text-start", "id": block},
+                {"type": "text-delta", "id": block, "delta": text},
+                {"type": "text-end", "id": block},
+            ]
+        parts.append({"type": "data-raw-event", "data": {
+            "event_type": "claude_code.sdk", "subtype": "result", "raw": dict(message),
+        }})
+        return self._native_output(parts, message, frame, standalone=True)
+
+    def _native_output(
+        self, parts: dict[str, Any] | list[dict[str, Any]], message: dict[str, Any], frame: dict[str, Any],
+        *, standalone: bool = False,
+    ) -> list[RuntimeEvent]:
+        parts = [parts] if isinstance(parts, dict) else parts
+        if self.response_id is not None and not standalone:
+            return [ResponseOutput(None, self.response_id, part) for part in parts]
+        data = message.get("data")
+        native_id = str(message.get("uuid") or (data.get("uuid") if isinstance(data, dict) else "") or frame["seq"])
+        response_id = f"claude-native:{native_id}"
+        input_ids = tuple(str(value) for value in frame.get("unadmitted_result_input_ids") or ())
+        outcome: ResponseOutcome = "failed" if message.get("is_error") is True else "completed"
+        chunks = [
+            {"type": "start", "messageId": response_id, "messageMetadata": {
+                "native_message": True, "response_id": response_id, "input_ids": list(input_ids),
+            }},
+            *parts, _finish("error" if outcome == "failed" else "stop"),
+        ]
+        native_reason = str(message.get("terminal_reason") or message.get("subtype") or message.get("type") or "") or None
+        return [
+            ResponseStarted(None, response_id, "input" if input_ids else "engine", input_ids),
+            *[ResponseOutput(None, response_id, part) for part in chunks],
+            ResponseEnded(None, response_id, outcome, native_reason),
+        ]
 
     def _interaction(self, frame: dict[str, Any]) -> list[RuntimeEvent]:
         interaction_id = str(frame.get("interaction_id") or "").strip()
@@ -413,6 +481,12 @@ def _finish(reason: str) -> dict[str, Any]:
     return {"type": "finish", "finishReason": reason}
 
 
+def _command_failure(native: Any) -> dict[str, Any]:
+    native = native if isinstance(native, dict) else {}
+    state = str(native.get("state") or "refused")
+    return {"code": state, "message": f"Native command {state}", "native": native}
+
+
 class ClaudeRuntimeClient:
     """One reader's connection to one Claude session in its box."""
 
@@ -554,7 +628,15 @@ class ClaudeRuntimeClient:
             open_responses=open_responses,
             pending_interactions=pending,
             queued_input_ids=tuple(str(i) for i in snapshot.get("queued_input_ids") or []),
-            admitted_input_ids=tuple(str(i) for i in snapshot.get("consumed_input_ids") or []),
+            admitted_input_ids=tuple(dict.fromkeys(
+                str(i)
+                for key in ("consumed_input_ids", "completed_input_ids")
+                for i in snapshot.get(key) or []
+            )),
+            refused_inputs=tuple(
+                InputRefused(None, str(input_id), _command_failure(native))
+                for input_id, native in (snapshot.get("refused_inputs") or {}).items()
+            ),
             cursor=RuntimeCursor(self._boot_id, {"seq": through, "index": _WHOLE_FRAME}),
             closed_interactions=tuple(
                 InteractionClosed(None, str(interaction_id), reason)

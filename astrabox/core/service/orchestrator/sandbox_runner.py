@@ -417,12 +417,22 @@ def _validate_host_engine_requirements(
 #: engine event has committed; until then the runner journal cannot compact it
 #: behind a later Result checkpoint.
 _PERSISTENT_SDK_MESSAGE_TYPES: frozenset[str] = frozenset({
+    "NativeSDKMessage",
+    "ResultMessage",
+    "AssistantMessage",
     "HookEventMessage",
     "TaskStartedMessage",
     "TaskProgressMessage",
     "TaskNotificationMessage",
     "TaskUpdatedMessage",
 })
+
+
+@dataclasses.dataclass(frozen=True)
+class NativeSDKMessage:
+    """A native protocol message the pinned Python SDK does not yet expose."""
+
+    data: dict[str, Any]
 
 
 def _jsonable(obj: Any) -> Any:
@@ -436,7 +446,11 @@ def _jsonable(obj: Any) -> Any:
         fields = {
             f.name: _jsonable(getattr(obj, f.name)) for f in dataclasses.fields(obj)
         }
-        return {"__sdk_type": type(obj).__name__, **fields}
+        native = getattr(obj, "_astrabox_native_message", None)
+        return {
+            **(native if isinstance(native, dict) else {}),
+            "__sdk_type": type(obj).__name__, **fields,
+        }
     if isinstance(obj, dict):
         return {k: _jsonable(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
@@ -697,9 +711,11 @@ class EnvelopeSender:
                 raise RunnerProtocolError(
                     "requires_persistence must be true when present"
                 )
-            if requires_persistence is True and op not in {"event", "interaction_closed", "error"}:
+            if requires_persistence is True and op not in {
+                "event", "interaction_closed", "error", "input_completed", "input_refused",
+            }:
                 raise RunnerProtocolError(
-                    "only SDK events, errors and interaction closures can require host persistence"
+                    "only SDK events, errors, interaction closures and input outcomes can require host persistence"
                 )
             frame = {"op": op, "seq": seq, "session_id": self._session_id, **fields}
             if result_store_sequence is not None:
@@ -1410,6 +1426,8 @@ class RunnerSession:
         # Vendor message id -> platform input id, for inputs queried but not yet
         # echoed. See :meth:`_query_delivery` for why the two differ.
         self._platform_input_ids_by_vendor_uuid: dict[str, str] = {}
+        self._completed_prompt_ids: set[str] = set()
+        self._refused_prompt_receipts: dict[str, dict[str, Any]] = {}
         self._consumed_commands_since_result: set[str] = set()
         self._produced_commands: set[str] = set()
         # An interrupt can overtake a prompt already written to the CLI's stdin.
@@ -1982,7 +2000,13 @@ class RunnerSession:
             "first_unpersisted_event_seq": self.sender.first_unpersisted_event_seq,
             "engine_response_id": self._engine_response_id,
             "running_input_ids": sorted(self._consumed_commands_since_result),
-            "consumed_input_ids": sorted(self._consumed_commands_since_result | self._produced_commands),
+            "consumed_input_ids": sorted(
+                (self._consumed_commands_since_result | self._produced_commands)
+                - self._completed_prompt_ids
+                - self._refused_prompt_receipts.keys()
+            ),
+            "completed_input_ids": sorted(self._completed_prompt_ids),
+            "refused_inputs": dict(self._refused_prompt_receipts),
             "queued_input_ids": queued,
             "pending_interactions": self.broker.pending_requests(),
             "answered_interaction_ids": sorted(self._answered_interactions),
@@ -2196,6 +2220,9 @@ class RunnerSession:
     async def _pump_events_inner(self) -> None:
         assert self._client is not None
         async for message in self._client.receive_messages():
+            if isinstance(message, NativeSDKMessage) and message.data.get("type") == "command_lifecycle":
+                await self._native_command_lifecycle(message.data)
+                continue
             platform_input_id: str | None = None
             message_type = type(message).__name__
             self._track_task(message, message_type)
@@ -2240,6 +2267,17 @@ class RunnerSession:
                 # id it is the consumption receipt for.
                 payload["uuid"] = platform_input_id
             extra: dict[str, Any] = {}
+            if message_type == "ResultMessage" and isinstance(payload, dict):
+                native_ids = payload.get("user_message_uuids") or [payload.get("user_message_uuid")]
+                pending_ids = {item.input_id for item in self._pending_prompt_consumptions}
+                if not isinstance(native_ids, list) or any(value is not None and not isinstance(value, str) for value in native_ids):
+                    raise RunnerProtocolError("native Result input attribution must be UUID strings")
+                completed = tuple(dict.fromkeys(
+                    mapped for value in native_ids
+                    if value and (mapped := self._platform_input_ids_by_vendor_uuid.get(value)) in pending_ids
+                ))
+                if completed:
+                    extra["unadmitted_result_input_ids"] = list(completed)
             # A root assistant response beginning while nothing platform-owned
             # is in flight is the engine's own: Claude answering a queued task
             # notification, which this SDK does not echo as a UserMessage. The
@@ -2293,7 +2331,7 @@ class RunnerSession:
                 self._engine_response_id = response_id
                 self._engine_response_ids.add(response_id)
                 await self._report_status()
-            if is_result:
+            if is_result and not extra.get("unadmitted_result_input_ids"):
                 self._engine_response_id = None
                 self._run_start_seq = None
                 self._interrupts_awaiting_prompt_boundary.difference_update(
@@ -2327,6 +2365,31 @@ class RunnerSession:
                     or self._consumed_commands_since_result
                 )
                 await self._report_status()
+
+    async def _native_command_lifecycle(self, message: dict[str, Any]) -> None:
+        """Settle only the input named by the CLI's native command receipt."""
+        vendor_uuid = str(message.get("command_uuid") or "").strip()
+        input_id = self._platform_input_ids_by_vendor_uuid.get(vendor_uuid)
+        pending = next(
+            (item for item in self._pending_prompt_consumptions if item.input_id == input_id), None,
+        )
+        state = message.get("state")
+        if pending is None or state not in {"completed", "cancelled", "discarded", "refused"}:
+            return
+        command_id = self._command_ids_by_input_id[pending.input_id]
+        await self.sender.send(
+            "input_completed" if state == "completed" else "input_refused",
+            input_id=pending.input_id, native=dict(message), requires_persistence=True,
+        )
+        self._pending_prompt_consumptions.remove(pending)
+        self._platform_input_ids_by_vendor_uuid.pop(vendor_uuid, None)
+        self._produced_commands.add(command_id)
+        if state == "completed":
+            self._completed_prompt_ids.add(pending.input_id)
+        else:
+            self._refused_prompt_receipts[pending.input_id] = dict(message)
+        self._busy = bool(self._pending_prompt_consumptions or self._consumed_commands_since_result)
+        await self._report_status()
 
 
 # ── websocket transport ─────────────────────────────────────────────────────
@@ -3311,6 +3374,21 @@ def _real_session_factory(opening: dict[str, Any], link: HostLink) -> RunnerSess
 
     class NativeClient(ClaudeSDKClient):
         """Bridge the pinned CLI controls absent from Python SDK0.2.163."""
+
+        async def receive_messages(self) -> AsyncIterator[Any]:
+            from claude_agent_sdk._internal.message_parser import parse_message
+
+            if self._query is None:
+                raise RunnerProtocolError("native messages before SDK connection")
+            async for data in self._query.receive_messages():
+                message = parse_message(data)
+                if message is None:
+                    yield NativeSDKMessage(dict(data))
+                else:
+                    # Preserve additive native fields such as command/result
+                    # attribution; the Python dataclass parser drops them.
+                    setattr(message, "_astrabox_native_message", dict(data))
+                    yield message
 
         async def apply_flag_settings(self, settings: dict[str, Any]) -> None:
             if self._query is None:
