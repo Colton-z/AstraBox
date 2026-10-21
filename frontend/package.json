@@ -17,7 +17,7 @@
     "postinstall": "patch-package --error-on-fail"
   },
   "dependencies": {
-    "@ai-sdk/react": "^4.0.130",
+    "@ai-sdk/react": "^4.0.147",
     "@base-ui/react": "^1.7.0",
     "@fontsource-variable/geist": "^5.3.0",
     "@fontsource-variable/geist-mono": "^5.3.0",
