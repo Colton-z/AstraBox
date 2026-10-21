@@ -445,26 +445,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/admin/environment-schema": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Environment Schema Endpoint
-         * @description Return the authoritative editable schema for the environment form.
-         */
-        get: operations["get_environment_schema_endpoint_api_v1_admin_environment_schema_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/admin/environments": {
         parameters: {
             query?: never;
@@ -472,10 +452,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * List Admin Environments
-         * @description List all environment presets (including disabled entries).
-         */
+        /** List Admin Environments */
         get: operations["list_admin_environments_api_v1_admin_environments_get"];
         put?: never;
         post?: never;
@@ -492,40 +469,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
-        /**
-         * Upsert Admin Environment
-         * @description Upsert a single environment preset by name.
-         */
-        put: operations["upsert_admin_environment_api_v1_admin_environments__name__put"];
-        post?: never;
-        /**
-         * Delete Admin Environment
-         * @description Delete a preset only after checking its Agent and Assistant references.
-         */
-        delete: operations["delete_admin_environment_api_v1_admin_environments__name__delete"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/admin/environments/{name}/models": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List Environment Models
-         * @description Model ids the console can offer for agents on this environment.
-         *
-         *     Enumerated by the environment's selected model provider. A provider with
-         *     no authoritative catalog returns an empty list and the console accepts a
-         *     free-text model id.
-         */
-        get: operations["list_environment_models_api_v1_admin_environments__name__models_get"];
-        put?: never;
+        /** Get Admin Environment */
+        get: operations["get_admin_environment_api_v1_admin_environments__name__get"];
+        /** Save Admin Environment */
+        put: operations["save_admin_environment_api_v1_admin_environments__name__put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -650,6 +597,94 @@ export interface paths {
         };
         /** Admin Process Health */
         get: operations["admin_process_health_api_v1_admin_process_health_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/runtime-profile-schema": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Runtime Profile Schema Endpoint
+         * @description Return the authoritative editable schema for the environment form.
+         */
+        get: operations["get_runtime_profile_schema_endpoint_api_v1_admin_runtime_profile_schema_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/runtime-profiles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Admin Runtime Profiles
+         * @description List all environment presets (including disabled entries).
+         */
+        get: operations["list_admin_runtime_profiles_api_v1_admin_runtime_profiles_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/runtime-profiles/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Upsert Admin Runtime Profile
+         * @description Upsert a single environment preset by name.
+         */
+        put: operations["upsert_admin_runtime_profile_api_v1_admin_runtime_profiles__name__put"];
+        post?: never;
+        /**
+         * Delete Admin Runtime Profile
+         * @description Delete a preset only after checking its Agent and Assistant references.
+         */
+        delete: operations["delete_admin_runtime_profile_api_v1_admin_runtime_profiles__name__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/runtime-profiles/{name}/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Runtime Profile Models
+         * @description Model ids the console can offer for agents on this environment.
+         *
+         *     Enumerated by the environment's selected model provider. A provider with
+         *     no authoritative catalog returns an empty list and the console accepts a
+         *     free-text model id.
+         */
+        get: operations["list_runtime_profile_models_api_v1_admin_runtime_profiles__name__models_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1213,7 +1248,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/agent-configuration/environments": {
+    "/api/v1/agent-configuration/runtime-profiles": {
         parameters: {
             query?: never;
             header?: never;
@@ -1221,10 +1256,10 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List Agent Configuration Environments
-         * @description Secret-free Environment choices for the Agent form.
+         * List Agent Configuration Runtime Profiles
+         * @description Secret-free RuntimeProfile choices for the Agent form.
          */
-        get: operations["list_agent_configuration_environments_api_v1_agent_configuration_environments_get"];
+        get: operations["list_agent_configuration_runtime_profiles_api_v1_agent_configuration_runtime_profiles_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1233,7 +1268,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/agent-configuration/environments/{name}/models": {
+    "/api/v1/agent-configuration/runtime-profiles/{name}/models": {
         parameters: {
             query?: never;
             header?: never;
@@ -1242,9 +1277,9 @@ export interface paths {
         };
         /**
          * List Agent Configuration Models
-         * @description Searchable model ids exposed by the chosen Environment's gateway.
+         * @description Searchable model ids exposed by the chosen RuntimeProfile's gateway.
          */
-        get: operations["list_agent_configuration_models_api_v1_agent_configuration_environments__name__models_get"];
+        get: operations["list_agent_configuration_models_api_v1_agent_configuration_runtime_profiles__name__models_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2443,18 +2478,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/execution-policy": {
+    "/api/v1/environments": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /**
-         * Get Execution Policy
-         * @description Read this process's policy without starting workers or touching runtime resources.
-         */
-        get: operations["get_execution_policy_api_v1_execution_policy_get"];
+        /** List Accessible Environments */
+        get: operations["list_accessible_environments_api_v1_environments_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/environments/current": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Current Environment */
+        get: operations["get_current_environment_api_v1_environments_current_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3762,10 +3811,10 @@ export interface components {
             [key: string]: unknown;
         };
         /**
-         * AdminDeletedEnvironment
+         * AdminDeletedRuntimeProfile
          * @description The identity of the preset removed by an administrator.
          */
-        AdminDeletedEnvironment: {
+        AdminDeletedRuntimeProfile: {
             /** Deleted */
             deleted: boolean;
             /** Name */
@@ -3773,16 +3822,18 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
-        /**
-         * AdminEnvironmentModels
-         * @description Model ids an environment's provider can offer.
-         *
-         *     Empty when the provider publishes no authoritative catalog; the console
-         *     then accepts a free-text model id.
-         */
-        AdminEnvironmentModels: {
-            /** Models */
-            models: string[];
+        /** AdminEnvironment */
+        AdminEnvironment: {
+            /** Description */
+            description: string | null;
+            /** Display Name */
+            display_name: string;
+            /** Member User Ids */
+            member_user_ids: string[];
+            /** Name */
+            name: string;
+            /** Version */
+            version: number;
         } & {
             [key: string]: unknown;
         };
@@ -3843,7 +3894,7 @@ export interface components {
          *     One grammar, two producers:
          *     :func:`~astrabox.core.service.orchestrator.agent_schema.get_agent_schema`
          *     and
-         *     :func:`~astrabox.core.service.orchestrator.environment_schema.get_environment_schema`.
+         *     :func:`~astrabox.core.service.orchestrator.runtime_profile_schema.get_runtime_profile_schema`.
          *     ``groups`` and ``fields`` are the form's own vocabulary (key, type, enum,
          *     default, help), which the console reads and this module does not interpret.
          */
@@ -3973,8 +4024,8 @@ export interface components {
         AdminNavigationSummary: {
             /** Agents */
             agents: number;
-            /** Environments */
-            environments: number;
+            /** Runtime Profiles */
+            runtime_profiles: number;
             /** Sessions */
             sessions: number;
         } & {
@@ -4031,6 +4082,19 @@ export interface components {
             /** Severity */
             severity: string;
             threads: components["schemas"]["AdminThreads"];
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * AdminRuntimeProfileModels
+         * @description Model ids an environment's provider can offer.
+         *
+         *     Empty when the provider publishes no authoritative catalog; the console
+         *     then accepts a free-text model id.
+         */
+        AdminRuntimeProfileModels: {
+            /** Models */
+            models: string[];
         } & {
             [key: string]: unknown;
         };
@@ -4532,46 +4596,6 @@ export interface components {
             enabled: string[];
         };
         /**
-         * AgentEnvironmentModels
-         * @description The model ids an Environment's gateway offers. Empty when it offers none.
-         */
-        AgentEnvironmentModels: {
-            /** Models */
-            models: string[];
-        } & {
-            [key: string]: unknown;
-        };
-        /**
-         * AgentEnvironmentOption
-         * @description One Environment an Agent author may choose, without its secrets.
-         */
-        AgentEnvironmentOption: {
-            /** Display Name */
-            display_name: string;
-            /** Enabled */
-            enabled: boolean;
-            /** Engine Kind */
-            engine_kind: string;
-            /**
-             * Engine Options Schema
-             * @default []
-             */
-            engine_options_schema: {
-                [key: string]: unknown;
-            }[];
-            /**
-             * Extensions
-             * @default {}
-             */
-            extensions: {
-                [key: string]: unknown;
-            };
-            /** Name */
-            name: string;
-        } & {
-            [key: string]: unknown;
-        };
-        /**
          * AgentExtensionCatalog
          * @description The provider's catalog with this Agent's selection marked.
          *
@@ -4728,8 +4752,8 @@ export interface components {
             configured_target: number;
             /** Enabled */
             enabled: boolean;
-            /** Execution Target */
-            execution_target: string;
+            /** Environment Name */
+            environment_name: string;
             /** Last Error */
             last_error?: string | null;
             /** Last Miss At */
@@ -4805,8 +4829,6 @@ export interface components {
             } | null;
             /** Enabled */
             enabled?: boolean | null;
-            /** Environment Name */
-            environment_name?: string | null;
             /** Exposure Mode */
             exposure_mode?: string | null;
             /** Extension Catalog */
@@ -4835,6 +4857,8 @@ export interface components {
             }[] | null;
             /** Prepared Capacity */
             prepared_capacity?: number | null;
+            /** Runtime Profile Name */
+            runtime_profile_name?: string | null;
             /** Skills */
             skills?: (string | {
                 [key: string]: unknown;
@@ -4854,6 +4878,46 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /**
+         * AgentRuntimeProfileModels
+         * @description The model ids a RuntimeProfile's gateway offers. Empty when it offers none.
+         */
+        AgentRuntimeProfileModels: {
+            /** Models */
+            models: string[];
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * AgentRuntimeProfileOption
+         * @description One RuntimeProfile an Agent author may choose, without its secrets.
+         */
+        AgentRuntimeProfileOption: {
+            /** Display Name */
+            display_name: string;
+            /** Enabled */
+            enabled: boolean;
+            /** Engine Kind */
+            engine_kind: string;
+            /**
+             * Engine Options Schema
+             * @default []
+             */
+            engine_options_schema: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Extensions
+             * @default {}
+             */
+            extensions: {
+                [key: string]: unknown;
+            };
+            /** Name */
+            name: string;
+        } & {
+            [key: string]: unknown;
+        };
         /** AgentTag */
         AgentTag: {
             /** Agents */
@@ -4869,19 +4933,19 @@ export interface components {
             /** Message */
             message: string;
         };
-        /** ApiEnvelope[AdminDeletedEnvironment] */
-        ApiEnvelope_AdminDeletedEnvironment_: {
+        /** ApiEnvelope[AdminDeletedRuntimeProfile] */
+        ApiEnvelope_AdminDeletedRuntimeProfile_: {
             /** Code */
             code: string;
-            data: components["schemas"]["AdminDeletedEnvironment"];
+            data: components["schemas"]["AdminDeletedRuntimeProfile"];
             /** Message */
             message: string;
         };
-        /** ApiEnvelope[AdminEnvironmentModels] */
-        ApiEnvelope_AdminEnvironmentModels_: {
+        /** ApiEnvelope[AdminEnvironment] */
+        ApiEnvelope_AdminEnvironment_: {
             /** Code */
             code: string;
-            data: components["schemas"]["AdminEnvironmentModels"];
+            data: components["schemas"]["AdminEnvironment"];
             /** Message */
             message: string;
         };
@@ -4946,6 +5010,14 @@ export interface components {
             /** Code */
             code: string;
             data: components["schemas"]["AdminProcessHealth"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[AdminRuntimeProfileModels] */
+        ApiEnvelope_AdminRuntimeProfileModels_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["AdminRuntimeProfileModels"];
             /** Message */
             message: string;
         };
@@ -5061,14 +5133,6 @@ export interface components {
             /** Message */
             message: string;
         };
-        /** ApiEnvelope[AgentEnvironmentModels] */
-        ApiEnvelope_AgentEnvironmentModels_: {
-            /** Code */
-            code: string;
-            data: components["schemas"]["AgentEnvironmentModels"];
-            /** Message */
-            message: string;
-        };
         /** ApiEnvelope[AgentExtensionCatalog] */
         ApiEnvelope_AgentExtensionCatalog_: {
             /** Code */
@@ -5122,6 +5186,14 @@ export interface components {
             /** Code */
             code: string;
             data: components["schemas"]["AgentRecord"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[AgentRuntimeProfileModels] */
+        ApiEnvelope_AgentRuntimeProfileModels_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["AgentRuntimeProfileModels"];
             /** Message */
             message: string;
         };
@@ -5317,6 +5389,14 @@ export interface components {
             /** Message */
             message: string;
         };
+        /** ApiEnvelope[CurrentEnvironment] */
+        ApiEnvelope_CurrentEnvironment_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["CurrentEnvironment"];
+            /** Message */
+            message: string;
+        };
         /** ApiEnvelope[CurrentUser] */
         ApiEnvelope_CurrentUser_: {
             /** Code */
@@ -5370,14 +5450,6 @@ export interface components {
             /** Code */
             code: string;
             data: components["schemas"]["DeploymentTriggerAck"];
-            /** Message */
-            message: string;
-        };
-        /** ApiEnvelope[ExecutionPolicy] */
-        ApiEnvelope_ExecutionPolicy_: {
-            /** Code */
-            code: string;
-            data: components["schemas"]["ExecutionPolicy"];
             /** Message */
             message: string;
         };
@@ -5828,6 +5900,15 @@ export interface components {
             /** Message */
             message: string;
         };
+        /** ApiEnvelope[list[AdminEnvironment]] */
+        ApiEnvelope_list_AdminEnvironment__: {
+            /** Code */
+            code: string;
+            /** Data */
+            data: components["schemas"]["AdminEnvironment"][];
+            /** Message */
+            message: string;
+        };
         /** ApiEnvelope[list[AgentCategory]] */
         ApiEnvelope_list_AgentCategory__: {
             /** Code */
@@ -5837,21 +5918,21 @@ export interface components {
             /** Message */
             message: string;
         };
-        /** ApiEnvelope[list[AgentEnvironmentOption]] */
-        ApiEnvelope_list_AgentEnvironmentOption__: {
-            /** Code */
-            code: string;
-            /** Data */
-            data: components["schemas"]["AgentEnvironmentOption"][];
-            /** Message */
-            message: string;
-        };
         /** ApiEnvelope[list[AgentRecord]] */
         ApiEnvelope_list_AgentRecord__: {
             /** Code */
             code: string;
             /** Data */
             data: components["schemas"]["AgentRecord"][];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[list[AgentRuntimeProfileOption]] */
+        ApiEnvelope_list_AgentRuntimeProfileOption__: {
+            /** Code */
+            code: string;
+            /** Data */
+            data: components["schemas"]["AgentRuntimeProfileOption"][];
             /** Message */
             message: string;
         };
@@ -5897,6 +5978,15 @@ export interface components {
             code: string;
             /** Data */
             data: components["schemas"]["DeploymentRecord"][];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[list[EnvironmentView]] */
+        ApiEnvelope_list_EnvironmentView__: {
+            /** Code */
+            code: string;
+            /** Data */
+            data: components["schemas"]["EnvironmentView"][];
             /** Message */
             message: string;
         };
@@ -6257,8 +6347,6 @@ export interface components {
             engine_options?: {
                 [key: string]: unknown;
             } | null;
-            /** Environment Name */
-            environment_name?: string | null;
             /** Extension Catalog */
             extension_catalog?: {
                 [key: string]: unknown;
@@ -6290,6 +6378,8 @@ export interface components {
             permission_mode_default?: string | null;
             /** Primary */
             primary?: boolean | null;
+            /** Runtime Profile Name */
+            runtime_profile_name?: string | null;
             /** Skills */
             skills?: (string | {
                 [key: string]: unknown;
@@ -6314,21 +6404,19 @@ export interface components {
         };
         /**
          * AssistantDefaults
-         * @description The layer as stored, with the Environment new Assistants would use now.
+         * @description The layer as stored, with the RuntimeProfile new Assistants would use now.
          */
         AssistantDefaults: {
-            /** Assistant Environment Names */
-            assistant_environment_names: string[];
+            /** Assistant Runtime Profile Names */
+            assistant_runtime_profile_names: string[];
             /** Credential Vault Ids */
             credential_vault_ids?: string[] | null;
-            /** Effective Environment Name */
-            effective_environment_name?: string | null;
+            /** Effective Runtime Profile Name */
+            effective_runtime_profile_name?: string | null;
             /** Engine Options */
             engine_options?: {
                 [key: string]: unknown;
             } | null;
-            /** Environment Name */
-            environment_name?: string | null;
             /** Extension Catalog */
             extension_catalog?: {
                 [key: string]: unknown;
@@ -6349,6 +6437,8 @@ export interface components {
             packages?: {
                 [key: string]: unknown;
             }[] | null;
+            /** Runtime Profile Name */
+            runtime_profile_name?: string | null;
             /** Skills */
             skills?: (string | {
                 [key: string]: unknown;
@@ -6383,8 +6473,6 @@ export interface components {
             engine_options?: {
                 [key: string]: unknown;
             } | null;
-            /** Environment Name */
-            environment_name?: string | null;
             /** Instructions */
             instructions?: string | null;
             /** Mcp Servers */
@@ -6397,6 +6485,8 @@ export interface components {
             packages?: {
                 [key: string]: unknown;
             }[] | null;
+            /** Runtime Profile Name */
+            runtime_profile_name?: string | null;
             /** Skills */
             skills?: (string | {
                 [key: string]: unknown;
@@ -6875,6 +6965,20 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** CurrentEnvironment */
+        CurrentEnvironment: {
+            /** Description */
+            description: string | null;
+            /** Display Name */
+            display_name: string;
+            /** Name */
+            name: string;
+            runtime_policy: components["schemas"]["EnvironmentRuntimePolicy"];
+            /** Version */
+            version: number;
+        } & {
+            [key: string]: unknown;
+        };
         /**
          * CurrentUser
          * @description The identity the request resolved to, as the console reads it.
@@ -6974,10 +7078,10 @@ export interface components {
             deployment_id: string;
             /** Enabled */
             enabled?: boolean | null;
+            /** Environment Name */
+            environment_name: string;
             /** Execution Mode */
             execution_mode?: string | null;
-            /** Execution Target */
-            execution_target: string;
             /** Execution User Id */
             execution_user_id?: string | null;
             /** Owner Org Id */
@@ -7029,28 +7133,45 @@ export interface components {
             /** Timezone */
             timezone?: string | null;
         };
-        /**
-         * ExecutionPolicy
-         * @description Policy for new automatic work, distinct from custody of accepted runtime work.
-         */
-        ExecutionPolicy: {
+        /** EnvironmentRuntimePolicy */
+        EnvironmentRuntimePolicy: {
             /** Agent Prewarm Enabled */
             agent_prewarm_enabled: boolean;
             /** Background Execution Enabled */
             background_execution_enabled: boolean;
-            /** Execution Target */
-            execution_target: string;
             /**
-             * Runtime Recovery Scope
+             * Custody Scope
              * @constant
              */
-            runtime_recovery_scope: "owned_target";
-            /** Scheduler Control Configured */
-            scheduler_control_configured: boolean;
+            custody_scope: "environment";
             /** Scheduler Provider */
             scheduler_provider: string | null;
             /** Scheduler Worker Enabled */
             scheduler_worker_enabled: boolean;
+        };
+        /** EnvironmentView */
+        EnvironmentView: {
+            /** Description */
+            description: string | null;
+            /** Display Name */
+            display_name: string;
+            /** Name */
+            name: string;
+            /** Version */
+            version: number;
+        } & {
+            [key: string]: unknown;
+        };
+        /** EnvironmentWrite */
+        EnvironmentWrite: {
+            /** Description */
+            description?: string | null;
+            /** Display Name */
+            display_name: string;
+            /** Member User Ids */
+            member_user_ids?: string[];
+            /** Version */
+            version: number;
         };
         /**
          * ExposedPortUrl
@@ -9504,26 +9625,6 @@ export interface operations {
             };
         };
     };
-    get_environment_schema_endpoint_api_v1_admin_environment_schema_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_AdminFormSchema_"];
-                };
-            };
-        };
-    };
     list_admin_environments_api_v1_admin_environments_get: {
         parameters: {
             query?: never;
@@ -9539,12 +9640,43 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiEnvelope_list_dict_str__Any___"];
+                    "application/json": components["schemas"]["ApiEnvelope_list_AdminEnvironment__"];
                 };
             };
         };
     };
-    upsert_admin_environment_api_v1_admin_environments__name__put: {
+    get_admin_environment_api_v1_admin_environments__name__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AdminEnvironment_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_admin_environment_api_v1_admin_environments__name__put: {
         parameters: {
             query?: never;
             header?: never;
@@ -9555,9 +9687,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
+                "application/json": components["schemas"]["EnvironmentWrite"];
             };
         };
         responses: {
@@ -9567,69 +9697,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiEnvelope_dict_str__Any__"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    delete_admin_environment_api_v1_admin_environments__name__delete: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                name: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_AdminDeletedEnvironment_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_environment_models_api_v1_admin_environments__name__models_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                name: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_AdminEnvironmentModels_"];
+                    "application/json": components["schemas"]["ApiEnvelope_AdminEnvironment_"];
                 };
             };
             /** @description Validation Error */
@@ -9887,6 +9955,145 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_AdminProcessHealth_"];
+                };
+            };
+        };
+    };
+    get_runtime_profile_schema_endpoint_api_v1_admin_runtime_profile_schema_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AdminFormSchema_"];
+                };
+            };
+        };
+    };
+    list_admin_runtime_profiles_api_v1_admin_runtime_profiles_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_list_dict_str__Any___"];
+                };
+            };
+        };
+    };
+    upsert_admin_runtime_profile_api_v1_admin_runtime_profiles__name__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_dict_str__Any__"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_admin_runtime_profile_api_v1_admin_runtime_profiles__name__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AdminDeletedRuntimeProfile_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_runtime_profile_models_api_v1_admin_runtime_profiles__name__models_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AdminRuntimeProfileModels_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -10674,7 +10881,7 @@ export interface operations {
             };
         };
     };
-    list_agent_configuration_environments_api_v1_agent_configuration_environments_get: {
+    list_agent_configuration_runtime_profiles_api_v1_agent_configuration_runtime_profiles_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -10689,12 +10896,12 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiEnvelope_list_AgentEnvironmentOption__"];
+                    "application/json": components["schemas"]["ApiEnvelope_list_AgentRuntimeProfileOption__"];
                 };
             };
         };
     };
-    list_agent_configuration_models_api_v1_agent_configuration_environments__name__models_get: {
+    list_agent_configuration_models_api_v1_agent_configuration_runtime_profiles__name__models_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -10711,7 +10918,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiEnvelope_AgentEnvironmentModels_"];
+                    "application/json": components["schemas"]["ApiEnvelope_AgentRuntimeProfileModels_"];
                 };
             };
             /** @description Validation Error */
@@ -13770,7 +13977,7 @@ export interface operations {
             };
         };
     };
-    get_execution_policy_api_v1_execution_policy_get: {
+    list_accessible_environments_api_v1_environments_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -13785,7 +13992,27 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiEnvelope_ExecutionPolicy_"];
+                    "application/json": components["schemas"]["ApiEnvelope_list_EnvironmentView__"];
+                };
+            };
+        };
+    };
+    get_current_environment_api_v1_environments_current_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_CurrentEnvironment_"];
                 };
             };
         };

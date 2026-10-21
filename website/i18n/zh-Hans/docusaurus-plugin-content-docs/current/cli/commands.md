@@ -15,10 +15,10 @@ title: CLI 命令详解
 | 命令 | 功能描述 | 核心应用场景 |
 | :--- | :--- | :--- |
 | `init` | **初始化配置**：创建 `astrabox.yaml`，或把现有部署导出成配置文件。 | 开始使用配置文件、把现有资源纳入文件管理。 |
-| `schema` | **查看资源字段**：读取部署支持的 Agent 或 Environment 字段。 | 编写有效配置、查看候选值。 |
-| `get` | **查看资源**：列出一类资源或其中一项。 | 查看 Agent、Environment、Assistant、Session 和远程 MCP Server 配置。 |
+| `schema` | **查看资源字段**：读取部署支持的 Agent 或 RuntimeProfile 字段。 | 编写有效配置、查看候选值。 |
+| `get` | **查看资源**：列出一类资源或其中一项。 | 查看 Agent、RuntimeProfile、Assistant、Session 和远程 MCP Server 配置。 |
 | `diff` | **预览变更**：显示 `apply` 将执行的变更，不写入数据。 | 应用配置前进行检查。 |
-| `apply` | **应用配置**：创建或更新文件声明的 Environment 和 Agent。 | 通过文件管理部署、接入 CI/CD。 |
+| `apply` | **应用配置**：创建或更新文件声明的 RuntimeProfile 和 Agent。 | 通过文件管理部署、接入 CI/CD。 |
 | `run` | **运行 Agent**：发送任务并流式输出回复。 | 从终端或脚本使用 Agent。 |
 | `status` | **查看状态**：检查部署的健康状态和就绪状态。 | 监控本地或远程部署。 |
 | `destroy` | **清理资源**：删除文件声明的 Agent。 | 在明确确认后移除 Agent。 |
@@ -38,7 +38,7 @@ title: CLI 命令详解
 ### 使用模式
 
 1. **骨架模式**：不连接部署，创建一份带注释的配置文件，适合从零开始配置。
-2. **导出模式**：把部署中已有的 Environment 和 Agent 整理成 `astrabox apply` 可以使用的配置文件。
+2. **导出模式**：把部署中已有的 RuntimeProfile 和 Agent 整理成 `astrabox apply` 可以使用的配置文件。
 
 ### 命令格式
 
@@ -123,7 +123,7 @@ astrabox init --from-deployment --output json
 **最佳实践**
 
 - **从骨架开始**：配置新部署时，先创建带注释的文件，再通过 `astrabox schema` 查看支持的字段。
-- **使用导出模式**：部署中已经有可用的 Environment 和 Agent 时，直接导出，避免手工重新录入。
+- **使用导出模式**：部署中已经有可用的 RuntimeProfile 和 Agent 时，直接导出，避免手工重新录入。
 - **覆盖前先检查**：已有配置文件时，先使用其他 `--file` 路径或版本控制，再决定是否添加 `--force`。
 
 ### 运行效果
@@ -135,14 +135,14 @@ astrabox init --from-deployment --output json
 ```text
 {
   "agents": 1,
-  "environments": 1,
+  "runtime_profiles": 1,
   "file": "astrabox.yaml",
   "from_deployment": false
 }
 wrote astrabox.yaml
 ```
 
-生成的文件包含 `version: 1`、一个示例 Environment 和一个示例 Agent。通过 `astrabox schema environment` 和 `astrabox schema agent`，可以查看当前部署接受的字段和值。
+生成的文件包含 `version: 1`、一个示例 RuntimeProfile 和一个示例 Agent。通过 `astrabox schema runtime_profile` 和 `astrabox schema agent`，可以查看当前部署接受的字段和值。
 
 #### 导出模式输出
 
@@ -151,7 +151,7 @@ wrote astrabox.yaml
 ```text
 {
   "agents": 2,
-  "environments": 1,
+  "runtime_profiles": 1,
   "file": "astrabox.yaml",
   "from_deployment": true
 }
@@ -164,8 +164,8 @@ wrote astrabox.yaml
 
 #### 工作原理
 
-1. **读取字段定义**：从部署读取 Agent 和 Environment 的配置字段。
-2. **读取资源**：读取部署中的 Environment 和 Agent。
+1. **读取字段定义**：从部署读取 Agent 和 RuntimeProfile 的配置字段。
+2. **读取资源**：读取部署中的 RuntimeProfile 和 Agent。
 3. **保留可写字段**：只保留相应字段定义中允许写入的内容。
 4. **写入文件**：生成 `astrabox diff` 和 `astrabox apply` 可以使用的 `version: 1` 文档。
 
@@ -173,7 +173,7 @@ wrote astrabox.yaml
 
 生成的配置文件会：
 
-- **先声明 Environment**：新部署可以先创建 Environment，再创建引用它的 Agent。
+- **先声明 RuntimeProfile**：新部署可以先创建 RuntimeProfile，再创建引用它的 Agent。
 - **排除服务端字段**：ID、版本、所有者和时间戳不会写入配置文件。
 - **保留已有凭证**：已经保存的密钥会以掩码形式导出，未修改掩码时，应用配置会保留原值。
 
@@ -207,7 +207,7 @@ astrabox status
 
 ## `astrabox schema`
 
-`astrabox schema` 用于读取部署在写入 Agent 或 Environment 时接受的资源字段。结果包含字段名、类型、是否必填，以及存在固定选项时的候选值。
+`astrabox schema` 用于读取部署在写入 Agent 或 RuntimeProfile 时接受的资源字段。结果包含字段名、类型、是否必填，以及存在固定选项时的候选值。
 
 ### 使用方法
 
@@ -215,26 +215,26 @@ astrabox status
 # 查看 Agent 字段
 astrabox schema agent
 
-# 查看 Environment 字段
-astrabox schema environment
+# 查看 RuntimeProfile 字段
+astrabox schema runtime_profile
 ```
 
 ### 两类资源字段
 
 #### 🎯 Agent 字段
 
-Agent 字段描述一个 Agent 使用什么以及如何工作，包括名称、模型、Environment、系统提示词、MCP Server、Skill、Plugin、代码仓库和部署支持的其他设置。
+Agent 字段描述一个 Agent 使用什么以及如何工作，包括名称、模型、RuntimeProfile、系统提示词、MCP Server、Skill、Plugin、代码仓库和部署支持的其他设置。
 
 ```bash
 astrabox schema agent
 ```
 
-#### ⚡ Environment 字段
+#### ⚡ RuntimeProfile 字段
 
-Environment 字段描述可供 Agent 使用的 Agent 程序、模型服务连接、凭证和默认设置。
+RuntimeProfile 字段描述可供 Agent 使用的 Agent 程序、模型服务连接、凭证和默认设置。
 
 ```bash
-astrabox schema environment
+astrabox schema runtime_profile
 ```
 
 ### 主要参数
@@ -251,10 +251,10 @@ astrabox schema environment
 
 ```bash
 # 便于阅读的字段表格
-astrabox schema environment
+astrabox schema runtime_profile
 
 # 完整、可供程序读取的字段定义
-astrabox schema environment --output json
+astrabox schema runtime_profile --output json
 ```
 
 候选值由部署提供。例如，`engine_kind` 用于选择已经安装的 Agent 程序，`endpoint_provider` 用于选择模型服务连接类型。
@@ -277,13 +277,13 @@ astrabox schema agent
 
 表格会显示字段名、类型、是否必填和候选值。这些字段可以写在 `astrabox.yaml` 的 `agents:` 列表中。
 
-#### 示例 2：查看 Environment 字段
+#### 示例 2：查看 RuntimeProfile 字段
 
 ```bash
-astrabox schema environment
+astrabox schema runtime_profile
 ```
 
-这些字段可以写在 `astrabox.yaml` 的 `environments:` 列表中。
+这些字段可以写在 `astrabox.yaml` 的 `runtime_profiles:` 列表中。
 
 #### 示例 3：读取嵌套字段格式
 
@@ -303,7 +303,7 @@ astrabox schema agent \
 #### 示例 5：使用 Bearer Token
 
 ```bash
-astrabox schema environment \
+astrabox schema runtime_profile \
   --endpoint https://astrabox.example.com \
   --token <access-token>
 ```
@@ -320,7 +320,7 @@ astrabox schema agent
 
 ```bash
 astrabox schema agent --output json > agent-schema.json
-astrabox schema environment --output json > environment-schema.json
+astrabox schema runtime_profile --output json > runtime-profile-schema.json
 ```
 
 ### 配置验证
@@ -364,7 +364,7 @@ astrabox get <kind> [name] [options]
 | 类型 | 返回内容 |
 | :--- | :--- |
 | `agents` | 可以创建对话并执行任务的 Agent。 |
-| `environments` | 可复用的 Agent 程序与模型服务设置。 |
+| `runtime_profiles` | 可复用的 Agent 程序与模型服务设置。 |
 | `assistants` | 部署提供的 Assistant。 |
 | `sessions` | 对话及其当前状态。 |
 | `mcp-servers` | 部署中保存的远程 MCP Server 配置。 |
@@ -381,8 +381,8 @@ astrabox get agents researcher
 # 按 ID 查看一个 Session
 astrabox get sessions <session-id>
 
-# 返回完整的 Environment 文档
-astrabox get environments --output json
+# 返回完整的 RuntimeProfile 文档
+astrabox get runtime_profiles --output json
 ```
 
 #### 使用场景
@@ -390,7 +390,7 @@ astrabox get environments --output json
 - **修改前查看资源**：先读取当前资源，再通过 Web 控制台或 `astrabox.yaml` 修改。
 - **为自动化流程取得 ID**：JSON 输出包含完整的资源文档。
 - **查看对话状态**：列出 Session，可以看到 ID 和当前状态。
-- **了解模型设置**：为 Agent 选择 Environment 前，先查看已有 Environment。
+- **了解模型设置**：为 Agent 选择 RuntimeProfile 前，先查看已有 RuntimeProfile。
 
 ### 运行结果
 
@@ -407,8 +407,8 @@ researcher  <model-name>       default           true     <agent-id>
 # 示例 1：列出 Agent
 astrabox get agents
 
-# 示例 2：列出 Environment
-astrabox get environments
+# 示例 2：列出 RuntimeProfile
+astrabox get runtime_profiles
 
 # 示例 3：列出 Assistant
 astrabox get assistants
@@ -464,7 +464,7 @@ astrabox diff --file <path> [options]
 
 1. **读取配置**：读取并解析 YAML 文档。
 2. **检查结构**：要求使用 `version: 1`、已知的顶层字段和正确的资源列表格式。
-3. **读取字段定义**：根据目标部署验证每一个 Agent 和 Environment。
+3. **读取字段定义**：根据目标部署验证每一个 Agent 和 RuntimeProfile。
 4. **匹配资源**：按名称匹配配置文件与部署中的资源。
 5. **报告操作**：显示每项资源将被创建、更新还是保持不变。
 
@@ -507,7 +507,7 @@ agent        researcher  update     model, system
 
 ## `astrabox apply`
 
-`astrabox apply` 用于创建或更新 `astrabox.yaml` 中声明的所有 Environment 和 Agent。
+`astrabox apply` 用于创建或更新 `astrabox.yaml` 中声明的所有 RuntimeProfile 和 Agent。
 
 ### 使用方法
 
@@ -532,14 +532,14 @@ astrabox apply --file <path> [options]
         ↓
 读取资源字段和当前资源
         ↓
-先应用 Environment，再应用 Agent
+先应用 RuntimeProfile，再应用 Agent
         ↓
 创建或更新每项声明
         ↓
 返回每项资源的处理结果
 ```
 
-- **Environment 会被完整替换**：需要声明所有必填字段。从 `astrabox init --from-deployment` 导出的配置开始修改，可以避免漏掉现有设置。
+- **RuntimeProfile 会被完整替换**：需要声明所有必填字段。从 `astrabox init --from-deployment` 导出的配置开始修改，可以避免漏掉现有设置。
 - **Agent 使用更新操作**：命令会发送文件中声明的字段，并携带已保存的版本；存在并发修改时会拒绝覆盖。
 - **不会隐式删除**：文件中没有出现的资源会保留在部署中。需要删除已声明的 Agent 时使用 `astrabox destroy`。
 
@@ -565,8 +565,8 @@ astrabox apply -f astrabox.yaml --output json
 
 ### 为什么使用 apply
 
-- ✅ **统一声明**：在一个文件中管理相关的 Environment 和 Agent。
-- ✅ **依赖顺序**：先创建或更新 Environment，再处理引用它的 Agent。
+- ✅ **统一声明**：在一个文件中管理相关的 RuntimeProfile 和 Agent。
+- ✅ **依赖顺序**：先创建或更新 RuntimeProfile，再处理引用它的 Agent。
 - ✅ **冲突保护**：Agent 版本过期或名称有歧义时，命令会失败，不覆盖、不猜测。
 - ✅ **结果可重复**：声明与部署已经一致时，再次执行会报告 `unchanged`。
 - ✅ **支持自动化**：JSON 输出和稳定退出码可以用于脚本和 CI/CD。
@@ -754,7 +754,7 @@ astrabox status --output json
 
 ## `astrabox destroy`
 
-`astrabox destroy` 用于删除 `astrabox.yaml` 中声明的所有 Agent。命令要求明确确认，并把文件中声明的 Environment 报告为 `retained`。
+`astrabox destroy` 用于删除 `astrabox.yaml` 中声明的所有 Agent。命令要求明确确认，并把文件中声明的 RuntimeProfile 报告为 `retained`。
 
 ### 使用方法
 
@@ -788,9 +788,9 @@ astrabox destroy -f astrabox.yaml --yes
 
 命令会按名称匹配 `agents:` 中的每一项，并删除已经存在的 Agent。声明的 Agent 已经不存在时，结果为 `absent`。
 
-#### Environment
+#### RuntimeProfile
 
-`environments:` 中的每一项都会报告为 `retained`。AstraBox 没有提供删除 Environment 的接口，因此 CLI 不会声称已经删除。
+`runtime_profiles:` 中的每一项都会报告为 `retained`。不再使用的运行配置可以在控制台删除。
 
 配置文件中没有声明的资源不会受到影响。
 
@@ -824,7 +824,7 @@ astrabox destroy -f astrabox.yaml --yes --output json
 1. **apply 不会自动删除**：从 `astrabox.yaml` 移除 Agent 不会删除部署中的 Agent。需要删除时，请使用包含该 Agent 声明的文件执行 `destroy`。
 2. **匹配时不需要完整 Agent 内容**：命令根据 `name` 匹配，但配置文件仍需通过文档和资源字段检查。
 3. **名称有歧义时会失败**：部署中有多个同名 Agent 时，命令返回冲突，不会自行选择。
-4. **不支持删除 Environment**：Environment 会保留在部署中。
+4. **不支持删除 RuntimeProfile**：RuntimeProfile 会保留在部署中。
 5. **保留可恢复的声明**：如果以后可能重新创建 Agent，请把经过检查的配置文件保存到版本控制中。
 
 ---
@@ -979,9 +979,9 @@ MCP Server 通过 stdin/stdout 使用逐行 JSON-RPC，并提供以下工具：
 
 | 工具 | 操作 |
 | :--- | :--- |
-| `astrabox_schema` | 读取 Agent 或 Environment 配置字段。 |
+| `astrabox_schema` | 读取 Agent 或 RuntimeProfile 配置字段。 |
 | `astrabox_get` | 列出一类资源。 |
-| `astrabox_export` | 把 Environment 和 Agent 导出成 `astrabox.yaml` 文档。 |
+| `astrabox_export` | 把 RuntimeProfile 和 Agent 导出成 `astrabox.yaml` 文档。 |
 | `astrabox_diff` | 预览文档变更，不写入数据。 |
 | `astrabox_apply` | 创建或更新文档声明的资源。 |
 | `astrabox_status` | 检查部署的健康状态和就绪状态。 |
@@ -1139,7 +1139,7 @@ astrabox.yaml: file does not exist
 # 新配置
 astrabox init
 
-# 部署中已经有 Environment 和 Agent
+# 部署中已经有 RuntimeProfile 和 Agent
 astrabox init --from-deployment
 
 # 或指定已有文件
@@ -1197,7 +1197,7 @@ astrabox apply -f astrabox.yaml --output json
 
 1. 文件不是有效的 YAML，或使用了不支持的文档版本。
 2. 资源包含目标部署不接受的配置字段。
-3. Environment 没有包含完整替换所需的必填字段。
+3. RuntimeProfile 没有包含完整替换所需的必填字段。
 4. 部署中存在多个同名 Agent，无法确定要修改哪一个。
 5. CLI 读取 Agent 后又发生了其他修改，版本检查拒绝了过期更新。
 
@@ -1214,11 +1214,11 @@ astrabox status --output json
 
 # 查看可以配置的资源字段
 astrabox schema agent --output json
-astrabox schema environment --output json
+astrabox schema runtime_profile --output json
 
 # 查看完整资源文档
 astrabox get agents --output json
-astrabox get environments --output json
+astrabox get runtime_profiles --output json
 
 # 查看本地 Server 日志
 astrabox logs server --tail 200

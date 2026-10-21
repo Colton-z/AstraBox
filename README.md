@@ -74,7 +74,7 @@ workspace and the Agent program's state.
 | Concept | Description | Analogy |
 | --- | --- | --- |
 | **Agent** | A cloud Agent powered by an installed Agent program | "Cloud teammate" |
-| **Environment** | The Agent program, sandbox, model connection, network access, and lifecycle used for a Session | "Desk and toolbox" |
+| **RuntimeProfile** | The Agent program, sandbox, model connection, network access, and lifecycle used for a Session | "Desk and toolbox" |
 | **Session** | One stateful Agent execution, including its messages, Events, and current state | "A specific piece of work" |
 | **Event** | The real-time output and state changes produced by a Session | "Live progress feed" |
 
@@ -117,7 +117,7 @@ web console. Its results can be printed as JSON, so a coding agent such as
 Claude Code or Codex can run the same commands for you.
 
 - **Configuration as code** — `astrabox init --from-deployment` exports a
-  deployment's Environments and Agents to `astrabox.yaml`; `astrabox diff`
+  deployment's RuntimeProfiles and Agents to `astrabox.yaml`; `astrabox diff`
   previews an edit and `astrabox apply` creates or updates resources, never
   deleting any.
 - **Tasks from the command line** — `astrabox run <agent> "<task>"` starts a
@@ -188,9 +188,9 @@ See [Add an Agent program](docs/writing-an-engine-adapter.md),
 
 1. **Deploy AstraBox** — run the service and OpenSandbox on one Docker host,
    Kubernetes, or infrastructure you already operate.
-2. **Configure an Environment** — choose the Agent program, sandbox image, model
+2. **Configure a RuntimeProfile** — choose the Agent program, sandbox image, model
    connection, network access, and lifecycle.
-3. **Create an Agent** — select the Environment and model in the web console,
+3. **Create an Agent** — select the RuntimeProfile and model in the web console,
    then add a system prompt, MCP servers, Plugins, Skills, or a repository only
    when the Agent needs them.
 4. **Start a Session** — open the Agent and start a Session.
@@ -215,7 +215,7 @@ curl -fsSL https://raw.githubusercontent.com/Colton-z/AstraBox/main/scripts/inst
 The installer asks which model service your Agents use, installs the deployment
 into `~/astrabox`, pulls the published images, starts them, and prints the
 console address once the console answers. Open <http://127.0.0.1:8088>. Select
-an Environment, create an Agent, and start your first Session from the console.
+a RuntimeProfile, create an Agent, and start your first Session from the console.
 
 ![Create an Agent in the AstraBox console](docs/img/agent-create-console-en.png)
 

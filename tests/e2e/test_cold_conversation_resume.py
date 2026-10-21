@@ -46,7 +46,7 @@ def test_cold_rebuild_restores_existing_conversation(e2e_client: httpx.Client) -
         "name": f"cold-resume-{uuid.uuid4().hex[:10]}",
         "model": source["model"],
         "engine_options": source.get("engine_options") or {},
-        "environment_name": environment_with_tenancy(e2e_client, "conversation"),
+        "runtime_profile_name": environment_with_tenancy(e2e_client, "conversation"),
         "prepared_capacity": 0,
         "skills": (["https://github.com/anthropics/skills.git@"
                     "34040c9c568585f6929bedeaad110ad08f079624#skills/skill-creator"]

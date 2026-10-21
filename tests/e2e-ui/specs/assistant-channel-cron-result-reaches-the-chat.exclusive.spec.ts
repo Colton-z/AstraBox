@@ -58,11 +58,11 @@ test('an Assistant job created from a chat reports its run to that chat without 
   let sessionId = '';
   const evidence: Record<string, unknown> = {};
   try {
-    const environmentName = await api.assistantEnvironmentName();
+    const runtimeProfileName = await api.assistantEnvironmentName();
     const assistant = await api.createAssistant({
       display_name: `__e2e_assistant_channel_cron_${id}`,
-      environment_name: environmentName,
-      model_config_override: { model_name: await api.assistantModelName(environmentName) },
+      runtime_profile_name: runtimeProfileName,
+      model_config_override: { model_name: await api.assistantModelName(runtimeProfileName) },
     });
     assistantId = String(assistant.assistant_id || '');
     expect(assistantId).not.toEqual('');

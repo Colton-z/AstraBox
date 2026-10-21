@@ -36,13 +36,13 @@ const MODEL_PLACEHOLDER = 'astrabox-credential-held-by-egress-sidecar';
 // the egress boundary can give each sibling in the box its own credential.
 const WORKLOAD_MODEL_PLACEHOLDER_PREFIX = 'astrabox-slot-credential-';
 const COLD_ENVIRONMENT_SETUP = [
-  'set ASTRABOX_E2E_CREDENTIAL_COLD_ENVIRONMENT to a dedicated cold Environment name.',
-  'Create it in Console > Manage > Environments with enabled=true, engine_kind=claude_code,',
+  'set ASTRABOX_E2E_CREDENTIAL_COLD_ENVIRONMENT to a dedicated cold RuntimeProfile name.',
+  'Create it in Console > Manage > RuntimeProfiles with enabled=true, engine_kind=claude_code,',
   'sandbox_backend=open_sandbox, and sandbox_tenancy=conversation. Match the prepared',
-  "Environment's runtime_template_name, endpoint_provider/provider_access, and networking,",
+  "RuntimeProfile's runtime_template_name, endpoint_provider/provider_access, and networking,",
   'and keep Agent prewarming disabled in the cold test case. Keep and reuse this deployment',
-  'fixture: AstraBox exposes no Environment DELETE API, so the spec cannot create and remove',
-  'a disposable Environment.',
+  'fixture: AstraBox exposes no RuntimeProfile DELETE API, so the spec cannot create and remove',
+  'a disposable RuntimeProfile.',
 ].join(' ');
 
 const READY_TIMEOUT_MS = parseTimeoutEnv('ASTRABOX_E2E_READY_TIMEOUT_MS', 300_000);
@@ -62,7 +62,7 @@ function requiredConfiguration(): void {
   ).not.toEqual('');
   expect(
     PREWARM_ENVIRONMENT,
-    'set ASTRABOX_E2E_CREDENTIAL_PREWARM_ENVIRONMENT to the OpenSandbox Agent-tenancy Environment',
+    'set ASTRABOX_E2E_CREDENTIAL_PREWARM_ENVIRONMENT to the OpenSandbox Agent-tenancy RuntimeProfile',
   ).not.toEqual('');
   expect(
     PROBE_URL,
@@ -82,20 +82,20 @@ function requiredConfiguration(): void {
   ).not.toEqual('');
 }
 
-async function concreteModel(api: AstraApi, environmentName: string): Promise<string> {
-  return api.configuredAgentModel(RESEARCH_AGENT, environmentName);
+async function concreteModel(api: AstraApi, runtimeProfileName: string): Promise<string> {
+  return api.configuredAgentModel(RESEARCH_AGENT, runtimeProfileName);
 }
 
 function agentConfig(
   name: string,
   model: string,
-  environmentName: string,
+  runtimeProfileName: string,
   prewarmEnabled: boolean,
 ) {
   return {
     name,
     model,
-    environment_name: environmentName,
+    runtime_profile_name: runtimeProfileName,
     prepared_capacity: prewarmEnabled ? 1 : 0,
     system: 'Run the exact shell command requested by the test and report its output.',
   };
@@ -255,7 +255,7 @@ async function proveSecurityPosture(
   expect(targets).toContain(new URL(MODEL_GATEWAY_URL).hostname.toLowerCase());
   expect(
     targets,
-    'the platform must admit an assigned Vault binding without changing the Environment allowlist',
+    'the platform must admit an assigned Vault binding without changing the RuntimeProfile allowlist',
   ).toContain(new URL(PROBE_URL).hostname.toLowerCase());
 
   const credentialNames = (posture.credential_names as unknown[] || []).map(String);
@@ -271,14 +271,14 @@ async function runJourney(
   api: AstraApi,
   platform: PlatformApi,
   page: Page,
-  environmentName: string,
+  runtimeProfileName: string,
   prewarmed: boolean,
   resources: HarnessResources,
 ): Promise<void> {
   const runId = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
   const secretName = `P002_REQUEST_TOKEN_${runId.toUpperCase()}`;
   const probeHost = new URL(PROBE_URL).hostname;
-  const model = await concreteModel(api, environmentName);
+  const model = await concreteModel(api, runtimeProfileName);
   const vault = await api.data<Record<string, unknown>>(
     'POST',
     '/admin/vaults',
@@ -313,7 +313,7 @@ async function runJourney(
   expect(credentialId).not.toEqual('');
 
   const name = `__e2e_p002_${prewarmed ? 'prewarm' : 'cold'}_${runId}`;
-  const created = await api.createAgent(agentConfig(name, model, environmentName, false));
+  const created = await api.createAgent(agentConfig(name, model, runtimeProfileName, false));
   resources.agentId = String(created.agent_id || '');
   expect(resources.agentId).not.toEqual('');
 
@@ -327,7 +327,7 @@ async function runJourney(
   if (prewarmed) {
     const latest = await api.getAgent(resources.agentId);
     await api.updateAgent(resources.agentId, {
-      ...agentConfig(name, model, environmentName, true),
+      ...agentConfig(name, model, runtimeProfileName, true),
       version: Number(latest.version || 1),
     });
     preparedSandboxId = await waitForAgentPool(platform, resources.agentId);

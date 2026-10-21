@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from astrabox.cli.client import ApiClient, as_items, resolve_endpoint
-from astrabox.cli.document import DOCUMENT_VERSION, KIND_AGENT, KIND_ENVIRONMENT
+from astrabox.cli.document import DOCUMENT_VERSION, KIND_AGENT, KIND_RUNTIME_PROFILE
 from astrabox.cli.flags import connection_flags
 from astrabox.cli.output import (
     EXIT_CONFLICT,
@@ -32,7 +32,7 @@ DEFAULT_DOCUMENT_NAME = "astrabox.yaml"
 
 #: Collections the export reads, in the order the document declares them.
 _EXPORT_SOURCES = (
-    (KIND_ENVIRONMENT, "environments", "/api/v1/admin/environments"),
+    (KIND_RUNTIME_PROFILE, "runtime_profiles", "/api/v1/admin/runtime-profiles"),
     (KIND_AGENT, "agents", "/api/v1/agents"),
 )
 
@@ -40,7 +40,7 @@ _SKELETON = """\
 # An AstraBox deployment, as code.
 #
 # The field names below are the deployment's, not this file's. Read them with:
-#   astrabox schema environment
+#   astrabox schema runtime_profile
 #   astrabox schema agent
 #
 # Then converge a deployment onto this file:
@@ -51,19 +51,19 @@ _SKELETON = """\
 # deployment already holds.
 version: 1
 
-environments:
+runtime_profiles:
   - name: default
     # Candidate sets for both enums come from what this deployment has
-    # installed: `astrabox schema environment -o json`.
+    # installed: `astrabox schema runtime_profile -o json`.
     engine_kind: claude_code
     endpoint_provider: litellm
     enabled: true
 
 agents:
   - name: my-agent
-    # Models the environment can serve: `astrabox get environments -o json`.
+    # Models the environment can serve: `astrabox get runtime_profiles -o json`.
     model: claude-opus-5
-    environment_name: default
+    runtime_profile_name: default
     system: |
       You are a helpful agent.
     enabled: true
@@ -78,7 +78,7 @@ def register(subparsers: Any) -> None:
         help="Write a starting astrabox.yaml, or export a running deployment's.",
         description=(
             "Without --from-deployment this writes an annotated skeleton and "
-            "contacts nothing. With it, the environments and Agents a "
+            "contacts nothing. With it, the runtime_profiles and Agents a "
             "deployment already holds are projected through its own field "
             "schema into a document `astrabox apply` accepts. An ambiguous "
             "Agent name refuses the export before a file is written."
@@ -120,7 +120,7 @@ def _cmd_init(args: Any) -> int:
         counts = {name: len(document.get(name, [])) for _, name, _ in _EXPORT_SOURCES}
     else:
         body = _SKELETON
-        counts = {"environments": 1, "agents": 1}
+        counts = {"runtime_profiles": 1, "agents": 1}
 
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(body, encoding="utf-8")
@@ -136,7 +136,7 @@ def _cmd_init(args: Any) -> int:
 
 
 def export_document(client: ApiClient) -> dict[str, Any]:
-    """Project a deployment's environments and Agents into a document body.
+    """Project a deployment's runtime_profiles and Agents into a document body.
 
     Only fields the deployment's schema declares survive, so server-managed
     state — ids, versions, ownership, timestamps — never reaches the file and

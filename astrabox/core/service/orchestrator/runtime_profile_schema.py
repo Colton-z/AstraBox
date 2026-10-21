@@ -1,11 +1,11 @@
-"""Admin Environment configuration schema.
+"""Admin RuntimeProfile configuration schema.
 
-An Environment is an admin-authored runtime configuration referenced by Agents
+A RuntimeProfile is an admin-authored runtime configuration referenced by Agents
 and Assistants. This module is the single authoritative source for the editable
-shape stored in the ``environments`` table. It drives the schema-based form
-and the write-path validation in ``platform_service.upsert_environment_config``.
+shape stored in the ``runtime_profiles`` table. It drives the schema-based form
+and the write-path validation in ``platform_service.upsert_runtime_profile_config``.
 
-An environment carries the sandbox runtime fields plus ``provider_access``
+A RuntimeProfile carries the sandbox runtime fields plus ``provider_access``
 (the model-provider credentials shared across the Agents that select it);
 ``AgentConfigService`` merges it into each Agent's ``AgentView``
 (``docs/domain-model.md``).
@@ -17,7 +17,7 @@ Schema properties:
   write-time step that canonicalizes those fields and settles defaults once.
 - The shape is closed: a field, or a sub-field of ``provider_access`` or
   ``tracing``, that the schema does not declare is refused, because the stored
-  Environment has a column for each declared field and nowhere for any other.
+  RuntimeProfile has a column for each declared field and nowhere for any other.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ from astrabox.core.service.orchestrator.schema_validation import (
     validate_payload,
 )
 
-ENVIRONMENT_SCHEMA_VERSION = 1
+RUNTIME_PROFILE_SCHEMA_VERSION = 1
 
 # Field group ids.
 GROUP_BASIC = "basic"
@@ -47,8 +47,8 @@ GROUP_RUNTIME = "runtime"
 
 # Ordered by the create/edit narrative: what it is → how it runs. Group `id` is
 # the stable contract; label + subtitle are owned by frontend i18n, keyed by id
-# (manage:env_form.groups.<id>.{label,description}). The schema carries no copy.
-ENV_GROUPS: list[dict[str, str]] = [
+# (manage:runtime_profile_form.groups.<id>.{label,description}). The schema carries no copy.
+RUNTIME_PROFILE_GROUPS: list[dict[str, str]] = [
     {"id": GROUP_BASIC},
     {"id": GROUP_RUNTIME},
 ]
@@ -97,11 +97,11 @@ def _field_enum(field: dict[str, Any]) -> list[str] | None:
         return source()
     return field.get("enum")
 
-# Model-provider access sub-fields. Credentials are an Environment property, not
+# Model-provider access sub-fields. Credentials are a RuntimeProfile property, not
 # an agent field: an api_key is not part of a harness's identity, so agents that
 # differ only in system prompt share one key and a rotation touches one place
 # (in Managed Agents this is invisible/platform-hosted; self-hosted BYO-key makes
-# it an Environment property — see ``docs/domain-model.md``). ``api_key`` is an
+# it a RuntimeProfile property — see ``docs/domain-model.md``). ``api_key`` is an
 # inline key, sealed in the secret store and masked in read views;
 # ``api_key_secret_name`` references a SecretProvider name instead. ``base_url``
 # points at the model endpoint / gateway.
@@ -132,11 +132,11 @@ _TRACING_ITEM_SCHEMA: list[dict[str, Any]] = [
     {"key": "log_user_prompt", "type": "boolean", "advanced": True},
 ]
 
-# Environment networking is a product contract, not an OpenSandbox policy
+# RuntimeProfile networking is a product contract, not an OpenSandbox policy
 # document. The runtime resolves this shape into the provider-neutral sandbox
 # seam, and each backend translates it at its own boundary. Vault bindings are
 # intentionally absent: a provider composes their exact authorized destinations
-# into its effective policy without duplicating them on the Environment record.
+# into its effective policy without duplicating them on the RuntimeProfile record.
 _NETWORKING_ITEM_SCHEMA: list[dict[str, Any]] = [
     {
         "key": "type",
@@ -150,8 +150,8 @@ _NETWORKING_ITEM_SCHEMA: list[dict[str, Any]] = [
 
 # The authoritative editable field list. Order = render order on the form.
 # Field `key` is the stable contract; label/help are owned by frontend i18n
-# (manage:env_form.fields.<key>.{label,help}) — the schema carries shape, not copy.
-ENV_FIELD_SCHEMA: list[dict[str, Any]] = [
+# (manage:runtime_profile_form.fields.<key>.{label,help}) — the schema carries shape, not copy.
+RUNTIME_PROFILE_FIELD_SCHEMA: list[dict[str, Any]] = [
     # ── basic ─────────────────────────────────────────────────────────────
     {"key": "name", "type": "string", "group": GROUP_BASIC, "required": True},
     {"key": "display_name", "type": "string", "group": GROUP_BASIC},
@@ -186,7 +186,7 @@ ENV_FIELD_SCHEMA: list[dict[str, Any]] = [
     # depend on what ASTRABOX_SANDBOX_IDLE_ACTION happened to be when the sweep
     # ran, which can be months after the environment was written — and the
     # stored environment would not state what happens to its own sandboxes.
-    # ``normalize_environment_payload`` settles the field once at write time
+    # ``normalize_runtime_profile_payload`` settles the field once at write time
     # from that setting; nothing re-derives it on read. Whether the backend can
     # honor `pause` is the backend's answer, asked by the form before it offers
     # the choice — a setting that would never take effect must not be accepted.
@@ -240,7 +240,7 @@ ENV_FIELD_SCHEMA: list[dict[str, Any]] = [
 ]
 
 
-def get_environment_schema() -> dict[str, Any]:
+def get_runtime_profile_schema() -> dict[str, Any]:
     """Return the JSON-serializable schema consumed by the admin form.
 
     Dynamic enums (engine_kind / sandbox_backend / sandbox_permission_level /
@@ -248,7 +248,7 @@ def get_environment_schema() -> dict[str, Any]:
     form always offers what this deployment runs.
     """
     fields: list[dict[str, Any]] = []
-    for f in ENV_FIELD_SCHEMA:
+    for f in RUNTIME_PROFILE_FIELD_SCHEMA:
         out = dict(f)
         if out.get("type") == "enum":
             out["enum"] = _field_enum(f)
@@ -258,8 +258,8 @@ def get_environment_schema() -> dict[str, Any]:
             out["default"] = default_model_endpoint_name()
         fields.append(out)
     return {
-        "version": ENVIRONMENT_SCHEMA_VERSION,
-        "groups": [dict(g) for g in ENV_GROUPS],
+        "version": RUNTIME_PROFILE_SCHEMA_VERSION,
+        "groups": [dict(g) for g in RUNTIME_PROFILE_GROUPS],
         "fields": fields,
     }
 
@@ -267,11 +267,11 @@ def get_environment_schema() -> dict[str, Any]:
 # ── Normalization ─────────────────────────────────────────────────────────
 
 
-#: Fields an Environment read carries beyond the authored ones: bookkeeping and
+#: Fields a RuntimeProfile read carries beyond the authored ones: bookkeeping and
 #: the installed engine's capabilities (``AgentConfigService``'s admin listing).
 #: The console saves the record it loaded with its edits applied, so a write
 #: drops these instead of refusing them; every other undeclared field is refused.
-ENVIRONMENT_READ_ONLY_FIELDS = frozenset(
+RUNTIME_PROFILE_READ_ONLY_FIELDS = frozenset(
     {
         "created_at",
         "updated_at",
@@ -285,17 +285,17 @@ ENVIRONMENT_READ_ONLY_FIELDS = frozenset(
 )
 
 
-def normalize_environment_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Return a storable Environment with concrete runtime defaults.
+def normalize_runtime_profile_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return a storable RuntimeProfile with concrete runtime defaults.
 
-    Call this before :func:`validate_environment_payload`. The read-only fields
-    a loaded record carries (:data:`ENVIRONMENT_READ_ONLY_FIELDS`) are dropped.
+    Call this before :func:`validate_runtime_profile_payload`. The read-only fields
+    a loaded record carries (:data:`RUNTIME_PROFILE_READ_ONLY_FIELDS`) are dropped.
     When the form omits ``idle_action``, the installation's
     ``ASTRABOX_SANDBOX_IDLE_ACTION`` supplies it. Cleanup can then decide what
-    happens to an idle sandbox from the stored Environment alone.
+    happens to an idle sandbox from the stored RuntimeProfile alone.
     """
     normalized = {
-        key: value for key, value in payload.items() if key not in ENVIRONMENT_READ_ONLY_FIELDS
+        key: value for key, value in payload.items() if key not in RUNTIME_PROFILE_READ_ONLY_FIELDS
     }
     action = str(normalized.get("idle_action") or "").strip().lower()
     if not action:
@@ -303,12 +303,12 @@ def normalize_environment_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
         action = str(load_astrabox_settings().sandbox_idle_action or "").strip().lower()
     normalized["idle_action"] = action
-    from astrabox.core.service.orchestrator.environment_networking import (
-        normalized_environment_networking,
+    from astrabox.core.service.orchestrator.runtime_profile_networking import (
+        normalized_runtime_profile_networking,
     )
 
     try:
-        normalized["networking"] = normalized_environment_networking(
+        normalized["networking"] = normalized_runtime_profile_networking(
             normalized.get("networking")
         )
     except ValueError as exc:
@@ -319,7 +319,7 @@ def normalize_environment_payload(payload: dict[str, Any]) -> dict[str, Any]:
 # ── Validation ────────────────────────────────────────────────────────────
 
 
-def validate_environment_payload(payload: dict[str, Any]) -> None:
+def validate_runtime_profile_payload(payload: dict[str, Any]) -> None:
     """Types / required / enum / item-schema validation for an environment payload.
 
     Delegates to the shared validator; ``_field_enum`` resolves the dynamic enums
@@ -331,17 +331,17 @@ def validate_environment_payload(payload: dict[str, Any]) -> None:
     """
     _reject_undeclared_fields(payload)
     validate_payload(
-        payload, ENV_FIELD_SCHEMA, resolve_enum=_field_enum, payload_label="environment payload"
+        payload, RUNTIME_PROFILE_FIELD_SCHEMA, resolve_enum=_field_enum, payload_label="environment payload"
     )
     from astrabox.seams.tracing import parse_tracing_config
 
     parse_tracing_config(payload.get("tracing"))
-    from astrabox.core.service.orchestrator.environment_networking import (
-        parse_environment_networking,
+    from astrabox.core.service.orchestrator.runtime_profile_networking import (
+        parse_runtime_profile_networking,
     )
 
     try:
-        parse_environment_networking(payload.get("networking"))
+        parse_runtime_profile_networking(payload.get("networking"))
     except ValueError as exc:
         raise invalid_request(f"environment payload: {exc}") from exc
     _assert_tracing_reaches_the_engine(payload)
@@ -360,8 +360,8 @@ def _reject_undeclared_fields(payload: dict[str, Any]) -> None:
     """
     if not isinstance(payload, dict):
         return
-    unknown = sorted(set(payload) - {str(field["key"]) for field in ENV_FIELD_SCHEMA})
-    for field in ENV_FIELD_SCHEMA:
+    unknown = sorted(set(payload) - {str(field["key"]) for field in RUNTIME_PROFILE_FIELD_SCHEMA})
+    for field in RUNTIME_PROFILE_FIELD_SCHEMA:
         key = str(field["key"])
         block = payload.get(key)
         if key == "networking" or not field.get("item_schema") or not isinstance(block, dict):
@@ -465,13 +465,13 @@ def _assert_tenancy_has_permission_level(payload: dict[str, Any]) -> None:
 def _assert_backend_capabilities(payload: dict[str, Any]) -> None:
     """Refuse what the selected backend has not declared it can run.
 
-    Every Environment's boxes are created under its networking policy, and the
+    Every RuntimeProfile's boxes are created under its networking policy, and the
     platform refuses a create on a backend that cannot enforce one; shared
     tenancy runs every conversation in an isolated session inside one box;
     an engine driven over a process's stdin and stdout runs, in a
     conversation's own box, as one of the box's long-lived processes. Each
     would otherwise be refused at the first conversation, long after the
-    Environment was saved.
+    RuntimeProfile was saved.
     """
     from astrabox.core.service.orchestrator.engine.capabilities import (
         capabilities_for_engine_kind,
@@ -484,7 +484,7 @@ def _assert_backend_capabilities(payload: dict[str, Any]) -> None:
     ).strip().lower()
     required = [
         (
-            "an Environment's networking, which each box is created under",
+            "a RuntimeProfile's networking, which each box is created under",
             ("supports_create_network_policy",),
         )
     ]
@@ -543,6 +543,6 @@ def _assert_provider_configuration_is_reachable(payload: dict[str, Any]) -> None
 
     from astrabox.seams.sandbox import sandbox_for_name
 
-    sandbox_for_name(payload.get("sandbox_backend")).validate_environment_configuration(
+    sandbox_for_name(payload.get("sandbox_backend")).validate_runtime_profile_configuration(
         payload
     )

@@ -47,7 +47,7 @@ test('an Assistant receives one long A2A result after its watcher disconnects, a
   agentId = (await api.createColdTestAgent(`__e2e_a2a_long_${marker}`)).agent_id;
   const environment = process.env.ASTRABOX_E2E_ASSISTANT_ENVIRONMENT || await api.assistantEnvironmentName();
   assistantId = (await api.createAssistant({ display_name: `__e2e_a2a_source_${marker}`,
-    environment_name: environment,
+    runtime_profile_name: environment,
     model_config_override: { model_name: await api.assistantModelName(environment) },
   })).assistant_id;
   const sourceId = (await api.startAssistantConversation(assistantId)).session_id;

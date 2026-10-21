@@ -17,9 +17,9 @@ from astrabox.seams.sandbox import (
 
 
 #: Networks every sandbox's egress denies in every mode and every deployment
-#: shape, independent of the Environment. ``169.254.0.0/16`` is IPv4 link-local;
+#: shape, independent of the RuntimeProfile. ``169.254.0.0/16`` is IPv4 link-local;
 #: it holds the ``169.254.169.254`` cloud metadata service, whose credentials a
-#: sandbox must never reach. A platform constant, not a knob, so no Environment
+#: sandbox must never reach. A platform constant, not a knob, so no RuntimeProfile
 #: and no deployment can turn it off; the sibling per-host bridge deny
 #: (``ASTRABOX_SANDBOX_EGRESS_DENY_CIDRS``) is layered on top of it.
 ALWAYS_DENIED_NETWORKS: tuple[str, ...] = ("169.254.0.0/16",)
@@ -75,7 +75,7 @@ def open_sandbox_network_policy(
     (``ASTRABOX_SANDBOX_EGRESS_DENY_CIDRS``: on the Docker stack, the built-in
     bridge that every other sandbox and the published sandbox ports live on),
     and follow. OpenSandbox's ``dns+nft`` egress drops every IP/CIDR deny target
-    before it consults an allow set, so an Environment or Agent allow entry
+    before it consults an allow set, so a RuntimeProfile or Agent allow entry
     naming one of those addresses does not reopen it; an allow entry inside an
     always-denied range is refused outright rather than emitted.
     """
@@ -161,8 +161,8 @@ def with_vault_binding_allows(
 
     A Vault assignment is a platform-managed grant to use its request-scoped
     credentials. OpenSandbox requires every binding host to be an explicit
-    network allow, so its effective policy is the Environment policy plus those
-    exact hosts. The Environment document remains unchanged. Under
+    network allow, so its effective policy is the RuntimeProfile policy plus those
+    exact hosts. The RuntimeProfile document remains unchanged. Under
     ``defaultAction=allow`` the rules are representationally redundant; under
     ``defaultAction=deny`` they are the reachability granted by the binding.
     """
@@ -188,7 +188,7 @@ def with_vault_binding_allows(
     }
     return NetworkPolicy(
         # No provider policy means unrestricted reachability. Otherwise retain
-        # the Environment-derived action and add only the binding destinations.
+        # the RuntimeProfile-derived action and add only the binding destinations.
         defaultAction=(
             getattr(policy, "default_action", None) if policy is not None else "allow"
         ),

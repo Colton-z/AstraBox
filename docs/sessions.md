@@ -2,7 +2,7 @@
 
 > Create, run, inspect, and archive Agent Sessions.
 
-A Session is one conversation with an Agent. It uses an Agent and Environment,
+A Session is one conversation with an Agent. It uses an Agent and RuntimeProfile,
 keeps the messages you send and the responses the Agent program produces, and
 reports what the Agent program is doing now. You send messages to the Session,
 and its responses arrive on the Session's stream.
@@ -132,7 +132,7 @@ sending a message.
 
 ## Create a Session
 
-A Session starts from an Agent. The Environment is already selected by that
+A Session starts from an Agent. The RuntimeProfile is already selected by that
 Agent. From the console:
 
 1. Open **Agents** in the AstraBox console.
@@ -204,17 +204,17 @@ Agent program reports token usage or model cost for a response, the console
 shows it with that response. Billing and quotas remain with the model service
 configured for the deployment.
 
-AstraBox does not accept an Agent object, Agent version, or Environment in the
+AstraBox does not accept an Agent object, Agent version, or RuntimeProfile in the
 creation body. The request path identifies the Agent, and the Agent already
-selects the Environment. The Session records that Agent identity; it does not
+selects the RuntimeProfile. The Session records that Agent identity; it does not
 snapshot or lock an Agent version:
 
-- AstraBox resolves the current Agent and Environment when it first prepares a
+- AstraBox resolves the current Agent and RuntimeProfile when it first prepares a
   runtime for the Session.
-- Saving an Agent or Environment does not reconfigure a running runtime in
+- Saving an Agent or RuntimeProfile does not reconfigure a running runtime in
   place.
 - If AstraBox later recreates the runtime, the same Session can use the current saved
-  Agent and Environment configuration.
+  Agent and RuntimeProfile configuration.
 - The Agent `version` field detects concurrent updates. It is not a selectable
   configuration version for a Session.
 
@@ -582,7 +582,7 @@ Imported messages read, page and share like any other message, and carry
 
 1. **Treat Agent configuration as live** — A Session does not pin an Agent
    version. Saving an Agent does not alter a running runtime, but a recreated
-   runtime uses the current saved Agent and Environment configuration.
+   runtime uses the current saved Agent and RuntimeProfile configuration.
 2. **Use stable request identifiers** — Give each Session creation request a
    stable `Idempotency-Key` and each message a stable `client_message_id` for
    duplicate prevention and traceability.
@@ -624,11 +624,11 @@ A: Save `data.seq` from the latest `data-resume-cursor` part, then reconnect
 with the `after_seq` query parameter. AstraBox does not consume
 `Last-Event-ID`.
 
-**Q: Why is an Environment missing when I create or edit an Agent?**
+**Q: Why is a RuntimeProfile missing when I create or edit an Agent?**
 
-A: The Agent form lists only enabled Environments whose Agent program supports
-Agents. The **Environments** administration view also shows disabled entries;
-check the Environment's enabled state and selected Agent program there.
+A: The Agent form lists only enabled RuntimeProfiles whose Agent program supports
+Agents. The **RuntimeProfiles** administration view also shows disabled entries;
+check the RuntimeProfile's enabled state and selected Agent program there.
 
 ## API Reference
 

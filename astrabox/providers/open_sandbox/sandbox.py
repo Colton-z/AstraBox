@@ -196,7 +196,7 @@ _ENV_ASSIGNMENT_RE = re.compile(r"^(?P<lead>\s*)(?P<key>[^\s=]+)=(?P<value>.*)$"
 #: The ONLY environment variables whose values survive into a diagnostic report.
 #:
 #: An allowlist, not a denylist, and that choice is the whole point. The
-#: OpenSandbox docker runtime renders the container's full ``Environment:``
+#: OpenSandbox docker runtime renders the container's full ``RuntimeProfile:``
 #: block into its ``inspect`` report (and therefore into ``summary``, which is
 #: inspect + events + logs), masking only names containing SECRET / TOKEN /
 #: PASSWORD / KEY. That rule is a reasonable default for a general-purpose
@@ -230,7 +230,7 @@ _DIAGNOSTIC_ENV_ALLOWLIST = frozenset(
         # The model endpoint and model name. Not credentials, and between them
         # they answer the most common question a diagnostics reader has ("what
         # was this box actually talking to?"). The endpoint is a deployment-level
-        # setting the operator configured on the Environment and can already read
+        # setting the operator configured on the RuntimeProfile and can already read
         # back in /manage.
         "ANTHROPIC_BASE_URL",
         "ANTHROPIC_MODEL",
@@ -1211,7 +1211,7 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         handle = await create_open_sandbox_box(
             session_id=spec.session_id,
             assignment_id=spec.assignment_id,
-            execution_target=spec.execution_target,
+            environment_name=spec.environment_name,
             image=str(spec.image or "").strip() or resolve_agent_image(),
             env=dict(spec.env),
             resource_limits=dict(spec.resource_limits),
@@ -1331,7 +1331,7 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         """Merge the allows the runtime needs into the box's live egress policy.
 
         The allows are computed exactly as creation computes them (the
-        Environment-derived policy plus each Vault binding's hosts) and
+        RuntimeProfile-derived policy plus each Vault binding's hosts) and
         compared with the policy the sidecar enforces now; the missing ones go
         in through the sidecar's runtime ``PATCH /policy``, which merges by
         target and keeps ``defaultAction``. This runs before the vault refresh

@@ -1,16 +1,16 @@
 // Map the server-driven Agent FormSchema into the console's declarative edit
 // config so create and edit share one field definition.
 //
-// This is the agent twin of environmentEditConfig.ts. Two agent-specific extensions
+// This is the agent twin of runtimeProfileEditConfig.ts. Two agent-specific extensions
 // over the environment bridge:
-//   1. `env_ref` (environment_name) needs the live environment list as its select
+//   1. `runtime_profile_ref` (runtime_profile_name) needs the live environment list as its select
 //      options — the schema carries no `enum` for it, so the page passes the fetched
-//      environments in and the options are built from them here.
+//      runtime_profiles in and the options are built from them here.
 //   2. Access control (visibility / admin / allowlist) is stored separately from
 //      the schema. It is appended as its own section in the same edit grammar.
 import { createElement, Fragment } from 'react';
 import i18n from '@/i18n';
-import type { AgentCategory, EnvironmentConfig, FormFieldSchema, FormSchema } from '@/types';
+import type { AgentCategory, RuntimeProfileConfig, FormFieldSchema, FormSchema } from '@/types';
 import { deleteByPath, getByPath, setByPath } from '@/components/form/paths';
 
 import type {
@@ -41,7 +41,7 @@ function editType(field: FormFieldSchema): EditFieldType {
     case 'integer':
       return 'number';
     case 'enum':
-    case 'env_ref':
+    case 'runtime_profile_ref':
       return 'select';
     case 'string_list':
       return 'list';
@@ -99,12 +99,12 @@ function accessors(field: FormFieldSchema): Pick<EditFieldSpec, 'get' | 'set'> {
 export type AgentEditOpts = {
   /** True while creating (name input) vs editing (name locked). */
   nameEditable: boolean;
-  /** Live environment list for the `env_ref` (environment_name) picker. */
-  environments?: EnvironmentConfig[];
-  /** Model ids advertised by the currently selected Environment. */
+  /** Live environment list for the `runtime_profile_ref` (runtime_profile_name) picker. */
+  runtime_profiles?: RuntimeProfileConfig[];
+  /** Model ids advertised by the currently selected RuntimeProfile. */
   models?: string[];
   /**
-   * The selected Environment's engine declaration for the engine_options bag.
+   * The selected RuntimeProfile's engine declaration for the engine_options bag.
    * Non-empty: declares native JSON blocks, not their internal fields. Empty or absent:
    * the engine takes no bag and the engine_options control does not render.
    */
@@ -210,12 +210,12 @@ function toFieldSpec(field: FormFieldSchema, opts: AgentEditOpts): EditFieldSpec
   const type: EditFieldType = isModel ? 'search_select' : editType(field);
   const example = fieldExample(field, type);
 
-  // env_ref options come from the live env list rather than `field.enum`:
+  // runtime_profile_ref options come from the live env list rather than `field.enum`:
   // eligibility is an adapter capability returned by the server, and an
   // engine's identity is never a UI allowlist.
   const envOptions =
-    field.type === 'env_ref'
-      ? (opts.environments ?? [])
+    field.type === 'runtime_profile_ref'
+      ? (opts.runtime_profiles ?? [])
           .filter(
             (e) =>
               e.enabled !== false &&
@@ -252,8 +252,8 @@ function toFieldSpec(field: FormFieldSchema, opts: AgentEditOpts): EditFieldSpec
       : envOptions ?? field.enum?.map((v) => ({ value: v, label: v })),
     example,
     placeholder: field.placeholder ?? example ?? (
-      field.type === 'env_ref'
-        ? i18n.t('manage:agent_form.select_env_placeholder')
+      field.type === 'runtime_profile_ref'
+        ? i18n.t('manage:agent_form.select_runtime_profile_placeholder')
         : isModel
           ? i18n.t('manage:agent_form.select_model_placeholder')
           : field.type === 'enum'
@@ -266,8 +266,8 @@ function toFieldSpec(field: FormFieldSchema, opts: AgentEditOpts): EditFieldSpec
       : undefined,
     emptyLabel: isModel
       ? i18n.t('manage:agent_form.no_models')
-      : field.type === 'env_ref'
-        ? i18n.t('manage:agent_form.no_environments')
+      : field.type === 'runtime_profile_ref'
+        ? i18n.t('manage:agent_form.no_runtime_profiles')
         : undefined,
     allowCustom: isModel,
     rows: field.type === 'text' ? (field.key === 'system' ? 8 : 3) : type === 'json' ? 6 : undefined,
@@ -358,7 +358,7 @@ function accessControlSection(draft: Record<string, unknown>): EditSectionSpec {
 /**
  * Object fields whose `item_schema` is rendered as individual controls instead
  * of the JSON escape hatch — the agent-side twin of the set in
- * `environmentEditConfig.ts`.
+ * `runtimeProfileEditConfig.ts`.
  *
  * While the set is empty, every object block on this form is edited as JSON. A
  * set makes enabling an inline field declarative, and

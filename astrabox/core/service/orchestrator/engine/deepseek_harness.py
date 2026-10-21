@@ -506,7 +506,7 @@ async def _publish_runtime(
         await engine_client.set_permission_mode(permission_mode)
     if model:
         # The engine session carries no model of its own — `session/create`
-        # has no such field — so this is the only place the Environment's
+        # has no such field — so this is the only place the RuntimeProfile's
         # choice reaches the harness. Asserted on every publish for the same
         # reason the preset is: a model changed on the Agent has to reach the
         # conversations that already exist.

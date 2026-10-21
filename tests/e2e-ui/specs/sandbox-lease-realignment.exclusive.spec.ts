@@ -26,10 +26,10 @@ for (const owner of ['agent', 'assistant'] as const) {
     const ownSessions: string[] = [];
     if (owner === 'agent') {
       const base = await api.defaultAgent();
-      expect(base.environment_name).toBeTruthy();
+      expect(base.runtime_profile_name).toBeTruthy();
       expect(base.model).toBeTruthy();
       const agent = await api.createAgent({
-        name, environment_name: base.environment_name, model: base.model, prepared_capacity: 0,
+        name, runtime_profile_name: base.runtime_profile_name, model: base.model, prepared_capacity: 0,
       });
       agents.push(agent.agent_id);
       for (let index = 0; index < 2; index += 1) {
@@ -41,7 +41,7 @@ for (const owner of ['agent', 'assistant'] as const) {
     } else {
       const environment = await api.assistantEnvironmentName();
       const assistant = await api.createAssistant({
-        display_name: name, environment_name: environment,
+        display_name: name, runtime_profile_name: environment,
         model_config_override: { model_name: await api.assistantModelName(environment) },
       });
       const assistantId = String(assistant.assistant_id);

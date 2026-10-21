@@ -84,7 +84,7 @@ class EngineExtensions:
     #: its label, help and the keys the platform reserves in it; the adapter
     #: applies it at the vendor target its help names.
     native_config: tuple[dict[str, Any], ...] = field(default_factory=tuple)
-    #: Whether the engine sends telemetry to an Environment's tracing endpoint.
+    #: Whether the engine sends telemetry to a RuntimeProfile's tracing endpoint.
     tracing: bool = False
 
     def package_kind(self, name: str) -> PackageKind | None:
@@ -152,7 +152,7 @@ def validate_engine_extensions(engine_kind: str, extensions: EngineExtensions) -
 
 
 def accepted_configuration_inputs(extensions: EngineExtensions) -> frozenset[str]:
-    """The Agent and Environment fields this surface gives a consumer."""
+    """The Agent and RuntimeProfile fields this surface gives a consumer."""
 
     accepted: set[str] = set()
     if extensions.mcp_transports:

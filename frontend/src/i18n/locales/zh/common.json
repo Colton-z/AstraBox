@@ -26,7 +26,7 @@
   "sandbox": "沙箱",
   "agent": "Agent",
   "assistant": "Assistant",
-  "environment": "环境",
+  "runtime_profile": "运行配置",
   "deployment": "触发配置",
   "credential_vault": "凭证库",
   "engine": "运行程序",

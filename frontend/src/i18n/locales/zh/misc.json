@@ -259,7 +259,7 @@
       "model": {
         "label": "模型",
         "manage_gateway": "在 {{name}} 管理模型",
-        "help": "填写所选运行环境的模型服务连接所提供的模型 ID"
+        "help": "填写所选运行配置的模型服务连接所提供的模型 ID"
       },
       "system": {
         "label": "系统提示词",
@@ -300,8 +300,8 @@
       "packages": {
         "label": "扩展包"
       },
-      "environment_name": {
-        "label": "运行环境",
+      "runtime_profile_name": {
+        "label": "运行配置",
         "help": "选择已经保存的运行设置，其中包含 Agent 程序、沙箱设置、网络访问和模型连接。Credential Vault（凭证库）需要另行分配。"
       },
       "exposure_mode": {
@@ -310,7 +310,7 @@
       },
       "idle_hibernate_seconds": {
         "label": "空闲超时（秒）",
-        "help": "达到此空闲时间后，AstraBox 会按运行环境中保存的方式暂停或回收沙箱"
+        "help": "达到此空闲时间后，AstraBox 会按运行配置中保存的方式暂停或回收沙箱"
       },
       "prepared_capacity": {
         "label": "预备容量",

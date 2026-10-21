@@ -9,13 +9,13 @@ import pytest
 
 from astrabox.core.service.orchestrator.agent import prepared_slots as ps
 from astrabox.persistence.repository.agent_repository import AgentRepository
-from astrabox.persistence.repository.environment_repository import EnvironmentRepository
+from astrabox.persistence.repository.runtime_profile_repository import RuntimeProfileRepository
 
 pytestmark = pytest.mark.usefixtures("database")
 
 
 async def _agent() -> AgentRepository:
-    await EnvironmentRepository().put(
+    await RuntimeProfileRepository().put(
         "env",
         {"engine_kind": "claude_code", "idle_action": "terminate", "networking": {"type": "unrestricted"}},
         updated_by="test",
@@ -24,7 +24,7 @@ async def _agent() -> AgentRepository:
     await repo.create_agent(
         {
             "agent_id": "agent-1", "name": "agent-1", "model": "model",
-            "environment_name": "env", "created_by": "owner",
+            "runtime_profile_name": "env", "created_by": "owner",
         }
     )
     return repo

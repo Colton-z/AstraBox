@@ -11,7 +11,7 @@ from dataclasses import asdict, is_dataclass, replace
 from typing import Any
 
 from astrabox.persistence.repository.agent_repository import AgentRepository
-from astrabox.persistence.repository.environment_repository import EnvironmentRepository
+from astrabox.persistence.repository.runtime_profile_repository import RuntimeProfileRepository
 from astrabox.persistence.repository.session_repository import SessionRepository
 from astrabox.persistence.repository.agent_repository import AgentReferenceMissing
 from astrabox.persistence.repository.assistant_catalog_repository import (
@@ -47,9 +47,9 @@ from astrabox.core.service.orchestrator.author_boundary import (
     refuse_reserved_mcp_fields,
     validate_author_declarations,
 )
-from astrabox.core.service.orchestrator.environment_schema import (
-    normalize_environment_payload,
-    validate_environment_payload,
+from astrabox.core.service.orchestrator.runtime_profile_schema import (
+    normalize_runtime_profile_payload,
+    validate_runtime_profile_payload,
 )
 from astrabox.core.service.orchestrator.engine.capabilities import (
     capabilities_for_engine_kind,
@@ -79,7 +79,7 @@ _ASSISTANT_RUNTIME_FIELDS = (
     "owner_id",
     "org_id",
     "engine_kind",
-    "environment_name",
+    "runtime_profile_name",
     "display_name",
     "system",
     "timezone",
@@ -135,7 +135,7 @@ def _reference_missing(error: AgentReferenceMissing) -> APIError:
     """The API error for an Agent write naming a record that does not exist."""
     if error.reference == "environment":
         return APIError(
-            code="ENVIRONMENT_NOT_FOUND",
+            code="RUNTIME_PROFILE_NOT_FOUND",
             message="environment no longer exists; reload its configuration",
             status_code=404,
         )
@@ -148,7 +148,7 @@ class AgentConfigService:
     """Store Agent configuration and resolve it into runtime views.
 
     One ``agents`` collection, keyed by ``agent_id``, holds the model, system
-    prompt, extensions, authorization, and selected Environment. This service
+    prompt, extensions, authorization, and selected RuntimeProfile. This service
     creates and updates those records and resolves the in-memory
     :class:`AgentView` consumed by the runtime.
 
@@ -163,17 +163,17 @@ class AgentConfigService:
     def __init__(
         self,
         agent_repo: AgentRepository,
-        environment_repo: EnvironmentRepository,
+        runtime_profile_repo: RuntimeProfileRepository,
         *,
         assistant_repo: AssistantCatalogRepository | None = None,
         sessions_repo: SessionRepository | None = None,
         spawn_background_task: Callable[..., Any] | None = None,
     ) -> None:
         self._agent_repo = agent_repo
-        self._environment_repo = environment_repo
+        self._runtime_profile_repo = runtime_profile_repo
         self._sessions_repo = sessions_repo or SessionRepository()
         # The runtime-view resolver reads the Assistant catalog directly. An
-        # Assistant view combines its Environment with its own overrides; using
+        # Assistant view combines its RuntimeProfile with its own overrides; using
         # the repository here avoids a service-construction cycle.
         self._assistant_repo = assistant_repo or AssistantCatalogRepository()
         # A bound method of the still-constructing AgentPlatformService facade
@@ -189,7 +189,7 @@ class AgentConfigService:
         *,
         viewer_user_id: str | None = None,
         viewer_roles: Sequence[str] | None = None,
-        require_enabled_environment: bool = True,
+        require_enabled_runtime_profile: bool = True,
     ) -> AgentView | None:
         """Resolve one Agent's runtime view by ``agent_id``.
 
@@ -208,18 +208,18 @@ class AgentConfigService:
         ):
             return None
         return await self._build_agent_view(
-            item, {}, require_enabled_environment=require_enabled_environment
+            item, {}, require_enabled_runtime_profile=require_enabled_runtime_profile
         )
 
     async def resolve_session_harness(
-        self, session: dict[str, Any], *, require_enabled_environment: bool = True
+        self, session: dict[str, Any], *, require_enabled_runtime_profile: bool = True
     ) -> AgentView | None:
         """Resolve the runtime view for an existing Session.
 
         A Session resolves its Agent or Assistant by identity, not by a mutable
         display name: an Agent Session carries ``agent_id`` (resolved from the
         ``agents`` collection); an Assistant Session carries an Assistant
-        ``workspace_ref`` (resolved from the Assistant's Environment and
+        ``workspace_ref`` (resolved from the Assistant's RuntimeProfile and
         overrides). This is the one entry point the session kernel
         (startup / recover / runtime_ensure) calls.
         """
@@ -238,7 +238,7 @@ class AgentConfigService:
             ).strip()
         if assistant_id:
             return await self._resolve_assistant_harness(
-                assistant_id, require_enabled_environment=require_enabled_environment
+                assistant_id, require_enabled_runtime_profile=require_enabled_runtime_profile
             )
         agent_id = str(
             (workspace_ref or {}).get("agent_id")
@@ -248,7 +248,7 @@ class AgentConfigService:
         if not agent_id:
             return None
         view = await self.resolve_agent_harness(
-            agent_id, require_enabled_environment=require_enabled_environment
+            agent_id, require_enabled_runtime_profile=require_enabled_runtime_profile
         )
         if view is None:
             return None
@@ -258,9 +258,9 @@ class AgentConfigService:
         return replace(view, session_source_type=session.get("source_type"))
 
     async def _resolve_assistant_harness(
-        self, assistant_id: str, *, require_enabled_environment: bool = True
+        self, assistant_id: str, *, require_enabled_runtime_profile: bool = True
     ) -> AgentView | None:
-        """Build an Assistant Session's runtime view from its layers, Environment and own fields.
+        """Build an Assistant Session's runtime view from its layers, RuntimeProfile and own fields.
 
         The layers above the Assistant (assistant_layers) come first and its
         own fields stack on top; see that module for how each field combines.
@@ -278,9 +278,9 @@ class AgentConfigService:
         assistant = await self._assistant_repo.get_assistant(assistant_id)
         if assistant is None:
             return None
-        env_name = str(assistant.get("environment_name") or "").strip()
-        env = await self._require_environment(
-            env_name, ref=f"assistant '{assistant_id}'", require_enabled=require_enabled_environment
+        env_name = str(assistant.get("runtime_profile_name") or "").strip()
+        env = await self._require_runtime_profile(
+            env_name, ref=f"assistant '{assistant_id}'", require_enabled=require_enabled_runtime_profile
         )
         layers = await inherited_layers()
         model_override = assistant.get("model_config_override") or {}
@@ -298,7 +298,7 @@ class AgentConfigService:
             record
             for label, record in [*layers, (assistant_ref, assistant)]
             if catalog_selection_in_use(
-                record, owner=label, admits_work=require_enabled_environment
+                record, owner=label, admits_work=require_enabled_runtime_profile
             )
         ]
         sources: list[tuple[str, dict[str, Any]]] = []
@@ -357,7 +357,7 @@ class AgentConfigService:
                     for vault_id in self._normalize_credential_vault_ids(record.get("credential_vault_ids"))
                 ]
             ),
-            environment_name=env_name,
+            runtime_profile_name=env_name,
             assistant_revision=self._assistant_revision(
                 assistant,
                 env,
@@ -367,8 +367,8 @@ class AgentConfigService:
                 ],
             ),
         )
-        self._overlay_environment_runtime(view, env)
-        if require_enabled_environment:
+        self._overlay_runtime_profile(view, env)
+        if require_enabled_runtime_profile:
             from astrabox.seams.runtime_preparation import resolve_runtime_preparation_plan
 
             view.runtime_preparation = await resolve_runtime_preparation_plan(view)
@@ -382,7 +382,7 @@ class AgentConfigService:
 
         The Assistant's fields its runtime view is built from
         (``_ASSISTANT_RUNTIME_FIELDS``), the runtime fields of the layers it
-        inherits as the caller passes them, and the Environment's revision.
+        inherits as the caller passes them, and the RuntimeProfile's revision.
         Bookkeeping (the main conversation, the workspace id, the primary mark,
         versions and timestamps) is left out, so writing it prepares nothing
         again. It says only that the definition moved; which change matters to
@@ -395,7 +395,7 @@ class AgentConfigService:
             {
                 "assistant": definition,
                 "layers": list(layers or []),
-                "environment_updated_at": str(env.get("updated_at") or ""),
+                "runtime_profile_updated_at": str(env.get("updated_at") or ""),
             },
             sort_keys=True,
             ensure_ascii=False,
@@ -405,11 +405,11 @@ class AgentConfigService:
 
     async def _build_agent_view(
         self, item: dict[str, Any], env_cache: dict[str, dict[str, Any]],
-        *, require_enabled_environment: bool = True,
+        *, require_enabled_runtime_profile: bool = True,
     ) -> AgentView:
         """Merge an agent doc with its named environment into an AgentView.
 
-        ``require_enabled_environment=False`` builds a view that only reads (a
+        ``require_enabled_runtime_profile=False`` builds a view that only reads (a
         session page, an admin detail, the idle sweep). Such a view also leaves
         out a catalog selection the deployment cannot resolve, which a view that
         admits work refuses (``catalog_selection_in_use``).
@@ -421,10 +421,10 @@ class AgentConfigService:
         chose for it.
         """
         agent_ref = f"agent '{item.get('agent_id') or item.get('name')}'"
-        env_name = str(item.get("environment_name") or "").strip()
+        env_name = str(item.get("runtime_profile_name") or "").strip()
         if env_name not in env_cache:
-            env_cache[env_name] = await self._require_environment(
-                env_name, ref=agent_ref, require_enabled=require_enabled_environment,
+            env_cache[env_name] = await self._require_runtime_profile(
+                env_name, ref=agent_ref, require_enabled=require_enabled_runtime_profile,
             )
         env = env_cache[env_name]
         display_meta = item.get("display_meta") or {}
@@ -446,7 +446,7 @@ class AgentConfigService:
         # servers; this refuses a definition saved before that check.
         refuse_reserved_mcp_fields(own_mcp_servers, owner=agent_ref)
         selecting = catalog_selection_in_use(
-            item, owner=agent_ref, admits_work=require_enabled_environment
+            item, owner=agent_ref, admits_work=require_enabled_runtime_profile
         )
         resolved_mcp_servers = self._merge_mcp_servers(
             [
@@ -482,7 +482,7 @@ class AgentConfigService:
             credential_vault_ids=self._normalize_credential_vault_ids(
                 item.get("credential_vault_ids")
             ),
-            environment_name=env_name,
+            runtime_profile_name=env_name,
             exposure_mode=str(item.get("exposure_mode") or "").strip() or None,
             idle_hibernate_seconds=self._coerce_positive_int(item.get("idle_hibernate_seconds")),
             terminal_panel=bool(item.get("terminal_panel", False)),
@@ -506,16 +506,16 @@ class AgentConfigService:
                 str(item.get("_prewarm_revision") or "").strip() or None
             ),
         )
-        self._overlay_environment_runtime(view, env)
-        if require_enabled_environment:
+        self._overlay_runtime_profile(view, env)
+        if require_enabled_runtime_profile:
             from astrabox.seams.runtime_preparation import resolve_runtime_preparation_plan
 
             view.runtime_preparation = await resolve_runtime_preparation_plan(view)
         return view
 
-    def _overlay_environment_runtime(self, view: AgentView, env: dict[str, Any]) -> None:
+    def _overlay_runtime_profile(self, view: AgentView, env: dict[str, Any]) -> None:
         """Overlay the environment's sandbox runtime fields onto the view."""
-        # Environment writes and the built-in seed validate this required field.
+        # RuntimeProfile writes and the built-in seed validate this required field.
         # The read projection carries that established invariant; it is not a
         # second schema validator whose answer can drift from the write path.
         view.engine_kind = str(env["engine_kind"]).strip()
@@ -546,7 +546,7 @@ class AgentConfigService:
         # deployment's own setting, so an overlay that filled it in would be a
         # second answer to the same question.
         view.idle_action = str(env.get("idle_action") or "").strip().lower() or None
-        view.environment_updated_at = str(env.get("updated_at") or "").strip() or None
+        view.runtime_profile_updated_at = str(env.get("updated_at") or "").strip() or None
 
     @staticmethod
     def _synthesize_model_config(
@@ -579,25 +579,25 @@ class AgentConfigService:
             model_config["endpoint_provider"] = endpoint_provider
         return model_config or None
 
-    async def _require_environment(
+    async def _require_runtime_profile(
         self, env_name: str, *, ref: str, require_enabled: bool = True
     ) -> dict[str, Any]:
         if not env_name:
             raise APIError(
-                code="AGENT_ENVIRONMENT_REQUIRED",
-                message=f"{ref} has no environment_name",
+                code="AGENT_RUNTIME_PROFILE_REQUIRED",
+                message=f"{ref} has no runtime_profile_name",
                 status_code=500,
             )
-        env = await self._environment_repo.get_with_secrets(env_name)
+        env = await self._runtime_profile_repo.get_with_secrets(env_name)
         if not env:
             raise APIError(
-                code="AGENT_ENVIRONMENT_MISSING",
+                code="AGENT_RUNTIME_PROFILE_MISSING",
                 message=f"{ref} references environment '{env_name}' which is missing",
                 status_code=500,
             )
         if require_enabled and env.get("enabled") is False:
             raise APIError(
-                code="AGENT_ENVIRONMENT_DISABLED",
+                code="AGENT_RUNTIME_PROFILE_DISABLED",
                 message=f"{ref} references disabled environment '{env_name}'",
                 status_code=409,
             )
@@ -704,14 +704,14 @@ class AgentConfigService:
             platform_admin=is_platform_admin(getattr(user, "roles", ()) or ()),
         )
 
-    async def get_environment(self, name: str) -> dict[str, Any] | None:
+    async def get_runtime_profile(self, name: str) -> dict[str, Any] | None:
         """Return the environment doc by name, credentials masked (None if missing)."""
         target = str(name or "").strip()
         if not target:
             return None
-        return await self._environment_repo.get_any_by_name(target)
+        return await self._runtime_profile_repo.get_any_by_name(target)
 
-    async def list_environment_models(self, name: str) -> list[str]:
+    async def list_runtime_profile_models(self, name: str) -> list[str]:
         """The model ids the console can offer for agents on this environment.
 
         Resolves the environment's ``endpoint_provider`` and asks it to
@@ -725,7 +725,7 @@ class AgentConfigService:
         from astrabox.seams.model import model_endpoint_for_name
 
         target = str(name or "").strip()
-        env = await self._environment_repo.get_with_secrets(target) if target else None
+        env = await self._runtime_profile_repo.get_with_secrets(target) if target else None
         if not env:
             return []
         settings = load_astrabox_settings()
@@ -772,27 +772,27 @@ class AgentConfigService:
     async def _validate_engine_configuration(
         self,
         *,
-        environment_name: str,
+        runtime_profile_name: str,
         engine_options: Any,
         configuration_inputs: dict[str, Any],
     ) -> dict[str, Any]:
-        """Write-side gate for the Agent's Environment and engine inputs.
+        """Write-side gate for the Agent's RuntimeProfile and engine inputs.
 
         The bag's keys mean nothing to the platform; the environment's engine
         declares what it accepts (``EngineExtensions.native_config``)
         and carries accepted values verbatim. Platform configuration fields are
         also checked against the adapter's declared consumers so a saved value
-        cannot become an inert knob. Every Agent write checks the Environment
+        cannot become an inert knob. Every Agent write checks the RuntimeProfile
         even when those optional inputs are empty: an engine that cannot run
         ``agent_chat`` must be refused before it becomes a broken Agent record.
         """
         bag = engine_options if isinstance(engine_options, dict) else {}
-        env_name = str(environment_name or "").strip()
+        env_name = str(runtime_profile_name or "").strip()
         if not env_name:
             raise invalid_request(
-                "Agent configuration requires environment_name"
+                "Agent configuration requires runtime_profile_name"
             )
-        env = await self._environment_repo.get_any_by_name(env_name)
+        env = await self._runtime_profile_repo.get_any_by_name(env_name)
         if not isinstance(env, dict):
             raise invalid_request(
                 f"Agent environment '{env_name}' does not exist"
@@ -839,7 +839,7 @@ class AgentConfigService:
         if packages is not None:
             editable["packages"] = normalize_packages(packages)
         env = await self._validate_engine_configuration(
-            environment_name=str(editable.get("environment_name") or ""),
+            runtime_profile_name=str(editable.get("runtime_profile_name") or ""),
             engine_options=editable.get("engine_options"),
             configuration_inputs={
                 "mcp_servers": editable.get("mcp_servers"),
@@ -958,8 +958,8 @@ class AgentConfigService:
         # the engine's declaration: an environment switch alone can pair the
         # stored bag with an engine that declares none of its keys.
         effective_environment = str(
-            updates.get("environment_name")
-            or existing.get("environment_name")
+            updates.get("runtime_profile_name")
+            or existing.get("runtime_profile_name")
             or ""
         )
         effective_bag = (
@@ -976,14 +976,14 @@ class AgentConfigService:
             for field in ("mcp_servers", "skills", "packages", "default_repo")
         }
         env = await self._validate_engine_configuration(
-            environment_name=effective_environment,
+            runtime_profile_name=effective_environment,
             engine_options=effective_bag,
             configuration_inputs={
                 field: effective[field]
                 for field in ("mcp_servers", "skills", "packages")
             },
         )
-        if "prepared_capacity" in updates or "environment_name" in updates:
+        if "prepared_capacity" in updates or "runtime_profile_name" in updates:
             self._check_prepared_capacity_backend(
                 int(
                     updates["prepared_capacity"]
@@ -996,7 +996,7 @@ class AgentConfigService:
             await self._check_prepared_capacity_limit(
                 int(updates["prepared_capacity"]), agent_id=target
             )
-        if "terminal_panel" in updates or "environment_name" in updates:
+        if "terminal_panel" in updates or "runtime_profile_name" in updates:
             self._check_terminal_panel_backend(
                 bool(
                     updates["terminal_panel"]
@@ -1006,7 +1006,7 @@ class AgentConfigService:
                 environment=env,
             )
         # The whole effective definition, not only the changed fields: moving
-        # an Agent to a stricter Environment must meet that Environment too.
+        # an Agent to a stricter RuntimeProfile must meet that RuntimeProfile too.
         await validate_author_declarations(
             owner=f"Agent {name!r}",
             networking=env.get("networking"),
@@ -1052,7 +1052,7 @@ class AgentConfigService:
 
     @staticmethod
     def _check_prepared_capacity_backend(capacity: int, *, sandbox_backend: str) -> None:
-        """Check pool support when this execution target uses prepared capacity.
+        """Check pool support when this Environment uses prepared capacity.
 
         A cold-only target can edit shared authored capacity without requiring
         pool credentials. A target that uses that capacity validates its own
@@ -1091,8 +1091,8 @@ class AgentConfigService:
         The terminal of a conversation with its own box is one of the box's
         long-lived processes, which the next command attaches to again; under
         shared tenancy it is an isolated session instead, which the
-        Environment's own check already requires. Checked when the panel is
-        turned on or the Agent moves to another Environment.
+        RuntimeProfile's own check already requires. Checked when the panel is
+        turned on or the Agent moves to another RuntimeProfile.
         """
 
         if not terminal_panel:
@@ -1141,26 +1141,26 @@ class AgentConfigService:
                 status_code=409,
             )
 
-    # ── Environment config (carries provider_access; credentials are write-only) ──
+    # ── RuntimeProfile config (carries provider_access; credentials are write-only) ──
 
-    async def list_environment_configs(self, user: UserContext) -> list[dict[str, Any]]:
+    async def list_runtime_profile_configs(self, user: UserContext) -> list[dict[str, Any]]:
         # The repository masks every stored credential, so these documents
         # never carry a credential's value to the client.
         return [
-            self._environment_with_engine_capabilities(config)
-            for config in await self._environment_repo.list_all()
+            self._runtime_profile_with_engine_capabilities(config)
+            for config in await self._runtime_profile_repo.list_all()
         ]
 
-    async def count_environment_configs(self) -> int:
-        return await self._environment_repo.count_all()
+    async def count_runtime_profile_configs(self) -> int:
+        return await self._runtime_profile_repo.count_all()
 
     @staticmethod
-    def _environment_with_engine_capabilities(
+    def _runtime_profile_with_engine_capabilities(
         environment: dict[str, Any],
     ) -> dict[str, Any]:
         """Attach installed-engine facts without exposing engine internals.
 
-        Stored environments survive plugin removal, so the admin catalogue
+        Stored runtime_profiles survive plugin removal, so the admin catalogue
         must still render them.  ``engine_available=False`` explains why one
         cannot currently be selected; it never silently turns that environment
         into a Claude environment.
@@ -1179,27 +1179,27 @@ class AgentConfigService:
         rendered["supported_session_kinds"] = sorted(
             capabilities.supported_session_kinds
         )
-        # The modes a form may offer for this Environment's program, in the
+        # The modes a form may offer for this RuntimeProfile's program, in the
         # program's own vocabulary; empty means the program has none to choose.
         rendered["permission_modes"] = list(capabilities.permission_modes)
         # What the program lets an Agent or Assistant add to it, so a form
-        # renders only the extension fields this Environment's program reads.
+        # renders only the extension fields this RuntimeProfile's program reads.
         rendered["engine_options_schema"] = [
             dict(field) for field in capabilities.extensions.native_config
         ]
         rendered["extensions"] = extensions_projection(capabilities.extensions)
         return rendered
 
-    async def list_agent_environment_options(self) -> list[dict[str, Any]]:
-        """Return the small, secret-free Environment catalog Agent forms need.
+    async def list_agent_runtime_profile_options(self) -> list[dict[str, Any]]:
+        """Return the small, secret-free RuntimeProfile catalog Agent forms need.
 
-        Agent authors need to choose a runnable Environment, but they must not
-        receive the administrator's complete Environment documents (network
+        Agent authors need to choose a runnable RuntimeProfile, but they must not
+        receive the administrator's complete RuntimeProfile documents (network
         policy, provider settings, and write-only credential metadata).  Keep
-        this projection deliberately narrow and exclude disabled environments
+        this projection deliberately narrow and exclude disabled runtime_profiles
         whose installed engine does not declare the Agent product.
         """
-        configs = await self._environment_repo.list_all()
+        configs = await self._runtime_profile_repo.list_all()
         options: list[dict[str, Any]] = []
         for config in configs:
             if not isinstance(config, dict) or config.get("enabled") is False:
@@ -1229,7 +1229,7 @@ class AgentConfigService:
                         ).extensions.native_config
                     ],
                     # What else the engine accepts, so the form shows only
-                    # the extension fields this Environment's engine reads.
+                    # the extension fields this RuntimeProfile's engine reads.
                     "extensions": extensions_projection(
                         capabilities_for_engine_kind(engine_kind).extensions
                     ),
@@ -1237,10 +1237,10 @@ class AgentConfigService:
             )
         return sorted(options, key=lambda item: (str(item["display_name"]).lower(), item["name"]))
 
-    async def list_agent_environment_models(self, name: str) -> list[str]:
-        """List models only for an Environment offered by the Agent form."""
+    async def list_agent_runtime_profile_models(self, name: str) -> list[str]:
+        """List models only for a RuntimeProfile offered by the Agent form."""
         target = str(name or "").strip()
-        environment = await self.get_environment(target)
+        environment = await self.get_runtime_profile(target)
         if (
             not environment
             or environment.get("enabled") is False
@@ -1250,9 +1250,9 @@ class AgentConfigService:
             )
         ):
             return []
-        return await self.list_environment_models(target)
+        return await self.list_runtime_profile_models(target)
 
-    async def upsert_environment_config(
+    async def upsert_runtime_profile_config(
         self,
         user: UserContext,
         name: str,
@@ -1266,27 +1266,27 @@ class AgentConfigService:
             )
 
         # Persist a concrete idle_action before validation because sandbox
-        # cleanup reads this field directly from the stored Environment.
-        payload = normalize_environment_payload(payload)
+        # cleanup reads this field directly from the stored RuntimeProfile.
+        payload = normalize_runtime_profile_payload(payload)
         # Schema validation (types / required / enum / no undeclared fields);
         # does not rewrite the payload.
-        validate_environment_payload({**payload, "name": name})
-        # The request is the whole Environment: a field it leaves out is
+        validate_runtime_profile_payload({**payload, "name": name})
+        # The request is the whole RuntimeProfile: a field it leaves out is
         # cleared, and a credential sent back masked keeps the stored one.
-        return await self._environment_repo.put(
+        return await self._runtime_profile_repo.put(
             name,
             {key: value for key, value in payload.items() if key != "name"},
             updated_by=user.user_id,
         )
 
-    async def delete_environment_config(
+    async def delete_runtime_profile_config(
         self, user: UserContext, name: str,
     ) -> dict[str, Any]:
         """Remove an unreferenced preset through the administrator HTTP surface.
 
-        The Environment row stays locked from the reference check to the
-        delete (``EnvironmentRepository.delete_after_reference_check``), and
-        every owner that names an Environment does so through a foreign key, so
+        The RuntimeProfile row stays locked from the reference check to the
+        delete (``RuntimeProfileRepository.delete_after_reference_check``), and
+        every owner that names a RuntimeProfile does so through a foreign key, so
         a binding either commits before the check reads or waits for the delete.
         """
         target = str(name or "").strip()
@@ -1294,7 +1294,7 @@ class AgentConfigService:
             raise invalid_request("environment name is required")
 
         async def check_references(connection: Any) -> None:
-            agents = await self._agent_repo.list_agents_by_environment(target, conn=connection)
+            agents = await self._agent_repo.list_agents_by_runtime_profile(target, conn=connection)
             deleted_agent_ids = [
                 str(agent["agent_id"]) for agent in agents if agent.get("state") == "DELETED"
             ]
@@ -1315,7 +1315,7 @@ class AgentConfigService:
             ]
             # A deleted Assistant holds no workspace (its deletion removes it), so
             # the compute it can still own is in the conversations it left.
-            assistants = await self._assistant_repo.list_assistants_by_environment(
+            assistants = await self._assistant_repo.list_assistants_by_runtime_profile(
                 target, connection=connection,
             )
             deleted_assistant_ids = [
@@ -1362,7 +1362,7 @@ class AgentConfigService:
                     "target_id": str(layer["scope"]),
                     "target_name": "Assistant defaults",
                 }
-                for layer in await AssistantDefaultsRepository().list_by_environment(
+                for layer in await AssistantDefaultsRepository().list_by_runtime_profile(
                     target, connection=connection,
                 )
             )
@@ -1372,18 +1372,18 @@ class AgentConfigService:
                 )
                 suffix = f", and {len(holders) - 5} more" if len(holders) > 5 else ""
                 raise APIError(
-                    code="ENVIRONMENT_IN_USE",
+                    code="RUNTIME_PROFILE_IN_USE",
                     message=(
-                        f"Environment is still used by {shown}{suffix}. "
+                        f"RuntimeProfile is still used by {shown}{suffix}. "
                         "Move or delete these Agents and Assistants, point the Assistant "
                         "defaults elsewhere, and finish any pending sandbox cleanup, before "
-                        "deleting the Environment."
+                        "deleting the RuntimeProfile."
                     ),
                     status_code=409,
                     data={"holders": holders},
                 )
 
-        await self._environment_repo.delete_after_reference_check(target, check_references)
+        await self._runtime_profile_repo.delete_after_reference_check(target, check_references)
         return {"name": target, "deleted": True}
 
     # ── Normalizers ────────────────────────────────────────────────────────

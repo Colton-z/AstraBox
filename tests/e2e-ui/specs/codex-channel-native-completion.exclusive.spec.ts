@@ -52,7 +52,7 @@ test('Codex forwards the next main-agent reply after retaining an idle child com
   try {
     agentId = (await api.createAgent({
       name: `__e2e_codex_channel_completion_${id}`,
-      environment_name: profile.environment_name, model: profile.model, prepared_capacity: 0,
+      runtime_profile_name: profile.runtime_profile_name, model: profile.model, prepared_capacity: 0,
     })).agent_id;
     const deployment = await platform.createDeployment(agentId, { scene: 'channel:generic_json', prompt_prefix: '' });
     deploymentId = deployment.deployment_id;

@@ -462,7 +462,7 @@ def _spine(
 ) -> tuple[DeploymentService, ChannelIngressService, _Runtimes, _PendingTasks]:
     binding_row = {
         "deployment_id": "wh-1",
-        "execution_target": "astrabox",
+        "environment_name": "astrabox",
         "agent_id": "agent-1",
         "scene": "channel:recorder",
         "prompt_prefix": "",

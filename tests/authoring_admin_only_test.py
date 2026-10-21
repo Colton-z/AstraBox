@@ -18,8 +18,8 @@ from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator.agent_config_service import AgentConfigService
 from astrabox.core.service.orchestrator.assistant.assistant_service import AssistantService
 
-_AGENT = {"name": "probe", "model": "some-model", "environment_name": "claude-code"}
-_ASSISTANT = {"display_name": "Jarvis", "environment_name": "env-1"}
+_AGENT = {"name": "probe", "model": "some-model", "runtime_profile_name": "claude-code"}
+_ASSISTANT = {"display_name": "Jarvis", "runtime_profile_name": "env-1"}
 
 
 class _AgentRepo:
@@ -48,7 +48,7 @@ class _CatalogRepo:
 
 
 class _Environments:
-    async def get_environment(self, name: str) -> dict[str, Any]:
+    async def get_runtime_profile(self, name: str) -> dict[str, Any]:
         return {"name": name, "enabled": True, "engine_kind": "assistant"}
 
 
@@ -57,7 +57,7 @@ def _agent_service() -> tuple[AgentConfigService, _AgentRepo]:
 
     register_builtin_providers()
     repo = _AgentRepo()
-    return AgentConfigService(repo, environment_repo=_EnvironmentRepo()), repo  # type: ignore[arg-type]
+    return AgentConfigService(repo, runtime_profile_repo=_EnvironmentRepo()), repo  # type: ignore[arg-type]
 
 
 def _assistant_service() -> tuple[AssistantService, _CatalogRepo]:

@@ -16,7 +16,7 @@ from astrabox.cli.client import ApiClient, as_items, resolve_endpoint
 from astrabox.cli.flags import connection_flags
 from astrabox.cli.document import (
     KIND_AGENT,
-    KIND_ENVIRONMENT,
+    KIND_RUNTIME_PROFILE,
     Document,
     ResourceSpec,
     load_document,
@@ -33,17 +33,17 @@ from astrabox.cli.output import (
 #: Schema kinds `astrabox schema` serves, and the route each is read from.
 SCHEMA_ROUTES = {
     "agent": "/api/v1/admin/agent-schema",
-    "environment": "/api/v1/admin/environment-schema",
+    "runtime_profile": "/api/v1/admin/runtime-profile-schema",
 }
 
 #: Collections `astrabox get` lists, with the route and the columns the table
 #: format shows. `--output json` always carries the full documents.
 GET_ROUTES: dict[str, tuple[str, tuple[str, ...]]] = {
-    "agents": ("/api/v1/agents", ("name", "model", "environment_name", "enabled", "agent_id")),
-    "environments": ("/api/v1/admin/environments", ("name", "enabled", "endpoint_provider")),
+    "agents": ("/api/v1/agents", ("name", "model", "runtime_profile_name", "enabled", "agent_id")),
+    "runtime_profiles": ("/api/v1/admin/runtime-profiles", ("name", "enabled", "endpoint_provider")),
     "assistants": (
         "/api/v1/assistants",
-        ("display_name", "assistant_id", "engine_kind", "environment_name"),
+        ("display_name", "assistant_id", "engine_kind", "runtime_profile_name"),
     ),
     "sessions": (
         "/api/v1/sessions",
@@ -125,9 +125,8 @@ def register(subparsers: Any) -> None:
         parents=[common],
         help="Remove the resources an astrabox.yaml document declares.",
         description=(
-            "Delete every Agent the document declares. Environments are "
-            "reported as retained: the deployment serves no delete route for "
-            "them."
+            "Delete every Agent the document declares. RuntimeProfiles are "
+            "reported as retained; delete an unused profile in the console."
         ),
     )
     destroy.add_argument("-f", "--file", required=True, help="Path to astrabox.yaml.")
@@ -229,10 +228,9 @@ def _cmd_destroy(args: argparse.Namespace) -> int:
                 continue
             client.delete(f"/api/v1/agents/{existing['agent_id']}")
             results.append(_result(spec, ACTION_DELETE, ()))
-        for spec in document.environments:
-            # The deployment serves GET and PUT for an environment preset and
-            # no DELETE, so destroy reports the environment as kept rather
-            # than claiming a removal it did not perform.
+        for spec in document.runtime_profiles:
+            # Profiles may be referenced by resources outside this document.
+            # Destroy reports them as retained without sending a deletion.
             results.append(_result(spec, ACTION_RETAINED, ()))
     emit(
         {"resources": results},
@@ -280,15 +278,15 @@ def walk_path(document: Mapping[str, Any] | None, path: str) -> Any:
 def plan_and_run(client: ApiClient, document: Document, *, write: bool) -> list[dict[str, Any]]:
     """Compute each resource's verdict, performing the writes when asked.
 
-    Environments are processed before Agents because an Agent's
-    ``environment_name`` is validated against an existing environment: applying
+    RuntimeProfiles are processed before Agents because an Agent's
+    ``runtime_profile_name`` is validated against an existing environment: applying
     them in document order would fail a first-run document that declares both.
     """
     results: list[dict[str, Any]] = []
-    if document.environments:
-        paths = schema_field_paths(client, KIND_ENVIRONMENT)
-        for spec in document.environments:
-            results.append(_apply_environment(client, spec, paths=paths, write=write))
+    if document.runtime_profiles:
+        paths = schema_field_paths(client, KIND_RUNTIME_PROFILE)
+        for spec in document.runtime_profiles:
+            results.append(_apply_runtime_profile(client, spec, paths=paths, write=write))
     if document.agents:
         paths = schema_field_paths(client, KIND_AGENT)
         for spec in document.agents:
@@ -296,20 +294,20 @@ def plan_and_run(client: ApiClient, document: Document, *, write: bool) -> list[
     return results
 
 
-def _apply_environment(
+def _apply_runtime_profile(
     client: ApiClient, spec: ResourceSpec, *, paths: Mapping[str, str], write: bool
 ) -> dict[str, Any]:
     """Create or update one environment preset, keyed by name.
 
-    ``PUT /api/v1/admin/environments/{name}`` upserts, so the write is the same
+    ``PUT /api/v1/admin/runtime-profiles/{name}`` upserts, so the write is the same
     call in both cases and applying an unchanged document converges.
     """
-    existing = _find_named(client.get("/api/v1/admin/environments"), spec.name)
+    existing = _find_named(client.get("/api/v1/admin/runtime-profiles"), spec.name)
     changed = _changed_fields(spec.fields, existing, paths)
     action = _verdict(existing, changed)
     if write and action != ACTION_UNCHANGED:
         body = {key: value for key, value in spec.fields.items() if key != "name"}
-        client.put(f"/api/v1/admin/environments/{spec.name}", json=body)
+        client.put(f"/api/v1/admin/runtime-profiles/{spec.name}", json=body)
     return _result(spec, action, changed)
 
 

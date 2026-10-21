@@ -64,16 +64,16 @@ for (const tenancy of ['agent', 'conversation'] as const) {
   test(`${tenancy} tenancy: a DeepSeek Harness Agent loads its declared Bundle's Skill, and not after the Bundle is removed`, async ({ request }) => {
     const api = new AstraApi(request);
     const profile = engineProfileFor('deepseek_harness');
-    // The fixture configures the profile's Environment and one for the other
+    // The fixture configures the profile's RuntimeProfile and one for the other
     // tenancy, named with that tenancy as suffix (configure-agent-engine-matrix.py).
-    const environment = tenancy === 'agent' ? profile.environment_name : `${profile.environment_name}-${tenancy}`;
+    const environment = tenancy === 'agent' ? profile.runtime_profile_name : `${profile.runtime_profile_name}-${tenancy}`;
     const stored = (await new PlatformApi(request).listEnvironments())
       .find((item) => String(item.name || '') === environment);
-    expect(stored?.sandbox_tenancy, `${environment} is the ${tenancy}-tenancy DeepSeek Harness Environment`).toBe(tenancy);
+    expect(stored?.sandbox_tenancy, `${environment} is the ${tenancy}-tenancy DeepSeek Harness RuntimeProfile`).toBe(tenancy);
     const config = {
       name: `__e2e_dsh_bundle_${tenancy}_${randomUUID().slice(0, 8)}`,
       model: profile.model,
-      environment_name: environment,
+      runtime_profile_name: environment,
       prepared_capacity: 1,
     };
     const agentId = (await api.createAgent({ ...config, engine_options: { profile_package: BUNDLE } })).agent_id;
@@ -101,7 +101,7 @@ for (const [source, spec] of [
     const agentId = (await api.createAgent({
       name: `__e2e_dsh_bundle_${source}_${randomUUID().slice(0, 8)}`,
       model: profile.model,
-      environment_name: profile.environment_name,
+      runtime_profile_name: profile.runtime_profile_name,
       prepared_capacity: 1,
       engine_options: { profile_package: { dependencies: { 'humanizer-ru': spec } } },
     })).agent_id;

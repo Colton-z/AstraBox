@@ -22,7 +22,7 @@ test('Pi retains a native tool failure across reload and continues the conversat
   const api = new AstraApi(request);
   const profile = engineProfileFor('pi');
   agentId = (await api.createAgent({
-    name: `__e2e_pi_tool_error_${randomUUID()}`, environment_name: profile.environment_name,
+    name: `__e2e_pi_tool_error_${randomUUID()}`, runtime_profile_name: profile.runtime_profile_name,
     model: profile.model, prepared_capacity: 0,
   })).agent_id;
   const sessionId = (await api.startConversation(agentId)).session_id;

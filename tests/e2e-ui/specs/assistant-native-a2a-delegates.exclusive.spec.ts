@@ -54,7 +54,7 @@ test('Hermes native A2A delegates two context-linked turns and returns the targe
   const environment = await api.assistantEnvironmentName();
   assistantId = (await api.createAssistant({
     display_name: `__e2e_native_a2a_${marker}`,
-    environment_name: environment,
+    runtime_profile_name: environment,
     model_config_override: { model_name: await api.assistantModelName(environment) },
   })).assistant_id;
   const sourceId = (await api.startAssistantConversation(assistantId)).session_id;

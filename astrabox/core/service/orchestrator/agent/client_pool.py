@@ -79,7 +79,7 @@ _POOL_NAME_PART_RE = re.compile(r"[^a-z0-9-]+")
 
 # Where an Agent read carries the durable cleanup address of the supplier
 # namespace serving it. Both values live together: a pool name is meaningful
-# only to the backend that created it, especially after the Environment
+# only to the backend that created it, especially after the RuntimeProfile
 # changes provider.
 CLIENT_POOL_NAME_FIELD = "_client_pool_name"
 CLIENT_POOL_BACKEND_FIELD = "_client_pool_backend"
@@ -106,7 +106,7 @@ def _value(subject: Any, key: str, default: Any = None) -> Any:
 
 
 def prepared_capacity(template: Any) -> int:
-    """The prepared capacity this execution target actually uses, preserving authored capacity."""
+    """The prepared capacity this Environment actually uses, preserving authored capacity."""
 
     if not get_settings().agent_prewarm_enabled:
         return 0
@@ -344,7 +344,7 @@ async def build_agent_client_pool_plan(
         create_spec = SandboxCreateSpec(
             session_id=member.session_id,
             assignment_id=member.assignment_id,
-            execution_target=get_settings().execution_target,
+            environment_name=get_settings().environment_name,
             resource_limits=resource_limits,
             resource_requests=resource_requests,
             image=spec.creation_image,

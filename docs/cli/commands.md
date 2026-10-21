@@ -15,10 +15,10 @@ Each command below includes its purpose, parameters/options, examples, and opera
 | Command | Description | Core Use Cases |
 | :--- | :--- | :--- |
 | `init` | **Initialize configuration**: Create `astrabox.yaml`, or export a deployment into one. | Start configuration as code; bring existing resources into a file. |
-| `schema` | **View resource fields**: Read the Agent or Environment field definitions from a deployment. | Author valid configuration; inspect candidate values. |
-| `get` | **View resources**: List a collection or one member. | Inspect Agents, Environments, Assistants, Sessions, and remote MCP Server configurations. |
+| `schema` | **View resource fields**: Read the Agent or RuntimeProfile field definitions from a deployment. | Author valid configuration; inspect candidate values. |
+| `get` | **View resources**: List a collection or one member. | Inspect Agents, RuntimeProfiles, Assistants, Sessions, and remote MCP Server configurations. |
 | `diff` | **Preview changes**: Show what `apply` would change without writing. | Review a configuration before applying it. |
-| `apply` | **Apply configuration**: Create or update declared Environments and Agents. | Configure a deployment from a file; CI/CD integration. |
+| `apply` | **Apply configuration**: Create or update declared RuntimeProfiles and Agents. | Configure a deployment from a file; CI/CD integration. |
 | `run` | **Run an Agent**: Send a task and stream the reply. | Use an Agent from a terminal or script. |
 | `status` | **View status**: Probe the deployment's health and readiness endpoints. | Monitor a local or remote deployment. |
 | `destroy` | **Clean up resources**: Delete the Agents declared in a file. | Remove declared Agents with explicit confirmation. |
@@ -38,7 +38,7 @@ Each command below includes its purpose, parameters/options, examples, and opera
 ### Modes
 
 1. **Skeleton Mode**: Create an annotated file without contacting a deployment. Suitable for developers starting configuration from scratch.
-2. **Export Mode**: Project the Environments and Agents already held by a deployment into a file that `astrabox apply` accepts.
+2. **Export Mode**: Project the RuntimeProfiles and Agents already held by a deployment into a file that `astrabox apply` accepts.
 
 ### Syntax
 
@@ -125,7 +125,7 @@ astrabox init --from-deployment --output json
 - Resolve duplicate Agent names before export. `init --from-deployment` refuses an ambiguous name and leaves the output file untouched rather than writing a document `apply` cannot identify.
 
 - **Start from a skeleton**: For a new deployment, start with the annotated file and read the accepted fields with `astrabox schema`.
-- **Use export mode**: When a deployment already has working Environments and Agents, export it instead of recreating those resources by hand.
+- **Use export mode**: When a deployment already has working RuntimeProfiles and Agents, export it instead of recreating those resources by hand.
 - **Review before overwriting**: Use a different `--file` path or version control before combining `--force` with an existing file.
 
 ### Output
@@ -137,14 +137,14 @@ After running a skeleton-mode command, you will see output similar to:
 ```text
 {
   "agents": 1,
-  "environments": 1,
+  "runtime_profiles": 1,
   "file": "astrabox.yaml",
   "from_deployment": false
 }
 wrote astrabox.yaml
 ```
 
-The generated file contains `version: 1`, one example Environment, and one example Agent. Use `astrabox schema environment` and `astrabox schema agent` to replace the example fields with values accepted by the deployment.
+The generated file contains `version: 1`, one example RuntimeProfile, and one example Agent. Use `astrabox schema runtime_profile` and `astrabox schema agent` to replace the example fields with values accepted by the deployment.
 
 #### Export mode output
 
@@ -153,7 +153,7 @@ After running an export-mode command, you will see output similar to:
 ```text
 {
   "agents": 2,
-  "environments": 1,
+  "runtime_profiles": 1,
   "file": "astrabox.yaml",
   "from_deployment": true
 }
@@ -166,8 +166,8 @@ Export mode lets you move a deployment configured in the web console into an `as
 
 #### How it works
 
-1. **Read the field schemas**: Reads the Agent and Environment authoring schemas from the deployment.
-2. **Read the resources**: Reads the Environments and Agents the deployment holds.
+1. **Read the field schemas**: Reads the Agent and RuntimeProfile authoring schemas from the deployment.
+2. **Read the resources**: Reads the RuntimeProfiles and Agents the deployment holds.
 3. **Project writable fields**: Keeps only fields declared by the corresponding authoring schema.
 4. **Write the file**: Writes a `version: 1` document that `astrabox diff` and `astrabox apply` accept.
 
@@ -175,7 +175,7 @@ Export mode lets you move a deployment configured in the web console into an `as
 
 The generated file is responsible for:
 
-- **Declaring Environments first**: A fresh deployment can create an Environment before an Agent refers to it.
+- **Declaring RuntimeProfiles first**: A fresh deployment can create a RuntimeProfile before an Agent refers to it.
 - **Excluding server-managed fields**: IDs, versions, ownership, and timestamps are not written into the file.
 - **Preserving stored secrets**: Masked secret values can be applied unchanged to keep the secret already stored by the deployment.
 
@@ -207,7 +207,7 @@ A: Yes, when the target deployment accepts the same resource fields and candidat
 
 ## `astrabox schema`
 
-`astrabox schema` reads the resource fields that a deployment accepts when writing an Agent or Environment. The schema includes every field's key, type, whether it is required, and its candidate values where it has a fixed set.
+`astrabox schema` reads the resource fields that a deployment accepts when writing an Agent or RuntimeProfile. The schema includes every field's key, type, whether it is required, and its candidate values where it has a fixed set.
 
 ### Usage
 
@@ -215,26 +215,26 @@ A: Yes, when the target deployment accepts the same resource fields and candidat
 # Read the Agent field schema
 astrabox schema agent
 
-# Read the Environment field schema
-astrabox schema environment
+# Read the RuntimeProfile field schema
+astrabox schema runtime_profile
 ```
 
 ### Two resource schemas
 
 #### 🎯 Agent schema
 
-The Agent schema describes the settings that define what an Agent uses and how it behaves, including its name, model, Environment, system prompt, MCP Servers, Skills, Plugins, repository, and other supported settings.
+The Agent schema describes the settings that define what an Agent uses and how it behaves, including its name, model, RuntimeProfile, system prompt, MCP Servers, Skills, Plugins, repository, and other supported settings.
 
 ```bash
 astrabox schema agent
 ```
 
-#### ⚡ Environment schema
+#### ⚡ RuntimeProfile schema
 
-The Environment schema describes the Agent program, model-service connection, credentials, and defaults available to Agents that use the Environment.
+The RuntimeProfile schema describes the Agent program, model-service connection, credentials, and defaults available to Agents that use the RuntimeProfile.
 
 ```bash
-astrabox schema environment
+astrabox schema runtime_profile
 ```
 
 ### Main parameters
@@ -251,10 +251,10 @@ When a field accepts only a fixed set, the table output shows those values in th
 
 ```bash
 # Human-readable field table
-astrabox schema environment
+astrabox schema runtime_profile
 
 # Complete machine-readable schema
-astrabox schema environment --output json
+astrabox schema runtime_profile --output json
 ```
 
 The candidate values are supplied by the deployment. For example, `engine_kind` selects an installed Agent program and `endpoint_provider` selects a model-service connection type.
@@ -277,13 +277,13 @@ astrabox schema agent
 
 The table lists the field key, type, required status, and candidate values. Use those keys inside an item under `agents:` in `astrabox.yaml`.
 
-#### Example 2: inspect Environment fields
+#### Example 2: inspect RuntimeProfile fields
 
 ```bash
-astrabox schema environment
+astrabox schema runtime_profile
 ```
 
-Use those keys inside an item under `environments:` in `astrabox.yaml`.
+Use those keys inside an item under `runtime_profiles:` in `astrabox.yaml`.
 
 #### Example 3: read nested field definitions
 
@@ -303,7 +303,7 @@ astrabox schema agent \
 #### Example 5: use a bearer token
 
 ```bash
-astrabox schema environment \
+astrabox schema runtime_profile \
   --endpoint https://astrabox.example.com \
   --token <access-token>
 ```
@@ -320,7 +320,7 @@ astrabox schema agent
 
 ```bash
 astrabox schema agent --output json > agent-schema.json
-astrabox schema environment --output json > environment-schema.json
+astrabox schema runtime_profile --output json > runtime-profile-schema.json
 ```
 
 ### Configuration validation
@@ -364,7 +364,7 @@ astrabox get <kind> [name] [options]
 | Kind | What it returns |
 | :--- | :--- |
 | `agents` | Agents that can start conversations and perform tasks. |
-| `environments` | Reusable Agent-program and model-service settings. |
+| `runtime_profiles` | Reusable Agent-program and model-service settings. |
 | `assistants` | Assistants exposed by the deployment. |
 | `sessions` | Conversations and their current state. |
 | `mcp-servers` | Remote MCP Server configurations stored by the deployment. |
@@ -381,8 +381,8 @@ astrabox get agents researcher
 # Read one Session by ID
 astrabox get sessions <session-id>
 
-# Return complete Environment documents
-astrabox get environments --output json
+# Return complete RuntimeProfile documents
+astrabox get runtime_profiles --output json
 ```
 
 #### Use cases
@@ -390,7 +390,7 @@ astrabox get environments --output json
 - **Inspect before editing**: Read the current resource before changing it in the web console or `astrabox.yaml`.
 - **Find IDs for automation**: JSON output includes the complete stored documents.
 - **Monitor conversations**: List Sessions to see their IDs and current states.
-- **Discover model settings**: Read Environments before choosing one for an Agent.
+- **Discover model settings**: Read RuntimeProfiles before choosing one for an Agent.
 
 ### Output
 
@@ -407,8 +407,8 @@ researcher  <model-name>       default           true     <agent-id>
 # Example 1: list Agents
 astrabox get agents
 
-# Example 2: list Environments
-astrabox get environments
+# Example 2: list RuntimeProfiles
+astrabox get runtime_profiles
 
 # Example 3: list Assistants
 astrabox get assistants
@@ -464,7 +464,7 @@ astrabox diff --file <path> [options]
 
 1. **Load configuration**: Read and parse the YAML document.
 2. **Validate structure**: Require `version: 1`, known top-level keys, and correctly shaped resource lists.
-3. **Read field schemas**: Validate each Agent and Environment against the target deployment.
+3. **Read field schemas**: Validate each Agent and RuntimeProfile against the target deployment.
 4. **Match resources**: Match declared resources to stored resources by name.
 5. **Report actions**: Show whether each resource would be created, updated, or left unchanged.
 
@@ -507,7 +507,7 @@ Review the result, then run `astrabox apply -f astrabox.yaml` to send the writes
 
 ## `astrabox apply`
 
-`astrabox apply` creates or updates every Environment and Agent declared in an `astrabox.yaml` file.
+`astrabox apply` creates or updates every RuntimeProfile and Agent declared in an `astrabox.yaml` file.
 
 ### Usage
 
@@ -532,14 +532,14 @@ Load and validate astrabox.yaml
         ↓
 Read resource schemas and current resources
         ↓
-Apply Environments before Agents
+Apply RuntimeProfiles before Agents
         ↓
 Create or update each declared resource
         ↓
 Return one action for every declaration
 ```
 
-- **Environment writes are complete replacements**: Declare all required Environment fields. Starting from `astrabox init --from-deployment` avoids accidentally omitting existing settings.
+- **RuntimeProfile writes are complete replacements**: Declare all required RuntimeProfile fields. Starting from `astrabox init --from-deployment` avoids accidentally omitting existing settings.
 - **Agent writes are updates**: The command sends the declared fields and carries the stored version so a concurrent edit is refused instead of overwritten.
 - **No implicit deletion**: A resource omitted from the file remains on the deployment. Use `astrabox destroy` to remove declared Agents.
 
@@ -565,8 +565,8 @@ astrabox apply -f astrabox.yaml --output json
 
 ### Why Use apply
 
-- ✅ **One declaration**: Keep related Environments and Agents in the same file.
-- ✅ **Dependency order**: Environments are created or updated before Agents refer to them.
+- ✅ **One declaration**: Keep related RuntimeProfiles and Agents in the same file.
+- ✅ **Dependency order**: RuntimeProfiles are created or updated before Agents refer to them.
 - ✅ **Conflict protection**: A stale Agent version or ambiguous name fails instead of overwriting or guessing.
 - ✅ **Repeatable result**: A second apply reports unchanged resources when the declaration already matches.
 - ✅ **Automation support**: JSON output and stable exit codes work in scripts and CI/CD pipelines.
@@ -592,7 +592,7 @@ astrabox run <agent> <task> [options]
 | `--session` | Continue an existing Session instead of starting a conversation. | No | Starts a conversation |
 | `--timeout` | Deadline in seconds for the whole run, including sandbox startup and the reply. | No | `900` |
 | `--endpoint` | Deployment base URL. | No | Local maintained address |
-| `--token` | Bearer token. | No | Environment or OAuth credentials |
+| `--token` | Bearer token. | No | RuntimeProfile or OAuth credentials |
 | `--output`, `-o` | Output format: `table` or `json`. | No | `table` |
 
 ### Usage Examples
@@ -754,7 +754,7 @@ astrabox status --output json
 
 ## `astrabox destroy`
 
-`astrabox destroy` deletes every Agent declared in an `astrabox.yaml` file. It requires explicit acknowledgement and reports declared Environments as retained.
+`astrabox destroy` deletes every Agent declared in an `astrabox.yaml` file. It requires explicit acknowledgement and reports declared RuntimeProfiles as retained.
 
 ### Usage
 
@@ -788,9 +788,9 @@ Review the file and run `astrabox diff` or `astrabox get agents` before acknowle
 
 Every item under `agents:` is matched by name and deleted when present. A declared Agent that is already absent is reported as `absent`.
 
-#### Environments
+#### RuntimeProfiles
 
-Items under `environments:` are reported as `retained`. AstraBox exposes no Environment delete route, so the CLI does not claim to delete them.
+Items under `runtime_profiles:` are reported as `retained`. Delete an unused RuntimeProfile in the console.
 
 Resources omitted from the file are not touched.
 
@@ -824,7 +824,7 @@ astrabox destroy -f astrabox.yaml --yes --output json
 1. **Deletion cannot be inferred from apply**: Removing an Agent from `astrabox.yaml` does not delete it. Use `destroy` with a file that declares the Agent.
 2. **The whole Agent declaration is not required for matching**: The command matches declared Agents by `name`; the file must still satisfy the document and resource schemas.
 3. **Ambiguous names fail**: If several stored Agents share the declared name, the command exits with a conflict instead of choosing one.
-4. **Environment deletion is not supported**: Environments remain on the deployment.
+4. **RuntimeProfile deletion is not supported**: RuntimeProfiles remain on the deployment.
 5. **Keep a recoverable declaration**: Store the reviewed file in version control if you may need to recreate the Agent later.
 
 ---
@@ -979,9 +979,9 @@ The server uses line-delimited JSON-RPC on stdin/stdout and exposes these tools:
 
 | Tool | Operation |
 | :--- | :--- |
-| `astrabox_schema` | Read an Agent or Environment authoring schema. |
+| `astrabox_schema` | Read an Agent or RuntimeProfile authoring schema. |
 | `astrabox_get` | List one resource collection. |
-| `astrabox_export` | Export Environments and Agents as an `astrabox.yaml` document body. |
+| `astrabox_export` | Export RuntimeProfiles and Agents as an `astrabox.yaml` document body. |
 | `astrabox_diff` | Preview a document without writing. |
 | `astrabox_apply` | Create or update resources declared by a document. |
 | `astrabox_status` | Probe deployment health and readiness. |
@@ -1139,7 +1139,7 @@ astrabox.yaml: file does not exist
 # For new configuration
 astrabox init
 
-# For a deployment that already has Environments and Agents
+# For a deployment that already has RuntimeProfiles and Agents
 astrabox init --from-deployment
 
 # Or specify the existing file
@@ -1197,7 +1197,7 @@ Common causes:
 
 1. The file is invalid YAML or has an unsupported document version.
 2. A resource contains a key the deployment's authoring schema does not accept.
-3. An Environment omits a field required for its complete replacement.
+3. A RuntimeProfile omits a field required for its complete replacement.
 4. Several Agents share one declared name, so matching is ambiguous.
 5. An Agent changed after the CLI read it, so optimistic concurrency refused the stale update.
 
@@ -1214,11 +1214,11 @@ astrabox status --output json
 
 # Inspect the accepted resource fields
 astrabox schema agent --output json
-astrabox schema environment --output json
+astrabox schema runtime_profile --output json
 
 # Inspect complete stored documents
 astrabox get agents --output json
-astrabox get environments --output json
+astrabox get runtime_profiles --output json
 
 # Read local service logs
 astrabox logs server --tail 200

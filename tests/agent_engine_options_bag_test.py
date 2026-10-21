@@ -50,11 +50,11 @@ class _FakeAgentRepo:
 
 
 class _FakeEnvironmentRepo:
-    def __init__(self, environments: dict[str, dict[str, Any]]) -> None:
-        self.environments = environments
+    def __init__(self, runtime_profiles: dict[str, dict[str, Any]]) -> None:
+        self.runtime_profiles = runtime_profiles
 
     async def get_any_by_name(self, name: str) -> dict[str, Any] | None:
-        env = self.environments.get(name)
+        env = self.runtime_profiles.get(name)
         return dict(env) if env else None
 
     get_with_secrets = get_any_by_name
@@ -63,12 +63,12 @@ class _FakeEnvironmentRepo:
 def _service(
     *,
     agent: dict[str, Any] | None = None,
-    environments: dict[str, dict[str, Any]] | None = None,
+    runtime_profiles: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[AgentConfigService, _FakeAgentRepo]:
     register_builtin_providers()
     repo = _FakeAgentRepo(agent)
     env_repo = _FakeEnvironmentRepo(
-        environments
+        runtime_profiles
         or {
             "claude-env": {"name": "claude-env", "engine_kind": "claude_code"},
             "hermes-env": {"name": "hermes-env", "engine_kind": "assistant"},
@@ -78,14 +78,14 @@ def _service(
             },
         }
     )
-    return AgentConfigService(repo, environment_repo=env_repo), repo  # type: ignore[arg-type]
+    return AgentConfigService(repo, runtime_profile_repo=env_repo), repo  # type: ignore[arg-type]
 
 
 def _payload(**overrides: Any) -> dict[str, Any]:
     payload = {
         "name": "bag-probe",
         "model": "some-model",
-        "environment_name": "claude-env",
+        "runtime_profile_name": "claude-env",
     }
     payload.update(overrides)
     return payload

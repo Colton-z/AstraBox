@@ -263,7 +263,7 @@ if expected_level == "advanced":
 elif expected_level == "default":
     if has_sys_admin or has_unconfined_apparmor:
         raise SystemExit(
-            f"Pod {pod_name!r} carries an advanced sandbox grant for a default Environment"
+            f"Pod {pod_name!r} carries an advanced sandbox grant for a default RuntimeProfile"
         )
 else:
     raise SystemExit(f"unsupported expected sandbox permission level: {expected_level!r}")
@@ -542,7 +542,7 @@ log "health OK"
 
 # ── 4) Agent + conversation. The release probe names an exact existing Agent so
 # its engine options are part of what starts. The standalone smoke keeps its
-# original isolated path: select a seed Environment/model, clone a disposable
+# original isolated path: select a seed RuntimeProfile/model, clone a disposable
 # Agent, and remove it during cleanup.
 SEEDED_AGENT_NAME="${ASTRABOX_E2E_AGENT_NAME:-Claude Code}"
 AGENTS_RESP="$(api_curl -fsS "${BASE_URL}/api/v1/agents" 2>/dev/null)" \
@@ -571,26 +571,26 @@ agent = matches[0]
 if not isinstance(agent, dict):
     raise SystemExit(f"seeded Agent {target!r} was not found")
 agent_id = str(agent.get("agent_id") or "").strip()
-environment = str(agent.get("environment_name") or "").strip()
+environment = str(agent.get("runtime_profile_name") or "").strip()
 model = str(agent.get("model") or "").strip()
 if not agent_id or not environment or not model:
-    raise SystemExit(f"Agent {target!r} has no id, Environment, or model")
+    raise SystemExit(f"Agent {target!r} has no id, RuntimeProfile, or model")
 print(agent_id + "\t" + environment + "\t" + model)
 ' "${SEEDED_AGENT_NAME}" "${EXACT_AGENT_ID}" 2>/dev/null)" \
   || fail "cannot read a usable seeded Agent named '${SEEDED_AGENT_NAME}'"
 IFS=$'\t' read -r SELECTED_AGENT_ID SEEDED_ENVIRONMENT SEEDED_MODEL <<< "${SEEDED_SELECTION}"
 SMOKE_ENVIRONMENT="${ASTRABOX_E2E_ENVIRONMENT:-${SEEDED_ENVIRONMENT}}"
-[[ -n "${SMOKE_ENVIRONMENT}" ]] || fail "the smoke Agent needs an Environment"
+[[ -n "${SMOKE_ENVIRONMENT}" ]] || fail "the smoke Agent needs a RuntimeProfile"
 if [[ -n "${EXACT_AGENT_ID}" && "${SMOKE_ENVIRONMENT}" != "${SEEDED_ENVIRONMENT}" ]]; then
-  fail "exact Agent Environment drifted: selected=${SEEDED_ENVIRONMENT} requested=${SMOKE_ENVIRONMENT}"
+  fail "exact Agent RuntimeProfile drifted: selected=${SEEDED_ENVIRONMENT} requested=${SMOKE_ENVIRONMENT}"
 fi
 
 ENCODED_ENVIRONMENT="$("${VENV_PY}" -c \
   'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' \
-  "${SMOKE_ENVIRONMENT}")" || fail "could not encode the Environment name"
+  "${SMOKE_ENVIRONMENT}")" || fail "could not encode the RuntimeProfile name"
 MODELS_RESP="$(api_curl -fsS \
-  "${BASE_URL}/api/v1/admin/environments/${ENCODED_ENVIRONMENT}/models" 2>/dev/null)" \
-  || fail "could not list models for Environment '${SMOKE_ENVIRONMENT}'"
+  "${BASE_URL}/api/v1/admin/runtime-profiles/${ENCODED_ENVIRONMENT}/models" 2>/dev/null)" \
+  || fail "could not list models for RuntimeProfile '${SMOKE_ENVIRONMENT}'"
 PREFERRED_MODEL="${ASTRABOX_E2E_MODEL:-${SEEDED_MODEL:-${ANTHROPIC_MODEL:-${ASTRABOX_LLM_MODEL:-}}}}"
 SMOKE_MODEL="$(printf '%s' "${MODELS_RESP}" | "${VENV_PY}" -c '
 import json, sys
@@ -609,7 +609,7 @@ def supports(candidate):
     )
 
 if explicit and not supports(explicit):
-    raise SystemExit(f"requested model {explicit!r} is not offered by this Environment")
+    raise SystemExit(f"requested model {explicit!r} is not offered by this RuntimeProfile")
 if preferred and supports(preferred):
     print(preferred)
     raise SystemExit(0)
@@ -622,15 +622,15 @@ if prefix:
         route for route in exact if not route.startswith(prefix)
     ]
 if not exact:
-    raise SystemExit("the Environment returned no concrete model id")
+    raise SystemExit("the RuntimeProfile returned no concrete model id")
 print(exact[0])
 ' "${PREFERRED_MODEL}" "${ANTHROPIC_BASE_URL:-}" "${ASTRABOX_E2E_MODEL:-}" 2>/dev/null)" \
-  || fail "cannot choose a usable model for Environment '${SMOKE_ENVIRONMENT}'"
-[[ -n "${SMOKE_MODEL}" ]] || fail "the Environment returned no usable model"
+  || fail "cannot choose a usable model for RuntimeProfile '${SMOKE_ENVIRONMENT}'"
+[[ -n "${SMOKE_MODEL}" ]] || fail "the RuntimeProfile returned no usable model"
 if [[ -n "${EXACT_AGENT_ID}" && "${SMOKE_MODEL}" != "${SEEDED_MODEL}" ]]; then
   fail "exact Agent model drifted: selected=${SEEDED_MODEL} resolved=${SMOKE_MODEL}"
 fi
-log "using Environment '${SMOKE_ENVIRONMENT}' and model '${SMOKE_MODEL}'"
+log "using RuntimeProfile '${SMOKE_ENVIRONMENT}' and model '${SMOKE_MODEL}'"
 
 if [[ -n "${EXACT_AGENT_ID}" ]]; then
   AGENT_ID="${SELECTED_AGENT_ID}"
@@ -638,7 +638,7 @@ if [[ -n "${EXACT_AGENT_ID}" ]]; then
 else
   AGENT_BODY="$("${VENV_PY}" -c '
 import json, sys
-print(json.dumps({"name": "e2e-smoke", "model": sys.argv[1], "environment_name": sys.argv[2], "prepared_capacity": 0}))
+print(json.dumps({"name": "e2e-smoke", "model": sys.argv[1], "runtime_profile_name": sys.argv[2], "prepared_capacity": 0}))
 ' "${SMOKE_MODEL}" "${SMOKE_ENVIRONMENT}")" \
     || fail "could not encode the Agent request"
 

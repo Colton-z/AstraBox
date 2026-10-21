@@ -82,6 +82,9 @@ class SessionService:
         deployment_name: str | None = None,
         title: str | None = None,
     ) -> dict[str, Any]:
+        from astrabox.core.service.environment_access import require_environment_access
+
+        await require_environment_access(user, operation="create conversation record")
         # The Session resolves its Agent or Assistant by identity (``agent_id``
         # or ``workspace_ref``), never by a mutable display name.
         template = await self._agent_config.resolve_session_harness(
@@ -262,9 +265,9 @@ class SessionService:
 
     async def get_webshell_url(self, user: UserContext, session_id: str) -> dict[str, Any]:
         session = await self.must_get_owned_session(user, session_id)
-        from astrabox.core.service.orchestrator.runtime.execution_target import require_execution_target
+        from astrabox.core.service.orchestrator.runtime.environment_ownership import require_environment_ownership
 
-        require_execution_target(session)
+        require_environment_ownership(session)
         if is_assistant_user_conversation(session) and self._assistant_workspace_service is not None:
             session, resolution = await reconcile_session_runtime_binding(
                 session=session,

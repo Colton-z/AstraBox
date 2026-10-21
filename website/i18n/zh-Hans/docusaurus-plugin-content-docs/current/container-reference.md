@@ -2,7 +2,7 @@
 
 > 了解 Agent 沙箱提供的工作区、软件、资源和持久化能力。
 
-AstraBox 的 Environment 会让每个 Agent 在容器中运行。AstraBox 是自托管软件，
+AstraBox 的 RuntimeProfile 会让每个 Agent 在容器中运行。AstraBox 是自托管软件，
 因此操作系统、命令和资源由沙箱镜像与部署配置决定。
 
 在 AstraBox 自带的 Agent 镜像中，可以稳定依赖以下行为：
@@ -88,7 +88,7 @@ RUN npm install -g 'typescript@5.8.3'
 | pip | 通过 `pip3 install` 安装 Python 包 |
 | npm | 通过 `npm install -g` 安装 Node.js 包 |
 
-构建完成后，在 Environment 控制台的 **沙箱镜像或模板** 中选择这个镜像。
+构建完成后，在 RuntimeProfile 控制台的 **沙箱镜像或模板** 中选择这个镜像。
 生产环境应固定基础镜像和依赖版本。
 
 Session 启动时，AstraBox 不会安装通用依赖列表，也不会执行通用 setup script。
@@ -121,10 +121,10 @@ Session 启动时，AstraBox 不会安装通用依赖列表，也不会执行通
 
 AstraBox 当前的 OpenSandbox 创建配方为每个沙箱设置 `4` CPU 和 `4Gi` 内存的运行上限，
 以及 `200m` CPU 和 `768Mi` 内存的调度请求。冷创建与预备容量使用同一份配方。这些值是
-平台设置，不是单个 Session 的 Environment 选项；磁盘容量和执行期限仍取决于沙箱服务
+平台设置，不是单个 Session 的 RuntimeProfile 选项；磁盘容量和执行期限仍取决于沙箱服务
 与部署。
 
-如果任务存在最低资源要求，请先在目标 Environment 中验证。内存或磁盘耗尽时，进程
+如果任务存在最低资源要求，请先在目标 RuntimeProfile 中验证。内存或磁盘耗尽时，进程
 可能被终止或写入失败；长任务还应考虑部署配置的执行期限。
 
 ## 文件持久化
@@ -157,11 +157,11 @@ printf 'HOME=%s\nUSER=%s\nSHELL=%s\nLANG=%s\nWORKSPACE=%s\n' \
   "$HOME" "${USER:-}" "${SHELL:-}" "${LANG:-}" "${WORKSPACE:-}"
 ```
 
-模型凭证和关联 Credential Vault 中的凭证按 Environment 与 Credential
+模型凭证和关联 Credential Vault 中的凭证按 RuntimeProfile 与 Credential
 Vault 的配置提供。不要在日志或任务输出中打印密钥。
 
 ## 相关文档
 
-- [运行环境](environments.md) - Environment 配置
+- [运行配置](runtime-profiles.md) - RuntimeProfile 配置
 - [文件](files.md) - 操作 Session 工作区中的文件
 - [Credential Vault](credentials.md) - 凭证与注入

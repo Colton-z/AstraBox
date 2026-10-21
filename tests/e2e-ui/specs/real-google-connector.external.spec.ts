@@ -155,7 +155,7 @@ test.describe.serial('Gmail connector with a real Google account', () => {
     for (const name of ['before', 'opted-out']) {
       made.push(String((await api.createAssistant({
         display_name: `__e2e_gmail_${name}_${randomUUID().slice(0, 8)}`,
-        environment_name: environment,
+        runtime_profile_name: environment,
       })).assistant_id));
     }
     const [before, optedOut] = made;
@@ -181,12 +181,12 @@ test.describe.serial('Gmail connector with a real Google account', () => {
   test("the person's Assistant reads their Gmail", async ({ request }) => {
     const api = new AstraApi(request);
     expect(state.messageId, 'the person must be connected').not.toBe('');
-    // A connector is relayed by the platform, so the Environment needs no
+    // A connector is relayed by the platform, so the RuntimeProfile needs no
     // MCP network access for it.
     const environment = await api.assistantEnvironmentName();
     const assistant = await api.createAssistant({
       display_name: `__e2e_gmail_${randomUUID().slice(0, 8)}`,
-      environment_name: environment,
+      runtime_profile_name: environment,
       model_config_override: { model_name: await api.assistantModelName(environment) },
     });
     state.assistantId = assistant.assistant_id;
@@ -213,7 +213,7 @@ test.describe.serial('Gmail connector with a real Google account', () => {
     const agent = await api.createAgent({
       name: `__e2e_gmail_agent_${randomUUID().slice(0, 8)}`,
       model: base.model,
-      environment_name: prewarmEnvironment,
+      runtime_profile_name: prewarmEnvironment,
       prepared_capacity: 1,
     });
     state.agentId = agent.agent_id;
@@ -264,7 +264,7 @@ test.describe.serial('Gmail connector with a real Google account', () => {
       const agent = await api.createAgent({
         name: `__e2e_gmail_${engine.engine_kind}_${randomUUID().slice(0, 8)}`,
         model: profile.model,
-        environment_name: profile.environment_name,
+        runtime_profile_name: profile.runtime_profile_name,
         prepared_capacity: 1,
       });
       expect((await api.data<{ enabled: string[] }>(

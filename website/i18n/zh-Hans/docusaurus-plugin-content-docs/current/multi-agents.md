@@ -25,10 +25,10 @@ run 都有独立的引擎对话，父 Agent 把各项结果汇总成最终回复
 
 | 范围 | 行为 |
 | --- | --- |
-| Environment 和文件系统 | Child run 在父 Session 的运行环境中执行，共享 Environment、沙箱和工作区。 |
-| Vault | Child run 使用父 Agent 运行环境中可用的凭证。 |
+| RuntimeProfile 和文件系统 | Child run 在父 Session 的运行配置中执行，共享 RuntimeProfile、沙箱和工作区。 |
+| Vault | Child run 使用父 Agent 运行配置中可用的凭证。 |
 | 对话历史 | 每个 child run 都有自己的引擎原生消息，只接收父任务传给它的上下文。 |
-| Agent 配置 | 委派行为由已安装的 Agent 程序和 Session 运行环境解析到的 Agent 配置决定。 |
+| Agent 配置 | 委派行为由已安装的 Agent 程序和 Session 运行配置解析到的 Agent 配置决定。 |
 | 事件流 | 父 Session 事件流以瞬时的 `data-subagent` part 传递 Agent 程序报告的 child-run 信息；child-run 接口返回单个子任务的完整投影消息。 |
 
 :::warning
@@ -67,11 +67,11 @@ AstraBox 不定义 `multiagent.agents` 名单。委派工具和 child-run 语义
 的子 Agent 配置。通过 `GET /api/v1/agent-configuration/schema` 读取所选 Agent 程序实际
 消费的输入，再按[定义 Agent](authoring-agents.md)配置系统提示词和扩展。
 
-### Agent 配置与 Session 运行环境
+### Agent 配置与 Session 运行配置
 
 Session 不会冻结可选择的 Agent 版本或 Agent 名单快照。AstraBox 在准备或重建 Session
-运行环境时解析当前 Agent 和 Environment。保存 Agent 不会原地改写正在运行的任务；
-之后再次准备运行环境时，可以使用当前保存的配置。
+运行配置时解析当前 Agent 和 RuntimeProfile。保存 Agent 不会原地改写正在运行的任务；
+之后再次准备运行配置时，可以使用当前保存的配置。
 
 ## 创建并运行 Session
 
@@ -105,10 +105,10 @@ curl --silent --show-error --request POST \
 
 ## 连接 MCP Server 和 Vault
 
-MCP 服务器、Skill、Plugin、仓库访问和 Vault 配置在父 Agent 或其 Environment 上：
+MCP 服务器、Skill、Plugin、仓库访问和 Vault 配置在父 Agent 或其 RuntimeProfile 上：
 
-- Child run 使用同一个 Session 运行环境中可用的功能。
-- Environment 的网络策略同时作用于父任务和子任务。
+- Child run 使用同一个 Session 运行配置中可用的功能。
+- RuntimeProfile 的网络策略同时作用于父任务和子任务。
 - Vault 凭证沿用父 Session 的 Agent 或 Assistant 分配关系和出站保护规则。
 - 只有被委派的工作确实需要时，才授予高权限凭证。
 
@@ -196,8 +196,8 @@ child run 的 Session 也是有效状态，**Agents** 标签会显示空状态�
 
 ### 更新 Agent 后 Session 未使用新配置
 
-保存 Agent 不会重新配置已经在执行的任务或运行环境。新 Session 会使用已保存的配置；
-AstraBox 后续重建已有 Session 的运行环境后，该 Session 也可以使用这份配置。
+保存 Agent 不会重新配置已经在执行的任务或运行配置。新 Session 会使用已保存的配置；
+AstraBox 后续重建已有 Session 的运行配置后，该 Session 也可以使用这份配置。
 
 ### 创建或更新父 Agent 返回错误
 

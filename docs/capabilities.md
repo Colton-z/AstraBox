@@ -16,7 +16,7 @@ A lower-barrier way to bring Agents into business scenarios. An administrator pr
 
 ## HTTP API
 
-A low-level interface for developers who need complete control. Define an Agent, start a Session, and configure Environments, Skills, Session files, and other resources through API requests. There is no need to build your own Agent loop or tool-execution infrastructure. The API also covers administration of Environments, Vaults, Deployments, Assistants, and messaging channels.
+A low-level interface for developers who need complete control. Define an Agent, start a Session, and configure RuntimeProfiles, Skills, Session files, and other resources through API requests. There is no need to build your own Agent loop or tool-execution infrastructure. The API also covers administration of RuntimeProfiles, Vaults, Deployments, Assistants, and messaging channels.
 
 ## Web console vs HTTP API
 
@@ -34,5 +34,5 @@ Start with the web console to use Agent capabilities directly. Choose the HTTP A
 
 ## Next steps
 
-- [Web console](quickstart.md) — Agents · Sessions · Deployments · Channels · Environments
-- [HTTP API](api.md) — Agents · Sessions · Deployments · Assistants · Environments
+- [Web console](quickstart.md) — Agents · Sessions · Deployments · Channels · RuntimeProfiles
+- [HTTP API](api.md) — Agents · Sessions · Deployments · Assistants · RuntimeProfiles

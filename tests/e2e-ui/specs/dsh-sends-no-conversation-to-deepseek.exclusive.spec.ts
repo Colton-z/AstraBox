@@ -37,7 +37,7 @@ test('a DeepSeek Harness box uploads no conversation to DeepSeek', async ({ requ
   const profile = engineProfileFor('deepseek_harness');
   agentId = (await api.createAgent({
     name: `__e2e_dsh_privacy_${randomUUID()}`,
-    environment_name: profile.environment_name,
+    runtime_profile_name: profile.runtime_profile_name,
     model: profile.model,
     prepared_capacity: 0,
   })).agent_id;

@@ -152,12 +152,12 @@ class AssistantWorkspaceService:
         return await self._workspace_repo.get_workspace(assistant_id)
 
     async def get_owned_workspace(self, *, user_id: str, assistant_id: str) -> dict[str, Any] | None:
-        """Read a workspace for a physical operation in this execution target."""
-        from astrabox.core.service.orchestrator.runtime.execution_target import require_execution_target
+        """Read a workspace for a physical operation in this Environment."""
+        from astrabox.core.service.orchestrator.runtime.environment_ownership import require_environment_ownership
 
         workspace = await self.get_workspace(user_id=user_id, assistant_id=assistant_id)
         if workspace is not None:
-            require_execution_target(workspace)
+            require_environment_ownership(workspace)
         return workspace
 
     async def has_assistant_workspace(self, *, assistant_id: str) -> bool:

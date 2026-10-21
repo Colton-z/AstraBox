@@ -85,7 +85,7 @@ const AGENT_SCHEMA: FormSchema = {
   fields: [
     { key: 'name', type: 'string', group: 'identity' },
     { key: 'model', type: 'string', group: 'runtime' },
-    { key: 'environment_name', type: 'env_ref', group: 'runtime' },
+    { key: 'runtime_profile_name', type: 'runtime_profile_ref', group: 'runtime' },
   ],
 };
 
@@ -462,7 +462,7 @@ describe('Agent authoring wire boundary', () => {
       {
         name: 'Operator',
         model: 'model-1',
-        environment_name: 'default',
+        runtime_profile_name: 'default',
         visibility: 'allowlist',
         admins: ['manager'],
         allowed_user_ids: ['member'],
@@ -476,7 +476,7 @@ describe('Agent authoring wire boundary', () => {
     expect(JSON.parse(sentBody(createInit))).toEqual({
       name: 'Operator',
       model: 'model-1',
-      environment_name: 'default',
+      runtime_profile_name: 'default',
     });
     const [accessUrl, accessInit] = mockFetch.mock.calls[1] as [string, RequestInit];
     expect(accessUrl).toBe('/api/v1/agents/agent%2F1/access');
@@ -495,7 +495,7 @@ describe('Agent authoring wire boundary', () => {
     });
 
     await createAgent(
-      { name: 'Private', model: 'model-1', environment_name: 'default' },
+      { name: 'Private', model: 'model-1', runtime_profile_name: 'default' },
       AGENT_SCHEMA,
     );
 
@@ -517,7 +517,7 @@ describe('Agent authoring wire boundary', () => {
         {
           name: 'Invalid access',
           model: 'model-1',
-          environment_name: 'default',
+          runtime_profile_name: 'default',
           admins: [''],
         },
         AGENT_SCHEMA,
@@ -542,7 +542,7 @@ describe('Agent authoring wire boundary', () => {
 
     await expect(
       createAgent(
-        { name: 'Private', model: 'model-1', environment_name: 'default' },
+        { name: 'Private', model: 'model-1', runtime_profile_name: 'default' },
         AGENT_SCHEMA,
       ),
     ).rejects.toThrow('FORBIDDEN: access denied');
@@ -562,7 +562,7 @@ describe('Agent authoring wire boundary', () => {
         agent_id: 'agent-1',
         name: 'Operator',
         model: 'model-1',
-        environment_name: 'default',
+        runtime_profile_name: 'default',
         version: 3,
         created_by: 'owner',
         state: 'ACTIVE',
@@ -577,7 +577,7 @@ describe('Agent authoring wire boundary', () => {
     expect(JSON.parse(sentBody(init))).toEqual({
       name: 'Operator',
       model: 'model-1',
-      environment_name: 'default',
+      runtime_profile_name: 'default',
       version: 3,
     });
   });

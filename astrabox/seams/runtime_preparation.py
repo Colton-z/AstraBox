@@ -156,7 +156,7 @@ class SessionPreparationContext:
 
     Runs on cold start, claim of waiting inventory, reattachment and sandbox
     replacement, each before ``EngineAdapter.activate_runtime``. An initialized
-    engine accepts files and external binding updates. Environment requires an
+    engine accepts files and external binding updates. RuntimeProfile requires an
     engine-native activation mechanism; spawn-only consumers remain Session-bound.
     ``model_credential_placeholder`` is the inert model value the provider must
     bind to this persisted owner before returning, when it owns model delivery.

@@ -177,7 +177,7 @@ class PreparationFixture(RuntimePreparationProvider):
             return await plan(config)
         return RuntimePreparationPlan(session_bound=(
             str(config.get("name", "")).startswith("Material ")
-            or str(config.get("environment_name", "")).startswith("session-env-")
+            or str(config.get("runtime_profile_name", "")).startswith("session-env-")
         ))
 
     async def synchronize(self, *, context):
@@ -226,7 +226,7 @@ class PreparationFixture(RuntimePreparationProvider):
             from credential_binding_fixture import bind
 
             return await bind(context)
-        if context.subject.kind == "assistant" and str(context.config.get("environment_name", "")).startswith("session-env-"):
+        if context.subject.kind == "assistant" and str(context.config.get("runtime_profile_name", "")).startswith("session-env-"):
             environment = {
                 "RUNTIME_IDENTITY_SESSION_ID": context.session_id,
                 "ASTRABOX_SESSION_URL": f"https://console.example.test/session/{context.session_id}?from=context&view=full",

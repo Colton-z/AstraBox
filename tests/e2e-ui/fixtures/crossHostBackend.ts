@@ -11,7 +11,7 @@ type Prepared = { ready: boolean; target: number; prepared_count: number; sandbo
   client_pool_name: string; runtime_generation: string };
 type Detail = { session_id: string; sandbox_id: string; workspace_id: string;
   agent_id: string; state: string };
-type Environment = { name: string; engine_kind: string; enabled: boolean;
+type RuntimeProfile = { name: string; engine_kind: string; enabled: boolean;
   sandbox_tenancy: string; runtime_template_name: string };
 
 function url(origin: string, route: string): string { return `${origin}${appPath(route)}`; }
@@ -41,15 +41,15 @@ export function backendBrowserFlow(sessions: string[], evidence: Record<string, 
       .filter((agent) => agent.agent_id === profile.agent_id);
     expect(sources, 'the management page must load the exact deployed DSH Agent').toHaveLength(1);
     const source = sources[0];
-    const environmentsRead = responseFor(page, '/admin/environments');
-    await page.goto(url(origin, '/manage/environments'));
-    const environments = (await data<Environment[]>(await environmentsRead)).filter((environment) =>
+    const environmentsRead = responseFor(page, '/admin/runtime-profiles');
+    await page.goto(url(origin, '/manage/runtime-profiles'));
+    const runtime_profiles = (await data<RuntimeProfile[]>(await environmentsRead)).filter((environment) =>
       environment.enabled && environment.sandbox_tenancy === 'conversation'
       && environment.engine_kind === profile.engine_kind && environment.runtime_template_name === profile.image);
-    expect(environments, 'reuse the deployed DSH conversation recipe').toHaveLength(1);
+    expect(runtime_profiles, 'reuse the deployed DSH conversation recipe').toHaveLength(1);
     await page.goto(url(origin, '/manage/agents/new'));
     await page.locator('#agent-new-name').fill(`distributed-prewarm-${randomUUID()}`);
-    await page.locator('#agent-new-environment_name').selectOption(environments[0].name);
+    await page.locator('#agent-new-runtime_profile_name').selectOption(runtime_profiles[0].name);
     const model = String(source.model || '');
     expect(model).not.toBe('');
     await page.locator('#agent-new-model').fill(model);
@@ -65,7 +65,7 @@ export function backendBrowserFlow(sessions: string[], evidence: Record<string, 
     const agent = await data<AgentRecord>(await created);
     agentId = agent.agent_id;
     onAgent(agentId);
-    evidence.agent = { agent_id: agentId, environment_name: agent.environment_name, model: agent.model };
+    evidence.agent = { agent_id: agentId, runtime_profile_name: agent.runtime_profile_name, model: agent.model };
     await page.waitForURL(new RegExp(`/manage/agents/${agentId}$`));
     return agent;
   }

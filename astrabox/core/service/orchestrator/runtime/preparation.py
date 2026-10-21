@@ -13,7 +13,7 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator.engine.base import EngineStartupContext
 from astrabox.core.service.orchestrator.engine.registry import get_engine_adapter
-from astrabox.core.service.orchestrator.runtime.execution_target import require_execution_target
+from astrabox.core.service.orchestrator.runtime.environment_ownership import require_environment_ownership
 from astrabox.core.service.orchestrator.runtime.packages import template_packages
 from astrabox.core.service.orchestrator.runtime.sandbox_client import get_underlying_sandbox
 from astrabox.core.service.orchestrator.runtime.skill_sources import (
@@ -303,7 +303,7 @@ async def _synchronize_assistant_resources(
     Assistant waits for a running synchronization instead of failing.
     """
     from astrabox.core.service.orchestrator.agent_config_service import AgentConfigService
-    from astrabox.persistence.repository.environment_repository import EnvironmentRepository
+    from astrabox.persistence.repository.runtime_profile_repository import RuntimeProfileRepository
     from astrabox.persistence.repository.assistant_workspace_repository import (
         AssistantWorkspaceRepository,
     )
@@ -321,7 +321,7 @@ async def _synchronize_assistant_resources(
     workspaces = AssistantWorkspaceRepository()
     sessions = SessionRepository()
     configuration = AgentConfigService(
-        AgentRepository(), EnvironmentRepository(), sessions_repo=sessions,
+        AgentRepository(), RuntimeProfileRepository(), sessions_repo=sessions,
     )
     packages, skills_path = _prepared_paths(config)
 
@@ -434,7 +434,7 @@ async def prepare_session_runtime_context(context: EngineStartupContext) -> Engi
     if session is None or not principal or principal != context.user_id:
         raise APIError(code="RUNTIME_PREPARATION_FAILED", status_code=409,
                        message="Runtime preparation requires the persisted Session owner and workload identity")
-    require_execution_target(session)
+    require_environment_ownership(session)
     config = _config(context.template)
     subject = preparation_subject(session)
     revision = subject_revision(subject, config)

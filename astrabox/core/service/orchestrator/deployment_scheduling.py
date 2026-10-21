@@ -54,7 +54,7 @@ def schedule_definition(deployment: dict[str, Any]) -> ScheduleDefinition:
     schedule = deployment.get("schedule") if isinstance(deployment.get("schedule"), dict) else {}
     return ScheduleDefinition(
         deployment_id=str(deployment.get("deployment_id") or "").strip(),
-        execution_target=str(deployment["execution_target"]),
+        environment_name=str(deployment["environment_name"]),
         cron=str(schedule.get("cron") or ""),
         timezone=str(schedule.get("timezone") or ""),
         enabled=deployment.get("enabled") is not False,
@@ -68,7 +68,7 @@ def invocation_context(invocation: RunInvocation) -> dict[str, Any]:
     context: dict[str, Any] = {
         **dict(invocation.payload),
         "deployment_id": invocation.deployment_id,
-        "execution_target": invocation.execution_target,
+        "environment_name": invocation.environment_name,
         "trigger": invocation.trigger,
     }
     if invocation.replayed_from_run_id:
@@ -123,7 +123,7 @@ async def start_deployment_scheduler() -> None:
     scheduler = configured_scheduler()
     if scheduler is None:
         if not get_settings().background_execution_enabled:
-            logger.info("scheduler worker disabled for execution target %s", get_settings().execution_target)
+            logger.info("scheduler worker disabled for Environment %s", get_settings().environment_name)
             return
         deployments = await DeploymentRepository().list_scheduled()
         enabled = [row for row in deployments if row.get("enabled") is not False]
@@ -139,7 +139,7 @@ async def start_deployment_scheduler() -> None:
         DeploymentRunHandler() if get_settings().background_execution_enabled else None
     )
     if not get_settings().background_execution_enabled:
-        logger.info("scheduler control client ready; worker disabled for target %s", get_settings().execution_target)
+        logger.info("scheduler control client ready; worker disabled for Environment %s", get_settings().environment_name)
         return
     logger.info(
         "scheduler provider %s started: recovery_scope=%s max_active_schedules=%s "

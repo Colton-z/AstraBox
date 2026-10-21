@@ -33,7 +33,7 @@ def _stored_agent() -> dict[str, Any]:
         "name": "Investment Research",
         "system": "Be terse.",
         "model": "claude-opus-4",
-        "environment_name": "astrabox-e2e-investment",
+        "runtime_profile_name": "astrabox-e2e-investment",
         "enabled": True,
         "visibility": "private",
         # Public to read; written by PUT /admin/agents/{id}/mcp-servers.

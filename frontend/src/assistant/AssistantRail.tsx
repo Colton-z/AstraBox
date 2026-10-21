@@ -82,7 +82,7 @@ export function useRailAssistants() {
  *
  * Each user has one without setting anything up: the first visit creates it
  * from the deployment's Assistant defaults (POST /assistants/primary). A
- * deployment with no Environment for Assistants answers
+ * deployment with no RuntimeProfile for Assistants answers
  * ASSISTANT_DEFAULTS_UNAVAILABLE, and the section is absent rather than an
  * entry that cannot be opened. A row opens the Assistant's main conversation,
  * so it carries that conversation's unread mark. Its earlier conversations,

@@ -552,8 +552,8 @@ async def test_a_users_token_carries_the_users_role_not_the_scopes_it_asked_for(
         ([], "GET", "/api/v1/admin/system/overview", "ADMIN_ROLE_REQUIRED"),
         ([], "GET", "/api/v1/agents", "reached"),
         (["astrabox/astrabox-admin"], "GET", "/api/v1/admin/system/overview", "reached"),
-        ([], "DELETE", "/api/v1/admin/environments/research", "ADMIN_ROLE_REQUIRED"),
-        (["astrabox/astrabox-admin"], "DELETE", "/api/v1/admin/environments/research", "reached"),
+        ([], "DELETE", "/api/v1/admin/runtime-profiles/research", "ADMIN_ROLE_REQUIRED"),
+        (["astrabox/astrabox-admin"], "DELETE", "/api/v1/admin/runtime-profiles/research", "reached"),
     ],
     ids=[
         "member-admin-route", "member-own-route", "administrator-admin-route",

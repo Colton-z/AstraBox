@@ -26,7 +26,7 @@ from astrabox.core.service.orchestrator.session_runtime.feed import Notice, Resy
 from astrabox.core.service.orchestrator.session_runtime.follow import follow_output
 from astrabox.persistence.provider import get_persistence
 from astrabox.persistence.repository.agent_repository import AgentRepository
-from astrabox.persistence.repository.environment_repository import EnvironmentRepository
+from astrabox.persistence.repository.runtime_profile_repository import RuntimeProfileRepository
 from astrabox.persistence.repository.session_repository import SessionRepository
 from astrabox.persistence.repository.session_runtime_repository import (
     FactBatch,
@@ -181,13 +181,13 @@ class RelationalPersistenceContractSuite:
             {"type": "finish"},
         ]
         sid, rolled_back = uuid.uuid4().hex, uuid.uuid4().hex
-        await EnvironmentRepository().put("contract", {
+        await RuntimeProfileRepository().put("contract", {
             "engine_kind": "claude_code", "idle_action": "terminate",
             "networking": {"type": "unrestricted"},
         }, updated_by="contract-owner")
         await AgentRepository().create_agent({
             "agent_id": sid, "name": "Relational contract", "model": "unused",
-            "environment_name": "contract", "created_by": "contract-owner",
+            "runtime_profile_name": "contract", "created_by": "contract-owner",
         })
         for value in (sid, rolled_back):
             await SessionRepository().create_session({

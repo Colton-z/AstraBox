@@ -78,7 +78,7 @@ curl -X POST https://astrabox.example.com/api/v1/admin/vaults \
 
 一个 Agent 或 Assistant 可以分配多个 Vault。Session 创建时使用当时的分配。移除分配后，之后创建的
 Session 将不会再接收该 Vault。平台会自动允许活动出站凭证 binding 指定的精确目标地址；
-这些地址已经属于沙箱的有效策略，Environment 允许列表无需重复填写。
+这些地址已经属于沙箱的有效策略，RuntimeProfile 允许列表无需重复填写。
 
 ```bash
 curl -X POST \
@@ -225,7 +225,7 @@ curl -X PUT \
 
 **Q: Plugin 或 Skill 拉取时报 `could not read Username for 'https://gitee.com': No such device or address`，怎么排查？**
 
-A: Git 没能完成认证，随后尝试在没有交互输入的运行环境中询问用户名。仅凭这条
+A: Git 没能完成认证，随后尝试在没有交互输入的运行配置中询问用户名。仅凭这条
 错误，不能确定是未配置凭证、凭证被拒绝，还是凭证匹配了其他仓库。请管理员检查：
 
 1. Vault 中存在可用的 **HTTP Basic（Git HTTPS）** 凭证。MCP Bearer Token 或环境
@@ -262,7 +262,7 @@ refresh 配置或刷新已经失效时，请轮换 Credential。
 ## 下一步
 
 - [Session](sessions.md) — 使用分配给 Agent 的 Vault 运行 Agent。
-- [定义 Agent](authoring-agents.md) — 指定 Environment 以及会使用凭证的扩展。
+- [定义 Agent](authoring-agents.md) — 指定 RuntimeProfile 以及会使用凭证的扩展。
 - [保护 Agent 使用的凭证](egress-credential-injection.md) — 配置受保护的凭证传递和
   出站限制。
-- [运行环境](environments.md) — 配置运行环境及其网络访问。
+- [运行配置](runtime-profiles.md) — 配置运行配置及其网络访问。

@@ -69,15 +69,15 @@ class Session(Base):
         Index(None, "owner_type", "owner_id"),
         Index(None, "sandbox_id"),
         Index(None, "state", "updated_at"),
-        Index(None, "execution_target", "session_id"),
+        Index(None, "environment_name", "session_id"),
         string_list_check("undestroyed_sandbox_ids"),
         *boolean_checks("hidden", "deleted", "runtime_unavailable"),
         MYSQL_TABLE_OPTIONS,
     )
 
     session_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
-    #: The physical execution target that may attach, recover or release this runtime.
-    execution_target: Mapped[str] = mapped_column(KeyText(128), server_default="astrabox")
+    #: The physical Environment that may attach, recover or release this runtime.
+    environment_name: Mapped[str] = mapped_column(KeyText(128))
     user_id: Mapped[str] = mapped_column(KeyText(512))
     org_id: Mapped[str | None] = mapped_column(payload_text())
     session_kind: Mapped[str] = mapped_column(KeyText(32))

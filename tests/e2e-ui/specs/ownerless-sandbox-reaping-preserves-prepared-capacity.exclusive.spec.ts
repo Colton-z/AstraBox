@@ -179,7 +179,7 @@ from astrabox.core.service.orchestrator.runtime.sandbox_client import extract_sa
 from astrabox.core.service.orchestrator.runtime_manager import RemoteAgentRuntimeManager
 from astrabox.deploy.onebox import ensure_database_wiring, needs_sandbox_server, _export_backend_wiring
 from astrabox.persistence.repository.agent_repository import AgentRepository
-from astrabox.persistence.repository.environment_repository import EnvironmentRepository
+from astrabox.persistence.repository.runtime_profile_repository import RuntimeProfileRepository
 from astrabox.seams.sandbox import sandbox_for_name
 
 async def main():
@@ -190,7 +190,7 @@ async def main():
     given = json.loads(sys.argv[1])
     provider = sandbox_for_name(given['backend'])
     agent_repo = AgentRepository()
-    template = await AgentConfigService(agent_repo, EnvironmentRepository()).resolve_agent_harness(given['agentId'])
+    template = await AgentConfigService(agent_repo, RuntimeProfileRepository()).resolve_agent_harness(given['agentId'])
     assert template is not None, 'the probe Agent must resolve through production configuration'
     manager = RemoteAgentRuntimeManager()
     plan = await ensure_agent_client_pool(template, runtime_manager=manager)
@@ -269,7 +269,7 @@ test('ownerless sweep reclaims an empty box and preserves live and prepared capa
     const agent = await api.createAgent({
       name: `__e2e_ownerless_${runId}_${suffix}`,
       model,
-      environment_name: environment,
+      runtime_profile_name: environment,
       prepared_capacity: preparedCapacity,
     });
     const id = String(agent.agent_id || '');

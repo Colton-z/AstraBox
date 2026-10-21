@@ -14,7 +14,7 @@ by `NAMESPACES` in `index.ts`):
 | `common`    | Shared atoms reused everywhere (buttons, field labels, statuses). |
 | `shell`     | App chrome: sidebar, nav, layout, top-level shell.                |
 | `chat`      | Session / chat surface (composer, messages, tools, interaction).  |
-| `manage`    | Manage area: agents, sessions, sandboxes, assistants, environments. |
+| `manage`    | Manage area: agents, sessions, sandboxes, assistants, runtime_profiles. |
 | `agents`    | Agent gallery / agent detail (end-user facing agent surfaces).    |
 | `misc`      | Anything that doesn't fit a namespace above.                      |
 

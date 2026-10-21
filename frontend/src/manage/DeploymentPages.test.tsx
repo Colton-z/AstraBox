@@ -570,7 +570,7 @@ describe('channel response policy', () => {
         icon: null,
         description: null,
         engine_kind: 'claude-code',
-        environment_name: 'default',
+        runtime_profile_name: 'default',
         permission_mode_default: 'default',
       }];
     }

@@ -3,13 +3,13 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import i18n from '@/i18n';
 import type { FormSchema } from '@/types';
 
-import { buildEnvEditSections } from './environmentEditConfig';
+import { buildEnvEditSections } from './runtimeProfileEditConfig';
 
 beforeAll(async () => {
   await i18n.changeLanguage('en');
 });
 
-// The runtime group as astrabox/core/service/orchestrator/environment_schema.py
+// The runtime group as astrabox/core/service/orchestrator/runtime_profile_schema.py
 // declares it: networking is a closed product shape, while provider_access
 // carries a credential.
 const SCHEMA: FormSchema = {
@@ -184,7 +184,7 @@ describe('what an enum’s options are called on screen', () => {
     for (const option of tenancy.options ?? []) {
       expect(option.label).not.toBe(option.value);
       expect(option.label).toBe(
-        i18n.t(`manage:env_form.fields.sandbox_tenancy.options.${option.value}`),
+        i18n.t(`manage:runtime_profile_form.fields.sandbox_tenancy.options.${option.value}`),
       );
     }
   });

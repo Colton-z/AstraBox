@@ -672,8 +672,8 @@ test('webhook-delivered native Skill command keeps one user input through a cold
   //    The model is the deployed Agent's own; a deployment that does not carry
   //    a concrete one is a failed precondition, not a reason to pick another.
   const base = await api.defaultAgent();
-  const environmentName = String(base.environment_name || '').trim();
-  expect(environmentName, 'the deployed Agent must expose its Environment').not.toEqual('');
+  const runtimeProfileName = String(base.runtime_profile_name || '').trim();
+  expect(runtimeProfileName, 'the deployed Agent must expose its RuntimeProfile').not.toEqual('');
   const model = String(base.model || '').trim();
   if (!model || model.includes('*')) {
     throw new Error(
@@ -681,17 +681,17 @@ test('webhook-delivered native Skill command keeps one user input through a cold
       + `(model=${JSON.stringify(base.model ?? null)}); this spec runs on the deployment-proven model only`,
     );
   }
-  const environmentModels = await api.listEnvironmentModels(environmentName);
+  const environmentModels = await api.listEnvironmentModels(runtimeProfileName);
   if (!environmentModels.includes(model)) {
     throw new Error(
-      `Environment ${JSON.stringify(environmentName)} does not expose the deployment-proven model `
+      `RuntimeProfile ${JSON.stringify(runtimeProfileName)} does not expose the deployment-proven model `
       + `${JSON.stringify(model)}; have: ${environmentModels.join(', ')}`,
     );
   }
   const agent = await api.createAgent({
     name: `__e2e_webhook_skill_${runId}`,
     model,
-    environment_name: environmentName,
+    runtime_profile_name: runtimeProfileName,
     prepared_capacity: 0,
     skills: [SKILL_DESCRIPTOR],
   });

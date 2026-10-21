@@ -30,7 +30,7 @@ Resources and context have the following scopes:
 
 | Scope | Behavior |
 | --- | --- |
-| Environment and filesystem | Child runs execute inside the parent Session runtime and share its Environment, sandbox, and workspace. |
+| RuntimeProfile and filesystem | Child runs execute inside the parent Session runtime and share its RuntimeProfile, sandbox, and workspace. |
 | Vaults | Child runs use the credentials made available to the parent Agent runtime. |
 | Conversation history | Each child run has its own engine-owned messages. It receives only the context passed by its parent. |
 | Agent configuration | Delegation follows the installed Agent program and the Agent configuration resolved for the Session runtime. |
@@ -86,7 +86,7 @@ as described in [Defining an Agent](authoring-agents.md).
 ### Agent configuration and Session runtime
 
 A Session does not freeze a selectable Agent version or a roster snapshot.
-AstraBox resolves the current Agent and Environment when it prepares or
+AstraBox resolves the current Agent and RuntimeProfile when it prepares or
 rebuilds the Session runtime. Saving the Agent does not rewrite a running task
 in place; a later runtime preparation can use the current saved configuration.
 
@@ -124,10 +124,10 @@ run is useful and how to execute it.
 ## Connect MCP servers and Vaults
 
 MCP servers, Skills, Plugins, repository access, and Vaults are configured on
-the parent Agent or its Environment:
+the parent Agent or its RuntimeProfile:
 
 - Child runs use capabilities available inside the same Session runtime.
-- The Environment's network policy applies to parent and child activity.
+- The RuntimeProfile's network policy applies to parent and child activity.
 - Vault credentials follow the same Agent or Assistant assignment and outbound
   protection rules as the parent Session.
 - Grant high-privilege credentials only when the delegated work requires them.

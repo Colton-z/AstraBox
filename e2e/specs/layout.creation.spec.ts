@@ -17,7 +17,7 @@ import { settle, stubApi } from "./layoutHelpers";
  * heading is the record's OWN name rather than the form's title, which is what
  * separates "the router moved" from "the record page loaded the record". The
  * two writes are not the same shape underneath, which is why both are here: an
- * Agent is a POST the server names (`agent_id`), an Environment is a PUT to a
+ * Agent is a POST the server names (`agent_id`), a RuntimeProfile is a PUT to a
  * key the author chose, and only one of them can be got right by accident.
  *
  * `/api` is stubbed (layoutHelpers.ts), so what is asserted is the console's
@@ -42,7 +42,7 @@ test.describe("management create flows", () => {
       display_meta: { display_name: "Created Agent" },
       description: "Created in the browser",
       model: "claude-opus-5",
-      environment_name: "environment-1",
+      runtime_profile_name: "environment-1",
       enabled: true,
       version: 1,
     };
@@ -73,9 +73,9 @@ test.describe("management create flows", () => {
     const name = page.getByRole("textbox", { name: "Name", exact: true });
     await expect(name).toBeVisible();
     await name.fill("created-agent");
-    // Environment before model, in that order: the models on offer are the ones
-    // the selected Environment's gateway advertises, so the picker has nothing
-    // in it until an Environment is chosen.
+    // RuntimeProfile before model, in that order: the models on offer are the ones
+    // the selected RuntimeProfile's gateway advertises, so the picker has nothing
+    // in it until a RuntimeProfile is chosen.
     await page
       .getByRole("combobox", { name: "Runtime environment", exact: true })
       .selectOption("environment-1");
@@ -87,10 +87,10 @@ test.describe("management create flows", () => {
     await expect(page.getByRole("heading", { name: "Created Agent", exact: true })).toBeVisible();
   });
 
-  test("a newly created Environment opens its record page", async ({ page }) => {
+  test("a newly created RuntimeProfile opens its record page", async ({ page }) => {
     const created = {
       name: "created-environment",
-      display_name: "Created Environment",
+      display_name: "Created RuntimeProfile",
       description: "Created in the browser",
       engine_kind: "claude_code",
       sandbox_backend: "open_sandbox",
@@ -99,17 +99,17 @@ test.describe("management create flows", () => {
     let saved = false;
 
     await stubApi(page);
-    await page.route("**/api/v1/admin/environments", async (route) => {
+    await page.route("**/api/v1/admin/runtime-profiles", async (route) => {
       if (saved) await fulfill(route, [created]);
       else await route.fallback();
     });
     // The name IS the key, so the write is a PUT at the record's own URL.
-    await page.route("**/api/v1/admin/environments/created-environment", async (route) => {
+    await page.route("**/api/v1/admin/runtime-profiles/created-environment", async (route) => {
       saved = true;
       await fulfill(route, created);
     });
 
-    await page.goto("/manage/environments/new", { waitUntil: "domcontentloaded" });
+    await page.goto("/manage/runtime-profiles/new", { waitUntil: "domcontentloaded" });
     await settle(page);
     await expect(
       page.getByRole("heading", { name: "New environment", exact: true }),
@@ -120,9 +120,9 @@ test.describe("management create flows", () => {
     await name.fill("created-environment");
     await page.getByRole("button", { name: "Create", exact: true }).click();
 
-    await expect(page).toHaveURL(/\/manage\/environments\/created-environment$/);
+    await expect(page).toHaveURL(/\/manage\/runtime_profiles\/created-environment$/);
     await expect(
-      page.getByRole("heading", { name: "Created Environment", exact: true }),
+      page.getByRole("heading", { name: "Created RuntimeProfile", exact: true }),
     ).toBeVisible();
   });
 });

@@ -6,8 +6,8 @@ timestamps, JSONB, text arrays and BYTEA. The type declarations in
 These declarations are schema groundwork, not complete MySQL backend support.
 Repository expressions, schema initialization and physical coordination still
 require a compatible implementation and live acceptance. In particular, the
-MySQL Agent/Assistant Environment FKs require shared transactional tombstone
-cleanup in the Environment deletion operation, described below.
+MySQL Agent/Assistant RuntimeProfile FKs require shared transactional tombstone
+cleanup in the RuntimeProfile deletion operation, described below.
 No OceanBase or other MySQL-compatible service support follows from MySQL DDL
 compilation.
 
@@ -48,8 +48,8 @@ every developer's external or native identities fit.
 | Fields declared in this slice | Maximum UTF-8 bytes | Current producers and callers |
 | --- | ---: | --- |
 | Session, input and terminal command IDs; reader owner | 128 | Session/input IDs are UUID strings; terminal IDs are `tcmd_` plus 32 hex characters. Reader owners are hostname:PID:8hex. Explicit/imported identities can be longer. |
-| Environment name and references to Secret keys | 512 | Environment names have no global maximum. Generated credential IDs are `vcr_` plus 32 hex characters; Environment secret keys contain the field name and a UUID suffix. |
-| Secret scope | 768 | Includes `environment/` plus the Environment name, or a vault/deployment identity. |
+| RuntimeProfile name and references to Secret keys | 512 | RuntimeProfile names have no global maximum. Generated credential IDs are `vcr_` plus 32 hex characters; RuntimeProfile secret keys contain the field name and a UUID suffix. |
+| Secret scope | 768 | Includes `environment/` plus the RuntimeProfile name, or a vault/deployment identity. |
 | Secret key | 512 | Credential/field identities, including generated secret keys. |
 | Session input client message ID | 1024 | The API accepts caller-supplied strings without a global maximum; generated input UUIDs are a common default. |
 | Input state and terminal status | 32 | Current lifecycle codes, including `delivered` and `interrupted`, fit this allocation. |
@@ -89,7 +89,7 @@ binding behavior together. The reference widths are not a new global provider
 API or a requirement to use a particular driver.
 
 Source-valid PostgreSQL values can exceed these allocations. For example,
-`"研发" * 86` is a 516-byte nonempty Environment name; an external client message
+`"研发" * 86` is a 516-byte nonempty RuntimeProfile name; an external client message
 ID may exceed 1024 bytes; an explicit Session ID may exceed 128 bytes. Reject
 such values for MySQL before writing or importing them. Do not rename or
 truncate them, and do not impose the MySQL limits on PostgreSQL.
@@ -118,20 +118,20 @@ Inactive rows remain unrestricted; active duplicates fail atomically.
 The MySQL input-state index includes closed rows rather than relying on an
 unsupported partial index. It is a performance index, not a uniqueness rule.
 
-## Environment references
+## RuntimeProfile references
 
-The Agent and Assistant live-Environment CHECKs remain enforced on both
+The Agent and Assistant live-RuntimeProfile CHECKs remain enforced on both
 dialects. PostgreSQL retains ON DELETE SET NULL. Exactly those two FKs compile
 as ON DELETE RESTRICT on MySQL because its CHECK evaluator cannot validate
 storage-engine SET NULL actions. Other FK actions and logical names stay
 unchanged. See the [exact foreign-key validation](https://github.com/mysql/mysql-server/blob/mysql-8.4.0/sql/sql_table.cc#L6325-L6342).
 
-The shared Environment deletion operation must hold the Environment lock,
+The shared RuntimeProfile deletion operation must hold the RuntimeProfile lock,
 refuse live or compute-bearing references, clear only eligible deleted
-Agent/Assistant references, delete the Environment and purge its secrets on
+Agent/Assistant references, delete the RuntimeProfile and purge its secrets on
 the same transaction. The MySQL schema requires that cleanup recipe; schema
 compilation alone does not provide it. RESTRICT refuses surviving references,
-and CHECK prevents a live definition from having no Environment. A raw SQL
+and CHECK prevents a live definition from having no RuntimeProfile. A raw SQL
 DELETE with remaining tombstone references therefore differs from PostgreSQL;
 it must not be presented as equivalent to the shared deletion operation.
 

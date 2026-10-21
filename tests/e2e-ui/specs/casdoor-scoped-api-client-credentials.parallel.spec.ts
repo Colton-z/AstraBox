@@ -38,10 +38,10 @@ test('Casdoor client credentials mint independent read, write, and admin API sco
   const { clientId, clientSecret } = deployedApiClient(serverContainer);
   const browserApi = new AstraApi(request);
   const baseAgent = await browserApi.defaultAgent();
-  const environmentName = String(baseAgent.environment_name || '').trim();
+  const runtimeProfileName = String(baseAgent.runtime_profile_name || '').trim();
   let model = String(baseAgent.model || '').trim();
   if (!model || model.includes('*')) {
-    const models = await browserApi.listEnvironmentModels(environmentName);
+    const models = await browserApi.listEnvironmentModels(runtimeProfileName);
     model = models.find((item) => item && !item.includes('*')) || 'deepseek-chat';
   }
 
@@ -100,7 +100,7 @@ test('Casdoor client credentials mint independent read, write, and admin API sco
       await call(machine, read.value, 'POST', '/agents', {
         name: `__e2e_read_must_not_create_${Date.now()}`,
         model,
-        environment_name: environmentName,
+        runtime_profile_name: runtimeProfileName,
       }),
       'astrabox:write',
     );
@@ -116,7 +116,7 @@ test('Casdoor client credentials mint independent read, write, and admin API sco
     const created = await call(machine, write.value, 'POST', '/agents', {
       name: `__e2e_api_client_${Date.now()}`,
       model,
-      environment_name: environmentName,
+      runtime_profile_name: runtimeProfileName,
       prepared_capacity: 0,
     });
     expect(created.status).toBe(200);

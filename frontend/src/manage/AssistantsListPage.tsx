@@ -90,7 +90,7 @@ export default function AssistantsListPage() {
       key: 'name',
       intent: 'name',
       header: t('common:name'),
-      cell: (a) => <NameCell name={assistantDisplayName(a)} sub={a.environment_name} />,
+      cell: (a) => <NameCell name={assistantDisplayName(a)} sub={a.runtime_profile_name} />,
     },
     {
       key: 'engine',

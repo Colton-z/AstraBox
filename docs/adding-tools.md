@@ -24,9 +24,9 @@ the `dependencies` of its web profile's `package.json`
 (`engine_options.profile_package`), which AstraBox writes and installs with
 `dsh plugin --profile web install` before the harness starts; a Bundle is
 also how a profile composition (a patch layer) is packaged. A limited
-Environment admits the hosts these sources name (their git hosts and the npm
+RuntimeProfile admits the hosts these sources name (their git hosts and the npm
 registry) the way it admits a Skill's Git origin: a public host is added for
-the Agent, and a private one only if the Environment names it. Connectors work
+the Agent, and a private one only if the RuntimeProfile names it. Connectors work
 with every program.
 Native tools always remain available.
 
@@ -73,21 +73,21 @@ Notes:
 Any signed-in user may create an Agent, so the extensions an Agent declares
 itself reach only what an administrator made available:
 
-- In a `limited` Environment, the Git hosts of the Agent's Skills and Plugins
+- In a `limited` RuntimeProfile, the Git hosts of the Agent's Skills and Plugins
   are added to the allowed hosts, and so are its remote MCP servers when the
-  Environment allows remote MCP servers. A host is added only when it is a
-  public internet address or the Environment already lists it.
+  RuntimeProfile allows remote MCP servers. A host is added only when it is a
+  public internet address or the RuntimeProfile already lists it.
 - A private, loopback or link-local address is the deployment's own network:
   the Docker bridge where the platform and other sandboxes listen, and the
   cloud metadata service. A host with such an address, or a name that resolves
   to one or does not resolve, is refused with `AGENT_EGRESS_HOST_REFUSED` (403)
   when the Agent is saved, and again before a sandbox is prepared. To make an
   internal host available, an administrator adds the host, IP or CIDR to the
-  Environment's allowed hosts.
+  RuntimeProfile's allowed hosts.
 - A host name is resolved when the Agent is saved. The sandbox resolves it
   again whenever it connects, so the check describes where the name pointed at
   that moment.
-- An `unrestricted` Environment already allows every destination, and an
+- An `unrestricted` RuntimeProfile already allows every destination, and an
   Agent's hosts do not change it.
 - An Agent's own MCP definition cannot set `provider` or
   `credential_target_url`; only an administrator's MCP catalog assignment sets
@@ -99,7 +99,7 @@ itself reach only what an administrator made available:
 
 Browser and web capabilities belong to the selected Agent program or to an extension it supports. AstraBox does not define a second platform-level browser toolset with its own tool names.
 
-Use the Agent program's native configuration when it includes browser support. Otherwise, add a browser MCP server or reviewed Plugin and allow its remote and package hosts in the Environment's network policy.
+Use the Agent program's native configuration when it includes browser support. Otherwise, add a browser MCP server or reviewed Plugin and allow its remote and package hosts in the RuntimeProfile's network policy.
 
 When integrating browser capabilities:
 

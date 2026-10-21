@@ -1,6 +1,6 @@
 # 配置文件详解
 
-`astrabox.yaml` 是 AstraBox 部署的核心配置文件，用于声明希望部署提供的 Environment 和 Agent。
+`astrabox.yaml` 是 AstraBox 部署的核心配置文件，用于声明希望部署提供的 RuntimeProfile 和 Agent。
 
 ## 配置系统概览
 
@@ -8,7 +8,7 @@ AstraBox 使用一份配置文件声明两类资源：
 
 | 资源 | 作用 |
 |------|------|
-| **Environment** | 选择 Agent 程序、模型服务连接、沙箱运行方式、凭证，以及多个 Agent 可以共用的默认设置。 |
+| **RuntimeProfile** | 选择 Agent 程序、模型服务连接、沙箱运行方式、凭证，以及多个 Agent 可以共用的默认设置。 |
 | **Agent** | 定义一个 Agent 的模型、系统提示词、MCP Server、Skill、Plugin、代码仓库、使用方式和其他设置。 |
 
 配置文件会应用到 `--endpoint` 或 `ASTRABOX_ENDPOINT` 指定的部署，不保存部署地址或 CLI 鉴权凭证。
@@ -22,7 +22,7 @@ AstraBox 使用一份配置文件声明两类资源：
 ```yaml
 version: 1
 
-environments:
+runtime_profiles:
   - name: default
     engine_kind: <agent-program-id>
     endpoint_provider: <model-connection-id>
@@ -31,7 +31,7 @@ environments:
 agents:
   - name: researcher
     model: <model-name>
-    environment_name: default
+    runtime_profile_name: default
     system: |
       调研指定主题，并列出使用的资料来源。
     enabled: true
@@ -39,7 +39,7 @@ agents:
 
 **三个部分**：
 - **version** - 配置文件版本；当前只接受 `1`
-- **environments** - 可选的 Environment 声明列表
+- **environments** - 可选的 RuntimeProfile 声明列表
 - **agents** - 可选的 Agent 声明列表
 
 ---
@@ -53,7 +53,7 @@ agents:
 ```yaml
 version: 1
 
-environments:
+runtime_profiles:
   - name: default
     engine_kind: <agent-program-id>
     endpoint_provider: <model-connection-id>
@@ -62,7 +62,7 @@ environments:
 agents:
   - name: researcher
     model: <model-name>
-    environment_name: default
+    runtime_profile_name: default
     system: |
       调研指定主题，并列出使用的资料来源。
     enabled: true
@@ -88,24 +88,24 @@ version: 1
 
 #### `environments`（可选）
 
-**Environment 声明列表**
+**RuntimeProfile 声明列表**
 
-- 📝 **作用**：列出部署中应当存在的可复用运行环境和模型服务设置
+- 📝 **作用**：列出部署中应当存在的可复用运行配置和模型服务设置
 - ✅ **规则**：必须是对象列表，每一项都需要非空的 `name`
 - ✅ **默认值**：不填写时为空列表
-- 🎯 **用于**：在处理 Agent 前创建或更新 Environment
+- 🎯 **用于**：在处理 Agent 前创建或更新 RuntimeProfile
 
 **示例**：
 
 ```yaml
-environments:
+runtime_profiles:
   - name: default
     engine_kind: <agent-program-id>
     endpoint_provider: <model-connection-id>
     enabled: true
 ```
 
-写入 Environment 时会完整替换现有配置。应保留该 Environment 的所有必填字段，建议从 `astrabox init --from-deployment` 导出的内容开始修改。
+写入 RuntimeProfile 时会完整替换现有配置。应保留该 RuntimeProfile 的所有必填字段，建议从 `astrabox init --from-deployment` 导出的内容开始修改。
 
 #### `agents`（可选）
 
@@ -122,7 +122,7 @@ environments:
 agents:
   - name: researcher
     model: <model-name>
-    environment_name: default
+    runtime_profile_name: default
     system: |
       调研指定主题，并列出使用的资料来源。
     enabled: true
@@ -137,14 +137,14 @@ agents:
 - 📝 **作用**：在部署尚未生成 ID 时标识一项声明
 - ✅ **规则**：不能为空，同一类资源列表中不能重复
 - 🎯 **用于**：
-  - 匹配已有 Environment
+  - 匹配已有 RuntimeProfile
   - 匹配已有 Agent
   - 报告每项 `diff`、`apply` 或 `destroy` 操作
 
 **示例**：
 
 ```yaml
-environments:
+runtime_profiles:
   - name: default
 
 agents:
@@ -162,21 +162,21 @@ version: 1
 agent: []  # 错误：正确字段是 agents
 ```
 
-Environment 和 Agent 内部的字段也会经过验证，具体内容见后续两节。
+RuntimeProfile 和 Agent 内部的字段也会经过验证，具体内容见后续两节。
 
 ---
 
-## Environment 配置
+## RuntimeProfile 配置
 
-Environment 是一组可复用的 Agent 程序、模型服务、沙箱、网络、凭证和链路追踪设置。Agent 通过 `environment_name` 选择 Environment。
+RuntimeProfile 是一组可复用的 Agent 程序、模型服务、沙箱、网络、凭证和链路追踪设置。Agent 通过 `runtime_profile_name` 选择 RuntimeProfile。
 
 ### 配置示例
 
 ```yaml
-environments:
+runtime_profiles:
   - name: default
     display_name: 默认环境
-    description: 通用 Agent 运行环境
+    description: 通用 Agent 运行配置
     engine_kind: <agent-program-id>
     endpoint_provider: <model-connection-id>
     provider_access:
@@ -200,13 +200,13 @@ environments:
 
 - **是否必填**：是
 - **候选值**：目标部署已经安装的 Agent 程序
-- **查看方式**：`astrabox schema environment`
+- **查看方式**：`astrabox schema runtime_profile`
 
 不要直接照搬其他部署中的值。Plugin 可以为某一个部署添加 Agent 程序，不代表其他部署也已经安装。
 
 #### `endpoint_provider`
 
-选择这个 Environment 使用的模型服务连接类型。
+选择这个 RuntimeProfile 使用的模型服务连接类型。
 
 - **是否必填**：否
 - **候选值**：目标部署注册的模型连接
@@ -223,7 +223,7 @@ environments:
 
 #### `provider_access`
 
-配置这个 Environment 中的 Agent 如何访问模型服务：
+配置这个 RuntimeProfile 中的 Agent 如何访问模型服务：
 
 ```yaml
 provider_access:
@@ -265,7 +265,7 @@ networking:
 
 `sandbox_tenancy` 用于选择一个沙箱只属于一段对话，还是可以由同一个 Agent 使用。`sandbox_permission_level` 用于选择沙箱内部获得的权限级别。
 
-Agent 级沙箱复用需要能够落实隔离要求的权限级别。不支持的组合会在写入 Environment 时失败。
+Agent 级沙箱复用需要能够落实隔离要求的权限级别。不支持的组合会在写入 RuntimeProfile 时失败。
 
 #### `tracing` {#tracing}
 
@@ -284,16 +284,16 @@ tracing:
 
 Collector 需要鉴权时，填写 `auth_token` 或 `auth_token_secret_name`，二者只能选一个。凭证值须包含完整的 `Authorization` 方案，例如 `Bearer your-token` 或 `Basic base64-value`。Secret 名称从 AstraBox 服务进程的环境变量解析：`otel-auth` 对应 `OTEL_AUTH`，即转为大写并将连字符替换为下划线。它不引用 Web 控制台中的 Vault 条目。
 
-Claude Code 支持这项配置。解析后的凭证通过 `OTEL_EXPORTER_OTLP_HEADERS` 传入 CLI，不经过出站 Vault 替换；使用 HTTPS 保护传输中的凭证。关闭链路追踪时不会读取 Secret。启用时若引用缺失或为空，AstraBox 会记录 Environment 和引用名称，并为该运行时配置禁用链路追踪，不使对话失败，也不匿名发送数据。已保存的 Environment 不会被修改。
+Claude Code 支持这项配置。解析后的凭证通过 `OTEL_EXPORTER_OTLP_HEADERS` 传入 CLI，不经过出站 Vault 替换；使用 HTTPS 保护传输中的凭证。关闭链路追踪时不会读取 Secret。启用时若引用缺失或为空，AstraBox 会记录 RuntimeProfile 和引用名称，并为该运行时配置禁用链路追踪，不使对话失败，也不匿名发送数据。已保存的 RuntimeProfile 不会被修改。
 
 #### 展示和状态字段
 
 | 字段 | 说明 |
 | :--- | :--- |
-| `name` | Agent 通过 `environment_name` 引用的稳定名称，必填。 |
+| `name` | Agent 通过 `runtime_profile_name` 引用的稳定名称，必填。 |
 | `display_name` | 向用户显示的名称。 |
-| `description` | Environment 的用途。 |
-| `enabled` | Environment 是否可以使用。 |
+| `description` | RuntimeProfile 的用途。 |
+| `enabled` | RuntimeProfile 是否可以使用。 |
 
 ### 自动管理的字段
 
@@ -305,7 +305,7 @@ ID、时间戳、所有者和其他服务端管理的状态不会出现在 `astr
 
 ## Agent 配置
 
-Agent 把模型、系统提示词、MCP Server、Skill、Plugin、代码仓库和 Environment 组合成一个云端 Agent。只要 AstraBox 部署正在运行，就可以随时使用这个 Agent。
+Agent 把模型、系统提示词、MCP Server、Skill、Plugin、代码仓库和 RuntimeProfile 组合成一个云端 Agent。只要 AstraBox 部署正在运行，就可以随时使用这个 Agent。
 
 ### 配置示例
 
@@ -317,7 +317,7 @@ agents:
     model: <model-name>
     system: |
       调研指定主题，并列出使用的资料来源。
-    environment_name: default
+    runtime_profile_name: default
     skills:
       - <skill-reference>
     mcp_servers: {}
@@ -340,7 +340,7 @@ model: <model-name>       # 文档占位符，需要替换
 model: ${MODEL_NAME}      # 会作为普通文本读取，不会展开环境变量
 ```
 
-部署地址和 CLI 鉴权凭证通过命令参数或进程环境变量设置。Agent 运行所需的凭证应保存在 Environment 的 `provider_access` 或 AstraBox Vault 中，不要通过模板写进配置文件。
+部署地址和 CLI 鉴权凭证通过命令参数或进程环境变量设置。Agent 运行所需的凭证应保存在 RuntimeProfile 的 `provider_access` 或 AstraBox Vault 中，不要通过模板写进配置文件。
 
 ### 不使用 `Auto`
 
@@ -354,7 +354,7 @@ AstraBox 的 `astrabox.yaml` 不使用 `Auto` 关键字。希望部署使用默�
 
 #### `model`
 
-必填的模型名称或模型路由名称，由选中的 Environment 使用。自行部署的模型网关可以提供 AstraBox 无法统一枚举的名称，因此这个字段允许直接填写文本。
+必填的模型名称或模型路由名称，由选中的 RuntimeProfile 使用。自行部署的模型网关可以提供 AstraBox 无法统一枚举的名称，因此这个字段允许直接填写文本。
 
 ```yaml
 model: <model-name>
@@ -370,9 +370,9 @@ system: |
   每项结论都要说明依据。
 ```
 
-#### `environment_name`
+#### `runtime_profile_name`
 
-必填的 Environment 名称。同一份文件中的 Environment 会先应用，因此一个文档可以先创建 Environment，再创建使用它的 Agent。
+必填的 RuntimeProfile 名称。同一份文件中的 RuntimeProfile 会先应用，因此一个文档可以先创建 RuntimeProfile，再创建使用它的 Agent。
 
 #### `engine_options`
 
@@ -383,7 +383,7 @@ engine_options:
   <agent-program-option>: <value>
 ```
 
-只填写该 Environment 所选 Agent 程序支持的选项。
+只填写该 RuntimeProfile 所选 Agent 程序支持的选项。
 
 #### `skills`
 
@@ -464,14 +464,14 @@ packages:
 
 ## 同时应用两类资源
 
-一份配置文件可以同时声明 Environment 和使用这些 Environment 的 Agent。CLI 会按照依赖顺序处理。
+一份配置文件可以同时声明 RuntimeProfile 和使用这些 RuntimeProfile 的 Agent。CLI 会按照依赖顺序处理。
 
 ### 配置示例
 
 ```yaml
 version: 1
 
-environments:
+runtime_profiles:
   - name: research
     engine_kind: <agent-program-id>
     endpoint_provider: <model-connection-id>
@@ -480,7 +480,7 @@ environments:
 agents:
   - name: researcher
     model: <model-name>
-    environment_name: research
+    runtime_profile_name: research
     system: |
       调研指定主题，并列出使用的资料来源。
     enabled: true
@@ -488,10 +488,10 @@ agents:
 
 ### 两类资源的区别
 
-| 处理方式 | Environment | Agent |
+| 处理方式 | RuntimeProfile | Agent |
 | :--- | :--- | :--- |
 | 文件中的标识 | `name` | `name` |
-| 应用顺序 | 先处理 | Environment 之后处理 |
+| 应用顺序 | 先处理 | RuntimeProfile 之后处理 |
 | 创建或更新 | 通过同一个 PUT 按名称创建或更新 | 按名称匹配后创建或更新 |
 | 更新内容 | 完整替换 | 文件声明的字段，加上已保存版本 |
 | 并发修改 | 写入最新的完整声明 | 版本过期时拒绝写入 |
@@ -501,13 +501,13 @@ agents:
 
 #### 应用顺序
 
-无论两份 YAML 列表在文件中的视觉位置如何，Environment 都会先于 Agent 处理。因此，Agent 的 `environment_name` 可以引用同一次 apply 中创建的 Environment。
+无论两份 YAML 列表在文件中的视觉位置如何，RuntimeProfile 都会先于 Agent 处理。因此，Agent 的 `runtime_profile_name` 可以引用同一次 apply 中创建的 RuntimeProfile。
 
 #### 资源匹配
 
 ID 由部署创建，不保存在 `astrabox.yaml` 中。CLI 根据 `name` 匹配资源。
 
-Environment 名称就是资源 Key。API 不要求 Agent 名称在整个部署中唯一；存在多个同名 Agent 时，CLI 会返回冲突，不会随机选择。
+RuntimeProfile 名称就是资源 Key。API 不要求 Agent 名称在整个部署中唯一；存在多个同名 Agent 时，CLI 会返回冲突，不会随机选择。
 
 #### 不会隐式删除
 
@@ -530,17 +530,17 @@ astrabox destroy -f astrabox.yaml --yes
 
 ## 资源字段定义
 
-`astrabox.yaml` 的三个顶层字段是固定的。Environment 和 Agent 内部使用哪些字段，由接收配置的 AstraBox 部署定义。
+`astrabox.yaml` 的三个顶层字段是固定的。RuntimeProfile 和 Agent 内部使用哪些字段，由接收配置的 AstraBox 部署定义。
 
 ### 配置示例
 
 ```bash
 # 便于阅读的表格
-astrabox schema environment
+astrabox schema runtime_profile
 astrabox schema agent
 
 # 用于脚本和嵌套对象的完整字段定义
-astrabox schema environment --output json
+astrabox schema runtime_profile --output json
 astrabox schema agent --output json
 ```
 
@@ -557,15 +557,15 @@ endpoint_provider enum      false     <已经安装的模型连接>
 
 #### `key`
 
-写入 Environment 或 Agent 声明的 YAML 字段名。
+写入 RuntimeProfile 或 Agent 声明的 YAML 字段名。
 
 #### `type`
 
-部署要求的值类型。常见类型包括字符串、多行文本、整数、布尔值、固定选项、字符串列表、对象、对象列表和 Environment 引用。
+部署要求的值类型。常见类型包括字符串、多行文本、整数、布尔值、固定选项、字符串列表、对象、对象列表和 RuntimeProfile 引用。
 
 #### `required`
 
-写入这类资源时是否必须提供该字段。Environment 使用完整替换，因此声明中需要保留所有必填字段。
+写入这类资源时是否必须提供该字段。RuntimeProfile 使用完整替换，因此声明中需要保留所有必填字段。
 
 #### `enum`
 
@@ -573,7 +573,7 @@ endpoint_provider enum      false     <已经安装的模型连接>
 
 #### `item_schema`
 
-结构化对象或列表项的字段定义，用于描述 Environment 网络、模型服务访问、链路追踪和代码仓库等嵌套配置。
+结构化对象或列表项的字段定义，用于描述 RuntimeProfile 网络、模型服务访问、链路追踪和代码仓库等嵌套配置。
 
 #### `path`
 
@@ -697,7 +697,7 @@ default_repo:
 
 对于以上示例，请通过部署的受保护密钥配置，为 AstraBox 服务设置 `PRODUCTION_MODEL_KEY` 和 `APPLICATION_DEPLOY_KEY`。Web 控制台的 Vault 分配是另一种凭证机制。CLI 鉴权信息应放在 `ASTRABOX_TOKEN` 或 OAuth 环境变量中，不写入 `astrabox.yaml`。
 
-Environment 中直接保存了凭证时，读取结果和 `astrabox init --from-deployment` 导出内容会显示掩码。把未修改的掩码重新应用到同一个 Environment，会保留已经保存的凭证。
+RuntimeProfile 中直接保存了凭证时，读取结果和 `astrabox init --from-deployment` 导出内容会显示掩码。把未修改的掩码重新应用到同一个 RuntimeProfile，会保留已经保存的凭证。
 
 在本地准备的文件确实包含明文密钥时，应排除在版本控制之外：
 
@@ -719,7 +719,7 @@ provider_access:
 YAML 注释可以解释某项设置存在的原因：
 
 ```yaml
-environments:
+runtime_profiles:
   - name: restricted
     # 只允许访问模型网关和已配置的远程 MCP Server。
     networking:
@@ -735,7 +735,7 @@ environments:
 
 ```bash
 # 方式 1：查看支持的字段
-astrabox schema environment
+astrabox schema runtime_profile
 astrabox schema agent
 
 # 方式 2：解析、验证并预览，不写入数据
@@ -756,7 +756,7 @@ CLI 会在发送写入请求前检查完整文档，部署随后会按照与 Web
 ```yaml
 version: 1
 
-environments:
+runtime_profiles:
   - name: local
     display_name: 本地环境
     engine_kind: <agent-program-id>
@@ -775,7 +775,7 @@ agents:
   - name: developer
     display_name: 开发助手
     model: <model-name>
-    environment_name: local
+    runtime_profile_name: local
     system: |
       协助处理代码仓库中的任务，并说明每项修改。
     enabled: true
@@ -791,7 +791,7 @@ agents:
     display_name: 代码审查
     description: 审查应用代码仓库中的变更
     model: <model-name>
-    environment_name: default
+    runtime_profile_name: default
     system: |
       检查变更的正确性、测试和运维风险。
     default_repo:
@@ -818,7 +818,7 @@ agents:
 ```yaml
 version: 1
 
-environments:
+runtime_profiles:
   - name: production
     display_name: 生产环境
     description: 网络访问受限的生产 Agent 环境
@@ -847,7 +847,7 @@ agents:
     display_name: 事故复盘
     description: 收集证据并起草事故复盘
     model: <model-name>
-    environment_name: production
+    runtime_profile_name: production
     system: |
       先收集证据，再给出结论。
       列出使用的每项日志、变更和时间线信息。
@@ -858,11 +858,11 @@ agents:
 
 ### 🎯 最小配置示例
 
-**最小 Environment**：
+**最小 RuntimeProfile**：
 
 ```yaml
 version: 1
-environments:
+runtime_profiles:
   - name: default
     engine_kind: <agent-program-id>
 ```
@@ -874,10 +874,10 @@ version: 1
 agents:
   - name: assistant
     model: <model-name>
-    environment_name: default
+    runtime_profile_name: default
 ```
 
-最小 Agent 引用的 Environment 没有在同一份文件中声明时，需要已经存在于目标部署中。
+最小 Agent 引用的 RuntimeProfile 没有在同一份文件中声明时，需要已经存在于目标部署中。
 
 ---
 
@@ -919,14 +919,14 @@ astrabox diff --file config/production.astrabox.yaml
 
 ```bash
 # 查看目标部署的必填字段
-astrabox schema environment
+astrabox schema runtime_profile
 astrabox schema agent
 
 # 导出当前资源的完整配置再修改
 astrabox init --from-deployment --force
 ```
 
-每项资源都需要 `name`。当前 Agent 还需要 `model` 和 `environment_name`，当前 Environment 需要 `engine_kind`。已安装的 Plugin 扩展字段后，仍以目标部署接受的字段为准。
+每项资源都需要 `name`。当前 Agent 还需要 `model` 和 `runtime_profile_name`，当前 RuntimeProfile 需要 `engine_kind`。已安装的 Plugin 扩展字段后，仍以目标部署接受的字段为准。
 
 ### ❓ 占位符或环境变量没有被替换
 
@@ -957,14 +957,14 @@ astrabox apply -f astrabox.yaml
 
 # 3. 读取已经保存的资源
 astrabox get agents <agent-name> --output json
-astrabox get environments <environment-name> --output json
+astrabox get runtime_profiles <environment-name> --output json
 ```
 
 - `unchanged` 表示文件声明的内容已经一致。
 - 从文件中移除资源不会删除它，`apply` 从不执行删除。
-- Agent 使用 `environment_name` 指定的 Environment。
+- Agent 使用 `runtime_profile_name` 指定的 RuntimeProfile。
 - Agent 程序选项只有在所选 Agent 程序支持时才会生效。
-- Environment 中的凭证掩码未修改时，会保留已保存的凭证。
+- RuntimeProfile 中的凭证掩码未修改时，会保留已保存的凭证。
 
 ### ❓ 字段名不兼容
 
@@ -974,7 +974,7 @@ astrabox get environments <environment-name> --output json
 
 ```bash
 astrabox init --from-deployment --force
-astrabox schema environment --output json
+astrabox schema runtime_profile --output json
 astrabox schema agent --output json
 ```
 
@@ -987,18 +987,18 @@ astrabox schema agent --output json
 | 字段 | 必填 | 说明 |
 | :--- | :--- | :--- |
 | `version` | ✅ | 必须为 `1`。 |
-| `environments` | ❌ | Environment 声明列表。 |
+| `environments` | ❌ | RuntimeProfile 声明列表。 |
 | `agents` | ❌ | Agent 声明列表。 |
 
-### Environment 字段
+### RuntimeProfile 字段
 
 | 字段 | 必填 | 说明 |
 | :--- | :--- | :--- |
-| `name` | ✅ | Environment 名称和文件中的标识。 |
+| `name` | ✅ | RuntimeProfile 名称和文件中的标识。 |
 | `display_name` | ❌ | 向用户显示的名称。 |
-| `description` | ❌ | Environment 的用途。 |
+| `description` | ❌ | RuntimeProfile 的用途。 |
 | `engine_kind` | ✅ | Agent 程序。 |
-| `enabled` | ❌ | Environment 是否可以使用。 |
+| `enabled` | ❌ | RuntimeProfile 是否可以使用。 |
 | `sandbox_backend` | ❌ | 沙箱后端。 |
 | `runtime_template_name` | ❌ | 沙箱后端的运行模板。 |
 | `networking` | ❌ | 沙箱出站网络规则。 |
@@ -1029,7 +1029,7 @@ astrabox schema agent --output json
 | `diff_panel` | ❌ | 布尔值；是否显示文件差异面板，不控制文件修改权限。 |
 | `default_repo` | ❌ | 主代码仓库。 |
 | `packages` | ❌ | 引擎原生扩展包，每项带上引擎声明的 `kind`。 |
-| `environment_name` | ✅ | Agent 使用的 Environment。 |
+| `runtime_profile_name` | ✅ | Agent 使用的 RuntimeProfile。 |
 | `exposure_mode` | ❌ | 对话和 MCP 使用方式。 |
 | `idle_hibernate_seconds` | ❌ | 休眠前的空闲时间。 |
 | `prepared_capacity` | ❌ | 同时能在准备运行时上开始的新对话数量，0 到 1000，0 为关闭。创建时省略：能够预热的部署为 1。 |

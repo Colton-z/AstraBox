@@ -17,7 +17,7 @@ import pytest
 from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator.agent.agent_service import AgentService
 from astrabox.persistence.repository.agent_repository import AgentRepository
-from astrabox.persistence.repository.environment_repository import EnvironmentRepository
+from astrabox.persistence.repository.runtime_profile_repository import RuntimeProfileRepository
 
 pytestmark = pytest.mark.usefixtures("database")
 
@@ -40,14 +40,14 @@ PRIVATE = {
 
 
 async def _service() -> tuple[AgentService, AgentRepository]:
-    await EnvironmentRepository().put(
+    await RuntimeProfileRepository().put(
         "env",
         {"engine_kind": "claude_code", "idle_action": "terminate", "networking": {"type": "unrestricted"}},
         updated_by="test",
     )
     repo = AgentRepository()
     for row in (PUBLIC, PRIVATE):
-        await repo.create_agent({**row, "model": "model", "environment_name": "env"})
+        await repo.create_agent({**row, "model": "model", "runtime_profile_name": "env"})
     service = AgentService.__new__(AgentService)  # no runtime/sandbox deps needed here
     service._agent_repo = repo  # type: ignore[attr-defined]
     service.ensure_bootstrap = _noop  # type: ignore[assignment]

@@ -28,7 +28,7 @@ from astrabox.common.utils.api_response import success_response
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.http_headers import build_attachment_headers
 from astrabox.common.utils.time_utils import utcnow_iso
-from astrabox.core.service.orchestrator.environment_schema import get_environment_schema
+from astrabox.core.service.orchestrator.runtime_profile_schema import get_runtime_profile_schema
 from astrabox.core.service.orchestrator.agent_schema import get_agent_schema
 from astrabox.api.routes._shared import _resolve_user, _svc
 from astrabox.deploy.admin_integrations import configured_management_links
@@ -60,7 +60,7 @@ class AdminFormSchema(BaseModel):
     One grammar, two producers:
     :func:`~astrabox.core.service.orchestrator.agent_schema.get_agent_schema`
     and
-    :func:`~astrabox.core.service.orchestrator.environment_schema.get_environment_schema`.
+    :func:`~astrabox.core.service.orchestrator.runtime_profile_schema.get_runtime_profile_schema`.
     ``groups`` and ``fields`` are the form's own vocabulary (key, type, enum,
     default, help), which the console reads and this module does not interpret.
     """
@@ -72,7 +72,7 @@ class AdminFormSchema(BaseModel):
     fields: list[dict[str, Any]]
 
 
-class AdminEnvironmentModels(BaseModel):
+class AdminRuntimeProfileModels(BaseModel):
     """Model ids an environment's provider can offer.
 
     Empty when the provider publishes no authoritative catalog; the console
@@ -84,7 +84,7 @@ class AdminEnvironmentModels(BaseModel):
     models: list[str]
 
 
-class AdminDeletedEnvironment(BaseModel):
+class AdminDeletedRuntimeProfile(BaseModel):
     """The identity of the preset removed by an administrator."""
 
     model_config = ConfigDict(extra="allow")
@@ -150,7 +150,7 @@ class AdminNavigationSummary(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     agents: int
-    environments: int
+    runtime_profiles: int
     sessions: int
 
 
@@ -405,64 +405,64 @@ async def get_agent_schema_endpoint(request: Request):
 
 
 @router.get(
-    "/api/v1/admin/environment-schema",
+    "/api/v1/admin/runtime-profile-schema",
     response_model=ApiEnvelope[AdminFormSchema],
     response_model_exclude_unset=True,
 )
-async def get_environment_schema_endpoint(request: Request):
+async def get_runtime_profile_schema_endpoint(request: Request):
     """Return the authoritative editable schema for the environment form."""
     await _resolve_user(request)
-    return success_response(get_environment_schema())
+    return success_response(get_runtime_profile_schema())
 
 
 @router.get(
-    "/api/v1/admin/environments",
+    "/api/v1/admin/runtime-profiles",
     # An environment preset is a stored document whose fields are the
     # environment schema's, not this route's; the schema itself is served by
-    # `/api/v1/admin/environment-schema`.
+    # `/api/v1/admin/runtime-profile-schema`.
     response_model=ApiEnvelope[list[dict[str, Any]]],
     response_model_exclude_unset=True,
 )
-async def list_admin_environments(request: Request):
+async def list_admin_runtime_profiles(request: Request):
     """List all environment presets (including disabled entries)."""
     user = await _resolve_user(request)
-    result = await _svc().list_environment_configs(user)
+    result = await _svc().list_runtime_profile_configs(user)
     return success_response(result)
 
 
 @router.put(
-    "/api/v1/admin/environments/{name}",
+    "/api/v1/admin/runtime-profiles/{name}",
     response_model=ApiEnvelope[dict[str, Any]],
     response_model_exclude_unset=True,
 )
-async def upsert_admin_environment(
+async def upsert_admin_runtime_profile(
     name: str,
     request: Request,
     payload: dict[str, Any] = Body(...),
 ):
     """Upsert a single environment preset by name."""
     user = await _resolve_user(request)
-    result = await _svc().upsert_environment_config(user, name, payload)
+    result = await _svc().upsert_runtime_profile_config(user, name, payload)
     return success_response(result)
 
 
 @router.delete(
-    "/api/v1/admin/environments/{name}",
-    response_model=ApiEnvelope[AdminDeletedEnvironment],
+    "/api/v1/admin/runtime-profiles/{name}",
+    response_model=ApiEnvelope[AdminDeletedRuntimeProfile],
     response_model_exclude_unset=True,
 )
-async def delete_admin_environment(name: str, request: Request):
+async def delete_admin_runtime_profile(name: str, request: Request):
     """Delete a preset only after checking its Agent and Assistant references."""
     user = await _resolve_user(request)
-    return success_response(await _svc().delete_environment_config(user, name))
+    return success_response(await _svc().delete_runtime_profile_config(user, name))
 
 
 @router.get(
-    "/api/v1/admin/environments/{name}/models",
-    response_model=ApiEnvelope[AdminEnvironmentModels],
+    "/api/v1/admin/runtime-profiles/{name}/models",
+    response_model=ApiEnvelope[AdminRuntimeProfileModels],
     response_model_exclude_unset=True,
 )
-async def list_environment_models(name: str, request: Request):
+async def list_runtime_profile_models(name: str, request: Request):
     """Model ids the console can offer for agents on this environment.
 
     Enumerated by the environment's selected model provider. A provider with
@@ -470,7 +470,7 @@ async def list_environment_models(name: str, request: Request):
     free-text model id.
     """
     await _resolve_user(request)
-    models = await _svc().list_environment_models(name)
+    models = await _svc().list_runtime_profile_models(name)
     return success_response({"models": models})
 
 

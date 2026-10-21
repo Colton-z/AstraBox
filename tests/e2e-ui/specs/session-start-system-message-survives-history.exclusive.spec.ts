@@ -45,7 +45,7 @@ test('SessionStart systemMessage appears once before a turn and after history re
   await api.updateAgent(agentId, {
     name: agent.name,
     model: agent.model,
-    environment_name: agent.environment_name,
+    runtime_profile_name: agent.runtime_profile_name,
     version: agent.version,
     engine_options: {
       sdk_options: {

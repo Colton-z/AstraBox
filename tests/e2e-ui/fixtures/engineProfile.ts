@@ -33,7 +33,7 @@ export interface EngineProfile {
   agent_id: string;
   agent_name: string;
   engine_kind: string;
-  environment_name: string;
+  runtime_profile_name: string;
   model: string;
   /** What this engine can be asked to do at all; a false one is not a gap. */
   contracts: Record<string, boolean>;
@@ -118,7 +118,7 @@ export function engineProfiles(): EngineProfile[] {
   }
   cached = profiles.map((item) => {
     const profile = item as EngineProfile;
-    for (const key of ['agent_id', 'agent_name', 'engine_kind', 'environment_name', 'model']) {
+    for (const key of ['agent_id', 'agent_name', 'engine_kind', 'runtime_profile_name', 'model']) {
       text(profile[key], key);
     }
     for (const key of ['contracts', 'decisions', 'modes', 'tools']) {

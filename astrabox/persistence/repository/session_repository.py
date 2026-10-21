@@ -34,7 +34,7 @@ from sqlalchemy.sql import Executable, Select
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.time_utils import utcnow_iso
-from astrabox.config.settings import get_settings, validate_execution_target
+from astrabox.config.settings import get_settings, validate_environment_name
 from astrabox.core.model import SessionState
 from astrabox.persistence.repository.keyset import InvalidListCursor
 from astrabox.persistence.sql import (
@@ -234,15 +234,15 @@ def _workspace_columns(payload: Mapping[str, Any]) -> dict[str, Any]:
 class SessionRepository:
     """Session rows. Reads hide soft-deleted rows unless they say otherwise."""
 
-    def __init__(self, *, execution_target: str | None = None) -> None:
-        self.execution_target = validate_execution_target(
-            get_settings().execution_target if execution_target is None else execution_target
+    def __init__(self, *, environment_name: str | None = None) -> None:
+        self.environment_name = validate_environment_name(
+            get_settings().environment_name if environment_name is None else environment_name
         )
 
     def _runtime_owner(self, session_id: str) -> ColumnElement[bool]:
         return and_(
             _SESSIONS.c.session_id == session_id,
-            _SESSIONS.c.execution_target == self.execution_target,
+            _SESSIONS.c.environment_name == self.environment_name,
         )
 
     async def create_session(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -252,9 +252,9 @@ class SessionRepository:
         derived from an idempotency key when the caller has one.
         """
         values = dict(payload)
-        if "execution_target" in values and values["execution_target"] != self.execution_target:
-            raise ValueError("a Session must be created in this repository's execution target")
-        values["execution_target"] = self.execution_target
+        if "environment_name" in values and values["environment_name"] != self.environment_name:
+            raise ValueError("a Session must be created in this repository's Environment")
+        values["environment_name"] = self.environment_name
         vault_ids = [str(v) for v in values.pop("vault_ids", None) or [] if str(v or "").strip()]
         workspace = _workspace_columns(values)
         values.pop("workspace_ref", None)
@@ -266,8 +266,8 @@ class SessionRepository:
             if stored.get("agent_id"):
                 await insert_if_absent(
                     conn, AgentRuntime.__table__,
-                    {"agent_id": stored["agent_id"], "execution_target": self.execution_target},
-                    index_columns=["agent_id", "execution_target"],
+                    {"agent_id": stored["agent_id"], "environment_name": self.environment_name},
+                    index_columns=["agent_id", "environment_name"],
                 )
             await conn.execute(insert(_SESSIONS).values(**stored))
             if vault_ids:
@@ -286,12 +286,12 @@ class SessionRepository:
         created = await self.get_session_including_deleted(session_id)
         if created is None:
             raise RuntimeError(f"session {session_id!r} was not stored")
-        if created["execution_target"] != self.execution_target:
+        if created["environment_name"] != self.environment_name:
             raise APIError(
-                code="EXECUTION_TARGET_MISMATCH", status_code=409,
-                message="existing Session belongs to a different execution target",
-                data={"execution_target": created["execution_target"],
-                      "server_execution_target": self.execution_target},
+                code="ENVIRONMENT_MISMATCH", status_code=409,
+                message="existing Session belongs to a different Environment",
+                data={"environment_name": created["environment_name"],
+                      "server_environment_name": self.environment_name},
             )
         return created
 
@@ -339,7 +339,7 @@ class SessionRepository:
                 _selected()
                 .where(
                     _live(),
-                    _SESSIONS.c.execution_target == self.execution_target,
+                    _SESSIONS.c.environment_name == self.environment_name,
                     or_(
                         and_(
                             _SESSIONS.c.sandbox_id == target,
@@ -380,8 +380,8 @@ class SessionRepository:
         current = await self.get_session(session_id)
         if current is None:
             raise RuntimeError(f"cannot record startup allocation: session {session_id!r} is missing")
-        if current["execution_target"] != self.execution_target:
-            raise ValueError("startup allocation belongs to a different execution target")
+        if current["environment_name"] != self.environment_name:
+            raise ValueError("startup allocation belongs to a different Environment")
         if owner_expected and any(current.get(key) != value for key, value in owner_expected.items()):
             raise RuntimeError(f"startup allocation owner changed: {session_id!r}")
         existing = current.get("startup_allocation")
@@ -398,7 +398,7 @@ class SessionRepository:
         recorded = await self.compare_and_update_session(
             session_id,
             expected={**(owner_expected or {}), "startup_allocation": existing,
-                      "execution_target": self.execution_target},
+                      "environment_name": self.environment_name},
             updates={"startup_allocation": normalized},
         )
         if recorded:
@@ -474,7 +474,7 @@ class SessionRepository:
     ) -> list[dict[str, Any]]:
         """One page, in ``session_id`` order, of rows with an active or retained allocation."""
         conditions: list[ColumnElement[bool]] = [
-            _SESSIONS.c.execution_target == self.execution_target,
+            _SESSIONS.c.environment_name == self.environment_name,
             or_(
                 _SESSIONS.c.startup_allocation.isnot(None),
                 _SESSIONS.c.retained_startup_allocations != json_literal([]),
@@ -502,7 +502,7 @@ class SessionRepository:
         return await _many(
             _selected().where(
                 _SESSIONS.c.startup_allocation["sandbox_id"].as_string() == target,
-                _SESSIONS.c.execution_target == self.execution_target,
+                _SESSIONS.c.environment_name == self.environment_name,
             )
         )
 
@@ -521,7 +521,7 @@ class SessionRepository:
             _selected()
             .where(
                 _SESSIONS.c.sandbox_id == target, _live(),
-                _SESSIONS.c.execution_target == self.execution_target,
+                _SESSIONS.c.environment_name == self.environment_name,
             )
             .order_by(_SESSIONS.c.updated_at.desc())
         )
@@ -538,7 +538,7 @@ class SessionRepository:
         """
         now = from_iso(now_iso)
         conditions: list[ColumnElement[bool]] = [
-            _SESSIONS.c.execution_target == self.execution_target,
+            _SESSIONS.c.environment_name == self.environment_name,
             _bound_and_open(),
             or_(
                 _SESSIONS.c.expires_at.is_(None),
@@ -568,7 +568,7 @@ class SessionRepository:
         """
         now = from_iso(now_iso)
         conditions: list[ColumnElement[bool]] = [
-            _SESSIONS.c.execution_target == self.execution_target,
+            _SESSIONS.c.environment_name == self.environment_name,
             _bound_and_open(),
             _SESSIONS.c.expires_at > now,
             _SESSIONS.c.sandbox_parked_at.is_(None),
@@ -724,7 +724,7 @@ class SessionRepository:
     ) -> list[dict[str, Any]]:
         """One page, in ``session_id`` order, of sessions whose startup was interrupted."""
         conditions: list[ColumnElement[bool]] = [
-            _SESSIONS.c.execution_target == self.execution_target,
+            _SESSIONS.c.environment_name == self.environment_name,
             _live(),
             _SESSIONS.c.state == SessionState.CREATING.value,
         ]
@@ -782,7 +782,7 @@ class SessionRepository:
     ) -> list[dict[str, Any]]:
         statement = select(
             _SESSIONS.c.session_id,
-            _SESSIONS.c.execution_target,
+            _SESSIONS.c.environment_name,
             _SESSIONS.c.agent_id,
             _SESSIONS.c.assistant_id,
             _SESSIONS.c.owner_id,
@@ -810,8 +810,8 @@ class SessionRepository:
 
         With ``notify``, the same transaction enqueues that session's notice.
         """
-        if "execution_target" in updates:
-            raise ValueError("a Session's execution target is immutable")
+        if "environment_name" in updates:
+            raise ValueError("a Session's Environment is immutable")
         values = _column_values(updates)
         if touch_updated_at:
             values["updated_at"] = func.now()
@@ -842,8 +842,8 @@ class SessionRepository:
         notice from the same transaction, so the notice exists only if the
         change committed; with no ``updates`` it announces the row as it is.
         """
-        if "execution_target" in updates:
-            raise ValueError("a Session's execution target is immutable")
+        if "environment_name" in updates:
+            raise ValueError("a Session's Environment is immutable")
         values = _column_values(updates)
         if touch_updated_at:
             values["updated_at"] = func.now()
@@ -876,8 +876,8 @@ class SessionRepository:
         expected: dict[str, Any] | None = None, updates: dict[str, Any] | None = None,
     ) -> bool:
         """Retire bindings, mark deleted and remove routes while expected fields match."""
-        if updates and "execution_target" in updates:
-            raise ValueError("a Session's execution target is immutable")
+        if updates and "environment_name" in updates:
+            raise ValueError("a Session's Environment is immutable")
         conditions = [_SESSIONS.c.session_id == session_id]
         conditions.extend(_condition(key, value) for key, value in (expected or {}).items())
         values = _column_values(updates or {})

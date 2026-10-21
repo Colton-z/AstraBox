@@ -29,7 +29,7 @@ from mcp.client.auth.utils import (
 from mcp.shared.auth import OAuthMetadata, ProtectedResourceMetadata
 
 from astrabox.common.utils.errors import APIError
-from astrabox.core.service.orchestrator.environment_networking import (
+from astrabox.core.service.orchestrator.runtime_profile_networking import (
     non_public_address_reason,
 )
 

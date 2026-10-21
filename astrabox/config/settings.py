@@ -53,10 +53,13 @@ _REMOVED_LOCAL_SANDBOX_BACKEND = "direct_docker"
 _CURRENT_LOCAL_SANDBOX_BACKEND = "open_sandbox"
 
 
-def validate_execution_target(value: str) -> str:
-    """An execution target is a stable, unpadded database key."""
-    if not value or value != value.strip() or len(value) > 128:
-        raise ValueError("execution_target must be a nonempty, unpadded key of at most 128 characters")
+def validate_environment_name(value: str) -> str:
+    """A stable Environment key accepted by native application and resource names."""
+    if re.fullmatch(r"[a-z0-9][a-z0-9_-]{2,29}", value) is None:
+        raise ValueError(
+            "environment_name requires 3–30 lowercase letters, digits, underscores or hyphens, "
+            "starting with a letter or digit"
+        )
     return value
 
 
@@ -452,27 +455,27 @@ class AstraBoxSettings(BaseSettings):
     )
 
     def resolved_state_dir(self) -> Path:
-        """Return the state root with a configured home-directory alias expanded."""
+        """This deployment's private state, retained in place across upgrades."""
         return self.state_dir.expanduser()
 
     # --- persistence -------------------------------------------------------
-    execution_target: str = Field(
-        default="astrabox", min_length=1, max_length=128,
-        description="Stable ownership key for this process's sandbox runtimes.",
+    environment_name: str = Field(
+        default="astrabox", min_length=3, max_length=30,
+        description="Immutable Environment owning this process's data, access and runtime resources.",
     )
 
-    @field_validator("execution_target")
+    @field_validator("environment_name")
     @classmethod
-    def _validate_execution_target(cls, value: str) -> str:
-        return validate_execution_target(value)
+    def _validate_environment_name(cls, value: str) -> str:
+        return validate_environment_name(value)
 
     agent_prewarm_enabled: bool = Field(
         default=True,
-        description="Use prepared Agent capacity in this execution target; false selects cold admission.",
+        description="Use prepared Agent capacity in this Environment; false selects cold admission.",
     )
     background_execution_enabled: bool = Field(
         default=True,
-        description="Run channel and scheduler workers in this execution target.",
+        description="Run channel and scheduler workers in this Environment.",
     )
 
     scheduler_provider: str = Field(

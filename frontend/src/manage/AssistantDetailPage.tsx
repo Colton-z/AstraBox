@@ -45,7 +45,7 @@ import {
   assistantStateTone,
   assistantWakeable,
   formatDateTime,
-  loadAssistantEnvironments,
+  loadAssistantRuntimeProfiles,
 } from './assistantConfig';
 import {
   assistantExtensionUpdate,
@@ -54,7 +54,7 @@ import {
   buildAssistantExtensionSection,
   type AssistantEditDraft,
 } from './assistantEditConfig';
-import type { EnvironmentConfig } from '@/types';
+import type { RuntimeProfileConfig } from '@/types';
 import { keepsLastRead, useKeepCurrent, type ReloadContext } from '@/hooks/useKeepCurrent';
 import { useFrontendReleaseHold } from '@/hooks/useFrontendReleaseHold';
 import { useExtensionProvider } from '@/hooks/useExtensionProvider';
@@ -65,7 +65,7 @@ const draftRecordOf = (v: unknown) => (v ?? null) as Record<string, unknown> | n
 /**
  * One Assistant, on its own page.
  *
- * Same shape as the Environment and Agent records (docs/frontend-design.md §3):
+ * Same shape as the RuntimeProfile and Agent records (docs/frontend-design.md §3):
  * the list hands the record over, each group of mutable fields is a card that
  * owns its save (§4), and the read-only facts the deployment reports —
  * workspace state, the sandbox it currently holds, when it last changed — sit
@@ -95,12 +95,12 @@ export default function AssistantDetailPage() {
   const [invalidKeys, setInvalidKeys] = useState<Set<string>>(new Set());
   const savedTimer = useRef<number | null>(null);
 
-  // The Assistant's Environment, for what its program lets an owner add.
-  const [environments, setEnvironments] = useState<EnvironmentConfig[]>([]);
+  // The Assistant's RuntimeProfile, for what its program lets an owner add.
+  const [runtime_profiles, setRuntimeProfiles] = useState<RuntimeProfileConfig[]>([]);
   useEffect(() => {
-    void loadAssistantEnvironments().then(setEnvironments, () => setEnvironments([]));
+    void loadAssistantRuntimeProfiles().then(setRuntimeProfiles, () => setRuntimeProfiles([]));
   }, []);
-  const environment = environments.find((candidate) => candidate.name === record?.environment_name);
+  const environment = runtime_profiles.find((candidate) => candidate.name === record?.runtime_profile_name);
 
   // The deployment catalog's MCP servers and Skills, as on an Agent.
   const {
@@ -403,8 +403,8 @@ export default function AssistantDetailPage() {
               are reported here rather than offered as fields nobody can change. */}
           <ConsoleFact label={t('common:engine')} value={assistantEngineLabel(record)} />
           <ConsoleFact
-            label={t('manage:common_fields.environment')}
-            value={record.environment_name || '—'}
+            label={t('manage:common_fields.runtime_profile')}
+            value={record.runtime_profile_name || '—'}
           />
           <ConsoleFact
             label={t('manage:assistants.field_current_sandbox')}

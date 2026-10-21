@@ -44,11 +44,11 @@ test('an Assistant keeps its memory, its own skill and its scheduled job on a ne
   const skillName = `e2e-skill-${id}`;
   const skillMarker = `SKILL_BODY_${id}`;
   const jobName = `e2e-job-${id}`;
-  const environmentName = await api.assistantEnvironmentName();
+  const runtimeProfileName = await api.assistantEnvironmentName();
   const assistant = await api.createAssistant({
     display_name: `__e2e_assistant_profile_${id}`,
-    environment_name: environmentName,
-    model_config_override: { model_name: await api.assistantModelName(environmentName) },
+    runtime_profile_name: runtimeProfileName,
+    model_config_override: { model_name: await api.assistantModelName(runtimeProfileName) },
   });
   assistantId = String(assistant.assistant_id || '');
   const firstBox = String((await api.waitForWorkspaceReady(assistantId, 60_000)).current_sandbox_id || '');

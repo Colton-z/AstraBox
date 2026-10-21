@@ -52,7 +52,8 @@ import AgentCreatePage from './AgentCreatePage';
 import DeploymentCreatePage from './DeploymentCreatePage';
 import AssistantCreatePage from './AssistantCreatePage';
 import AssistantDefaultsPage from './AssistantDefaultsPage';
-import EnvironmentCreatePage from './EnvironmentCreatePage';
+import EnvironmentPage from './EnvironmentPage';
+import RuntimeProfileCreatePage from './RuntimeProfileCreatePage';
 import AgentDetailPage from './AgentDetailPage';
 import DeploymentsListPage from './DeploymentsListPage';
 import McpTokensPage from './McpTokensPage';
@@ -62,8 +63,8 @@ import AssistantDetailPage from './AssistantDetailPage';
 import SessionsListPage from './SessionsListPage';
 import SessionDetailPage from './SessionDetailPage';
 import AgentSessionsPage from './AgentSessionsPage';
-import EnvironmentsListPage from './EnvironmentsListPage';
-import EnvironmentDetailPage from './EnvironmentDetailPage';
+import RuntimeProfilesListPage from './RuntimeProfilesListPage';
+import RuntimeProfileDetailPage from './RuntimeProfileDetailPage';
 import CredentialsListPage from './CredentialsListPage';
 import CredentialVaultPage from './CredentialVaultPage';
 import ConnectorsPage from './ConnectorsPage';
@@ -79,7 +80,7 @@ import {
   type ManageNavCount,
 } from './navCounts';
 
-type NavCounts = { agents?: number; sessions?: number; environments?: number };
+type NavCounts = { agents?: number; sessions?: number; runtime_profiles?: number };
 
 /**
  * The rail, grouped by what the reader came to do.
@@ -120,7 +121,8 @@ const NAV_GROUPS: { titleKey: string; items: NavItem[] }[] = [
       { to: '/manage/agent-categories', labelKey: 'manage:nav.agent_categories', icon: Shapes, match: '/manage/agent-categories', adminOnly: true },
       { to: '/manage/assistants', labelKey: 'manage:nav.assistants', icon: Users, match: '/manage/assistants' },
       { to: '/manage/assistant-defaults', labelKey: 'manage:nav.assistant_defaults', icon: SlidersHorizontal, match: '/manage/assistant-defaults', adminOnly: true },
-      { to: '/manage/environments', labelKey: 'manage:nav.environments', icon: Box, match: '/manage/environments', count: 'environments' as const, adminOnly: true },
+      { to: '/manage/environment', labelKey: 'manage:nav.environment', icon: Boxes, match: '/manage/environment', adminOnly: true },
+      { to: '/manage/runtime-profiles', labelKey: 'manage:nav.runtime_profiles', icon: Box, match: '/manage/runtime-profiles', count: 'runtime_profiles' as const, adminOnly: true },
       { to: '/manage/credentials', labelKey: 'manage:nav.credentials', icon: KeyRound, match: '/manage/credentials', adminOnly: true },
       { to: '/manage/connectors', labelKey: 'manage:nav.connectors', icon: Plug, match: '/manage/connectors', adminOnly: true },
       { to: '/manage/deployments', labelKey: 'manage:nav.deployments', icon: Boxes, match: '/manage/deployments' },
@@ -173,7 +175,7 @@ export function ManageSidebar() {
   // rows. Inactive collections use one count-only summary instead of loading
   // three catalogs (and one otherwise unused Session row) on every shell mount.
   const agents = useSWR<ManageNavCount>(MANAGE_NAV_COUNT_KEYS.agents, null);
-  const environments = useSWR<ManageNavCount>(MANAGE_NAV_COUNT_KEYS.environments, null);
+  const runtime_profiles = useSWR<ManageNavCount>(MANAGE_NAV_COUNT_KEYS.runtime_profiles, null);
   const sessions = useSWR<ManageNavCount>(MANAGE_NAV_COUNT_KEYS.sessions, null);
   // SWR retains the last totals during failed background revalidation.
   const inactive = isAdmin ? summary.data : undefined;
@@ -181,9 +183,9 @@ export function ManageSidebar() {
     agents: pathname === '/manage/agents'
       ? agents.error ? undefined : agents.data ?? undefined
       : inactive?.agents,
-    environments: pathname === '/manage/environments'
-      ? environments.error ? undefined : environments.data ?? undefined
-      : inactive?.environments,
+    runtime_profiles: pathname === '/manage/runtime-profiles'
+      ? runtime_profiles.error ? undefined : runtime_profiles.data ?? undefined
+      : inactive?.runtime_profiles,
     sessions: pathname === '/manage/sessions'
       ? sessions.error ? undefined : sessions.data ?? undefined
       : inactive?.sessions,
@@ -342,13 +344,14 @@ export default function ManageApp() {
           <Route path="assistants/new" element={<AssistantCreatePage />} />
           <Route path="assistants/:assistantId" element={<AssistantDetailPage />} />
           <Route path="assistant-defaults" element={<AssistantDefaultsPage />} />
+          <Route path="environment" element={<EnvironmentPage />} />
           <Route path="sessions" element={<SessionsListPage />} />
           <Route path="sessions/:sessionId" element={<SessionDetailPage />} />
           <Route path="sandboxes" element={<SandboxesListPage />} />
           <Route path="sandboxes/:sandboxId" element={<SandboxDetailPage />} />
-          <Route path="environments" element={<EnvironmentsListPage />} />
-          <Route path="environments/new" element={<EnvironmentCreatePage />} />
-          <Route path="environments/:name" element={<EnvironmentDetailPage />} />
+          <Route path="runtime-profiles" element={<RuntimeProfilesListPage />} />
+          <Route path="runtime-profiles/new" element={<RuntimeProfileCreatePage />} />
+          <Route path="runtime-profiles/:name" element={<RuntimeProfileDetailPage />} />
           <Route path="credentials" element={<CredentialsListPage />} />
           <Route path="credentials/:vaultId" element={<CredentialVaultPage />} />
           <Route path="connectors" element={<ConnectorsPage />} />

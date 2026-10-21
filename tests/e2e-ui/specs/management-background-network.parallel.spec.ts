@@ -292,27 +292,27 @@ test('an idle Agents list keeps its rows and rail count through a lost network, 
 
   const api = new AstraApi(request);
 
-  // ── setup: one Agent this spec owns, on the matrix Agent's Environment ────
+  // ── setup: one Agent this spec owns, on the matrix Agent's RuntimeProfile ────
   const seeded = await api.defaultAgent();
-  const environmentName = String(seeded.environment_name || '').trim();
-  expect(environmentName, 'the matrix-selected Agent must name an Environment').not.toEqual('');
-  // The model is taken from the catalogue the Environment offers, not from the
+  const runtimeProfileName = String(seeded.runtime_profile_name || '').trim();
+  expect(runtimeProfileName, 'the matrix-selected Agent must name a RuntimeProfile').not.toEqual('');
+  // The model is taken from the catalogue the RuntimeProfile offers, not from the
   // seeded Agent's pin: a pin the gateway does not enumerate is refused on
   // create, and the list would then have nothing of this spec's to show.
-  const offered = await api.listEnvironmentModels(environmentName);
+  const offered = await api.listEnvironmentModels(runtimeProfileName);
   const seededModel = String(seeded.model || '').trim();
   const model = offered.includes(seededModel)
     ? seededModel
     : (offered.find((candidate) => candidate && !candidate.includes('*')) ?? '');
   expect(
     model,
-    `Environment ${JSON.stringify(environmentName)} offers no concrete model; it returned: `
+    `RuntimeProfile ${JSON.stringify(runtimeProfileName)} offers no concrete model; it returned: `
       + `${offered.join(', ') || '(nothing)'}`,
   ).not.toEqual('');
   const created = await api.createAgent({
     name: AGENT_NAME,
     model,
-    environment_name: environmentName,
+    runtime_profile_name: runtimeProfileName,
     prepared_capacity: 0,
     description: DESCRIPTION_BEFORE,
   });
@@ -424,7 +424,7 @@ test('an idle Agents list keeps its rows and rail count through a lost network, 
     await api.updateAgent(createdAgentId, {
       name: AGENT_NAME,
       model,
-      environment_name: environmentName,
+      runtime_profile_name: runtimeProfileName,
       prepared_capacity: 0,
       description: DESCRIPTION_AFTER,
       version: Number(latest.version || 1),

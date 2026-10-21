@@ -55,7 +55,19 @@ class RelationalStatements(Protocol):
 
 
 class RelationalPersistenceProvider(Protocol):
-    """The physical database services required by shared relational repositories."""
+    """Native storage and coordination isolated to one stable Environment.
+
+    Construction requires ``database_url`` and ``environment_name``. Every
+    repository connection, schema upgrade, runtime lock and notice is bound to
+    that Environment. One business database belongs to one Environment; startup
+    refuses a different persisted owner. Deployments supply separate database
+    roles and credentials rather than relying on query filters for isolation.
+    """
+
+    @property
+    def environment_name(self) -> str:
+        """The immutable Environment this provider instance serves."""
+        ...
 
     @property
     def database_url(self) -> str:

@@ -48,13 +48,13 @@ test('an Assistant conversation recovers when opening it is the first action aft
 }) => {
   const api = new AstraApi(request);
   const runId = new Date().toISOString().replace(/[:.]/g, '-');
-  const environmentName = await api.assistantEnvironmentName();
-  expect(environmentName, 'an assistant environment must exist').not.toEqual('');
-  const assistantModel = await api.assistantModelName(environmentName);
+  const runtimeProfileName = await api.assistantEnvironmentName();
+  expect(runtimeProfileName, 'an assistant environment must exist').not.toEqual('');
+  const assistantModel = await api.assistantModelName(runtimeProfileName);
 
   const assistant = await api.createAssistant({
     display_name: `__e2e_assistant_oob_open_${runId}`,
-    environment_name: environmentName,
+    runtime_profile_name: runtimeProfileName,
     model_config_override: { model_name: assistantModel },
   });
   assistantId = String(assistant.assistant_id || '');

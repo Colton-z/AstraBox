@@ -14,7 +14,7 @@ const api = vi.hoisted(() => ({
   adminListIntegrations: vi.fn(),
   adminNavigationSummary: vi.fn(),
   adminListSessions: vi.fn(),
-  listAdminEnvironments: vi.fn(),
+  listAdminRuntimeProfiles: vi.fn(),
   listAgents: vi.fn(),
   listAgentsPage: vi.fn(),
 }));
@@ -43,7 +43,7 @@ beforeEach(() => {
   for (const mock of Object.values(api)) mock.mockReset();
   api.getCurrentUser.mockResolvedValue({ user_id: 'admin', is_admin: true });
   api.adminListIntegrations.mockResolvedValue({ services: [] });
-  api.adminNavigationSummary.mockResolvedValue({ agents: 3, environments: 4, sessions: 5 });
+  api.adminNavigationSummary.mockResolvedValue({ agents: 3, runtime_profiles: 4, sessions: 5 });
 });
 
 function renderSidebar(pathname: string, fallback: Record<string, number> = {}, withGateway = false) {
@@ -71,12 +71,12 @@ describe('ManageSidebar collection counts', () => {
     renderSidebar('/manage/credentials');
 
     await waitFor(() => expect(badgeFor('Agents')?.textContent).toBe('3'));
-    expect(badgeFor('Environments')?.textContent).toBe('4');
+    expect(badgeFor('RuntimeProfiles')?.textContent).toBe('4');
     expect(badgeFor('Sessions')?.textContent).toBe('5');
     expect(api.adminNavigationSummary).toHaveBeenCalledTimes(1);
     expect(api.listAgents).not.toHaveBeenCalled();
     expect(api.listAgentsPage).not.toHaveBeenCalled();
-    expect(api.listAdminEnvironments).not.toHaveBeenCalled();
+    expect(api.listAdminRuntimeProfiles).not.toHaveBeenCalled();
     expect(api.adminListSessions).not.toHaveBeenCalled();
   });
 

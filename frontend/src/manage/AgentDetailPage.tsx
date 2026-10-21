@@ -11,8 +11,8 @@ import {
   getAgentExtensions,
   getAgentSchema,
   listAgentCategories,
-  listAgentEnvironmentModels,
-  listAgentEnvironments,
+  listAgentRuntimeProfileModels,
+  listAgentRuntimeProfiles,
   listAgentTags,
   listAgents,
   setAgentAccess,
@@ -24,7 +24,7 @@ import type {
   AgentConfig,
   AgentDraft,
   AgentExtensionCatalog,
-  EnvironmentConfig,
+  RuntimeProfileConfig,
   FormSchema,
 } from '@/types';
 
@@ -113,7 +113,7 @@ export default function AgentDetailPage() {
     retry: retryExtensionProvider,
   } = useExtensionProvider();
 
-  const [environments, setEnvironments] = useState<EnvironmentConfig[]>([]);
+  const [runtime_profiles, setRuntimeProfiles] = useState<RuntimeProfileConfig[]>([]);
   const [categories, setCategories] = useState<AgentCategory[]>([]);
   const [tagSuggestions, setTagSuggestions] = useState<string[]>([]);
   const [models, setModels] = useState<string[]>([]);
@@ -129,7 +129,7 @@ export default function AgentDetailPage() {
       const [list, sch, envs, cats, tags] = await Promise.all([
         listAgents(),
         getAgentSchema().catch(() => null),
-        listAgentEnvironments().catch(() => [] as EnvironmentConfig[]),
+        listAgentRuntimeProfiles().catch(() => [] as RuntimeProfileConfig[]),
         listAgentCategories(),
         listAgentTags(),
       ]);
@@ -137,7 +137,7 @@ export default function AgentDetailPage() {
       const access = found?.can_manage ? await getAgentAccess(found.agent_id) : null;
       setRecord(found && access ? { ...found, ...access } : found);
       setSchema(sch);
-      setEnvironments(envs);
+      setRuntimeProfiles(envs);
       setCategories(cats);
       setTagSuggestions(tags.map((entry) => entry.tag));
       setError(found ? '' : t('manage:agents.not_found', { name: agentId }));
@@ -152,16 +152,16 @@ export default function AgentDetailPage() {
     void load();
   }, [load]);
 
-  const environmentName = String(draft?.environment_name || '').trim();
+  const runtimeProfileName = String(draft?.runtime_profile_name || '').trim();
   useEffect(() => {
     let current = true;
-    if (!environmentName) {
+    if (!runtimeProfileName) {
       setModels([]);
       return () => {
         current = false;
       };
     }
-    void listAgentEnvironmentModels(environmentName)
+    void listAgentRuntimeProfileModels(runtimeProfileName)
       .then((items) => {
         if (current) setModels(items);
       })
@@ -171,7 +171,7 @@ export default function AgentDetailPage() {
     return () => {
       current = false;
     };
-  }, [environmentName]);
+  }, [runtimeProfileName]);
 
   useEffect(
     () => () => {
@@ -196,15 +196,15 @@ export default function AgentDetailPage() {
     () =>
       buildAgentEditSections(schema, draft as Record<string, unknown> | null, {
         nameEditable: false,
-        environments,
-        engineOptionsSchema: environments.find((e) => e.name === environmentName)
+        runtime_profiles,
+        engineOptionsSchema: runtime_profiles.find((e) => e.name === runtimeProfileName)
           ?.engine_options_schema,
         models,
         catalogName: extensionProvider?.display_name,
         categories,
         tagSuggestions,
       }).sections,
-    [schema, draft, environments, models, extensionProvider, categories, tagSuggestions, t],
+    [schema, draft, runtime_profiles, models, extensionProvider, categories, tagSuggestions, t],
   );
 
   const isDirty = (fields: EditFieldSpec[]) =>
@@ -479,8 +479,8 @@ export default function AgentDetailPage() {
         <ConsoleFactRail>
           <ConsoleFact label={t('common:model')} value={agentModel(record) || '—'} />
           <ConsoleFact
-            label={t('manage:common_fields.environment')}
-            value={String(record.environment_name || '—')}
+            label={t('manage:common_fields.runtime_profile')}
+            value={String(record.runtime_profile_name || '—')}
           />
           <ConsoleFact
             label={t('common:updated_at')}

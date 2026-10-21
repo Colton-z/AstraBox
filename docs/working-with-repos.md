@@ -74,12 +74,12 @@ made available:
   HTTPS URL never receives a deployment-wide token. Use an `http_basic`
   Credential assigned to the Agent; the sandbox's egress proxy adds it outside
   the sandbox. See [Authenticate with Vaults](credentials.md#2-add-a-credential).
-- **Repository hosts in a limited Environment.** Plugin and Skill Git hosts join
-  a limited Environment's allowed hosts only when they are public internet
-  addresses or the Environment already lists them. A private, loopback or
+- **Repository hosts in a limited RuntimeProfile.** Plugin and Skill Git hosts join
+  a limited RuntimeProfile's allowed hosts only when they are public internet
+  addresses or the RuntimeProfile already lists them. A private, loopback or
   link-local address, or a name that resolves to one or does not resolve, is
   refused with `AGENT_EGRESS_HOST_REFUSED` (403). To use a Git server on your
-  own network, an administrator adds its host, IP or CIDR to the Environment's
+  own network, an administrator adds its host, IP or CIDR to the RuntimeProfile's
   allowed hosts.
 
 ## Configure a GitHub repository on an Agent
@@ -170,7 +170,7 @@ A fine-grained PAT can be scoped to specific repositories. Prefer short-lived, t
 1. Keep private keys and tokens out of Agent JSON, logs, screenshots, and version control. Store only the logical secret name on the Agent.
 2. Grant a deploy key write access only when the Agent must push. Revoke or rotate it after unintended disclosure.
 3. Use separate credentials for development and production so audit trails remain meaningful.
-4. Allow only the required Git hosts in a restricted Environment's network
+4. Allow only the required Git hosts in a restricted RuntimeProfile's network
    policy. The built-in SSH clone accepts the Git server's presented host key
    without a known-hosts check, so use a trusted network path and
    repository-scoped credentials.
@@ -236,7 +236,7 @@ A: No. Unless the Agent runs `git push`, edits remain in the Session workspace. 
 
 **Q: Is GitHub Enterprise Server supported?**
 
-A: Use a reachable SSH repository URL and a credential authorized for that server. Allow its hostname in the Environment network policy and verify Git and API access from the production sandbox topology.
+A: Use a reachable SSH repository URL and a credential authorized for that server. Allow its hostname in the RuntimeProfile network policy and verify Git and API access from the production sandbox topology.
 
 ## Next steps
 

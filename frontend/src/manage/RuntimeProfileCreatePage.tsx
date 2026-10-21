@@ -5,11 +5,11 @@ import { useSWRConfig } from 'swr';
 
 import {
   adminDescribeSandboxIdleAction,
-  getEnvironmentSchema,
-  listAdminEnvironments,
-  upsertAdminEnvironment,
+  getRuntimeProfileSchema,
+  listAdminRuntimeProfiles,
+  upsertAdminRuntimeProfile,
 } from '@/api';
-import type { EnvironmentConfig, FormSchema } from '@/types';
+import type { RuntimeProfileConfig, FormSchema } from '@/types';
 
 import {
   ConsoleCreatePage,
@@ -18,24 +18,24 @@ import {
   ConsoleRecordPage,
   useRecordCrumb,
 } from './console';
-import { buildEnvironmentDraft } from './environmentConfig';
-import { buildEnvEditSections } from './environmentEditConfig';
+import { buildRuntimeProfileDraft } from './runtimeProfileConfig';
+import { buildEnvEditSections } from './runtimeProfileEditConfig';
 import { MANAGE_NAV_COUNT_KEYS } from './navCounts';
 
 /**
- * A new Environment, on its own page — the same fields the record page reads
+ * A new RuntimeProfile, on its own page — the same fields the record page reads
  * (§4), with the name editable because that is what is being decided here.
  *
  * The name is also the environment's key, so a collision is refused before the
- * write rather than after: `upsertAdminEnvironment` would silently overwrite
+ * write rather than after: `upsertAdminRuntimeProfile` would silently overwrite
  * the one already holding that name.
  */
-export default function EnvironmentCreatePage() {
+export default function RuntimeProfileCreatePage() {
   const navigate = useNavigate();
   const { t } = useTranslation();
   const { mutate } = useSWRConfig();
 
-  const [draft, setDraft] = useState<EnvironmentConfig | null>(null);
+  const [draft, setDraft] = useState<RuntimeProfileConfig | null>(null);
   const [schema, setSchema] = useState<FormSchema | null>(null);
   const [taken, setTaken] = useState<string[]>([]);
   const [idleActions, setIdleActions] = useState<string[] | null>(null);
@@ -45,7 +45,7 @@ export default function EnvironmentCreatePage() {
   const [error, setError] = useState('');
   const [invalidKeys, setInvalidKeys] = useState<Set<string>>(new Set());
 
-  useRecordCrumb(t('manage:environments.create_title'));
+  useRecordCrumb(t('manage:runtime_profiles.create_title'));
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -54,19 +54,19 @@ export default function EnvironmentCreatePage() {
       // The schema is the form, and the existing names are the whole of the
       // collision guard below. An unknown name list is not an empty one: an
       // empty one clears every name, so the create reaches
-      // `upsertAdminEnvironment` and overwrites whichever environment already
+      // `upsertAdminRuntimeProfile` and overwrites whichever environment already
       // holds it — which is why neither failure is absorbed here. The two
       // The idle-action probe is the declared exception: an unanswered probe
       // leaves the schema's supported choices on offer.
       const [sch, existing, idle] = await Promise.all([
-        getEnvironmentSchema(),
-        listAdminEnvironments(),
+        getRuntimeProfileSchema(),
+        listAdminRuntimeProfiles(),
         adminDescribeSandboxIdleAction().catch(() => null),
       ]);
       setSchema(sch);
       setTaken(existing.map((env) => env.name));
       setIdleActions(idle?.supported_actions ?? null);
-      setDraft(buildEnvironmentDraft());
+      setDraft(buildRuntimeProfileDraft());
     } catch (e) {
       setLoadError((e as Error).message);
     } finally {
@@ -89,7 +89,7 @@ export default function EnvironmentCreatePage() {
 
   if (loading) {
     return (
-      <ConsoleRecordPage title={t('manage:environments.create_title')}>
+      <ConsoleRecordPage title={t('manage:runtime_profiles.create_title')}>
         <ConsoleRecordLoading />
       </ConsoleRecordPage>
     );
@@ -100,7 +100,7 @@ export default function EnvironmentCreatePage() {
   // error card with a Retry, that the record page this becomes renders.
   if (!draft) {
     return (
-      <ConsoleRecordPage title={t('manage:environments.create_title')}>
+      <ConsoleRecordPage title={t('manage:runtime_profiles.create_title')}>
         <ConsoleErrorState detail={loadError} onRetry={() => void load()} />
       </ConsoleRecordPage>
     );
@@ -108,17 +108,17 @@ export default function EnvironmentCreatePage() {
 
   const name = String(draft.name || '').trim();
   const blockedReason = !name
-    ? t('manage:environments.err_name_required')
+    ? t('manage:runtime_profiles.err_name_required')
     : taken.includes(name)
-      ? t('manage:environments.err_name_exists', { name })
+      ? t('manage:runtime_profiles.err_name_exists', { name })
       : undefined;
 
   return (
     <ConsoleCreatePage
-      title={t('manage:environments.create_title')}
+      title={t('manage:runtime_profiles.create_title')}
       sections={sections}
       draft={draft as unknown as Record<string, unknown>}
-      onDraftChange={(d) => setDraft(d as unknown as EnvironmentConfig)}
+      onDraftChange={(d) => setDraft(d as unknown as RuntimeProfileConfig)}
       idPrefix="environment-new"
       invalidKeys={invalidKeys}
       onInvalidChange={(key, invalid) =>
@@ -133,14 +133,14 @@ export default function EnvironmentCreatePage() {
       saving={saving}
       createLabel={t('common:create')}
       blockedReason={blockedReason}
-      onCancel={() => navigate('/manage/environments')}
+      onCancel={() => navigate('/manage/runtime-profiles')}
       onCreate={() => {
         setSaving(true);
         setError('');
-        void upsertAdminEnvironment(name, { ...draft, name })
+        void upsertAdminRuntimeProfile(name, { ...draft, name })
           .then(() => {
-            void mutate(MANAGE_NAV_COUNT_KEYS.environments);
-            navigate(`/manage/environments/${encodeURIComponent(name)}`);
+            void mutate(MANAGE_NAV_COUNT_KEYS.runtime_profiles);
+            navigate(`/manage/runtime-profiles/${encodeURIComponent(name)}`);
           })
           .catch((e: unknown) => setError((e as Error).message))
           .finally(() => setSaving(false));

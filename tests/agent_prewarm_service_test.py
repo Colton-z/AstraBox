@@ -39,12 +39,12 @@ class _Repo:
             return []
         return [dict(self.row)]
 
-    async def list_agent_ids_by_environment(
+    async def list_agent_ids_by_runtime_profile(
         self, name: str, *, after_agent_id: str | None = None, limit: int = 200
     ) -> list[str]:
         if (
             self.row is None
-            or self.row.get("environment_name") != name
+            or self.row.get("runtime_profile_name") != name
             or after_agent_id is not None
         ):
             return []
@@ -69,7 +69,7 @@ class _AgentConfig:
     async def resolve_agent_harness(self, agent_id: str) -> Any:
         return self.template if self.template.agent_id == agent_id else None
 
-    async def get_environment(self, name: str) -> dict[str, Any]:
+    async def get_runtime_profile(self, name: str) -> dict[str, Any]:
         return {"name": name, "enabled": True}
 
 
@@ -104,8 +104,8 @@ async def test_an_agent_edit_during_a_pass_leaves_no_client_pool_unnamed(
 ) -> None:
     """Every namespace a pass starts is recorded or retired, whatever lands meanwhile.
 
-    The demo seed converges the Environment and then edits the Agent's prompt.
-    The edit landed while the Environment's pass was starting its namespace:
+    The demo seed converges the RuntimeProfile and then edits the Agent's prompt.
+    The edit landed while the RuntimeProfile's pass was starting its namespace:
     that namespace was never recorded, the follow-up pass retired only the one
     recorded before it, and its scheduler kept a box with nothing naming it.
     """
@@ -118,7 +118,7 @@ async def test_an_agent_edit_during_a_pass_leaves_no_client_pool_unnamed(
     repo = await create_agent(agent_id, system="prompt-1", prepared_capacity=1)
     await set_runtime(
         agent_id,
-        # The Environment write changed the recipe this generation was made from.
+        # The RuntimeProfile write changed the recipe this generation was made from.
         runtime_generation="generation-before-environment-write",
         sandbox_generation="generation-before-environment-write",
         client_pool_epoch=first_epoch,
@@ -137,7 +137,7 @@ async def test_an_agent_edit_during_a_pass_leaves_no_client_pool_unnamed(
                 system=row["system"],
                 version=row["version"],
                 engine_kind="pi",
-                environment_name=row["environment_name"],
+                runtime_profile_name=row["runtime_profile_name"],
                 prepared_capacity=row["prepared_capacity"],
                 runtime_template_name="astrabox/sandbox-pi:test",
                 sandbox_backend="open_sandbox",
@@ -195,7 +195,7 @@ async def test_an_agent_edit_during_a_pass_leaves_no_client_pool_unnamed(
 
     monkeypatch.setattr(runtime_generation_module, "runtime_generations", generations)
 
-    # The Environment write's reconciliation.
+    # The RuntimeProfile write's reconciliation.
     assert service.schedule_runtime_reconciliation(agent_id) is True
     while service._preparation_tasks:
         await asyncio.gather(*service._preparation_tasks, return_exceptions=True)

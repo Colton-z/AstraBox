@@ -48,7 +48,7 @@ no backend name is hardcoded anywhere in the dispatch path.
 Installed is not enabled. Registration says a provider is installed in this
 process; the composition root then publishes the deployment's enabled set
 (:func:`set_enabled_sandbox_backends`), and every lookup and aggregation reads
-only that set: name resolution, the backend and permission enums an Environment
+only that set: name resolution, the backend and permission enums a RuntimeProfile
 form offers, capability questions, reverse lookup of a live handle, background
 inventory, and shutdown. A record that names an installed backend this
 deployment has not enabled fails with :class:`SandboxBackendDisabled` instead of
@@ -420,8 +420,8 @@ class SandboxCreateSpec:
     publishing its sandbox id. It is not the Session id: a Session may replace
     its sandbox, and each replacement command receives another assignment.
 
-    ``execution_target`` declares the physical owner before any database binding
-    can be published. Providers persist :func:`execution_target_metadata` in
+    ``environment_name`` declares the physical owner before any database binding
+    can be published. Providers persist :func:`environment_name_metadata` in
     create metadata and preserve it on adoption. Inventory maintenance uses this
     positive ownership fact even while creation is still in progress.
 
@@ -430,7 +430,7 @@ class SandboxCreateSpec:
     through would hand scheduling policy to a provider default and, on
     OpenSandbox, omitting requests silently makes them equal to the limits.
 
-    ``network_policy`` is the Environment's validated outbound reachability.
+    ``network_policy`` is the RuntimeProfile's validated outbound reachability.
     A caller must check
     :attr:`SandboxProvider.supports_create_network_policy` before supplying
     one; silently dropping a requested security control is not an allowed
@@ -442,14 +442,14 @@ class SandboxCreateSpec:
     provider-neutral protected-credential plan, never a provider SDK object and
     never part of ``env``. It is excluded from repr because it contains secret
     values. Supplying it implies protected injection is enabled. It does not
-    change the Environment's ``network_policy`` document or depend on a network
+    change the RuntimeProfile's ``network_policy`` document or depend on a network
     mode, but a provider must admit each exact binding destination in its
     effective containment policy; otherwise the platform-managed credential
     would be installed behind a network rule that makes it unusable. Providers
     advertising both capabilities must preserve that distinction or refuse an
     unsupported combination before allocation.
 
-    ``permission_level`` is the Environment's requested sandbox grant. Like a
+    ``permission_level`` is the RuntimeProfile's requested sandbox grant. Like a
     network policy, it is a security contract rather than a hint: a provider
     maps it to its create primitive or refuses it before returning a box.
 
@@ -470,7 +470,7 @@ class SandboxCreateSpec:
 
     session_id: str
     assignment_id: str
-    execution_target: str
+    environment_name: str
     resource_limits: dict[str, str]
     resource_requests: dict[str, str]
     image: str | None = None
@@ -653,20 +653,20 @@ SANDBOX_ASSIGNMENT_ID_METADATA_KEY = "astrabox.assignment-id"
 SANDBOX_INSTALLATION_METADATA_KEY = "astrabox.installation"
 
 #: Physical execution ownership, present before a create can publish its database binding.
-SANDBOX_EXECUTION_TARGET_METADATA_KEY = "astrabox.execution-target"
+SANDBOX_ENVIRONMENT_METADATA_KEY = "astrabox.environment"
 
 
-def execution_target_metadata(execution_target: str) -> dict[str, str]:
+def environment_name_metadata(environment_name: str) -> dict[str, str]:
     """The full target identity as an opaque, label-safe ownership token.
 
     A backend carries this mapping unchanged from creation through adoption.
     Inventory sweeps use the same token before touching unbound resources.
     The readable target name remains on the platform's persistent records.
     """
-    if not execution_target or execution_target != execution_target.strip():
-        raise ValueError("sandbox execution target must be non-empty and unpadded")
-    token = base64.b32encode(hashlib.sha256(execution_target.encode()).digest())
-    return {SANDBOX_EXECUTION_TARGET_METADATA_KEY: token.decode().rstrip("=").lower()}
+    if not environment_name or environment_name != environment_name.strip():
+        raise ValueError("sandbox Environment must be non-empty and unpadded")
+    token = base64.b32encode(hashlib.sha256(environment_name.encode()).digest())
+    return {SANDBOX_ENVIRONMENT_METADATA_KEY: token.decode().rstrip("=").lower()}
 
 #: The diagnostic scopes the inventory face accepts. Each names one report a
 #: backend may be able to produce about one sandbox; nothing here promises a
@@ -820,8 +820,8 @@ SANDBOX_TENANCY_AGENT = "agent"
 SANDBOX_TENANCIES = (SANDBOX_TENANCY_CONVERSATION, SANDBOX_TENANCY_AGENT)
 
 
-#: What the substrate is asked to GRANT one of this Environment's boxes. An
-#: Environment property, like ``sandbox_tenancy`` and for the same reason: it is
+#: What the substrate is asked to GRANT one of this RuntimeProfile's boxes. An
+#: RuntimeProfile property, like ``sandbox_tenancy`` and for the same reason: it is
 #: a statement about boxes, not about the agent CLI running inside one.
 #:
 #: The counterpart of :class:`SandboxIsolationCapability`, which is what a box
@@ -1138,11 +1138,11 @@ class SandboxProvider(ABC):
     #: session id and the platform publishing it.
     supports_isolated_session_recovery: bool = False
     #: Permission levels this backend can both deliver and prove. The write path
-    #: reads this declaration before persisting an Environment, so a level that
+    #: reads this declaration before persisting a RuntimeProfile, so a level that
     #: can only fail at sandbox start is not offered as working configuration.
     #: Registration validates the values against ``SANDBOX_PERMISSION_LEVELS``.
     supported_permission_levels: tuple[str, ...] = (SANDBOX_PERMISSION_LEVEL_DEFAULT,)
-    #: Whether creates honour an Environment's provider-neutral
+    #: Whether creates honour a RuntimeProfile's provider-neutral
     #: ``network_policy`` by creating the box under it.
     #:
     #: A network policy is a SECURITY CONTROL, so the only two acceptable
@@ -1181,7 +1181,7 @@ class SandboxProvider(ABC):
     #: over (:class:`SandboxProcesses`). The standard implementation over the
     #: image's execd provides all of it. The terminal of a conversation with
     #: its own box, and an engine that speaks over a process's stdin and
-    #: stdout in such a box, need it, so an Agent or Environment that would
+    #: stdout in such a box, need it, so an Agent or RuntimeProfile that would
     #: use either on a backend without it is refused when it is saved.
     supports_process_sessions: bool = False
     #: Environment variables only this provider reads. When the provider is
@@ -1211,13 +1211,13 @@ class SandboxProvider(ABC):
             f"sandbox provider {self.name!r} does not implement create_sandbox"
         )
 
-    def validate_environment_configuration(self, payload: Mapping[str, Any]) -> None:
-        """Refuse provider-specific Environment combinations that cannot work.
+    def validate_runtime_profile_configuration(self, payload: Mapping[str, Any]) -> None:
+        """Refuse provider-specific RuntimeProfile combinations that cannot work.
 
-        Core validates the AstraBox Environment shape first. A provider may
+        Core validates the AstraBox RuntimeProfile shape first. A provider may
         then check only its own deployment topology and capabilities. The
         default accepts the configuration; provider vocabulary must never be
-        promoted into the public Environment schema through this hook.
+        promoted into the public RuntimeProfile schema through this hook.
         """
 
         _ = payload
@@ -2709,8 +2709,8 @@ __all__ = [
     "SANDBOX_MANAGED_BY_METADATA_VALUE",
     "SANDBOX_ASSIGNMENT_ID_METADATA_KEY",
     "SANDBOX_INSTALLATION_METADATA_KEY",
-    "SANDBOX_EXECUTION_TARGET_METADATA_KEY",
-    "execution_target_metadata",
+    "SANDBOX_ENVIRONMENT_METADATA_KEY",
+    "environment_name_metadata",
     "SANDBOX_SESSION_ID_METADATA_KEY",
     "SandboxClaim",
     "SandboxDestruction",

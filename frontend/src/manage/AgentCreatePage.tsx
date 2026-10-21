@@ -7,11 +7,11 @@ import {
   createAgent,
   getAgentSchema,
   listAgentCategories,
-  listAgentEnvironmentModels,
-  listAgentEnvironments,
+  listAgentRuntimeProfileModels,
+  listAgentRuntimeProfiles,
   listAgentTags,
 } from '@/api';
-import type { AgentCategory, AgentDraft, EnvironmentConfig, FormSchema } from '@/types';
+import type { AgentCategory, AgentDraft, RuntimeProfileConfig, FormSchema } from '@/types';
 
 import {
   ConsoleCreatePage,
@@ -39,7 +39,7 @@ export default function AgentCreatePage() {
 
   const [draft, setDraft] = useState<AgentDraft | null>(null);
   const [schema, setSchema] = useState<FormSchema | null>(null);
-  const [environments, setEnvironments] = useState<EnvironmentConfig[]>([]);
+  const [runtime_profiles, setRuntimeProfiles] = useState<RuntimeProfileConfig[]>([]);
   const [categories, setCategories] = useState<AgentCategory[]>([]);
   const [tagSuggestions, setTagSuggestions] = useState<string[]>([]);
   const [models, setModels] = useState<string[]>([]);
@@ -66,12 +66,12 @@ export default function AgentCreatePage() {
       // product that has nothing to show.
       const [sch, envs, cats, tags] = await Promise.all([
         getAgentSchema(),
-        listAgentEnvironments(),
+        listAgentRuntimeProfiles(),
         listAgentCategories(),
         listAgentTags(),
       ]);
       setSchema(sch);
-      setEnvironments(envs);
+      setRuntimeProfiles(envs);
       setCategories(cats);
       setTagSuggestions(tags.map((entry) => entry.tag));
       setDraft(buildAgentDraft(sch));
@@ -86,16 +86,16 @@ export default function AgentCreatePage() {
     void load();
   }, [load]);
 
-  const environmentName = String(draft?.environment_name || '').trim();
+  const runtimeProfileName = String(draft?.runtime_profile_name || '').trim();
   useEffect(() => {
     let current = true;
-    if (!environmentName) {
+    if (!runtimeProfileName) {
       setModels([]);
       return () => {
         current = false;
       };
     }
-    void listAgentEnvironmentModels(environmentName)
+    void listAgentRuntimeProfileModels(runtimeProfileName)
       .then((items) => {
         if (current) setModels(items);
       })
@@ -105,7 +105,7 @@ export default function AgentCreatePage() {
     return () => {
       current = false;
     };
-  }, [environmentName]);
+  }, [runtimeProfileName]);
 
   // Only `visibility` changes which fields the config produces (it toggles the
   // allowlist), so the memo keys on that value rather than the whole draft —
@@ -118,14 +118,14 @@ export default function AgentCreatePage() {
     () =>
       buildAgentEditSections(schema, { visibility: draftVisibility }, {
         nameEditable: true,
-        environments,
+        runtime_profiles,
         models,
-        engineOptionsSchema: environments.find((e) => e.name === environmentName)
+        engineOptionsSchema: runtime_profiles.find((e) => e.name === runtimeProfileName)
           ?.engine_options_schema,
         categories,
         tagSuggestions,
       }),
-    [schema, draftVisibility, environments, models, environmentName, categories, tagSuggestions, t],
+    [schema, draftVisibility, runtime_profiles, models, runtimeProfileName, categories, tagSuggestions, t],
   );
 
   if (loading) {
@@ -154,7 +154,7 @@ export default function AgentCreatePage() {
       title={t('manage:agents.create_title')}
       sections={sections}
       // Creating an Agent is where someone meets this form for the first time;
-      // the Environment it names has already settled the sandbox, the gateway
+      // the RuntimeProfile it names has already settled the sandbox, the gateway
       // and the tracing destination, so most of what is advanced here is a
       // question they do not have to answer yet. The record page folds nothing:
       // there each section owns its own save.

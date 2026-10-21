@@ -65,9 +65,9 @@ test('evicting the session runtime recreates the resident sidecar transport on t
   // create validator (agent_schema) requires a non-blank model — skipping any
   // litellm wildcard routing key, exactly as the reclaimed-sandbox sibling does.
   const base = await api.defaultAgent();
-  const environmentName = String(base.environment_name || '').trim();
-  expect(environmentName, 'seeded default agent must name an environment').not.toEqual('');
-  const models = await api.listEnvironmentModels(environmentName);
+  const runtimeProfileName = String(base.runtime_profile_name || '').trim();
+  expect(runtimeProfileName, 'seeded default agent must name an environment').not.toEqual('');
+  const models = await api.listEnvironmentModels(runtimeProfileName);
   const model = models.find((m) => m && !m.includes('*')) || 'deepseek-chat';
 
   // Scoped to run-view ON PURPOSE. The app shell's sidebar renders a
@@ -111,7 +111,7 @@ test('evicting the session runtime recreates the resident sidecar transport on t
     const agent = await api.createAgent({
       name: `__e2e_transport_recreate_${runId}`,
       model,
-      environment_name: environmentName,
+      runtime_profile_name: runtimeProfileName,
       prepared_capacity: 0,
     });
     agentId = String(agent.agent_id || '');

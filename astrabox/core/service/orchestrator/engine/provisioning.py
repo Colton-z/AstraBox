@@ -21,7 +21,7 @@ else entirely.
   even consults the runtime registry; without it a session reaches READY and
   every turn dies reporting an attach failure.
 * Networking and protected credential delivery are independent create inputs.
-  Every backend must enforce the Environment's reachability and, when enabled,
+  Every backend must enforce the RuntimeProfile's reachability and, when enabled,
   translate the same provider-neutral credential plan without letting either
   input widen, narrow, enable, or disable the other.
 
@@ -252,7 +252,7 @@ class EngineSandboxRequest:
     cwd_env_var: str | None = None
     publish_ports: tuple[int, ...] = ()
     #: Hosts required by this engine's image preparation in addition to the
-    #: model endpoint. The platform combines them with Environment policy; the
+    #: model endpoint. The platform combines them with RuntimeProfile policy; the
     #: adapter declares destinations but never applies policy itself.
     required_network_hosts: tuple[str, ...] = ()
     #: An in-box service port whose first accepted connection means the box is
@@ -341,10 +341,10 @@ def resolve_model_credential_delivery(
 ) -> tuple[str, SandboxNetworkPolicy, SandboxEgressCredentialPlan | None]:
     """Resolve independent networking and credential-delivery inputs.
 
-    Networking is derived solely from the Environment plus platform-known
+    Networking is derived solely from the RuntimeProfile plus platform-known
     runtime destinations. Protected delivery independently chooses whether the
     image receives the real credential or a placeholder backed by Vault. No
-    binding host is copied into the Environment-derived policy; the provider
+    binding host is copied into the RuntimeProfile-derived policy; the provider
     later admits only the exact destinations named by attached bindings in its
     effective policy. No network mode enables or disables Vault.
 
@@ -389,7 +389,7 @@ def resolve_model_credential_delivery(
     if not bool(getattr(backend_adapter, "supports_create_network_policy", False)):
         raise NotImplementedError(
             f"sandbox backend {backend_adapter.name!r} cannot enforce the "
-            f"{engine_kind} Environment's networking contract"
+            f"{engine_kind} RuntimeProfile's networking contract"
         )
     if preparation.model_credential_delivery == "provider":
         identity = target_slot or str(workload_id or "").strip()
@@ -1076,7 +1076,7 @@ def engine_create_spec(
     The platform answers the second question — claim a prepared unit, place a
     conversation in its Agent's box, or create a box — and only the create needs
     this recipe. It is composed once for every engine and every placement so
-    boxes of the same Environment cannot disagree on their boot environment or
+    boxes of the same RuntimeProfile cannot disagree on their boot environment or
     durable mounts. ``backend``, the provider that creates the box, fits the
     resource recipe to what its runtime can honour.
     """
@@ -1087,7 +1087,7 @@ def engine_create_spec(
     return SandboxCreateSpec(
         session_id=session_id,
         assignment_id=assignment_id,
-        execution_target=get_settings().execution_target,
+        environment_name=get_settings().environment_name,
         resource_limits=resource_limits,
         resource_requests=resource_requests,
         image=resolve_runtime_template_name(template),
@@ -1366,7 +1366,7 @@ async def _provision_shared_conversation(
                     code="SANDBOX_ISOLATION_UNSUPPORTED",
                     message=(
                         f"sandbox {candidate_id!r} cannot host the Agent-shared "
-                        "conversation requested by this Environment"
+                        "conversation requested by this RuntimeProfile"
                     ),
                     status_code=409,
                 )
@@ -1534,7 +1534,7 @@ async def require_engine_sandbox_permission(
     sandbox_id: str,
     template: Any,
 ) -> None:
-    """Require a connected box to attest the Environment's current grant."""
+    """Require a connected box to attest the RuntimeProfile's current grant."""
 
     from astrabox.seams.sandbox import sandbox_for_sandbox
 
@@ -1613,7 +1613,7 @@ async def connect_engine_sandbox(
 ) -> Any:
     """Reattach an engine only after its running box proves the requested grant.
 
-    A persisted sandbox id proves identity, not posture. The Environment may
+    A persisted sandbox id proves identity, not posture. The RuntimeProfile may
     have changed since this box was created, and a provider pool recipe may
     have drifted independently. Reattachment therefore asks the running box
     the same question the create path asks before an engine can use it.

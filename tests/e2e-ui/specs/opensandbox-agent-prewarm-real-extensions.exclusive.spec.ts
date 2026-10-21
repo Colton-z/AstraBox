@@ -6,7 +6,7 @@
  * plugin. This spec proves both tenancy modes through the public product API
  * and the browser, including durable shared-session placement across restart.
  *
- * It deliberately requires task-owned Environments and real extension sources.
+ * It deliberately requires task-owned RuntimeProfiles and real extension sources.
  * A skipped extension source would turn it into a wiring test that never
  * exercises preparation.
  */
@@ -67,11 +67,11 @@ interface PreparedRuntimeStatus {
 function requiredConfiguration(): void {
   expect(
     SHARED_ENVIRONMENT,
-    'set ASTRABOX_E2E_PREWARM_SHARED_ENVIRONMENT to an OpenSandbox Agent-tenancy Environment',
+    'set ASTRABOX_E2E_PREWARM_SHARED_ENVIRONMENT to an OpenSandbox Agent-tenancy RuntimeProfile',
   ).not.toEqual('');
   expect(
     CONVERSATION_ENVIRONMENT,
-    'set ASTRABOX_E2E_PREWARM_CONVERSATION_ENVIRONMENT to an OpenSandbox conversation-tenancy Environment',
+    'set ASTRABOX_E2E_PREWARM_CONVERSATION_ENVIRONMENT to an OpenSandbox conversation-tenancy RuntimeProfile',
   ).not.toEqual('');
   expect(
     RESEARCH_AGENT,
@@ -79,15 +79,15 @@ function requiredConfiguration(): void {
   ).not.toEqual('');
 }
 
-async function concreteModel(api: AstraApi, environmentName: string): Promise<string> {
-  return api.configuredAgentModel(RESEARCH_AGENT, environmentName);
+async function concreteModel(api: AstraApi, runtimeProfileName: string): Promise<string> {
+  return api.configuredAgentModel(RESEARCH_AGENT, runtimeProfileName);
 }
 
-function extensionAgentConfig(name: string, model: string, environmentName: string) {
+function extensionAgentConfig(name: string, model: string, runtimeProfileName: string) {
   return {
     name,
     model,
-    environment_name: environmentName,
+    runtime_profile_name: runtimeProfileName,
     prepared_capacity: 1,
     skills: [SKILL_DESCRIPTOR],
     packages: [
@@ -103,9 +103,9 @@ function extensionAgentConfig(name: string, model: string, environmentName: stri
   };
 }
 
-function extensionAgentCreateConfig(name: string, model: string, environmentName: string) {
+function extensionAgentCreateConfig(name: string, model: string, runtimeProfileName: string) {
   return {
-    ...extensionAgentConfig(name, model, environmentName),
+    ...extensionAgentConfig(name, model, runtimeProfileName),
     // createAgent must carry this policy through the dedicated second-phase
     // /access write. The strict authoring POST refuses all three fields.
     visibility: 'allowlist' as const,

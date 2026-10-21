@@ -18,10 +18,10 @@
  * The conversation claims the Agent's prewarmed box, where the server
  * definition was already in place.
  *
- * The HTTP cases run on each engine's conversation-tenancy Environment, where
+ * The HTTP cases run on each engine's conversation-tenancy RuntimeProfile, where
  * the definition is written when the conversation's own box is provisioned.
  * Their server is the shared HTTP MCP fixture in a box of its own, reached at
- * its exposed address, which an administrator's copy of the Environment
+ * its exposed address, which an administrator's copy of the RuntimeProfile
  * admits; the server logs every call it serves, so the evidence of a real
  * call is the server's own record rather than the reply.
  */
@@ -68,7 +68,7 @@ for (const engineKind of ['codex', 'pi', 'deepseek_harness'] as const) {
     const agent = await api.createAgent({
       name: `__e2e_author_mcp_${engineKind}_${randomUUID().slice(0, 8)}`,
       model: profile.model,
-      environment_name: profile.environment_name,
+      runtime_profile_name: profile.runtime_profile_name,
       prepared_capacity: 1,
       mcp_servers: {
         [SERVER]: { type: 'stdio', command: PYTHON, args: ['-c', SERVER_SOURCE], env: { E2E_MARKER: marker } },
@@ -109,12 +109,12 @@ test.describe('HTTP on conversation tenancy', () => {
     test(`${engineKind}: an Agent on conversation tenancy calls the HTTP MCP server its author declares`, async ({ request }) => {
       const api = new AstraApi(request);
       const profile = engineProfileFor(engineKind);
-      // The fixture configures one Environment per tenancy, the other named
+      // The fixture configures one RuntimeProfile per tenancy, the other named
       // with that tenancy as suffix (configure-agent-engine-matrix.py).
-      const environment = `${profile.environment_name}-conversation`;
+      const environment = `${profile.runtime_profile_name}-conversation`;
       const stored = (await new PlatformApi(request).listEnvironments())
         .find((item) => String(item.name || '') === environment);
-      expect(stored?.sandbox_tenancy, `${environment} is the conversation-tenancy Environment`).toBe('conversation');
+      expect(stored?.sandbox_tenancy, `${environment} is the conversation-tenancy RuntimeProfile`).toBe('conversation');
 
       const runId = `${Date.now()}-${test.info().workerIndex}`;
       const input = {

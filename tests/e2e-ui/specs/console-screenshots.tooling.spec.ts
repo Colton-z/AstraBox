@@ -59,8 +59,8 @@ test('capture the console screenshots used by the README and docs', async ({ pag
   // runs on this deployment — and if neither is available this fails now with
   // the variable to set, rather than after three minutes of retries.
   const base = await api.defaultAgent();
-  const environmentName = String(base.environment_name || '').trim();
-  expect(environmentName, 'seeded default agent must name an environment').not.toEqual('');
+  const runtimeProfileName = String(base.runtime_profile_name || '').trim();
+  expect(runtimeProfileName, 'seeded default agent must name an environment').not.toEqual('');
   const model = (process.env.ASTRABOX_E2E_SCREENSHOT_MODEL || String(base.model || '')).trim();
   expect(
     model,
@@ -75,7 +75,7 @@ test('capture the console screenshots used by the README and docs', async ({ pag
     const agent = await api.createAgent({
       name: 'Docs Demo',
       model,
-      environment_name: environmentName,
+      runtime_profile_name: runtimeProfileName,
       prepared_capacity: 0,
     });
     agentId = String(agent.agent_id || '');

@@ -188,6 +188,10 @@ _IDENTITY_FIELDS = ("participant", "conversation_key")
 #: is recorded as refused and leaves retained context; it never runs as
 #: another account.
 _REFUSAL_NOTICES = {
+    "ENVIRONMENT_ACCESS_DENIED": (
+        "This message was not answered because its execution account does not have "
+        "access to this Environment."
+    ),
     "CHANNEL_REFERENCE_OWNER_MISMATCH": (
         "This message was not answered because it continues a conversation you "
         "cannot continue. Send a new message to start your own."
@@ -340,9 +344,9 @@ class ChannelIngressService:
         self, binding: dict[str, Any], inbound: ChannelInbound
     ) -> ChannelIngressReceipt:
         """`ingest` for a caller that already loaded the binding row."""
-        from astrabox.core.service.orchestrator.runtime.execution_target import require_execution_target
+        from astrabox.core.service.orchestrator.runtime.environment_ownership import require_environment_ownership
 
-        require_execution_target(binding)
+        require_environment_ownership(binding)
         deployment_id = str(binding.get("deployment_id") or "")
         channel_name = channel_scene_name(str(binding.get("scene") or ""))
         if channel_name is None:
@@ -923,6 +927,21 @@ class ChannelIngressService:
 
     # ── dispatch (invariant B + attach-not-append) ───────────────────────
 
+    async def _require_item_environment_access(self, item: dict[str, Any]) -> None:
+        """Authorize the captured execution account before judging or answering."""
+        payload = dict(item.get("payload") or {})
+        if payload.get("execution_mode") == EXECUTION_LINKED and not payload.get("execution_user_id"):
+            target = await self._targets.resolve(item)
+            if target is None:
+                raise APIError(code="NOT_FOUND", message="bound agent not found", status_code=404)
+            payload = await self._capture_linked_account(item, payload, target)
+        from astrabox.core.service.environment_access import require_environment_access
+
+        await require_environment_access(
+            UserContext(user_id=str(payload.get("creator_user_id") or "")),
+            operation="channel input",
+        )
+
     async def _resolve_item_session(self, item: dict[str, Any]) -> str:
         """Get-or-create the item's target session and CAS-bind it.
 
@@ -1146,11 +1165,12 @@ class ChannelIngressService:
             heartbeat = asyncio.create_task(
                 self._renew_drive_leases(leases), name=f"channel-drive-leases-{item_id}",
             )
-            if payload.get("selection") == "judge" and not await self._judged_to_respond(
-                item, owner=owner, generation=generation,
-            ):
-                return
             try:
+                await self._require_item_environment_access(item)
+                if payload.get("selection") == "judge" and not await self._judged_to_respond(
+                    item, owner=owner, generation=generation,
+                ):
+                    return
                 session_id = await self._resolve_item_session(item)
             except APIError as exc:
                 if exc.code not in _REFUSAL_NOTICES:
@@ -2284,9 +2304,9 @@ class ChannelIngressService:
                 f"channel delivery binding {deployment_id!r} is missing, disabled, "
                 "or no longer matches its delivery row"
             )
-        from astrabox.core.service.orchestrator.runtime.execution_target import require_execution_target
+        from astrabox.core.service.orchestrator.runtime.environment_ownership import require_environment_ownership
 
-        require_execution_target(binding)
+        require_environment_ownership(binding)
         return await self._channel_credentials.hydrate(
             binding, get_channel(expected_channel)
         )

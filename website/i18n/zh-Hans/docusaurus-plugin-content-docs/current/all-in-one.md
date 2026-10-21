@@ -81,7 +81,7 @@ docker logs -f astrabox
 AstraBox is ready at http://127.0.0.1:8088
 ```
 
-接着按[快速入门的第 2 步](quickstart.md)继续：选择运行环境、创建 Agent 并开始 Session。
+接着按[快速入门的第 2 步](quickstart.md)继续：选择运行配置、创建 Agent 并开始 Session。
 
 :::warning
 这种部署方式的控制台没有登录，并且只发布在本机回环地址上。不要把它发布到其他地址。需要

@@ -164,7 +164,7 @@ curl --fail-with-body --silent --show-error \
 ```bash
 # 触发示例：使用只读 Token 调用管理 API
 curl --fail-with-body --silent --show-error \
-  "$SERVICE_URL/api/v1/admin/environments" \
+  "$SERVICE_URL/api/v1/admin/runtime-profiles" \
   -H "Authorization: Bearer $READ_TOKEN"
 ```
 
@@ -174,7 +174,7 @@ curl --fail-with-body --silent --show-error \
 
 **常见触发场景：**
 
-- Agent、Session 或 Environment ID 不存在
+- Agent、Session 或 RuntimeProfile ID 不存在
 - 资源已被删除
 - 调用方无权发现其他所有者的资源
 - URL 路径拼写错误
@@ -210,7 +210,7 @@ curl --fail-with-body --silent --show-error \
 
 - 使用相同幂等键创建不同的对话
 - Agent 正在工作时，请求删除或归档 Session、结束对话或终止其沙箱
-- Agent 或 Environment 状态不允许当前操作
+- Agent 或 RuntimeProfile 状态不允许当前操作
 
 ```json
 {

@@ -91,13 +91,13 @@ def test_turning_artifacts_off_takes_the_tools_from_every_conversation_of_the_ag
     names = {tool["name"] for tool in listed.json()["result"]["tools"]}
     assert "create_artifact" in names, names
 
-    # The authoring write requires the Agent's model and Environment; sending
+    # The authoring write requires the Agent's model and RuntimeProfile; sending
     # them unchanged leaves the switch as the only change.
     updated = data(e2e_client.put(
         f"/api/v1/agents/{agent_id}",
         json={
             "model": agent["model"],
-            "environment_name": agent["environment_name"],
+            "runtime_profile_name": agent["runtime_profile_name"],
             "artifacts_enabled": False,
             "version": agent["version"],
         },

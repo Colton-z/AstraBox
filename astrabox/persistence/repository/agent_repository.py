@@ -11,7 +11,7 @@ read and moves the version with it, so two writers that read the same
 definition cannot both succeed.
 
 The runtime state of the Agent's boxes is kept apart from the definition: one
-``agent_runtimes`` row per Agent and execution target with its resident box,
+``agent_runtimes`` row per Agent and Environment with its resident box,
 runtime generation and client pool, and tables of their own for prepared slots,
 box admissions, displaced client pools, gateway keys and undestroyed sandboxes. Every runtime
 write is one statement or a short transaction. A write that changes the
@@ -55,7 +55,7 @@ from sqlalchemy.sql.compiler import SQLCompiler
 from sqlalchemy.sql.functions import FunctionElement
 from sqlalchemy.sql import ColumnElement, Select
 
-from astrabox.config.settings import get_settings, validate_execution_target
+from astrabox.config.settings import get_settings, validate_environment_name
 from astrabox.persistence.repository.assistant_catalog_repository import _ChildObject, _OrderedChildren
 from astrabox.persistence.sql.runtime_expressions import string_array_items
 from astrabox.persistence.sql import (
@@ -82,7 +82,7 @@ from astrabox.persistence.sql.models.agents import (
     AgentVaultBinding,
 )
 from astrabox.persistence.sql.models.sessions import Session
-from astrabox.persistence.sql.models.environments import Environment
+from astrabox.persistence.sql.models.runtime_profiles import RuntimeProfile
 from astrabox.persistence.sql.statements import (
     insert_if_absent, insert_if_absent_primary_key, upsert_primary_key,
 )
@@ -91,7 +91,7 @@ from astrabox.seams.persistence_coordination import SessionNotice
 
 _AGENTS = Agent.__table__
 _SESSIONS = Session.__table__
-_ENVIRONMENTS = Environment.__table__
+_RUNTIME_PROFILES = RuntimeProfile.__table__
 _LINKS = AgentCategoryLink.__table__
 _VAULTS = AgentVaultBinding.__table__
 _ASSIGNMENTS = AgentMCPAssignment.__table__
@@ -127,7 +127,7 @@ _COLUMN_FIELDS = (
     "idle_hibernate_seconds",
     "prepared_capacity",
     "enabled",
-    "environment_name",
+    "runtime_profile_name",
     "visibility",
     "admins",
     "allowed_user_ids",
@@ -144,7 +144,7 @@ _CREATE_FIELDS = frozenset({"agent_id", "created_by", "org_id", "state", "versio
 
 #: Runtime record columns a read carries when set, by the key services read.
 _RUNTIME_KEYS = {
-    "execution_target": "_execution_target",
+    "environment_name": "_environment_name",
     "sandbox_id": "sandbox_id",
     "sandbox_backend": "sandbox_backend",
     "resident_generation": "_resident_sandbox_generation",
@@ -202,21 +202,21 @@ _OPTIONAL_FIELDS = (
     "default_repo",
     "exposure_mode",
     "idle_hibernate_seconds",
-    "environment_name",
+    "runtime_profile_name",
     "org_id",
     "updated_by",
 )
 
 #: Foreign keys a write can name a missing row through, by the reference.
 _REFERENCES = {
-    "fk_agents_environment_name_environments": "environment",
+    "fk_agents_runtime_profile_name_runtime_profiles": "environment",
     "fk_agent_category_links_category_id_agent_categories": "category",
     "fk_agent_vault_bindings_vault_id_vaults": "vault",
 }
 
 
 class AgentReferenceMissing(Exception):
-    """A write named an Environment, category or vault that does not exist."""
+    """A write named a RuntimeProfile, category or vault that does not exist."""
 
     def __init__(self, reference: str) -> None:
         super().__init__(f"the Agent names a {reference} that does not exist")
@@ -264,23 +264,23 @@ def _ordered(column: Any, order: Any, owner: Any) -> Any:
 
 
 def _runtime_owner(
-    table: Table, agent_id: str | ColumnElement[str], execution_target: str,
+    table: Table, agent_id: str | ColumnElement[str], environment_name: str,
 ) -> ColumnElement[bool]:
-    """A runtime ledger belongs to one Agent in one execution target."""
-    return and_(table.c.agent_id == agent_id, table.c.execution_target == execution_target)
+    """A runtime ledger belongs to one Agent in one Environment."""
+    return and_(table.c.agent_id == agent_id, table.c.environment_name == environment_name)
 
 
-def _definition(execution_target: str | None = None) -> Select[Any]:
+def _definition(environment_name: str | None = None) -> Select[Any]:
     """Every Agent with its authored children and the selected target's runtime record."""
-    if execution_target is None:
-        execution_target = get_settings().execution_target
+    if environment_name is None:
+        environment_name = get_settings().environment_name
     return select(
         _AGENTS,
         *_RUNTIME_COLUMNS,
         select(_OrderedChildren(
             cast(_UNDESTROYED.c.sandbox_id, Text), _UNDESTROYED.c.sandbox_id,
         ))
-        .where(_runtime_owner(_UNDESTROYED, _AGENTS.c.agent_id, execution_target))
+        .where(_runtime_owner(_UNDESTROYED, _AGENTS.c.agent_id, environment_name))
         .limit(1).scalar_subquery().label("undestroyed_sandbox_ids"),
         _ordered(_LINKS.c.category_id, _LINKS.c.position, _LINKS.c.agent_id).label("categories"),
         _ordered(_VAULTS.c.vault_id, _VAULTS.c.position, _VAULTS.c.agent_id).label("credential_vault_ids"),
@@ -297,7 +297,7 @@ def _definition(execution_target: str | None = None) -> Select[Any]:
         .where(_CONNECTORS.c.agent_id == _AGENTS.c.agent_id)
         .limit(1).scalar_subquery().label("connector_servers"),
     ).select_from(_AGENTS.outerjoin(
-        _RUNTIMES, _runtime_owner(_RUNTIMES, _AGENTS.c.agent_id, execution_target),
+        _RUNTIMES, _runtime_owner(_RUNTIMES, _AGENTS.c.agent_id, environment_name),
     ))
 
 
@@ -385,12 +385,12 @@ def _slot_manifest(item: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _slot_values(
-    agent_id: str, manifest: Mapping[str, Any], *, execution_target: str,
+    agent_id: str, manifest: Mapping[str, Any], *, environment_name: str,
 ) -> dict[str, Any]:
     """A slot manifest as a row of ``agent_prepared_slots``."""
     values: dict[str, Any] = {
         "agent_id": agent_id,
-        "execution_target": execution_target,
+        "environment_name": environment_name,
         "manifest": {
             key: value
             for key, value in manifest.items()
@@ -404,18 +404,18 @@ def _slot_values(
     return values
 
 
-def _ledger(execution_target: str | None = None) -> Select[Any]:
+def _ledger(environment_name: str | None = None) -> Select[Any]:
     """:func:`_definition` with the Agent's slots, admissions and displaced pools.
 
     One statement, so the revisions and the rows they count are read together.
     """
-    if execution_target is None:
-        execution_target = get_settings().execution_target
+    if environment_name is None:
+        environment_name = get_settings().environment_name
     slots = (
         select(_OrderedChildren(
             _slot_json(), _SLOTS.c.prepared_at.is_(None), _SLOTS.c.prepared_at, _SLOTS.c.slot_id,
         ))
-        .where(_runtime_owner(_SLOTS, _AGENTS.c.agent_id, execution_target))
+        .where(_runtime_owner(_SLOTS, _AGENTS.c.agent_id, environment_name))
         .limit(1).scalar_subquery().label("prepared_slots")
     )
     admissions = (
@@ -424,17 +424,17 @@ def _ledger(execution_target: str | None = None) -> Select[Any]:
             "session_id", cast(_ADMISSIONS.c.session_id, Text),
             "at", _ADMISSIONS.c.admitted_at,
         ), _ADMISSIONS.c.admitted_at))
-        .where(_runtime_owner(_ADMISSIONS, _AGENTS.c.agent_id, execution_target))
+        .where(_runtime_owner(_ADMISSIONS, _AGENTS.c.agent_id, environment_name))
         .limit(1).scalar_subquery().label("box_admissions")
     )
     retiring = (
         select(_OrderedChildren(_ChildObject(
             "name", cast(_RETIRING.c.pool_name, Text), "backend", cast(_RETIRING.c.backend, Text),
         ), _RETIRING.c.recorded_at, _RETIRING.c.pool_name))
-        .where(_runtime_owner(_RETIRING, _AGENTS.c.agent_id, execution_target))
+        .where(_runtime_owner(_RETIRING, _AGENTS.c.agent_id, environment_name))
         .limit(1).scalar_subquery().label("retiring_client_pools")
     )
-    return _definition(execution_target=execution_target).add_columns(slots, admissions, retiring)
+    return _definition(environment_name=environment_name).add_columns(slots, admissions, retiring)
 
 
 def _admission_time(value: str) -> float:
@@ -482,16 +482,16 @@ async def _admit(
     sandbox_id: str,
     session_id: str,
     young_since: datetime,
-    execution_target: str,
+    environment_name: str,
 ) -> None:
     """Charge ``session_id`` to a box of the Agent, forgetting admissions older than ``young_since``."""
     await conn.execute(
         delete(_ADMISSIONS).where(
-            _runtime_owner(_ADMISSIONS, agent_id, execution_target), _ADMISSIONS.c.admitted_at < young_since
+            _runtime_owner(_ADMISSIONS, agent_id, environment_name), _ADMISSIONS.c.admitted_at < young_since
         )
     )
     await conn.execute(upsert_primary_key(conn, _ADMISSIONS, {
-        "execution_target": execution_target,
+        "environment_name": environment_name,
         "agent_id": agent_id, "sandbox_id": sandbox_id, "session_id": session_id,
         "admitted_at": datetime.now(timezone.utc),
     }, update_columns=["admitted_at"]))
@@ -658,10 +658,10 @@ def _stored_children(row: Mapping[str, Any]) -> dict[str, Any]:
 
 
 async def _read(
-    conn: AsyncConnection, agent_id: str, *, execution_target: str | None = None,
+    conn: AsyncConnection, agent_id: str, *, environment_name: str | None = None,
 ) -> dict[str, Any]:
     row = (await conn.execute(
-        _definition(execution_target=execution_target).where(_AGENTS.c.agent_id == agent_id)
+        _definition(environment_name=environment_name).where(_AGENTS.c.agent_id == agent_id)
     )).one()
     return _view(row._mapping)
 
@@ -697,11 +697,11 @@ def manageable_by(viewer: str, *, platform_admin: bool) -> ColumnElement[bool]:
 
 
 class AgentRepository:
-    """Global authored definitions with compute ledgers bound to one execution target."""
+    """Global authored definitions with compute ledgers bound to one Environment."""
 
-    def __init__(self, *, execution_target: str | None = None) -> None:
-        self.execution_target = validate_execution_target(
-            get_settings().execution_target if execution_target is None else execution_target
+    def __init__(self, *, environment_name: str | None = None) -> None:
+        self.environment_name = validate_environment_name(
+            get_settings().environment_name if environment_name is None else environment_name
         )
 
     # ── definition ─────────────────────────────────────────────────────────
@@ -723,10 +723,10 @@ class AgentRepository:
         async def create(conn: AsyncConnection) -> dict[str, Any]:
             await conn.execute(insert(_AGENTS).values(**values))
             await conn.execute(insert(_RUNTIMES).values(
-                agent_id=agent_id, execution_target=self.execution_target,
+                agent_id=agent_id, environment_name=self.environment_name,
             ))
             await _replace_children(conn, agent_id, _child_values(payload))
-            return await _read(conn, agent_id, execution_target=self.execution_target)
+            return await _read(conn, agent_id, environment_name=self.environment_name)
 
         try:
             return await transaction(create)
@@ -736,7 +736,7 @@ class AgentRepository:
     async def get_agent(self, agent_id: str) -> dict[str, Any] | None:
         """One Agent, or ``None`` when there is none or it is deleted."""
         row = await fetch_one(
-            _definition(execution_target=self.execution_target)
+            _definition(environment_name=self.environment_name)
             .where(_AGENTS.c.agent_id == agent_id, _LIVE)
         )
         return _view(row) if row is not None else None
@@ -759,7 +759,7 @@ class AgentRepository:
         ``updated_by``; changes that leave every stored value as it is write
         nothing. Returns the Agent as stored afterwards, or ``None`` when its
         version moved since it was read or it is deleted. Raises
-        :class:`AgentReferenceMissing` when a change names an Environment,
+        :class:`AgentReferenceMissing` when a change names a RuntimeProfile,
         category or vault that does not exist.
         """
         unknown = sorted(set(changes) - AUTHORED_FIELDS)
@@ -778,7 +778,7 @@ class AgentRepository:
                 return None
             # Lock only the definition, including on dialects without FOR UPDATE OF.
             stored = (await conn.execute(
-                _definition(execution_target=self.execution_target).where(_AGENTS.c.agent_id == agent_id)
+                _definition(environment_name=self.environment_name).where(_AGENTS.c.agent_id == agent_id)
             )).mappings().one()
             changed_children = {
                 field: value
@@ -800,7 +800,7 @@ class AgentRepository:
                 )
             )
             await _replace_children(conn, agent_id, changed_children)
-            return await _read(conn, agent_id, execution_target=self.execution_target)
+            return await _read(conn, agent_id, environment_name=self.environment_name)
 
         try:
             return await transaction(change)
@@ -847,12 +847,12 @@ class AgentRepository:
     ) -> list[dict[str, Any]]:
         """Visible Agents and their configuration eligibility, newest edit first."""
         rows = await fetch_all(
-            _definition(execution_target=self.execution_target)
-            .outerjoin(_ENVIRONMENTS, _ENVIRONMENTS.c.name == _AGENTS.c.environment_name)
+            _definition(environment_name=self.environment_name)
+            .outerjoin(_RUNTIME_PROFILES, _RUNTIME_PROFILES.c.name == _AGENTS.c.runtime_profile_name)
             .add_columns(and_(
                 _AGENTS.c.state != "DELETING",
                 _AGENTS.c.enabled.is_(True),
-                _ENVIRONMENTS.c.enabled.is_(True),
+                _RUNTIME_PROFILES.c.enabled.is_(True),
             ).label("can_start_conversation"))
             .where(
                 _LIVE,
@@ -867,7 +867,7 @@ class AgentRepository:
     ) -> list[dict[str, Any]]:
         """Every live Agent ``viewer`` may manage, the most recently edited first."""
         rows = await fetch_all(
-            _definition(execution_target=self.execution_target)
+            _definition(environment_name=self.environment_name)
             .where(_LIVE, manageable_by(viewer, platform_admin=platform_admin))
             .order_by(_AGENTS.c.updated_at.desc(), _AGENTS.c.agent_id.desc())
         )
@@ -935,7 +935,7 @@ class AgentRepository:
         if enabled is not None:
             conditions.append(_AGENTS.c.enabled.is_(enabled))
         rows = await fetch_all(
-            _definition(execution_target=self.execution_target)
+            _definition(environment_name=self.environment_name)
             .where(*conditions)
             .order_by(_AGENTS.c.name_key, _AGENTS.c.agent_id)
             .limit(max(1, min(int(limit or 200), 10_000)))
@@ -969,7 +969,7 @@ class AgentRepository:
         if after_agent_id:
             conditions.append(_AGENTS.c.agent_id > after_agent_id)
         rows = await fetch_all(
-            _definition(execution_target=self.execution_target)
+            _definition(environment_name=self.environment_name)
             .where(*conditions)
             .order_by(_AGENTS.c.agent_id)
             .limit(max(1, min(int(limit or 200), 10_000)))
@@ -982,7 +982,7 @@ class AgentRepository:
         if not ids:
             return {}
         rows = await fetch_all(
-            _definition(execution_target=self.execution_target)
+            _definition(environment_name=self.environment_name)
             .where(_AGENTS.c.agent_id.in_(ids), _LIVE)
         )
         return {str(row["agent_id"]): _view(row) for row in rows}
@@ -994,7 +994,7 @@ class AgentRepository:
             return []
         bound = select(_VAULTS.c.agent_id).where(_VAULTS.c.vault_id == target)
         rows = await fetch_all(
-            _definition(execution_target=self.execution_target)
+            _definition(environment_name=self.environment_name)
             .where(_AGENTS.c.agent_id.in_(bound), _LIVE)
             .order_by(_AGENTS.c.agent_id)
         )
@@ -1004,7 +1004,7 @@ class AgentRepository:
         """Every live Agent holding a catalog selection, enabled or not."""
         assigned = select(_ASSIGNMENTS.c.agent_id)
         rows = await fetch_all(
-            _definition(execution_target=self.execution_target)
+            _definition(environment_name=self.environment_name)
             .where(
                 _LIVE,
                 or_(
@@ -1017,13 +1017,13 @@ class AgentRepository:
         )
         return [_view(row) for row in rows]
 
-    async def list_agents_by_environment(
+    async def list_agents_by_runtime_profile(
         self, name: str, *, conn: AsyncConnection
     ) -> list[dict[str, Any]]:
-        """Every Agent naming an Environment, deleted ones included, on ``conn``.
+        """Every Agent naming a RuntimeProfile, deleted ones included, on ``conn``.
 
-        Each carries ``holds_compute`` across all execution targets: shared
-        Environment deletion must account for every box, pool, prepared slot
+        Each carries ``holds_compute`` across all Environments: shared
+        RuntimeProfile deletion must account for every box, pool, prepared slot
         and sandbox whose deletion could not be confirmed.
         """
         owner = _AGENTS.c.agent_id
@@ -1038,9 +1038,9 @@ class AgentRepository:
         ).label("holds_compute")
         rows = (
             await conn.execute(
-                _definition(execution_target=self.execution_target)
+                _definition(environment_name=self.environment_name)
                 .add_columns(holds_compute)
-                .where(_AGENTS.c.environment_name == name)
+                .where(_AGENTS.c.runtime_profile_name == name)
                 .order_by(_AGENTS.c.agent_id)
             )
         ).all()
@@ -1049,11 +1049,11 @@ class AgentRepository:
             for row in rows
         ]
 
-    async def list_agent_ids_by_environment(
+    async def list_agent_ids_by_runtime_profile(
         self, name: str, *, after_agent_id: str | None = None, limit: int = 200
     ) -> list[str]:
-        """One page of the live Agents naming an Environment, in ``agent_id`` order."""
-        conditions: list[ColumnElement[bool]] = [_LIVE, _AGENTS.c.environment_name == name]
+        """One page of the live Agents naming a RuntimeProfile, in ``agent_id`` order."""
+        conditions: list[ColumnElement[bool]] = [_LIVE, _AGENTS.c.runtime_profile_name == name]
         if after_agent_id:
             conditions.append(_AGENTS.c.agent_id > after_agent_id)
         rows = await fetch_all(
@@ -1085,8 +1085,8 @@ class AgentRepository:
         async def create(conn: AsyncConnection) -> None:
             await insert_if_absent(
                 conn, _RUNTIMES,
-                {"agent_id": agent_id, "execution_target": self.execution_target},
-                index_columns=["agent_id", "execution_target"],
+                {"agent_id": agent_id, "environment_name": self.environment_name},
+                index_columns=["agent_id", "environment_name"],
                 where=_live(agent_id).exists(),
             )
 
@@ -1108,7 +1108,7 @@ class AgentRepository:
             changed = await conn.execute(
                 update(_RUNTIMES)
                 .where(
-                    _runtime_owner(_RUNTIMES, agent_id, self.execution_target),
+                    _runtime_owner(_RUNTIMES, agent_id, self.environment_name),
                     _RUNTIMES.c.agent_id.in_(_live(agent_id)),
                     following <= last,
                 )
@@ -1118,7 +1118,7 @@ class AgentRepository:
                 return None
             return int((await conn.execute(
                 select(_RUNTIMES.c.last_conversation_uid)
-                .where(_runtime_owner(_RUNTIMES, agent_id, self.execution_target))
+                .where(_runtime_owner(_RUNTIMES, agent_id, self.environment_name))
             )).scalar_one())
 
         return await transaction(allocate)
@@ -1134,7 +1134,7 @@ class AgentRepository:
             changed = await conn.execute(
                 update(_RUNTIMES)
                 .where(
-                    _runtime_owner(_RUNTIMES, agent_id, self.execution_target),
+                    _runtime_owner(_RUNTIMES, agent_id, self.environment_name),
                     _RUNTIMES.c.agent_id.in_(_live(agent_id)),
                 )
                 .values(workspace_id=func.coalesce(_RUNTIMES.c.workspace_id, minted))
@@ -1143,7 +1143,7 @@ class AgentRepository:
                 return None
             return str((await conn.execute(
                 select(_RUNTIMES.c.workspace_id)
-                .where(_runtime_owner(_RUNTIMES, agent_id, self.execution_target))
+                .where(_runtime_owner(_RUNTIMES, agent_id, self.environment_name))
             )).scalar_one())
 
         return await transaction(claim)
@@ -1152,7 +1152,7 @@ class AgentRepository:
         """Record that a new conversation of the Agent found no prepared unit."""
         await execute(
             update(_RUNTIMES)
-            .where(_runtime_owner(_RUNTIMES, agent_id, self.execution_target))
+            .where(_runtime_owner(_RUNTIMES, agent_id, self.environment_name))
             .values(capacity_last_miss_at=func.now())
         )
 
@@ -1162,7 +1162,7 @@ class AgentRepository:
             await execute(
                 update(_RUNTIMES)
                 .where(
-                    _runtime_owner(_RUNTIMES, agent_id, self.execution_target),
+                    _runtime_owner(_RUNTIMES, agent_id, self.environment_name),
                     _RUNTIMES.c.seats_per_box != seats,
                 )
                 .values(seats_per_box=seats)
@@ -1173,7 +1173,7 @@ class AgentRepository:
         """Keep the name of a sandbox the Agent's teardown could not confirm destroyed."""
         async def record(conn: AsyncConnection) -> None:
             await conn.execute(insert_if_absent_primary_key(conn, _UNDESTROYED, {
-                "execution_target": self.execution_target,
+                "environment_name": self.environment_name,
                 "agent_id": agent_id, "sandbox_id": sandbox_id,
             }))
 
@@ -1197,7 +1197,7 @@ class AgentRepository:
         """
         async def record(conn: AsyncConnection) -> str:
             await conn.execute(upsert_primary_key(conn, _GATEWAY_ENTRIES, {
-                "execution_target": self.execution_target,
+                "environment_name": self.environment_name,
                 "agent_id": agent_id, "slot_id": slot_id, "session_id": session_id,
                 "endpoint_provider": endpoint_provider,
             }, update_columns=[], update_values={
@@ -1207,7 +1207,7 @@ class AgentRepository:
                 ),
             }))
             owner = (await conn.execute(select(_GATEWAY_ENTRIES.c.session_id).where(
-                _runtime_owner(_GATEWAY_ENTRIES, agent_id, self.execution_target),
+                _runtime_owner(_GATEWAY_ENTRIES, agent_id, self.environment_name),
                 _GATEWAY_ENTRIES.c.slot_id == slot_id,
             ))).scalar_one()
             return str(owner)
@@ -1222,7 +1222,7 @@ class AgentRepository:
                 _GATEWAY_ENTRIES.c.session_id,
                 _GATEWAY_ENTRIES.c.endpoint_provider,
             )
-            .where(_runtime_owner(_GATEWAY_ENTRIES, agent_id, self.execution_target))
+            .where(_runtime_owner(_GATEWAY_ENTRIES, agent_id, self.environment_name))
             .order_by(_GATEWAY_ENTRIES.c.recorded_at, _GATEWAY_ENTRIES.c.slot_id)
         )
         return [dict(row) for row in rows]
@@ -1232,7 +1232,7 @@ class AgentRepository:
         return (
             await execute(
                 delete(_GATEWAY_ENTRIES).where(
-                    _runtime_owner(_GATEWAY_ENTRIES, agent_id, self.execution_target),
+                    _runtime_owner(_GATEWAY_ENTRIES, agent_id, self.environment_name),
                     _GATEWAY_ENTRIES.c.slot_id == slot_id,
                     _GATEWAY_ENTRIES.c.session_id == session_id,
                 )
@@ -1251,7 +1251,7 @@ class AgentRepository:
         when the Agent is missing or deleted.
         """
         row = await fetch_one(
-            _ledger(execution_target=self.execution_target)
+            _ledger(environment_name=self.environment_name)
             .where(_AGENTS.c.agent_id == agent_id, _LIVE)
         )
         return _ledger_view(row) if row is not None else None
@@ -1260,7 +1260,7 @@ class AgentRepository:
         """The Agent's slot manifests, oldest first, deleted Agent or not."""
         rows = await fetch_all(
             select(_slot_json().label("manifest"))
-            .where(_runtime_owner(_SLOTS, agent_id, self.execution_target))
+            .where(_runtime_owner(_SLOTS, agent_id, self.environment_name))
             .order_by(_SLOTS.c.prepared_at.is_(None), _SLOTS.c.prepared_at, _SLOTS.c.slot_id)
         )
         return [_slot_manifest(row["manifest"]) for row in rows]
@@ -1271,7 +1271,7 @@ class AgentRepository:
         if not target:
             return None
         row = await fetch_one(
-            _definition(execution_target=self.execution_target)
+            _definition(environment_name=self.environment_name)
             .where(_RUNTIMES.c.sandbox_id == target, _LIVE)
             .order_by(_AGENTS.c.agent_id)
             .limit(1)
@@ -1284,7 +1284,7 @@ class AgentRepository:
         if not target:
             return []
         rows = await fetch_all(
-            _definition(execution_target=self.execution_target)
+            _definition(environment_name=self.environment_name)
             .where(_RUNTIMES.c.sandbox_id == target, _LIVE)
             .order_by(_AGENTS.c.agent_id)
         )
@@ -1302,7 +1302,7 @@ class AgentRepository:
         if after_agent_id:
             conditions.append(_RUNTIMES.c.agent_id > after_agent_id)
         rows = await fetch_all(
-            _definition(execution_target=self.execution_target)
+            _definition(environment_name=self.environment_name)
             .where(*conditions)
             .order_by(_RUNTIMES.c.agent_id)
             .limit(max(1, min(int(limit or 200), 10_000)))
@@ -1325,7 +1325,7 @@ class AgentRepository:
         if after_agent_id:
             conditions.append(_AGENTS.c.agent_id > after_agent_id)
         rows = await fetch_all(
-            _ledger(execution_target=self.execution_target)
+            _ledger(environment_name=self.environment_name)
             .where(*conditions)
             .order_by(_AGENTS.c.agent_id)
             .limit(max(1, min(int(limit or 200), 10_000)))
@@ -1348,7 +1348,7 @@ class AgentRepository:
         if after_agent_id:
             conditions.append(_RUNTIMES.c.agent_id > after_agent_id)
         rows = await fetch_all(
-            _definition(execution_target=self.execution_target)
+            _definition(environment_name=self.environment_name)
             .where(*conditions)
             .order_by(_RUNTIMES.c.agent_id)
             .limit(max(1, min(int(limit or 50), 500)))
@@ -1368,7 +1368,7 @@ class AgentRepository:
             await execute(
                 update(_RUNTIMES)
                 .where(
-                    _runtime_owner(_RUNTIMES, agent_id, self.execution_target),
+                    _runtime_owner(_RUNTIMES, agent_id, self.environment_name),
                     _RUNTIMES.c.agent_id.in_(_live(agent_id)),
                     _RUNTIMES.c.sandbox_id == sandbox_id,
                     _RUNTIMES.c.expires_at.is_not_distinct_from(from_iso(observed_expires_at)),
@@ -1400,7 +1400,7 @@ class AgentRepository:
         published with nothing recorded against it.
         """
         conditions: list[ColumnElement[bool]] = [
-            _runtime_owner(_RUNTIMES, agent_id, self.execution_target),
+            _runtime_owner(_RUNTIMES, agent_id, self.environment_name),
             _RUNTIMES.c.agent_id.in_(_live(agent_id)),
             _RUNTIMES.c.admissions_revision == admissions_revision,
         ]
@@ -1424,7 +1424,7 @@ class AgentRepository:
                 return False
             await _admit(
                 conn, agent_id, sandbox_id=sandbox_id, session_id=session_id,
-                young_since=young_since, execution_target=self.execution_target,
+                young_since=young_since, environment_name=self.environment_name,
             )
             return True
 
@@ -1451,7 +1451,7 @@ class AgentRepository:
             fenced = await conn.execute(
                 update(_RUNTIMES)
                 .where(
-                    _runtime_owner(_RUNTIMES, agent_id, self.execution_target),
+                    _runtime_owner(_RUNTIMES, agent_id, self.environment_name),
                     _RUNTIMES.c.agent_id.in_(_live(agent_id)),
                     _RUNTIMES.c.admissions_revision == admissions_revision,
                 )
@@ -1461,7 +1461,7 @@ class AgentRepository:
                 return False
             await _admit(
                 conn, agent_id, sandbox_id=sandbox_id, session_id=session_id,
-                young_since=young_since, execution_target=self.execution_target,
+                young_since=young_since, environment_name=self.environment_name,
             )
             return True
 
@@ -1471,7 +1471,7 @@ class AgentRepository:
         """Withdraw one conversation's admission to a box, deleted Agent or not."""
         await execute(
             delete(_ADMISSIONS).where(
-                _runtime_owner(_ADMISSIONS, agent_id, self.execution_target),
+                _runtime_owner(_ADMISSIONS, agent_id, self.environment_name),
                 _ADMISSIONS.c.sandbox_id == sandbox_id,
                 _ADMISSIONS.c.session_id == session_id,
             )
@@ -1490,7 +1490,7 @@ class AgentRepository:
             await execute(
                 update(_RUNTIMES)
                 .where(
-                    _runtime_owner(_RUNTIMES, agent_id, self.execution_target),
+                    _runtime_owner(_RUNTIMES, agent_id, self.environment_name),
                     _RUNTIMES.c.agent_id.in_(_live(agent_id)),
                     _RUNTIMES.c.sandbox_id == sandbox_id,
                     _RUNTIMES.c.sandbox_backend == sandbox_backend,
@@ -1517,7 +1517,7 @@ class AgentRepository:
         if not agent_id or not sandbox_id:
             raise ValueError("agent_id and sandbox_id are required for binding cleanup")
         conditions: list[ColumnElement[bool]] = [
-            _runtime_owner(_RUNTIMES, agent_id, self.execution_target),
+            _runtime_owner(_RUNTIMES, agent_id, self.environment_name),
             _RUNTIMES.c.sandbox_id == sandbox_id,
         ]
         if sandbox_backend:
@@ -1533,7 +1533,7 @@ class AgentRepository:
                 return False
             await conn.execute(
                 update(_RUNTIMES)
-                .where(_runtime_owner(_RUNTIMES, agent_id, self.execution_target))
+                .where(_runtime_owner(_RUNTIMES, agent_id, self.environment_name))
                 .values(
                     sandbox_id=None,
                     sandbox_backend=None,
@@ -1545,7 +1545,7 @@ class AgentRepository:
             await conn.execute(
                 update(_SLOTS)
                 .where(
-                    _runtime_owner(_SLOTS, agent_id, self.execution_target),
+                    _runtime_owner(_SLOTS, agent_id, self.environment_name),
                     _SLOTS.c.sandbox_id == sandbox_id,
                     _SLOTS.c.sandbox_backend == held._mapping["sandbox_backend"],
                     _SLOTS.c.placement == "shared_slot",
@@ -1575,14 +1575,14 @@ class AgentRepository:
             _SLOTS.c.sandbox_id == sandbox_id,
             _SLOTS.c.slot_id != excluding,
             _SLOTS.c.agent_id.in_(owners),
-            _SLOTS.c.execution_target == self.execution_target,
+            _SLOTS.c.environment_name == self.environment_name,
         )
         admissions = select(_ADMISSIONS.c.session_id).where(
             _ADMISSIONS.c.sandbox_id == sandbox_id,
             _ADMISSIONS.c.session_id != excluding,
             _ADMISSIONS.c.admitted_at >= young_since,
             _ADMISSIONS.c.agent_id.in_(owners),
-            _ADMISSIONS.c.execution_target == self.execution_target,
+            _ADMISSIONS.c.environment_name == self.environment_name,
         )
         return bool(await fetch_value(select(or_(slots.exists(), admissions.exists()))))
 
@@ -1608,7 +1608,7 @@ class AgentRepository:
             adopted = await conn.execute(
                 update(_RUNTIMES)
                 .where(
-                    _runtime_owner(_RUNTIMES, agent_id, self.execution_target),
+                    _runtime_owner(_RUNTIMES, agent_id, self.environment_name),
                     _RUNTIMES.c.agent_id.in_(_live(agent_id)),
                 )
                 # MySQL evaluates assignments in order. Set sandbox_id last,
@@ -1625,7 +1625,7 @@ class AgentRepository:
             if adopted.rowcount != 1:
                 return False
             await conn.execute(insert(_SLOTS), [
-                _slot_values(agent_id, seat, execution_target=self.execution_target) for seat in seats
+                _slot_values(agent_id, seat, environment_name=self.environment_name) for seat in seats
             ])
             return True
 
@@ -1656,7 +1656,7 @@ class AgentRepository:
             fenced = await conn.execute(
                 update(_RUNTIMES)
                 .where(
-                    _runtime_owner(_RUNTIMES, agent_id, self.execution_target),
+                    _runtime_owner(_RUNTIMES, agent_id, self.environment_name),
                     _RUNTIMES.c.agent_id.in_(_live(agent_id)),
                     _RUNTIMES.c.slots_revision == slots_revision,
                     _RUNTIMES.c.admissions_revision == admissions_revision,
@@ -1673,7 +1673,7 @@ class AgentRepository:
                 await conn.execute(
                     update(_SLOTS)
                     .where(
-                        _runtime_owner(_SLOTS, agent_id, self.execution_target),
+                        _runtime_owner(_SLOTS, agent_id, self.environment_name),
                         _SLOTS.c.slot_id == slot_id,
                         _SLOTS.c.state == "prepared",
                     )
@@ -1684,7 +1684,7 @@ class AgentRepository:
                 claimed = await conn.execute(
                     update(_SLOTS)
                     .where(
-                        _runtime_owner(_SLOTS, agent_id, self.execution_target),
+                        _runtime_owner(_SLOTS, agent_id, self.environment_name),
                         _SLOTS.c.slot_id == slot_id,
                         _SLOTS.c.state == "prepared",
                     )
@@ -1696,12 +1696,12 @@ class AgentRepository:
                         "under its revision fence"
                     )
                 stored = (await conn.execute(select(_slot_json()).where(
-                    _runtime_owner(_SLOTS, agent_id, self.execution_target), _SLOTS.c.slot_id == slot_id,
+                    _runtime_owner(_SLOTS, agent_id, self.environment_name), _SLOTS.c.slot_id == slot_id,
                 ))).scalar_one()
                 manifest = _slot_manifest(stored)
                 await conn.execute(
                     delete(_ADMISSIONS).where(
-                        _runtime_owner(_ADMISSIONS, agent_id, self.execution_target),
+                        _runtime_owner(_ADMISSIONS, agent_id, self.environment_name),
                         _ADMISSIONS.c.sandbox_id == manifest["sandbox_id"],
                         _ADMISSIONS.c.session_id == slot_id,
                     )
@@ -1712,7 +1712,7 @@ class AgentRepository:
                     sandbox_id=str(manifest["sandbox_id"]),
                     session_id=session_id,
                     young_since=young_since,
-                    execution_target=self.execution_target,
+                    environment_name=self.environment_name,
                 )
                 assigned[session_id] = manifest
             return assigned
@@ -1769,14 +1769,14 @@ class AgentRepository:
         async def apply(conn: AsyncConnection) -> bool:
             locked = await conn.execute(
                 update(_RUNTIMES)
-                .where(_runtime_owner(_RUNTIMES, agent_id, self.execution_target))
+                .where(_runtime_owner(_RUNTIMES, agent_id, self.environment_name))
                 .values(slots_revision=_RUNTIMES.c.slots_revision + 1)
             )
             if locked.rowcount != 1:
                 return False
             changed = await conn.execute(
                 change.where(
-                    _runtime_owner(_SLOTS, agent_id, self.execution_target),
+                    _runtime_owner(_SLOTS, agent_id, self.environment_name),
                     _SLOTS.c.slot_id == slot_id,
                     _SLOTS.c.state == state,
                     _SLOTS.c.claimed_session_id.is_not_distinct_from(claimed_session_id or None),
@@ -1821,7 +1821,7 @@ class AgentRepository:
             await execute(
                 update(_RUNTIMES)
                 .where(
-                    _runtime_owner(_RUNTIMES, agent_id, self.execution_target),
+                    _runtime_owner(_RUNTIMES, agent_id, self.environment_name),
                     _RUNTIMES.c.agent_id.in_(_live(agent_id)),
                     _RUNTIMES.c.slots_revision == int(observed["_slots_revision"]),
                     *(
@@ -1856,7 +1856,7 @@ class AgentRepository:
                         _RUNTIMES.c.client_pool_backend,
                     )
                     .where(
-                        _runtime_owner(_RUNTIMES, agent_id, self.execution_target),
+                        _runtime_owner(_RUNTIMES, agent_id, self.environment_name),
                         _RUNTIMES.c.agent_id.in_(_live(agent_id)),
                     )
                     .with_for_update()
@@ -1872,14 +1872,14 @@ class AgentRepository:
             if current["client_pool_name"] is not None:
                 await conn.execute(
                     insert_if_absent_primary_key(conn, _RETIRING, {
-                        "execution_target": self.execution_target,
+                        "environment_name": self.environment_name,
                         "agent_id": agent_id, "pool_name": current["client_pool_name"],
                         "backend": current["client_pool_backend"],
                     })
                 )
             await conn.execute(
                 update(_RUNTIMES)
-                .where(_runtime_owner(_RUNTIMES, agent_id, self.execution_target))
+                .where(_runtime_owner(_RUNTIMES, agent_id, self.environment_name))
                 .values(client_pool_name=name, client_pool_backend=backend)
             )
             return "recorded"
@@ -1892,7 +1892,7 @@ class AgentRepository:
             await execute(
                 update(_RUNTIMES)
                 .where(
-                    _runtime_owner(_RUNTIMES, agent_id, self.execution_target),
+                    _runtime_owner(_RUNTIMES, agent_id, self.environment_name),
                     _RUNTIMES.c.client_pool_name == name,
                     _RUNTIMES.c.client_pool_backend == backend,
                 )
@@ -1904,7 +1904,7 @@ class AgentRepository:
         """The client pools newer ones displaced, oldest first: ``name`` and ``backend``."""
         rows = await fetch_all(
             select(_RETIRING.c.pool_name, _RETIRING.c.backend)
-            .where(_runtime_owner(_RETIRING, agent_id, self.execution_target))
+            .where(_runtime_owner(_RETIRING, agent_id, self.environment_name))
             .order_by(_RETIRING.c.recorded_at, _RETIRING.c.pool_name)
         )
         return [{"name": str(row["pool_name"]), "backend": str(row["backend"])} for row in rows]
@@ -1914,7 +1914,7 @@ class AgentRepository:
         return (
             await execute(
                 delete(_RETIRING).where(
-                    _runtime_owner(_RETIRING, agent_id, self.execution_target), _RETIRING.c.pool_name == name
+                    _runtime_owner(_RETIRING, agent_id, self.environment_name), _RETIRING.c.pool_name == name
                 )
             )
         ) == 1
@@ -1943,7 +1943,7 @@ class AgentRepository:
             changed = await conn.execute(
                 update(_RUNTIMES)
                 .where(
-                    _runtime_owner(_RUNTIMES, agent_id, self.execution_target),
+                    _runtime_owner(_RUNTIMES, agent_id, self.environment_name),
                     _RUNTIMES.c.prewarm_revision.is_not_distinct_from(prewarm_revision or None),
                 )
                 .values(prewarm_revision=new_revision, prepared_runtime_error=None)
@@ -1981,7 +1981,7 @@ class AgentRepository:
             changed = await conn.execute(
                 update(_RUNTIMES)
                 .where(
-                    _runtime_owner(_RUNTIMES, agent_id, self.execution_target),
+                    _runtime_owner(_RUNTIMES, agent_id, self.environment_name),
                     _RUNTIMES.c.prewarm_revision.is_not_distinct_from(prewarm_revision or None),
                 )
                 .values(**values)
@@ -2009,7 +2009,7 @@ class AgentRepository:
 
         async def swap(conn: AsyncConnection) -> bool:
             conditions: list[ColumnElement[bool]] = [
-                _runtime_owner(_RUNTIMES, agent_id, self.execution_target),
+                _runtime_owner(_RUNTIMES, agent_id, self.environment_name),
                 _operation_is(expected),
             ]
             if generation is not None:

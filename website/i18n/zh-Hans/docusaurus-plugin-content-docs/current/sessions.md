@@ -2,7 +2,7 @@
 
 > 创建、运行、查看和归档 Agent Session。
 
-Session 是与 Agent 进行的一段对话。它使用一个 Agent 和 Environment，保存你发送的
+Session 是与 Agent 进行的一段对话。它使用一个 Agent 和 RuntimeProfile，保存你发送的
 消息和 Agent 程序产生的回复，并报告 Agent 程序当前在做什么。你向 Session 发送消息，
 回复会出现在 Session 的事件流中。
 
@@ -16,11 +16,11 @@ Session 在 `state` 中报告以下状态之一：
 
 | 状态 | 说明 | 可流转到 |
 | --- | --- | --- |
-| `CREATING` | 正在准备或分配运行环境。 | `READY`, `TERMINATED` |
+| `CREATING` | 正在准备或分配运行配置。 | `READY`, `TERMINATED` |
 | `READY` | 没有正在运行的工作，Session 可以接收消息。 | `PROCESSING`, `WAITING_INPUT`, `TERMINATED`, `DELETED` |
 | `PROCESSING` | Agent 程序正在工作、有一条回复尚未结束，或 AstraBox 仍保存着程序尚未取走的消息。 | `READY`, `WAITING_INPUT`, `TERMINATED`, `DELETED` |
 | `WAITING_INPUT` | 一条回复因审批或问题而暂停。 | `PROCESSING`, `READY`, `TERMINATED`, `DELETED` |
-| `TERMINATED` | 运行环境已离线。 | `CREATING`, `DELETED` |
+| `TERMINATED` | 运行配置已离线。 | `CREATING`, `DELETED` |
 | `DELETED` | 已删除。 | —（终态） |
 
 `runtime_status` 是 Agent 程序自己的报告：`working`、`waiting` 或 `idle`。
@@ -31,21 +31,21 @@ Session 在 `state` 中报告以下状态之一：
 
 - **已归档（archived）**：与 `state` 分开记录。Session 仍可读取，但不会出现在
   活动对话列表中。
-- **运行环境不可用（runtime unavailable）**：Session 的沙箱已不存在或已释放时，
+- **运行配置不可用（runtime unavailable）**：Session 的沙箱已不存在或已释放时，
   `runtime_unavailable` 为 `true`。处于 `READY` 的 Session 保留对话历史，下一条
   消息会启动新的沙箱。
 
 1. <b>创建 → CREATING</b> 新 Session 进入 `CREATING`，AstraBox 正在准备
-   或分配运行环境。
+   或分配运行配置。
 2. <b>CREATING → READY</b> Session 已准备好，可以接收输入。Session 仍处于
-   `CREATING` 时发送的消息会被保存，并在运行环境就绪后交给 Agent 程序。
+   `CREATING` 时发送的消息会被保存，并在运行配置就绪后交给 Agent 程序。
 3. <b>READY → PROCESSING</b> 发送消息后，消息会交给 Agent 程序，由程序开始
    一条回复。
 4. <b>PROCESSING → WAITING_INPUT → PROCESSING</b> 需要审批或回答的回复会暂停，
    直到有人回应，然后继续。
 5. <b>PROCESSING → READY</b> 回复结束，并且 Agent 程序报告自己已空闲。自行继续
    工作的程序（例如正在执行后台任务）会保持 `PROCESSING`，直到它报告空闲。
-6. <b>TERMINATED</b> 对话仍然保留，但需要先恢复运行环境
+6. <b>TERMINATED</b> 对话仍然保留，但需要先恢复运行配置
    （`POST /api/v1/sessions/{session_id}/recover`），才能继续执行任务。
 7. <b>DELETED（终态）</b> 删除 Session 后，它的生命周期结束。
 
@@ -76,7 +76,7 @@ curl --silent --show-error --request POST \
 
 - **`status: "accepted"`**：AstraBox 把请求交给 Agent 程序，由程序停止进行中的
   回复，并报告回复的结束方式，例如 `cancelled`。
-- **`status: "idle"`**：没有已连接的运行环境，因此没有可以中断的工作。
+- **`status: "idle"`**：没有已连接的运行配置，因此没有可以中断的工作。
 - **中断后**：Session 仍可复用，照常发送下一条消息即可。
 
 只有 `DELETED` 是终态。中断回复不会删除 Session 或已保存的对话历史。Session 的
@@ -96,16 +96,16 @@ curl --silent --show-error --request POST \
 
 ## 创建 Session
 
-Session 从 Agent 启动，Environment 已经由这个 Agent 选定。在控制台中：
+Session 从 Agent 启动，RuntimeProfile 已经由这个 Agent 选定。在控制台中：
 
 1. 在 AstraBox 控制台中打开 **Agent**。
 2. 选择一个 Agent。
 3. 选择 **开始对话**。
 
-运行环境准备好后，新的 Session 会自动打开。Agent 开启预热时，Session 可以领取在它
-创建之前就已准备好的运行环境，其中已包含 Agent 配置和已配置的扩展。配置持久工作区
-存储后，AstraBox 会在交付运行环境前选定新 Session 的工作区，或已有 Session 保存的
-工作区。运行环境使用期间，这个分配关系保持固定。
+运行配置准备好后，新的 Session 会自动打开。Agent 开启预热时，Session 可以领取在它
+创建之前就已准备好的运行配置，其中已包含 Agent 配置和已配置的扩展。配置持久工作区
+存储后，AstraBox 会在交付运行配置前选定新 Session 的工作区，或已有 Session 保存的
+工作区。运行配置使用期间，这个分配关系保持固定。
 
 外部系统可以在请求路径中传入 Agent ID：
 
@@ -145,7 +145,7 @@ AstraBox 会返回同一个 Session，不会重复创建。
 | `agent_id` | string | 启动这个 Session 的 Agent。 |
 | `state` | string | Session 当前状态。 |
 | `title` | string/null | Session 标题。 |
-| `model_name` | string/null | 当前运行环境报告的模型。 |
+| `model_name` | string/null | 当前运行配置报告的模型。 |
 | `permission_mode` | string/null | Agent 程序支持时，为它选择的权限模式。 |
 | `runtime_status` | string/null | Agent 程序最近一次报告的状态：`idle`、`working` 或 `waiting`。 |
 | `current_responses` | array | Agent 程序正在产生的回复。 |
@@ -162,20 +162,20 @@ Session 列表响应包含每个 Session 的摘要，其中的 `state` 来自 Ag
 回复报告 token 用量或模型费用后，控制台会把这些数据和该回复一起显示。计费和限额由
 当前部署配置的模型服务管理。
 
-AstraBox 创建 Session 时不接受 Agent 对象、Agent 版本或 Environment 请求字段。
-请求路径指定 Agent，而 Environment 已经由 Agent 选定。Session 记录 Agent 身份，
+AstraBox 创建 Session 时不接受 Agent 对象、Agent 版本或 RuntimeProfile 请求字段。
+请求路径指定 Agent，而 RuntimeProfile 已经由 Agent 选定。Session 记录 Agent 身份，
 不会快照或锁定某个 Agent 版本：
 
-- AstraBox 第一次为 Session 准备运行环境时，解析当前 Agent 和 Environment
-- 保存 Agent 或 Environment 后，正在运行的运行环境不会被原地重新配置
-- AstraBox 后续重建运行环境时，同一个 Session 可以使用当前保存的 Agent 和
-  Environment 配置
+- AstraBox 第一次为 Session 准备运行配置时，解析当前 Agent 和 RuntimeProfile
+- 保存 Agent 或 RuntimeProfile 后，正在运行的运行配置不会被原地重新配置
+- AstraBox 后续重建运行配置时，同一个 Session 可以使用当前保存的 Agent 和
+  RuntimeProfile 配置
 - Agent 的 `version` 字段用于检测并发更新，不是 Session 可以选择的配置版本
 
 ## 创建后添加资源
 
 AstraBox 创建 Session 的请求不接受 `resources` 数组。默认 GitHub 仓库和 Vault
-分配关系配置在 Agent 上；一次性文件则在 Session 运行环境准备好后直接上传到工作区。
+分配关系配置在 Agent 上；一次性文件则在 Session 运行配置准备好后直接上传到工作区。
 参阅[访问 GitHub](working-with-repos.md)、[使用 Vault 认证](credentials.md)和
 [上传与下载文件](files.md)。
 
@@ -320,7 +320,7 @@ curl --silent --show-error --request POST \
 分页响应使用 `has_more` 和 `next_cursor`。未传 `page=1` 时，同一个列表接口返回
 控制台使用的非分页数组。这个 Session 路由族只能更新权限模式这一项 Session 配置；
 具体可选值由所选 Agent 程序定义。AstraBox 把权限模式保存在 Session 上，并应用到
-正在运行的 Agent 程序；没有运行中程序的 Session 会在运行环境启动时获得该模式。
+正在运行的 Agent 程序；没有运行中程序的 Session 会在运行配置启动时获得该模式。
 
 ### 未读回复
 
@@ -361,7 +361,7 @@ POST /api/v1/sessions/{session_id}/child-runs/{child_run_id}/stop
 POST /api/v1/sessions/{session_id}/archive
 ```
 
-需要让记录和运行环境进入终态 `DELETED` 时，删除 Session：
+需要让记录和运行配置进入终态 `DELETED` 时，删除 Session：
 
 ```text
 DELETE /api/v1/sessions/{session_id}
@@ -452,13 +452,13 @@ curl -X POST "$ASTRABOX/api/v1/admin/sessions/$SESSION_ID/history-import" \
 ## 最佳实践
 
 1. **把 Agent 配置视为实时配置** — Session 不锁定 Agent 版本。保存 Agent 不会
-   修改正在运行的运行环境，但重建后的运行环境会使用当前保存的 Agent 和 Environment
+   修改正在运行的运行配置，但重建后的运行配置会使用当前保存的 Agent 和 RuntimeProfile
    配置。
 2. **使用稳定的请求标识** — 为每个 Session 创建请求设置稳定的
    `Idempotency-Key`，并为每条消息设置稳定的 `client_message_id`，以避免重复请求
    并便于追踪。
 3. **明确区分中断和归档** — 需要停止某条回复时使用中断；只有在 Session 应离开
-   活动列表并释放运行环境时才归档。
+   活动列表并释放运行配置时才归档。
 
 ## 常见问题
 
@@ -490,10 +490,10 @@ A：调用 `GET /sessions/{id}/messages`，并使用每页返回的 `before` 游
 A：保存最新 `data-resume-cursor` part 的 `data.seq`，然后使用 `after_seq`
 查询参数重连。AstraBox 不读取 `Last-Event-ID`。
 
-**Q：创建或编辑 Agent 时为什么找不到某个 Environment？**
+**Q：创建或编辑 Agent 时为什么找不到某个 RuntimeProfile？**
 
-A：Agent 表单只列出已启用、并且其 Agent 程序支持 Agent 的 Environment。
-**运行环境**管理页也会显示已停用项；请在那里检查 Environment 的启用状态和
+A：Agent 表单只列出已启用、并且其 Agent 程序支持 Agent 的 RuntimeProfile。
+**运行配置**管理页也会显示已停用项；请在那里检查 RuntimeProfile 的启用状态和
 所选 Agent 程序。
 
 ## API 参考

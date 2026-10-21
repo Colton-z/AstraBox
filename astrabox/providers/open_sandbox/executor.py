@@ -44,7 +44,7 @@ from astrabox.providers.sandbox_image import (
 )
 from astrabox.seams.sandbox import (
     SANDBOX_ASSIGNMENT_ID_METADATA_KEY,
-    SANDBOX_EXECUTION_TARGET_METADATA_KEY,
+    SANDBOX_ENVIRONMENT_METADATA_KEY,
     SANDBOX_INSTALLATION_METADATA_KEY,
     SANDBOX_MANAGED_BY_METADATA_KEY,
     SANDBOX_MANAGED_BY_METADATA_VALUE,
@@ -57,7 +57,7 @@ from astrabox.seams.sandbox import (
     SandboxDestruction,
     SandboxUnreachable,
     sandbox_installation_id,
-    execution_target_metadata,
+    environment_name_metadata,
 )
 
 logger = get_logger(__name__)
@@ -883,7 +883,7 @@ async def create_open_sandbox_box(
     *,
     session_id: str,
     assignment_id: str,
-    execution_target: str,
+    environment_name: str,
     image: str,
     env: dict[str, str],
     resource_limits: dict[str, str],
@@ -959,7 +959,7 @@ async def create_open_sandbox_box(
         for key, value in dict(metadata or {}).items()
     }
     reserved_metadata = {
-        SANDBOX_EXECUTION_TARGET_METADATA_KEY,
+        SANDBOX_ENVIRONMENT_METADATA_KEY,
         SANDBOX_SESSION_ID_METADATA_KEY,
         SANDBOX_MANAGED_BY_METADATA_KEY,
         SANDBOX_ASSIGNMENT_ID_METADATA_KEY,
@@ -1106,7 +1106,7 @@ async def create_open_sandbox_box(
                 **hardening,
                 metadata={
                     **caller_metadata,
-                    **execution_target_metadata(execution_target),
+                    **environment_name_metadata(environment_name),
                     # The seam owns these names. Runtime owner + deployment
                     # establish ownership; assignment names this create attempt;
                     # installation names the database whose rows own the box.

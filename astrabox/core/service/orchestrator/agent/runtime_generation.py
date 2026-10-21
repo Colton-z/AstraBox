@@ -155,8 +155,15 @@ async def runtime_generations(
             placeholder_context=f"runtime-generation:{agent_id}",
         )
     from astrabox.seams.runtime_preparation import runtime_preparation_plan, runtime_preparation_provider
+    from astrabox.core.service.orchestrator.engine.provisioning import sandbox_create_resources
 
     integration = runtime_preparation_provider()
+    provider = sandbox_for_template(template)
+    resource_limits, resource_requests = provider.fit_resources(
+        *sandbox_create_resources(
+            shared=resolve_sandbox_tenancy(template) != SANDBOX_TENANCY_CONVERSATION,
+        )
+    )
     payload: dict[str, Any] = {
         "runtime_preparation": {
             "provider": integration.name if integration is not None else None,
@@ -165,16 +172,18 @@ async def runtime_generations(
         },
         "agent_id": agent_id,
         "prewarm_revision": _value(template, "prewarm_revision"),
-        "environment_updated_at": str(
-            _value(template, "environment_updated_at", "") or ""
+        "runtime_profile_updated_at": str(
+            _value(template, "runtime_profile_updated_at", "") or ""
         ),
         "image": resolve_runtime_template_name(template),
         "engine_kind": engine_kind,
-        "sandbox_backend": str(sandbox_for_template(template).name),
+        "sandbox_backend": str(provider.name),
         "sandbox_tenancy": resolve_sandbox_tenancy(template),
         "permission_level": resolve_sandbox_permission_level(template),
         "network_policy": network_policy,
         "box": {
+            "resource_limits": resource_limits,
+            "resource_requests": resource_requests,
             "entrypoint": tuple(request.entrypoint),
             "env": dict(request.env),
             "credential_env_var": request.credential_env_var,
@@ -231,7 +240,7 @@ async def runtime_generations(
     # Plugins; each conversation starts its own engine in it, so its recipe
     # excludes engine configuration.
     box_payload = {
-        **{key: value for key, value in payload.items() if key != "environment_updated_at"},
+        **{key: value for key, value in payload.items() if key != "runtime_profile_updated_at"},
         "model": {
             key: value
             for key, value in payload["model"].items()

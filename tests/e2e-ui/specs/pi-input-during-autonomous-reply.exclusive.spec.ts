@@ -88,7 +88,7 @@ test('Pi preserves an ordinary reply when a Web input is queued during its tool'
   const deliveries = () => recipient.deliveries.map((row) => row.text);
   try {
     agentId = (await api.createAgent({ name: `__e2e_pi_queued_input_${id}`,
-      environment_name: profile.environment_name, model: profile.model, prepared_capacity: 0 })).agent_id;
+      runtime_profile_name: profile.runtime_profile_name, model: profile.model, prepared_capacity: 0 })).agent_id;
     const deployment = await platform.createDeployment(agentId, { scene: 'channel:generic_json', prompt_prefix: '' });
     deploymentId = deployment.deployment_id;
     async function channelInput(text: string, messageId: string): Promise<string> {
@@ -263,7 +263,7 @@ test('Pi preserves an autonomous reply when a Web input arrives before it settle
   }
   try {
     agentId = (await api.createAgent({ name: `__e2e_pi_active_input_${id}`,
-      environment_name: profile.environment_name, model: profile.model, prepared_capacity: 0 })).agent_id;
+      runtime_profile_name: profile.runtime_profile_name, model: profile.model, prepared_capacity: 0 })).agent_id;
     const deployment = await platform.createDeployment(agentId, { scene: 'channel:generic_json', prompt_prefix: '' });
     deploymentId = deployment.deployment_id;
     expect(deployment.secret).toBeTruthy();

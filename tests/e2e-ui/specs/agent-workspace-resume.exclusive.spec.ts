@@ -82,8 +82,8 @@ async function preparedCapacity(page: Page, id: string): Promise<Prepared> {
 }
 
 async function createFixture(api: AstraApi, profile: EngineProfile): Promise<string> {
-  const environments = await api.data<Array<Record<string, unknown>>>('GET', '/admin/environments');
-  const environment = environments.find((item) => item.enabled === true
+  const runtime_profiles = await api.data<Array<Record<string, unknown>>>('GET', '/admin/runtime-profiles');
+  const environment = runtime_profiles.find((item) => item.enabled === true
     && item.sandbox_tenancy === 'conversation' && item.engine_kind === profile.engine_kind
     && item.runtime_template_name === profile.image);
   expect(environment, `the deployment must supply the exact ${profile.engine_kind} conversation image`).toBeTruthy();
@@ -91,7 +91,7 @@ async function createFixture(api: AstraApi, profile: EngineProfile): Promise<str
   const agent = await api.createAgent({
     name: `workspace-resume-${profile.engine_kind}-${randomUUID()}`,
     model: base.model, engine_options: base.engine_options,
-    environment_name: environment!.name, prepared_capacity: 1,
+    runtime_profile_name: environment!.name, prepared_capacity: 1,
   });
   agentId = agent.agent_id;
   evidence.agentId = agentId;

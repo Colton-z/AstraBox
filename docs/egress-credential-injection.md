@@ -51,7 +51,7 @@ For placeholder-based credentials:
 3. The proxy checks the request's destination, method, path, and permitted
    substitution location.
 4. A matching request receives the real value. A request that does not match
-   receives no credential and may also be blocked by the Environment's network
+   receives no credential and may also be blocked by the RuntimeProfile's network
    rules.
 
 The real value is never returned by the credentials API or shown in the
@@ -96,14 +96,14 @@ host or repository path.
 
 ## Network access remains separate
 
-An Environment still controls ordinary outbound access with its `limited` or
+A RuntimeProfile still controls ordinary outbound access with its `limited` or
 `unrestricted` network mode. Assigning a protected credential adds its exact
 destination to the effective sandbox rules; it does not change the saved
-Environment or allow unrelated destinations. The credential's method and path
+RuntimeProfile or allow unrelated destinations. The credential's method and path
 rules decide which matching requests receive the secret.
 
 Remote MCP calls and other sandbox traffic use the deployment's network egress.
-See [Network access](networking.md) for Environment settings and outbound IP
+See [Network access](networking.md) for RuntimeProfile settings and outbound IP
 addresses.
 
 ## Deployment requirements
@@ -141,7 +141,7 @@ metadata without saved values.
 
 ## Configure ordinary network access independently
 
-An Environment states ordinary outbound reachability independently of
+A RuntimeProfile states ordinary outbound reachability independently of
 credential delivery. `unrestricted` permits all destinations. `limited` permits
 its allowlist plus platform-known destinations; it does not duplicate Vault
 bindings or inspect Plugin-internal MCP declarations:
@@ -174,7 +174,7 @@ to `api.example.com` is the authorization to reach `api.example.com`. Method and
 path rules still decide where the secret is injected; requests elsewhere on
 that host remain credential-free.
 
-Vault assignment leaves the Environment record unchanged. Environment
+Vault assignment leaves the RuntimeProfile record unchanged. RuntimeProfile
 networking and Vault record lifecycle are independent. Removing the assignment
 removes its managed host grant from new sandbox policy.
 
@@ -183,7 +183,7 @@ OpenSandbox egress v1.1.7 supports credential interception on HTTPS 443, or HTTP
 `dns+nft`. It also validates that each runtime binding host is explicitly
 reachable. The adapter therefore renders each attached binding host as an exact
 allow rule. Under unrestricted networking that rule is redundant; under limited
-networking it is the host grant carried by the Vault assignment. The Environment
+networking it is the host grant carried by the Vault assignment. The RuntimeProfile
 allowlist needs no duplicate destination.
 
 ## Add an outbound credential
@@ -278,7 +278,7 @@ egress-side Vault before preparation downloads Skills or Plugins. Model,
 environment, MCP and HTTP Basic credentials use the same delivery path as cold
 creation; prewarming does not substitute fake secret values. Protected values
 remain outside the sandbox environment. Allocation and resume refresh current
-bindings through the same plan. The Environment allowlist does not need to
+bindings through the same plan. The RuntimeProfile allowlist does not need to
 duplicate the Vault binding hosts.
 
 See [OpenSandbox credential protection](providers/opensandbox.md#credential-protection)

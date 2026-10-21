@@ -114,7 +114,7 @@ class AdminService:
         """Authorize ``user`` against the Session's durable owner.
 
         Agent Sessions inherit their Agent's management ACL. Assistant Sessions
-        inherit their Assistant owner's identity; the Environment name stored in
+        inherit their Assistant owner's identity; the RuntimeProfile name stored in
         ``agent_id`` is runtime configuration, not an Agent ACL key. Platform
         administrators may manage either subject. Every per-Session admin
         view/action funnels through this gate and fails loud with 403.
@@ -372,15 +372,15 @@ class AdminService:
 
     async def admin_navigation_summary(self, user) -> dict[str, int]:
         """Counts for the management rail, under each collection's read scope."""
-        manageable, agents, environments = await asyncio.gather(
+        manageable, agents, runtime_profiles = await asyncio.gather(
             self._manageable_agent_ids(user),
             self._agent_config.count_visible_agents(user),
-            self._agent_config.count_environment_configs(),
+            self._agent_config.count_runtime_profile_configs(),
         )
         sessions = await self._sessions_repo.count_all_sessions(agent_ids=manageable)
         return {
             "agents": agents,
-            "environments": environments,
+            "runtime_profiles": runtime_profiles,
             "sessions": sessions,
         }
 
@@ -694,7 +694,7 @@ class AdminService:
 
         # Reading configured extensions is not permission to start a runtime.
         template = await self._agent_config.resolve_session_harness(
-            session, require_enabled_environment=False
+            session, require_enabled_runtime_profile=False
         )
         if template:
             clean["template_skills"] = list(template.skills) if template.skills else []

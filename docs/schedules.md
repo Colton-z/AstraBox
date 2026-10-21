@@ -26,13 +26,13 @@ Assistant triggers.
   already uses. An installation that sets `ASTRABOX_SCHEDULER_PROVIDER=none`
   cannot create, enable, or run Schedules.
 
-A Schedule retains the execution target where its binding was created.
+A Schedule retains the Environment where its binding was created.
 Authorized web processes can manage its native schedule through a control
-client. Only workers of that target dispatch it. Setting
+client. Only workers of that Environment dispatch it. Setting
 `ASTRABOX_BACKGROUND_EXECUTION_ENABLED=false` leaves schedule management
 available but starts no local scheduler worker. Existing accepted Sessions
-retain target-owned runtime transport and native state custody. See
-[shared-database deployment](deploy.md#share-a-product-database).
+retain Environment-owned runtime transport and native state custody. See
+[Environment deployment](deploy.md#environments).
 
 Open **Console → Triggers → New trigger**, then choose **Schedule**. The form
 contains the complete Schedule definition:

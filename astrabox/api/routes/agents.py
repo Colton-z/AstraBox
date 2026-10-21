@@ -79,7 +79,7 @@ class AgentRecord(BaseModel):
     artifacts_enabled: bool | None = None
     default_repo: dict[str, Any] | None = None
     packages: list[dict[str, Any]] | None = None
-    environment_name: str | None = None
+    runtime_profile_name: str | None = None
     exposure_mode: str | None = None
     idle_hibernate_seconds: int | None = None
     prepared_capacity: int | None = None
@@ -176,8 +176,8 @@ class AgentFormSchema(BaseModel):
     fields: list[AgentFormField]
 
 
-class AgentEnvironmentOption(BaseModel):
-    """One Environment an Agent author may choose, without its secrets."""
+class AgentRuntimeProfileOption(BaseModel):
+    """One RuntimeProfile an Agent author may choose, without its secrets."""
 
     model_config = ConfigDict(extra="allow")
 
@@ -194,8 +194,8 @@ class AgentEnvironmentOption(BaseModel):
     extensions: dict[str, Any] = {}
 
 
-class AgentEnvironmentModels(BaseModel):
-    """The model ids an Environment's gateway offers. Empty when it offers none."""
+class AgentRuntimeProfileModels(BaseModel):
+    """The model ids a RuntimeProfile's gateway offers. Empty when it offers none."""
 
     model_config = ConfigDict(extra="allow")
 
@@ -218,10 +218,10 @@ class AgentPreparedRuntimeStatus(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool
-    execution_target: str
+    environment_name: str
     prewarm_enabled: bool
     configured_target: int
-    #: Prepared capacity selected by this execution target, independently of Agent enablement.
+    #: Prepared capacity selected by this Environment, independently of Agent enablement.
     target: int
     ready: bool
     #: Prepared units a new conversation can take right now.
@@ -299,25 +299,25 @@ def register_agent_routes(app: Any) -> None:
         return success_response(get_agent_schema())
 
     @app.get(
-        "/api/v1/agent-configuration/environments",
-        response_model=ApiEnvelope[list[AgentEnvironmentOption]],
+        "/api/v1/agent-configuration/runtime-profiles",
+        response_model=ApiEnvelope[list[AgentRuntimeProfileOption]],
         response_model_exclude_unset=True,
     )
-    async def list_agent_configuration_environments(request: Request):
-        """Secret-free Environment choices for the Agent form."""
+    async def list_agent_configuration_runtime_profiles(request: Request):
+        """Secret-free RuntimeProfile choices for the Agent form."""
         await _resolve_user(request)
-        result = await get_platform_service().list_agent_environment_options()
+        result = await get_platform_service().list_agent_runtime_profile_options()
         return success_response(result)
 
     @app.get(
-        "/api/v1/agent-configuration/environments/{name}/models",
-        response_model=ApiEnvelope[AgentEnvironmentModels],
+        "/api/v1/agent-configuration/runtime-profiles/{name}/models",
+        response_model=ApiEnvelope[AgentRuntimeProfileModels],
         response_model_exclude_unset=True,
     )
     async def list_agent_configuration_models(name: str, request: Request):
-        """Searchable model ids exposed by the chosen Environment's gateway."""
+        """Searchable model ids exposed by the chosen RuntimeProfile's gateway."""
         await _resolve_user(request)
-        models = await get_platform_service().list_agent_environment_models(name)
+        models = await get_platform_service().list_agent_runtime_profile_models(name)
         return success_response({"models": models})
 
     @app.get(

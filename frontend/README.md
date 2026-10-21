@@ -74,7 +74,7 @@ src/
   session/        the live-turn conversation surface (SessionPage) and its
                   session-state machinery (polling, outbox / tool / pending-
                   interaction state, auto-resume)
-  manage/         operator "manage" console (ManageApp): agents, environments,
+  manage/         operator "manage" console (ManageApp): agents, runtime_profiles,
                   deployments, sessions, assistants  (console/ is its UI kit)
   assistant/      assistants feature (page, api, types)
   components/     shared components:

@@ -157,18 +157,18 @@ test('unsent text survives session switching and reload without returning after 
 test('session history stays listed after its Agent is deleted', async ({ request, page }) => {
   const api = new AstraApi(request);
   const seeded = await api.defaultAgent();
-  const environmentName = String(seeded.environment_name || '').trim();
-  expect(environmentName, 'seeded default agent must name an environment').not.toEqual('');
-  const models = await api.listEnvironmentModels(environmentName);
+  const runtimeProfileName = String(seeded.runtime_profile_name || '').trim();
+  expect(runtimeProfileName, 'seeded default agent must name an environment').not.toEqual('');
+  const models = await api.listEnvironmentModels(runtimeProfileName);
   const model = models.find((item) => item && !item.includes('*'));
-  expect(model, `${environmentName} must expose a concrete model`).toBeTruthy();
+  expect(model, `${runtimeProfileName} must expose a concrete model`).toBeTruthy();
   const agentName = `__e2e_session_list_history_${Date.now()}`;
 
   try {
     const agent = await api.createAgent({
       name: agentName,
       model,
-      environment_name: environmentName,
+      runtime_profile_name: runtimeProfileName,
       prepared_capacity: 0,
     });
     const agentId = String(agent.agent_id || '');

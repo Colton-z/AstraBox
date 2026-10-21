@@ -1,6 +1,6 @@
 """Assistant defaults: the layers of what every Assistant beneath them inherits.
 
-Each row is one layer: the Environment and model new Assistants use,
+Each row is one layer: the RuntimeProfile and model new Assistants use,
 instructions, and the Skills, MCP servers, packages, native options and
 Credential Vaults provided to them. ``scope`` names the layer;
 ``deployment`` covers the whole deployment. Assistants read their layers when
@@ -36,13 +36,13 @@ _LAYERS = AssistantDefaults.__table__
 _VAULTS = AssistantDefaultVaultBinding.__table__
 _ASSIGNMENTS = AssistantDefaultMcpAssignment.__table__
 
-#: The constraint named when a layer's Environment does not exist,
+#: The constraint named when a layer's RuntimeProfile does not exist,
 #: as ``astrabox.persistence.sql.base.NAMING_CONVENTION`` names it.
-_ENVIRONMENT_FK = "fk_assistant_defaults_environment_name_environments"
+_RUNTIME_PROFILE_FK = "fk_assistant_defaults_runtime_profile_name_runtime_profiles"
 
 #: Layer fields stored in the column of the same name.
 _LAYER_COLUMNS = (
-    "environment_name",
+    "runtime_profile_name",
     "model_name",
     "instructions",
     "skills",
@@ -53,8 +53,8 @@ _LAYER_COLUMNS = (
 )
 
 
-class AssistantDefaultsEnvironmentMissing(Exception):
-    """The Environment a layer names does not exist."""
+class AssistantDefaultsRuntimeProfileMissing(Exception):
+    """The RuntimeProfile a layer names does not exist."""
 
 
 class AssistantDefaultsVaultMissing(Exception):
@@ -137,7 +137,7 @@ class AssistantDefaultsRepository:
 
         ``expected_version`` is ``None`` for a layer that did not exist when it
         was read. ``False`` when another save got there first; nothing is
-        written then. Raises :class:`AssistantDefaultsEnvironmentMissing` or
+        written then. Raises :class:`AssistantDefaultsRuntimeProfileMissing` or
         :class:`AssistantDefaultsVaultMissing` for a reference that does not
         exist.
         """
@@ -197,8 +197,8 @@ class AssistantDefaultsRepository:
             await load_installation_id()
             return await transaction(work)
         except ForeignKeyViolation as exc:
-            if exc.constraint == _ENVIRONMENT_FK:
-                raise AssistantDefaultsEnvironmentMissing(str(columns["environment_name"])) from exc
+            if exc.constraint == _RUNTIME_PROFILE_FK:
+                raise AssistantDefaultsRuntimeProfileMissing(str(columns["runtime_profile_name"])) from exc
             raise AssistantDefaultsVaultMissing(",".join(vault_ids)) from exc
 
     async def list_by_credential_vault_id(self, vault_id: str) -> list[dict[str, Any]]:
@@ -214,12 +214,12 @@ class AssistantDefaultsRepository:
             if view is not None
         ]
 
-    async def list_by_environment(
+    async def list_by_runtime_profile(
         self, name: str, *, connection: AsyncConnection | None = None
     ) -> list[dict[str, Any]]:
-        """The layers naming this Environment, on the caller's transaction when supplied."""
+        """The layers naming this RuntimeProfile, on the caller's transaction when supplied."""
         statement = (
-            select(_LAYERS.c.scope).where(_LAYERS.c.environment_name == name).order_by(_LAYERS.c.scope)
+            select(_LAYERS.c.scope).where(_LAYERS.c.runtime_profile_name == name).order_by(_LAYERS.c.scope)
         )
         if connection is not None:
             return [dict(row) for row in (await connection.execute(statement)).mappings()]

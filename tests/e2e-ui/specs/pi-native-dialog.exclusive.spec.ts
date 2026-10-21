@@ -123,11 +123,11 @@ test('Pi native command dialog survives reload without inventing a tool call', a
   expect(profiles).toHaveLength(1);
   const profile = profiles[0]!;
   const api = new AstraApi(request);
-  const environments = await api.data<Array<Record<string, unknown>>>('GET', '/admin/environments');
-  const environment = environments.find((item) => item.enabled === true
+  const runtime_profiles = await api.data<Array<Record<string, unknown>>>('GET', '/admin/runtime-profiles');
+  const environment = runtime_profiles.find((item) => item.enabled === true
     && item.sandbox_tenancy === 'conversation' && item.engine_kind === 'pi'
     && item.runtime_template_name === profile.image);
-  expect(environment, 'use the existing deployment-proven cold Pi Environment').toBeTruthy();
+  expect(environment, 'use the existing deployment-proven cold Pi RuntimeProfile').toBeTruthy();
   const base = await api.getAgent(profile.agent_id);
   const options = object(base.engine_options);
   const settings = object(options.settings);
@@ -136,7 +136,7 @@ test('Pi native command dialog survives reload without inventing a tool call', a
   const reloadExtension = '/opt/pi/node_modules/@earendil-works/pi-coding-agent/examples/extensions/reload-runtime.ts';
   const agent = await api.createAgent({
     name: `__e2e_pi_dialog_${Date.now()}`, model: base.model,
-    environment_name: environment!.name, prepared_capacity: 0,
+    runtime_profile_name: environment!.name, prepared_capacity: 0,
     engine_options: { ...options, settings: {
       ...settings, extensions: [...originalExtensions as unknown[], reloadExtension],
     } },

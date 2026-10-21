@@ -6,8 +6,8 @@ import { useSWRConfig } from 'swr';
 
 import { Button } from '@/components/ui/button';
 import { PageShell } from '@/components/shell';
-import { listAdminEnvironments } from '@/api';
-import type { EnvironmentConfig } from '@/types';
+import { listAdminRuntimeProfiles } from '@/api';
+import type { RuntimeProfileConfig } from '@/types';
 
 import {
   ConsolePageHeader,
@@ -24,22 +24,22 @@ import {
   type ConsoleColumn,
 } from './console';
 import {
-  envDisplayName,
+  runtimeProfileDisplayName,
   envEngineLabel,
   envSandbox,
   envUpdatedAt,
   formatDateTime,
-} from './environmentConfig';
+} from './runtimeProfileConfig';
 import { MANAGE_NAV_COUNT_KEYS } from './navCounts';
 import { keepsLastRead, useKeepCurrent, type ReloadContext } from '@/hooks/useKeepCurrent';
 
 type StatusFilter = 'all' | 'enabled' | 'disabled';
 
-export default function EnvironmentsListPage() {
+export default function RuntimeProfilesListPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { mutate } = useSWRConfig();
-  const [docs, setDocs] = useState<EnvironmentConfig[]>([]);
+  const [docs, setDocs] = useState<RuntimeProfileConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
@@ -53,14 +53,14 @@ export default function EnvironmentsListPage() {
     const background = context?.background === true;
     if (!background) setLoading(true);
     try {
-      const list = await listAdminEnvironments();
+      const list = await listAdminRuntimeProfiles();
       setDocs([...list].sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''))));
-      await mutate(MANAGE_NAV_COUNT_KEYS.environments, list.length, { revalidate: false });
+      await mutate(MANAGE_NAV_COUNT_KEYS.runtime_profiles, list.length, { revalidate: false });
       setError('');
       loaded.current = true;
     } catch (e) {
       if (keepsLastRead(e, context, loaded.current)) return;
-      await mutate(MANAGE_NAV_COUNT_KEYS.environments, null, { revalidate: false });
+      await mutate(MANAGE_NAV_COUNT_KEYS.runtime_profiles, null, { revalidate: false });
       setError((e as Error).message);
     } finally {
       if (!background) setLoading(false);
@@ -84,7 +84,7 @@ export default function EnvironmentsListPage() {
       if (!q) return true;
       return (
         String(e.name || '').toLowerCase().includes(q) ||
-        envDisplayName(e).toLowerCase().includes(q) ||
+        runtimeProfileDisplayName(e).toLowerCase().includes(q) ||
         envEngineLabel(e).toLowerCase().includes(q)
       );
     });
@@ -94,10 +94,10 @@ export default function EnvironmentsListPage() {
   // A row opens the record's own page (docs/frontend-design.md §3) rather than
   // a panel beside the list: the form needs the width, and the URL of a record
   // should be the record.
-  const openRecord = (name: string) => navigate(`/manage/environments/${encodeURIComponent(name)}`);
-  const openCreate = () => navigate('/manage/environments/new');
+  const openRecord = (name: string) => navigate(`/manage/runtime-profiles/${encodeURIComponent(name)}`);
+  const openCreate = () => navigate('/manage/runtime-profiles/new');
 
-  const columns: ConsoleColumn<EnvironmentConfig>[] = [
+  const columns: ConsoleColumn<RuntimeProfileConfig>[] = [
     {
       key: 'name',
       intent: 'name',
@@ -109,12 +109,12 @@ export default function EnvironmentsListPage() {
         <NameCell
           name={
             <span className="flex min-w-0 items-center gap-2">
-              <span className="truncate">{envDisplayName(e)}</span>
+              <span className="truncate">{runtimeProfileDisplayName(e)}</span>
               {e.enabled === false && (
                 <StatusPill tone="idle">{t('common:disabled')}</StatusPill>
               )}
               {e.engine_available === false && (
-                <StatusPill tone="failed">{t('manage:environments.engine_missing')}</StatusPill>
+                <StatusPill tone="failed">{t('manage:runtime_profiles.engine_missing')}</StatusPill>
               )}
             </span>
           }
@@ -145,9 +145,9 @@ export default function EnvironmentsListPage() {
   return (
     <PageShell>
       <ConsolePageHeader
-        title={t('manage:environments.title')}
-        meta={t('manage:environments.meta', { count: docs.length, enabled: enabledCount })}
-        description={t('manage:environments.description')}
+        title={t('manage:runtime_profiles.title')}
+        meta={t('manage:runtime_profiles.meta', { count: docs.length, enabled: enabledCount })}
+        description={t('manage:runtime_profiles.description')}
         actions={
           <>
             <Button variant="outline" size="icon" onClick={() => void load()} disabled={loading} aria-label={t('common:refresh')}>
@@ -155,7 +155,7 @@ export default function EnvironmentsListPage() {
             </Button>
             <Button onClick={openCreate}>
             <Plus className="size-4" />
-            {t('manage:environments.create')}
+            {t('manage:runtime_profiles.create')}
           </Button>
           </>
         }
@@ -163,7 +163,7 @@ export default function EnvironmentsListPage() {
 
       <div className="flex flex-1 flex-col gap-4">
         <ConsoleToolbar>
-          <ConsoleSearch value={search} onChange={setSearch} total={docs.length} placeholder={t('manage:environments.search_placeholder')} />
+          <ConsoleSearch value={search} onChange={setSearch} total={docs.length} placeholder={t('manage:runtime_profiles.search_placeholder')} />
           <FilterChips
             aria-label={t('manage:filter.status_aria')}
             value={status}
@@ -186,23 +186,23 @@ export default function EnvironmentsListPage() {
               <ConsoleTableSkeleton columns={columns} />
             ) : error ? (
               <ConsoleErrorState
-                title={t('manage:environments.error_title')}
+                title={t('manage:runtime_profiles.error_title')}
                 detail={error}
                 onRetry={() => void load()}
               />
             ) : docs.length === 0 ? (
               <ConsoleEmptyState
-                title={t('manage:environments.empty_title')}
-                hint={t('manage:environments.empty_hint')}
+                title={t('manage:runtime_profiles.empty_title')}
+                hint={t('manage:runtime_profiles.empty_hint')}
                 action={
                   <Button size="sm" onClick={openCreate}>
                     <Plus className="size-4" />
-                    {t('manage:environments.create')}
+                    {t('manage:runtime_profiles.create')}
                   </Button>
                 }
               />
             ) : (
-              <ConsoleTableNote>{t('manage:environments.no_match', { query: search })}</ConsoleTableNote>
+              <ConsoleTableNote>{t('manage:runtime_profiles.no_match', { query: search })}</ConsoleTableNote>
             )
           }
         />

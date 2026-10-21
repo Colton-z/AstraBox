@@ -23,7 +23,7 @@ does nothing: the backend is only known once composition has resolved it, and
 this is the first moment both halves are in hand.
 
 What it deliberately does not do: touch the database (``create_all`` /
-migrations), seed Agents or Environments, start the scheduler provider, or
+migrations), seed Agents or RuntimeProfiles, start the scheduler provider, or
 start the recovery control plane —
 those are service-lifecycle steps that belong to the surface you embed (the
 lifespan for the HTTP app; your own startup for a bespoke embedding — see
@@ -279,9 +279,9 @@ def _resolve_enabled_sandbox_backends(override: Sequence[str] | None) -> list[st
     ``override`` is the embedder's explicit list; ``None`` reads
     ``ASTRABOX_SANDBOX_BACKENDS``. An empty list enables only the default
     backend. Every name must be installed, may appear once, and the list must
-    contain the default: an Environment that names no backend resolves to the
+    contain the default: a RuntimeProfile that names no backend resolves to the
     default, and a default this deployment does not enable would refuse every
-    such Environment's first Session.
+    such RuntimeProfile's first Session.
     """
     from astrabox.config.settings import get_settings
     from astrabox.seams.sandbox import default_sandbox_backend, installed_sandbox_names
@@ -321,7 +321,7 @@ def _resolve_enabled_sandbox_backends(override: Sequence[str] | None) -> list[st
     if default not in names:
         raise BootstrapConfigError(
             f"ASTRABOX_SANDBOX_BACKENDS={','.join(names)} does not enable the "
-            f"default backend ASTRABOX_SANDBOX_BACKEND={default!r}; an Environment "
+            f"default backend ASTRABOX_SANDBOX_BACKEND={default!r}; a RuntimeProfile "
             "that names no backend would be refused. Add it, or choose a default "
             "from the list."
         )
@@ -446,7 +446,7 @@ def _select_scheduler_provider() -> None:
         raise BootstrapConfigError(str(exc)) from exc
     try:
         scheduler.configure(
-            database_url=database_url, execution_target=get_settings().execution_target,
+            database_url=database_url, environment_name=get_settings().environment_name,
         )
     except SchedulerConfigurationError as exc:
         raise BootstrapConfigError(

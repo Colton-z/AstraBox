@@ -626,7 +626,7 @@ def _model_reference(model_access: Any) -> str:
 
     Read from the seam's own resolution rather than from the Agent's
     ``model_config`` bag: the platform already merges the Agent's model, the
-    Environment's default and the deployment's, and re-deriving it here would
+    RuntimeProfile's default and the deployment's, and re-deriving it here would
     be a second answer that disagrees with the credential and base URL beside
     it.
     """

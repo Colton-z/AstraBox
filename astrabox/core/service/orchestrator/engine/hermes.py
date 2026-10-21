@@ -1700,7 +1700,7 @@ def _resolve_hermes_openai_base_url(
             code="HERMES_MODEL_BASE_URL_NOT_OPENAI_COMPATIBLE",
             message=(
                 "Hermes requires an OpenAI-compatible model base URL; the "
-                "Environment's model connection names an Anthropic-compatible one"
+                "RuntimeProfile's model connection names an Anthropic-compatible one"
             ),
             status_code=500,
         )

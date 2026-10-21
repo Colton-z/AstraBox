@@ -52,18 +52,18 @@ test('a scheduled Deployment runs, edits, and replays through Sessions', async (
   const platform = new PlatformApi(request);
 
   const base = await api.defaultAgent();
-  const environmentName = String(base.environment_name || '').trim();
-  expect(environmentName, 'the seeded Agent must name an Environment').not.toEqual('');
+  const runtimeProfileName = String(base.runtime_profile_name || '').trim();
+  expect(runtimeProfileName, 'the seeded Agent must name a RuntimeProfile').not.toEqual('');
   let model = String(base.model || '').trim();
   if (!model || model.includes('*')) {
-    const models = await api.listEnvironmentModels(environmentName);
+    const models = await api.listEnvironmentModels(runtimeProfileName);
     model = models.find((item) => item && !item.includes('*')) || 'deepseek-chat';
   }
   const agentName = `__e2e_schedule_${RUN_ID}`;
   const agent = await api.createAgent({
     name: agentName,
     model,
-    environment_name: environmentName,
+    runtime_profile_name: runtimeProfileName,
     prepared_capacity: 0,
   });
   agentId = String(agent.agent_id || '').trim();

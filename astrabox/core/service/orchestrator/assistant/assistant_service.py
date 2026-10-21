@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from astrabox.persistence.repository.assistant_catalog_repository import (
     LIST_STATUSES,
     AssistantCatalogRepository,
-    AssistantEnvironmentMissing,
+    AssistantRuntimeProfileMissing,
     AssistantExists,
     AssistantSandboxRetained,
     AssistantSessionMissing,
@@ -83,7 +83,7 @@ def _version_conflict(assistant_id: str) -> APIError:
     )
 
 # Engine validity comes from the single matrix (domain-model.md §2).
-_IMMUTABLE_AFTER_MATERIALIZE = frozenset({"engine_kind", "environment_name", "owner_id"})
+_IMMUTABLE_AFTER_MATERIALIZE = frozenset({"engine_kind", "runtime_profile_name", "owner_id"})
 
 # A materializer Session in one of these has stopped driving the workspace: it
 # cannot reach READY, so the materialization it claimed has no owner left.
@@ -408,36 +408,36 @@ class AssistantService:
                 user.roles, admin_only=load_astrabox_settings().authoring_admin_only
             )
         display_name = str(config.get("display_name") or "").strip()
-        environment_name = str(config.get("environment_name") or "").strip()
+        runtime_profile_name = str(config.get("runtime_profile_name") or "").strip()
         if not display_name:
             raise APIError(
                 code="ASSISTANT_INVALID",
                 message="display_name is required",
                 status_code=400,
             )
-        if not environment_name:
+        if not runtime_profile_name:
             raise APIError(
                 code="ASSISTANT_INVALID",
-                message="environment_name is required",
+                message="runtime_profile_name is required",
                 status_code=400,
             )
-        # An Assistant is not an Agent: it selects an Environment and applies
-        # its own overrides. The Agent program comes from that Environment.
-        environment = await self._agent_config.get_environment(environment_name)
+        # An Assistant is not an Agent: it selects a RuntimeProfile and applies
+        # its own overrides. The Agent program comes from that RuntimeProfile.
+        environment = await self._agent_config.get_runtime_profile(runtime_profile_name)
         if not environment or environment.get("enabled") is False:
             raise APIError(
-                code="ASSISTANT_ENVIRONMENT_MISSING",
-                message=f"environment '{environment_name}' not found or disabled",
+                code="ASSISTANT_RUNTIME_PROFILE_MISSING",
+                message=f"environment '{runtime_profile_name}' not found or disabled",
                 status_code=403,
             )
-        environment_engine_kind = str(environment.get("engine_kind") or "").strip()
-        if not environment_engine_kind:
+        runtime_profile_engine_kind = str(environment.get("engine_kind") or "").strip()
+        if not runtime_profile_engine_kind:
             raise APIError(
-                code="ASSISTANT_ENVIRONMENT_INVALID",
-                message=f"environment {environment_name!r} has no engine_kind",
+                code="ASSISTANT_RUNTIME_PROFILE_INVALID",
+                message=f"environment {runtime_profile_name!r} has no engine_kind",
                 status_code=500,
             )
-        engine_kind = environment_engine_kind
+        engine_kind = runtime_profile_engine_kind
         requested_engine_kind = str(config.get("engine_kind") or "").strip()
         if requested_engine_kind and not engine_allowed_for_session_kind(
             requested_engine_kind,
@@ -455,7 +455,7 @@ class AssistantService:
             raise APIError(
                 code="INVALID_REQUEST",
                 message=(
-                    f"environment {environment_name!r} uses engine_kind="
+                    f"environment {runtime_profile_name!r} uses engine_kind="
                     f"{engine_kind!r}, not {requested_engine_kind!r}"
                 ),
                 status_code=400,
@@ -504,7 +504,7 @@ class AssistantService:
             "icon": str(config.get("icon") or "").strip() or None,
             "description": str(config.get("description") or "").strip() or None,
             "engine_kind": engine_kind,
-            "environment_name": environment_name,
+            "runtime_profile_name": runtime_profile_name,
             "permission_mode_default": permission_mode_default,
             "system": _normalize_system(config.get("system")),
             "timezone": _normalize_timezone(config.get("timezone")),
@@ -518,10 +518,10 @@ class AssistantService:
         }
         try:
             created = await self._catalog_repo.create_assistant(payload)
-        except AssistantEnvironmentMissing:
+        except AssistantRuntimeProfileMissing:
             raise APIError(
-                code="ASSISTANT_ENVIRONMENT_MISSING",
-                message=f"environment '{environment_name}' not found or disabled",
+                code="ASSISTANT_RUNTIME_PROFILE_MISSING",
+                message=f"environment '{runtime_profile_name}' not found or disabled",
                 status_code=403,
             ) from None
         # An Assistant is resident: its workspace is prepared now, so its
@@ -711,8 +711,8 @@ class AssistantService:
         """The caller's primary Assistant, created from the deployment's defaults when absent.
 
         Every user has one without setting anything up: it is created on first
-        use with the Environment the layers name (or the deployment's only
-        Assistant Environment), as a record only, so its workspace starts with
+        use with the RuntimeProfile the layers name (or the deployment's only
+        Assistant RuntimeProfile), as a record only, so its workspace starts with
         its first conversation. A user whose Assistants predate this has their
         earliest marked primary instead. Its id is derived from the owner and
         how many primaries they have had, deleted ones included (deletion
@@ -726,19 +726,19 @@ class AssistantService:
         if primary_id is not None:
             return await self.get_assistant(user, primary_id), False
         from astrabox.core.service.orchestrator.assistant.assistant_layers import (
-            default_environment_name,
+            default_runtime_profile_name,
             inherited_layers,
         )
-        from astrabox.persistence.repository.environment_repository import EnvironmentRepository
+        from astrabox.persistence.repository.runtime_profile_repository import RuntimeProfileRepository
 
-        environment_name = await default_environment_name(
-            await inherited_layers(), await EnvironmentRepository().list_all()
+        runtime_profile_name = await default_runtime_profile_name(
+            await inherited_layers(), await RuntimeProfileRepository().list_all()
         )
-        if not environment_name:
+        if not runtime_profile_name:
             raise APIError(
                 code="ASSISTANT_DEFAULTS_UNAVAILABLE",
                 message=(
-                    "this deployment has no Environment for Assistants: an administrator "
+                    "this deployment has no RuntimeProfile for Assistants: an administrator "
                     "chooses one in the Assistant defaults, or enables one that runs Assistants"
                 ),
                 status_code=409,
@@ -752,7 +752,7 @@ class AssistantService:
                 user,
                 {
                     "display_name": display_name,
-                    "environment_name": environment_name,
+                    "runtime_profile_name": runtime_profile_name,
                     "timezone": timezone,
                 },
                 assistant_id=candidate,
@@ -937,12 +937,12 @@ class AssistantService:
             effective,
             sanitized_updates.get("engine_options", assistant.get("engine_options")),
         )
-        environment_name = str(assistant.get("environment_name") or "").strip()
-        environment = await self._agent_config.get_environment(environment_name)
+        runtime_profile_name = str(assistant.get("runtime_profile_name") or "").strip()
+        environment = await self._agent_config.get_runtime_profile(runtime_profile_name)
         if not environment:
             raise APIError(
-                code="ASSISTANT_ENVIRONMENT_MISSING",
-                message=f"environment '{environment_name}' not found",
+                code="ASSISTANT_RUNTIME_PROFILE_MISSING",
+                message=f"environment '{runtime_profile_name}' not found",
                 status_code=403,
             )
         await validate_author_declarations(
@@ -1756,11 +1756,11 @@ class AssistantService:
     ) -> None:
         """Create a hidden Session that prepares the workspace, not a conversation."""
 
-        environment_name = str(assistant.get("environment_name") or "").strip()
-        if not environment_name:
+        runtime_profile_name = str(assistant.get("runtime_profile_name") or "").strip()
+        if not runtime_profile_name:
             raise APIError(
                 code="ASSISTANT_INVALID",
-                message=f"assistant={assistant_id} has no environment_name",
+                message=f"assistant={assistant_id} has no runtime_profile_name",
                 status_code=500,
             )
         engine_kind = self._require_engine_kind(assistant)
@@ -2310,11 +2310,11 @@ class AssistantService:
     ) -> dict[str, Any]:
         assistant = await self._must_use_assistant(user, assistant_id)
         engine_kind = self._require_engine_kind(assistant)
-        environment_name = str(assistant.get("environment_name") or "").strip()
-        if not environment_name:
+        runtime_profile_name = str(assistant.get("runtime_profile_name") or "").strip()
+        if not runtime_profile_name:
             raise APIError(
                 code="ASSISTANT_INVALID",
-                message=f"assistant={assistant_id} has no environment_name",
+                message=f"assistant={assistant_id} has no runtime_profile_name",
                 status_code=500,
             )
         effective_permission_mode = (

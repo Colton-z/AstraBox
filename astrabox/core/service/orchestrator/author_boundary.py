@@ -2,17 +2,17 @@
 
 Anyone who may create an Agent or an Assistant writes fields that decide what
 its sandbox clones and connects to: Skill and Plugin Git origins and its own
-remote MCP servers join a limited Environment's allowed hosts, a repository
+remote MCP servers join a limited RuntimeProfile's allowed hosts, a repository
 deploy key is named by its secret, and an MCP server definition decides which
 requests the egress sidecar authenticates. An author may use only what an
 administrator made available:
 
-* A host from those fields joins a limited Environment's policy only when the
-  Environment already names it, or when it is a public internet address. A
+* A host from those fields joins a limited RuntimeProfile's policy only when the
+  RuntimeProfile already names it, or when it is a public internet address. A
   private, loopback, link-local or otherwise non-public address is the
   deployment's own network — the Docker bridge gateway the platform API is
   published on, sibling sandboxes, the cloud metadata service — and only an
-  administrator opens it, by naming it in the Environment.
+  administrator opens it, by naming it in the RuntimeProfile.
 * A deploy key resolves only from a secret name listed in
   ``ASTRABOX_DEPLOY_KEY_SECRET_NAMES``. Every other server environment variable
   is out of an author's reach.
@@ -23,7 +23,7 @@ administrator made available:
 The checks run where an author writes, refusing with a 4xx before anything is
 saved, and again where the runtime reads a stored definition (the MCP fields
 when the Agent is resolved, the hosts when a sandbox policy is built), because
-a definition may predate the checks and the Environment may have changed.
+a definition may predate the checks and the RuntimeProfile may have changed.
 """
 
 from __future__ import annotations
@@ -36,13 +36,13 @@ from typing import Any
 
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.secrets import secret_env_key
-from astrabox.core.service.orchestrator.environment_networking import (
-    EnvironmentNetworking,
-    environment_admits_address,
-    environment_admits_host,
+from astrabox.core.service.orchestrator.runtime_profile_networking import (
+    RuntimeProfileNetworking,
+    runtime_profile_admits_address,
+    runtime_profile_admits_host,
     non_public_address_reason,
     normalize_host_target,
-    parse_environment_networking,
+    parse_runtime_profile_networking,
 )
 from astrabox.core.service.orchestrator.runtime.mcp_servers import (
     sandbox_mcp_egress_hosts,
@@ -124,23 +124,23 @@ def _refused(host: str, reason: str) -> APIError:
         code="AGENT_EGRESS_HOST_REFUSED",
         message=(
             f"network host {host!r} from this Agent's Skills, Plugins or MCP "
-            f"servers is {reason}. Its limited Environment does not name it, and "
+            f"servers is {reason}. Its limited RuntimeProfile does not name it, and "
             "only an administrator can open the deployment's own network to a "
             "sandbox: use a public host, or ask an administrator to add this "
-            "host to the Environment's allowed hosts."
+            "host to the RuntimeProfile's allowed hosts."
         ),
         status_code=403,
     )
 
 
 def check_author_egress_hosts(
-    networking: EnvironmentNetworking, hosts: Iterable[str]
+    networking: RuntimeProfileNetworking, hosts: Iterable[str]
 ) -> list[str]:
-    """Refuse author hosts a limited Environment does not already admit.
+    """Refuse author hosts a limited RuntimeProfile does not already admit.
 
-    Checks what needs no lookup: the host's syntax, whether the Environment
+    Checks what needs no lookup: the host's syntax, whether the RuntimeProfile
     names it, and a literal IP. Returns the host names still to be resolved;
-    an unrestricted Environment admits everything and returns none.
+    an unrestricted RuntimeProfile admits everything and returns none.
     """
     if networking.mode != SANDBOX_NETWORK_LIMITED:
         return []
@@ -156,7 +156,7 @@ def check_author_egress_hosts(
             ) from exc
         if "/" in host or host.startswith("*."):
             raise _refused(host, "not a single host")
-        if environment_admits_host(networking, host):
+        if runtime_profile_admits_host(networking, host):
             continue
         try:
             ipaddress.ip_address(host)
@@ -164,7 +164,7 @@ def check_author_egress_hosts(
             pending.append(host)
             continue
         reason = non_public_address_reason(host)
-        if reason and not environment_admits_address(networking, host):
+        if reason and not runtime_profile_admits_address(networking, host):
             raise _refused(host, reason)
     return pending
 
@@ -188,12 +188,12 @@ async def resolve_host_addresses(host: str) -> list[str]:
 
 
 async def refuse_unadmitted_author_hosts(
-    networking: EnvironmentNetworking, hosts: Iterable[str]
+    networking: RuntimeProfileNetworking, hosts: Iterable[str]
 ) -> None:
     """Refuse author hosts that would open the deployment's own network.
 
     A host name is resolved, and every address it answers must be public or
-    already covered by one of the Environment's allowed IPs or CIDRs. A name
+    already covered by one of the RuntimeProfile's allowed IPs or CIDRs. A name
     that does not resolve cannot be shown to be public and is refused.
     """
     for name in check_author_egress_hosts(networking, hosts):
@@ -202,7 +202,7 @@ async def refuse_unadmitted_author_hosts(
             raise _refused(name, "a name the platform could not resolve")
         for address in addresses:
             reason = non_public_address_reason(address)
-            if reason and not environment_admits_address(networking, address):
+            if reason and not runtime_profile_admits_address(networking, address):
                 raise _refused(name, f"resolved to {address}, {reason}")
 
 
@@ -262,7 +262,7 @@ async def validate_author_declarations(
 ) -> None:
     """Refuse an Agent's or Assistant's fields before they are saved.
 
-    ``networking`` is the stored networking document of the Environment the
+    ``networking`` is the stored networking document of the RuntimeProfile the
     fields will run in, and ``owner`` names the resource in the refusal.
     """
     refuse_reserved_mcp_fields(mcp_servers, owner=owner)
@@ -271,11 +271,11 @@ async def validate_author_declarations(
     ):
         require_allowed_deploy_key(name, label=label)
     try:
-        spec = parse_environment_networking(networking)
+        spec = parse_runtime_profile_networking(networking)
     except ValueError as exc:
         raise APIError(
             code="AGENT_RUNTIME_ERROR",
-            message=f"Environment networking is invalid: {exc}",
+            message=f"RuntimeProfile networking is invalid: {exc}",
             status_code=500,
         ) from exc
     try:

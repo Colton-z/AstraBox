@@ -131,7 +131,7 @@ async def relational_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> A
     admin_url = make_url(configured).set(drivername="postgresql", database="postgres")
     name = "astrabox_contract_" + uuid.uuid4().hex[:16]
     roles, passwords = [name + "_a", name + "_b"], [secrets.token_urlsafe(24), secrets.token_urlsafe(24)]
-    environments = [{
+    runtime_profiles = [{
         "ASTRABOX_PERSISTENCE_PROVIDER": "contract-postgres",
         "ASTRABOX_DB_URL": admin_url.set(database=name, username=role, password=password).render_as_string(hide_password=False),
     } for role, password in zip(roles, passwords, strict=True)]
@@ -149,7 +149,7 @@ async def relational_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> A
         database_created = True
         await admin.execute(sql.SQL("REVOKE CONNECT ON DATABASE {} FROM PUBLIC").format(sql.Identifier(name)))
         await admin.execute(sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(sql.Identifier(name), sql.Identifier(roles[1])))
-        for key, value in environments[0].items():
+        for key, value in runtime_profiles[0].items():
             monkeypatch.setenv(key, value)
         get_settings.cache_clear()
         get_persistence.cache_clear()
@@ -165,7 +165,7 @@ async def relational_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> A
         await audit.execute("LISTEN astrabox_session")
         native = _PostgresObservation(observer, audit, name, roles)
         watch = asyncio.create_task(native.watch())
-        store = RelationalContractStore(environments[1], native)
+        store = RelationalContractStore(runtime_profiles[1], native)
         print(f"owned PostgreSQL database={name} roles={roles}; not the candidate database")
         yield store
         if watch.done():
@@ -186,7 +186,7 @@ async def relational_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> A
         get_settings.cache_clear()
         if database_created and (store is None or not store.passed):
             receipt = tmp_path / "retained-postgres.private.json"
-            receipt.write_text(json.dumps({"database": name, "environments": environments}, indent=2))
+            receipt.write_text(json.dumps({"database": name, "runtime_profiles": runtime_profiles}, indent=2))
             receipt.chmod(0o600)
             print(f"KEPT own PostgreSQL database={name}; private receipt={receipt}")
         else:

@@ -1,11 +1,11 @@
-"""Provider-neutral Environment networking configuration.
+"""Provider-neutral RuntimeProfile networking configuration.
 
-An Environment decides ordinary outbound reachability. Credential storage and
+A RuntimeProfile decides ordinary outbound reachability. Credential storage and
 injection are a separate sandbox capability and therefore do not appear in this
 module. The runtime later adds destinations the platform itself requires
 (model, callback, tracing, declared Plugin repositories, and optionally Agent
 MCP). The provider boundary separately admits exact destinations authorized by
-attached Vault bindings without writing them into the Environment document.
+attached Vault bindings without writing them into the RuntimeProfile document.
 """
 
 from __future__ import annotations
@@ -27,8 +27,8 @@ _NAT64_WELL_KNOWN_PREFIX = ipaddress.IPv6Network("64:ff9b::/96")
 
 
 @dataclass(frozen=True, slots=True)
-class EnvironmentNetworking:
-    """The Environment-owned network intent before provider translation."""
+class RuntimeProfileNetworking:
+    """The RuntimeProfile-owned network intent before provider translation."""
 
     mode: Literal["unrestricted", "limited"]
     allowed_hosts: tuple[str, ...] = ()
@@ -112,8 +112,8 @@ def non_public_address_reason(address: str) -> str | None:
     return None
 
 
-def environment_admits_host(networking: EnvironmentNetworking, host: str) -> bool:
-    """Whether the Environment's own allowed hosts already name ``host``.
+def runtime_profile_admits_host(networking: RuntimeProfileNetworking, host: str) -> bool:
+    """Whether the RuntimeProfile's own allowed hosts already name ``host``.
 
     ``host`` is canonical (see :func:`normalize_host_target`). A leftmost
     wildcard names every host beneath its domain, not the domain itself.
@@ -126,8 +126,8 @@ def environment_admits_host(networking: EnvironmentNetworking, host: str) -> boo
     return False
 
 
-def environment_admits_address(networking: EnvironmentNetworking, address: str) -> bool:
-    """Whether an allowed IP or CIDR of the Environment already covers ``address``."""
+def runtime_profile_admits_address(networking: RuntimeProfileNetworking, address: str) -> bool:
+    """Whether an allowed IP or CIDR of the RuntimeProfile already covers ``address``."""
     ip = ipaddress.ip_address(address)
     for target in networking.allowed_hosts:
         try:
@@ -139,8 +139,8 @@ def environment_admits_address(networking: EnvironmentNetworking, address: str) 
     return False
 
 
-def parse_environment_networking(raw: Any) -> EnvironmentNetworking:
-    """Validate one Environment networking document without provider vocabulary.
+def parse_runtime_profile_networking(raw: Any) -> RuntimeProfileNetworking:
+    """Validate one RuntimeProfile networking document without provider vocabulary.
 
     An omitted document has a secure, deterministic default: limited networking
     with no operator-authored destinations and Agent MCP auto-admission off.
@@ -148,7 +148,7 @@ def parse_environment_networking(raw: Any) -> EnvironmentNetworking:
     """
 
     if raw is None or raw == {}:
-        return EnvironmentNetworking(mode=SANDBOX_NETWORK_LIMITED)
+        return RuntimeProfileNetworking(mode=SANDBOX_NETWORK_LIMITED)
     if not isinstance(raw, dict):
         raise ValueError("networking must be an object")
     unknown = sorted(set(raw) - _NETWORKING_KEYS)
@@ -182,18 +182,18 @@ def parse_environment_networking(raw: Any) -> EnvironmentNetworking:
         raise ValueError("networking.allow_mcp_servers must be a boolean")
 
     if mode == SANDBOX_NETWORK_UNRESTRICTED:
-        return EnvironmentNetworking(mode=SANDBOX_NETWORK_UNRESTRICTED)
-    return EnvironmentNetworking(
+        return RuntimeProfileNetworking(mode=SANDBOX_NETWORK_UNRESTRICTED)
+    return RuntimeProfileNetworking(
         mode=SANDBOX_NETWORK_LIMITED,
         allowed_hosts=tuple(allowed),
         allow_mcp_servers=allow_mcp,
     )
 
 
-def normalized_environment_networking(raw: Any) -> dict[str, Any]:
+def normalized_runtime_profile_networking(raw: Any) -> dict[str, Any]:
     """Return the canonical stored shape for one networking document."""
 
-    spec = parse_environment_networking(raw)
+    spec = parse_runtime_profile_networking(raw)
     if spec.mode == SANDBOX_NETWORK_UNRESTRICTED:
         return {"type": SANDBOX_NETWORK_UNRESTRICTED}
     return {
@@ -204,11 +204,11 @@ def normalized_environment_networking(raw: Any) -> dict[str, Any]:
 
 
 __all__ = [
-    "EnvironmentNetworking",
-    "environment_admits_address",
-    "environment_admits_host",
+    "RuntimeProfileNetworking",
+    "runtime_profile_admits_address",
+    "runtime_profile_admits_host",
     "non_public_address_reason",
     "normalize_host_target",
-    "normalized_environment_networking",
-    "parse_environment_networking",
+    "normalized_runtime_profile_networking",
+    "parse_runtime_profile_networking",
 ]

@@ -50,35 +50,35 @@ class CliResult:
 
 
 def _agent_environment(cli: Any) -> dict[str, Any]:
-    """Choose an enabled Environment that advertises Agent Sessions."""
-    environments = cli("get", "environments", "-o", "json").json()
+    """Choose an enabled RuntimeProfile that advertises Agent Sessions."""
+    runtime_profiles = cli("get", "runtime_profiles", "-o", "json").json()
     environment = next(
         (
             row
-            for row in environments
+            for row in runtime_profiles
             if row.get("enabled") is not False
             and "agent_chat" in row.get("supported_session_kinds", [])
         ),
         None,
     )
-    assert environment is not None, "deployment offers no enabled Agent Environment"
+    assert environment is not None, "deployment offers no enabled Agent RuntimeProfile"
     return environment
 
 
 def _assistant_environment(cli: Any) -> dict[str, Any]:
-    """Choose an enabled Environment that advertises only Assistant Sessions."""
-    environments = cli("get", "environments", "-o", "json").json()
+    """Choose an enabled RuntimeProfile that advertises only Assistant Sessions."""
+    runtime_profiles = cli("get", "runtime_profiles", "-o", "json").json()
     environment = next(
         (
             row
-            for row in environments
+            for row in runtime_profiles
             if row.get("enabled") is not False
             and "assistant_chat" in row.get("supported_session_kinds", [])
             and "agent_chat" not in row.get("supported_session_kinds", [])
         ),
         None,
     )
-    assert environment is not None, "deployment offers no Assistant-only Environment"
+    assert environment is not None, "deployment offers no Assistant-only RuntimeProfile"
     return environment
 
 
@@ -133,15 +133,15 @@ def test_schema_serves_the_write_contract(cli: Any) -> None:
 
     assert payload["version"], "the agent schema carries no version"
     fields = {field["key"]: field for field in payload["fields"]}
-    for required in ("name", "model", "environment_name"):
+    for required in ("name", "model", "runtime_profile_name"):
         assert fields[required].get("required") is True, f"{required} is not required"
 
 
 def test_get_lists_what_the_deployment_holds(cli: Any) -> None:
-    environments = cli("get", "environments", "-o", "json").json()
+    runtime_profiles = cli("get", "runtime_profiles", "-o", "json").json()
 
-    assert isinstance(environments, list) and environments, "no environments to configure against"
-    assert all("name" in row for row in environments)
+    assert isinstance(runtime_profiles, list) and runtime_profiles, "no runtime_profiles to configure against"
+    assert all("name" in row for row in runtime_profiles)
 
 
 def test_a_missing_resource_exits_failed_not_zero(cli: Any) -> None:
@@ -192,9 +192,9 @@ def test_apply_creates_then_destroy_removes(
     unchanged on a second diff, appear in `get`, and leave nothing behind.
     """
     environment = _agent_environment(cli)
-    environment_name = str(environment["name"])
+    runtime_profile_name = str(environment["name"])
     models = e2e_client.get(
-        f"/api/v1/admin/environments/{environment_name}/models"
+        f"/api/v1/admin/runtime-profiles/{runtime_profile_name}/models"
     ).json()["data"]["models"]
     model = models[0] if models else "claude-opus-5"
 
@@ -205,7 +205,7 @@ def test_apply_creates_then_destroy_removes(
         "agents:\n"
         f"  - name: {name}\n"
         f"    model: {model}\n"
-        f"    environment_name: {environment_name}\n"
+        f"    runtime_profile_name: {runtime_profile_name}\n"
         "    enabled: true\n"
         "    prepared_capacity: 0\n",
         encoding="utf-8",
@@ -248,7 +248,7 @@ def test_apply_refuses_an_assistant_only_environment(
         "agents:\n"
         f"  - name: {name}\n"
         "    model: assistant-model-is-not-used\n"
-        f"    environment_name: {environment['name']}\n",
+        f"    runtime_profile_name: {environment['name']}\n",
         encoding="utf-8",
     )
 
@@ -281,7 +281,7 @@ def test_dry_run_apply_writes_nothing(cli: Any, tmp_path: Path) -> None:
         "agents:\n"
         f"  - name: {name}\n"
         "    model: claude-opus-5\n"
-        f"    environment_name: {environment['name']}\n",
+        f"    runtime_profile_name: {environment['name']}\n",
         encoding="utf-8",
     )
 
@@ -312,7 +312,7 @@ def test_the_mcp_facade_answers_the_same_deployment(cli: Any, e2e_base_url: str)
                     "jsonrpc": "2.0",
                     "id": 3,
                     "method": "tools/call",
-                    "params": {"name": "astrabox_get", "arguments": {"kind": "environments"}},
+                    "params": {"name": "astrabox_get", "arguments": {"kind": "runtime_profiles"}},
                 }
             ),
         ]
@@ -333,7 +333,7 @@ def test_the_mcp_facade_answers_the_same_deployment(cli: Any, e2e_base_url: str)
     assert answers[2]["result"]["tools"], "tools/list returned nothing"
     listed = answers[3]["result"]
     assert listed["isError"] is False
-    assert listed["structuredContent"]["items"], "the MCP tool saw no environments"
+    assert listed["structuredContent"]["items"], "the MCP tool saw no runtime_profiles"
 
 def test_run_answers_a_task_end_to_end(
     cli: Any, e2e_client: httpx.Client, tmp_path: Path
@@ -347,11 +347,11 @@ def test_run_answers_a_task_end_to_end(
     sandbox reproduces that window.
     """
     environment = _agent_environment(cli)
-    environment_name = str(environment["name"])
+    runtime_profile_name = str(environment["name"])
     models = e2e_client.get(
-        f"/api/v1/admin/environments/{environment_name}/models"
+        f"/api/v1/admin/runtime-profiles/{runtime_profile_name}/models"
     ).json()["data"]["models"]
-    assert models, f"environment {environment_name} offers no model to run against"
+    assert models, f"environment {runtime_profile_name} offers no model to run against"
 
     name = f"cli-e2e-run-{uuid.uuid4().hex[:8]}"
     document = tmp_path / "astrabox.yaml"
@@ -360,7 +360,7 @@ def test_run_answers_a_task_end_to_end(
         "agents:\n"
         f"  - name: {name}\n"
         f"    model: {models[0]}\n"
-        f"    environment_name: {environment_name}\n"
+        f"    runtime_profile_name: {runtime_profile_name}\n"
         "    system: Answer in one short sentence. Do not use tools.\n"
         "    enabled: true\n"
         "    prepared_capacity: 0\n",

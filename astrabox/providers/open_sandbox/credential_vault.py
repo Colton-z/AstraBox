@@ -5,7 +5,7 @@ terminates outbound HTTPS and substitutes the real credential from its
 write-only vault, so sandbox processes cannot read the secret.
 
 Vault mode requires an egress image and the provider's protected-injection
-capability. Environment networking is a separate sandbox input. The provider
+capability. RuntimeProfile networking is a separate sandbox input. The provider
 combines it with the exact hosts authorized by the attached bindings when it
 builds the effective OpenSandbox policy; neither configuration duplicates the
 other.
@@ -50,7 +50,7 @@ _CREDENTIAL_NAME = "astrabox-model-gateway"
 #: the live set recoverable from the names the vault does return.
 _SLOT_CREDENTIAL_PREFIX = "astrabox-slot-"
 
-#: Environment credential names keep the provider-neutral credential id after
+#: RuntimeProfile credential names keep the provider-neutral credential id after
 #: this provider-owned prefix. Their bindings stay singular per destination;
 #: sibling workloads are represented by substitutions inside that one binding.
 _ENV_CREDENTIAL_PREFIX = "astrabox-vault-"
@@ -101,7 +101,7 @@ def require_vault_preconditions(*, egress_image: str, egress_mode: str) -> None:
 
     The credential proxy is the component that holds and injects protected
     values. ``egress_mode`` is an OpenSandbox component precondition, not an
-    Environment reachability decision; no Environment host or mode is read
+    RuntimeProfile reachability decision; no RuntimeProfile host or mode is read
     here.
     """
     missing: list[str] = []
@@ -130,7 +130,7 @@ def gateway_host(base_url: str) -> str:
 
     A binding that matched everything would attach the credential to any
     request the sandbox made. The binding itself names where this secret may
-    go; Environment networking independently decides whether that request can
+    go; RuntimeProfile networking independently decides whether that request can
     leave the box.
     """
     parsed = urlparse(str(base_url or "").strip())
@@ -374,7 +374,7 @@ def carry_workload_substitutions(
     The model credential names in sanitized Vault state are the recoverable
     workload identities whose substitutions this box must retain. Model
     substitutions route each workload to its own gateway credential.
-    Environment substitutions route each workload-specific placeholder to the
+    RuntimeProfile substitutions route each workload-specific placeholder to the
     one Agent-bound credential; they remain inside that credential's existing
     binding so OpenSandbox never sees overlapping request bindings.
 

@@ -1,6 +1,6 @@
 # AstraBox 与 Claude Code self-hosted environments
 
-[Claude Managed Agents](https://platform.claude.com/docs/zh-CN/managed-agents/overview) 提供预置、可配置的 Agent 运行环境及其所需基础设施。Environment 可以使用 Anthropic 管理的云端沙箱，也可以使用部署在企业基础设施中的 self-hosted environment。
+[Claude Managed Agents](https://platform.claude.com/docs/zh-CN/managed-agents/overview) 提供预置、可配置的 Agent 运行配置及其所需基础设施。RuntimeProfile 可以使用 Anthropic 管理的云端沙箱，也可以使用部署在企业基础设施中的 self-hosted environment。
 
 AstraBox 在此基础上进一步把完整的 Agent 服务交给用户自行部署。它把已安装的 Agent 程序运行成云端 Agent，并通过 AstraBox 控制台、API、Deployment 和消息平台保持随时可用。
 

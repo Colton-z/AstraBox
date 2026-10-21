@@ -63,14 +63,14 @@ test('250 real Agents retain complete cursor pages, access counts and loaded row
 }) => {
   const api = new AstraApi(request);
   const base = await api.defaultAgent();
-  const environment = String(base.environment_name || '');
+  const environment = String(base.runtime_profile_name || '');
   const models = await api.listEnvironmentModels(environment);
   const model = models.find((item) => item && !item.includes('*'));
   expect(model).toBeTruthy();
   const prefix = `zz_e2e_scale_${randomUUID().replaceAll('-', '').slice(0, 12)}_`;
   const config = (index: number) => ({
     name: `${prefix}${String(index).padStart(3, '0')}`, model,
-    environment_name: environment, prepared_capacity: 0,
+    runtime_profile_name: environment, prepared_capacity: 0,
     enabled: index % 5 !== 4,
     visibility: index === 0 || index % 7 === 3 ? 'private' : 'public',
   });

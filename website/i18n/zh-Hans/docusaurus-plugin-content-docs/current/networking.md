@@ -15,7 +15,7 @@ AstraBox 不为远程 MCP 服务提供全球统一的固定出站 IP 池。Astra
 远程 MCP 服务的配置方式不会为它创建另一条网络路径。Agent 程序会从沙箱中
 连接所有远程 MCP 地址。
 
-Environment 控制沙箱可以访问哪些目标：
+RuntimeProfile 控制沙箱可以访问哪些目标：
 
 | 模式 | 行为 |
 | --- | --- |
@@ -28,7 +28,7 @@ Environment 控制沙箱可以访问哪些目标：
 或 CIDR 加入服务的入站防火墙规则。沙箱节点可能被替换时，可以通过 NAT Gateway
 或其他统一出口服务提供固定地址。
 
-> Environment 的网络白名单控制沙箱可以访问哪些目标，不会分配固定的公网源
+> RuntimeProfile 的网络白名单控制沙箱可以访问哪些目标，不会分配固定的公网源
 > IP。额外允许的主机可以是精确主机、`*.example.com` 形式的最左侧通配符、IP
 > 地址或 CIDR；不要填写协议、端口或路径。位于部署沙箱网络
 > （`ASTRABOX_SANDBOX_EGRESS_DENY_CIDRS`）内的条目不会生效：这些拒绝规则先于所有允许规则执行。

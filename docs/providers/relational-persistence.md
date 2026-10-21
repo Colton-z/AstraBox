@@ -12,20 +12,19 @@ dialect, schema and coordination implementation before claiming support.
 
 ## Installation boundary {#installation-boundary}
 
-One selected provider serves the control plane's definitions, authorization,
-Sessions, native state, and runtime records through the same repository engine
-and transaction contract. The interface does not split a shared Agent catalog
-from deployment-local runtime storage. Repository joins, foreign keys and
-atomic workflows cross those records; separating them requires a platform
-design beyond supplying a different physical provider.
+One selected provider serves one Environment's definitions, authorization,
+Sessions, complete native state and runtime records through the same repository
+engine and transaction contract. Joins, foreign keys and atomic workflows stay
+inside that database. Another Environment uses a separate business database,
+role and credentials; shared schema names or query filters are not a substitute
+for that access boundary. Database schema initialization refuses a different
+persisted Environment owner before applying an upgrade.
 
-Agent runtime generations, pools and quota records include their execution
-target. A Session or Assistant workspace retains its physical execution target;
-channel and scheduler work inherits the target of its Deployment. These are
-columns in the common schema and transactions, not provider-local partitions
-or separate runtime databases. Providers preserve the complete composite keys
-and foreign keys. Replicas within a target follow the
-[deployment configuration contract](/docs/deploy#share-a-product-database).
+Runtime generations, pools, quota records, Sessions, Assistant workspaces and
+Deployments retain their Environment ownership. Providers preserve complete
+keys and foreign keys. All replicas follow the [Environment deployment
+contract](/docs/deploy#environments). A provider must enforce the configured
+Environment binding; an unscoped or unsupported backend is refused.
 
 ## Register and select a provider
 
@@ -38,7 +37,7 @@ example = "example_storage:ExamplePersistence"
 
 Set `ASTRABOX_PERSISTENCE_PROVIDER=example` and set `ASTRABOX_DB_URL` to that
 provider's native URL. The provider class accepts the keyword argument
-`database_url: str`. AstraBox loads only the selected persistence entry point;
+`database_url: str` and `environment_name: str`. AstraBox loads only the selected persistence entry point;
 unknown names and missing required operations fail before schema initialization.
 No provider is substituted silently.
 
@@ -47,6 +46,7 @@ Implement
 
 | Member | Responsibility |
 |---|---|
+| `environment_name` | Immutable Environment identity bound to this provider. |
 | `database_url` | Native configured URL, normalized by the provider. |
 | `get_engine()` | The same SQLAlchemy `AsyncEngine` for a given event loop and configuration. Connections passed to shared recipes come from this engine. |
 | `statements` | The three native conflict operations described below. |

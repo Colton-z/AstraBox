@@ -15,13 +15,13 @@ interface AdminConnector {
 
 let agentId = '';
 let assistantId = '';
-let environmentName = '';
+let runtimeProfileName = '';
 
 onPassOnly(async ({ request }) => {
   const api = new AstraApi(request);
   if (agentId) await api.deleteAgent(agentId);
   if (assistantId) await api.deleteAssistant(assistantId);
-  if (environmentName) await api.data('DELETE', `/admin/environments/${environmentName}`);
+  if (runtimeProfileName) await api.data('DELETE', `/admin/runtime-profiles/${runtimeProfileName}`);
 });
 
 test.use({ locale: 'en-US' });
@@ -43,25 +43,25 @@ test('Agent and Assistant settings show only configured apps and hide an empty C
   const agent = await api.createAgent({
     name: `__e2e_connector_visibility_${randomUUID().slice(0, 8)}`,
     model: seeded.model,
-    environment_name: seeded.environment_name,
+    runtime_profile_name: seeded.runtime_profile_name,
     prepared_capacity: 0,
   });
   agentId = agent.agent_id;
 
-  const environments = await api.data<Array<{ engine_kind: string; enabled: boolean; supported_session_kinds: string[] }>>(
-    'GET', '/admin/environments',
+  const runtime_profiles = await api.data<Array<{ engine_kind: string; enabled: boolean; supported_session_kinds: string[] }>>(
+    'GET', '/admin/runtime-profiles',
   );
-  const assistantEnvironment = environments.find((environment) =>
+  const assistantEnvironment = runtime_profiles.find((environment) =>
     environment.enabled && environment.supported_session_kinds.includes('assistant_chat'),
   );
   expect(assistantEnvironment, 'the deployment needs an enabled Assistant environment').toBeDefined();
-  environmentName = `__e2e_connector_visibility_${randomUUID().slice(0, 8)}`;
-  await api.data('PUT', `/admin/environments/${environmentName}`, {
-    name: environmentName, enabled: true, engine_kind: assistantEnvironment!.engine_kind, sandbox_backend: 'open_sandbox',
+  runtimeProfileName = `__e2e_connector_visibility_${randomUUID().slice(0, 8)}`;
+  await api.data('PUT', `/admin/runtime-profiles/${runtimeProfileName}`, {
+    name: runtimeProfileName, enabled: true, engine_kind: assistantEnvironment!.engine_kind, sandbox_backend: 'open_sandbox',
   });
   const assistant = await api.createAssistant({
-    display_name: environmentName,
-    environment_name: environmentName,
+    display_name: runtimeProfileName,
+    runtime_profile_name: runtimeProfileName,
   });
   assistantId = assistant.assistant_id;
 

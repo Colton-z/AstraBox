@@ -133,13 +133,13 @@ test('an Assistant used today still has its workspace box the next morning', asy
   const platform = new PlatformApi(request);
   const runId = new Date().toISOString().replace(/[:.]/g, '-');
 
-  const environmentName = await api.assistantEnvironmentName();
-  expect(environmentName, 'an assistant environment must exist').not.toEqual('');
-  const assistantModel = await api.assistantModelName(environmentName);
+  const runtimeProfileName = await api.assistantEnvironmentName();
+  expect(runtimeProfileName, 'an assistant environment must exist').not.toEqual('');
+  const assistantModel = await api.assistantModelName(runtimeProfileName);
 
   const assistant = await api.createAssistant({
     display_name: `__e2e_assistant_overnight_${runId}`,
-    environment_name: environmentName,
+    runtime_profile_name: runtimeProfileName,
     model_config_override: { model_name: assistantModel },
   });
   assistantId = String(assistant.assistant_id || '');

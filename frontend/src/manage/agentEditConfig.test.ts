@@ -21,7 +21,7 @@ const SCHEMA: FormSchema = {
 
 const opts = (engineOptionsSchema?: FormSchema['fields']) => ({
   nameEditable: true,
-  environments: [],
+  runtime_profiles: [],
   models: [],
   engineOptionsSchema,
 });

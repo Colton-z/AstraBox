@@ -28,8 +28,8 @@
  *   conversation start.
  *
  * Deployment fixtures this reads and never creates: the deployment-proven Agent
- * (`ASTRABOX_E2E_AGENT_NAME`, default "Claude Code") for an Environment and
- * model, an enabled Environment that runs Assistants, and the PostgreSQL
+ * (`ASTRABOX_E2E_AGENT_NAME`, default "Claude Code") for a RuntimeProfile and
+ * model, an enabled RuntimeProfile that runs Assistants, and the PostgreSQL
  * service handle the database oracle needs (`ASTRABOX_E2E_POSTGRES_CONTAINER`
  * outside Compose). The Skill and package sources follow
  * `ASTRABOX_E2E_REAL_SKILL_DESCRIPTOR`, `ASTRABOX_E2E_REAL_PLUGIN_REPOSITORY` and
@@ -181,7 +181,7 @@ test('an Agent page edits its own MCP servers, Skills and packages, and its conv
   const agent = await api.createAgent({
     name: `__e2e_no_catalog_${randomUUID().slice(0, 8)}`,
     model: base.model,
-    environment_name: base.environment_name,
+    runtime_profile_name: base.runtime_profile_name,
     prepared_capacity: 0,
   });
   agentIds.push(agent.agent_id);
@@ -265,7 +265,7 @@ test('an Assistant page and the Assistant defaults work without a catalog', asyn
   await requireNoCatalog(api);
   const assistant = await api.createAssistant({
     display_name: `__e2e_no_catalog_${randomUUID().slice(0, 8)}`,
-    environment_name: await api.assistantEnvironmentName(),
+    runtime_profile_name: await api.assistantEnvironmentName(),
   });
   assistantIds.push(assistant.assistant_id);
   expect(await refusal(request, 'GET', `/assistants/${assistant.assistant_id}/extensions`)).toEqual({
@@ -317,7 +317,7 @@ test('a catalog selection kept from before is shown, refused at use, and removed
   const agent = await api.createAgent({
     name: `__e2e_stale_catalog_${randomUUID().slice(0, 8)}`,
     model: base.model,
-    environment_name: base.environment_name,
+    runtime_profile_name: base.runtime_profile_name,
     prepared_capacity: 0,
   });
   agentIds.push(agent.agent_id);

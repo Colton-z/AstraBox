@@ -35,7 +35,7 @@ Agent 使用基于占位符的受保护凭证时：
 1. AstraBox 读取凭证，并为当前沙箱创建新的不透明占位符。
 2. Agent 程序收到占位符；沙箱出站代理收到真实值和匹配规则。
 3. 出站代理检查请求的目标地址、方法、路径和允许替换的位置。
-4. 符合规则的请求会获得真实值；不符合规则的请求不会获得凭证，也可能被 Environment 的网络规则阻止。
+4. 符合规则的请求会获得真实值；不符合规则的请求不会获得凭证，也可能被 RuntimeProfile 的网络规则阻止。
 
 凭证 API 永远不会返回真实值，控制台也不会显示。轮换 MCP 凭证后，AstraBox 会在把下一条
 消息交给 Agent 程序之前刷新受保护凭证，Agent 使用原有占位符。出站环境变量和 HTTP Basic
@@ -58,9 +58,9 @@ HTTP Basic 要求使用 443 端口、路径不是根路径的不含凭证 HTTPS 
 
 ## 网络访问单独配置
 
-Agent 的 Environment（运行环境）仍通过 `limited` 或 `unrestricted` 网络模式控制普通出站访问。分配受保护凭证会把它的准确目标地址加入沙箱实际使用的网络规则，但不会修改已保存的 Environment，也不会允许其他无关地址。凭证的方法和路径规则决定哪些匹配请求能够获得密钥。
+Agent 的 RuntimeProfile（运行配置）仍通过 `limited` 或 `unrestricted` 网络模式控制普通出站访问。分配受保护凭证会把它的准确目标地址加入沙箱实际使用的网络规则，但不会修改已保存的 RuntimeProfile，也不会允许其他无关地址。凭证的方法和路径规则决定哪些匹配请求能够获得密钥。
 
-远程 MCP 调用和其他沙箱流量都使用当前部署的网络出口。Environment 设置和出站 IP 地址见[网络访问](networking.md)。
+远程 MCP 调用和其他沙箱流量都使用当前部署的网络出口。RuntimeProfile 设置和出站 IP 地址见[网络访问](networking.md)。
 
 ## 部署要求
 
@@ -89,7 +89,7 @@ Agent 程序收到的是不含密钥的占位符。沙箱创建后，AstraBox �
 
 ## 独立配置普通网络访问
 
-Environment 独立于凭证传递声明普通出站可达性。`unrestricted` 允许所有地址；`limited`
+RuntimeProfile 独立于凭证传递声明普通出站可达性。`unrestricted` 允许所有地址；`limited`
 允许其允许列表和平台已知地址，它不会重复 Vault binding，也不会读取 Plugin 内部的 MCP
 声明：
 
@@ -115,13 +115,13 @@ AstraBox 凭证计划会保留目标地址、方法、路径、transport 和安�
 分配给工作负载，就代表授权访问 `api.example.com`。方法和路径规则仍然决定哪些请求会被注入
 密钥；同一主机上的其他请求不带凭证。
 
-Vault 分配保持 Environment 记录原样。Environment 网络配置与 Vault 记录生命周期相互
+Vault 分配保持 RuntimeProfile 记录原样。RuntimeProfile 网络配置与 Vault 记录生命周期相互
 独立。移除分配会从新沙箱策略中移除它管理的地址授权。
 
 OpenSandbox egress v1.1.7 支持在 HTTPS 443 上拦截凭证；凭证明示允许不安全传输时也支持
 HTTP 80，并且要求 `dns+nft`。它还会校验每个运行时 binding 地址明确可达。因此 adapter
 会把每个已附加的 binding 地址渲染为精确允许规则。该规则在 `unrestricted` 下是冗余项；
-在 `limited` 下则是 Vault 分配携带的地址授权。Environment 允许列表无需重复填写。
+在 `limited` 下则是 Vault 分配携带的地址授权。RuntimeProfile 允许列表无需重复填写。
 
 ## 添加出站凭证
 
@@ -202,7 +202,7 @@ adapter 会拒绝带凭证 SSE，因为 OpenSandbox 无法预先绑定该 transp
 在准备流程下载 Skill 或 Plugin 之前，creator 会把 Agent 当前完整的凭证计划提供给出站代理
 一侧的 Vault。模型、环境变量、MCP 和 HTTP Basic 凭证使用与冷创建相同的传递路径；预热
 不会用虚假的密钥值代替。受保护的值留在沙箱环境之外。分配和恢复通过同一份计划刷新当前
-绑定。Environment 允许列表无需重复 Vault binding 地址。
+绑定。RuntimeProfile 允许列表无需重复 Vault binding 地址。
 
 自定义部署和预备容量的要求见
 [OpenSandbox 凭证保护](providers/opensandbox.md#credential-protection)。

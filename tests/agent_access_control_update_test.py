@@ -60,7 +60,7 @@ class _FakeEnvironmentRepo:
     # engine_options acceptance is judged by the environment's engine, so the
     # closed-contract probes need the payload's environment to resolve. It is
     # unrestricted so the example hosts in these payloads reach no resolver;
-    # what a limited Environment admits is author_boundary_test's subject.
+    # what a limited RuntimeProfile admits is author_boundary_test's subject.
     async def get_any_by_name(self, name: str) -> dict[str, Any] | None:
         return {
             "name": name,
@@ -76,13 +76,13 @@ def _service(agent: dict[str, Any]) -> tuple[AgentConfigService, _FakeAgentRepo]
 
     register_builtin_providers()
     repo = _FakeAgentRepo(agent)
-    return AgentConfigService(repo, environment_repo=_FakeEnvironmentRepo()), repo  # type: ignore[arg-type]
+    return AgentConfigService(repo, runtime_profile_repo=_FakeEnvironmentRepo()), repo  # type: ignore[arg-type]
 
 
 _REQUIRED = {
     "name": "probe",
     "model": "some-model",
-    "environment_name": "claude-code",
+    "runtime_profile_name": "claude-code",
 }
 
 _BASE = {

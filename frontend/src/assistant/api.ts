@@ -124,7 +124,7 @@ export function startAssistantConversation(
 
 /**
  * The caller's primary Assistant, created from the deployment's Assistant
- * defaults on first use. A deployment without an Environment for Assistants
+ * defaults on first use. A deployment without a RuntimeProfile for Assistants
  * answers ASSISTANT_DEFAULTS_UNAVAILABLE (409).
  */
 export async function ensurePrimaryAssistant(
@@ -188,7 +188,7 @@ export async function setAssistantExtensions(
   })) as AssistantExtensionCatalog;
 }
 
-/** The deployment's Assistant defaults, with the Environment new Assistants would use. */
+/** The deployment's Assistant defaults, with the RuntimeProfile new Assistants would use. */
 export async function getAssistantDefaults(): Promise<AssistantDefaults> {
   return await sendApi((wire) => apiClient.GET('/api/v1/admin/assistant-defaults', wire)) as AssistantDefaults;
 }
@@ -196,7 +196,7 @@ export async function getAssistantDefaults(): Promise<AssistantDefaults> {
 /** The authored fields of a defaults read, as the replacing PUT takes them. */
 export function authoredDefaults(view: AssistantDefaults): AssistantDefaultsFields {
   return {
-    environment_name: view.environment_name ?? null,
+    runtime_profile_name: view.runtime_profile_name ?? null,
     model_name: view.model_name ?? null,
     instructions: view.instructions ?? null,
     skills: view.skills ?? [],

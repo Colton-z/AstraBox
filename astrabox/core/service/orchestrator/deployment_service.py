@@ -274,12 +274,12 @@ class DeploymentService:
         async with self._scheduling():
             await scheduler.apply(definition)
 
-    async def _delete_schedule(self, deployment_id: str, *, execution_target: str) -> None:
+    async def _delete_schedule(self, deployment_id: str, *, environment_name: str) -> None:
         scheduler = self._scheduler()
         if scheduler is None:
             return
         async with self._scheduling():
-            await scheduler.delete(deployment_id, execution_target=execution_target)
+            await scheduler.delete(deployment_id, environment_name=environment_name)
 
     # ── Management (called by authenticated admin routes) ────────────────────
 
@@ -342,7 +342,7 @@ class DeploymentService:
             scene = str(row.get("scene") or "")
             try:
                 if scene == SCENE_SCHEDULE:
-                    await self._delete_schedule(deployment_id, execution_target=str(row["execution_target"]))
+                    await self._delete_schedule(deployment_id, environment_name=str(row["environment_name"]))
                 elif channel_scene_name(scene) is not None:
                     await self._channel_credentials.purge(deployment_id)
             except Exception:
@@ -1006,7 +1006,7 @@ class DeploymentService:
                 # The row disappeared after the visibility read. Its desired
                 # state is deletion, so leaving either old or candidate
                 # schedule would create an orphan invocation source.
-                await self._delete_schedule(deployment_id, execution_target=str(existing["execution_target"]))
+                await self._delete_schedule(deployment_id, environment_name=str(existing["environment_name"]))
                 self._raise_deployment_not_found()
             return self._sanitize(updated)
         updates.pop("name", None)
@@ -1269,7 +1269,7 @@ class DeploymentService:
             )
             self._raise_deployment_not_found()
         if str(existing.get("scene") or "") == SCENE_SCHEDULE:
-            await self._delete_schedule(deployment_id, execution_target=str(existing["execution_target"]))
+            await self._delete_schedule(deployment_id, environment_name=str(existing["environment_name"]))
         channel_name = channel_scene_name(str(existing.get("scene") or ""))
         prior_credentials: dict[str, Any] | None = None
         if channel_name is not None and get_channel(channel_name).describe().credential_fields:
@@ -1383,9 +1383,9 @@ class DeploymentService:
         # message while its runtime is still starting, and its runtime answers
         # it once ready.
         self._verify_signature(deployment, headers, raw_body)
-        from astrabox.core.service.orchestrator.runtime.execution_target import require_execution_target
+        from astrabox.core.service.orchestrator.runtime.environment_ownership import require_environment_ownership
 
-        require_execution_target(deployment)
+        require_environment_ownership(deployment)
         content = self._build_content(deployment, raw_body)
         target = await self._targets.resolve(deployment)
         if target is None:
@@ -1481,7 +1481,7 @@ class DeploymentService:
         scheduler = self._require_scheduler()
         async with self._scheduling():
             records = list(await scheduler.list_runs(
-                deployment_id, execution_target=str(deployment["execution_target"]), limit=limit
+                deployment_id, environment_name=str(deployment["environment_name"]), limit=limit
             ))
         progress = await asyncio.gather(*(self._run_progress(record) for record in records))
         return [
@@ -1502,7 +1502,7 @@ class DeploymentService:
         async with self._scheduling():
             record = await scheduler.enqueue(
                 deployment_id=deployment_id,
-                execution_target=str(deployment["execution_target"]),
+                environment_name=str(deployment["environment_name"]),
                 trigger="manual",
                 payload=run_payload(deployment),
             )
@@ -1531,7 +1531,7 @@ class DeploymentService:
         self._require_schedule(deployment)
         scheduler = self._require_scheduler()
         async with self._scheduling():
-            source = await scheduler.get_run(run_id, execution_target=str(deployment["execution_target"]))
+            source = await scheduler.get_run(run_id, environment_name=str(deployment["environment_name"]))
         if source is None or source.invocation.deployment_id != str(deployment_id):
             raise APIError(
                 code="NOT_FOUND", message="Deployment Run not found", status_code=404
@@ -1540,7 +1540,7 @@ class DeploymentService:
         async with self._scheduling():
             record = await scheduler.enqueue(
                 deployment_id=deployment_id,
-                execution_target=str(deployment["execution_target"]),
+                environment_name=str(deployment["environment_name"]),
                 trigger="replay",
                 payload=run_payload(deployment, input_text=captured),
                 replayed_from_run_id=run_id,
@@ -1597,14 +1597,14 @@ class DeploymentService:
             or target_ref(deployment) != target_ref(context)
         ):
             raise RunPermanentError("scheduled Deployment no longer exists")
-        from astrabox.core.service.orchestrator.runtime.execution_target import require_execution_target
+        from astrabox.core.service.orchestrator.runtime.environment_ownership import require_environment_ownership
 
-        if context.get("execution_target") != deployment["execution_target"]:
-            raise RunPermanentError("Run execution target does not match its Deployment")
+        if context.get("environment_name") != deployment["environment_name"]:
+            raise RunPermanentError("Run Environment does not match its Deployment")
         try:
-            require_execution_target(deployment)
+            require_environment_ownership(deployment)
         except APIError as exc:
-            raise RunPermanentError("scheduled Deployment belongs to another execution target") from exc
+            raise RunPermanentError("scheduled Deployment belongs to another Environment") from exc
         if (
             str(context.get("trigger") or "schedule") == "schedule"
             and deployment.get("enabled") is False
@@ -1644,17 +1644,17 @@ class DeploymentService:
         permanently.
         """
 
-        from astrabox.core.service.orchestrator.runtime.execution_target import require_execution_target
+        from astrabox.core.service.orchestrator.runtime.environment_ownership import require_environment_ownership
 
         session = await self._sessions_repo.get_session(session_id)
         if session is None:
             raise RunPermanentError("scheduled Session no longer exists")
-        if context.get("execution_target") != session["execution_target"]:
-            raise RunPermanentError("Run execution target does not match its Session")
+        if context.get("environment_name") != session["environment_name"]:
+            raise RunPermanentError("Run Environment does not match its Session")
         try:
-            require_execution_target(session)
+            require_environment_ownership(session)
         except APIError as exc:
-            raise RunPermanentError("scheduled Session belongs to another execution target") from exc
+            raise RunPermanentError("scheduled Session belongs to another Environment") from exc
         target = await self._targets.resolve(context)
         personal_user = (await self._personal_run_user(context)
                          if context.get("scope") == "personal" else None)

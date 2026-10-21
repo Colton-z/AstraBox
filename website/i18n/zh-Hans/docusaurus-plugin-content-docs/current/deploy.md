@@ -16,6 +16,46 @@ AstraBox 是自托管软件。你可以在一台 Docker 主机上运行完整服
 
 Kubernetes 和已有 OpenSandbox 服务的配置方法见 [OpenSandbox 部署指南](providers/opensandbox.md)。
 
+## 环境隔离 {#environments}
+
+Environment 管理配置、权限、凭据、完整会话和原生 SessionStore、触发配置、Run 与运行资源的归属。
+一个部署地址服务一个 Environment；多个副本可以共同服务同一环境。生产与灰度分别使用业务数据库、
+数据库账号和密码、私有状态目录及服务凭据。RuntimeProfile 是环境内部的引擎、镜像、模型、网络和
+沙箱配方，同一个环境可以包含多种引擎与运行配置。
+
+在首次启动前设置 `ASTRABOX_ENVIRONMENT_NAME`。环境标识由 3–30 个小写字母、数字、下划线或
+连字符组成，以字母或数字开头。数据库保存唯一且不可变的环境标识，配置为其他标识的进程会拒绝启动。
+修改标识不会迁移数据，也不会复制出隔离环境。管理 API 只修改当前环境的详情和成员，不创建其他部署。
+本部署模型不提供跨部署切换的中央控制台，也不支持依靠同一业务库中的不同 schema 进行环境隔离。
+
+仓库维护的 Compose 和单容器部署会创建独立的服务数据库、非超级用户账号及凭据。
+不同环境使用独立的部署目录和状态卷；使用外部 PostgreSQL 时，为每个环境分配独立数据库和账号，
+撤销 PUBLIC 的数据库访问权限，只向对应账号授权。共享物理主机或集群时，网络、存储和服务权限
+仍须分别配置。各环境不能共用可写状态目录或运行凭据。不要在升级时移动或重新生成现有密钥。
+
+灰度环境可关闭预热和自动渠道、调度任务，保留交互式会话：
+
+```dotenv
+ASTRABOX_ENVIRONMENT_NAME=gray
+ASTRABOX_AGENT_PREWARM_ENABLED=false
+ASTRABOX_BACKGROUND_EXECUTION_ENABLED=false
+ASTRABOX_STATE_DIR=/var/lib/astrabox-gray
+```
+
+同时配置灰度独立的数据库和服务凭据。关闭后台执行不会停止已接收任务的输出接收、原生状态保存、
+活跃沙箱续期、恢复或清理。预热单独控制，关闭后通过冷启动接收新会话，不修改 Agent 配置的预热容量。
+`GET /api/v1/environments/current` 返回当前环境和实际运行策略。
+
+登录身份可以来自相同的外部身份提供商，环境成员权限独立授予，Agent 和会话权限继续生效。
+平台管理员可以管理当前环境，不需要成员授权，其访问会记录日志。渠道及调度任务的执行账号也必须
+是环境成员，不继承配置人的管理员角色。无登录的本地部署仅在首次创建环境时授予本地账号成员权限，
+重启不会恢复已撤销的授权。
+
+升级前停止旧副本。现有记录、加密凭据作用域、本地密钥和 DBOS 数据保持原位置。
+旧的运行配方改称 RuntimeProfile；保留原执行归属作为环境标识，原默认值为 `astrabox`。
+数据库如果包含多个旧执行归属的运行记录，会拒绝升级，需要先拆分环境数据库。
+已登录的普通账号可能需要管理员补授环境成员权限。升级不会把生产历史或凭据复制到灰度。
+
 ## 在单台 Docker 主机上运行 {#run-on-one-docker-host}
 
 部署会启动以下组件：
@@ -43,7 +83,7 @@ Kubernetes 和已有 OpenSandbox 服务的配置方法见 [OpenSandbox 部署指
 
 ### 沙箱网络边界 {#sandbox-network-boundary}
 
-每个沙箱都是 Docker 默认 `bridge` 网络上的一个容器，并配有一个执行其 Environment
+每个沙箱都是 Docker 默认 `bridge` 网络上的一个容器，并配有一个执行其 RuntimeProfile
 网络设置的 OpenSandbox 出站边车。这套部署让平台不出现在该网络上：
 
 - 服务端只在 `127.0.0.1` 上发布控制台。PostgreSQL 和 Redis 只发布本机回环的开发端口。
@@ -56,7 +96,7 @@ Kubernetes 和已有 OpenSandbox 服务的配置方法见 [OpenSandbox 部署指
   `ASTRABOX_PUBLISH_HOST_IP` 设为 `0.0.0.0`。
 - 无论 `受限` 还是 `不受限`，每个沙箱的出站策略都拒绝 Docker 默认 bridge 上除
   `sandbox-edge` 以外的地址，即其他沙箱，以及发布沙箱端口的 bridge 网关。这些拒绝规则先于所有
-  允许规则生效，所以 Environment 白名单里写上 bridge 地址也不会重新放开。拒绝列表是
+  允许规则生效，所以 RuntimeProfile 白名单里写上 bridge 地址也不会重新放开。拒绝列表是
   `ASTRABOX_SANDBOX_EGRESS_DENY_CIDRS`，由服务端启动时推导。出站边车只在 `dns+nft`
   模式下执行地址规则，因此设置 `ASTRABOX_SANDBOX_EGRESS_MODE=dns` 时服务端拒绝启动。
 - 无论哪种网络模式，都拒绝存放云厂商元数据服务的 `169.254.0.0/16`。
@@ -108,8 +148,8 @@ curl -fsSL https://raw.githubusercontent.com/Colton-z/AstraBox/main/scripts/inst
 ### 从 AstraBox 0.1.8 升级 {#upgrade-from-0-1-8}
 
 AstraBox 0.1.9 使用新的数据库结构保存记录，不读取 0.1.8 的记录。从 0.1.8 升级的安装会
-从空的 AstraBox 数据库开始：原有的 Agent、Environment、Assistant、Session 及其历史、
-Deployment 和 Vault 都不会带过来。新版本会像全新安装一样创建默认的 Environment 和
+从空的 AstraBox 数据库开始：原有的 Agent、RuntimeProfile、Assistant、Session 及其历史、
+Deployment 和 Vault 都不会带过来。新版本会像全新安装一样创建默认的 RuntimeProfile 和
 Agent；其余内容请在升级后重新创建。
 
 新数据库还会让这个安装获得新的标识。AstraBox 只删除、复用和计入本安装自己创建的沙箱，
@@ -430,9 +470,9 @@ Session：正常关闭时在几秒内完成，否则在停止副本的 30 秒租
 
 ## 构建沙箱镜像
 
-Environment（运行环境）把 Agent 与 Agent 程序及兼容的沙箱镜像关联起来。Agent 可用的操作系统、CPU 架构、Agent 程序、命令和语言运行时都来自该镜像。
+RuntimeProfile（运行配置）把 Agent 与 Agent 程序及兼容的沙箱镜像关联起来。Agent 可用的操作系统、CPU 架构、Agent 程序、命令和语言运行时都来自该镜像。
 
-如果每个 Session 都需要额外软件，请以对应的内置沙箱镜像为基础构建自定义镜像，安装并固定依赖，再在 Environment 中选择这个镜像。生产部署应使用不可变的镜像标签。
+如果每个 Session 都需要额外软件，请以对应的内置沙箱镜像为基础构建自定义镜像，安装并固定依赖，再在 RuntimeProfile 中选择这个镜像。生产部署应使用不可变的镜像标签。
 
 沙箱所需的 Agent 程序、账号和控制进程必须在沙箱启动时已经存在。不要依赖每个 Session 单独执行的安装脚本：预热沙箱可能早于使用它的 Session 创建。
 
@@ -623,7 +663,7 @@ in use, and this box needs 1`。不会排队等待。以这种方式被拒绝的
 变量不设置即没有上限，只有一个例外：在 Docker 主机上运行随附的沙箱服务时，内存上限默认为
 主机内存减去 4 GiB（留给平台、它的存储服务和主机本身）。16 GiB 的主机上就是 12 GiB，大约
 够十个独占沙箱的对话。8 GiB 及以下的主机上，这个上限不超过 4 GiB，放不下一个默认规格的共享
-沙箱（4 GiB 加 sidecar），运行环境使用共享沙箱的 Agent 或 Assistant 都无法启动：请调低
+沙箱（4 GiB 加 sidecar），运行配置使用共享沙箱的 Agent 或 Assistant 都无法启动：请调低
 `ASTRABOX_SHARED_SANDBOX_MEMORY_LIMIT` 及其请求，或调高 `ASTRABOX_SANDBOX_QUOTA_MEMORY`。把变量设为 `unlimited` 即取消该项上限。启动时会记录每项上限及其来源；
 如果后端无法列出自己的沙箱，就无法统计用量，此时设置上限会导致启动失败。控制台的「沙箱」
 页面会显示每项上限和当前用量。
@@ -634,7 +674,7 @@ in use, and this box needs 1`。不会排队等待。以这种方式被拒绝的
 使同样多的新对话可以同时在一秒内开始，而不必先启动沙箱。只要设置了
 `ASTRABOX_AGENT_PREWARM_REDIS_URL`，新建 Agent 的预备容量就默认为 1；所有随附的 Compose
 部署和[单容器部署](all-in-one.md)都会设置它，在这些部署上，全新安装时创建的两个 Agent
-同样如此。只要预备容量大于 0、Agent 及其运行环境处于启用状态，这些运行时就一直保留；
+同样如此。只要预备容量大于 0、Agent 及其运行配置处于启用状态，这些运行时就一直保留；
 对话取走一个空闲沙箱之后，AstraBox 会再准备一个补上，每个 Agent 同时最多准备八个。请按
 各 Agent 的 `prepared_capacity` 之和规划部署容量：例如一个服务 1,000 名用户、预计会有 100
 个对话同时开始的 Agent，预备容量需要 100，每个对话独立使用沙箱时就是 100 个空闲沙箱。已准备
@@ -645,7 +685,7 @@ Agent 保留的空闲沙箱数是预备容量除以每个沙箱的席位数并�
 写入。不设置时，一个 Agent 的已准备沙箱可能占满整个沙箱额度，不给对话留下余地。不需要快速
 开始首个对话的 Agent 可以把预备容量设为 0。
 
-空闲的已准备沙箱占用多少资源，取决于 Agent 的运行环境使用的 Agent 程序：
+空闲的已准备沙箱占用多少资源，取决于 Agent 的运行配置使用的 Agent 程序：
 
 | Agent 程序 | 一个空闲已准备沙箱的内存占用 |
 |---|---|
@@ -682,7 +722,7 @@ GET /readyz
 
 服务开始排空并准备关闭后，`/readyz` 会返回 `503`。平台的终止宽限时间应大于 `ASTRABOX_SHUTDOWN_DRAIN_SECONDS`，让该副本上正在处理的请求有时间完成。副本停止期间，Agent 程序在沙箱中继续运行，由另一个副本接管它们的 Session。
 
-CPU、内存、磁盘和沙箱超时由所选 OpenSandbox 运行时及其配置决定。依赖暂停沙箱之前，请在实际部署的后端上验证每个使用暂停功能的 Environment：
+CPU、内存、磁盘和沙箱超时由所选 OpenSandbox 运行时及其配置决定。依赖暂停沙箱之前，请在实际部署的后端上验证每个使用暂停功能的 RuntimeProfile：
 
 ```bash
 astrabox verify-opensandbox-snapshots
@@ -703,14 +743,14 @@ astrabox verify-opensandbox-snapshots
 - 所有副本使用共享持久化，以及相同的签名密钥和加密密钥；
 - 将数据库数据、状态、凭证和加密密钥一起备份；
 - 验证沙箱可以访问模型网关、AstraBox 回调、远程 MCP Server 和其他必需地址；
-- 验证每个会暂停沙箱的 Environment 都能从快照恢复；
+- 验证每个会暂停沙箱的 RuntimeProfile 都能从快照恢复；
 - 设置工作负载需要的出站网络规则和沙箱权限；
 - 在测试正常关闭时运行一次真实 Agent 任务；
 - 收集日志、指标和链路追踪数据，并明确访问与保留规则。
 
 ## 相关指南
 
-- [Environment](environments.md)
+- [RuntimeProfile](runtime-profiles.md)
 - [OpenSandbox](providers/opensandbox.md)
 - [团队登录](team-login.md)
 - [容器参考](container-reference.md)

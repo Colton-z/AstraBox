@@ -16,14 +16,14 @@ Open an Agent conversation and use the permission selector below the message
 box. The selector appears only when the Agent program supports changing modes.
 
 The selector lists only the modes declared by the Agent program installed in
-the Agent's Environment. Their names and descriptions come from that program.
+the Agent's RuntimeProfile. Their names and descriptions come from that program.
 The program also declares the default when no mode is selected. AstraBox does
 not parse a command to override that decision or reinterpret the program's
 approval request.
 Some programs also expose a separate approval setting in the Agent's
 **Advanced** section; it remains separate from the permission selector.
 
-A permission mode does not override the Environment's network policy or the
+A permission mode does not override the RuntimeProfile's network policy or the
 sandbox's isolation settings.
 
 ## Configure a mode for a Session

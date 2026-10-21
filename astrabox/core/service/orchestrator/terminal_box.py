@@ -169,9 +169,9 @@ class TerminalBox:
 
     async def prepare(self, session: dict[str, Any]) -> TerminalTarget:
         """Resolve where the session's terminal runs; ``409`` when it cannot run now."""
-        from astrabox.core.service.orchestrator.runtime.execution_target import require_execution_target
+        from astrabox.core.service.orchestrator.runtime.environment_ownership import require_environment_ownership
 
-        require_execution_target(session)
+        require_environment_ownership(session)
         if is_assistant_user_conversation(session) and self._assistant_workspace_service is not None:
             session, resolution = await reconcile_session_runtime_binding(
                 session=session,

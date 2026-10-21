@@ -4,7 +4,7 @@
 
 ## Key Advantages
 
-- **Declarative configuration**: Manage Environments and Agents through a single `astrabox.yaml` file—clear, portable, and easy to version-control.
+- **Declarative configuration**: Manage RuntimeProfiles and Agents through a single `astrabox.yaml` file—clear, portable, and easy to version-control.
 - **Local and remote access**: Use the same resource and Agent commands with the maintained local deployment or a remote self-hosted deployment.
 - **One-command startup**: `astrabox up` checks the local prerequisites, starts the maintained Compose deployment, and waits until it is ready.
 - **Scriptable output**: Resource, status, and Agent commands provide JSON output and stable exit codes for scripts and CI/CD pipelines.
@@ -19,10 +19,10 @@ The `astrabox` CLI provides commands to manage a deployment and its **Agents**:
 | Command | Description |
 | :--- | :--- |
 | `astrabox init` | Create an `astrabox.yaml` file or export one from a deployment. |
-| `astrabox schema` | Show the fields accepted for an Environment or Agent. |
-| `astrabox get` | List Agents, Environments, Assistants, Sessions, or remote MCP server configurations. |
+| `astrabox schema` | Show the fields accepted for a RuntimeProfile or Agent. |
+| `astrabox get` | List Agents, RuntimeProfiles, Assistants, Sessions, or remote MCP server configurations. |
 | `astrabox diff` | Preview the changes declared in `astrabox.yaml`. |
-| `astrabox apply` | Create or update the Environments and Agents declared in `astrabox.yaml`. |
+| `astrabox apply` | Create or update the RuntimeProfiles and Agents declared in `astrabox.yaml`. |
 | `astrabox destroy` | Delete the Agents declared in `astrabox.yaml`. |
 | `astrabox run` | Send a task to an Agent and stream its reply. |
 | `astrabox status` | View the deployment's health, readiness, and endpoint. |
@@ -65,12 +65,12 @@ Run `astrabox mcp serve` as a stdio MCP server when another application needs to
 
 ## Configuration File (`astrabox.yaml`)
 
-`astrabox.yaml` declares the Environments and Agents that should exist in an **AstraBox** deployment. Preview the changes with `astrabox diff`, then create or update the resources with `astrabox apply`.
+`astrabox.yaml` declares the RuntimeProfiles and Agents that should exist in an **AstraBox** deployment. Preview the changes with `astrabox diff`, then create or update the resources with `astrabox apply`.
 
 ```yaml
 version: 1
 
-environments:
+runtime_profiles:
   - name: default
     engine_kind: <agent-program-id>
     endpoint_provider: <model-connection-id>
@@ -79,13 +79,13 @@ environments:
 agents:
   - name: researcher
     model: <model-name>
-    environment_name: default
+    runtime_profile_name: default
     system: |
       Research the requested topic and cite the sources you use.
     enabled: true
 ```
 
-`engine_kind` is the configuration field that selects an installed Agent program. `endpoint_provider` selects the model-service connection. See [Configuration Reference](./configuration.md) for the file rules and use `astrabox schema environment` and `astrabox schema agent` for the fields available on a deployment.
+`engine_kind` is the configuration field that selects an installed Agent program. `endpoint_provider` selects the model-service connection. See [Configuration Reference](./configuration.md) for the file rules and use `astrabox schema runtime_profile` and `astrabox schema agent` for the fields available on a deployment.
 
 ## Quick Start
 
@@ -102,7 +102,7 @@ make build-agent-image
 # 3. Check the deployment
 .venv/bin/astrabox status
 
-# 4. Export its current Environments and Agents
+# 4. Export its current RuntimeProfiles and Agents
 .venv/bin/astrabox init --from-deployment
 
 # 5. Preview and apply edits to astrabox.yaml
@@ -128,7 +128,7 @@ astrabox run <agent-name> "Continue the task" --session <session-id>
 astrabox mcp serve --endpoint https://astrabox.example.com
 ```
 
-## Environment Requirements
+## RuntimeProfile Requirements
 
 ### ✅ Basic Requirements (All Modes)
 
@@ -136,7 +136,7 @@ astrabox mcp serve --endpoint https://astrabox.example.com
 - The AstraBox package installed
 - A reachable AstraBox deployment
 
-### 🐍 Python Development Environment
+### 🐍 Python Development RuntimeProfile
 
 - From a source checkout, run `make install` to create `.venv` and install the CLI.
 - From an installed package, run `astrabox` directly.

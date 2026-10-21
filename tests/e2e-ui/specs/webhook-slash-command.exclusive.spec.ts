@@ -85,17 +85,17 @@ for (const scene of ['scheduler', 'hmac'] as const) {
 
     try {
       const base = await api.defaultAgent();
-      const environmentName = String(base.environment_name || '').trim();
-      expect(environmentName).not.toEqual('');
+      const runtimeProfileName = String(base.runtime_profile_name || '').trim();
+      expect(runtimeProfileName).not.toEqual('');
       let model = String(base.model || '').trim();
       if (!model || model.includes('*')) {
-        const models = await api.listEnvironmentModels(environmentName);
+        const models = await api.listEnvironmentModels(runtimeProfileName);
         model = models.find((item) => item && !item.includes('*')) || 'deepseek-chat';
       }
       const agent = await api.createAgent({
         name: `__e2e_webhook_slash_${Date.now()}`,
         model,
-        environment_name: environmentName,
+        runtime_profile_name: runtimeProfileName,
         prepared_capacity: 0,
       });
       agentId = agent.agent_id;

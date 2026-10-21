@@ -22,10 +22,10 @@ def test_native_clear_continues_after_reset_and_reader_replay(
 ) -> None:
     client = e2e_client
     environment = os.environ["ASTRABOX_E2E_ASSISTANT_ENVIRONMENT"]
-    assert environment.startswith("claude-reset-"), "use this case's isolated Environment"
+    assert environment.startswith("claude-reset-"), "use this case's isolated RuntimeProfile"
     started = datetime.datetime.now(datetime.timezone.utc).isoformat()
     agent = h.data(client.post("/api/v1/agents", json={
-        "name": f"Native reset {uuid.uuid4().hex[:8]}", "environment_name": environment,
+        "name": f"Native reset {uuid.uuid4().hex[:8]}", "runtime_profile_name": environment,
         "model": os.environ["ASTRABOX_E2E_ASSISTANT_MODEL"], "prepared_capacity": 0,
     }))["agent_id"]
     sid = h.data(client.post(f"/api/v1/agents/{agent}/conversations", json={}))['session_id']
@@ -122,4 +122,4 @@ def test_native_clear_continues_after_reset_and_reader_replay(
                       "audit_native_rows_retained": len(original_native), "explicit_inputs": 4}))
     h.data(client.delete(f"/api/v1/sessions/{sid}", timeout=60))
     h.data(client.delete(f"/api/v1/agents/{agent}", timeout=60))
-    h.data(client.delete(f"/api/v1/admin/environments/{environment}"))
+    h.data(client.delete(f"/api/v1/admin/runtime-profiles/{environment}"))

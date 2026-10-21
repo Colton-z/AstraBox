@@ -25,7 +25,7 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Configure Agent environment',
-      items: ['environments', 'container-reference', 'networking'],
+      items: ['runtime-profiles', 'container-reference', 'networking'],
     },
     {
       type: 'category',

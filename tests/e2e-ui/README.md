@@ -185,14 +185,14 @@ npx playwright test specs/postgresql-runtime-services.exclusive.spec.ts
 ### OpenSandbox Agent 预热
 
 `opensandbox-agent-prewarm-real-extensions.exclusive.spec.ts` 需要两个预先配置好的
-Environment（`agent` 与 `conversation` tenancy）、Redis、PostgreSQL，以及能正常调用
-模型的 Agent 镜像。它不会创建或修改 Environment；这些是可跨轮复用的部署 fixture。
+RuntimeProfile（`agent` 与 `conversation` tenancy）、Redis、PostgreSQL，以及能正常调用
+模型的 Agent 镜像。它不会创建或修改 RuntimeProfile；这些是可跨轮复用的部署 fixture。
 
-部署时通过管理 API（`PUT /api/v1/admin/environments/{name}`）幂等创建并读回专用的
+部署时通过管理 API（`PUT /api/v1/admin/runtime-profiles/{name}`）幂等创建并读回专用的
 `astrabox-e2e-prewarm-shared` 与 `astrabox-e2e-prewarm-conversation`。前者使用
 `agent` tenancy，后者使用 `conversation` tenancy；两者都使用本轮部署的 Agent 镜像。
-不要复用面向日常用户的 `claude-code` Environment，也不要从经过脱敏的管理 API 响应
-克隆凭证字段。两个 Environment 与 namespace 必须显式传给 spec；缺一项时长跑前即失败。
+不要复用面向日常用户的 `claude-code` RuntimeProfile，也不要从经过脱敏的管理 API 响应
+克隆凭证字段。两个 RuntimeProfile 与 namespace 必须显式传给 spec；缺一项时长跑前即失败。
 
 ```bash
 ASTRABOX_E2E_BASE_URL=http://<aws-host>:<server-port> \
@@ -207,10 +207,10 @@ Skills/Plugins 等准备；`sandbox_tenancy=agent` 还在共享沙箱内准备�
 `sandbox_tenancy=conversation` 则准备完整沙箱供用户会话领取。两条路径都从 Agent 的
 `prepared-runtime` 状态读取是否就绪和当前准备版本，不读取 Kubernetes 供应商内部对象。
 
-spec 只读取两个 Environment。每个 case 会创建自己的 Agent 与 Sessions，
+spec 只读取两个 RuntimeProfile。每个 case 会创建自己的 Agent 与 Sessions，
 conversation case 还会更新一次 Agent 版本；通过时按新到旧删除 Sessions，再 soft-delete
 Agent 并退役其 client pool 或准备箱，失败时则保留这些对象和沙箱供排查。部署
-Environment 始终保留。
+RuntimeProfile 始终保留。
 
 ### Credential Vault 请求范围
 
@@ -241,16 +241,16 @@ Service 443 直接转发到 LiteLLM 的明文 80。spec 会从真实 Agent 工�
 
 部署 AstraBox 时，`ASTRABOX_LITELLM_BASE_URL` 必须使用同一个 HTTPS origin，使模型
 credential binding 与 spec 都命中 443 网关；server 侧模型枚举仍可通过
-`ASTRABOX_LITELLM_SERVER_BASE_URL` 使用集群内地址。如果 Environment 使用预热池，
+`ASTRABOX_LITELLM_SERVER_BASE_URL` 使用集群内地址。如果 RuntimeProfile 使用预热池，
 脚本的默认拒绝规则会从 probe URL 和 HTTPS gateway URL 推导两个完整域名。若显式设置
 `EGRESS_RULES`，它仍是完整覆盖，必须自行包含 probe、网关、回调和其他所有目的地。
 
-维护的 AWS release worker 会预置两个可跨轮复用的专用 Environment：cold case 使用
+维护的 AWS release worker 会预置两个可跨轮复用的专用 RuntimeProfile：cold case 使用
 `sandbox_tenancy=conversation`；Agent-prewarm case 使用 `sandbox_tenancy=agent`。
 两者都 pin 到本次 release 的 Agent image，
 使用部署的 LiteLLM endpoint/credential（不复制 secret），并在长 lane 前 read-back
 验证。直接绕过 release worker 运行 spec 时，下面四个值仍必须由部署证据显式提供；
-spec 不读取 ambient fallback，也不会临时改写共享 Environment。
+spec 不读取 ambient fallback，也不会临时改写共享 RuntimeProfile。
 
 ```bash
 ASTRABOX_E2E_BASE_URL=http://<aws-host>:<server-port> \

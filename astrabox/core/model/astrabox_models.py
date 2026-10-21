@@ -46,7 +46,7 @@ class AgentView:
     # ── identity ─────────────────────────────────────────────────────────
     #: Stable Agent identity used by every runtime path. None only for an
     #: assistant-derived view (an assistant is not an agent — it resolves via
-    #: its environment_name).
+    #: its runtime_profile_name).
     agent_id: str | None = None
     #: Set only by Assistant resolution, for Assistant-only platform tools.
     assistant_id: str | None = None
@@ -89,8 +89,8 @@ class AgentView:
     #: internal runtime view and is never exposed through Agent/Assistant APIs.
     credential_vault_ids: list[str] = field(default_factory=list)
     #: The compute and provider access used by this Agent.
-    environment_name: str | None = None
-    #: Registered engine adapter selected by the Environment. This is runtime
+    runtime_profile_name: str | None = None
+    #: Registered engine adapter selected by the RuntimeProfile. This is runtime
     #: identity, not an Agent-owned override.
     engine_kind: str | None = None
     #: Which registered model gateway the sandbox's traffic uses, resolved from
@@ -142,7 +142,7 @@ class AgentView:
     display_name: str | None = None
     icon: str | None = None
     use_cases: list[str] = field(default_factory=list)
-    #: Environment-owned outbound reachability. The runtime parses this product
+    #: RuntimeProfile-owned outbound reachability. The runtime parses this product
     #: shape into the provider-neutral sandbox seam; credential bindings are a
     #: separate input and never appear here.
     networking: dict[str, Any] | None = None
@@ -158,8 +158,8 @@ class AgentView:
     tracing: dict[str, object] | None = None
     #: Internal revision inputs for prepared-runtime replacement. They are
     #: resolved from stored configuration and never form an editable API field.
-    environment_updated_at: str | None = None
-    #: An Assistant's stored definition and its Environment's revision, as one
+    runtime_profile_updated_at: str | None = None
+    #: An Assistant's stored definition and its RuntimeProfile's revision, as one
     #: digest. A workspace records the digest its Agent-program profile was
     #: prepared from; a conversation reuses that profile only while it matches.
     assistant_revision: str | None = None

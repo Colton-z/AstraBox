@@ -538,7 +538,7 @@ class AstraBoxRuntimeSettings(BaseSettings):
         ),
     )
     # Host-controlled resolver used by the egress sidecar. It is intentionally
-    # not copied from an Environment's env: changing DNS changes where a
+    # not copied from a RuntimeProfile's env: changing DNS changes where a
     # credential-bound hostname goes. The one-container image fills this with
     # its private CoreDNS address; source-dev scripts do the equivalent.
     sandbox_egress_dns_upstream: str = Field(
@@ -562,7 +562,7 @@ class AstraBoxRuntimeSettings(BaseSettings):
     )
     # The model credential is held by the egress sidecar instead of being handed
     # to the sandbox. On by default; callers synthesize a deny-by-default policy
-    # when the Environment has none. A requested path that the backend cannot
+    # when the RuntimeProfile has none. A requested path that the backend cannot
     # provide fails instead of silently sending the real credential into the box.
     sandbox_credential_vault_enabled: bool = Field(
         default=True,

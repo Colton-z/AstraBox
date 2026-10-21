@@ -134,7 +134,7 @@ The context is a trusted snapshot supplied by the host, not a held database
 transaction or a lock on the subject. Its owner, revision and operation identify
 the preparation being attempted; they do not guarantee that those values remain
 current while provider code runs. An Assistant's revision includes inherited
-defaults and Environment configuration, not just its authored fields. The host's
+defaults and RuntimeProfile configuration, not just its authored fields. The host's
 checks reject superseded preparation results; they cannot undo provider writes
 that already committed or remote requests that already took effect.
 
@@ -192,19 +192,19 @@ Use the selected persistence engine's actual `AsyncConnection` and an active
 root transaction at `READ COMMITTED` isolation. Other engines, autocommit and
 savepoints are refused. Validate before locking provider-owned rows, use only one
 subject per transaction, propagate refusals to roll back, and keep the transaction
-short. Definition, Environment, defaults and operation locks last until that
+short. Definition, RuntimeProfile, defaults and operation locks last until that
 transaction commits or rolls back. An Agent must remain `ACTIVE`; a deleted
 Assistant, stale owner/revision or superseded/expired callback operation is
 refused with `PREPARATION_SUBJECT_CONFLICT`. Assistant revision validation uses
 the effective inherited configuration, including the first insertion of defaults.
-An Agent's `revision` is its authored `version`: changing its Environment alone
+An Agent's `revision` is its authored `version`: changing its RuntimeProfile alone
 does not advance that revision. Agent callbacks additionally check the recorded
-prepared generation; this does not recompute an effective Environment revision.
-The Environment lock prevents concurrent edits during the validated transaction,
-but does not certify that an Agent's Environment is unchanged since guard issuance
-or since its callback configuration was captured. A disabled Environment is
+prepared generation; this does not recompute an effective RuntimeProfile revision.
+The RuntimeProfile lock prevents concurrent edits during the validated transaction,
+but does not certify that an Agent's RuntimeProfile is unchanged since guard issuance
+or since its callback configuration was captured. A disabled RuntimeProfile is
 permitted: startup admission remains the startup path's responsibility. An
-Environment edit still changes an Assistant's effective revision, so a guard
+RuntimeProfile edit still changes an Assistant's effective revision, so a guard
 issued before that edit is stale even if the subject retains its owner.
 Standalone guards require no active operation even if a synchronization starts
 after issuance. A successful validation is not a promise about a later transaction.

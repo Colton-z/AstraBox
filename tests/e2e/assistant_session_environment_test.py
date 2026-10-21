@@ -89,10 +89,10 @@ def test_assistant_tools_keep_each_session_context_after_reattach_and_replacemen
         sessions = scene["sessions"]
         assert len(sessions) == len(set(sessions)) == 2
         subject = data(client.get(f"/api/v1/assistants/{aid}"))
-        assert subject["display_name"].startswith("Session context ") and subject["environment_name"] == environment
+        assert subject["display_name"].startswith("Session context ") and subject["runtime_profile_name"] == environment
     else:
         aid = data(client.post("/api/v1/assistants", json={
-            "display_name": f"Session context {nonce}", "environment_name": environment,
+            "display_name": f"Session context {nonce}", "runtime_profile_name": environment,
             "model_config_override": {"model_name": model},
             "system": "Execute requested terminal commands exactly. Never simulate their output. Reply with the requested completion marker after execution.",
         }))["assistant_id"]

@@ -34,7 +34,7 @@ from astrabox.core.service.orchestrator.engine_kind_utils import (
     resolve_session_engine_kind,
 )
 from astrabox.core.service.orchestrator.engine.capabilities import require_session_kind
-from astrabox.core.service.orchestrator.runtime.execution_target import require_execution_target
+from astrabox.core.service.orchestrator.runtime.environment_ownership import require_environment_ownership
 
 logger = get_logger(__name__)
 
@@ -547,7 +547,7 @@ class RuntimeEnsure:
         *,
         user: UserContext | None = None,
     ) -> _RuntimeEnsureResult:
-        require_execution_target(session)
+        require_environment_ownership(session)
         session_id = str(session["session_id"])
         session_kind = require_session_kind(session.get("session_kind"))
         if session_kind == "agent_chat":

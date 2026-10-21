@@ -18,7 +18,6 @@ import pytest
 from astrabox.deploy import onebox
 from astrabox.identity.session_signing import reset_session_signing_cache
 from astrabox.providers.litellm_shared_auth import (
-    SANDBOX_INFERENCE_KEY_ALIAS,
     SANDBOX_INFERENCE_KEY_TYPE,
     sandbox_inference_key,
 )
@@ -145,4 +144,3 @@ def test_the_key_is_created_with_litellm_s_inference_only_type(
         "the value must be supplied, or LiteLLM returns one nothing else can name"
     )
     assert seen[1]["json"]["key_type"] == SANDBOX_INFERENCE_KEY_TYPE
-    assert seen[1]["json"]["key_alias"] == SANDBOX_INFERENCE_KEY_ALIAS

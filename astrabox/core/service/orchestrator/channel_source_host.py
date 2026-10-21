@@ -224,11 +224,11 @@ class ChannelSourceHost:
             ):
                 return
             try:
-                from astrabox.core.service.orchestrator.runtime.execution_target import (
-                    require_execution_target,
+                from astrabox.core.service.orchestrator.runtime.environment_ownership import (
+                    require_environment_ownership,
                 )
 
-                require_execution_target(binding)
+                require_environment_ownership(binding)
                 hydrated = await self._channel_credentials.hydrate(binding, provider)
                 async for envelope in provider.open_source(binding=hydrated):
                     if not await self._handle_envelope(name, envelope):

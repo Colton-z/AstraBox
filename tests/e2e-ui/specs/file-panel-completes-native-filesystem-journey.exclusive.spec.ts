@@ -51,18 +51,18 @@ test('Files panel creates, uploads, downloads, renames, and deletes', async ({
   let sessionId = '';
   try {
     const base = await api.defaultAgent();
-    const environmentName = String(base.environment_name || '').trim();
-    expect(environmentName, 'seeded default agent must name an environment').not.toEqual('');
+    const runtimeProfileName = String(base.runtime_profile_name || '').trim();
+    expect(runtimeProfileName, 'seeded default agent must name an environment').not.toEqual('');
     let model = String(base.model || '').trim();
     if (!model || model.includes('*')) {
-      const models = await api.listEnvironmentModels(environmentName);
+      const models = await api.listEnvironmentModels(runtimeProfileName);
       model = models.find((candidate) => candidate && !candidate.includes('*')) || 'deepseek-chat';
     }
 
     const agent = await api.createAgent({
       name: `__e2e_file_journey_${runId}`,
       model,
-      environment_name: environmentName,
+      runtime_profile_name: runtimeProfileName,
       prepared_capacity: 0,
     });
     agentId = String(agent.agent_id || '');

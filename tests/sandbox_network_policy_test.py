@@ -1,6 +1,6 @@
-"""Environment networking stays provider-neutral and fail-closed.
+"""RuntimeProfile networking stays provider-neutral and fail-closed.
 
-The Environment document carries no provider SDK shape and no duplicated Vault
+The RuntimeProfile document carries no provider SDK shape and no duplicated Vault
 hosts. Each provider maps that document once, then composes the exact
 destinations authorized by attached credential bindings into its effective
 policy.
@@ -12,8 +12,8 @@ import pytest
 
 from astrabox.common.utils.errors import APIError
 from astrabox.core.model import AgentView
-from astrabox.core.service.orchestrator.environment_networking import (
-    parse_environment_networking,
+from astrabox.core.service.orchestrator.runtime_profile_networking import (
+    parse_runtime_profile_networking,
 )
 from astrabox.core.service.orchestrator.runtime.config_resolver import (
     resolve_network_policy,
@@ -79,7 +79,7 @@ def test_limited_environment_must_explicitly_admit_agent_mcp() -> None:
 )
 def test_malformed_networking_is_refused_not_dropped(document: object) -> None:
     with pytest.raises(ValueError):
-        parse_environment_networking(document)
+        parse_runtime_profile_networking(document)
     with pytest.raises(APIError):
         _resolve(document)
 
@@ -170,7 +170,7 @@ def test_deployment_denied_networks_lead_every_mode_ahead_of_every_allow() -> No
 
     OpenSandbox's dns+nft egress drops IP/CIDR deny targets before it consults
     an allow set, so these rules keep a sandbox off other sandboxes and off the
-    published sandbox ports even when an Environment is Unrestricted, or when
+    published sandbox ports even when a RuntimeProfile is Unrestricted, or when
     an allow-list entry (or a Vault binding host) names a bridge address.
     """
     from astrabox.providers.open_sandbox.credential_vault import (
@@ -285,7 +285,7 @@ def test_the_metadata_deny_leads_the_configured_bridge_denies_without_duplicatio
 
 
 def test_an_allow_entry_inside_the_metadata_range_is_refused() -> None:
-    """A literal metadata IP or CIDR in an Environment allow-list fails loud."""
+    """A literal metadata IP or CIDR in a RuntimeProfile allow-list fails loud."""
     from astrabox.providers.open_sandbox.networking import open_sandbox_network_policy
 
     for target in ("169.254.169.254", "169.254.0.0/16", "169.254.170.2/31"):

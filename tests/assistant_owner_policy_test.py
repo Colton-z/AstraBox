@@ -59,11 +59,11 @@ class _FakeCatalogRepo:
 
 
 class _FakeTemplateService:
-    async def get_environment(self, name: str) -> Any:
-        # The Assistant selects an Environment, including its Agent program and
+    async def get_runtime_profile(self, name: str) -> Any:
+        # The Assistant selects a RuntimeProfile, including its Agent program and
         # model access; it does not reference a separate template. It is
         # unrestricted so the example MCP host reaches no resolver; what a
-        # limited Environment admits is author_boundary_test's subject.
+        # limited RuntimeProfile admits is author_boundary_test's subject.
         return {
             "name": name,
             "enabled": True,
@@ -235,7 +235,7 @@ async def test_foreign_and_missing_assistants_share_a_non_disclosing_404() -> No
     service, _catalog, _workspace = _service()
     created = await _create_unprepared(service,
         _user("owner-1"),
-        {"display_name": "Jarvis", "environment_name": "env-1"},
+        {"display_name": "Jarvis", "runtime_profile_name": "env-1"},
     )
 
     with pytest.raises(APIError) as foreign:

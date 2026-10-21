@@ -2,7 +2,7 @@
 
 ``GET /v1/sandboxes/{id}/diagnostics/{scope}`` returns prose rendered by the
 OpenSandbox server. On its DOCKER runtime, ``inspect`` renders the container's
-whole ``Environment:`` block (and ``summary`` is inspect + events + logs, so it
+whole ``RuntimeProfile:`` block (and ``summary`` is inspect + events + logs, so it
 inherits that), masking only names containing SECRET / TOKEN / PASSWORD / KEY.
 
 That default does not know AstraBox's vocabulary. Two of the values the
@@ -53,7 +53,7 @@ Labels:
   astrabox.managed-by=astrabox
   astrabox.session-id=conv-1
 
-Environment:
+RuntimeProfile:
   PATH=/usr/local/bin:/usr/bin:/bin
   HOME=/home/convuser
   IS_SANDBOX=1
@@ -83,7 +83,7 @@ class TranscriptCapabilityTokenRedactionTests(unittest.TestCase):
     def test_unknown_variables_are_redacted_by_default(self) -> None:
         # The allowlist's reason for existing: a variable nobody has classified
         # yet is redacted, so adding one cannot silently create a leak.
-        out = _redact_env_values("Environment:\n  SOME_FUTURE_CREDENTIAL=hunter2\n")
+        out = _redact_env_values("RuntimeProfile:\n  SOME_FUTURE_CREDENTIAL=hunter2\n")
         self.assertNotIn("hunter2", out)
         self.assertIn("SOME_FUTURE_CREDENTIAL=***", out)
 
@@ -101,12 +101,12 @@ class RedactionCannotBeSteppedAroundTests(unittest.TestCase):
         # An allowlist keyed on upper-snake names says nothing about a variable
         # whose name is not upper-snake — and "said nothing" must mean redacted,
         # not printed. Same value, same danger, different spelling.
-        out = _redact_env_values(f"Environment:\n  transcript_url={_TRANSCRIPT_URL}\n")
+        out = _redact_env_values(f"RuntimeProfile:\n  transcript_url={_TRANSCRIPT_URL}\n")
         self.assertNotIn(_CAPABILITY_TOKEN, out)
         self.assertIn("transcript_url=***", out)
 
     def test_a_mixed_case_variable_name_is_still_redacted(self) -> None:
-        out = _redact_env_values("Environment:\n  Anthropic_Custom_Headers=user-42\n")
+        out = _redact_env_values("RuntimeProfile:\n  Anthropic_Custom_Headers=user-42\n")
         self.assertNotIn("user-42", out)
         self.assertIn("Anthropic_Custom_Headers=***", out)
 
@@ -115,7 +115,7 @@ class RedactionCannotBeSteppedAroundTests(unittest.TestCase):
         # one is shaped like an assignment. The rest is still the value, and it
         # is the half that carries the correlation pair here.
         report = (
-            "Environment:\n"
+            "RuntimeProfile:\n"
             "  ANTHROPIC_CUSTOM_HEADERS=x-agent-header: set-by-the-agent\n"
             "langfuse_session_id: conv-1, langfuse_trace_user_id: user-42\n"
             "  PATH=/usr/local/bin:/usr/bin:/bin\n"
@@ -142,7 +142,7 @@ class RedactionCannotBeSteppedAroundTests(unittest.TestCase):
             f"  x:custom:header={_TRANSCRIPT_URL}",
             f"  ~weird~={_TRANSCRIPT_URL}",
         ):
-            out = _redact_env_values(f"Environment:\n{line}\n")
+            out = _redact_env_values(f"RuntimeProfile:\n{line}\n")
             self.assertNotIn(_CAPABILITY_TOKEN, out, line)
             self.assertIn("=***", out, line)
 
@@ -152,7 +152,7 @@ class RedactionCannotBeSteppedAroundTests(unittest.TestCase):
         # a span boundary let a multi-line value end its own redaction and hand
         # out the rest of itself.
         report = (
-            "Environment:\n"
+            "RuntimeProfile:\n"
             "  ANTHROPIC_CUSTOM_HEADERS=x-agent-header: set-by-the-agent\n"
             "Recent events:\n"
             "langfuse_session_id: conv-1, langfuse_trace_user_id: user-42\n"
@@ -166,7 +166,7 @@ class RedactionCannotBeSteppedAroundTests(unittest.TestCase):
         # "\n\n" as easily as it holds a section header, so honouring one as the
         # end of a redaction let the value publish its own second half.
         report = (
-            "Environment:\n"
+            "RuntimeProfile:\n"
             "  ANTHROPIC_CUSTOM_HEADERS=x-agent-header: set-by-the-agent\n"
             "\n"
             "langfuse_session_id: conv-1, langfuse_trace_user_id: user-42\n"
@@ -181,7 +181,7 @@ class RedactionCannotBeSteppedAroundTests(unittest.TestCase):
         # would have printed anyway — but it must not hand the REST of the value
         # back to the reader as prose.
         report = (
-            "Environment:\n"
+            "RuntimeProfile:\n"
             "  ANTHROPIC_CUSTOM_HEADERS=x-agent-header: set-by-the-agent\n"
             "  PATH=/usr/local/bin\n"
             "langfuse_session_id: conv-1, langfuse_trace_user_id: user-42\n"
@@ -204,7 +204,7 @@ class RedactionCannotBeSteppedAroundTests(unittest.TestCase):
             "}",  # the end of a JSON blob
         ):
             report = (
-                "Environment:\n"
+                "RuntimeProfile:\n"
                 "  ANTHROPIC_CUSTOM_HEADERS=x-agent-header: set-by-the-agent\n"
                 f"{forged}\n"
                 "langfuse_trace_user_id: user-42\n"
@@ -232,7 +232,7 @@ class TheCostOfClosingTheSpanTests(unittest.TestCase):
 
     def test_prose_after_a_redacted_value_is_masked_to_the_end(self) -> None:
         report = (
-            "Environment:\n"
+            "RuntimeProfile:\n"
             "  SOME_FUTURE_CREDENTIAL=hunter2\n"
             "\n"
             "Recent events:\n"
