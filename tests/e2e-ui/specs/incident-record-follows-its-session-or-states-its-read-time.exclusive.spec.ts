@@ -160,7 +160,10 @@ test('an incident record follows its session while the turn runs, or says when i
 
   const completed = await api.sendTurn(sessionId, 'Reply with exactly: ready for reclaim', 60_000);
   expect(completed.errorText).toBeNull();
-  expect((await api.adminSessionDetail(sessionId)).current_responses).toEqual([]);
+  await api.waitForAdminSession(sessionId,
+    (record) => record.last_response?.status === 'ended' && record.last_response?.outcome === 'completed'
+      && record.current_responses?.length === 0 && record.held_inputs?.length === 0,
+    15_000);
 
   // ── incident 1: a product action, not an injected fault ───────────────────
   const reclaim = await api.terminateSandbox(sessionId);
