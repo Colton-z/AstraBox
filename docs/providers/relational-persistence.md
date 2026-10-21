@@ -26,7 +26,7 @@ unknown names and missing required operations fail before schema initialization.
 No provider is substituted silently.
 
 Implement
-[`RelationalPersistenceProvider`](../../astrabox/seams/relational_persistence.py):
+[`RelationalPersistenceProvider`](https://github.com/Colton-z/AstraBox/blob/v0.1.10/astrabox/seams/relational_persistence.py):
 
 | Member | Responsibility |
 |---|---|
@@ -84,6 +84,8 @@ An independently named SQLAlchemy dialect can supply its own `RelationalStatemen
 without changing the shared helpers. Types and expression-only differences,
 including `TimestampAfter`, use SQLAlchemy's existing dialect compilation
 extensions. Do not introduce another query language or database executor.
+See [relational schema representations](../relational-types.md) for physical
+type limits.
 
 ## Transaction and coordination guarantees
 

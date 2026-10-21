@@ -76,12 +76,25 @@ curl --silent --show-error --request POST \
 
 - **`status: "accepted"`**：AstraBox 把请求交给 Agent 程序，由程序停止进行中的
   回复，并报告回复的结束方式，例如 `cancelled`。
-- **`status: "idle"`**：没有已连接的运行环境，因此没有可以中断的工作。
+- **`status: "idle"`**：未观察到进行中的回复或平台保留的输入，不表示运行环境已断开。
+- **`409 PENDING_INPUTS_NOT_CANCELLED`**：未观察到进行中的回复，但平台仍保留已接收输入。
+  `data.input_ids` 列出读取时的这些输入；它们未被撤回，仍可能执行。控制台会解释这次拒绝，
+  不会把它显示为成功空闲。
 - **中断后**：Session 仍可复用，照常发送下一条消息即可。
 
 只有 `DELETED` 是终态。中断回复不会删除 Session 或已保存的对话历史。Session 的
 网页终端有自己的停止操作 `POST /api/v1/sessions/{session_id}/terminal/interrupt`；
 中断对话不会停止终端命令。
+
+中断不会撤回排队消息，即使它停止了当前回复。已接收的单条输入没有撤回操作。
+`pending` 记录只表示交付回执尚未到达，运行环境可能已经收到输入；不要通过删除记录或
+把它标为已取消来实现撤回。
+
+需要让整个对话离线时，在对话列表中选择**归档**
+（`POST /api/v1/sessions/{session_id}/archive`）。归档成功后不再建立运行环境连接，
+保存的历史仍可读取；读取方核对归档状态时，尚未交给程序的输入以 `CONVERSATION_ENDED`
+失败。归档是独立的生命周期操作，不是取消单条消息，也不会撤销程序已经执行的工作。
+归档发生错误时，应先处理错误，再将对话视为离线。
 
 ## Agent 工作时发送消息
 
@@ -179,7 +192,7 @@ AstraBox 创建 Session 的请求不接受 `resources` 数组。默认 GitHub �
 参阅[访问 GitHub](working-with-repos.md)、[使用 Vault 认证](credentials.md)和
 [上传与下载文件](files.md)。
 
-## 发送消息
+## 发送消息 {#send-a-message}
 
 管理员配置转写模型后，可以点击控制台的麦克风按钮录音，将转写文字追加到可编辑草稿，
 检查后再发送。配置方式、录音限制和重试行为见[语音输入](voice-input.md)。
@@ -322,6 +335,32 @@ curl --silent --show-error --request POST \
 具体可选值由所选 Agent 程序定义。AstraBox 把权限模式保存在 Session 上，并应用到
 正在运行的 Agent 程序；没有运行中程序的 Session 会在运行环境启动时获得该模式。
 
+### 对话历史与工作折叠
+
+`GET /api/v1/sessions/{session_id}/messages` 以 UI 消息返回保存的对话。控制台通过
+`GET /api/v1/sessions/{session_id}/history-blocks` 读取相同消息，将折叠的工作替换为
+`data-process-block` 标题。标题的 `block_id` 和 `cursor` 对应
+`GET /api/v1/sessions/{session_id}/history-blocks/{block_id}?cursor=...` 中的内容；
+展开时按记录的位置获取。
+
+以 `failed` 或 `cancelled` 结束的回复可以把已完成的工作和中间正文折叠到一个标题下。
+成功回复在最后一次工具调用之后有正文时，也可以折叠；该调用之后的正文留在折叠区域外。
+`max_tokens` 等原生结束原因不会选择另一套布局。回复元数据独立保留 `outcome` 和
+`native_reason`。
+
+控制台的显示规则如下：
+
+- 失败提示和停止提示始终留在折叠区域外。
+- 异常结束时，失败、被拒绝和未完成的工具调用不会折进整条回复。交互与结果 part 也留在
+  外部；存在待审批工具时，不能折叠整条回复。
+- 展开整条回复会恢复正文和过程分组；展开普通过程分组会直接显示工具与推理。
+  工具卡片保留自身的输入、输出展开控制。折叠只改变初始显示，不会丢弃步骤。
+- 重新加载通过历史接口读取相同的回复结果与内容。生成了过程标题，不会把失败回复变为成功。
+
+过程摘要用于命名操作，不代表回复结果。在过程摘要接口上，`status: completed` 表示标题
+生成完成。失败或取消的回复即使有标题，`response_completed` 仍为 `false`。
+集成方应依据记录的 `outcome` 判断成功与否；只要失败提示和全部步骤仍可访问，中间正文可以折叠。
+
 ### 未读回复
 
 Session 会记录最后一次产生输出的时间（`last_output_at`），无论输出由某人的消息引起，
@@ -373,6 +412,16 @@ Agent 程序报告自己正在工作时，归档、删除、结束对话和终�
 `HTTP 409 SESSION_BUSY`。请先中断工作，或等待它完成。正在等待审批或问题回答的
 Session 不算在工作，可以归档或删除。
 
+## Browser
+
+Browser 面板通过有签名、会过期的查看链接控制沙箱桌面。单次 Agent 对话独占的沙箱，以及
+当前登录用户拥有的 Assistant 工作区可以使用它。Assistant 的多个 Session 共用其归属用户
+的桌面。多个用户共用的 Agent 沙箱没有按对话隔离桌面，因此不能开放 Browser。
+
+工作区休眠时，先唤醒 Assistant 再打开 Browser。重新连接会为工作区当前沙箱生成新链接，
+替换沙箱后也一样。桌面标签页和 Browser 链接属于该沙箱，不会随替换保留。
+这个查看器不要求持久工作区卷。
+
 ## 对话工作流
 
 Session 支持包含多条消息的对话。推荐流程如下：
@@ -414,7 +463,7 @@ curl --silent --show-error --request POST \
 下载工作区文件。链接本身授予读取权限，因此只应发送给目标查看者，并在不需要时撤销。
 查看者不能发送消息或修改 Session。
 
-## 导入早期历史
+## 导入早期历史 {#import-earlier-history}
 
 把对话从其他系统迁移到 AstraBox 时，平台管理员可以导入每段对话的早期消息，让对应
 Session 显示这些消息。导入只用于阅读：它不会启动沙箱、不会执行任何操作，也不会改变

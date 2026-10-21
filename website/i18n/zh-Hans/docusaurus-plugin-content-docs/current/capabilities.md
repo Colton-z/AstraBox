@@ -1,36 +1,57 @@
 # 使用指引
 
-一分钟内选对 AstraBox 的使用方式——面向新用户的入门概览。
+按你的任务选择起点。Web 控制台、HTTP API、CLI 和 MCP 接口使用同一套 AstraBox 资源与访问控制。
 
-## 关于 AstraBox
+## 选择 Agent 或 Assistant
 
-AstraBox 是开源、自托管的 Agent 运行平台，将已安装的 Agent 程序变成可以 7×24 小时运行的云端 Agent。企业不必再自建一整套 Agent 基础设施：从 Agent 的构建、部署、运行，到 API 集成、消息渠道触达、身份隔离，全部运行在企业自己控制的部署中。我们缩短了“研发一个 Agent”到“真正上线服务终端用户”的距离，让每一家企业都能快速拥有自己的 AI Agent 产品。
+| 你的任务 | 从哪里开始 | 保留哪些内容 |
+|---|---|---|
+| 给可复用的 Agent 分配任务、供团队使用，或集成到产品中 | [定义 Agent](authoring-agents.md)，然后[启动 Session](sessions.md) | Agent 定义，以及各自拥有历史和工作区的独立对话 |
+| 跨多次对话持续进行个人工作 | [使用 Assistant](assistants.md) | 仅归属用户可访问的工作区、程序原生状态、记忆和对话 |
+| 无需打开控制台就运行任务 | [配置 Deployment](deployments.md) | 指向 Agent 或 Assistant 的定时任务、签名 Webhook 或消息渠道绑定 |
 
-Web 控制台和 HTTP API 覆盖从构建 Agent 到交付使用的完整路径，两种方式操作相同的资源，并不是两套独立的产品模式。
+Environment 选择已安装的 Agent 程序、沙箱、模型连接和网络设置。管理员先准备这些资源，
+用户再开始工作。不可用的 Agent 仍会列出，但**开始对话**按钮会禁用；管理者可以检查它的
+Agent 与 Environment 配置。
 
-## Web 控制台
+## 选择使用方式
 
-更低门槛地把 Agent 落地到业务场景。由管理员准备好 Agent 与可用资源，用户可以直接开始使用；控制台同时提供消息渠道接入、定时任务、用户认证等业务需要的周边能力。
+| 你要做什么 | 指南 |
+|---|---|
+| 尝试自托管安装并发送第一个任务 | [快速开始](quickstart.md) |
+| 在浏览器中使用流式回复、审批、工具和文件 | [Session](sessions.md)、[文件](files.md)和[语音输入](voice-input.md) |
+| 保存或分享 Agent 制作的交互页面 | [Artifact](artifacts.md) |
+| 添加已连接应用、MCP 服务、Skill 或 Plugin | [Agent 工具与扩展](adding-tools.md) |
+| 让 Assistant 把任务委派给另一个 Agent | [Agent 间通信](a2a.md) |
+| 在消息平台中接收任务结果 | [消息渠道](channels.md) |
+| 周期性运行任务或由其他系统触发 | [定时任务](schedules.md)和 [Webhook](webhooks.md) |
+| 在自己的应用中集成对话 | [HTTP API](api.md)和[事件流](events-stream.md) |
+| 通过脚本或编程助手管理定义并提交任务 | [CLI](cli/overview.md)和 [Agent MCP](agent-mcp.md) |
 
-## HTTP API
+控制台负责导航、输入草稿、流式输出和交互卡片。API 集成方负责自己的界面：先提交输入、
+保留接收回执，再跟随输出流。接收成功表示消息已经保存；Agent 程序决定何时取走，以及由
+哪条回复回答。待处理的审批或问题使用专门的交互回答接口。参阅[发送消息](sessions.md#send-a-message)。
 
-为需要完整控制能力的开发者提供底层接口。无需自建 Agent loop、工具执行沙箱，只需通过 API 定义 Agent、启动 Session，并配置 Environment、Skill 和 Session 文件，即可在云端运行复杂任务并实时接收结果。API 同时提供 Environment、Vault、Deployment、Assistant 和消息渠道等管理接口。
+## 回到之前的工作
 
-## Web 控制台与 HTTP API 对比
+离开浏览器页面不会停止 Agent。重新打开 Session，可以读取保存的消息、工具、推理和交互记录，
+并继续接收新输出。**停止**用于中断当前回复，不会撤回排队输入。归档对话会使其离线，并保留历史。
 
-| 维度 | Web 控制台 | HTTP API |
-| --- | --- | --- |
-| 定位 | 在一个界面中提供 Agent 创建、运行、消息渠道、定时任务和认证 | 以 API 开放相同的 Agent 定义和运行资源 |
-| 适合谁 | Agent 用户、管理员，以及希望直接使用现成界面的团队 | 希望把 Agent 集成到自己的产品和工作流中的开发者 / 企业 |
-| 配置方式 | 管理员通过表单配置 Agent 和资源 | 调用方通过 JSON 请求创建和更新相同的资源 |
-| 调用方复杂度 | 较低——由控制台处理请求、事件流和资源导航 | 较高——灵活度高，调用方自行管理 API 请求、事件流和界面 |
-| 终端用户身份 | 使用部署中配置的登录方式和 Agent 鉴权 | 使用相同的用户身份或带作用域的客户端凭证 |
-| 消息渠道接入 | 创建和管理当前安装的消息渠道 | 通过 API 创建和管理相同的 Deployment 与渠道连接 |
-| 定时 / 触发执行 | 创建 Schedule、Webhook 和手动运行 | 通过 API 创建和调用相同的 Deployment |
+沙箱确认丢失时，受影响的回复会失败。AstraBox 保留历史和原生状态，让 Agent 程序在替换后的
+计算环境上恢复；不会自动重放程序已经取走的任务。原生状态恢复不依赖持久工作区卷。沙箱释放或
+丢失后仍需保留任务文件时，必须配置这项可选存储。参阅 [Session 生命周期](sessions.md)和
+[工作区存储](deploy.md#where-conversation-workspaces-live)。
 
-如果你的目标是直接使用 Agent，推荐从 Web 控制台开始；如果你需要完整控制 Agent 的运行时行为或自建上层产品，请使用 HTTP API。两种方式操作相同的资源，只要调用方拥有访问权限，在一端创建的资源也可以在另一端使用。
+## 运行与扩展 AstraBox
 
-## 下一步
+| 你的职责 | 指南 |
+|---|---|
+| 安装或升级部署 | [部署 AstraBox](deploy.md) |
+| 离线升级时保留选定记录 | [离线数据导入](data-import.md) |
+| 配置模型路由、团队登录或受保护凭证 | [模型](models.md)、[团队登录](team-login.md)和[凭证](credentials.md) |
+| 规划沙箱容量和可选的文件持久化 | [Environment](environments.md) 和 [OpenSandbox](providers/opensandbox.md) |
+| 把 AstraBox 嵌入 Python 应用 | [嵌入应用](embedding.md) |
+| 接入程序、沙箱、身份或数据库 | [扩展接口](architecture.md#plugin-interfaces) |
 
-- [Web 控制台](quickstart.md)——Agents · Sessions · Deployments · Channels · Environments
-- [HTTP API](api.md)——Agents · Sessions · Deployments · Assistants · Environments
+内置数据库提供方使用 PostgreSQL。外部关系型提供方需要提供相应的数据库结构与协调保证；
+仅有 MySQL 类型映射不代表已经支持 MySQL 部署。

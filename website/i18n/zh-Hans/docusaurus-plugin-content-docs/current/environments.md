@@ -106,7 +106,13 @@ Environment。列表会显示名称、Agent 程序、沙箱服务和最后更新
 Agent 创建者只能看到已经启用、并且能够运行 Agent 的 Environment。模型和
 链路追踪凭证不会出现在这个选择列表中。
 
-停用 Environment 后，不能再创建新的 Agent 对话或重新预热。AstraBox 会回收
+停用 Environment 后，不能再创建新的 Agent 对话或重新预热。
+完整列表（不带 `page=1` 的 `GET /api/v1/agents`）保留所有可见 Agent，并返回
+`can_start_conversation`。Agent 被停用、正在删除，或其 Environment 被停用或缺失时，
+该值为 false。对话选择器将它标为**不可用**，并禁用**开始对话**；管理与历史页面保留定义。
+重新启用 Environment 后，其已启用 Agent 恢复该操作。这个字段只表示配置上能否启动，
+不表示运行环境健康；列举不会准备计算资源或检查凭证，创建对话时仍会校验当前配置。
+AstraBox 会回收
 其 Agent 尚未被领取的预备容量，不会因此回收已经分配给 Session 的沙箱。
 管理员仍可查看预热状态和删除 Agent；即使 Agent 保存的预热开关仍然开启，
 状态也会显示预热已停用、可用数量为零。

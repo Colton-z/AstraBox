@@ -85,13 +85,25 @@ AstraBox 为每个 Session 运行一个读取方（reader）：只有一个进�
 | `submit(input)` | 把一个 `RuntimeInput` 交给运行时；运行时收到后即返回。按 `input_id` 保持幂等。运行时拒绝这条输入时，抛出 `RuntimeInputRefused(code, message, status_code=)`。 |
 | `events(after=cursor)` | 一个异步生成器，在连接存续期间产出游标之后的运行时事件（游标为 `None` 时从头开始）。无法从该游标恢复时，抛出 `RuntimeCursorExpired`。 |
 | `state()` | 运行时此刻对自身状态的报告（`RuntimeState`）。 |
-| `answer(interaction_id, response)` | 把用户的回答转交给一项未关闭的交互。运行时没有这项未关闭的交互时，抛出 `InteractionNotOpen`。 |
+| `answer(interaction_id, response)` | 把用户回答交给未关闭交互。重复交付时，运行时若保留已接收该回答的证据，可以正常返回；否则没有该未关闭交互时抛出 `InteractionNotOpen`。 |
 | `interrupt(cancel_queued=False)` | 停止进行中的回复；设置 `cancel_queued` 时，同时丢弃排在它后面的输入。 |
 | `committed(cursor)` | AstraBox 已持久记录游标及之前的全部事件。只在读取方取得历史之前保留历史的运行时，可以释放游标之前的内容。 |
 | `capabilities()` | 已连接运行时的 `EngineCapabilityManifest`：权限模式、输入内容类型和控制操作。 |
 | `close()` | 关闭连接。运行时本身会继续运行。 |
 
 另有两个可选成员，实现后才会使用：`set_permission_mode(mode)`，读取方在连接时以及 Session 所有者修改权限模式时，用 Session 保存的模式调用它；`stop_child_run(control_ref)`，按你在子 Agent 信息中携带的控制引用停止一个子 Agent。
+
+声明 `supports_server_info` 的程序可以在 `get_server_info()` 返回 `runtime_versions`。
+其中 `runtime_generation` 是观测到的运行实例 ID，`components` 列出
+`{component, version, source, reason}`。组件名与版本字符串由适配器定义；已知版本是非空
+字符串，未知版本为 `version: null` 并带非空原因。每个组件声明观测来源，部署标签和宿主
+软件包版本不能代替沙箱内运行时观测。
+
+启动、恢复和读取方连接会保存观测结果及其沙箱 ID、读取时间。管理员 Session 列表与详情
+读取已保存快照，不查询或唤醒计算资源。快照描述最近连接的实例，不是持续健康检查或版本审计
+日志；其代次与 `matches_bound_sandbox` 区分不同实例，缺失信息明确为未知。
+没有这项可选观测的程序仍可使用。Claude runner 在每次启动时记录已加载源代码 SHA256、
+安装的 SDK 分发版本，以及选定原生 CLI 的 `--version` 输出。
 
 ### 报告运行时事件
 
@@ -112,7 +124,17 @@ AstraBox 为每个 Session 运行一个读取方（reader）：只有一个进�
 
 ### 接纳输入
 
-`submit()` 必须按 `input_id` 保持幂等。厂商按消息 ID 去重时，使用输入 ID（或由它推导出的值）作为该 ID；厂商不去重时，再次发送输入前先检查厂商的历史、队列或你自己的提交记录。正在工作的运行时会把输入放进自己的队列；如何回答排队的输入由厂商决定。
+`submit()` 必须按 `input_id` 保持幂等。厂商按消息 ID 去重时，使用输入 ID（或由它推导出的值）作为该 ID；厂商不去重时，再次发送输入前先检查厂商的历史、队列或你自己的提交记录。正在工作的运行时可能收到新输入，但尚未接纳；适配器必须区分这两个边界。
+厂商如何取走和回答输入，由各程序决定。
+
+Claude 适配器按交付顺序向同一个持久 `ClaudeSDKClient.query()` 提交输入，包括回复正在进行
+时。何时取走、由哪条回复回答，由 Claude 原生队列决定；适配器不等 `ResultMessage`
+才交付下一条输入。交付回执不代表 Claude 已取走。在同一个 Result 前取走的多条输入属于
+同一回复；有新输入加入时，已有消息元数据通过实时与历史共用的输出日志携带完整 `input_ids`。
+其他程序通过相同约定报告自己的接纳与回复边界。
+
+恢复覆盖已经交给原生队列但尚未取走的输入、较早完成的回复，以及包含全部已取走输入的当前
+回复。对照原生取走记录和 Result 边界检查平台记录，不要求每条输入分别对应一条回复。
 
 只在厂商写下能在运行时进程重启后保留的记录时（例如写入厂商对话记录的用户消息），才报告 `InputAdmitted`。如果厂商仍可能丢弃这条输入，提交请求的应答就不算接纳。输入被接纳之前，AstraBox 会保存它，并在当前运行时丢失时把它交给替换后的运行时；接纳之后，AstraBox 不会再次发送它。对于新的读取方没有收到其 `InputAdmitted` 的输入，它可以通过 `RuntimeState.admitted_input_ids` 结束对这些输入的保管。
 
@@ -122,13 +144,22 @@ AstraBox 为每个 Session 运行一个读取方（reader）：只有一个进�
 
 再次读取 `events(after=cursor)` 时，必须按相同顺序产出该游标之后的相同事件。读取方会为它记录的浏览器 part 编号，因此实时看到某个 part、之后又从记录中读到它的跟随者，只会看到它一次。请基于厂商保留的内容（它的 journal、日志或历史 API）进行转换，并把该记录无法重建的转换状态放进 position。
 
-游标来自另一个 generation，或者对应的位置厂商已经不再保留时，抛出 `RuntimeCursorExpired`。读取方随后会收回运行时已收到但从未接纳的输入，通过 `state()` 获取运行时自己的报告（未结束的回复、待处理交互、排队中和已接纳的输入，以及继续读取的游标），然后核对：运行时不再报告的回复以失败结束（`runtime_lost`），运行时不再等待的交互以过期关闭。
+游标来自另一个 generation，或者对应的位置厂商已经不再保留时，抛出 `RuntimeCursorExpired`。读取方随后会收回运行时已收到但从未接纳的输入，通过 `state()` 获取运行时自己的报告（未结束回复、待处理与已关闭交互、排队与已接纳输入，以及
+继续读取的游标），然后核对：运行时不再报告的回复以失败结束（`runtime_lost`）；不再等待的
+交互按保留的关闭原因关闭，没有关闭回执时才标为过期。适配器通过可重放的
+`InteractionClosed(..., "answered")` 报告已接收回答，并在 `RuntimeState.closed_interactions`
+中保留回执以供核对。回答已存入平台数据库，不证明运行时已接收。
 
 ### 组织回复的浏览器 part
 
 一条回复的 part 以 `start` part 开始，其 `messageId` 是回复 ID，`messageMetadata` 带有 `response_id`、`input_ids` 和 `origin`。回复以 `finish` part 结束；失败的回复会在 `finish` 之前发送一个 `error` part。
 
 回复暂停等待交互时，先带着交互约定报告 `InteractionOpened`，再发送结束浏览器当前消息段的 part：工具审批对应的 `tool-approval-request` part（`build_tool_approval_request_frame`）、`data` 为交互记录的 `data-interaction` part，以及带有 `finishReason: "tool-calls"` 的 `finish` part。然后报告 `StatusChanged("waiting")`。这条回复的任何后续 part（无论是继续输出还是另一项交互请求）之前，都要用同一个 `messageId` 的 `start` part 重新打开同一条消息。使用 `engine/interaction_contract.py` 中的辅助函数构建交互约定，并用 `validate_interaction_contract` 检查：它声明用户可以怎样回答（表单、在声明的选项中做出决定，或工具审批），并原样携带厂商的标识和含义。
+
+适配器可以撤回未确认的文本或推理预览，同时保留已完成步骤。开始 chunk 在
+`providerMetadata.astrabox.part_id` 中携带 chunk ID，再通过 `message-metadata` chunk
+发布该回复累计的 `retracted_part_ids`。实时消息和历史在显示与过程分组前省略这些 part。
+输出日志保留原 chunk 与撤回事实，保证确定性重放。是否为临时或被替换的原生输出由适配器决定。
 
 ### 报告工具调用
 
@@ -214,6 +245,16 @@ Agent 或 Assistant 的工作区。归属标识和访问凭据由平台签发。
 并且只在所需的原生数据进入数据库保管之后才发布引用。DSH 为得到这项确认扩展了厂商自带的
 本地附件后端，同时保留原生的规范化、不可变发布和经过校验的读取。它的恢复屏障会在
 Session 于替换计算资源上打开之前运行。
+
+Assistant profile 启动时，在激活之前记录原生状态释放义务。激活失败必须停止原生写入方，
+确认原生存储与 profile 保存；否则抛出带精确沙箱与运行实例身份的 `RuntimeStateSaveRequired`。
+平台保留原分配以便恢复。唤醒流程完成保存确认后才能释放计算资源；定期镜像或单独 profile
+归档不是该确认。
+
+Hermes 也恢复同一所有者在首次原生快照发布前留下的本地 SessionDB。冷启动在私有 profile
+主目录保留完整供应方备份、profile 归档与之前的回执。通过现有快照 API 发布这些不可变字节时，
+保存事务校验当前 materializer、分配与代次；拒绝外部回执与过时代次。部分发布后，使用快照
+前序检查重发相同备份字节；只有两份归档都获得确认后才更新恢复回执。
 
 ### 执行用户与环境变量
 

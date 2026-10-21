@@ -10,17 +10,26 @@ AstraBox 是开源、自托管的 Agent 运行平台，可将已安装的 Agent 
 | --------------- | -------------------------- | ----------- |
 | **Agent**       | 由已安装 Agent 程序驱动的云端 Agent       | "云端同事"      |
 | **Environment** | Session 的运行环境，包含 Agent 程序、沙箱、模型连接和网络配置 | "办公桌和工具箱" |
-| **Session**     | Agent 的一次有状态运行，包含消息、Event 和当前状态 | "一项具体工作" |
+| **Session**     | 一次对话，包含已接收输入、回复、工具、交互与保存的历史 | "一项具体工作" |
+| **Assistant**   | 同一用户的多次对话共用的个人工作区 | "个人工作区" |
+| **Deployment**  | 为 Agent 或 Assistant 启动工作的定时、Webhook 或消息渠道绑定 | "任务触发器" |
 | **Event**       | Session 中产生的实时事件流          | "工作进度实时播报"  |
 
-除了面向团队和自动化的 Agent，AstraBox 还提供 [Assistant](assistants.md)：个人专属的长期云端工作区，所有对话共用这个工作区和 Agent 程序的状态。
+[Agent](authoring-agents.md) 适合可复用任务与团队使用，[Assistant](assistants.md) 适合跨对话
+持续进行的个人工作。[使用指引](capabilities.md)按任务列出控制台、API、CLI 和 MCP 的入口。
+程序原生状态和对话历史保存在平台数据库中；沙箱释放或丢失后仍需保留工作区文件时，需要
+配置可选的[持久工作区存储](deploy.md#where-conversation-workspaces-live)。
 
 ## 工作流程
 
-1. **定义 Agent。** 指定模型、系统提示词（system prompt）和扩展。
-2. **配置 Environment。** 选择 Agent 程序、沙箱、模型连接和网络配置。
+1. **配置 Environment。** 选择 Agent 程序、沙箱、模型连接和网络配置。
+2. **定义 Agent。** 选择 Environment、模型、系统提示词（system prompt）和扩展。
 3. **启动 Session。** 使用 Agent 创建运行实例。
 4. **发消息 + 收事件。** 向 Session 发送消息，然后通过 HTTP 实时接收 Agent 消息、执行进度和状态变更。
+
+输入接口返回持久保存的接收回执，输出通过独立的事件流到达。Agent 程序决定何时取走消息、
+一条回复回答哪些输入，以及何时需要审批。离开页面后仍可回到保存的对话；浏览器连接断开
+并不代表 Agent 已停止。中断、恢复和历史的使用方式见 [Session](sessions.md)。
 
 ## 开箱即用的企业级基建
 

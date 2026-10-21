@@ -105,12 +105,24 @@ curl -fsSL https://raw.githubusercontent.com/Colton-z/AstraBox/main/scripts/inst
 文件中的其他所有行。需要更换模型服务时，在它再次询问时重新选择，或设置
 `ASTRABOX_INSTALL_MODEL_PROVIDER` 后运行；它为原有服务写入的设置会被删除。
 
+### 升级匹配的组件
+
+服务端与沙箱运行镜像需要一起升级。进程传输改动还要求匹配的 execd 与沙箱镜像；已有沙箱
+会保留安装时的二进制。在 0.1.10 中，内置 PostgreSQL 提供方将结构升级到 Alembic 修订
+`0003`，添加可空的 `sessions.runtime_versions`。外部持久化提供方必须提供对应物理结构。
+管理员版本页面读取已保存的运行观测，不会唤醒计算资源；参阅
+[运行版本观测](writing-an-engine-adapter.md)。
+
 ### 从 AstraBox 0.1.8 升级 {#upgrade-from-0-1-8}
 
-AstraBox 0.1.9 使用新的数据库结构保存记录，不读取 0.1.8 的记录。从 0.1.8 升级的安装会
-从空的 AstraBox 数据库开始：原有的 Agent、Environment、Assistant、Session 及其历史、
-Deployment 和 Vault 都不会带过来。新版本会像全新安装一样创建默认的 Environment 和
-Agent；其余内容请在升级后重新创建。
+AstraBox 0.1.9 使用新的 PostgreSQL 结构，不会自动转换 0.1.8 记录。需要保留选定记录时，
+运维方可以在正常启动前转换并加载到当前结构。按[离线导入指南](data-import.md)保留对象顺序、
+稳定 ID、鉴权、密钥以及历史与原生状态。转换与执行由运维方负责；没有内置的整套安装导入命令，
+也不提供通用旧格式兼容。
+
+以下流程会**丢弃旧 AstraBox 记录并全新开始**。Agent、Environment、Assistant、Session
+及历史、Deployment 和 Vault 不会带入。新版本初始化默认 Environment 和 Agent；选择
+此路径时，其余资源需重新创建。
 
 新数据库还会让这个安装获得新的标识。AstraBox 只删除、复用和计入本安装自己创建的沙箱，
 因此 0.1.8 安装的沙箱会一直运行，直到你删除它们。运行新版本的安装脚本之前：
@@ -287,6 +299,20 @@ named volume 接口挂载这些视图。在交给用户之前，平台将视图�
 这项配置只影响工作区文件，原生 SessionStore 仍由平台数据库保存。无卷部署不会启动挂载
 辅助程序，与 `ASTRABOX_WORKSPACE_MOUNTER_IMAGE` 的取值无关。
 
+启用工作区存储时，默认也挂载 Assistant profile。承载 profile 的文件系统必须支持程序
+运行中的 SQLite 与原子文件操作。设置 `ASTRABOX_ASSISTANT_PROFILE_ON_WORKSPACE_VOLUME=false`
+可以只挂载用户工作区，把 profile 留在沙箱文件系统。共享挂载计划在分配前应用这个选择；
+存储提供方接收最终计划，不自行过滤路径。原生与 profile 快照仍保存在平台数据库；
+保存未获确认时仍保留原分配。
+
+Hermes 快照保留完整 SessionDB 和支持的 profile 状态：记忆、用户 Skill、定时任务与执行
+历史、项目与记忆存储、看板、验证证据和 A2A 记录。运行配置和凭证由平台提供。
+profile 中的任意额外文件、缓存与厂商消息配对数据不在快照约定内；用户任务文件应放在工作区。
+
+为已有 Assistant 更改这项设置前，通过正常保存/休眠流程确认原生和 profile 快照均已保存。
+保存未确认的 Assistant 必须先在保留的原分配上完成恢复。保留原底层目录和恢复备份；
+更改设置不会删除或导入它们。
+
 连接已有 OpenSandbox 服务（`ASTRABOX_SANDBOX_OPENAPI_BASE_URL`）时，持久工作区要求该
 服务使用 Kubernetes 运行时，见
 [连接已有 OpenSandbox 服务](providers/opensandbox.md#connect-an-existing-opensandbox-service)。
@@ -406,17 +432,23 @@ hub 把每个人的厂商 token 保存在它自己的加密数据库中（`conte
 
 ## AstraBox 数据库 {#the-astrabox-database}
 
-AstraBox 把记录保存在 PostgreSQL 中，不支持其他数据库：`ASTRABOX_DB_URL` 不是
-`postgresql://` URL 时，服务端不会启动。仓库维护的 Compose 部署和单容器部署会运行
-PostgreSQL，并用生成的凭证拼出该 URL；其他部署需要把 `ASTRABOX_DB_URL` 设为自己的
-PostgreSQL 服务。所有平台副本使用同一个数据库。
+PostgreSQL 是支持的默认数据库，通过 `ASTRABOX_PERSISTENCE_PROVIDER=postgres` 选择。
+内置提供方要求 `ASTRABOX_DB_URL` 为 `postgresql://` URL。仓库维护的 Compose 和单容器
+部署运行 PostgreSQL，并用生成的凭证构造 URL；使用此提供方的其他部署指向自己的 PostgreSQL
+服务。所有平台副本使用相同提供方与数据库。
 
-服务端启动时、开始处理请求之前，会把数据库结构更新到它所运行版本的结构。同时启动的副本
+外部提供方通过 `astrabox.providers.persistence` 注册，并校验自己的原生 URL。它们必须
+提供兼容的 SQLAlchemy 引擎、原生冲突操作、结构初始化、错误分类和物理协调，包括绑定事务的
+通知、运行时锁、监听与重新同步。注册成功或使用可复用的 MySQL 冲突操作，不代表后端完整。
+参阅[关系型持久化提供方](providers/relational-persistence.md)。
+
+使用内置 `postgres` 提供方时，服务端启动后、开始处理请求前更新结构。同时启动的副本
 通过 PostgreSQL advisory lock 轮流执行，因此每项结构变更只运行一次。结构变更失败时，
 服务端停止，数据库结构保持原样。较旧的版本无法在已被较新版本升级过的数据库上启动。
 
-每个服务端进程最多保持 30 个连接池连接，另有一个监听 PostgreSQL 通知的连接，以及内置
-调度器使用的连接。请按全部副本的需要设置数据库的连接数上限。服务端会在连接上监听通知并
+使用此提供方时，每个服务端进程为仓库查询最多保留 30 个池连接，为运行时连接与归档锁另保留
+最多 30 个。独立连接池让持锁方能够查询仓库，不被其他持锁方阻塞。此外还有一个 PostgreSQL
+通知连接与内置调度器的连接。请按全部副本设置连接上限。服务端会在连接上监听通知并
 缓存 prepared statement，因此请直接连接 PostgreSQL，或通过 session 模式的连接池连接。
 
 ## 运行多个平台副本

@@ -1,38 +1,67 @@
 # Usage guide
 
-Pick the right way to use AstraBox in one minute — a getting-started overview for new users.
+Choose a starting point for your task. The web console, HTTP API, CLI and MCP
+interface use the same AstraBox resources and access controls.
 
-## About AstraBox
+## Choose an Agent or Assistant
 
-AstraBox is an open-source, self-hosted Agent runtime. It turns installed Agent programs into cloud Agents that are available around the clock. Enterprises no longer need to build a full Agent infrastructure themselves — from building, deploying, and running an Agent, to API integration, messaging channels, and identity isolation, everything runs in the deployment they control. It shortens the distance from "developing an Agent" to "actually serving end users," so every team can quickly own its AI Agent product.
+| Your task | Start here | What you keep |
+|---|---|---|
+| Give a reusable Agent a task, work with a team, or embed it in a product | [Define an Agent](authoring-agents.md), then [start a Session](sessions.md) | An Agent definition and separate conversations with their own history and workspace |
+| Continue personal work across conversations | [Use an Assistant](assistants.md) | An owner-only workspace, native program state, memory and conversations |
+| Run without someone opening the console | [Configure a Deployment](deployments.md) | A schedule, signed webhook or messaging binding targeting an Agent or Assistant |
 
-The web console and HTTP API cover the full path from building an Agent to
-delivering it. They operate the same resources rather than defining separate
-product modes.
+An Environment selects the installed Agent program, sandbox, model connection
+and network settings. Administrators prepare these resources before users start
+work. An unavailable Agent remains listed, with **Start conversation** disabled;
+its manager can inspect its Agent and Environment configuration.
 
-## Web console
+## Choose how to work
 
-A lower-barrier way to bring Agents into business scenarios. An administrator prepares the Agent and available resources, and users can start working with it directly. The console also covers the surrounding capabilities that a business needs — messaging channel integration, scheduled tasks, and user authentication.
+| What you want to do | Guide |
+|---|---|
+| Try a self-hosted installation and send the first task | [Quickstart](quickstart.md) |
+| Work in a browser with streamed replies, approvals, tools and files | [Sessions](sessions.md), [files](files.md) and [voice input](voice-input.md) |
+| Save or share an interactive page made by an Agent | [Artifacts](artifacts.md) |
+| Add connected apps, MCP servers, Skills or plugins | [Agent tools and extensions](adding-tools.md) |
+| Let an Assistant delegate to another Agent | [Agent-to-Agent communication](a2a.md) |
+| Receive work in a messaging product | [Channels](channels.md) |
+| Run periodic work or invoke it from another system | [Schedules](schedules.md) and [webhooks](webhooks.md) |
+| Integrate a conversation into your application | [HTTP API](api.md) and [event stream](events-stream.md) |
+| Manage definitions and submit work from scripts or a coding assistant | [CLI](cli/overview.md) and [Agent MCP](agent-mcp.md) |
 
-## HTTP API
+The console handles navigation, draft input, streaming and interaction cards.
+An API integration owns its interface: submit an input, keep its receipt, then
+follow the output stream. Acceptance means the message is stored; the Agent
+program decides when it consumes it and which response answers it. Answer a
+pending approval or question through its interaction endpoint. See
+[sending messages](sessions.md#send-a-message).
 
-A low-level interface for developers who need complete control. Define an Agent, start a Session, and configure Environments, Skills, Session files, and other resources through API requests. There is no need to build your own Agent loop or tool-execution infrastructure. The API also covers administration of Environments, Vaults, Deployments, Assistants, and messaging channels.
+## Return to your work
 
-## Web console vs HTTP API
+Leaving a browser page does not stop the Agent. Reopen the Session to read saved
+messages, tools, reasoning and recorded interactions, and follow new output.
+Use **Stop** to interrupt the active response; queued inputs are not withdrawn.
+Archive a conversation to take it offline while retaining its history.
 
-| Dimension                       | Web console                                                                                       | HTTP API                                                                                                       |
-| ------------------------------- | ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| Positioning                     | Provides Agent authoring, operation, messaging, scheduling, and authentication in one interface   | Exposes the same Agent definition and runtime resources as APIs                                                   |
-| Best for                        | Agent users, administrators, and teams that want a ready-to-use interface                          | Developers and enterprises that want to integrate Agents into their own products and workflows                  |
-| Configuration                   | Administrators configure Agents and resources through forms                                       | Callers create and update the same resources with JSON requests                                                  |
-| Caller complexity               | Lower — the console handles requests, streams, and resource navigation                            | Higher — flexible; the caller manages API requests, stream consumption, and its own interface                   |
-| End-user identity               | Uses the deployment's configured login and Agent access controls                                  | Uses the same verified user identity or scoped client credentials                                                |
-| Messaging channels              | Create and manage installed messaging integrations                                                | Create and manage the same Deployments and channel connections                                                  |
-| Scheduled / triggered execution | Create schedules, webhooks, and manual runs                                                       | Create and invoke the same Deployments through API requests                                                      |
+If a sandbox is confirmed lost, the affected response fails. AstraBox retains
+history and native state so the Agent program can resume on replacement compute;
+it does not automatically replay work the program already consumed. Native
+state recovery works without a persistent workspace volume. Keeping task files
+when a sandbox is released or lost requires that optional storage. See
+[Session lifecycle](sessions.md) and [workspace storage](deploy.md#where-conversation-workspaces-live).
 
-Start with the web console to use Agent capabilities directly. Choose the HTTP API when you need full runtime control or plan to build your own product layer. Both interfaces operate the same resources, so a resource created in one is available in the other when the caller has access.
+## Run and extend AstraBox
 
-## Next steps
+| Your responsibility | Guide |
+|---|---|
+| Install or upgrade a deployment | [Deploy AstraBox](deploy.md) |
+| Preserve selected records through an offline upgrade | [Offline data import](data-import.md) |
+| Configure model routes, team login or protected credentials | [Models](models.md), [team login](team-login.md) and [credentials](credentials.md) |
+| Plan sandbox capacity and optional file persistence | [Environments](environments.md) and [OpenSandbox](providers/opensandbox.md) |
+| Embed AstraBox in a Python application | [Embedding](embedding.md) |
+| Supply a program, sandbox, identity or database integration | [Extension interfaces](architecture.md#plugin-interfaces) |
 
-- [Web console](quickstart.md) — Agents · Sessions · Deployments · Channels · Environments
-- [HTTP API](api.md) — Agents · Sessions · Deployments · Assistants · Environments
+The built-in database provider uses PostgreSQL. External relational providers
+must supply their schema and coordination guarantees; MySQL type mappings alone
+do not constitute a supported MySQL deployment.

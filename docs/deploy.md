@@ -140,6 +140,16 @@ To change the model service, answer its question again, or run it with
 `ASTRABOX_INSTALL_MODEL_PROVIDER` set; the settings it wrote for the previous
 service are removed.
 
+### Upgrade matching components
+
+Update the server and sandbox runtime images together. Process transport changes
+also require matching execd and sandbox images; an existing sandbox keeps its
+installed binaries. In 0.1.10, the built-in PostgreSQL provider advances the
+schema to Alembic revision `0003`, adding nullable `sessions.runtime_versions`.
+External persistence providers must supply the corresponding physical schema.
+Administrative version views report saved runtime observations without waking
+compute; see [runtime version observations](writing-an-engine-adapter.md).
+
 ### Upgrade from AstraBox 0.1.8 {#upgrade-from-0-1-8}
 
 AstraBox 0.1.9 uses a new PostgreSQL schema and does not automatically convert

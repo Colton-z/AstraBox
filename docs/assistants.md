@@ -28,8 +28,10 @@ shared workspace.
 Every user has a **primary Assistant** without setting one up. The first time a
 user opens the console, AstraBox creates it from the deployment's
 [Assistant defaults](#defaults), with the browser's [timezone](#timezone), and
-lists it at the top of the left rail. Creating it writes only the record: the
-workspace is prepared when its first conversation starts. A user whose
+lists it at the top of the left rail. Creation also attempts to prepare its
+workspace so the first conversation can attach to it. If that preparation
+fails, the saved Assistant remains and its first conversation attempts
+preparation again. A user whose
 Assistants predate this has their earliest one marked primary instead.
 
 The primary Assistant needs an **Environment**: the saved runtime setup that
@@ -58,6 +60,11 @@ Assistant.
 The signed-in user becomes the owner. The Environment also determines the Agent
 program, and the console keeps both fixed after creation. The name, description,
 icon, timezone, system prompt, and default permission mode remain editable.
+
+Saving a changed definition attempts to refresh a ready workspace in place.
+If that refresh fails, the next conversation prepares the current revision.
+An existing ready conversation checks the revision before using the profile.
+Creating or editing a record alone is not proof that its workspace is ready.
 
 ## Assistant defaults {#defaults}
 

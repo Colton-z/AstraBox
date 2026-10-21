@@ -12,6 +12,14 @@ Hermes 固定使用 0.21.5 版本，提交
 `a2a_orchestrate`。AstraBox 执行由它管理的 Agent 时，不会启动 Hermes 的入站消息网关：
 该网关有自己的另一套执行生命周期。
 
+对于交给 AstraBox 管理的 Agent 的长任务，加载内置的 `astrabox-agent-task` Skill。
+它通过现有 A2A API 设置 `returnImmediately=true` 提交任务，保留任务引用，并使用 Hermes
+后台终端进程订阅该任务，接收原生完成通知。Assistant 通过 `get_agent_task` 读取结果，
+并在原对话中汇报。观察连接中断不会使任务失败，也不会重新提交任务。
+需要在当前回复结束后继续汇报时，必须启用后台通知；否则 Assistant 需要使用原生进程工具等待。
+运行环境丢失后可以凭已保存的任务引用重新查询，但观察进程本身不会跨沙箱丢失保留。
+同步的原生 `a2a_call` 仍受所配置的对端超时限制。
+
 ## 调用 AstraBox 管理的 Agent
 
 经过认证的外部客户端从

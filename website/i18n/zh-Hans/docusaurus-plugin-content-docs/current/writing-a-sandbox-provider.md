@@ -59,6 +59,18 @@ async def data_plane(sandbox_id, get_endpoint):
 这些实现已经处理 execd 的线协议细节：权限位格式、退出码的报告方式、重放帧和连接关闭方式。
 使用它们时，provider 声明 `supports_process_sessions = True`。
 
+进程端点会过期时，用异步解析函数构造 `ExecdProcesses`，返回包含 `expires_at` 的完整
+`SandboxEndpoint`。缓存端点过期后，它会在新的 HTTP 请求或 WebSocket 连接前重新解析；
+无时区的过期时间按 UTC 解释。解析函数必须返回可用端点；`at_endpoint` 用于固定地址。
+重新解析保留进程 ID 与重放游标，不替换已打开的连接；现有连接的过期策略由提供方负责。
+HTTP 权限错误不会触发端点续期或重试。
+
+经 WebSocket 代理连接进程时，一起使用内置 execd 镜像和 `ExecdProcesses`。
+客户端请求 `errors=frame`，因此 holder 已被占用或进程缺失时，守护进程会在 WebSocket
+升级后以原有机器错误码拒绝。代理必须原样转发文本与二进制帧。未分类代理错误不能证明
+进程已被占用；不得以状态查询或自动接管代替原子连接判断。已有沙箱也需要匹配的 execd
+二进制与新客户端。
+
 execd 以 root 运行，会执行任何到达它的请求。请在 `get_endpoint` 返回的请求头中放入
 每个沙箱自己的凭证，并确保沙箱内的工作负载读不到它；或者只允许 AstraBox 访问该端口。
 

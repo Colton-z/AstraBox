@@ -1,7 +1,7 @@
 # Extend the console's HTTP transport
 
 A deployment that supplies browser authentication can install one transport
-before the console starts. Set `globalThis.astraboxConsoleTransport` to an
+before the console starts. Set `globalThis.astraboxConsoleTransport` to a
 function `(request: Request) => Promise<Response>`. The TypeScript type is exported
 as `ConsoleTransport` from `frontend/src/consoleTransport.ts`.
 

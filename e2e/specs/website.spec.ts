@@ -43,6 +43,84 @@ function staticHrefs(html: string): string[] {
 }
 
 test.describe("public website", () => {
+  test("readers can choose current workflows and read complete release guidance in either language", async ({
+    page,
+    request,
+  }) => {
+    const releaseGuides = [
+      { id: "a2a", terms: ["astrabox-agent-task", "returnImmediately=true", "get_agent_task"] },
+      { id: "sessions", terms: ["PENDING_INPUTS_NOT_CANCELLED", "CONVERSATION_ENDED", "history-blocks", "response_completed", "Browser"] },
+      { id: "deploy", terms: ["0003", "sessions.runtime_versions", "ASTRABOX_ASSISTANT_PROFILE_ON_WORKSPACE_VOLUME=false", "astrabox.providers.persistence"] },
+      { id: "data-import", terms: ["0003", "sessions.runtime_versions", "HISTORY_IMPORT_CONFLICT", "HISTORY_IMPORT_AFTER_CONVERSATION", "SessionStore"] },
+      { id: "providers/relational-persistence", terms: ["RelationalPersistenceProvider", "ASTRABOX_PERSISTENCE_PROVIDER=example", "coordination.notify", "MySQL"] },
+      { id: "relational-types", terms: ["KeyText", "validate_backend_keys", "3072", "ON DELETE RESTRICT"] },
+      { id: "console-transport", terms: ["astraboxConsoleTransport", "request.signal", "Request.clone()", "15"] },
+      { id: "team-login", terms: ["redirect_url", "204 No Content", "authenticated: false"] },
+      { id: "providers/runtime-preparation", terms: ["context.commit_guard", "issue_preparation_commit_guard", "SESSION_READ_ONLY", "applicable: true"] },
+      { id: "writing-an-engine-adapter", terms: ["runtime_versions", "RuntimeState.closed_interactions", "retracted_part_ids", "RuntimeStateSaveRequired", "ClaudeSDKClient.query()"] },
+      { id: "writing-a-sandbox-provider", terms: ["expires_at", "errors=frame", "at_endpoint"] },
+      { id: "embedding", terms: ["DeploymentExecutionContext", "set_execution_identity_validator"] },
+      { id: "environments", terms: ["can_start_conversation"] },
+      { id: "events-stream", terms: ["interaction_id", "data-interaction"] },
+      { id: "architecture", terms: ["channel_delivery=False", "ENVIRONMENT_SECRET_STORE_NOT_TRANSACTIONAL", "ASTRABOX_ASSISTANT_PROFILE_ON_WORKSPACE_VOLUME=false"] },
+    ];
+    for (const locale of ["", "/zh-Hans"]) {
+      await page.goto(localUrl(`${locale}/docs/capabilities`), { waitUntil: "domcontentloaded" });
+      const article = page.locator("article");
+      const destinations = ["assistants", "artifacts", "a2a", "voice-input", "schedules", "webhooks", "events-stream", "cli/overview", "agent-mcp", "data-import"];
+      for (const id of destinations) {
+        const link = article.locator(`a[href="${locale}/docs/${id}"]`).first();
+        await expect(link).toBeVisible();
+        await link.click();
+        await expect(page).toHaveURL((url) => url.pathname === `${locale}/docs/${id}`);
+        await expect(article.getByRole("heading", { level: 1 })).toBeVisible();
+        await page.goBack({ waitUntil: "domcontentloaded" });
+      }
+      const copy = await article.innerText();
+      expect(copy).toContain(locale ? "不会撤回排队输入" : "queued inputs are not withdrawn");
+      expect(copy).toContain(locale ? "不依赖持久工作区卷" : "without a persistent workspace volume");
+
+      await page.goto(localUrl(`${locale}/docs/assistants`), { waitUntil: "domcontentloaded" });
+      const assistantCopy = await article.innerText();
+      expect(assistantCopy).toContain(locale ? "创建时也会尝试准备工作区" : "Creation also attempts to prepare");
+      expect(assistantCopy).toContain(locale ? "准备失败时" : "If that preparation fails");
+
+      const sidebar = page.locator(".theme-doc-sidebar-menu:visible");
+      const extensions = sidebar.getByRole("button", { name: locale ? "扩展 AstraBox" : "Extend AstraBox", exact: true });
+      if (await extensions.getAttribute("aria-expanded") === "false") await extensions.click();
+      for (const id of ["providers/relational-persistence", "relational-types", "console-transport"]) {
+        await expect(sidebar.locator(`a[href="${locale}/docs/${id}"]`)).toBeVisible();
+      }
+
+      for (const { id, terms } of releaseGuides) {
+        await test.step(`${locale || "en"}: current ${id} guidance`, async () => {
+          await page.goto(localUrl(`${locale}/docs/${id}`), { waitUntil: "domcontentloaded" });
+          await expect(article.getByRole("heading", { level: 1 })).toBeVisible();
+          const content = (await article.innerText()).replace(/\s+/g, " ");
+          for (const term of terms) expect(content, `${locale}/${id}: missing ${term}`).toContain(term);
+          if (locale) expect(content).toMatch(/\p{Script=Han}/u);
+
+          const links = await article.locator(".theme-doc-markdown a[href]").evaluateAll((anchors) => anchors.map((anchor) => (anchor as HTMLAnchorElement).href));
+          for (const href of new Set(links)) {
+            const target = new URL(href);
+            if (target.origin !== new URL(page.url()).origin) continue;
+            expect(target.pathname, `${id}: link leaves its language`).toMatch(new RegExp(`^${locale}/docs/`));
+            const response = await request.get(target.href);
+            expect(response.ok(), `${id}: broken link ${target.pathname}`).toBe(true);
+            if (target.hash) {
+              const html = await response.text();
+              const hasSection = await page.evaluate(({ html, section }) =>
+                new DOMParser().parseFromString(html, "text/html").getElementById(section) !== null,
+                { html, section: decodeURIComponent(target.hash.slice(1)) },
+              );
+              expect(hasSection, `${id}: missing section ${target.hash}`).toBe(true);
+            }
+          }
+        });
+      }
+    }
+  });
+
   test("readers can reach task guides in both languages and use their technical examples and next steps", async ({
     page,
   }) => {

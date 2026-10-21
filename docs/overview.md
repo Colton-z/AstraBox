@@ -10,17 +10,30 @@ AstraBox is an open-source, self-hosted runtime that turns installed Agent progr
 | --------------- | ------------------------------------------------------------------------------------- | ------------------------- |
 | **Agent**       | A cloud Agent powered by an installed Agent program                                    | "Cloud teammate"          |
 | **Environment** | The runtime for a Session, including the Agent program, sandbox, model connection, and network configuration | "Desk and toolbox" |
-| **Session**     | One stateful Agent execution, including its messages, Events, and current state         | "A specific piece of work" |
+| **Session**     | One conversation, including accepted inputs, responses, tools, interactions and saved history | "A specific piece of work" |
+| **Assistant**   | One user's personal workspace shared by that user's conversations                     | "Personal workspace" |
+| **Deployment**  | A schedule, webhook or messaging binding that starts work for an Agent or Assistant    | "Task trigger" |
 | **Event**       | The real-time event stream produced by a Session                                      | "Live progress feed"      |
 
-Alongside Agents for teams and automation, AstraBox offers [Assistants](assistants.md): one person's long-lived cloud workspace, where all conversations share the workspace and the Agent program's state.
+Use [Agents](authoring-agents.md) for reusable tasks and team access, and
+[Assistants](assistants.md) for personal work across conversations. The
+[usage guide](capabilities.md) maps tasks to the console, API, CLI and MCP guides.
+Native program state and conversation history are stored in the platform
+database. Keeping workspace files after sandbox release or loss requires
+optional [persistent workspace storage](deploy.md#where-conversation-workspaces-live).
 
 ## Workflow
 
-1. **Define an Agent.** Specify the model, system prompt, and extensions.
-2. **Configure an Environment.** Choose the Agent program, sandbox, model connection, and network configuration.
+1. **Configure an Environment.** Choose the Agent program, sandbox, model connection, and network configuration.
+2. **Define an Agent.** Select the Environment, model, system prompt, and extensions.
 3. **Start a Session.** Use the Agent to create a runtime instance.
 4. **Send message + Stream events.** Send a message to the Session and stream the Agent's messages, progress, and status changes over HTTP.
+
+The input endpoint returns a durable receipt; output arrives on a separate
+stream. The Agent program decides when it consumes messages, which inputs a
+response answers, and when it needs approval. You can leave the page and return
+to the saved conversation. A lost browser connection does not imply the Agent
+has stopped. See [Sessions](sessions.md) for interrupt, recovery and history.
 
 ## Enterprise Infrastructure Included
 

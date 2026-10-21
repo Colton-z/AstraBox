@@ -112,12 +112,21 @@ Agent 工作流程。
 
 渠道订阅在 Session 的输出日志中保存自己的位置，回复 outbox 保存投递尝试和平台消息 ID。
 每次投递都从输出日志中完整读取它的回复，因此重启后继续的投递发送的是同一条回复。
+适配器可以在消息开始时通过运行时输出约定设置 `channel_delivery=False`，标记提示性消息。
+该消息保留在 Session 历史中；无论目标接收流式还是最终文本，渠道订阅都跳过它，不创建 outbox
+记录。Claude 的 SessionStart hook 消息使用这项策略，原生后台回复仍正常投递。
+运行环境替换时，重放包含仍在等待宿主持久化回执的 SDK 事件，即使它们早于当前回复。
+服务端和 Claude 运行镜像必须一起携带这份快照约定。
 系统没有第二份对话存储。参见[接入新的消息平台](writing-a-channel-provider.md)。
 
 ### 数据与凭证
 
-AstraBox 把记录保存在 PostgreSQL 中，这是它唯一支持的数据库；所有副本使用同一个数据库。
-服务启动时会把数据库结构迁移到与自身发布版本一致的版本，详见[部署 AstraBox](deploy.md)。
+PostgreSQL 是 AstraBox 支持的默认数据库；所有副本使用相同持久化提供方与数据库。
+内置 `postgres` 提供方在启动时升级结构，详见[部署 AstraBox](deploy.md)。
+外部[关系型提供方](providers/relational-persistence.md)提供 SQLAlchemy 引擎、原生冲突操作、
+结构初始化、错误分类与物理协调。仓库流程使用共享 SQLAlchemy 语句，原生差异通过提供方
+冲突操作和方言编译扩展实现。模型包含 [MySQL 类型与 DDL 映射](relational-types.md)，
+但完整 MySQL 提供方仍需兼容的结构初始化、物理协调和真实验收；这些映射不代表支持 MySQL。
 内置 LiteLLM 使用独立的数据库和数据库角色。
 
 定时 Deployment 通过 scheduler provider 运行。内置的 `dbos` provider 在每个服务进程中
@@ -173,6 +182,11 @@ AstraBox Credential Vault 是组织级资源。`local` Secret Store 使用 AES-G
 | Agent 程序原生状态（SessionStore） | AstraBox 的 PostgreSQL 数据库，以程序原生记录或归档格式保存 |
 | Session 和 Assistant 文件 | `/workspace`，可使用持久工作区卷；未配置时随沙箱或受支持的快照保留 |
 
+Environment 内联凭证要求 Secret Store 继承 `EncryptedCollectionSecretStore`，让引用与
+密文在 PostgreSQL 中一同提交，读取方获得一致快照。`local` 和 `aws_kms` 都支持。
+其他 Secret Store 可以服务无凭证的 Environment；内联凭证会以
+`ENVIRONMENT_SECRET_STORE_NOT_TRANSACTIONAL` 拒绝。
+
 原生状态包含 Agent 程序恢复对话所需的记录，也包括原生子对话状态。AstraBox 保存这些
 记录，界面展示的消息历史不替代原生状态。替代运行环境恢复对话前，平台通过程序的状态
 接口或原生文件还原记录。这项数据库存储不依赖持久工作区卷。
@@ -189,6 +203,10 @@ AstraBox Credential Vault 是组织级资源。`local` Secret Store 使用 AES-G
 新建的沙箱，而不是预热好的沙箱。Agent 程序不负责选择存储介质或实现目录路由。本地
 文件系统适用于单个沙箱主机；多台主机需要访问同一个共享文件系统。未配置工作区卷的
 部署不需要路由。配置方法见[工作区部署](deploy.md#where-conversation-workspaces-live)。
+
+Assistant 部署也可以设置 `ASTRABOX_ASSISTANT_PROFILE_ON_WORKSPACE_VOLUME=false`，
+挂载工作区但把运行中的程序 profile 留在沙箱本地存储。这只改变共享挂载计划，原生/profile
+快照与保存确认流程仍然相同。参阅[工作区部署](deploy.md#where-conversation-workspaces-live)。
 
 `mounted_volume` 存储插件使用部署配置的卷。`aws_efs` 插件校验已经配置、支持共享访问的
 EFS CSI Kubernetes 卷。两者都通过后端的路由进入沙箱。部署者管理底层文件系统；使用 EFS
