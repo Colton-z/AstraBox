@@ -327,6 +327,7 @@ for _code, _status, _category, _retryable, _owner in (
     # command id answers this once a newer command has started.
     ("TERMINAL_COMMAND_NOT_FOUND", 404, "request", False, "session"),
     ("SESSION_BUSY", 409, "state", True, "session"),
+    ("SESSION_NOT_READY", 409, "state", True, "session"),
     ("INTERACTION_NOT_FOUND", 404, "request", False, "session"),
     # Answered, withdrawn or expired: answering again cannot succeed.
     ("INTERACTION_NOT_OPEN", 409, "state", False, "session"),
