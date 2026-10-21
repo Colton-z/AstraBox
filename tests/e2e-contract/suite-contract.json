@@ -42,7 +42,7 @@
   ],
   "playwright": {
     "exclusive": {
-      "files": 187,
+      "files": 188,
       "parallel_files": 118,
       "parallel_tests": 212,
       "serial_files": [
@@ -80,6 +80,7 @@
         "specs/channel-message-supersedes-exited-question.exclusive.spec.ts",
         "specs/channel-observed-message-runs-once-after-authorization.exclusive.spec.ts",
         "specs/channel-response-policy-judges-ordinary-messages.exclusive.spec.ts",
+        "specs/claude-local-command-lifecycle.exclusive.spec.ts",
         "specs/console-axe.exclusive.spec.ts",
         "specs/console-extension-save-reschedules-prewarm.exclusive.spec.ts",
         "specs/cross-host-backend-claim.exclusive.spec.ts",
@@ -116,9 +117,9 @@
         "specs/subagent-replay-recovery.exclusive.spec.ts",
         "specs/untouched-tab-catches-up-after-backend-restart.exclusive.spec.ts"
       ],
-      "serial_tests": 110,
+      "serial_tests": 111,
       "serial_workers": 1,
-      "tests": 322,
+      "tests": 323,
       "workers": 5
     },
     "parallel": {
