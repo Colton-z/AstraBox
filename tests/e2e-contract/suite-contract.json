@@ -42,7 +42,7 @@
   ],
   "playwright": {
     "exclusive": {
-      "files": 187,
+      "files": 188,
       "parallel_files": 119,
       "parallel_tests": 213,
       "serial_files": [
@@ -66,6 +66,7 @@
         "specs/assistant-native-a2a-approval.exclusive.spec.ts",
         "specs/assistant-runtime-availability-status.exclusive.spec.ts",
         "specs/assistant-tool-card-live-and-cold.exclusive.spec.ts",
+        "specs/assistant-tool-errors-live-and-cold.exclusive.spec.ts",
         "specs/assistant-workspace-files-survive-park-and-wake.exclusive.spec.ts",
         "specs/assistant-workspace-oob-death-recovers-on-open.exclusive.spec.ts",
         "specs/backend-restart-rehydrates-resident-session-and-pending-approval.exclusive.spec.ts",
@@ -115,9 +116,9 @@
         "specs/subagent-replay-recovery.exclusive.spec.ts",
         "specs/untouched-tab-catches-up-after-backend-restart.exclusive.spec.ts"
       ],
-      "serial_tests": 109,
+      "serial_tests": 110,
       "serial_workers": 1,
-      "tests": 322,
+      "tests": 323,
       "workers": 5
     },
     "parallel": {

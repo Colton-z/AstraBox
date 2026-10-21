@@ -174,6 +174,8 @@ it('keeps a refused save beside its Save and marks the field the refusal names',
   const capacity = (await screen.findByRole('spinbutton', {
     name: 'Prepared capacity',
   })) as HTMLInputElement;
+  // The control mounts before the fetched record seeds its editable draft.
+  await waitFor(() => expect(capacity.value).toBe(String(RECORD.prepared_capacity)));
 
   fireEvent.change(capacity, { target: { value: '5000' } });
   const runtime = card('Runtime and availability');
