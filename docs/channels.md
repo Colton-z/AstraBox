@@ -16,18 +16,21 @@ setup link and configuration fields.
 
 ## Platform authorization and message routing
 
-AstraBox messaging triggers have two independent configuration dimensions:
+AstraBox messaging triggers have three independent configuration dimensions:
 
 | Dimension | Problem it solves | Configuration |
 | --- | --- | --- |
 | Platform authorization | How the app or bot obtains permission to send and receive messages. | Credentials and settings from the messaging platform. |
-| Message routing | Which Agent and Session should be used for an inbound message. | The Agent selected on the trigger and the external conversation reported by the platform. |
+| Message routing | Which Agent or Assistant and Session should be used for an inbound message. | The target selected on the trigger and the external conversation reported by the platform. |
+| Execution identity | Which AstraBox account runs and owns the conversations. | **Run messages as** for Agent triggers; the owner's account for Assistant triggers. |
 
 The credentials entered for a messaging platform authorize the app or bot
-connection. They do not authenticate a participant as an AstraBox user. An
-accepted message runs as the owner of the Agent or Assistant selected on the
-trigger, so configure the bot's visibility and platform permissions for the
-intended audience, and list who may send messages under **Allowed senders**
+connection. They do not authenticate a participant as an AstraBox user. The
+execution account follows **Run messages as**: an Agent trigger defaults to the
+Agent's creator when the adapter supports that mode, and a platform
+administrator can select another supported mode. An Assistant trigger always
+runs as its owner. Configure the bot's visibility and platform permissions for
+the intended audience, and list who may send messages under **Allowed senders**
 when only some accounts should reach it.
 
 ## Connect a messaging platform
@@ -67,7 +70,11 @@ owner; see [Assistants](assistants.md#triggers).
 ### Allowed senders
 
 **Allowed senders** lists the accounts whose messages a trigger accepts, one
-per line, written as `platform:user-id` (for example `telegram:123456789`).
+per line. Use the exact sender identity format and example shown by the selected
+adapter. For example, Satori's Telegram adapter uses `telegram:123456789`, while
+Generic JSON webhook uses the request's `sender` value, such as `user123`.
+Do not add or remove a platform prefix yourself.
+
 An empty list accepts every account the platform delivers. A message from an
 account outside a non-empty list is ignored: it starts no work and is not
 included as context in later replies. A trigger on an Assistant must list the
@@ -82,13 +89,16 @@ scheduled job's result or a finished background task, is delivered there too.
 
 **Run messages as** decides whose AstraBox account a trigger's messages run
 as. That account owns the conversations, supplies their connectors, and sees
-them in the console. Only administrators can change it:
+them in the console. Only platform administrators can change it:
 
 | Setting | Messages run as |
 | --- | --- |
-| The Agent's creator | The account that created the Agent. This is the default. |
+| The Agent's creator | The account that created the Agent. The default when the adapter supports this mode. |
 | One chosen account | The identity-provider user ID entered under **Execution account user ID**. |
-| Each sender's linked account | The account an administrator linked to the sender under **Linked accounts** on the trigger's page. |
+| Each sender's linked account | The account a platform administrator linked to the sender under **Linked accounts** on the trigger's page. |
+
+Assistant triggers always use their owner's account and cannot select another
+execution mode.
 
 With each sender's linked account, every sender holds their own conversation
 with the Agent, even in a shared room, and the Agent's access settings apply
@@ -158,7 +168,9 @@ numbered options. Participants can answer in any of these ways:
 The Agent then continues the same task and its reply follows. A form with
 several questions asks them one at a time. Any other message means the
 participant moved on: AstraBox stops the waiting task and handles the message
-as a new request. In a group, anyone the Agent responds to can answer.
+as a new request. Answers and button presses must pass the trigger's sender and
+execution-account checks. In linked-account mode, a participant cannot answer
+another account's conversation.
 
 ## Credential integration
 
