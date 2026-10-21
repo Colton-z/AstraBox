@@ -47,8 +47,8 @@ asyncio.run(run(json.loads(sys.argv[1])))
 test('a pending input refuses stop explicitly and can take its whole conversation offline through Archive', async ({ page, request }) => {
   const api = new AstraApi(request);
   const agent = await api.defaultAgent();
-  const environments = await api.data<Array<{ name: string; engine_kind: string }>>('GET', '/admin/environments');
-  const environment = environments.find((item) => item.name === agent.environment_name);
+  const runtime_profiles = await api.data<Array<{ name: string; engine_kind: string }>>('GET', '/admin/runtime-profiles');
+  const environment = runtime_profiles.find((item) => item.name === agent.runtime_profile_name);
   expect(environment?.engine_kind).toBeTruthy();
   const user = await api.data<{ user_id: string }>('GET', '/user/current');
   const sid = randomUUID();

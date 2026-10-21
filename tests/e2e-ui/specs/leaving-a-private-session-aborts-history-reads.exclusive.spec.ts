@@ -14,9 +14,9 @@ const sessions = trackSessions();
 test('switching private conversations aborts older pages and history refreshes, then permits a fresh read', async ({ page, request }) => {
   const api = new AstraApi(request);
   const agent = await api.defaultAgent();
-  const environments = await api.data<Array<{ name: string; engine_kind: string }>>('GET', '/admin/environments');
-  const environment = environments.find((item) => item.name === agent.environment_name);
-  expect(environment?.engine_kind, 'the fixture must use its Agent Environment\'s declared engine').toBeTruthy();
+  const runtime_profiles = await api.data<Array<{ name: string; engine_kind: string }>>('GET', '/admin/runtime-profiles');
+  const environment = runtime_profiles.find((item) => item.name === agent.runtime_profile_name);
+  expect(environment?.engine_kind, 'the fixture must use its Agent RuntimeProfile\'s declared engine').toBeTruthy();
   const user = await api.data<{ user_id: string }>('GET', '/user/current');
   const ids = [randomUUID(), randomUUID()];
   sessions.push(...ids);

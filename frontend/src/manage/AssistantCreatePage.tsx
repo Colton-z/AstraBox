@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import { createAssistant } from '@/assistant/api';
-import type { EnvironmentConfig } from '@/types';
+import type { RuntimeProfileConfig } from '@/types';
 
 import {
   ConsoleCreatePage,
@@ -14,7 +14,7 @@ import {
 } from './console';
 import {
   buildAssistantDraft,
-  loadAssistantEnvironments,
+  loadAssistantRuntimeProfiles,
   type AssistantDraft,
 } from './assistantConfig';
 import { buildAssistantCreateSections } from './assistantEditConfig';
@@ -33,7 +33,7 @@ export default function AssistantCreatePage() {
   const { t } = useTranslation();
 
   const [draft, setDraft] = useState<AssistantDraft | null>(null);
-  const [environments, setEnvironments] = useState<EnvironmentConfig[]>([]);
+  const [runtime_profiles, setRuntimeProfiles] = useState<RuntimeProfileConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -46,9 +46,9 @@ export default function AssistantCreatePage() {
     setLoading(true);
     setLoadError('');
     try {
-      // The list contains only environments backed by an installed adapter
+      // The list contains only runtime_profiles backed by an installed adapter
       // that declares assistant_chat. No unverifiable free-text fallback.
-      setEnvironments(await loadAssistantEnvironments());
+      setRuntimeProfiles(await loadAssistantRuntimeProfiles());
       setDraft(buildAssistantDraft());
     } catch (e) {
       setLoadError((e as Error).message);
@@ -61,10 +61,10 @@ export default function AssistantCreatePage() {
     void load();
   }, [load]);
 
-  const environmentName = draft?.environment_name ?? '';
+  const runtimeProfileName = draft?.runtime_profile_name ?? '';
   const sections = useMemo(
-    () => buildAssistantCreateSections(environments, environmentName),
-    [environments, environmentName, t],
+    () => buildAssistantCreateSections(runtime_profiles, runtimeProfileName),
+    [runtime_profiles, runtimeProfileName, t],
   );
 
   if (loading) {
@@ -87,11 +87,11 @@ export default function AssistantCreatePage() {
   }
 
   const name = draft.display_name.trim();
-  const environment = draft.environment_name.trim();
+  const environment = draft.runtime_profile_name.trim();
   const blockedReason = !name
     ? t('manage:assistants.err_name_required')
     : !environment
-      ? t('manage:assistants.err_environment_required')
+      ? t('manage:assistants.err_runtime_profile_required')
       : undefined;
 
   return (
@@ -122,7 +122,7 @@ export default function AssistantCreatePage() {
           display_name: name,
           description: draft.description.trim() || undefined,
           engine_kind: draft.engine_kind,
-          environment_name: environment,
+          runtime_profile_name: environment,
           permission_mode_default: draft.permission_mode_default || undefined,
           system: draft.system.trim() || undefined,
           timezone: draft.timezone.trim() || undefined,

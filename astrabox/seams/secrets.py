@@ -23,12 +23,12 @@ selects one with ``ASTRABOX_SECRET_STORE``; an external provider can register at
 the ``astrabox.providers.secrets`` entry-point group. Dispatch is name-keyed and
 fails loud on an unknown or misconfigured provider.
 
-Environment inline credentials require a provider derived from
+RuntimeProfile inline credentials require a provider derived from
 ``EncryptedCollectionSecretStore``: their references and ciphertext commit in
 one PostgreSQL transaction, and reads select them in one snapshot. Both built-in
 providers support this. Other providers remain usable for credential-free
-Environments, but saving or resolving inline Environment credentials refuses
-with ``ENVIRONMENT_SECRET_STORE_NOT_TRANSACTIONAL``.
+RuntimeProfiles, but saving or resolving inline RuntimeProfile credentials refuses
+with ``RUNTIME_PROFILE_SECRET_STORE_NOT_TRANSACTIONAL``.
 
 This module imports only the standard library.
 """

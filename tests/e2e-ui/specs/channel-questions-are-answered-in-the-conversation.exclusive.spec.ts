@@ -50,7 +50,7 @@ async function openConversation(request: APIRequestContext, profile: EngineProfi
   const id = randomUUID();
   const agentId = (await api.createAgent({
     name: `__e2e_channel_question_${profile.engine_kind}_${id}`,
-    environment_name: profile.environment_name, model: profile.model, prepared_capacity: 0,
+    runtime_profile_name: profile.runtime_profile_name, model: profile.model, prepared_capacity: 0,
   })).agent_id;
   const deployment = await platform.createDeployment(agentId, { scene: 'channel:generic_json', prompt_prefix: '' });
   created.push({ agentId, deploymentId: deployment.deployment_id });

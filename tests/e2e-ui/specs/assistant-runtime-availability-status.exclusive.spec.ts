@@ -33,7 +33,7 @@ test('Assistant history distinguishes an unavailable runtime, startup, readiness
   await page.addInitScript(() => localStorage.setItem('astrabox-lang', 'en'));
   // This is a stored-state display fixture, not a claim to reproduce the deployment failure.
   // Bypass Assistant creation's automatic wake so a history read has no compute to adopt.
-  sql(`INSERT INTO assistants (assistant_id, owner_id, display_name, engine_kind, environment_name) `
+  sql(`INSERT INTO assistants (assistant_id, owner_id, display_name, engine_kind, runtime_profile_name) `
     + `VALUES (${sqlLiteral(assistantId)}, ${sqlLiteral(owner)}, '__e2e_runtime_status', 'assistant', ${sqlLiteral(environment)}); `
     + `INSERT INTO sessions (session_id, user_id, session_kind, workspace_kind, assistant_id, engine_kind, title, state) `
     + `VALUES (${sqlLiteral(sessionId)}, ${sqlLiteral(owner)}, 'assistant_chat', 'assistant', ${sqlLiteral(assistantId)}, 'assistant', '__e2e_runtime_status', 'READY')`);

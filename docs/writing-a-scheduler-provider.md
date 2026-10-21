@@ -20,7 +20,7 @@ an installation needs a different durable engine.
 | The public Run status: the Session's response to the Run's input, else the provider's dispatch state | Retries, recovery of interrupted invocations, and the Run ledger |
 
 The Deployment record stays the desired state. When AstraBox starts, it passes
-each worker the stored Schedules belonging to its execution target (`reconcile`);
+each worker the stored Schedules belonging to its Environment (`reconcile`);
 a control-only process does not reconcile worker state. After a change, it
 passes the one Schedule that changed (`apply` or `delete`). The provider stores the
 payload AstraBox gives it — the target and the prompt — and hands it back with
@@ -72,32 +72,33 @@ Engines legitimately differ in three ways. Declare them in
 
 ## Check the deployment's configuration
 
-AstraBox calls `configure(database_url=..., execution_target=...)` at startup.
+AstraBox calls `configure(database_url=..., environment_name=...)` at startup.
 The URL is the selected relational backend's native URL; the provider validates
-whether it can use that store. `execution_target` is the stable namespace whose
+whether it can use that store. `environment_name` is the stable namespace whose
 work this process may execute. Raise `SchedulerConfigurationError` for an
 unsupported configuration before any invocation can start.
 
-`start(handler)` opens control operations and starts the target's worker.
+`start(handler)` opens control operations and starts the Environment's worker.
 `start(None)` opens control operations without firing schedules, claiming
 invocations or recovering workflows. `stop()` drains the worker and closes
 clients while AstraBox's services are still available.
 
-`ScheduleDefinition.execution_target` and `RunInvocation.execution_target`
+`ScheduleDefinition.environment_name` and `RunInvocation.environment_name`
 carry durable ownership. Control methods `delete`, `enqueue`, `get_run` and
-`list_runs` take an explicit target, so a web process can manage an authorized
-binding without running its work. Reconciliation is limited to the worker's
-own target. The platform validates ownership again before starting a Session
-or admitting a Run input.
+`list_runs` take an explicit Environment and refuse a foreign one. A process
+can manage its local bindings without running their work. Reconciliation is
+limited to that same Environment. The platform validates ownership again
+before starting a Session or admitting a Run input.
 
 ## Use the engine's complete execution capability
 
 Use a maintained durable engine's supported routing, queueing and recovery
-APIs. The built-in adapter maps targets to DBOS applications and named native
-queues; all control operations use `DBOSClient`. A control-only client requires
-a system database initialized by a worker and never migrates the native store.
+APIs. The built-in adapter maps Environments to DBOS applications and named
+native queues; all control operations use `DBOSClient`. A control-only process
+initializes its local native schema through the pinned DBOS CLI migration
+entry point, then constructs the client without launching a workflow worker.
 DBOS application names accept 3–30 lowercase letters, digits, underscores and
-hyphens. The initial target `astrabox` retains its native application and queue
+hyphens. The default Environment `astrabox` retains its native application and queue
 names. See the fixed dependency's [client interface](https://github.com/dbos-inc/dbos-transact-py/blob/a51254c6c5ab2f1f217444778d306d4c967b1ba8/dbos/_client.py).
 
 Keep generic scheduling machinery in that engine. Document an unmet requirement
@@ -133,7 +134,7 @@ from astrabox_scheduler_example import ExampleSchedulerProvider
 class TestExampleScheduler(SchedulerProviderContractSuite):
     def make_provider(self, store):
         provider = ExampleSchedulerProvider()
-        provider.configure(database_url=..., execution_target="astrabox")  # fresh `store`
+        provider.configure(database_url=..., environment_name="astrabox")  # fresh `store`
         return provider
 
     async def fire_due_times(self, provider, deployment_id, start, end):

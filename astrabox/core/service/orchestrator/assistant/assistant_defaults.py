@@ -1,11 +1,11 @@
 """The deployment's Assistant defaults: the layer every Assistant inherits.
 
 An administrator decides here what the deployment's Assistants can do: the
-Environment and model new Assistants use, instructions, and the Skills, MCP
+RuntimeProfile and model new Assistants use, instructions, and the Skills, MCP
 servers (the deployment's own, or picked from the extension catalog),
 packages, native options and Credential Vaults every Assistant gets. A layer
 is checked the way an Assistant's own fields are: against what the engine of
-its Environment reads, the Environment's network boundary, and the Vaults
+its RuntimeProfile reads, the RuntimeProfile's network boundary, and the Vaults
 that may be bound. ``assistant_layers`` says how layers combine.
 """
 
@@ -17,8 +17,8 @@ from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext, default_org_id
 from astrabox.core.service.orchestrator.assistant.assistant_layers import (
     LAYER_FIELDS,
-    assistant_environment_names,
-    default_environment_name,
+    assistant_runtime_profile_names,
+    default_runtime_profile_name,
     inherited_layers,
 )
 from astrabox.core.service.orchestrator.agent_extension_service import (
@@ -36,11 +36,11 @@ from astrabox.core.service.orchestrator.mcp_assignments import (
 )
 from astrabox.persistence.repository.assistant_defaults_repository import (
     DEPLOYMENT_SCOPE,
-    AssistantDefaultsEnvironmentMissing,
+    AssistantDefaultsRuntimeProfileMissing,
     AssistantDefaultsRepository,
     AssistantDefaultsVaultMissing,
 )
-from astrabox.persistence.repository.environment_repository import EnvironmentRepository
+from astrabox.persistence.repository.runtime_profile_repository import RuntimeProfileRepository
 from astrabox.seams.extensions import ExtensionCatalog
 
 #: What a layer stores: its authored fields and its catalog selection.
@@ -72,11 +72,11 @@ class AssistantDefaultsService:
         self,
         *,
         repo: AssistantDefaultsRepository | None = None,
-        environments: EnvironmentRepository | None = None,
+        runtime_profiles: RuntimeProfileRepository | None = None,
         assistant_service: Any = None,
     ) -> None:
         self._repo = repo or AssistantDefaultsRepository()
-        self._environment_repo = environments or EnvironmentRepository()
+        self._runtime_profile_repo = runtime_profiles or RuntimeProfileRepository()
         self._assistant_service = assistant_service
 
     def _assistants(self) -> Any:
@@ -86,25 +86,25 @@ class AssistantDefaultsService:
             self._assistant_service = get_assistant_service()
         return self._assistant_service
 
-    async def _environments(self) -> list[dict[str, Any]]:
-        return await self._environment_repo.list_all()
+    async def _runtime_profiles(self) -> list[dict[str, Any]]:
+        return await self._runtime_profile_repo.list_all()
 
     async def view(self) -> dict[str, Any]:
-        """The deployment's layer, the Environment new Assistants would use, and the choices.
+        """The deployment's layer, the RuntimeProfile new Assistants would use, and the choices.
 
         The layer's catalog selection is reported as stored, so a deployment
         that runs no extension catalog can still show what the layer selected.
         """
 
         layer = await self._repo.get_layer(DEPLOYMENT_SCOPE) or {}
-        environments = await self._environments()
+        runtime_profiles = await self._runtime_profiles()
         layers = await inherited_layers(repo=self._repo)
         return {
             **{field: layer.get(field) for field in LAYER_FIELDS},
             AGENT_MCP_ASSIGNMENTS_FIELD: layer.get(AGENT_MCP_ASSIGNMENTS_FIELD),
             AGENT_EXTENSION_CATALOG_FIELD: layer.get(AGENT_EXTENSION_CATALOG_FIELD),
-            "effective_environment_name": await default_environment_name(layers, environments),
-            "assistant_environment_names": await assistant_environment_names(environments),
+            "effective_runtime_profile_name": await default_runtime_profile_name(layers, runtime_profiles),
+            "assistant_runtime_profile_names": await assistant_runtime_profile_names(runtime_profiles),
             "updated_at": layer.get("updated_at"),
         }
 
@@ -114,16 +114,16 @@ class AssistantDefaultsService:
         unknown = sorted(set(fields) - set(LAYER_FIELDS))
         if unknown:
             raise _invalid(f"Assistant defaults take no fields {unknown}")
-        environments = await self._environments()
-        environment_name = _text(fields.get("environment_name"), "environment_name")
-        if environment_name is not None and environment_name not in await assistant_environment_names(environments):
+        runtime_profiles = await self._runtime_profiles()
+        runtime_profile_name = _text(fields.get("runtime_profile_name"), "runtime_profile_name")
+        if runtime_profile_name is not None and runtime_profile_name not in await assistant_runtime_profile_names(runtime_profiles):
             raise APIError(
-                code="ASSISTANT_ENVIRONMENT_MISSING",
-                message=f"environment {environment_name!r} is not an enabled Environment that runs Assistants",
+                code="ASSISTANT_RUNTIME_PROFILE_MISSING",
+                message=f"environment {runtime_profile_name!r} is not an enabled RuntimeProfile that runs Assistants",
                 status_code=403,
             )
         layer: dict[str, Any] = {
-            "environment_name": environment_name,
+            "runtime_profile_name": runtime_profile_name,
             "model_name": _text(fields.get("model_name"), "model_name"),
             "instructions": _text(fields.get("instructions"), "instructions"),
             "skills": list(fields.get("skills") or []),
@@ -132,7 +132,7 @@ class AssistantDefaultsService:
             "engine_options": dict(fields.get("engine_options") or {}),
             "credential_vault_ids": list(fields.get("credential_vault_ids") or []),
         }
-        await self._check_extensions(user, layer, environments)
+        await self._check_extensions(user, layer, runtime_profiles)
         current = await self._repo.get_layer(DEPLOYMENT_SCOPE) or {}
         stored = {field: current.get(field) for field in _STORED_FIELDS}
         stored.update(layer)
@@ -153,12 +153,12 @@ class AssistantDefaultsService:
                 expected_version=current.get("version"),
                 updated_by=user.user_id,
             )
-        except AssistantDefaultsEnvironmentMissing:
+        except AssistantDefaultsRuntimeProfileMissing:
             raise APIError(
-                code="ASSISTANT_ENVIRONMENT_MISSING",
+                code="ASSISTANT_RUNTIME_PROFILE_MISSING",
                 message=(
-                    f"environment {stored.get('environment_name')!r} is not an enabled "
-                    "Environment that runs Assistants"
+                    f"environment {stored.get('runtime_profile_name')!r} is not an enabled "
+                    "RuntimeProfile that runs Assistants"
                 ),
                 status_code=403,
             ) from None
@@ -172,7 +172,7 @@ class AssistantDefaultsService:
             raise _conflict()
 
     async def _check_extensions(
-        self, user: UserContext, layer: dict[str, Any], environments: list[dict[str, Any]]
+        self, user: UserContext, layer: dict[str, Any], runtime_profiles: list[dict[str, Any]]
     ) -> None:
         """Refuse what the Assistants' engine would not read or may not reach."""
 
@@ -189,11 +189,11 @@ class AssistantDefaultsService:
         if not authored:
             return
         layers = [("the deployment's Assistant defaults", layer)]
-        name = await default_environment_name(layers, environments)
-        environment = next((env for env in environments if env.get("name") == name), None)
+        name = await default_runtime_profile_name(layers, runtime_profiles)
+        environment = next((env for env in runtime_profiles if env.get("name") == name), None)
         if environment is None:
             raise _invalid(
-                "choose the Environment new Assistants use before adding Skills, MCP servers, "
+                "choose the RuntimeProfile new Assistants use before adding Skills, MCP servers, "
                 "packages or native options: what they may hold depends on its engine"
             )
         engine_kind = str(environment.get("engine_kind") or "").strip()

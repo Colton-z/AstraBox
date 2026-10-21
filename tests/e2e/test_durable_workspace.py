@@ -313,7 +313,7 @@ def test_an_assistant_remembers_its_conversations_after_its_box_is_destroyed(
                 "/api/v1/assistants",
                 json={
                     "display_name": f"__e2e_durable_{uuid.uuid4().hex[:8]}",
-                    "environment_name": environment,
+                    "runtime_profile_name": environment,
                     "model_config_override": {"model_name": model},
                 },
             )

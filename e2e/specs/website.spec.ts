@@ -57,7 +57,7 @@ test.describe("public website", () => {
       { id: "quickstart", category: categories.start, content: "pre code", image: true },
       { id: "agent-skills", category: categories.build, content: "pre code", image: true },
       { id: "permission-modes", category: categories.build, content: "pre code" },
-      { id: "environments", category: categories.environment, content: "table tbody tr" },
+      { id: "runtime-profiles", category: categories.environment, content: "table tbody tr" },
       { id: "container-reference", category: categories.environment, content: "pre code" },
       { id: "networking", category: categories.environment, content: "table tbody tr" },
       { id: "sessions", category: categories.tasks, content: "pre code" },

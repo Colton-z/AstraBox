@@ -73,7 +73,7 @@ provider 类上的能力标志说明后端支持什么。注册时，声明为 t
 
 | 标志 | provider 还需要实现 |
 | --- | --- |
-| `supports_create_network_policy` | `admit_runtime_egress`；按 Environment 的网络访问规则创建每个沙箱 |
+| `supports_create_network_policy` | `admit_runtime_egress`；按 RuntimeProfile 的网络访问规则创建每个沙箱 |
 | `supports_isolated_sessions` | 隔离会话的各项操作和 `count_active_isolated_sessions`；`read_memory_headroom` 和 `read_listening_ports` 有默认实现，通过 `commands` 读取沙箱 |
 | `supports_isolated_session_recovery` | `find_isolated_sessions_by_workspace` |
 | `supports_pause` | `pause` 和 `resume` |
@@ -84,7 +84,7 @@ provider 类上的能力标志说明后端支持什么。注册时，声明为 t
 | `supports_process_sessions` | 句柄的 `processes` |
 
 保存配置时，如果所选后端没有声明该配置需要的能力，AstraBox 会拒绝保存：后端没有
-`supports_create_network_policy` 时的任何 Environment；没有 `supports_isolated_sessions`
+`supports_create_network_policy` 时的任何 RuntimeProfile；没有 `supports_isolated_sessions`
 时的沙箱共享；没有 `supports_pause` 时的 `Pause` 空闲行为；客户端池未就绪时的预热容量；
 以及不共享沙箱时，没有 `supports_process_sessions` 的 Pi Agent 程序或 Agent 终端面板。
 
@@ -109,7 +109,7 @@ AstraBox 每个沙箱只建一次、从不查询：建箱抛错时，这次对�
 ## 启用后端
 
 `ASTRABOX_SANDBOX_BACKENDS` 列出部署启用的后端，`ASTRABOX_SANDBOX_BACKEND` 指定未选择
-后端的 Environment 使用的默认后端。仍指向已安装但未启用后端的记录会以
+后端的 RuntimeProfile 使用的默认后端。仍指向已安装但未启用后端的记录会以
 `SANDBOX_BACKEND_DISABLED` 失败。把只有该 provider 读取的环境变量列在 `owned_settings`
 中：provider 已安装但未启用时，AstraBox 会在启动阶段对其中每个已设置的变量发出警告。
 

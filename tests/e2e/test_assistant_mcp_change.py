@@ -3,18 +3,18 @@
 An Assistant's box is created once and outlives many edits. Two outcomes of an
 edit that adds an MCP server are proven on a real deployment:
 
-* On an Environment that admits MCP servers, the next conversation starts and
+* On a RuntimeProfile that admits MCP servers, the next conversation starts and
   answers, and the box now allows the server's host. The box's egress policy
   was fixed when the box was created, so without widening it the conversation
   failed at its first message: the egress sidecar refuses a credential binding
   for a host its policy does not allow.
-* On an Environment that forbids MCP servers, the next conversation cannot be
+* On a RuntimeProfile that forbids MCP servers, the next conversation cannot be
   prepared, and it says so: it ends with the cause on it, rather than showing
   READY and leaving its first message to fail.
 
-Each test runs on a sibling of the lane's Assistant Environment that differs
+Each test runs on a sibling of the lane's Assistant RuntimeProfile that differs
 only in whether it admits MCP servers, so the outcome does not depend on how
-the lane Environment happens to be configured.
+the lane RuntimeProfile happens to be configured.
 
 Removal preserves a real command already running on the original box: the
 response running it stays the session's response in progress and ends
@@ -64,7 +64,7 @@ pytestmark = [pytest.mark.e2e, pytest.mark.assistant_live]
 # the admitting test only needs its host to become reachable.
 _MCP_URL = "https://mcp.deepwiki.com/mcp"
 _MCP_SERVERS = {"wiki": {"type": "http", "url": _MCP_URL}}
-# The fields of the lane Environment that decide which program and image its
+# The fields of the lane RuntimeProfile that decide which program and image its
 # boxes run. The sibling copies these and sets its own networking.
 _RUNTIME_FIELDS = ("engine_kind", "idle_action", "runtime_template_name")
 
@@ -76,10 +76,10 @@ def _sibling_environment(
     assert lane, "the Assistant lane requires ASTRABOX_E2E_ASSISTANT_ENVIRONMENT"
     matches = [
         item
-        for item in data(e2e_client.get("/api/v1/admin/environments"))
+        for item in data(e2e_client.get("/api/v1/admin/runtime-profiles"))
         if item.get("name") == lane
     ]
-    assert len(matches) == 1, f"expected one Environment {lane!r}: {matches}"
+    assert len(matches) == 1, f"expected one RuntimeProfile {lane!r}: {matches}"
     name = f"{lane}-{'mcp' if admits_mcp else 'no-mcp'}{suffix}"
     body = {key: matches[0][key] for key in _RUNTIME_FIELDS if key in matches[0]}
     body.update(
@@ -90,7 +90,7 @@ def _sibling_environment(
             "allow_mcp_servers": admits_mcp,
         },
     )
-    data(e2e_client.put(f"/api/v1/admin/environments/{name}", json=body))
+    data(e2e_client.put(f"/api/v1/admin/runtime-profiles/{name}", json=body))
     return name
 
 
@@ -99,7 +99,7 @@ def _assistant(e2e_client: httpx.Client, environment: str, *, with_mcp_server: b
     assert model, "the Assistant lane requires ASTRABOX_E2E_ASSISTANT_MODEL"
     body: dict = {
         "display_name": f"e2e-mcp-change-{uuid.uuid4().hex[:6]}",
-        "environment_name": environment,
+        "runtime_profile_name": environment,
         "model_config_override": {"model_name": model},
     }
     if with_mcp_server:
@@ -198,7 +198,7 @@ def test_a_conversation_whose_setup_fails_says_why(
     assert session.get("state") == "TERMINATED", (
         f"a conversation whose setup failed shows {session.get('state')!r}: {session}"
     )
-    # The cause as the refusal states it: the Environment's switch and the host.
+    # The cause as the refusal states it: the RuntimeProfile's switch and the host.
     cause = str(session.get("last_error") or "")
     assert "allow_mcp_servers=false" in cause and str(urlsplit(_MCP_URL).hostname) in cause, (
         f"the conversation does not say why it ended: {cause!r}"

@@ -250,6 +250,20 @@ class WebIdentityMiddleware:
             )
             return
 
+        if (
+            user is not None and path.startswith("/api/") and not _is_exempt_path(path)
+            and path not in {"/api/v1/user/current", "/api/v1/environments"}
+        ):
+            from astrabox.core.service.environment_access import require_environment_access
+
+            try:
+                await require_environment_access(
+                    user, operation=str(scope.get("method") or "websocket") + " " + path,
+                )
+            except APIError as exc:
+                await self._reject(scope, receive, send, exc)
+                return
+
         # Admin-surface gate. With the no-auth DEFAULT resolver (single-user,
         # host-is-yours) the console stays open. The moment a real resolver is
         # configured, the admin surface hard-gates: anonymous never passes

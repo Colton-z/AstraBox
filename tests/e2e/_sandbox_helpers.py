@@ -79,7 +79,7 @@ def create_session(client: httpx.Client, *, permission_mode: str | None = None) 
         for item in agents
         if item.get("agent_id") == profile["agent_id"]
         and item.get("name") == profile["agent_name"]
-        and item.get("environment_name") == profile["environment_name"]
+        and item.get("runtime_profile_name") == profile["runtime_profile_name"]
         and item.get("model") == profile["model"]
     ]
     if len(matches) != 1:
@@ -87,22 +87,22 @@ def create_session(client: httpx.Client, *, permission_mode: str | None = None) 
             f"expected the configured {profile['engine_kind']!r} Investment Agent "
             f"exactly once, found {len(matches)}"
         )
-    environments = data(client.get("/api/v1/admin/environments"))
-    assert isinstance(environments, list), (
-        f"Environment list is not a list: {environments!r}"
+    runtime_profiles = data(client.get("/api/v1/admin/runtime-profiles"))
+    assert isinstance(runtime_profiles, list), (
+        f"RuntimeProfile list is not a list: {runtime_profiles!r}"
     )
     environment_matches = [
         item
-        for item in environments
-        if item.get("name") == profile["environment_name"]
+        for item in runtime_profiles
+        if item.get("name") == profile["runtime_profile_name"]
         and item.get("engine_kind") == profile["engine_kind"]
         and item.get("runtime_template_name") == profile["image"]
     ]
     if len(environment_matches) != 1:
         raise AssertionError(
-            "the selected Agent's live Environment no longer matches its release "
+            "the selected Agent's live RuntimeProfile no longer matches its release "
             f"evidence: engine={profile['engine_kind']!r} "
-            f"environment={profile['environment_name']!r} image={profile['image']!r} "
+            f"environment={profile['runtime_profile_name']!r} image={profile['image']!r} "
             f"matches={len(environment_matches)}"
         )
     agent_id = str(matches[0]["agent_id"])
@@ -119,7 +119,7 @@ def create_session(client: httpx.Client, *, permission_mode: str | None = None) 
 
 
 def environment_with_tenancy(client: httpx.Client, tenancy: str) -> str:
-    """Name the deployment's Environment with this sandbox tenancy, for this engine.
+    """Name the deployment's RuntimeProfile with this sandbox tenancy, for this engine.
 
     Some contracts only exist under one tenancy — a box that belongs to one
     conversation dies with it, a box that belongs to an Agent does not — so a
@@ -127,13 +127,13 @@ def environment_with_tenancy(client: httpx.Client, tenancy: str) -> str:
     whatever the campaign's matrix Agent happens to use.
     """
     profile = current_profile()
-    environments = data(client.get("/api/v1/admin/environments"))
-    assert isinstance(environments, list), (
-        f"Environment list is not a list: {environments!r}"
+    runtime_profiles = data(client.get("/api/v1/admin/runtime-profiles"))
+    assert isinstance(runtime_profiles, list), (
+        f"RuntimeProfile list is not a list: {runtime_profiles!r}"
     )
     matches = [
         str(item.get("name") or "")
-        for item in environments
+        for item in runtime_profiles
         if isinstance(item, dict)
         and item.get("sandbox_tenancy") == tenancy
         and item.get("engine_kind") == profile["engine_kind"]
@@ -141,9 +141,9 @@ def environment_with_tenancy(client: httpx.Client, tenancy: str) -> str:
         and item.get("enabled") is True
     ]
     assert matches, (
-        f"the deployment has no enabled {profile['engine_kind']} Environment with "
+        f"the deployment has no enabled {profile['engine_kind']} RuntimeProfile with "
         f"sandbox_tenancy={tenancy!r} on image {profile['image']!r}; "
-        f"available={[(i.get('name'), i.get('sandbox_tenancy')) for i in environments]}"
+        f"available={[(i.get('name'), i.get('sandbox_tenancy')) for i in runtime_profiles]}"
     )
     return sorted(matches)[0]
 
@@ -154,12 +154,12 @@ def create_agent_variant_session(
     name_suffix: str,
     engine_options: dict[str, object],
     permission_mode: str | None = None,
-    environment_name: str | None = None,
+    runtime_profile_name: str | None = None,
 ) -> dict:
     """Start a conversation from an isolated variant of the matrix Agent.
 
-    ``environment_name`` defaults to the matrix Agent's own. Pass one only when
-    the test needs a property of that Environment rather than of the Agent.
+    ``runtime_profile_name`` defaults to the matrix Agent's own. Pass one only when
+    the test needs a property of that RuntimeProfile rather than of the Agent.
     """
 
     profile = current_profile()
@@ -176,7 +176,7 @@ def create_agent_variant_session(
             f"{uuid.uuid4().hex[:10]}"
         ),
         "model": profile["model"],
-        "environment_name": environment_name or profile["environment_name"],
+        "runtime_profile_name": runtime_profile_name or profile["runtime_profile_name"],
         "engine_options": {**canonical_options, **engine_options},
         # Cold on purpose: these cases exercise a conversation's own start, and
         # the warm path has its own tests. Stated, not left to the deployment's
@@ -795,8 +795,9 @@ def poll_until_ready(
     timeout: float = READY_TIMEOUT_S,
     *,
     expected_image: str | None = None,
+    sandbox_admin_client: httpx.Client | None = None,
 ) -> list[str]:
-    """Poll any Session until READY and optionally prove its sandbox image."""
+    """Poll as the Session reader; optionally use an admin for image inventory."""
     seen: list[str] = []
     deadline = deadline_after(timeout)
     while time.monotonic() < deadline:
@@ -821,7 +822,7 @@ def poll_until_ready(
                     sandbox_id = str(detail.get("sandbox_id") or "").strip()
                     assert sandbox_id, f"READY session {sid} has no sandbox_id: {detail}"
                     descriptor = data(
-                        client.get(
+                        (sandbox_admin_client if sandbox_admin_client is not None else client).get(
                             f"/api/v1/admin/sandboxes/{sandbox_id}",
                             params={"backend": "open_sandbox"},
                         )
@@ -876,20 +877,20 @@ def box_is_running(*, sandbox_id: str, client: httpx.Client) -> bool:
 
 
 def environment_sandbox_tenancy(client: httpx.Client) -> str:
-    """The tenancy this matrix row's Environment is configured for.
+    """The tenancy this matrix row's RuntimeProfile is configured for.
 
-    Read from the Environment rather than assumed, because it is a per-deployment
+    Read from the RuntimeProfile rather than assumed, because it is a per-deployment
     choice and not a property of a product line: the same Agent runs one box per
     conversation or one box per Agent depending on this field, and what ending a
     conversation destroys differs accordingly.
     """
 
-    name = str(current_profile()["environment_name"])
-    rows = data(client.get("/api/v1/admin/environments"))
+    name = str(current_profile()["runtime_profile_name"])
+    rows = data(client.get("/api/v1/admin/runtime-profiles"))
     matches = [item for item in rows if item.get("name") == name]
-    assert len(matches) == 1, f"expected one Environment named {name!r}, found {len(matches)}"
+    assert len(matches) == 1, f"expected one RuntimeProfile named {name!r}, found {len(matches)}"
     tenancy = str(matches[0].get("sandbox_tenancy") or "").strip()
-    assert tenancy, f"Environment {name!r} declares no sandbox_tenancy: {matches[0]}"
+    assert tenancy, f"RuntimeProfile {name!r} declares no sandbox_tenancy: {matches[0]}"
     return tenancy
 
 

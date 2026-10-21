@@ -2,7 +2,7 @@
 
 A prepared box exists before any Session, so its model credential is a per-slot
 gateway placeholder with the substitution behind it, and a claim adopts the box
-only when its placement and Environment policy still hold.
+only when its placement and RuntimeProfile policy still hold.
 """
 
 from __future__ import annotations

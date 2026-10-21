@@ -18,7 +18,7 @@ infrastructure. AstraBox does not provide a product-wide CIDR to list here.
 How a remote MCP server is configured does not give it a separate network path.
 The Agent program connects to every remote MCP endpoint from its sandbox.
 
-An Environment controls which destinations the sandbox can reach:
+A RuntimeProfile controls which destinations the sandbox can reach:
 
 | Mode | Behavior |
 | --- | --- |
@@ -33,7 +33,7 @@ CIDR to your server's inbound firewall rules. A NAT gateway or another managed
 egress service can provide a stable address when the sandbox nodes themselves
 are replaceable.
 
-> The Environment network allowlist controls which destinations a sandbox may
+> The RuntimeProfile network allowlist controls which destinations a sandbox may
 > reach. It does not assign a stable public source IP. Additional allowed hosts
 > can be exact hosts, leftmost wildcards such as `*.example.com`, IP addresses,
 > or CIDRs; do not include a scheme, port, or path. An entry inside the

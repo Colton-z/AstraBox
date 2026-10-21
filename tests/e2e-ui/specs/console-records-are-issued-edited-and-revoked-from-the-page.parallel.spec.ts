@@ -24,7 +24,7 @@
  *     carries one and must not act until the armed word is pressed. Escape is
  *     driven before the confirm, because a test that only confirms passes on a
  *     dialog whose Cancel also deletes.
- *  3. The collision guard is asserted in BOTH directions. `upsertAdminEnvironment`
+ *  3. The collision guard is asserted in BOTH directions. `upsertAdminRuntimeProfile`
  *     would overwrite the environment already holding a name, so the create page
  *     blocks on it — and "the button is disabled" is equally true of a button
  *     that is always disabled, so the same field then takes a free name and the
@@ -78,8 +78,8 @@ test('a console record is created, edited and destroyed from the page that owns 
 
   // ── Setup. The API is allowed here and nowhere below ─────────────────────
   const seeded = await api.defaultAgent();
-  const environmentName = String(seeded.environment_name || '').trim();
-  expect(environmentName, 'the seeded agent must name an environment to borrow').not.toEqual('');
+  const runtimeProfileName = String(seeded.runtime_profile_name || '').trim();
+  expect(runtimeProfileName, 'the seeded agent must name an environment to borrow').not.toEqual('');
   const model = String(seeded.model || '').trim();
   expect(model).not.toContain('*');
   expect(model, 'the throwaway agent needs a concrete model to name').not.toEqual('');
@@ -88,19 +88,19 @@ test('a console record is created, edited and destroyed from the page that owns 
   // reads its collision set from — and the seeded agent's environment rather
   // than whichever row sorts first, because another spec's throwaway record
   // must not be able to become the name this one collides with.
-  const environments = await api.data<Array<Record<string, unknown>>>('GET', '/admin/environments');
-  const takenEnvironmentName = environments
+  const runtime_profiles = await api.data<Array<Record<string, unknown>>>('GET', '/admin/runtime-profiles');
+  const takenEnvironmentName = runtime_profiles
     .map((item) => String(item.name || '').trim())
-    .find((name) => name === environmentName) ?? '';
+    .find((name) => name === runtimeProfileName) ?? '';
   expect(
     takenEnvironmentName,
     'the environment the seeded agent runs on must be in the admin listing the create page reads',
-  ).toEqual(environmentName);
+  ).toEqual(runtimeProfileName);
 
   const agent = await api.createAgent({
     name: `__e2e_card_${runId}`,
     model,
-    environment_name: environmentName,
+    runtime_profile_name: runtimeProfileName,
     prepared_capacity: 0,
   });
   throwawayAgentId = String(agent.agent_id || '').trim();
@@ -235,9 +235,9 @@ test('a console record is created, edited and destroyed from the page that owns 
   ).toHaveCount(0);
 
   // ── 5. A create page that refuses, and then stops refusing ───────────────
-  // Copy: manage:env_form.fields.name.label, manage:environments.err_name_exists,
+  // Copy: manage:runtime_profile_form.fields.name.label, manage:runtime_profiles.err_name_exists,
   // common:create, common:cancel.
-  await page.goto(appPath('/manage/environments/new'));
+  await page.goto(appPath('/manage/runtime-profiles/new'));
   const newEnvironmentName = page.getByRole('textbox', { name: 'Name', exact: true });
   const createEnvironment = page.getByRole('button', { name: 'Create', exact: true });
 
@@ -253,9 +253,9 @@ test('a console record is created, edited and destroyed from the page that owns 
   await expect(createEnvironment).toBeEnabled();
 
   await page.getByRole('button', { name: 'Cancel' }).click();
-  await expect(page).toHaveURL(/\/manage\/environments$/);
+  await expect(page).toHaveURL(/\/manage\/runtime_profiles$/);
   expect(
-    (await api.data<Array<Record<string, unknown>>>('GET', '/admin/environments')).map((item) =>
+    (await api.data<Array<Record<string, unknown>>>('GET', '/admin/runtime-profiles')).map((item) =>
       String(item.name || ''),
     ),
     'walking away from the create page must write nothing',

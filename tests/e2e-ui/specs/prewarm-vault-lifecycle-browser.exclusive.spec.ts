@@ -66,7 +66,7 @@ async function preparedCapacity(page: Page, agent: Agent): Promise<Prepared> {
 }
 
 async function createAgent(page: Page, environment: string, name: string): Promise<Agent> {
-  expect(environment, 'the configured prewarm Environment is required').not.toBe('');
+  expect(environment, 'the configured prewarm RuntimeProfile is required').not.toBe('');
   const researchAgent = String(process.env.ASTRABOX_E2E_RESEARCH_AGENT || '').trim();
   expect(researchAgent, 'the deployment must name its proven research Agent').not.toBe('');
   const listed = responseFor(page, '/agents');
@@ -77,7 +77,7 @@ async function createAgent(page: Page, environment: string, name: string): Promi
 
   await page.goto(appPath('/manage/agents/new'));
   await page.locator('#agent-new-name').fill(name);
-  await page.locator('#agent-new-environment_name').selectOption(environment);
+  await page.locator('#agent-new-runtime_profile_name').selectOption(environment);
   await page.locator('#agent-new-model').fill(reference!.model);
   await page.getByRole('option', { name: reference!.model, exact: true }).click();
   await page.getByRole('button', { name: /^Show advanced settings/ }).click();

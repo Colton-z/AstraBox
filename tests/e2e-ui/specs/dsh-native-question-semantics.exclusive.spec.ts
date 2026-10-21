@@ -142,7 +142,7 @@ for (const scenario of cases) test(scenario.title, async ({ page, request }, inf
   let pending: PendingInteraction | null = null;
   try {
     agentId = (await api.createAgent({ name: `__e2e_dsh_question_${marker}`,
-      environment_name: profile.environment_name, model: profile.model, prepared_capacity: 0 })).agent_id;
+      runtime_profile_name: profile.runtime_profile_name, model: profile.model, prepared_capacity: 0 })).agent_id;
     sessionId = (await api.startConversation(agentId)).session_id;
     sessions.push(sessionId);
     await api.waitForSessionReady(sessionId);
@@ -422,7 +422,7 @@ test('DSH preserves complete native plan details and resumes the reviewed turn',
   let sessionId = '';
   try {
     agentId = (await api.createAgent({ name: `__e2e_dsh_plan_detail_${marker}`,
-      environment_name: profile.environment_name, model: profile.model, prepared_capacity: 0 })).agent_id;
+      runtime_profile_name: profile.runtime_profile_name, model: profile.model, prepared_capacity: 0 })).agent_id;
     sessionId = (await api.startConversation(agentId)).session_id;
     sessions.push(sessionId);
     await api.waitForSessionReady(sessionId);

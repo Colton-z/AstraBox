@@ -70,7 +70,7 @@ _HEADER = """\
 
 This generated page lists every environment variable read by AstraBox. Use it
 to look up an exact name, default, or accepted scope. For deployment workflows,
-start with [Configure AstraBox](environments.md), which groups common settings by
+start with [Configure AstraBox](runtime-profiles.md), which groups common settings by
 task and explains when to use them.
 
 The complete list is grouped by intended use:

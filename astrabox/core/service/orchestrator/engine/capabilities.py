@@ -184,10 +184,10 @@ class EngineRuntimeCapabilities:
     supported_session_kinds: frozenset[str]
     workload: EngineWorkloadDeclaration = EngineWorkloadDeclaration()
     conversation_placement: str = CONVERSATION_PLACEMENT_BOX_ACCOUNT
-    #: Image used only when an Environment leaves ``runtime_template_name``
+    #: Image used only when a RuntimeProfile leaves ``runtime_template_name``
     #: unpinned. The adapter owns this default because the image contains that
     #: engine's process and control protocol. ``None`` requires every
-    #: Environment for the adapter to name an image explicitly.
+    #: RuntimeProfile for the adapter to name an image explicitly.
     default_runtime_image: str | None = None
     #: Permission modes required for bootstrap and advertised before a Session
     #: has connected. A verified runtime manifest may add vendor modes; it may
@@ -211,7 +211,7 @@ class EngineRuntimeCapabilities:
     extensions: EngineExtensions = EngineExtensions()
     #: Whether a conversation with its own box runs the engine as one of
     #: the box's long-lived processes, which the platform attaches to over
-    #: stdin and stdout (``SandboxHandle.processes``). An Environment that
+    #: stdin and stdout (``SandboxHandle.processes``). A RuntimeProfile that
     #: pairs such an engine with conversation tenancy is refused on a
     #: backend that does not declare ``supports_process_sessions``.
     requires_process_sessions: bool = False

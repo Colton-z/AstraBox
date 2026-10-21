@@ -126,7 +126,7 @@ const RECLAIM_VISIBLE_MS = parseTimeoutEnv('ASTRABOX_E2E_SANDBOX_RECLAIM_VISIBLE
 /**
  * The rail routes whose page holds its read in local state and re-issues it
  * when the reader returns: AgentsListPage.tsx:66, AssistantsListPage.tsx:67,
- * EnvironmentsListPage.tsx:67, CredentialsListPage.tsx:90,
+ * RuntimeProfilesListPage.tsx:67, CredentialsListPage.tsx:90,
  * DeploymentsListPage.tsx:82, SessionsListPage.tsx:114,
  * SandboxesListPage.tsx:112, ErrorsListPage.tsx:93, McpTokensPage.tsx:78. These are
  * the verdict.
@@ -135,7 +135,7 @@ const RETURN_FRESH_ROUTES = [
   '/manage/agents',
   '/manage/agent-categories',
   '/manage/assistants',
-  '/manage/environments',
+  '/manage/runtime-profiles',
   '/manage/credentials',
   '/manage/deployments',
   '/manage/sessions',

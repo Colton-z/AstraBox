@@ -156,7 +156,7 @@ test.describe.serial('Google Calendar and Drive connectors with a real Google ac
     const environment = await api.assistantEnvironmentName();
     const assistant = await api.createAssistant({
       display_name: `__e2e_calendar_drive_${randomUUID().slice(0, 8)}`,
-      environment_name: environment,
+      runtime_profile_name: environment,
       model_config_override: { model_name: await api.assistantModelName(environment) },
     });
     state.assistantId = assistant.assistant_id;

@@ -53,11 +53,11 @@ async function readCompletedCard(page: Page): Promise<string> {
 
 test('an Assistant tool call and its result are visible live and after reload', async ({ page, request }) => {
   const api = new AstraApi(request);
-  const environmentName = await api.assistantEnvironmentName();
-  const model = await api.assistantModelName(environmentName);
+  const runtimeProfileName = await api.assistantEnvironmentName();
+  const model = await api.assistantModelName(runtimeProfileName);
   const assistant = await api.createAssistant({
     display_name: `__e2e_assistant_tool_${Date.now()}`,
-    environment_name: environmentName,
+    runtime_profile_name: runtimeProfileName,
     model_config_override: { model_name: model },
   });
   assistantId = String(assistant.assistant_id || '');

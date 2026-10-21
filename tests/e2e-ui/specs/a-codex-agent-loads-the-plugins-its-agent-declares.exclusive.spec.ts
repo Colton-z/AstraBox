@@ -18,7 +18,7 @@
  * A plugin also carries MCP servers, which Codex reads from the plugin's
  * `.mcp.json`. The `code-context` plugin of FradSer's `dotclaude`, pinned,
  * carries DeepWiki's public server; its host is in the plugin rather than in
- * the Agent, so an administrator's copy of the Codex Environment admits it,
+ * the Agent, so an administrator's copy of the Codex RuntimeProfile admits it,
  * as docs/adding-tools.md directs. The evidence is DeepWiki's own answer in
  * the stored conversation.
  *
@@ -62,12 +62,12 @@ const HOOK_PLUGIN = { ...PLUGIN, paths: ['plugins/explanatory-output-style'] };
 
 const sessions = trackSessions();
 const agentIds: string[] = [];
-const environments: Array<Record<string, unknown>> = [];
+const runtime_profiles: Array<Record<string, unknown>> = [];
 onPassOnly(async ({ request }) => {
   const api = new AstraApi(request);
   for (const agentId of agentIds) await api.deleteAgent(agentId);
-  for (const environment of environments) {
-    await api.data('PUT', `/admin/environments/${encodeURIComponent(String(environment.name))}`, {
+  for (const environment of runtime_profiles) {
+    await api.data('PUT', `/admin/runtime-profiles/${encodeURIComponent(String(environment.name))}`, {
       ...environment, enabled: false,
     });
   }
@@ -100,16 +100,16 @@ for (const tenancy of ['agent', 'conversation'] as const) {
   test(`${tenancy} tenancy: a Codex Agent loads its declared plugin's Skill, and not after the plugin is removed`, async ({ request }) => {
     const api = new AstraApi(request);
     const profile = engineProfileFor('codex');
-    // The fixture configures the profile's Environment and one for the other
+    // The fixture configures the profile's RuntimeProfile and one for the other
     // tenancy, named with that tenancy as suffix (configure-agent-engine-matrix.py).
-    const environment = tenancy === 'agent' ? profile.environment_name : `${profile.environment_name}-${tenancy}`;
+    const environment = tenancy === 'agent' ? profile.runtime_profile_name : `${profile.runtime_profile_name}-${tenancy}`;
     const stored = (await new PlatformApi(request).listEnvironments())
       .find((item) => String(item.name || '') === environment);
-    expect(stored?.sandbox_tenancy, `${environment} is the ${tenancy}-tenancy Codex Environment`).toBe(tenancy);
+    expect(stored?.sandbox_tenancy, `${environment} is the ${tenancy}-tenancy Codex RuntimeProfile`).toBe(tenancy);
     const config = {
       name: `__e2e_codex_plugin_${tenancy}_${randomUUID().slice(0, 8)}`,
       model: profile.model,
-      environment_name: environment,
+      runtime_profile_name: environment,
       prepared_capacity: 1,
     };
     const agentId = (await api.createAgent({ ...config, packages: [PLUGIN] })).agent_id;
@@ -130,14 +130,14 @@ test('a Codex Agent calls the MCP server its declared plugin carries', async ({ 
   const profile = engineProfileFor('codex');
   const id = randomUUID().slice(0, 8);
   const source = (await new PlatformApi(request).listEnvironments())
-    .find((item) => String(item.name || '') === profile.environment_name);
-  expect(source, `the Codex Environment ${profile.environment_name}`).toBeTruthy();
+    .find((item) => String(item.name || '') === profile.runtime_profile_name);
+  expect(source, `the Codex RuntimeProfile ${profile.runtime_profile_name}`).toBeTruthy();
   const environment = await copyEnvironment(api, source!, `__e2e_codex_plugin_mcp_${id}`, { hosts: [DEEPWIKI_HOST] });
-  environments.push(environment);
+  runtime_profiles.push(environment);
   const agentId = (await api.createAgent({
     name: `__e2e_codex_plugin_mcp_${id}`,
     model: profile.model,
-    environment_name: String(environment.name),
+    runtime_profile_name: String(environment.name),
     prepared_capacity: 0,
     packages: [MCP_PLUGIN],
   })).agent_id;
@@ -169,7 +169,7 @@ test('a Codex Agent runs the hooks its declared plugin carries', async ({ reques
   const agentId = (await api.createAgent({
     name: `__e2e_codex_plugin_hook_${randomUUID().slice(0, 8)}`,
     model: profile.model,
-    environment_name: profile.environment_name,
+    runtime_profile_name: profile.runtime_profile_name,
     prepared_capacity: 0,
     packages: [HOOK_PLUGIN],
   })).agent_id;

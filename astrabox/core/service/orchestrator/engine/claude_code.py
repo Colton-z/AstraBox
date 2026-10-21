@@ -59,10 +59,10 @@ class ClaudeCodeEngineAdapter(EngineAdapter):
     The adapter declares its image contract and activates the vendor protocol
     only after the platform has prepared a placement.
 
-    An Environment's ``runtime_template_name`` remains an explicit image pin.
+    A RuntimeProfile's ``runtime_template_name`` remains an explicit image pin.
     When it is empty, ``capabilities.default_runtime_image`` supplies the live
     deployment default for this adapter; changing the Claude deployment image
-    therefore moves only unpinned Environments.
+    therefore moves only unpinned RuntimeProfiles.
     """
 
     def startup_environment_scope(self) -> Literal["process", "session"] | None:

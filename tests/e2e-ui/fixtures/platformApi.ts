@@ -121,7 +121,7 @@ export interface AssistantRecord {
   assistant_id: string;
   display_name: string;
   engine_kind?: string;
-  environment_name?: string;
+  runtime_profile_name?: string;
   workspace_state?: string | null;
   current_sandbox_id?: string | null;
   [key: string]: unknown;
@@ -583,22 +583,22 @@ export class PlatformApi {
     return this.data<Record<string, unknown>>('GET', `/admin/sessions/${sessionId}/trace`);
   }
 
-  // ── Environments ──────────────────────────────────────────────────────────
+  // ── RuntimeProfiles ──────────────────────────────────────────────────────────
 
   listEnvironments(): Promise<Array<Record<string, unknown>>> {
-    return this.data<Array<Record<string, unknown>>>('GET', '/admin/environments');
+    return this.data<Array<Record<string, unknown>>>('GET', '/admin/runtime-profiles');
   }
 
   putEnvironment(name: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
     return this.data<Record<string, unknown>>(
       'PUT',
-      `/admin/environments/${encodeURIComponent(name)}`,
+      `/admin/runtime-profiles/${encodeURIComponent(name)}`,
       body,
     );
   }
 
   environmentSchema(): Promise<{ fields?: Array<Record<string, unknown>> }> {
-    return this.data<{ fields?: Array<Record<string, unknown>> }>('GET', '/admin/environment-schema');
+    return this.data<{ fields?: Array<Record<string, unknown>> }>('GET', '/admin/runtime-profile-schema');
   }
 
   agentSchema(): Promise<{ fields?: Array<Record<string, unknown>> }> {

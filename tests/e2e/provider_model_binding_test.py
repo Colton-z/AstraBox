@@ -167,7 +167,7 @@ def test_initialized_inventory_binds_each_owner_before_native_input(e2e_client: 
     nonce = uuid.uuid4().hex[:10]
     users = [f"binding-{nonce}-{kind}" for kind in ("a", "b", "unauthorized")]
     clients = [_user_client(admin, user) for user in users]
-    source = next(row for row in data(admin.get("/api/v1/admin/environments")) if row["name"] == profile["environment_name"])
+    source = next(row for row in data(admin.get("/api/v1/admin/runtime-profiles")) if row["name"] == profile["runtime_profile_name"])
     canonical = data(admin.get(f"/api/v1/agents/{profile['agent_id']}"))
     policy = {"session_bound": False, "users": users[:2], "refuse_binding": False,
               "startup_environment": True, "console_base_url": str(admin.base_url).rstrip("/")}
@@ -183,9 +183,9 @@ def test_initialized_inventory_binds_each_owner_before_native_input(e2e_client: 
                            "prewarm-session-environment@prewarm-environment-fixture": True},
     }
     agents = []
-    environments = []
+    runtime_profiles = []
     sessions = []
-    evidence = {"users": users, "environments": [], "inventory": [], "sessions": []}
+    evidence = {"users": users, "runtime_profiles": [], "inventory": [], "sessions": []}
     succeeded = False
     try:
         for kind in ("initialized", "session-bound", "cold"):
@@ -193,12 +193,12 @@ def test_initialized_inventory_binds_each_owner_before_native_input(e2e_client: 
             environment = {**source, "name": name, "display_name": name, "sandbox_backend": "binding_fixture"}
             if kind == "session-bound":
                 environment["runtime_template_name"] = os.environ[PREPARATION_IMAGE_ENV]
-            data(admin.put(f"/api/v1/admin/environments/{name}", json=environment))
-            environments.append(environment)
-            evidence["environments"].append(name)
+            data(admin.put(f"/api/v1/admin/runtime-profiles/{name}", json=environment))
+            runtime_profiles.append(environment)
+            evidence["runtime_profiles"].append(name)
             data(admin.put(f"/api/v1/runtime-preparation-fixture/binding-policies/{name}", json={**policy, "session_bound": kind == "session-bound"}))
             agent = data(admin.post("/api/v1/agents", json={
-                "name": name, "environment_name": name, "model": profile["model"],
+                "name": name, "runtime_profile_name": name, "model": profile["model"],
                 "engine_options": options, "prepared_capacity": 0,
             }))
             agents.append(agent)
@@ -207,7 +207,7 @@ def test_initialized_inventory_binds_each_owner_before_native_input(e2e_client: 
                 "visibility": "public", "admins": [], "allowed_user_ids": [],
             }))
             data(admin.put(f"/api/v1/agents/{agent['agent_id']}", json={
-                "name": name, "environment_name": name, "model": profile["model"],
+                "name": name, "runtime_profile_name": name, "model": profile["model"],
                 "engine_options": options,
                 "prepared_capacity": 2 if kind == "initialized" else 1 if kind == "session-bound" else 0,
             }))
@@ -282,7 +282,7 @@ def test_initialized_inventory_binds_each_owner_before_native_input(e2e_client: 
         assert not psql_rows(f"SELECT input_id FROM session_inputs WHERE session_id={sql_literal(unauthorized)}")
 
         waiting = _wait_prepared(admin, normal["agent_id"], live_test_deadline)
-        data(admin.put(f"/api/v1/runtime-preparation-fixture/binding-policies/{environments[0]['name']}", json={**policy, "refuse_binding": True}))
+        data(admin.put(f"/api/v1/runtime-preparation-fixture/binding-policies/{runtime_profiles[0]['name']}", json={**policy, "refuse_binding": True}))
         refused = data(clients[0].post(f"/api/v1/agents/{normal['agent_id']}/conversations", json={}))['session_id']
         sessions.append(refused)
         release_session(refused)

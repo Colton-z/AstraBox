@@ -38,7 +38,7 @@ export interface AssistantRecord {
   icon: string | null;
   description: string | null;
   engine_kind: string;
-  environment_name: string;
+  runtime_profile_name: string;
   permission_mode_default: string;
   system?: string | null;
   timezone?: string | null;

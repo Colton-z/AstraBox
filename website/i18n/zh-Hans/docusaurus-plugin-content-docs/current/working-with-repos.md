@@ -63,11 +63,11 @@ Agent 的 `deploy_key_secret_name` 只保存逻辑名称。AstraBox 准备工作
 - **私有 HTTPS 仓库。**以 HTTPS URL 声明的 Plugin 或 Skill 仓库不会收到部署级
   Token。请使用分配给 Agent 的 `http_basic` 凭证，由沙箱出站代理在沙箱外添加。
   参见[使用 Vault 认证](credentials.md#2-add-a-credential)。
-- **受限 Environment 中的仓库主机。**只有公网地址，或 Environment 已列出的主机，
-  才会作为 Plugin 和 Skill 的 Git 主机加入受限 Environment 的放行列表。私有、
+- **受限 RuntimeProfile 中的仓库主机。**只有公网地址，或 RuntimeProfile 已列出的主机，
+  才会作为 Plugin 和 Skill 的 Git 主机加入受限 RuntimeProfile 的放行列表。私有、
   回环或链路本地地址，以及解析到这类地址或无法解析的名称，会以
   `AGENT_EGRESS_HOST_REFUSED`（403）拒绝。要使用内网 Git 服务器，请由管理员把它
-  的主机、IP 或 CIDR 加入 Environment 的放行主机。
+  的主机、IP 或 CIDR 加入 RuntimeProfile 的放行主机。
 
 ## 在 Agent 上配置 GitHub 仓库
 
@@ -155,7 +155,7 @@ Fine-grained PAT 可以限定到具体仓库。优先使用短期、单任务凭
 1. 不要把私钥或 Token 写入 Agent JSON、日志、截图或代码仓库。Agent 只保存逻辑 Secret 名称。
 2. 只有 Agent 必须推送时才授予 Deploy Key 写权限。发生意外泄露后立即吊销或轮换。
 3. 开发和生产使用不同凭证，让审计记录保持明确。
-4. Environment 使用受限网络时，只允许任务需要的 Git 地址。内置 SSH 克隆
+4. RuntimeProfile 使用受限网络时，只允许任务需要的 Git 地址。内置 SSH 克隆
    不会用 known-hosts 校验 Git 服务器提供的 Host Key，因此请使用可信网络
    路径和仓库级凭证。
 
@@ -215,7 +215,7 @@ A: 不会。除非 Agent 执行 `git push`，修改只存在于 Session 工作�
 
 **Q: GitHub Enterprise Server (GHES) 是否支持？**
 
-A: 使用沙箱能够访问的 SSH 仓库 URL 和该服务器认可的凭证。在 Environment 网络策略中允许对应 Host，并从生产沙箱网络验证 Git 和 API 访问。
+A: 使用沙箱能够访问的 SSH 仓库 URL 和该服务器认可的凭证。在 RuntimeProfile 网络策略中允许对应 Host，并从生产沙箱网络验证 Git 和 API 访问。
 
 ## 下一步
 

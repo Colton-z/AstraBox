@@ -144,7 +144,7 @@ class EngineStartupContext:
     model_credential: str
     resume_session_key: str | None
     runtime_env: dict[str, str] | None = None
-    #: Environment delivered through the engine's native activation contract.
+    #: RuntimeProfile delivered through the engine's native activation contract.
     session_env: dict[str, str] | None = field(default=None, repr=False)
     #: Host-side refresh a client runs before handing its runtime an input
     #: (protected MCP credentials rotated since the runtime started).

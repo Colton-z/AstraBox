@@ -23,8 +23,8 @@ import {
   getExtensionProvider,
   listAgentCategories,
   listAgentConnectors,
-  listAgentEnvironmentModels,
-  listAgentEnvironments,
+  listAgentRuntimeProfileModels,
+  listAgentRuntimeProfiles,
   listAgentTags,
   listAgents,
   listConnectors,
@@ -43,8 +43,8 @@ vi.mock('@/api', async (importOriginal) => ({
   getExtensionProvider: vi.fn(),
   listAgentCategories: vi.fn(),
   listAgentConnectors: vi.fn(),
-  listAgentEnvironmentModels: vi.fn(),
-  listAgentEnvironments: vi.fn(),
+  listAgentRuntimeProfileModels: vi.fn(),
+  listAgentRuntimeProfiles: vi.fn(),
   listAgentTags: vi.fn(),
   listAgents: vi.fn(),
   listConnectors: vi.fn(),
@@ -60,7 +60,7 @@ const SCHEMA: FormSchema = {
     { key: 'description', type: 'text', group: 'identity' },
     { key: 'model', type: 'string', group: 'model', required: true },
     { key: 'system', type: 'text', group: 'model' },
-    { key: 'environment_name', type: 'env_ref', group: 'runtime', required: true },
+    { key: 'runtime_profile_name', type: 'runtime_profile_ref', group: 'runtime', required: true },
     { key: 'prepared_capacity', type: 'integer', advanced: true, group: 'runtime', default: 0 },
   ],
 };
@@ -71,7 +71,7 @@ const RECORD: AgentConfig = {
   name: 'research',
   description: 'Reads filings.',
   model: 'claude-opus-4-8',
-  environment_name: 'claude-code',
+  runtime_profile_name: 'claude-code',
   prepared_capacity: 0,
   enabled: true,
   version: 3,
@@ -124,7 +124,7 @@ beforeEach(() => {
     allowed_user_ids: [],
   });
   vi.mocked(getAgentSchema).mockReset().mockResolvedValue(SCHEMA);
-  vi.mocked(listAgentEnvironments).mockReset().mockResolvedValue([
+  vi.mocked(listAgentRuntimeProfiles).mockReset().mockResolvedValue([
     {
       name: 'claude-code',
       enabled: true,
@@ -133,7 +133,7 @@ beforeEach(() => {
       supported_session_kinds: ['agent_chat'],
     },
   ]);
-  vi.mocked(listAgentEnvironmentModels).mockReset().mockResolvedValue(['claude-opus-4-8']);
+  vi.mocked(listAgentRuntimeProfileModels).mockReset().mockResolvedValue(['claude-opus-4-8']);
   vi.mocked(listAgentCategories).mockReset().mockResolvedValue([]);
   vi.mocked(listAgentTags).mockReset().mockResolvedValue([]);
   vi.mocked(getExtensionProvider).mockReset().mockResolvedValue(null);

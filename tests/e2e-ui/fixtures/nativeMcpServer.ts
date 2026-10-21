@@ -39,8 +39,8 @@ export interface NativeMcpScene {
   sessions: string[];
   /** Throwaway Agents deleted on pass only. */
   agents: string[];
-  /** Test-owned Environments, disabled on pass: Environments have no DELETE route. */
-  environments: Array<Record<string, unknown>>;
+  /** Test-owned RuntimeProfiles, disabled on pass: RuntimeProfiles have no DELETE route. */
+  runtime_profiles: Array<Record<string, unknown>>;
   serverSession: string;
   clientSession: string;
   serverLog: string;
@@ -156,14 +156,14 @@ export async function serverLog(api: AstraApi, scene: NativeMcpScene): Promise<R
  */
 export function trackNativeMcpScene(evidenceName: string): NativeMcpScene {
   const scene: NativeMcpScene = {
-    sessions: trackSessions(), agents: [], environments: [], serverSession: '', clientSession: '', serverLog: '',
+    sessions: trackSessions(), agents: [], runtime_profiles: [], serverSession: '', clientSession: '', serverLog: '',
     serverUrl: '', relayErrors: [],
   };
   onPassOnly(async ({ request }) => {
     const api = new AstraApi(request);
     for (const id of scene.agents) await api.deleteAgent(id);
-    for (const environment of scene.environments) {
-      await api.data('PUT', `/admin/environments/${encodeURIComponent(String(environment.name))}`, {
+    for (const environment of scene.runtime_profiles) {
+      await api.data('PUT', `/admin/runtime-profiles/${encodeURIComponent(String(environment.name))}`, {
         ...environment, enabled: false,
       });
     }
@@ -255,18 +255,18 @@ export async function startNativeMcpServer(
 }
 
 /**
- * Create the client Agent on a test-owned copy of an Environment, then open
+ * Create the client Agent on a test-owned copy of a RuntimeProfile, then open
  * its conversation. The default is the deployed Claude Code extension
- * Environment; a case on another engine names that engine's Environment and
+ * RuntimeProfile; a case on another engine names that engine's RuntimeProfile and
  * model. Only the schema-required identity fields, the version and the given
  * configuration are sent; `engine_options` is sent only when a case supplies
  * vendor env, so a case without one adds no inert knob.
  *
- * An Agent's own MCP server joins a limited Environment's egress only when the
- * Environment admits MCP servers and names its host, and the listener's
+ * An Agent's own MCP server joins a limited RuntimeProfile's egress only when the
+ * RuntimeProfile admits MCP servers and names its host, and the listener's
  * exposed address is on the deployment's own network. An administrator
  * therefore turns on `allow_mcp_servers` and names that exact host, in a copy
- * of the Environment so the shared one keeps its policy.
+ * of the RuntimeProfile so the shared one keeps its policy.
  */
 export async function configureNativeMcpClientAgent(
   api: AstraApi,
@@ -278,12 +278,12 @@ export async function configureNativeMcpClientAgent(
   },
 ): Promise<AgentRecord> {
   expect(scene.serverUrl, 'the server must be running before the client Agent is configured').not.toEqual('');
-  const environmentName = options.environment?.name
+  const runtimeProfileName = options.environment?.name
     ?? String(process.env.ASTRABOX_E2E_PREWARM_SHARED_ENVIRONMENT || '').trim();
-  expect(environmentName, 'the MCP client requires an Environment').not.toEqual('');
-  const environments = await api.data<Array<Record<string, unknown>>>('GET', '/admin/environments');
-  const environment = environments.find((row) => row.name === environmentName);
-  expect(environment, `MCP client Environment ${environmentName}`).toMatchObject({
+  expect(runtimeProfileName, 'the MCP client requires a RuntimeProfile').not.toEqual('');
+  const runtime_profiles = await api.data<Array<Record<string, unknown>>>('GET', '/admin/runtime-profiles');
+  const environment = runtime_profiles.find((row) => row.name === runtimeProfileName);
+  expect(environment, `MCP client RuntimeProfile ${runtimeProfileName}`).toMatchObject({
     enabled: true, engine_kind: options.environment?.engineKind ?? 'claude_code',
     networking: { type: 'limited' },
   });
@@ -291,19 +291,19 @@ export async function configureNativeMcpClientAgent(
   const clientEnvironment = await copyEnvironment(api, environment!, clientEnvironmentName, {
     hosts: [new URL(scene.serverUrl).hostname], allowMcpServers: true,
   });
-  scene.environments.push(clientEnvironment);
+  scene.runtime_profiles.push(clientEnvironment);
   const clientAgent = await api.createAgent({
     name: `__e2e_mcp_${options.label}_${options.runId}`,
     model: options.environment?.model
-      ?? await api.configuredAgentModel((await api.defaultAgent()).name, environmentName),
-    environment_name: clientEnvironmentName,
+      ?? await api.configuredAgentModel((await api.defaultAgent()).name, runtimeProfileName),
+    runtime_profile_name: clientEnvironmentName,
     prepared_capacity: 0,
   });
   scene.agents.push(clientAgent.agent_id);
   const configured = await api.updateAgent(clientAgent.agent_id, {
     name: clientAgent.name,
     model: clientAgent.model,
-    environment_name: clientAgent.environment_name,
+    runtime_profile_name: clientAgent.runtime_profile_name,
     version: clientAgent.version,
     ...(options.env ? { engine_options: { sdk_options: { env: options.env } } } : {}),
     mcp_servers: { [options.server]: {

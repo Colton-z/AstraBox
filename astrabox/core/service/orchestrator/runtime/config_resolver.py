@@ -8,8 +8,8 @@ from urllib.parse import parse_qs, urlparse
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
-from astrabox.core.service.orchestrator.environment_networking import (
-    parse_environment_networking,
+from astrabox.core.service.orchestrator.runtime_profile_networking import (
+    parse_runtime_profile_networking,
 )
 from astrabox.seams.sandbox import (
     SANDBOX_NETWORK_LIMITED,
@@ -70,7 +70,7 @@ def resolve_runtime_template_name(template: AgentView) -> str:
         raise APIError(
             code="ENGINE_RUNTIME_IMAGE_REQUIRED",
             message=(
-                "an unpinned Environment cannot resolve a runtime image without "
+                "an unpinned RuntimeProfile cannot resolve a runtime image without "
                 "an engine_kind"
             ),
             status_code=409,
@@ -87,7 +87,7 @@ def resolve_runtime_template_name(template: AgentView) -> str:
             code="ENGINE_RUNTIME_IMAGE_REQUIRED",
             message=(
                 f"engine {engine_kind!r} has no default runtime image; set the "
-                "Environment's runtime_template_name"
+                "RuntimeProfile's runtime_template_name"
             ),
             status_code=409,
         )
@@ -195,12 +195,12 @@ def resolve_network_policy(
     required_hosts: Iterable[str] = (),
     mcp_hosts: Iterable[str] = (),
 ) -> SandboxNetworkPolicy:
-    """Resolve Environment networking into the provider-neutral sandbox seam.
+    """Resolve RuntimeProfile networking into the provider-neutral sandbox seam.
 
     ``required_hosts`` are runtime destinations AstraBox can derive without
     inspecting a credential: the model endpoint, Plugin Git origins, and other
     platform-owned connections. ``mcp_hosts`` are the Agent's explicit remote
-    MCP endpoints and are admitted only when the limited Environment opted into
+    MCP endpoints and are admitted only when the limited RuntimeProfile opted into
     them. Vault binding hosts never enter either list: the provider receives the
     separate credential plan and admits only the destinations that assignment
     authorizes.
@@ -208,17 +208,17 @@ def resolve_network_policy(
     Hosts that come from the Agent's or Assistant's own Skills, Plugins and MCP
     servers, rather than from a catalog assignment, are admitted only within
     what an administrator made available (see ``author_boundary``). This runs
-    again here, not only when the fields were saved, because the Environment
+    again here, not only when the fields were saved, because the RuntimeProfile
     may have changed since. Host names were resolved when the fields were
     saved; here only literal IPs are judged, so this adds no lookup to startup.
     """
 
     try:
-        networking = parse_environment_networking(template.networking)
+        networking = parse_runtime_profile_networking(template.networking)
     except ValueError as exc:
         raise APIError(
             code="AGENT_RUNTIME_ERROR",
-            message=f"Environment networking is invalid: {exc}",
+            message=f"RuntimeProfile networking is invalid: {exc}",
             status_code=500,
         ) from exc
 
@@ -241,7 +241,7 @@ def resolve_network_policy(
             code="AGENT_MCP_NETWORK_ACCESS_DISABLED",
             message=(
                 "this Agent declares remote MCP endpoints, but its limited "
-                "Environment has networking.allow_mcp_servers=false; enable "
+                "RuntimeProfile has networking.allow_mcp_servers=false; enable "
                 "that setting or remove the remote MCP servers. Hosts: "
                 + ", ".join(sorted(set(explicit_mcp_hosts)))
             ),
@@ -407,7 +407,7 @@ class RuntimeConfigResolver:
     def resolve_model_access(
         self, model_config: dict[str, Any]
     ) -> ResolvedModelAccess:
-        """Resolve one Environment's model access without engine wire names."""
+        """Resolve one RuntimeProfile's model access without engine wire names."""
 
         payload, endpoint_provider, endpoint = self._resolve_model_configuration(
             model_config

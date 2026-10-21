@@ -32,13 +32,13 @@ lists it at the top of the left rail. Creating it writes only the record: the
 workspace is prepared when its first conversation starts. A user whose
 Assistants predate this has their earliest one marked primary instead.
 
-The primary Assistant needs an **Environment**: the saved runtime setup that
+The primary Assistant needs an **RuntimeProfile**: the saved runtime setup that
 selects the Agent program, sandbox settings, model connection, and network
 access. AstraBox uses the one the Assistant defaults name or, when they name
-none, the only enabled Environment whose Agent program supports Assistants.
-With several such Environments and no choice in the defaults, or with none,
+none, the only enabled RuntimeProfile whose Agent program supports Assistants.
+With several such RuntimeProfiles and no choice in the defaults, or with none,
 users get no Assistant and the rail shows no Assistants section; an
-administrator sets the Environment in the Assistant defaults.
+administrator sets the RuntimeProfile in the Assistant defaults.
 
 Creating it does not require permission to author Agents and Assistants, so a
 deployment that reserves authoring to administrators still gives every user
@@ -49,13 +49,13 @@ Assistant.
 
 1. Select **+** beside **Assistants** in the rail, or open
    **Management console → Assistants** and select **New assistant**.
-2. Enter a name and select an **Environment**.
+2. Enter a name and select an **RuntimeProfile**.
 3. Optionally add a description and a [system prompt](#system-prompt), and
    choose the default [permission mode](permission-modes.md). The
    [timezone](#timezone) starts as the browser's.
 4. Select **Create**.
 
-The signed-in user becomes the owner. The Environment also determines the Agent
+The signed-in user becomes the owner. The RuntimeProfile also determines the Agent
 program, and the console keeps both fixed after creation. The name, description,
 icon, timezone, system prompt, and default permission mode remain editable.
 
@@ -66,7 +66,7 @@ owner. Administrators set what every Assistant inherits in
 **Management console → Assistant defaults** (or `/api/v1/admin/assistant-defaults`
 and its `/extensions`):
 
-- the **Environment** new primary Assistants are created in, or automatic;
+- the **RuntimeProfile** new primary Assistants are created in, or automatic;
 - the **model** Assistants use unless their own setting names one;
 - **organization instructions**, given to every Assistant before its owner's
   own [system prompt](#system-prompt);
@@ -78,8 +78,8 @@ and its `/extensions`):
   the defaults release it.
 
 They are checked the way an Assistant's own fields are, against what the
-chosen Environment's Agent program reads and may reach, so the extension
-fields wait until an Environment is chosen. Assistants read the defaults
+chosen RuntimeProfile's Agent program reads and may reach, so the extension
+fields wait until a RuntimeProfile is chosen. Assistants read the defaults
 together with their own settings, so a change takes effect as described in
 [When a change takes effect](#when-a-change-takes-effect).
 
@@ -87,7 +87,7 @@ How they combine with an Assistant's own settings: instructions come first,
 then the owner's; Skills, packages, and Vaults add up; MCP servers add up, and
 an Assistant may not name one of its own like an inherited one; an
 Agent-program configuration block the Assistant sets replaces the inherited
-block of the same name. An Environment the defaults name cannot be deleted
+block of the same name. A RuntimeProfile the defaults name cannot be deleted
 until the defaults point elsewhere.
 
 The owner sees what is inherited in the Assistant's profile and on its first
@@ -126,7 +126,7 @@ Hermes uses the sandbox's clock, which is UTC.
 
 An Assistant can add to its Agent program what that program accepts. The
 Assistant's record page shows a **Skills, plugins and configuration** card with
-the fields the Environment's program declares; the API takes the same fields as
+the fields the RuntimeProfile's program declares; the API takes the same fields as
 an [Agent](authoring-agents.md): `skills`, `mcp_servers`, `packages` and
 `engine_options`. When the deployment runs an
 [extension catalog](adding-tools.md#extension-catalog), the same card also
@@ -198,7 +198,7 @@ a reply is in progress, that reply ends with an error saying the backend lost
 it, and the conversation accepts the next message.
 
 A conversation that cannot be prepared ends and shows why, for example when
-the Assistant names an MCP server but its Environment does not allow MCP
+the Assistant names an MCP server but its RuntimeProfile does not allow MCP
 servers. Fix the cause, then start a new conversation.
 
 ## Start and continue work
@@ -295,7 +295,7 @@ the vendor with it. An agent reaches a connector only through the AstraBox
 server, which relays each call to the hub as the person the conversation acts
 for: an Assistant's owner, or whoever started the Agent conversation. No token
 and not the hub's address enters a sandbox, so a connector needs no MCP network
-access in the Environment. A connection belongs to the account that made it;
+access in the RuntimeProfile. A connection belongs to the account that made it;
 each Assistant and Agent uses only the connectors turned on for it. When an
 agent needs an app the person has not connected, it can show them a card to
 connect it in the conversation. Turning a connector on or off restarts the
@@ -427,7 +427,7 @@ request conventions.
 
 ## Related guides
 
-- [Environments](environments.md)
+- [RuntimeProfiles](runtime-profiles.md)
 - [Sessions](sessions.md)
 - [Messaging channels](channels.md)
 - [Schedules](schedules.md)

@@ -1,5 +1,5 @@
-// Shared read helpers for the management-side Environment (runtime preset) pages.
-import type { EnvironmentConfig } from '@/types';
+// Shared read helpers for the management-side RuntimeProfile (runtime preset) pages.
+import type { RuntimeProfileConfig } from '@/types';
 
 // Reuse the agent-side date/empty helpers verbatim — same semantics.
 export { formatDateTime, isEmptyValue } from './agentConfig';
@@ -8,7 +8,7 @@ function asString(v: unknown): string {
   return typeof v === 'string' ? v : '';
 }
 
-export function envDisplayName(e: EnvironmentConfig): string {
+export function runtimeProfileDisplayName(e: RuntimeProfileConfig): string {
   const dn = asString(e.display_name).trim();
   return dn || e.name;
 }
@@ -34,22 +34,22 @@ export function engineKindLabel(value: unknown): string {
 
 // An environment may carry its own product name in display_name; this column
 // shows the underlying engine archetype instead.
-export function envEngineLabel(e: EnvironmentConfig): string {
+export function envEngineLabel(e: RuntimeProfileConfig): string {
   return engineKindLabel(e.engine_kind);
 }
 
-export function envSandbox(e: EnvironmentConfig): string {
+export function envSandbox(e: RuntimeProfileConfig): string {
   const value = asString(e.sandbox_backend).trim() || 'open_sandbox';
   return value === 'open_sandbox' ? 'OpenSandbox' : engineKindLabel(value);
 }
 
-export function envUpdatedAt(e: EnvironmentConfig): string {
+export function envUpdatedAt(e: RuntimeProfileConfig): string {
   return asString(e.updated_at);
 }
 
 // Blank starting draft for the create flow. engine_kind is required, so seed a
 // sensible default the admin can change.
-export function buildEnvironmentDraft(): EnvironmentConfig {
+export function buildRuntimeProfileDraft(): RuntimeProfileConfig {
   return {
     name: '',
     enabled: true,

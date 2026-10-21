@@ -9,7 +9,7 @@ AstraBox 是开源、自托管的 Agent 运行平台，可将已安装的 Agent 
 | 概念              | 说明                         | 类比          |
 | --------------- | -------------------------- | ----------- |
 | **Agent**       | 由已安装 Agent 程序驱动的云端 Agent       | "云端同事"      |
-| **Environment** | Session 的运行环境，包含 Agent 程序、沙箱、模型连接和网络配置 | "办公桌和工具箱" |
+| **RuntimeProfile** | Session 的运行配置，包含 Agent 程序、沙箱、模型连接和网络配置 | "办公桌和工具箱" |
 | **Session**     | Agent 的一次有状态运行，包含消息、Event 和当前状态 | "一项具体工作" |
 | **Event**       | Session 中产生的实时事件流          | "工作进度实时播报"  |
 
@@ -18,7 +18,7 @@ AstraBox 是开源、自托管的 Agent 运行平台，可将已安装的 Agent 
 ## 工作流程
 
 1. **定义 Agent。** 指定模型、系统提示词（system prompt）和扩展。
-2. **配置 Environment。** 选择 Agent 程序、沙箱、模型连接和网络配置。
+2. **配置 RuntimeProfile。** 选择 Agent 程序、沙箱、模型连接和网络配置。
 3. **启动 Session。** 使用 Agent 创建运行实例。
 4. **发消息 + 收事件。** 向 Session 发送消息，然后通过 HTTP 实时接收 Agent 消息、执行进度和状态变更。
 
@@ -34,7 +34,7 @@ AstraBox 是开源、自托管的 Agent 运行平台，可将已安装的 Agent 
 
 ## 管理与扩展 AstraBox
 
-- **命令行与 MCP。** [AstraBox CLI](cli/overview.md) 在 `astrabox.yaml` 中声明 Environment 和 Agent，应用修改，并给 Agent 发送任务。命令结果可以输出为 JSON，每类失败都有各自的退出码，因此脚本和编程助手可以用它管理部署；`astrabox mcp serve` 还把同样的操作提供为 MCP 工具。
+- **命令行与 MCP。** [AstraBox CLI](cli/overview.md) 在 `astrabox.yaml` 中声明 RuntimeProfile 和 Agent，应用修改，并给 Agent 发送任务。命令结果可以输出为 JSON，每类失败都有各自的退出码，因此脚本和编程助手可以用它管理部署；`astrabox mcp serve` 还把同样的操作提供为 MCP 工具。
 - **Python 插件。** 安装的 Python 包可以接入 Agent 程序、沙箱后端、模型服务、消息平台、身份提供方、Secret Store、工作区存储、调度器和远程 MCP 服务来源。详见[扩展接口](architecture.md#plugin-interfaces)。
 
 ## 快速验证连通性
@@ -89,11 +89,11 @@ A: 同一个 Agent 可以同时运行多个活跃 Session，实际数量取决�
 
 **Q: 数据安全如何保障？**
 
-A: 默认情况下，每个 Session 运行在隔离沙箱中；Environment 也可以使用平台支持的 Agent 共享沙箱。Session 记录保存在沙箱之外；工作区生命周期取决于 Environment 的空闲处理方式和存储配置。
+A: 默认情况下，每个 Session 运行在隔离沙箱中；RuntimeProfile 也可以使用平台支持的 Agent 共享沙箱。Session 记录保存在沙箱之外；工作区生命周期取决于 RuntimeProfile 的空闲处理方式和存储配置。
 
 ## 下一步
 
 - [快速开始](quickstart.md) — 运行第一个 Agent
 - [定义 Agent](authoring-agents.md) — 深入了解 Agent 配置
-- [Environment](environments.md) — 配置运行环境
+- [RuntimeProfile](runtime-profiles.md) — 配置运行配置
 - [Session](sessions.md) — 管理 Session 生命周期

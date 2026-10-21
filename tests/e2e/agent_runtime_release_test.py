@@ -21,11 +21,11 @@ pytestmark = [pytest.mark.e2e, pytest.mark.deployment_shape]
 def test_deleted_agent_conversation_stops_holding_its_environment(e2e_client: httpx.Client) -> None:
     client = e2e_client
     environment = os.environ["ASTRABOX_E2E_ASSISTANT_ENVIRONMENT"]
-    assert environment.startswith("agent-release-"), "use this case's isolated Environment"
-    environments = data(client.get("/api/v1/admin/environments"))
-    assert [row["engine_kind"] for row in environments if row["name"] == environment] == ["claude_code"]
+    assert environment.startswith("agent-release-"), "use this case's isolated RuntimeProfile"
+    runtime_profiles = data(client.get("/api/v1/admin/runtime-profiles"))
+    assert [row["engine_kind"] for row in runtime_profiles if row["name"] == environment] == ["claude_code"]
     agent = data(client.post("/api/v1/agents", json={
-        "name": f"Agent release {uuid.uuid4().hex[:8]}", "environment_name": environment,
+        "name": f"Agent release {uuid.uuid4().hex[:8]}", "runtime_profile_name": environment,
         "model": os.environ["ASTRABOX_E2E_ASSISTANT_MODEL"], "prepared_capacity": 0,
     }))["agent_id"]
     sid = data(client.post(f"/api/v1/agents/{agent}/conversations", json={}))['session_id']
@@ -49,8 +49,8 @@ def test_deleted_agent_conversation_stops_holding_its_environment(e2e_client: ht
         kubeconfig=kubeconfig, namespace=namespace,
     )
     assert not durable_mounts_of_sandbox(pod=pod, kubeconfig=kubeconfig, namespace=namespace)
-    refused = client.delete(f"/api/v1/admin/environments/{environment}")
-    assert refused.status_code == 409 and refused.json()["code"] == "ENVIRONMENT_IN_USE"
+    refused = client.delete(f"/api/v1/admin/runtime-profiles/{environment}")
+    assert refused.status_code == 409 and refused.json()["code"] == "RUNTIME_PROFILE_IN_USE"
 
     data(client.post(f"/api/v1/sessions/{sid}/permission-mode",
                      json={"permission_mode": "bypassPermissions"}))
@@ -110,7 +110,7 @@ def test_deleted_agent_conversation_stops_holding_its_environment(e2e_client: ht
                     f"--timeout={deletion_timeout}s"], check=True, timeout=deletion_timeout + 5)
     native_after = {(r["scope_id"], r["seq"]): r for r in psql_rows(native_sql)}
     assert all(native_after[(r["scope_id"], r["seq"])] == r for r in native_before)
-    assert data(client.delete(f"/api/v1/admin/environments/{environment}")) == {
+    assert data(client.delete(f"/api/v1/admin/runtime-profiles/{environment}")) == {
         "name": environment, "deleted": True,
     }
     assert psql_rows(audit_sql) == audit_before

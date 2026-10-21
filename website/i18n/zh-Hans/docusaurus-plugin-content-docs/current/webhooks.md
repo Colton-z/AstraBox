@@ -43,7 +43,7 @@ Agent 收到的消息中，请求 payload 位于该前缀之后，中间以一�
 
 ### 独立 Session
 
-每个已接收的 Webhook 请求都会创建新的 Session，拥有独立的对话历史和工作区。是否共享沙箱由 Environment 的租用模式决定。使用响应中的 `session_id` 查看本次调用。
+每个已接收的 Webhook 请求都会创建新的 Session，拥有独立的对话历史和工作区。是否共享沙箱由 RuntimeProfile 的租用模式决定。使用响应中的 `session_id` 查看本次调用。
 
 ---
 

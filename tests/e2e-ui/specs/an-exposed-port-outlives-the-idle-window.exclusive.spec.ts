@@ -162,7 +162,7 @@ let parkingEnvironment = '';
 let parkingEnvironmentPayload: Record<string, unknown> = {};
 
 // Registration order is teardown order: the session goes first (trackSessions),
-// then its Agent, then the Environment nothing references any more.
+// then its Agent, then the RuntimeProfile nothing references any more.
 onPassOnly(async ({ request }) => {
   if (agentId) await new AstraApi(request).deleteAgent(agentId);
 });
@@ -185,21 +185,21 @@ test('an exposed port outlives the idle window the user spent browsing it', asyn
   const marker = `EXPOSED_PORT_IDLE_E2E_${runId}`;
 
   // ── A deployment that parks idle boxes ───────────────────────────────────
-  // Cloned from the deployment's own conversation-tenancy cold Environment so
+  // Cloned from the deployment's own conversation-tenancy cold RuntimeProfile so
   // the box belongs to this conversation alone — which is what the keeper
   // requires before it will park anything (`_box_is_this_session_s_alone`).
   const sourceName = String(process.env.ASTRABOX_E2E_CREDENTIAL_COLD_ENVIRONMENT || '').trim();
   expect(
     sourceName,
-    'this journey needs the deployment-provisioned conversation-tenancy Environment; '
+    'this journey needs the deployment-provisioned conversation-tenancy RuntimeProfile; '
       + 'set ASTRABOX_E2E_CREDENTIAL_COLD_ENVIRONMENT',
   ).not.toEqual('');
-  const environments = await platform.listEnvironments();
-  const source = environments.find((item) => String(item.name || '') === sourceName);
+  const runtime_profiles = await platform.listEnvironments();
+  const source = runtime_profiles.find((item) => String(item.name || '') === sourceName);
   expect(
     source,
-    `Environment ${JSON.stringify(sourceName)} is not on this deployment; have: `
-      + environments.map((item) => String(item.name || '')).join(', '),
+    `RuntimeProfile ${JSON.stringify(sourceName)} is not on this deployment; have: `
+      + runtime_profiles.map((item) => String(item.name || '')).join(', '),
   ).toBeTruthy();
 
   // Project through the product's own schema rather than a list kept here: a
@@ -214,16 +214,16 @@ test('an exposed port outlives the idle window the user spent browsing it', asyn
   if (access && typeof access === 'object') {
     expect(
       String((access as Record<string, unknown>).api_key || ''),
-      'the source Environment stores a model key that a clone cannot carry — the server '
+      'the source RuntimeProfile stores a model key that a clone cannot carry — the server '
         + 'returns it masked and a clone under a new name would store nothing. Point this '
-        + 'spec at an Environment using deployment model access.',
+        + 'spec at a RuntimeProfile using deployment model access.',
     ).not.toEqual(ENV_API_KEY_SENTINEL);
   }
 
-  // Environments are named as lowercase dashed resources and the name reaches a
+  // RuntimeProfiles are named as lowercase dashed resources and the name reaches a
   // URL path, so the `__e2e_` spelling that marks throwaway Agents is not used
   // here. Stable rather than run-scoped, and derived from the source so two
-  // source Environments cannot collide: `admin.py` offers environments GET and
+  // source RuntimeProfiles cannot collide: `admin.py` offers runtime_profiles GET and
   // PUT and no DELETE, so a run-scoped name would leave one undeletable row per
   // run on the deployment. A rerun upserts this one instead.
   parkingEnvironment = `astrabox-e2e-tmp-idle-port-${sourceName}`;
@@ -244,7 +244,7 @@ test('an exposed port outlives the idle window the user spent browsing it', asyn
   } catch (error) {
     parkingEnvironment = '';
     throw new Error(
-      'this deployment refused an Environment that parks idle boxes, so it has no '
+      'this deployment refused a RuntimeProfile that parks idle boxes, so it has no '
         + 'configuration in which this journey can fail or pass. Under idle_action '
         + '"terminate" the keeper leaves every box alone and the box instead dies at its '
         + `lease, which no 180s spec can reach.\n${error instanceof Error ? error.message : String(error)}`,
@@ -252,7 +252,7 @@ test('an exposed port outlives the idle window the user spent browsing it', asyn
   }
   expect(
     String(stored.idle_action || ''),
-    'the stored Environment must be the one the keeper will read',
+    'the stored RuntimeProfile must be the one the keeper will read',
   ).toEqual('pause');
 
   // ── An Agent that may sit quiet for exactly twenty minutes ───────────────
@@ -262,13 +262,13 @@ test('an exposed port outlives the idle window the user spent browsing it', asyn
   const models = await api.listEnvironmentModels(parkingEnvironment);
   expect(
     models,
-    `the parking Environment must expose the deployment-proven model ${JSON.stringify(model)}`,
+    `the parking RuntimeProfile must expose the deployment-proven model ${JSON.stringify(model)}`,
   ).toContain(model);
 
   const agent = await api.createAgent({
     name: `__e2e_idle_port_${runId}`,
     model,
-    environment_name: parkingEnvironment,
+    runtime_profile_name: parkingEnvironment,
     prepared_capacity: 0,
     idle_hibernate_seconds: IDLE_WINDOW_SECONDS,
   });
@@ -378,7 +378,7 @@ test('an exposed port outlives the idle window the user spent browsing it', asyn
     'the keeper must have reached this conversation: the tick either listed it as an idle '
       + 'candidate, or a tick that already ran parked it (which removes the row from the '
       + `candidate query). Neither happened — sweep=${JSON.stringify(sweep)}. Check that the `
-      + `Environment stored idle_action "pause" and that session ${sessionId} still holds a `
+      + `RuntimeProfile stored idle_action "pause" and that session ${sessionId} still holds a `
       + 'live, unparked lease.',
   ).toBe(true);
 

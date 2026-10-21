@@ -23,10 +23,10 @@ AstraBox 将 Agent 程序运行成 7×24 小时在线的云端 Agent。Agent 程
 
 | 维度 | 适配器 | 沙箱镜像 |
 | --- | --- | --- |
-| 用途 | 将 Agent 程序的协议接入 AstraBox | 提供 Agent 程序的运行环境 |
+| 用途 | 将 Agent 程序的协议接入 AstraBox | 提供 Agent 程序的运行配置 |
 | 负责内容 | 协议请求、原生事件、对话标识、恢复游标和重新连接 | 可执行程序、系统依赖、运行账户、启动命令和常驻服务 |
 | 何时修改 | Agent 程序的协议或支持能力发生变化 | 运行依赖或操作系统要求发生变化 |
-| 加载方式 | Python 入口点 `astrabox.providers.engine` | Environment 中配置的运行镜像 |
+| 加载方式 | Python 入口点 `astrabox.providers.engine` | RuntimeProfile 中配置的运行镜像 |
 | 验证方式 | 适配器和运行时客户端一致性测试，以及真实对话 | 在真实沙箱中启动并完成对话 |
 
 接入新的 Agent 程序时，两部分都需要完成。只有适配器，无法启动 Agent 程序；只有镜像，也无法接入 AstraBox 的对话生命周期。
@@ -57,19 +57,19 @@ Agent 程序已有的名称和值应保持不变。例如，它的 API 将某项
 - `supported_session_kinds`，即它驱动的 AstraBox Session 类型（`agent_chat`、`assistant_chat`）；
 - 引擎的 workload 信息（`EngineWorkloadDeclaration`），包括配置目录名称、指向该目录的环境变量，以及引擎自身执行路径在镜像中需要的命令；
 - 对话的放置方式：引擎进程以对话自己的账户运行时为 `per_conversation_account`，集成仍驱动单个沙箱级服务时为 `box_account`；
-- `default_runtime_image`，供 Environment 省略镜像时使用；
+- `default_runtime_image`，供 RuntimeProfile 省略镜像时使用；
 - `permission_modes` 和 `permission_mode_defaults`，使用引擎自己的名称；
-- `extensions`（`EngineExtensions`）：它接受的 Agent 作者 MCP 传输方式、它发现 Skill 的位置、它的原生包类型、它的原生配置文档（对象块，其中 `protected_keys` 列出由平台管理的顶层字段），以及它是否把遥测数据发送到 Environment 的链路追踪端点；
+- `extensions`（`EngineExtensions`）：它接受的 Agent 作者 MCP 传输方式、它发现 Skill 的位置、它的原生包类型、它的原生配置文档（对象块，其中 `protected_keys` 列出由平台管理的顶层字段），以及它是否把遥测数据发送到 RuntimeProfile 的链路追踪端点；
 - 当 AstraBox 需要在可替换沙箱外保存不透明的对话文件时使用的 `session_log`；
-- `requires_process_sessions`：在对话独占的沙箱里，引擎作为沙箱的长驻进程运行、通过其 stdin 和 stdout 驱动（`SandboxHandle.processes`）时声明；这种情况下，把该引擎与 conversation tenancy（每段对话使用独立沙箱）搭配的 Environment，在未声明 `supports_process_sessions` 的沙箱后端上会被拒绝。
+- `requires_process_sessions`：在对话独占的沙箱里，引擎作为沙箱的长驻进程运行、通过其 stdin 和 stdout 驱动（`SandboxHandle.processes`）时声明；这种情况下，把该引擎与 conversation tenancy（每段对话使用独立沙箱）搭配的 RuntimeProfile，在未声明 `supports_process_sessions` 的沙箱后端上会被拒绝。
 
-系统会在注册时校验这些声明。保存 Agent 时，适配器的 `extensions` 不接受的已配置值会被拒绝，不会保存成不生效的设置。链路追踪在保存 Environment 时校验：启用时要求适配器声明支持。切换到不支持该能力的适配器时，可以保留有效但已停用的链路追踪配置。
+系统会在注册时校验这些声明。保存 Agent 时，适配器的 `extensions` 不接受的已配置值会被拒绝，不会保存成不生效的设置。链路追踪在保存 RuntimeProfile 时校验：启用时要求适配器声明支持。切换到不支持该能力的适配器时，可以保留有效但已停用的链路追踪配置。
 
 通过 `engine_client_type` 声明运行时客户端类。注册时会先检查这个类是否实现了完整的运行时接口约定，之后引擎才会出现在产品的任何可选列表中。
 
 ### 在沙箱中放置对话
 
-沙箱共用方式不属于上述声明。一个沙箱承载多少段对话由 Environment 选择；由此确定的运行身份（账户命名、home 位置和组装账户的命令）由平台按 `(sandbox_tenancy, session_kind)`，使用适用于所有引擎的同一组规则生成。共享方式要求沙箱支持隔离会话，且适配器声明 `per_conversation_account`。如果引擎需要在该隔离会话内运行服务，请实现 `shared_conversation_service_launch()`。它必须在后台启动镜像中已安装的服务；平台会等待声明的端口就绪，再激活运行时。
+沙箱共用方式不属于上述声明。一个沙箱承载多少段对话由 RuntimeProfile 选择；由此确定的运行身份（账户命名、home 位置和组装账户的命令）由平台按 `(sandbox_tenancy, session_kind)`，使用适用于所有引擎的同一组规则生成。共享方式要求沙箱支持隔离会话，且适配器声明 `per_conversation_account`。如果引擎需要在该隔离会话内运行服务，请实现 `shared_conversation_service_launch()`。它必须在后台启动镜像中已安装的服务；平台会等待声明的端口就绪，再激活运行时。
 
 发布经过校验的文本文件时，使用 `runtime/sandbox_script_writer.py` 中的 `install_verified_text_script`，并传入上下文的 `runtime_identity` 和运行时可见的路径。无论冷启动还是预热放置，平台都会在写入前把工作区路径映射到实际存储位置。不要在适配器中转换工作区路径。身份为 `None` 表示明确写入沙箱文件系统；提供的身份不完整时，会在任何写入之前被拒绝。
 
@@ -264,4 +264,4 @@ example = "example_package.adapter:ExampleAdapter"
 
 - [系统架构](./architecture.md) — AstraBox 的职责与扩展接口
 - [OpenSandbox Provider](./providers/opensandbox.md) — 沙箱生命周期与运行行为
-- [Environment](./environments.md) — 镜像、资源和网络访问
+- [RuntimeProfile](./runtime-profiles.md) — 镜像、资源和网络访问

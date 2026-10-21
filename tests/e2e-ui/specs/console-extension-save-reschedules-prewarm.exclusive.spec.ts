@@ -76,7 +76,7 @@ function preparedSlot(agentId: string, pool: PoolStatus): Record<string, unknown
 function requiredConfiguration(): void {
   expect(
     SHARED_ENVIRONMENT,
-    'ASTRABOX_E2E_PREWARM_SHARED_ENVIRONMENT must name the deployed prewarm Environment',
+    'ASTRABOX_E2E_PREWARM_SHARED_ENVIRONMENT must name the deployed prewarm RuntimeProfile',
   ).not.toEqual('');
   expect(
     RESEARCH_AGENT,
@@ -84,8 +84,8 @@ function requiredConfiguration(): void {
   ).not.toEqual('');
 }
 
-async function concreteModel(api: AstraApi, environmentName: string): Promise<string> {
-  return api.configuredAgentModel(RESEARCH_AGENT, environmentName);
+async function concreteModel(api: AstraApi, runtimeProfileName: string): Promise<string> {
+  return api.configuredAgentModel(RESEARCH_AGENT, runtimeProfileName);
 }
 
 async function waitForReadyPool(
@@ -135,7 +135,7 @@ async function createPrewarmAgent(api: AstraApi, name: string): Promise<string> 
   const agent = await api.createAgent({
     name,
     model: await concreteModel(api, SHARED_ENVIRONMENT),
-    environment_name: SHARED_ENVIRONMENT,
+    runtime_profile_name: SHARED_ENVIRONMENT,
     prepared_capacity: 1,
   });
   const agentId = String(agent.agent_id || '').trim();

@@ -23,9 +23,9 @@
     "message": "模型",
     "description": "The label of footer link with label=Models linking to /docs/models"
   },
-  "link.item.label.Environments": {
-    "message": "Environment",
-    "description": "The label of footer link with label=Environments linking to /docs/environments"
+  "link.item.label.Runtime profiles": {
+    "message": "运行配置",
+    "description": "The label of footer link with label=Runtime profiles linking to /docs/runtime-profiles"
   },
   "link.item.label.GitHub": {
     "message": "GitHub",

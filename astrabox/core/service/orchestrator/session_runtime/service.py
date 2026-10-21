@@ -22,7 +22,7 @@ from astrabox.core.service.orchestrator.engine.interaction_contract import (
     validate_interaction_response,
 )
 from astrabox.core.service.orchestrator.runtime.preparation import require_session_user_prerequisites
-from astrabox.core.service.orchestrator.runtime.execution_target import require_execution_target
+from astrabox.core.service.orchestrator.runtime.environment_ownership import require_environment_ownership
 from astrabox.core.service.orchestrator.session_runtime.feed import SessionFeed
 from astrabox.core.service.orchestrator.session_runtime.follow import follow_output
 from astrabox.core.service.orchestrator.session_runtime.host import ReaderHost
@@ -127,7 +127,7 @@ class SessionRuntimeService:
         session = await self._sessions.get_owned_session(session_id, str(user.user_id))
         if session is None:
             raise await self._not_accepting(session_id, str(user.user_id))
-        require_execution_target(session)
+        require_environment_ownership(session)
         if (
             session.get("state") == SessionState.READY.value
             and session.get("agent_state") not in {AgentState.DELETING.value, AgentState.DELETED.value}
@@ -142,6 +142,7 @@ class SessionRuntimeService:
             owner_user_id=str(user.user_id),
             author_user_id=str(user.user_id),
             source="console",
+            actor=user,
         )
 
     async def send_as(
@@ -163,6 +164,7 @@ class SessionRuntimeService:
             owner_user_id=None,
             author_user_id=author_user_id,
             source=source,
+            actor=None,
         )
 
     async def _accept(
@@ -175,14 +177,8 @@ class SessionRuntimeService:
         owner_user_id: str | None,
         author_user_id: str | None,
         source: str,
+        actor: UserContext | None,
     ) -> dict[str, Any]:
-        await enforce_admission(
-            AdmissionRequest(
-                kind=ADMISSION_KIND_INPUT,
-                user_id=str(owner_user_id or author_user_id or ""),
-                session_id=session_id,
-            )
-        )
         session = (
             await self._sessions.get_owned_session(session_id, owner_user_id)
             if owner_user_id is not None
@@ -190,7 +186,20 @@ class SessionRuntimeService:
         )
         if session is None:
             raise await self._not_accepting(session_id, owner_user_id)
-        require_execution_target(session)
+        require_environment_ownership(session)
+        from astrabox.core.service.environment_access import require_environment_access
+
+        await require_environment_access(
+            actor if actor is not None else UserContext(user_id=str(session["user_id"])),
+            operation="input " + source,
+        )
+        await enforce_admission(
+            AdmissionRequest(
+                kind=ADMISSION_KIND_INPUT,
+                user_id=str(owner_user_id or author_user_id or ""),
+                session_id=session_id,
+            )
+        )
         if content_blocks:
             manifest = session.get("engine_capabilities")
             declared_types = manifest.get("input_content_types") if isinstance(manifest, dict) else None
@@ -390,8 +399,11 @@ class SessionRuntimeService:
     async def _require_owner(self, user: UserContext, session_id: str, *, execution: bool = False) -> None:
         if await self._sessions.get_owner(session_id) != str(user.user_id):
             raise APIError(code="SESSION_NOT_FOUND", message="session not found", status_code=404)
+        from astrabox.core.service.environment_access import require_environment_access
+
+        await require_environment_access(user, operation="conversation interaction")
         if execution:
             session = await self._sessions.get_owned_session(session_id, str(user.user_id))
             if session is None:
                 raise APIError(code="SESSION_NOT_FOUND", message="session not found", status_code=404)
-            require_execution_target(session)
+            require_environment_ownership(session)

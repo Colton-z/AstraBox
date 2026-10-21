@@ -33,6 +33,11 @@ from astrabox.persistence.repository.session_repository import SessionRepository
 from astrabox.providers import register_builtin_providers
 from tests._agent_ledger import create_agent
 
+
+@pytest.fixture(autouse=True)
+def _environment_membership(environment_member_accounts: set[str]) -> None:
+    environment_member_accounts.update({'u1'})
+
 pytestmark = pytest.mark.usefixtures("database")
 
 _USER = UserContext(user_id="u1")

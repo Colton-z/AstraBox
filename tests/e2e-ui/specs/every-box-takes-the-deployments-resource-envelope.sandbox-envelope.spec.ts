@@ -17,7 +17,7 @@
  * - a prepared box from an Agent's pool, which a conversation then claims.
  *
  * Deployment fixtures this reads and never creates: the deployment-proven
- * Agent (`ASTRABOX_E2E_AGENT_NAME`) for its model, and one enabled Environment
+ * Agent (`ASTRABOX_E2E_AGENT_NAME`) for its model, and one enabled RuntimeProfile
  * of each sandbox tenancy for that Agent's engine.
  */
 
@@ -79,31 +79,31 @@ function bytes(quantity: string): number {
   return Number(match[1]) * units[match[2] || ''];
 }
 
-/** An enabled Environment of this tenancy for the engine the base Agent runs. */
+/** An enabled RuntimeProfile of this tenancy for the engine the base Agent runs. */
 async function environmentWithTenancy(
   api: AstraApi,
   engineKind: string,
   tenancy: 'conversation' | 'agent',
 ): Promise<string> {
-  const environments = await api.data<Array<Record<string, unknown>>>('GET', '/admin/environments');
-  const names = environments
+  const runtime_profiles = await api.data<Array<Record<string, unknown>>>('GET', '/admin/runtime-profiles');
+  const names = runtime_profiles
     .filter((env) => env.enabled === true && env.engine_kind === engineKind && env.sandbox_tenancy === tenancy)
     .map((env) => String(env.name));
-  expect(names.length, `an enabled ${engineKind} Environment with ${tenancy} tenancy`).toBeGreaterThan(0);
+  expect(names.length, `an enabled ${engineKind} RuntimeProfile with ${tenancy} tenancy`).toBeGreaterThan(0);
   return names.sort()[0];
 }
 
 async function createAgent(
   api: AstraApi,
   label: string,
-  environmentName: string,
+  runtimeProfileName: string,
   preparedCapacity: number,
 ): Promise<string> {
   const base = await api.defaultAgent();
   const agent = await api.createAgent({
     name: `__e2e_envelope_${label}_${randomUUID().slice(0, 8)}`,
     model: base.model,
-    environment_name: environmentName,
+    runtime_profile_name: runtimeProfileName,
     prepared_capacity: preparedCapacity,
   });
   agentIds.push(agent.agent_id);
@@ -152,9 +152,9 @@ async function assertBoxTakesTheEnvelope(api: AstraApi, sandboxId: string, envel
 
 async function engineKind(api: AstraApi): Promise<string> {
   const base = await api.defaultAgent();
-  const environments = await api.data<Array<Record<string, unknown>>>('GET', '/admin/environments');
-  const own = environments.find((env) => env.name === base.environment_name);
-  expect(own, `the base Agent's Environment ${base.environment_name}`).toBeTruthy();
+  const runtime_profiles = await api.data<Array<Record<string, unknown>>>('GET', '/admin/runtime-profiles');
+  const own = runtime_profiles.find((env) => env.name === base.runtime_profile_name);
+  expect(own, `the base Agent's RuntimeProfile ${base.runtime_profile_name}`).toBeTruthy();
   return String(own!.engine_kind);
 }
 

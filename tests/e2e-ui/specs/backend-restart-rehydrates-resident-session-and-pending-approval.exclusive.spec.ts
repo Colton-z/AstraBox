@@ -328,9 +328,9 @@ test('backend restart rehydrates a resident warm conversation and a resident pen
   // validator (agent_schema) requires a non-blank model; skip any litellm wildcard
   // routing key, exactly as the reclaim / evict siblings do.
   const base = await api.defaultAgent();
-  const environmentName = String(base.environment_name || '').trim();
-  expect(environmentName, 'seeded default agent must name an environment').not.toEqual('');
-  const models = await api.listEnvironmentModels(environmentName);
+  const runtimeProfileName = String(base.runtime_profile_name || '').trim();
+  expect(runtimeProfileName, 'seeded default agent must name an environment').not.toEqual('');
+  const models = await api.listEnvironmentModels(runtimeProfileName);
   const model = models.find((m) => m && !m.includes('*')) || 'deepseek-chat';
 
   let warmSessionId = '';
@@ -342,7 +342,7 @@ test('backend restart rehydrates a resident warm conversation and a resident pen
     const agent = await api.createAgent({
       name: `__e2e_restart_rehydrate_${runId}`,
       model,
-      environment_name: environmentName,
+      runtime_profile_name: runtimeProfileName,
       prepared_capacity: 0,
     });
     agentId = String(agent.agent_id || '');

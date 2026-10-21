@@ -1,4 +1,4 @@
-/** Disabled Environments retire waiting capacity without destroying claimed Sessions. */
+/** Disabled RuntimeProfiles retire waiting capacity without destroying claimed Sessions. */
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 
@@ -16,15 +16,15 @@ test.use({ locale: 'en-US' });
 
 const sessions = trackSessions();
 const agents: string[] = [];
-let environmentName = '';
+let runtimeProfileName = '';
 let environment: Record<string, unknown> = {};
 
 onPassOnly(async ({ request }) => {
   const api = new AstraApi(request);
   for (const id of agents) await api.deleteAgent(id);
-  // Keep the test-owned Environment disabled after its Agents are removed.
-  if (environmentName) {
-    await new PlatformApi(request).putEnvironment(environmentName, { ...environment, enabled: false });
+  // Keep the test-owned RuntimeProfile disabled after its Agents are removed.
+  if (runtimeProfileName) {
+    await new PlatformApi(request).putEnvironment(runtimeProfileName, { ...environment, enabled: false });
   }
 });
 
@@ -99,11 +99,11 @@ async function readyCapacity(platform: PlatformApi, agentId: string): Promise<Re
 }
 
 for (const tenancy of ['agent', 'conversation'] as const) {
-  test(`${tenancy} tenancy: disabled Environment retires waiting capacity and permits Agent deletion`, async ({ page, request }) => {
+  test(`${tenancy} tenancy: disabled RuntimeProfile retires waiting capacity and permits Agent deletion`, async ({ page, request }) => {
     const api = new AstraApi(request);
     const platform = new PlatformApi(request);
     agents.length = 0;
-    environmentName = '';
+    runtimeProfileName = '';
     environment = {};
     const donorName = String(process.env[tenancy === 'agent'
       ? 'ASTRABOX_E2E_PREWARM_SHARED_ENVIRONMENT'
@@ -116,11 +116,11 @@ for (const tenancy of ['agent', 'conversation'] as const) {
     expect(donor, 'the selected deployment must supply this tenancy').toBeTruthy();
     expect(donor!.sandbox_tenancy).toBe(tenancy);
     const fields = new Set((await platform.environmentSchema()).fields!.map((field) => String(field.key)));
-    environmentName = `__e2e_retire_${tenancy}_${randomUUID()}`;
+    runtimeProfileName = `__e2e_retire_${tenancy}_${randomUUID()}`;
     environment = {
       ...Object.fromEntries(Object.entries(donor!).filter(([key]) => fields.has(key))),
-      name: environmentName,
-      display_name: environmentName,
+      name: runtimeProfileName,
+      display_name: runtimeProfileName,
       enabled: true,
       provider_access: {
         base_url: (donor!.provider_access as Record<string, unknown>).base_url,
@@ -129,12 +129,12 @@ for (const tenancy of ['agent', 'conversation'] as const) {
       },
       tracing: null,
     };
-    await platform.putEnvironment(environmentName, environment);
+    await platform.putEnvironment(runtimeProfileName, environment);
     // Leave a waiting seat beside the claimed Session in the Agent-shared box.
     for (const prewarm of [true, false]) {
       const agent = await api.createAgent({
-        name: `${environmentName}_${prewarm ? 'warm' : 'cold'}`,
-        model, environment_name: environmentName,
+        name: `${runtimeProfileName}_${prewarm ? 'warm' : 'cold'}`,
+        model, runtime_profile_name: runtimeProfileName,
         prepared_capacity: prewarm ? (tenancy === 'agent' ? 2 : 1) : 0,
       });
       agents.push(agent.agent_id);
@@ -170,14 +170,14 @@ for (const tenancy of ['agent', 'conversation'] as const) {
     for (const slot of spareSlots) expect(before.isolationIds).toContain(slot);
     if (tenancy === 'agent') expect(before.isolationIds).toContain(liveSlot);
     await test.info().attach('retirement-identities', {
-      body: JSON.stringify({ environmentName, agents, sessionId, liveBox, spareBox, spareSlots, liveSlot, before }),
+      body: JSON.stringify({ runtimeProfileName, agents, sessionId, liveBox, spareBox, spareSlots, liveSlot, before }),
       contentType: 'application/json',
     });
 
-    await platform.putEnvironment(environmentName, { ...environment, enabled: false });
+    await platform.putEnvironment(runtimeProfileName, { ...environment, enabled: false });
     for (const agentId of agents) {
       const response = await request.get(apiPath(`/agents/${agentId}/prepared-runtime`));
-      expect(response.status(), 'disabled Environment must not break operational reads').toBe(200);
+      expect(response.status(), 'disabled RuntimeProfile must not break operational reads').toBe(200);
       expect((await response.json()).data).toMatchObject({ enabled: false, ready: false, prepared_count: 0 });
     }
     const claimedRead = await request.get(apiPath(`/sessions/${sessionId}`));
@@ -209,7 +209,7 @@ for (const tenancy of ['agent', 'conversation'] as const) {
     expect(serverErrors, 'the management page must load without server errors').toEqual([]);
 
     for (const [route, code] of [
-      [`/agents/${warmAgent}/conversations`, 'AGENT_ENVIRONMENT_DISABLED'],
+      [`/agents/${warmAgent}/conversations`, 'AGENT_RUNTIME_PROFILE_DISABLED'],
       [`/agents/${warmAgent}/prepared-runtime/refresh`, 'AGENT_PREWARM_CONFIG_INVALID'],
     ]) {
       const response = await request.post(apiPath(route));
@@ -223,11 +223,11 @@ for (const tenancy of ['agent', 'conversation'] as const) {
     ).map((row) => row.session_id)).toEqual([sessionId]);
     expect((await api.adminSessionDetail(sessionId)).sandbox_id).toBe(liveBox);
 
-    // Delete the Session before its Agent; keep the Environment disabled throughout.
+    // Delete the Session before its Agent; keep the RuntimeProfile disabled throughout.
     await api.deleteSession(sessionId);
     sessions.splice(sessions.indexOf(sessionId), 1);
     for (const agentId of [warmAgent, coldAgent]) {
-      expect((await platform.listEnvironments()).find((row) => row.name === environmentName)?.enabled).toBe(false);
+      expect((await platform.listEnvironments()).find((row) => row.name === runtimeProfileName)?.enabled).toBe(false);
       await api.deleteAgent(agentId);
       const response = await request.get(apiPath(`/agents/${agentId}`));
       expect(response.status(), 'explicit Agent deletion must make the record unreadable').toBe(404);

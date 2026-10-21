@@ -50,11 +50,11 @@ def skill_supplier(e2e_base_url, e2e_auth_headers):
                 assert time.monotonic() < deadline, "the fixture server did not become healthy"
                 time.sleep(0.5)
             name = environment_with_tenancy(client, "conversation")
-            environments = data(client.get("/api/v1/admin/environments"))
-            environment = next(item for item in environments if item["name"] == name)
+            runtime_profiles = data(client.get("/api/v1/admin/runtime-profiles"))
+            environment = next(item for item in runtime_profiles if item["name"] == name)
             networking = environment.get("networking") or {}
             changed = {"name": name, "payload": environment}
-            data(client.put(f"/api/v1/admin/environments/{name}", json={
+            data(client.put(f"/api/v1/admin/runtime-profiles/{name}", json={
                 **environment,
                 "networking": {"type": "limited", **networking, "allowed_hosts": list(dict.fromkeys([*(networking.get("allowed_hosts") or []), receipt["host"]]))},
             }))
@@ -63,7 +63,7 @@ def skill_supplier(e2e_base_url, e2e_auth_headers):
         try:
             if changed:
                 with httpx.Client(base_url=e2e_base_url, headers=e2e_auth_headers, timeout=30) as client:
-                    data(client.put(f"/api/v1/admin/environments/{changed['name']}", json=changed["payload"]))
+                    data(client.put(f"/api/v1/admin/runtime-profiles/{changed['name']}", json=changed["payload"]))
         finally:
             module.restore(receipt)
             sys.path.remove(str(fixtures))
@@ -83,7 +83,7 @@ def _exercise(client, fixture, source, kind, deadline):
     agent = data(client.post("/api/v1/agents", json={
         "name": f"skill-source-{uuid.uuid4().hex[:10]}",
         "model": original["model"], "engine_options": original.get("engine_options") or {},
-        "environment_name": environment_with_tenancy(client, "conversation"),
+        "runtime_profile_name": environment_with_tenancy(client, "conversation"),
         "prepared_capacity": 0, "skills": [source],
     }))
     release_agent(agent["agent_id"])

@@ -34,7 +34,7 @@ for (const engine of engineCases()) {
     const agent = await api.createAgent({
       name: `__e2e_skill_${engine.engine_kind}_${randomUUID().slice(0, 8)}`,
       model: profile.model,
-      environment_name: profile.environment_name,
+      runtime_profile_name: profile.runtime_profile_name,
       prepared_capacity: 1,
       skills: [SKILL],
     });

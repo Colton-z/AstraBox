@@ -10,7 +10,7 @@
  * plugin catalog pins, declares a Python dependency (`gonogo-eval`) that Hermes
  * does not ship; its `gonogo_decide` tool answers with a verdict only when
  * Hermes' installer fetched that dependency from PyPI, through the Assistant
- * Environment's limited network. The configuration is a Hermes personality the owner defines and
+ * RuntimeProfile's limited network. The configuration is a Hermes personality the owner defines and
  * selects, whose text Hermes puts in each new session's system prompt. The
  * Assistant's own timezone, which Hermes names in the "Conversation started"
  * line of every system prompt, is checked alongside, and so is the Skill
@@ -99,11 +99,11 @@ test('an Assistant uses the Skill, Hermes plugin and configuration its owner add
   const api = new AstraApi(request);
   const id = randomUUID().slice(0, 8);
   const codename = `ORCHID-${id}`;
-  const environmentName = await api.assistantEnvironmentName();
+  const runtimeProfileName = await api.assistantEnvironmentName();
   const assistant = await api.createAssistant({
     display_name: `__e2e_assistant_extensions_${id}`,
-    environment_name: environmentName,
-    model_config_override: { model_name: await api.assistantModelName(environmentName) },
+    runtime_profile_name: runtimeProfileName,
+    model_config_override: { model_name: await api.assistantModelName(runtimeProfileName) },
     timezone: ZONE,
   });
   assistantId = String(assistant.assistant_id || '');

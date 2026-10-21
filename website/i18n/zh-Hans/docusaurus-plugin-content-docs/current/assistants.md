@@ -27,26 +27,26 @@ Session 会在同一个 Assistant 工作区中运行。
 创建时只写入记录：工作区在第一段对话开始时才准备。在此之前已经有 Assistant 的用户，
 其最早的那个会被标为主 Assistant。
 
-主 Assistant 需要一个 **Environment（运行环境）**：一套保存好的运行设置，包括 Agent 程序、
-沙箱设置、模型连接和网络访问。AstraBox 使用 Assistant 默认配置指定的 Environment；
-默认配置没有指定时，使用唯一一个已启用且 Agent 程序支持 Assistant 的 Environment。
-如果这样的 Environment 有多个而默认配置没有选择，或者一个都没有，用户就不会有 Assistant，
-左侧栏也不显示 Assistant 分区；此时需要管理员在 Assistant 默认配置中选定 Environment。
+主 Assistant 需要一个 **RuntimeProfile（运行配置）**：一套保存好的运行设置，包括 Agent 程序、
+沙箱设置、模型连接和网络访问。AstraBox 使用 Assistant 默认配置指定的 RuntimeProfile；
+默认配置没有指定时，使用唯一一个已启用且 Agent 程序支持 Assistant 的 RuntimeProfile。
+如果这样的 RuntimeProfile 有多个而默认配置没有选择，或者一个都没有，用户就不会有 Assistant，
+左侧栏也不显示 Assistant 分区；此时需要管理员在 Assistant 默认配置中选定 RuntimeProfile。
 
 创建主 Assistant 不需要创作 Agent 与 Assistant 的权限，所以即使部署只允许管理员创作，
 每个用户也都有一个。用户已经连接的应用会为它开启，与新建任何 Assistant 时一样。
 
 ### 更多 Assistant
 
-Assistant 创建页面只显示已启用且支持 Assistant 的 Environment。
+Assistant 创建页面只显示已启用且支持 Assistant 的 RuntimeProfile。
 
 1. 选择左侧栏 **Assistant** 旁的 **+**，或打开**管理台 → Assistant**，选择**创建 Assistant**。
-2. 填写名称并选择 **Environment**。
+2. 填写名称并选择 **RuntimeProfile**。
 3. 根据需要填写说明和[系统提示词](#系统提示词)，并选择默认[权限模式](permission-modes.md)。
    [时区](#时区)默认取浏览器的时区。
 4. 选择**创建**。
 
-当前登录用户会成为归属用户。Environment 同时决定 Assistant 使用的 Agent 程序；创建后，
+当前登录用户会成为归属用户。RuntimeProfile 同时决定 Assistant 使用的 Agent 程序；创建后，
 管理台不会再提供这两项的修改入口。名称、说明、图标、时区、系统提示词和默认权限模式仍可编辑。
 
 ## Assistant 默认配置 {#defaults}
@@ -55,7 +55,7 @@ Assistant 能做什么，由运行部署的人和它的归属用户决定。管�
 **管理台 → Assistant 默认配置**（或 `/api/v1/admin/assistant-defaults` 及其 `/extensions`）
 设置每个 Assistant 都会继承的内容：
 
-- 新建主 Assistant 使用的 **Environment**，或自动选择；
+- 新建主 Assistant 使用的 **RuntimeProfile**，或自动选择；
 - Assistant 自己没有指定时使用的**模型**；
 - **组织指令**，在归属用户自己的[系统提示词](#系统提示词)之前交给每个 Assistant；
 - 每个 Assistant 都有的 **Skill、MCP 服务、软件包和 Agent 程序配置**，可以直接填写，
@@ -63,13 +63,13 @@ Assistant 能做什么，由运行部署的人和它的归属用户决定。管�
 - 绑定到每个 Assistant 的 **Credential Vault**。被默认配置绑定的 Vault 会列在它的凭证页上，
   在默认配置解除绑定之前不能归档或删除。
 
-这些内容按 Assistant 自身字段的同一套规则校验：所选 Environment 的 Agent 程序读取什么、
-能访问什么，所以要先选定 Environment 才能填写扩展字段。Assistant 会把默认配置和自己的
+这些内容按 Assistant 自身字段的同一套规则校验：所选 RuntimeProfile 的 Agent 程序读取什么、
+能访问什么，所以要先选定 RuntimeProfile 才能填写扩展字段。Assistant 会把默认配置和自己的
 设置一起读取，因此修改的生效时机与[修改何时生效](#修改何时生效)所述相同。
 
 与 Assistant 自身设置的合并方式：指令在前，归属用户的在后；Skill、软件包和 Vault 叠加；
 MCP 服务叠加，Assistant 自己的 MCP 服务不能与继承的同名；Assistant 设置的某个 Agent 程序
-配置块会替换继承的同名配置块。默认配置指定的 Environment 在默认配置改指别处之前不能删除。
+配置块会替换继承的同名配置块。默认配置指定的 RuntimeProfile 在默认配置改指别处之前不能删除。
 
 归属用户可以在 Assistant 的资料页和第一段对话中看到继承的内容，但只能编辑自己的设置。
 
@@ -97,7 +97,7 @@ Assistant 按属主的时区计时，时区是 IANA 名称，例如 `Asia/Shangh
 ## 技能、插件与 Hermes 配置
 
 Assistant 可以给它的 Agent 程序添加该程序接受的内容。Assistant 的记录页有一张
-**技能、插件与配置**卡片，只显示 Environment 的程序声明支持的字段；API 使用与
+**技能、插件与配置**卡片，只显示 RuntimeProfile 的程序声明支持的字段；API 使用与
 [Agent](authoring-agents.md) 相同的字段：`skills`、`mcp_servers`、`packages` 和
 `engine_options`。部署启用[扩展目录](adding-tools.md#extension-catalog)时，同一张卡片也可以像 Agent 页面一样从目录中选择 MCP 服务器和 Skill（`GET`/`PUT /api/v1/assistants/{assistant_id}/extensions`）；需要上游凭证的目录 MCP 服务器，通过分配给该 Assistant 的 Credential Vault 访问。不启用目录时，卡片中只有 Assistant 自己的字段。对 Hermes 而言：
 
@@ -145,7 +145,7 @@ Assistant 可以给它的 Agent 程序添加该程序接受的内容。Assistant
 下一条消息。
 
 无法完成准备的对话会结束并显示原因，例如 Assistant 指定了 MCP 服务器，但其
-Environment 不允许使用 MCP 服务器。排除原因后，请开始新的对话。
+RuntimeProfile 不允许使用 MCP 服务器。排除原因后，请开始新的对话。
 
 ## 开始并继续工作
 
@@ -194,7 +194,7 @@ Assistant 管理页面上的 **Connectors** 卡片用来连接办公应用：Gma
 Assistant 上关闭一个应用后，属主之后再次连接它，这里仍保持关闭；断开连接不会关闭任何
 应用，这样 agent 可以告诉对方需要重新连接。
 
-连接由本部署的 connector hub [ContextForge](https://github.com/IBM/mcp-context-forge) 保存，它和 AstraBox 一起运行。hub 保存每个人在厂商那里的 token、负责刷新，并带着这个 token 调用厂商。agent 只能通过 AstraBox server 使用 connector：server 以这段对话所代表的人的身份把每次调用转给 hub，这个人是 Assistant 的属主，或者发起 Agent 对话的人。沙箱里既没有任何 token，也没有 hub 的地址，所以 connector 不需要 Environment 开放 MCP 网络访问。连接属于创建它的账号；每个 Assistant 和 Agent 只使用为它启用的 connector。agent 需要一个这个人还没连接的应用时，可以在对话里展示一张卡片，请对方连接。启用或停用 connector 后，Assistant 的 Hermes 后端会在没有回复进行时重启，和其他 MCP 修改一样。
+连接由本部署的 connector hub [ContextForge](https://github.com/IBM/mcp-context-forge) 保存，它和 AstraBox 一起运行。hub 保存每个人在厂商那里的 token、负责刷新，并带着这个 token 调用厂商。agent 只能通过 AstraBox server 使用 connector：server 以这段对话所代表的人的身份把每次调用转给 hub，这个人是 Assistant 的属主，或者发起 Agent 对话的人。沙箱里既没有任何 token，也没有 hub 的地址，所以 connector 不需要 RuntimeProfile 开放 MCP 网络访问。连接属于创建它的账号；每个 Assistant 和 Agent 只使用为它启用的 connector。agent 需要一个这个人还没连接的应用时，可以在对话里展示一张卡片，请对方连接。启用或停用 connector 后，Assistant 的 Hermes 后端会在没有回复进行时重启，和其他 MCP 修改一样。
 
 **断开** 会从 hub 删除 token，但不会撤销厂商那边的授权；要撤销，还需要在厂商的账号设置里移除这个应用。厂商不再接受这个连接时，卡片会显示 **需要重新登录**。
 
@@ -263,7 +263,7 @@ Assistant 不需要占用计算资源时，可以在详情页选择**暂停工�
 
 ## 相关指南
 
-- [Environment](environments.md)
+- [RuntimeProfile](runtime-profiles.md)
 - [Session](sessions.md)
 - [消息渠道接入](channels.md)
 - [Schedule](schedules.md)

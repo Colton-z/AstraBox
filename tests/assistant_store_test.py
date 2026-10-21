@@ -44,9 +44,9 @@ _OWNER = UserContext(user_id="u-1", org_id="default", roles=[])
 
 
 class _Environments:
-    """One unrestricted Environment that runs Assistants, for the authoring checks."""
+    """One unrestricted RuntimeProfile that runs Assistants, for the authoring checks."""
 
-    async def get_environment(self, name: str) -> dict[str, Any]:
+    async def get_runtime_profile(self, name: str) -> dict[str, Any]:
         return {
             "name": name,
             "enabled": True,
@@ -55,7 +55,7 @@ class _Environments:
         }
 
     async def get_any_by_name(self, name: str) -> dict[str, Any]:
-        return {**await self.get_environment(name), "updated_at": "2026-01-01T00:00:00+00:00"}
+        return {**await self.get_runtime_profile(name), "updated_at": "2026-01-01T00:00:00+00:00"}
 
     async def list_all(self) -> list[dict[str, Any]]:
         return []
@@ -140,7 +140,7 @@ async def test_concurrent_saves_of_the_assistant_defaults_cannot_overwrite_each_
             return await readers.hold(await super().get_layer(scope))
 
     service = AssistantDefaultsService(
-        repo=_Layers(), environments=_Environments(), assistant_service=SimpleNamespace(),  # type: ignore[arg-type]
+        repo=_Layers(), runtime_profiles=_Environments(), assistant_service=SimpleNamespace(),  # type: ignore[arg-type]
     )
     admin = UserContext(user_id="admin", roles=["admin"])
     outcomes = await asyncio.gather(
@@ -188,10 +188,10 @@ async def test_concurrent_first_opens_create_one_primary_assistant(
 ) -> None:
     await rows.environment("env-1")
     assert await AssistantDefaultsRepository().put_layer(
-        DEPLOYMENT_SCOPE, {"environment_name": "env-1"}, expected_version=None, updated_by="admin",
+        DEPLOYMENT_SCOPE, {"runtime_profile_name": "env-1"}, expected_version=None, updated_by="admin",
     )
     monkeypatch.setattr(
-        "astrabox.persistence.repository.environment_repository.EnvironmentRepository",
+        "astrabox.persistence.repository.runtime_profile_repository.RuntimeProfileRepository",
         lambda: _Environments(),
     )
     service = _assistant_service()

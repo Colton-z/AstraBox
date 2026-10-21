@@ -24,65 +24,81 @@ network.
 For Kubernetes and external-service settings, see the
 [OpenSandbox deployment guide](providers/opensandbox.md).
 
-## Share a product database {#share-a-product-database}
+## Environments {#environments}
 
-One product database defines one logical control plane. Agent and Assistant
-definitions, identity, authorization and conversation history are shared.
-`ASTRABOX_EXECUTION_TARGET` identifies the physical environment that owns
-runtime bindings, prepared inventory, quota ledgers and automatic trigger work.
-It is a stable name, independent of process IDs, host names and code versions.
+An Environment owns its Agent and Assistant definitions, RuntimeProfiles,
+credentials, access grants, conversation history, complete native SessionStore,
+triggers, Runs and execution resources. Production and gray use separate
+business databases, database roles and passwords, private state directories and
+service credentials. Each deployment endpoint serves one Environment; it does
+not create another deployment when an administrator edits Environment metadata.
+The maintained Compose and all-in-one deployments create dedicated service
+roles and databases and keep the bootstrap superuser credential out of the
+AstraBox process. Use separate deployment directories and volumes for different
+Environments. If they use an external PostgreSQL server, provision distinct
+non-superuser roles and databases, revoke PUBLIC database access, and grant each
+role access only to its own database.
 
-Replicas in the same target must use the same credentials, reachable sandbox
-service, pool coordination and `ASTRABOX_MCP_PROXY_BASE_URL`. Use a stable
-callback address reachable from their sandboxes. Different physical targets
-may use different sandbox endpoints and callback addresses while keeping the
-same business database and Agent identities. They must agree on schema,
-identity, credential encryption and shared product configuration.
+Set `ASTRABOX_ENVIRONMENT_NAME` before the first start. Its immutable name accepts
+3–30 lowercase letters, digits, underscores and hyphens, beginning with a letter
+or digit. The database persists one Environment identity. A process configured
+with another name refuses startup before applying further schema upgrades.
+Changing the name does not move resources or create an isolated copy of the
+data. RuntimeProfile names select recipes inside the serving Environment.
 
-For a gray environment that accepts interactive tests without preparing stock
-or running channel and scheduler workers:
+Replicas of the same Environment use the same database, generated or configured
+keys, reachable sandbox service, pool coordination and stable
+`ASTRABOX_MCP_PROXY_BASE_URL`. Other Environments must not reuse those credentials
+or writable state. Sharing a host or cluster requires separate database access,
+network policy, storage and service authorization; an Environment name or sandbox
+label alone supplies none of those permissions. A shared business database with
+separate schema names is not a supported Environment topology.
+
+A gray deployment can accept interactive conversations while leaving prewarming
+and automatic channel/scheduler workers off:
 
 ```dotenv
-ASTRABOX_EXECUTION_TARGET=gray
+ASTRABOX_ENVIRONMENT_NAME=gray
 ASTRABOX_AGENT_PREWARM_ENABLED=false
 ASTRABOX_BACKGROUND_EXECUTION_ENABLED=false
+ASTRABOX_STATE_DIR=/var/lib/astrabox-gray
 ```
 
-Keep the existing environment on the initial target `astrabox`. Stop versions
-that do not understand execution targets before applying these schema changes;
-upgrade every participant before enabling another target. Schema revisions
-assign existing resources and bindings to `astrabox`. Do not rename that target
-to relocate compute. A Session and an Assistant workspace retain their target
-across host and sandbox replacement; a physical operation from another target
-returns `EXECUTION_TARGET_MISMATCH`. Authorized history and configuration reads
-remain available across targets.
+Configure its own database and service credentials as described above. Disabling
+background execution does not stop native SessionStore custody, accepted
+runtime output, active sandbox keepalive, recovery or cleanup. Prewarming is a
+separate policy; disabled prewarming selects cold admission without changing an
+Agent's configured prepared capacity. Read `GET /api/v1/environments/current`
+for the serving Environment and its effective runtime policy. A control-only
+DBOS process initializes its local native tables with DBOS migrations and starts
+no workflow worker.
 
-An Agent's authored `prepared_capacity` stays shared. A target with prewarming
-disabled uses an effective capacity of zero and admits new work through cold
-placement; it neither creates nor acquires prepared units. Cleanup can retire
-only its own inventory. Accepted runtime work still has target-owned readers,
-native SessionStore custody, cleanup and active sandbox keepalive when channel
-and scheduler workers are disabled.
+### Access and upgrades
 
-Read `GET /api/v1/execution-policy` for the serving process's policy. Agent
-prepared-runtime status reports both configured and effective capacity. A
-trigger binding retains its creation target: incoming triggers go to that
-target, while authorized schedule management uses a native control client.
-The built-in DBOS provider uses the target as its native application name,
-which accepts 3–30 lowercase letters, digits, underscores and hyphens. A
-control-only DBOS client needs a system database initialized by a worker;
-it does not initialize the native schema or execute workflows.
+Login establishes identity; Environment membership and resource permissions
+establish access. Open **Console → Environment** to manage local details and member accounts.
+Platform administrators can also update metadata and member user IDs through `/api/v1/admin/environments/{name}`. Updates require the
+current `version`; the API cannot create a foreign Environment. Grant execution
+accounts membership too: channel and scheduler dispatch do not inherit the
+administrator role of whoever configured them. The first start of the no-login
+local deployment grants its local account membership once; restarting never
+reinstates a removed grant.
 
-Retiring outdated network configurations and cleaning orphan resources require the sandbox's
-create-time execution-target marker. A box without that marker is outside these
-automatic inventories; its persisted Session or Assistant owner still drives
-ordinary recovery, renewal and disposal. Unattributed resources require explicit
-operator inspection rather than an assumed target.
+Stop older replicas before upgrading. Existing data, sealed credential scopes,
+local key files and the native DBOS schema remain in place. The former runtime
+recipes become RuntimeProfiles. The upgrade refuses a database containing
+runtime references for multiple execution owners; those require separate
+Environment databases before this deployment model can serve them. For a
+single-owner installation, retain that owner as the Environment name (the
+original default is `astrabox`). A new membership check may require an
+administrator to grant existing signed-in accounts access before they resume
+use. The upgrade does not copy production history or credentials into gray.
 
-This is runtime ownership inside one control plane, not a second runtime
-database or a copy of business records. The
-[relational persistence interface](providers/relational-persistence.md#installation-boundary)
-supplies storage and coordination for the whole control plane.
+Retiring old network configurations and cleaning ownerless resources require
+the sandbox's create-time Environment and installation markers. Unattributed
+resources require operator inspection. The [relational persistence
+interface](providers/relational-persistence.md#installation-boundary) supplies
+one Environment's storage and native coordination.
 
 ## Run on one Docker host {#run-on-one-docker-host}
 
@@ -114,7 +130,7 @@ the host never leaves it running on an engine it does not support.
 ### The sandbox network boundary {#sandbox-network-boundary}
 
 Each sandbox is a container on Docker's default `bridge` network, paired with
-an OpenSandbox egress sidecar that enforces its Environment's networking. The
+an OpenSandbox egress sidecar that enforces its RuntimeProfile's networking. The
 stack keeps the platform off that network:
 
 - The server publishes only the console, on `127.0.0.1`. PostgreSQL and Redis
@@ -133,7 +149,7 @@ stack keeps the platform off that network:
 - Every sandbox's egress policy, under both `Limited` and `Unrestricted`
   networking, denies Docker's default bridge except `sandbox-edge`: other
   sandboxes and the bridge gateway where sandbox ports are published. The deny
-  rules come before every allow rule, so an Environment allowlist entry that
+  rules come before every allow rule, so a RuntimeProfile allowlist entry that
   names a bridge address does not reopen it. The deny list is
   `ASTRABOX_SANDBOX_EGRESS_DENY_CIDRS`, which the server derives at startup.
   The egress sidecar enforces address rules only in its `dns+nft` mode, so the
@@ -211,8 +227,8 @@ execution belong to the operator; there is no built-in installation-wide
 import command or general legacy-format compatibility.
 
 The procedure below **starts fresh without the old AstraBox records**. Agents,
-Environments, Assistants, Sessions/history, Deployments and Vaults are not
-carried over. The release seeds its default Environment and Agent; recreate
+RuntimeProfiles, Assistants, Sessions/history, Deployments and Vaults are not
+carried over. The release seeds its default RuntimeProfile and Agent; recreate
 the other resources if choosing this path.
 
 A new database also gives the installation a new identity. AstraBox removes,
@@ -656,13 +672,13 @@ or turn a single OpenSandbox lifecycle service into a highly available service.
 
 ## Build sandbox images
 
-An Environment connects an Agent to an Agent program and a compatible sandbox
+A RuntimeProfile connects an Agent to an Agent program and a compatible sandbox
 image. The image supplies the operating system, CPU architecture, Agent
 program, commands, and language runtimes available to the Agent.
 
 Build a custom image when every Session needs additional software. Start from
 the corresponding bundled sandbox image, install and pin the dependencies, and
-then select the custom image in the Environment. Publish immutable image tags
+then select the custom image in the RuntimeProfile. Publish immutable image tags
 for production deployments.
 
 Agent programs, accounts, and control processes required by a sandbox must
@@ -903,7 +919,7 @@ sandbox server on a Docker host: there it is the host's memory less 4 GiB for
 the platform, its stores and the host. On a 16 GiB host that is 12 GiB, about
 ten conversations with their own sandboxes. On a host of 8 GiB or less the
 ceiling is 4 GiB or less, too little for one shared sandbox of the default size
-(4 GiB and its sidecar), so an Agent or Assistant whose Environment shares a
+(4 GiB and its sidecar), so an Agent or Assistant whose RuntimeProfile shares a
 sandbox cannot start: lower `ASTRABOX_SHARED_SANDBOX_MEMORY_LIMIT` and its request, or raise
 `ASTRABOX_SANDBOX_QUOTA_MEMORY`. Set a variable to `unlimited` to remove the
 ceiling. Startup logs each ceiling and where it came from, and
@@ -920,7 +936,7 @@ sandbox. New Agents get a capacity of 1 wherever
 `ASTRABOX_AGENT_PREWARM_REDIS_URL` is set, which every bundled Compose
 deployment and the [all-in-one container](all-in-one.md) do; there, the two
 Agents a fresh installation creates get it as well. The runtimes are held for
-as long as the capacity is above 0 and the Agent and its Environment are
+as long as the capacity is above 0 and the Agent and its RuntimeProfile are
 enabled; after a conversation takes an idle sandbox, AstraBox prepares a
 replacement, up to eight at a time per Agent. Size the deployment for the sum
 of the Agents' `prepared_capacity`: for example, an Agent serving 1,000 users
@@ -938,7 +954,7 @@ sandbox quota and leave none for conversations. Set the capacity of Agents that
 do not need a fast first conversation to 0.
 
 What an idle prepared sandbox uses depends on the engine that the Agent's
-Environment runs:
+RuntimeProfile runs:
 
 | Engine | Idle memory of one prepared sandbox |
 |---|---|
@@ -985,7 +1001,7 @@ over their Sessions.
 
 CPU, memory, disk, and sandbox timeouts come from the selected OpenSandbox
 runtime and its configuration. Before relying on paused sandboxes, verify every
-Environment that uses them against the deployed backend:
+RuntimeProfile that uses them against the deployed backend:
 
 ```bash
 astrabox verify-opensandbox-snapshots
@@ -1008,14 +1024,14 @@ Before inviting users:
 - back up database data, state, credentials, and encryption keys together;
 - verify sandbox access to the model gateway, AstraBox callbacks, remote MCP
   servers, and other required destinations;
-- verify snapshot recovery for every Environment that pauses sandboxes;
+- verify snapshot recovery for every RuntimeProfile that pauses sandboxes;
 - set the required outbound network rules and sandbox permissions;
 - run a real Agent task while testing graceful shutdown;
 - collect logs, metrics, and traces with explicit access and retention rules.
 
 ## Related guides
 
-- [Environments](environments.md)
+- [RuntimeProfiles](runtime-profiles.md)
 - [OpenSandbox](providers/opensandbox.md)
 - [Team login](team-login.md)
 - [Container reference](container-reference.md)

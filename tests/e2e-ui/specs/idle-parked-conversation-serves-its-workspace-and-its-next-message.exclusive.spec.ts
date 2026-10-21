@@ -3,7 +3,7 @@
  * its next turn on the same sandbox. The Files panel wakes compute before the
  * next message; the conversation remains Ready throughout the return journey.
  *
- * This case changes a test Environment and runs the deployment-wide idle sweep.
+ * This case changes a test RuntimeProfile and runs the deployment-wide idle sweep.
  * It retains the Session and sandbox on failure and deletes its Agent on pass.
  */
 import { randomUUID } from 'node:crypto';
@@ -31,7 +31,7 @@ import {
 test.use({ locale: 'en-US' });
 
 // The masked stand-in the server returns for a stored secret
-// (agent_config_service.py:60). Cloning it under a NEW Environment name resolves
+// (agent_config_service.py:60). Cloning it under a NEW RuntimeProfile name resolves
 // to "no stored value", so the clone would silently drop the credential and the
 // failure would surface three steps later as an unexplained model error.
 const REDACTION_SENTINEL = '••••••••';
@@ -70,8 +70,8 @@ const sessions = trackSessions();
 let agentId = '';
 
 // Registration order is teardown order: the session goes first (trackSessions,
-// above), then the Agent it ran on. The Environment is left in place by design —
-// its name is stable and there is no DELETE route for environments.
+// above), then the Agent it ran on. The RuntimeProfile is left in place by design —
+// its name is stable and there is no DELETE route for runtime_profiles.
 onPassOnly(async ({ request }) => {
   if (agentId) await new AstraApi(request).deleteAgent(agentId);
 });
@@ -188,7 +188,7 @@ async function exerciseParkedConversation(
   { page, context, request }: { page: Page; context: BrowserContext; request: APIRequestContext },
   disableEnvironment: boolean,
 ): Promise<void> {
-  // Leave time to disable the Environment before this new scene becomes idle.
+  // Leave time to disable the RuntimeProfile before this new scene becomes idle.
   const idleWindowSeconds = disableEnvironment ? Math.max(15, IDLE_WINDOW_SECONDS) : IDLE_WINDOW_SECONDS;
   const idleWindowMs = disableEnvironment ? idleWindowSeconds * 1_000 : IDLE_WINDOW_MS;
   const api = new AstraApi(request);
@@ -212,24 +212,24 @@ async function exerciseParkedConversation(
   expect(
     supported.map((action) => String(action)),
     'this deployment\'s sandbox backend cannot snapshot, so `idle_action: "pause"` is refused '
-      + 'at the Environment form and this journey has no configuration in which it can pass or '
+      + 'at the RuntimeProfile form and this journey has no configuration in which it can pass or '
       + `fail. The route's own reason: ${String(capability.detail ?? '<none given>')} `
       + `(backend=${String(capability.backend ?? '<unnamed>')})`,
   ).toContain('pause');
 
-  // ── An Environment that parks, cloned from whichever engine the matrix chose ──
+  // ── A RuntimeProfile that parks, cloned from whichever engine the matrix chose ──
   const laneAgent = await api.defaultAgent();
-  const sourceName = String(laneAgent.environment_name || '').trim();
+  const sourceName = String(laneAgent.runtime_profile_name || '').trim();
   expect(
     sourceName,
-    `the lane's Agent ${JSON.stringify(laneAgent.name)} must name the Environment this clones`,
+    `the lane's Agent ${JSON.stringify(laneAgent.name)} must name the RuntimeProfile this clones`,
   ).not.toEqual('');
-  const environments = await platform.listEnvironments();
-  const source = environments.find((item) => String(item.name || '') === sourceName);
+  const runtime_profiles = await platform.listEnvironments();
+  const source = runtime_profiles.find((item) => String(item.name || '') === sourceName);
   expect(
     source,
-    `Environment ${JSON.stringify(sourceName)} is not on this deployment; have: `
-      + environments.map((item) => String(item.name || '')).join(', '),
+    `RuntimeProfile ${JSON.stringify(sourceName)} is not on this deployment; have: `
+      + runtime_profiles.map((item) => String(item.name || '')).join(', '),
   ).toBeTruthy();
   const sourceEnvironment = source as Record<string, unknown>;
 
@@ -246,7 +246,7 @@ async function exerciseParkedConversation(
     'the environment schema must declare its editable fields',
   ).toBeGreaterThan(0);
 
-  // Stable, not run-scoped: environments have GET and PUT and no DELETE, so a
+  // Stable, not run-scoped: runtime_profiles have GET and PUT and no DELETE, so a
   // run-scoped name would leave one row per run on the deployment forever.
   const parkEnvironment = `__e2e-idle-park-${sourceName}`;
   const parkPayload = {
@@ -262,9 +262,9 @@ async function exerciseParkedConversation(
   };
   expect(
     carriesRedactedSecret(parkPayload),
-    'the source Environment stores a secret the server returns masked, and a clone under a new '
-      + 'name stores nothing for it. Point this lane at an Environment that uses deployment '
-      + 'model access, or the park Environment will fail its first model call for a reason that '
+    'the source RuntimeProfile stores a secret the server returns masked, and a clone under a new '
+      + 'name stores nothing for it. Point this lane at a RuntimeProfile that uses deployment '
+      + 'model access, or the park RuntimeProfile will fail its first model call for a reason that '
       + 'has nothing to do with parking.',
   ).toBe(false);
 
@@ -273,7 +273,7 @@ async function exerciseParkedConversation(
     storedEnvironment = await platform.putEnvironment(parkEnvironment, parkPayload);
   } catch (error) {
     throw new Error(
-      'this deployment refused an Environment that parks idle boxes, so the journey has no '
+      'this deployment refused a RuntimeProfile that parks idle boxes, so the journey has no '
         + 'configuration in which it can pass or fail. Under idle_action "terminate" the keeper '
         + 'leaves every box alone and the box dies at its lease with the workspace instead.\n'
         + `${error instanceof Error ? error.message : String(error)}`,
@@ -281,21 +281,21 @@ async function exerciseParkedConversation(
   }
   expect(
     String(storedEnvironment.idle_action || ''),
-    'the stored Environment must be the one the keeper will read',
+    'the stored RuntimeProfile must be the one the keeper will read',
   ).toEqual('pause');
 
   const model = String(laneAgent.model || '').trim();
   expect(model, 'the lane-selected Agent must name a model route').not.toEqual('');
   expect(
     await api.listEnvironmentModels(parkEnvironment),
-    `the parking Environment must expose the lane's model ${JSON.stringify(model)}`,
+    `the parking RuntimeProfile must expose the lane's model ${JSON.stringify(model)}`,
   ).toContain(model);
 
   // ── The conversation a user would leave ──────────────────────────────────
   const agent = await api.createAgent({
     name: `__e2e_idle_park_${runId}`,
     model,
-    environment_name: parkEnvironment,
+    runtime_profile_name: parkEnvironment,
     // No prepared slot: this Agent must not spend its setup warming a box it
     // never claims, and a pooled box is not this conversation's alone.
     prepared_capacity: 0,
@@ -384,11 +384,11 @@ async function exerciseParkedConversation(
   if (disableEnvironment) {
     const disabled = await platform.putEnvironment(parkEnvironment, { ...parkPayload, enabled: false });
     expect(disabled.enabled).toBe(false);
-    expect(parkedMark(sessionId), 'the disabled Environment must precede the parking decision').toBe('');
+    expect(parkedMark(sessionId), 'the disabled RuntimeProfile must precede the parking decision').toBe('');
     expect(quietForMs(sessionId).quietMs, 'the idle window must still be open after disabling').toBeLessThan(idleWindowMs);
     const refused = await request.post(apiPath(`/agents/${agentId}/conversations`));
     expect(refused.status()).toBe(409);
-    expect((await refused.json()).code).toBe('AGENT_ENVIRONMENT_DISABLED');
+    expect((await refused.json()).code).toBe('AGENT_RUNTIME_PROFILE_DISABLED');
   }
 
   // ── The conversation goes quiet past the window it was given ─────────────
@@ -464,7 +464,7 @@ async function exerciseParkedConversation(
       + `to a parked one. session=${sessionId} sandbox=${boxBefore} state=${boxAfterPark} `
       + `quiet=${JSON.stringify(quietForMs(sessionId))} `
       + `disqualified=${disqualifiedFromTheSweep(sessionId) || '<no, it still qualifies>'} `
-      + `ticks=${JSON.stringify(ticks)}. Either the Environment did not store idle_action `
+      + `ticks=${JSON.stringify(ticks)}. Either the RuntimeProfile did not store idle_action `
       + '"pause", or the retention renew did not take, or the snapshot commit did not settle on '
       + 'this cluster (docs/providers/opensandbox.md names what pausing needs).',
   ).not.toEqual('');
@@ -480,7 +480,7 @@ async function exerciseParkedConversation(
 
   if (disableEnvironment) {
     const disabled = (await platform.listEnvironments()).find((row) => row.name === parkEnvironment);
-    expect(disabled?.enabled, 'the real sandbox must have parked while its Environment was disabled').toBe(false);
+    expect(disabled?.enabled, 'the real sandbox must have parked while its RuntimeProfile was disabled').toBe(false);
     await platform.putEnvironment(parkEnvironment, { ...parkPayload, enabled: true });
   }
 
@@ -637,6 +637,6 @@ test('a conversation parked for idleness opens on its own workspace and continue
   await exerciseParkedConversation({ page, context, request }, false);
 });
 
-test('a disabled Environment still parks existing idle compute and re-enabling preserves its workspace', async ({ page, context, request }) => {
+test('a disabled RuntimeProfile still parks existing idle compute and re-enabling preserves its workspace', async ({ page, context, request }) => {
   await exerciseParkedConversation({ page, context, request }, true);
 });

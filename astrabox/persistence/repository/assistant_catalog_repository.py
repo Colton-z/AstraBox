@@ -91,8 +91,8 @@ class AssistantExists(Exception):
     """An Assistant with this id, or a live primary of this owner, already exists."""
 
 
-class AssistantEnvironmentMissing(Exception):
-    """The Environment an Assistant names does not exist."""
+class AssistantRuntimeProfileMissing(Exception):
+    """The RuntimeProfile an Assistant names does not exist."""
 
 
 class AssistantVaultMissing(Exception):
@@ -231,7 +231,7 @@ def _record(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
         "icon": row["icon"],
         "description": row["description"],
         "engine_kind": row["engine_kind"],
-        "environment_name": row["environment_name"],
+        "runtime_profile_name": row["runtime_profile_name"],
         "permission_mode_default": row["permission_mode_default"],
         "system": row["system"],
         "timezone": row["timezone"],
@@ -324,7 +324,7 @@ class AssistantCatalogRepository:
 
         Raises :class:`AssistantExists` when the id is taken or, for a primary
         Assistant, when the owner already has a live one, and
-        :class:`AssistantEnvironmentMissing` when the Environment does not exist.
+        :class:`AssistantRuntimeProfileMissing` when the RuntimeProfile does not exist.
         """
         values = {
             "assistant_id": str(payload["assistant_id"]),
@@ -335,7 +335,7 @@ class AssistantCatalogRepository:
             "icon": payload.get("icon"),
             "description": payload.get("description"),
             "engine_kind": str(payload["engine_kind"]),
-            "environment_name": str(payload["environment_name"]),
+            "runtime_profile_name": str(payload["runtime_profile_name"]),
             "permission_mode_default": payload.get("permission_mode_default"),
             "system": payload.get("system"),
             "timezone": payload.get("timezone"),
@@ -358,7 +358,7 @@ class AssistantCatalogRepository:
         except UniqueViolation as exc:
             raise AssistantExists(values["assistant_id"]) from exc
         except ForeignKeyViolation as exc:
-            raise AssistantEnvironmentMissing(values["environment_name"]) from exc
+            raise AssistantRuntimeProfileMissing(values["runtime_profile_name"]) from exc
         assert row is not None
         stored = _record({**row, "credential_vault_ids": [], "mcp_assignments": [], "connectors": []})
         assert stored is not None
@@ -391,20 +391,20 @@ class AssistantCatalogRepository:
         )
         return [record for record in map(_record, rows) if record is not None]
 
-    async def list_assistants_by_environment(
+    async def list_assistants_by_runtime_profile(
         self, name: str, *, connection: AsyncConnection | None = None
     ) -> list[dict[str, Any]]:
-        """Every Assistant that names the Environment, deleted ones included.
+        """Every Assistant that names the RuntimeProfile, deleted ones included.
 
-        A deleted Assistant still names its Environment while conversations it
-        left behind may hold compute, which the Environment's cleanup check reads.
+        A deleted Assistant still names its RuntimeProfile while conversations it
+        left behind may hold compute, which the RuntimeProfile's cleanup check reads.
         ``connection`` keeps that check on the caller's deletion transaction.
         """
         statement = (
             select(
                 _ASSISTANTS.c.assistant_id, _ASSISTANTS.c.display_name, _ASSISTANTS.c.deleted
             )
-            .where(_ASSISTANTS.c.environment_name == name)
+            .where(_ASSISTANTS.c.runtime_profile_name == name)
             .order_by(_ASSISTANTS.c.assistant_id)
         )
         if connection is not None:
@@ -457,7 +457,7 @@ class AssistantCatalogRepository:
         """One page of :meth:`list_owner_assistants`, narrowed, after ``after``.
 
         ``after`` is the ``(updated_at, assistant_id)`` of the last row already
-        read. ``query`` matches the display name, id, Environment and engine
+        read. ``query`` matches the display name, id, RuntimeProfile and engine
         case-insensitively; ``status`` keeps Assistants whose workspace is
         ``ready`` or not (``dormant``). Both narrow in the query, so the page is
         the next ``limit`` matching rows.
@@ -474,7 +474,7 @@ class AssistantCatalogRepository:
                         for column in (
                             _ASSISTANTS.c.display_name,
                             _ASSISTANTS.c.assistant_id,
-                            _ASSISTANTS.c.environment_name,
+                            _ASSISTANTS.c.runtime_profile_name,
                             _ASSISTANTS.c.engine_kind,
                         )
                     )

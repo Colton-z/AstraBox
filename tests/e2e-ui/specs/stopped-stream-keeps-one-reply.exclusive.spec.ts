@@ -31,8 +31,8 @@ test('interrupt ACK before complete AssistantMessage retains one cancelled reply
   const api = new AstraApi(request);
   const agent = await api.createColdTestAgent(`__e2e_interrupt_tail_${Date.now()}`);
   agentId = agent.agent_id;
-  const environments = await api.data<Array<{ name: string; engine_kind: string }>>('GET', '/admin/environments');
-  expect(environments.find((item) => item.name === agent.environment_name)?.engine_kind).toBe('claude_code');
+  const runtime_profiles = await api.data<Array<{ name: string; engine_kind: string }>>('GET', '/admin/runtime-profiles');
+  expect(runtime_profiles.find((item) => item.name === agent.runtime_profile_name)?.engine_kind).toBe('claude_code');
   const { session_id: sid } = await api.startConversation(agentId);
   sessions.push(sid);
   const ready = await api.waitForSessionReady(sid);

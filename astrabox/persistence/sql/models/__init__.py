@@ -10,6 +10,7 @@ from __future__ import annotations
 from astrabox.persistence.sql.models import (  # noqa: F401 - registration
     platform,
     environments,
+    runtime_profiles,
     agents,
     assistants,
     deployments,

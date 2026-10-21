@@ -78,7 +78,7 @@ from sqlalchemy import (
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.sql import ColumnElement, Select
 
-from astrabox.config.settings import get_settings, validate_execution_target
+from astrabox.config.settings import get_settings, validate_environment_name
 from astrabox.persistence.sql import (
     execute,
     fetch_all,
@@ -461,14 +461,14 @@ def _context_candidates(
 class ChannelRepository:
     """Inbound work items, conversations, subscriptions, deliveries and their marks."""
 
-    def __init__(self, *, execution_target: str | None = None) -> None:
-        self.execution_target = validate_execution_target(
-            get_settings().execution_target if execution_target is None else execution_target
+    def __init__(self, *, environment_name: str | None = None) -> None:
+        self.environment_name = validate_environment_name(
+            get_settings().environment_name if environment_name is None else environment_name
         )
 
     def _owned_deployments(self) -> Select[Any]:
         return select(_DEPLOYMENTS.c.deployment_id).where(
-            _DEPLOYMENTS.c.execution_target == self.execution_target
+            _DEPLOYMENTS.c.environment_name == self.environment_name
         )
 
     # ── inbound work items ───────────────────────────────────────────────
@@ -550,12 +550,12 @@ class ChannelRepository:
                 select(_DEPLOYMENTS.c.deployment_id)
                 .where(
                     _DEPLOYMENTS.c.deployment_id == deployment_id,
-                    _DEPLOYMENTS.c.execution_target == self.execution_target,
+                    _DEPLOYMENTS.c.environment_name == self.environment_name,
                 )
                 .with_for_update()
             )
             if binding is None:
-                raise ValueError("channel binding is absent from this execution target")
+                raise ValueError("channel binding is absent from this Environment")
             inserted = await insert_if_absent(
                 conn, _INBOUND, values, index_columns=("deployment_id", "dedup_key"),
             )
@@ -1570,7 +1570,7 @@ class ChannelRepository:
             .join(_DEPLOYMENTS, _DEPLOYMENTS.c.deployment_id == s.deployment_id)
             .where(
                 s.session_id == session_id, _DEPLOYMENTS.c.enabled,
-                _DEPLOYMENTS.c.execution_target == self.execution_target,
+                _DEPLOYMENTS.c.environment_name == self.environment_name,
             )
             .order_by(s.deployment_id)
         )
@@ -1603,7 +1603,7 @@ class ChannelRepository:
             )
             .join(_DEPLOYMENTS, _DEPLOYMENTS.c.deployment_id == s.deployment_id)
             .join(_SESSIONS, _SESSIONS.c.session_id == s.session_id)
-            .where(_DEPLOYMENTS.c.execution_target == self.execution_target)
+            .where(_DEPLOYMENTS.c.environment_name == self.environment_name)
             .where(or_(
                 ~_DEPLOYMENTS.c.enabled, _SESSIONS.c.deleted, output_past,
                 select(_INTERACTIONS.c.ref).where(

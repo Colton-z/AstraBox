@@ -12,7 +12,7 @@ startup/shutdown:
   sandbox callbacks and inventory, transcripts, credentials, deployments,
   sharing, extensions, Agents, and Assistants;
 * a ``lifespan`` that on **startup** registers the built-in providers, brings up
-  the persistence schema, and seeds the default Environment and Agent, and on
+  the persistence schema, and seeds the default RuntimeProfile and Agent, and on
   **shutdown** awaits ``run_lifecycle_shutdown()``.
 
 ``create_app()`` is import-time constructible; the persistence backend is resolved
@@ -35,7 +35,7 @@ from astrabox.common.utils.time_utils import utcnow_iso
 logger = get_logger(__name__)
 
 #: The seeded default environment name.
-_DEFAULT_ENVIRONMENT_NAME = "claude-code"
+_DEFAULT_RUNTIME_PROFILE_NAME = "claude-code"
 
 
 def _seed_default_model() -> str:
@@ -74,28 +74,28 @@ _INVESTMENT_RESEARCH_SYSTEM_PROMPT = (
 )
 
 
-async def _warn_about_environments_on_disabled_backends() -> None:
-    """Name each enabled Environment whose sandbox backend this deployment does not enable.
+async def _warn_about_runtime_profiles_on_disabled_backends() -> None:
+    """Name each enabled RuntimeProfile whose sandbox backend this deployment does not enable.
 
     Startup proceeds: an operator may stop running a backend while keeping the
-    records that name it. A Session that resolves such an Environment fails
+    records that name it. A Session that resolves such a RuntimeProfile fails
     with ``SANDBOX_BACKEND_DISABLED`` when it needs a sandbox; this names the
-    Environments before anyone meets that.
+    RuntimeProfiles before anyone meets that.
     """
-    from astrabox.persistence.repository.environment_repository import EnvironmentRepository
+    from astrabox.persistence.repository.runtime_profile_repository import RuntimeProfileRepository
     from astrabox.seams.sandbox import enabled_sandbox_names
 
     enabled = enabled_sandbox_names()
-    for environment in await EnvironmentRepository().list_all():
+    for environment in await RuntimeProfileRepository().list_all():
         if environment.get("enabled") is False:
             continue
         backend = str(environment.get("sandbox_backend") or "").strip().lower()
         if backend and backend not in enabled:
             logger.warning(
-                "Environment %r selects sandbox backend %r, which this deployment "
+                "RuntimeProfile %r selects sandbox backend %r, which this deployment "
                 "does not enable (enabled: %s); its Sessions fail with "
                 "SANDBOX_BACKEND_DISABLED until the backend is added to "
-                "ASTRABOX_SANDBOX_BACKENDS or the Environment selects another",
+                "ASTRABOX_SANDBOX_BACKENDS or the RuntimeProfile selects another",
                 environment.get("name"),
                 backend,
                 enabled,
@@ -108,7 +108,7 @@ async def _seed_default_agent_if_empty() -> None:
 
     A fresh store has no agents, so the console would open on an empty list with
     nothing to converse with. This seeds one Agent plus the ``claude-code``
-    Environment it selects, so the first-run path works without separate setup.
+    RuntimeProfile it selects, so the first-run path works without separate setup.
     Runs only when
     the agents collection is empty, so an operator's later edits are never
     overwritten.
@@ -129,11 +129,11 @@ async def _seed_default_agent_if_empty() -> None:
     from astrabox.core.service.orchestrator.agent_schema import (
         default_prepared_capacity,
     )
-    from astrabox.core.service.orchestrator.environment_schema import (
-        normalize_environment_payload,
+    from astrabox.core.service.orchestrator.runtime_profile_schema import (
+        normalize_runtime_profile_payload,
     )
     from astrabox.persistence.repository.agent_repository import AgentRepository
-    from astrabox.persistence.repository.environment_repository import EnvironmentRepository
+    from astrabox.persistence.repository.runtime_profile_repository import RuntimeProfileRepository
     from astrabox.seams.sandbox import default_sandbox_backend, sandbox_for_name
 
     agents_repo = AgentRepository()
@@ -161,18 +161,18 @@ async def _seed_default_agent_if_empty() -> None:
             "ANTHROPIC_MODEL (or ASTRABOX_MODEL_NAME)"
         )
 
-    environments_repo = EnvironmentRepository()
+    runtime_profiles_repo = RuntimeProfileRepository()
     # The seed writes repositories directly instead of using
-    # AgentConfigService.upsert_environment_config, so it supplies the Agent
+    # AgentConfigService.upsert_runtime_profile_config, so it supplies the Agent
     # records' timestamps explicitly.
     seeded_at = utcnow_iso()
     # The environment is the single source of runtime config (image, backend,
     # install policy) + model connectivity. Seed it first so the agent resolves
     # cleanly. No endpoint_provider / provider_access — deployment defaults apply.
     # Normalized like an administrator's write, which settles its idle action.
-    await environments_repo.put(
-        _DEFAULT_ENVIRONMENT_NAME,
-        normalize_environment_payload({
+    await runtime_profiles_repo.put(
+        _DEFAULT_RUNTIME_PROFILE_NAME,
+        normalize_runtime_profile_payload({
             "enabled": True,
             "display_name": "Claude Code",
             "description": "Default environment: the built-in sandbox backend.",
@@ -241,7 +241,7 @@ async def _seed_default_agent_if_empty() -> None:
             "description": description,
             "model": deployment_model,
             "system": system,
-            "environment_name": _DEFAULT_ENVIRONMENT_NAME,
+            "runtime_profile_name": _DEFAULT_RUNTIME_PROFILE_NAME,
             "display_meta": {"display_name": name},
             "prepared_capacity": seeded_capacity,
             **(capabilities or {}),
@@ -299,7 +299,7 @@ async def _seed_default_agent_if_empty() -> None:
     logger.info(
         "seeded default environment %r (deployment backend=%s, image=%s) "
         "+ 2 agents (model=%r)",
-        _DEFAULT_ENVIRONMENT_NAME,
+        _DEFAULT_RUNTIME_PROFILE_NAME,
         backend_name,
         default_runtime_image,
         deployment_model,
@@ -372,8 +372,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
        ``warn_about_catalog_selections_without_a_catalog()`` then names each
        record that still holds an extension-catalog selection while the
        deployment runs no catalog.
-       ``_warn_about_environments_on_disabled_backends()`` then names each
-       enabled Environment that selects a sandbox backend outside the enabled
+       ``_warn_about_runtime_profiles_on_disabled_backends()`` then names each
+       enabled RuntimeProfile that selects a sandbox backend outside the enabled
        set.
        ``configure_sandbox_quotas()`` then resolves and logs each enabled
        backend's sandbox quota, refusing one on a backend that cannot list
@@ -425,9 +425,18 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     session_signing_secret()
     bootstrap()
     await get_persistence().initialize_schema()
+    from astrabox.persistence.repository.environment_repository import EnvironmentRepository
+
+    initial_local_user_id = None
+    resolver = app.state.web_identity_resolver
+    if getattr(resolver, "is_no_auth_default", False):
+        local_user = await resolver.resolve({})
+        if local_user is not None:
+            initial_local_user_id = local_user.user_id
+    await EnvironmentRepository().ensure_current(initial_local_user_id=initial_local_user_id)
     await sandbox_installation_id()
     await warn_about_catalog_selections_without_a_catalog()
-    await _warn_about_environments_on_disabled_backends()
+    await _warn_about_runtime_profiles_on_disabled_backends()
     await configure_sandbox_quotas(dict(enabled_sandbox_providers()))
     await reconcile_at_startup(dict(enabled_sandbox_providers()))
     await _seed_default_agent_if_empty()
@@ -824,7 +833,7 @@ def create_app() -> FastAPI:
 
     from astrabox.common.utils.errors import APIError
     from astrabox.api.routes.user import router as user_router
-    from astrabox.api.routes.execution_policy import router as execution_policy_router
+    from astrabox.api.routes.environments import router as environments_router
     from astrabox.api.routes.sessions import router as sessions_router
     from astrabox.api.routes.turns import router as turns_router
     from astrabox.api.routes.speech_input import router as speech_input_router
@@ -836,7 +845,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(user_router)
-    app.include_router(execution_policy_router)
+    app.include_router(environments_router)
     from astrabox.api.routes.session_user_actions import router as session_user_actions_router
 
     app.include_router(sessions_router)

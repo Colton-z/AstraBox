@@ -119,7 +119,7 @@ test('Agent administrators manage only their Agents triggers and Runs, with imme
     }
     expect((await context.request.put(apiPath(`/admin/agents/${agents[1]}/deployments/${id}`), { data: { enabled: true } })).status()).toBe(404);
     expect((await context.request.get(apiPath(`/admin/agents/${agents[0]}/deployments/${id}/account-links`))).status()).toBe(403);
-    for (const path of ['/admin/system/overview', '/admin/logs', '/admin/environments', '/admin/vaults']) {
+    for (const path of ['/admin/system/overview', '/admin/logs', '/admin/runtime-profiles', '/admin/vaults']) {
       expect((await context.request.get(apiPath(path))).status()).toBe(403);
     }
     // Creating this trigger did not make its author an owner independent of Agent ACL.

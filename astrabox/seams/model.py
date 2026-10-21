@@ -47,7 +47,7 @@ class ModelEndpoint:
 
 @dataclass(frozen=True)
 class ResolvedModelAccess:
-    """Engine-neutral model access resolved for one Environment.
+    """Engine-neutral model access resolved for one RuntimeProfile.
 
     ``configuration`` retains non-secret, provider- and engine-authored fields
     the selected adapter may understand. The remaining fields are the common

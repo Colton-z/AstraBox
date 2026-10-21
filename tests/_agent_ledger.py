@@ -13,7 +13,7 @@ from typing import Any
 from sqlalchemy import insert, select, update
 
 from astrabox.persistence.repository.agent_repository import AgentRepository, _slot_values
-from astrabox.persistence.repository.environment_repository import EnvironmentRepository
+from astrabox.persistence.repository.runtime_profile_repository import RuntimeProfileRepository
 from astrabox.persistence.sql import execute, fetch_all, fetch_one
 from astrabox.persistence.sql.models.agents import (
     AgentBoxAdmission,
@@ -29,8 +29,8 @@ _ADMISSIONS = AgentBoxAdmission.__table__
 async def create_agent(
     agent_id: str = "agent-1", *, deleted: bool = False, **definition: Any
 ) -> AgentRepository:
-    """An Agent of the ``env`` Environment, deleted or not."""
-    await EnvironmentRepository().put(
+    """An Agent of the ``env`` RuntimeProfile, deleted or not."""
+    await RuntimeProfileRepository().put(
         "env",
         {
             "engine_kind": "claude_code",
@@ -45,7 +45,7 @@ async def create_agent(
             "agent_id": agent_id,
             "name": agent_id,
             "model": "model",
-            "environment_name": "env",
+            "runtime_profile_name": "env",
             "created_by": "owner",
             "state": "DELETED" if deleted else "ACTIVE",
             **definition,
@@ -61,9 +61,9 @@ async def set_runtime(agent_id: str, **columns: Any) -> None:
 
 async def put_slots(agent_id: str, *manifests: dict[str, Any]) -> None:
     """Record slot manifests for the Agent."""
-    target = AgentRepository().execution_target
+    target = AgentRepository().environment_name
     await execute(insert(_SLOTS).values([
-        _slot_values(agent_id, manifest, execution_target=target) for manifest in manifests
+        _slot_values(agent_id, manifest, environment_name=target) for manifest in manifests
     ]))
 
 
@@ -74,7 +74,7 @@ async def put_admissions(agent_id: str, *admissions: dict[str, Any]) -> None:
             [
                 {
                     "agent_id": agent_id,
-                    "execution_target": AgentRepository().execution_target,
+                    "environment_name": AgentRepository().environment_name,
                     "sandbox_id": admission["sandbox_id"],
                     "session_id": admission["session_id"],
                     "admitted_at": datetime.fromtimestamp(float(admission["at"]), timezone.utc),

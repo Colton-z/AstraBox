@@ -15,15 +15,6 @@ CAPABILITY_PREFIX = "astrabox-litellm-cap-v1."
 CAPABILITY_AUDIENCE = "astrabox-litellm"
 ADMIN_UI_PURPOSE = "litellm-admin-ui"
 AGENT_CONSOLE_PURPOSE = "litellm-agent-console"
-#: The name this key carries in the proxy's key table and in its UI. A
-#: sandbox's model traffic carries a LiteLLM virtual key,
-#: not the master key: the gateway maps the master key to PROXY_ADMIN, the model
-#: binding admits ``/v1/*``, and the gateway's management surface
-#: (``/v1/mcp/server``, ``/v1/mcp/toolset``, ``/v1/mcp/network/*``) lives under
-#: that same prefix. A sandbox never has to read a credential to spend it — the
-#: egress sidecar attaches whatever the binding names to whatever request the
-#: workload makes.
-SANDBOX_INFERENCE_KEY_ALIAS = "astrabox-sandbox-inference"
 
 #: LiteLLM's key type for "may call the LLM API, may not manage the proxy".
 #: ``handle_key_type`` turns it into ``allowed_routes: ["llm_api_routes"]``, a
@@ -75,7 +66,7 @@ def sandbox_inference_key(secret: str) -> str:
 
     material = hmac.new(
         str(secret).encode("utf-8"),
-        SANDBOX_INFERENCE_KEY_ALIAS.encode("ascii"),
+        b"astrabox-sandbox-inference",
         hashlib.sha256,
     ).digest()
     suffix = base64.urlsafe_b64encode(material).decode("ascii").rstrip("=")
@@ -182,7 +173,6 @@ def verify_litellm_capability(
 __all__ = [
     "ADMIN_UI_PURPOSE",
     "AGENT_CONSOLE_PURPOSE",
-    "SANDBOX_INFERENCE_KEY_ALIAS",
     "SANDBOX_INFERENCE_KEY_TYPE",
     "MODEL_INFERENCE_PASSTHROUGH_ROUTES",
     "inference_key_metadata",

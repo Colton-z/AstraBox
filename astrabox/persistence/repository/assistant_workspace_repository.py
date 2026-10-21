@@ -35,7 +35,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from astrabox.config.settings import get_settings, validate_execution_target
+from astrabox.config.settings import get_settings, validate_environment_name
 from astrabox.persistence.repository.assistant_catalog_repository import _ChildObject, _OrderedChildren
 from astrabox.persistence.sql import execute, fetch_all, fetch_one, fetch_value, from_iso, to_iso, transaction
 from astrabox.persistence.sql.statements import insert_if_absent, upsert_primary_key
@@ -84,7 +84,7 @@ def _view(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
         return None
     workspace: dict[str, Any] = {
         "assistant_id": row["assistant_id"],
-        "execution_target": row["execution_target"],
+        "environment_name": row["environment_name"],
         "created_by_user_id": row["created_by_user_id"],
         "engine_kind": row["engine_kind"],
         "state": row["state"],
@@ -158,15 +158,15 @@ _BOX_RETIRED = {
 class AssistantWorkspaceRepository:
     """One workspace row per Assistant, and the profiles prepared in its box."""
 
-    def __init__(self, *, execution_target: str | None = None) -> None:
-        self.execution_target = validate_execution_target(
-            get_settings().execution_target if execution_target is None else execution_target
+    def __init__(self, *, environment_name: str | None = None) -> None:
+        self.environment_name = validate_environment_name(
+            get_settings().environment_name if environment_name is None else environment_name
         )
 
     def _runtime_owner(self, assistant_id: str) -> ColumnElement[bool]:
         return and_(
             _COLUMNS.assistant_id == assistant_id,
-            _COLUMNS.execution_target == self.execution_target,
+            _COLUMNS.environment_name == self.environment_name,
         )
 
     # ── reads ────────────────────────────────────────────────────────────
@@ -193,7 +193,7 @@ class AssistantWorkspaceRepository:
             select(_WORKSPACES)
             .where(
                 _COLUMNS.current_sandbox_id == target,
-                _COLUMNS.execution_target == self.execution_target,
+                _COLUMNS.environment_name == self.environment_name,
             )
             .order_by(_COLUMNS.assistant_id)
         )
@@ -261,7 +261,7 @@ class AssistantWorkspaceRepository:
     ) -> list[dict[str, Any]]:
         statement: Select[Any] = select(_WORKSPACES).where(
             _COLUMNS.current_sandbox_id.is_not(None),
-            _COLUMNS.execution_target == self.execution_target, *conditions,
+            _COLUMNS.environment_name == self.environment_name, *conditions,
         )
         after_id = str(after or "").strip()
         if after_id:
@@ -299,7 +299,7 @@ class AssistantWorkspaceRepository:
                 return None
             created = await insert_if_absent(conn, _WORKSPACES, {
                 "assistant_id": assistant_id,
-                "execution_target": self.execution_target,
+                "environment_name": self.environment_name,
                 "created_by_user_id": created_by_user_id,
                 "engine_kind": engine_kind,
                 "state": "MATERIALIZING",
@@ -343,7 +343,7 @@ class AssistantWorkspaceRepository:
                 await conn.execute(
                     update(_SESSIONS)
                     .where(
-                        _SESSIONS.c.execution_target == self.execution_target,
+                        _SESSIONS.c.environment_name == self.environment_name,
                         _SESSIONS.c.workspace_kind == "assistant",
                         or_(
                             _SESSIONS.c.assistant_id == assistant_id,

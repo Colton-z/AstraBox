@@ -23,7 +23,7 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.model import SessionState
-from astrabox.core.service.orchestrator.runtime.execution_target import require_execution_target
+from astrabox.core.service.orchestrator.runtime.environment_ownership import require_environment_ownership
 from astrabox.core.service.orchestrator.runtime.preparation import require_session_user_prerequisites
 from astrabox.core.service.orchestrator.engine_kind_utils import resolve_session_engine_kind
 from astrabox.core.service.orchestrator.runtime_binding import (
@@ -121,6 +121,9 @@ class SessionLifecycleService:
         conversation the first one made. Whichever create claims the row's
         startup starts the one runtime it gets.
         """
+        from astrabox.core.service.environment_access import require_environment_access
+
+        await require_environment_access(user, operation="create conversation")
         subject = str(
             agent_id
             or owner_id
@@ -173,7 +176,7 @@ class SessionLifecycleService:
         A row whose startup another create already claimed, or that left
         ``CREATING``, is not started again.
         """
-        require_execution_target(session)
+        require_environment_ownership(session)
         session_id = str(session["session_id"])
         generation = str(session.get("sandbox_generation") or "")
         if str(session.get("state") or "") != SessionState.CREATING.value or not generation:
@@ -238,7 +241,7 @@ class SessionLifecycleService:
         await self._recover(session)
 
     async def _recover(self, session: dict[str, Any]) -> None:
-        require_execution_target(session)
+        require_environment_ownership(session)
         session_id = str(session["session_id"])
         session, _binding = await reconcile_session_runtime_binding(
             session=session,
@@ -310,7 +313,7 @@ class SessionLifecycleService:
 
     async def delete_session(self, user: UserContext, session_id: str) -> dict[str, Any]:
         session = await self._session_service.must_get_owned_session(user, session_id)
-        require_execution_target(session)
+        require_environment_ownership(session)
         _refuse_while_working(session, "delete session")
         if is_assistant_user_conversation(session):
             sandbox_id = str(session.get("sandbox_id") or "").strip() or None
@@ -384,7 +387,7 @@ class SessionLifecycleService:
     async def archive_session(self, user: UserContext, session_id: str) -> dict[str, Any]:
         async with get_persistence().coordination.runtime_lock(session_id) as check_lock:
             session = await self._session_service.must_get_owned_session(user, session_id)
-            require_execution_target(session)
+            require_environment_ownership(session)
             if is_assistant_user_conversation(session):
                 _refuse_while_working(session, "archive session")
                 sandbox_id = str(session.get("sandbox_id") or "").strip() or None
@@ -411,7 +414,7 @@ class SessionLifecycleService:
     async def end_conversation(self, user: UserContext, session_id: str) -> dict[str, Any]:
         async with get_persistence().coordination.runtime_lock(session_id) as check_lock:
             session = await self._session_service.must_get_owned_session(user, session_id)
-            require_execution_target(session)
+            require_environment_ownership(session)
             if not is_assistant_user_conversation(session):
                 raise APIError(
                     code="INVALID_REQUEST",
@@ -444,7 +447,7 @@ class SessionLifecycleService:
         whose destruction is not confirmed goes onto the row's undestroyed
         ledger in the same write and is reported to the operator.
         """
-        require_execution_target(session)
+        require_environment_ownership(session)
         session_id = str(session["session_id"])
         if is_assistant_user_conversation(session):
             raise APIError(
@@ -506,7 +509,7 @@ class SessionLifecycleService:
         on a new box, which resumes the engine's session. Only archive and
         delete take a conversation out of the active set.
         """
-        require_execution_target(session)
+        require_environment_ownership(session)
         session_id = str(session["session_id"])
         _refuse_while_working(session, "terminate sandbox")
         if is_assistant_user_conversation(session):

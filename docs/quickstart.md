@@ -2,7 +2,7 @@
 
 > Run your first AstraBox Agent in five steps.
 
-Get your first AstraBox Agent running in five steps: start AstraBox, select an Environment, create an Agent, create a Session, and exchange messages. After the self-hosted deployment is running, no SDK installation is required.
+Get your first AstraBox Agent running in five steps: start AstraBox, select a RuntimeProfile, create an Agent, create a Session, and exchange messages. After the self-hosted deployment is running, no SDK installation is required.
 
 ## Prerequisites
 
@@ -21,7 +21,7 @@ Agent model requests go through the bundled gateway,
 [LiteLLM](https://docs.litellm.ai/). The installer writes the settings for the
 model service you choose; you can add more routes later, including
 OpenAI-compatible services and local models, as described in
-[Connect a model](models.md). An Environment then selects the endpoint and
+[Connect a model](models.md). A RuntimeProfile then selects the endpoint and
 administrator-managed credential.
 Protected delivery is enabled by default: the Agent sees a placeholder, while
 the bundled OpenSandbox provider adds the real credential only to matching
@@ -54,17 +54,17 @@ a registry mirror or a host without GitHub access, see
 The local deployment has no authentication and listens on loopback only. Configure [team login](team-login.md) and TLS before exposing AstraBox on a shared or public address.
 :::
 
-## Step 2: Select an Environment
+## Step 2: Select a RuntimeProfile
 
-Open **Console > Environments**. Select an enabled Environment that provides the Agent program, sandbox, network access, and model connection you want to use.
+Open **Console > RuntimeProfiles**. Select an enabled RuntimeProfile that provides the Agent program, sandbox, network access, and model connection you want to use.
 
 :::note
-If no suitable Environment is available, create one before continuing. See [Environments](environments.md) for the available settings.
+If no suitable RuntimeProfile is available, create one before continuing. See [RuntimeProfiles](runtime-profiles.md) for the available settings.
 :::
 
 ## Step 3: Create an Agent
 
-Open **Console > Agents**, then click **New agent**. Enter a name, select the Environment from Step 2, and select or enter a model. The system Prompt, MCP servers, Skills, Plugins, repository, and other settings are optional; configure only what this Agent needs. Click **Create**.
+Open **Console > Agents**, then click **New agent**. Enter a name, select the RuntimeProfile from Step 2, and select or enter a model. The system Prompt, MCP servers, Skills, Plugins, repository, and other settings are optional; configure only what this Agent needs. Click **Create**.
 
 ![Create an Agent in the AstraBox console](./img/agent-create-console-en.png)
 
@@ -87,7 +87,7 @@ The task runs in AstraBox, not in the browser. You can leave the page and return
 ## End-to-End Script
 
 An Agent's writable fields are declared by the Agent program selected through
-its Environment, so AstraBox cannot use one fixed Agent JSON object for every
+its RuntimeProfile, so AstraBox cannot use one fixed Agent JSON object for every
 deployment. After completing Steps 1–3, this script finds that Agent by name,
 creates a Session, sends a message, and streams the result:
 
@@ -132,7 +132,7 @@ A: Check the services with `cd ~/astrabox/containers && docker compose ps`, and 
 
 **Q: Why can't I create an Agent?**
 
-A: Ensure the name, Environment, and model are set. The selected Environment must be enabled and must support Agent conversations.
+A: Ensure the name, RuntimeProfile, and model are set. The selected RuntimeProfile must be enabled and must support Agent conversations.
 
 **Q: Why is my Session not receiving Events?**
 
@@ -142,12 +142,12 @@ A: Send a message to trigger the Agent. If the task fails, open **Console > Erro
 
 A: Reopen the Session from the sidebar. AstraBox stores the Session and its Event stream, so the page can load the saved history and resume following new Events.
 
-**Q: Why are no Environments available when I create an Agent?**
+**Q: Why are no RuntimeProfiles available when I create an Agent?**
 
-A: The deployment has no enabled Environment that supports Agent conversations. Create or enable one as described in Step 2.
+A: The deployment has no enabled RuntimeProfile that supports Agent conversations. Create or enable one as described in Step 2.
 
 ## Next steps
 
 - [Define an Agent](authoring-agents.md) — Learn about all Agent configuration fields.
-- [Environments](environments.md) — Customize your runtime Environments.
+- [RuntimeProfiles](runtime-profiles.md) — Customize your runtime RuntimeProfiles.
 - [Start a Session](sessions.md) — Dive deeper into Session management.

@@ -64,11 +64,11 @@ type AuthoringEnvironment = {
 };
 
 async function checkCompleteAgentCreateForm(page: Page, api: AstraApi) {
-  const [schema, environments] = await Promise.all([
+  const [schema, runtime_profiles] = await Promise.all([
     api.data<{ fields: AuthoringField[] }>('GET', '/agent-configuration/schema'),
-    api.data<AuthoringEnvironment[]>('GET', '/agent-configuration/environments'),
+    api.data<AuthoringEnvironment[]>('GET', '/agent-configuration/runtime-profiles'),
   ]);
-  const selectable = environments.filter((environment) => environment.enabled !== false
+  const selectable = runtime_profiles.filter((environment) => environment.enabled !== false
     && environment.engine_available !== false
     && environment.supported_session_kinds?.includes('agent_chat') === true);
   expect(selectable.length, 'the live deployment must provide an Agent environment').toBeGreaterThan(0);
@@ -82,7 +82,7 @@ async function checkCompleteAgentCreateForm(page: Page, api: AstraApi) {
 
   for (const environment of selectable) {
     await test.step(`Complete Agent form for ${environment.name}`, async () => {
-      await page.locator('#agent-new-environment_name').selectOption(environment.name);
+      await page.locator('#agent-new-runtime_profile_name').selectOption(environment.name);
       const nativeFields = environment.engine_options_schema ?? [];
       const fieldKeys = schema.fields.flatMap((field) => field.key === 'engine_options'
         ? nativeFields.map((block) => `engine_options.${block.key}`) : [field.key]);
@@ -105,7 +105,7 @@ async function checkCompleteAgentCreateForm(page: Page, api: AstraApi) {
         for (const [id, label] of Object.entries(rendered)) {
           expect(label, `${environment.name}/${language}/${id} must have readable copy`).not.toEqual('');
           expect(label, `${environment.name}/${language}/${id} must not show an unresolved translation`)
-            .not.toMatch(/(?:\w+:)?(?:agent_form|env_form|assistant_form)\.|^(?:misc|manage|common|chat):/);
+            .not.toMatch(/(?:\w+:)?(?:agent_form|runtime_profile_form|assistant_form)\.|^(?:misc|manage|common|chat):/);
         }
         if (language === 'en') englishLabels = rendered;
         for (const field of schema.fields.filter((field) => field.key !== 'engine_options' && !field.label)) {
@@ -174,10 +174,10 @@ test('Agent create and edit forms change language in place without losing drafts
   await checkOpenForm(page, `/manage/agents/${agent.agent_id}`, 'agent', 'agent');
 });
 
-test('Environment create and edit forms change language in place without losing drafts', async ({ page, request }) => {
-  await checkOpenForm(page, '/manage/environments/new', 'environment-new', 'environment');
+test('RuntimeProfile create and edit forms change language in place without losing drafts', async ({ page, request }) => {
+  await checkOpenForm(page, '/manage/runtime-profiles/new', 'environment-new', 'environment');
   const agent = await new AstraApi(request).defaultAgent();
-  await checkOpenForm(page, `/manage/environments/${encodeURIComponent(String(agent.environment_name))}`, 'environment', 'environment');
+  await checkOpenForm(page, `/manage/runtime-profiles/${encodeURIComponent(String(agent.runtime_profile_name))}`, 'environment', 'environment');
 });
 
 test('Assistant create and edit forms change language in place without losing drafts', async ({ page, request }) => {
@@ -185,7 +185,7 @@ test('Assistant create and edit forms change language in place without losing dr
   const api = new AstraApi(request);
   const assistant = await api.createAssistant({
     display_name: `Language acceptance ${randomUUID()}`,
-    environment_name: await api.assistantEnvironmentName(),
+    runtime_profile_name: await api.assistantEnvironmentName(),
   });
   assistantId = assistant.assistant_id;
   await checkOpenForm(page, `/manage/assistants/${assistantId}`, 'assistant', 'assistant');

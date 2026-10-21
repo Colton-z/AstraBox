@@ -511,7 +511,7 @@ class ExpirationWatcher:
         progress when the box died has already failed with its history kept.
 
         A live workspace whose profile was prepared from an earlier revision of
-        its Assistant (an edit, a connector, its Environment or the inherited
+        its Assistant (an edit, a connector, its RuntimeProfile or the inherited
         defaults changed) is prepared again in place, so the next conversation
         does not wait for it.
         """
@@ -618,7 +618,7 @@ class ExpirationWatcher:
         Parking is per environment, so the decision is per session rather than per
         tick: an environment's ``idle_action`` says what becomes of the boxes it
         shapes, and the deployment's ``ASTRABOX_SANDBOX_IDLE_ACTION`` answers for
-        the environments that do not say. Under ``terminate`` there is nothing for
+        the runtime_profiles that do not say. Under ``terminate`` there is nothing for
         a sweeper to do — the lease runs out and the control plane destroys the
         box. ``terminate`` is the deployment default.
 
@@ -828,7 +828,7 @@ class ExpirationWatcher:
         Two settings from one resolve, because they come from two resources and
         both have to hold:
 
-        * the Environment's ``idle_action`` — what becomes of a box of this
+        * the RuntimeProfile's ``idle_action`` — what becomes of a box of this
           shape. It is settled when the environment is written, so nothing is
           re-derived here; anything but ``pause`` means this sweep has no
           business with the session. An environment stating none is left alone
@@ -859,7 +859,7 @@ class ExpirationWatcher:
         try:
             # Maintaining existing compute does not admit new work.
             view = await self._platform._agent_config.resolve_agent_harness(
-                agent_id, require_enabled_environment=False
+                agent_id, require_enabled_runtime_profile=False
             )
         except Exception:
             logger.exception(

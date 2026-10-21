@@ -55,7 +55,7 @@ function agentAccessPolicy(config: Record<string, unknown>): AgentAccessPolicy {
 export interface AssistantRecord {
   assistant_id: string;
   display_name?: string;
-  environment_name?: string;
+  runtime_profile_name?: string;
   engine_kind?: string;
   [key: string]: unknown;
 }
@@ -518,9 +518,9 @@ export class AstraApi {
   /**
    * Create a temporary Agent whose conversations own cold, isolated sandboxes.
    *
-   * The campaign Agent uses an Agent-tenancy Environment backed exclusively by
+   * The campaign Agent uses an Agent-tenancy RuntimeProfile backed exclusively by
    * the shared Pool. Tests that require conversation tenancy must not inherit
-   * that placement policy. The deployment's cold Environment is explicitly
+   * that placement policy. The deployment's cold RuntimeProfile is explicitly
    * conversation-tenancy with prewarming disabled, so node capacity is the
    * admission authority and every conversation owns its sandbox.
    */
@@ -530,36 +530,36 @@ export class AstraApi {
 
     const base = await this.defaultAgent();
     const model = String(base.model || '').trim();
-    const environmentName = String(
+    const runtimeProfileName = String(
       process.env.ASTRABOX_E2E_CREDENTIAL_COLD_ENVIRONMENT || '',
     ).trim();
-    if (!model || !environmentName) {
+    if (!model || !runtimeProfileName) {
       throw new Error(
         'cold test Agent requires the deployment-proven default model and ' +
           'ASTRABOX_E2E_CREDENTIAL_COLD_ENVIRONMENT',
       );
     }
-    const models = await this.listEnvironmentModels(environmentName);
+    const models = await this.listEnvironmentModels(runtimeProfileName);
     if (!models.includes(model)) {
       throw new Error(
-        `cold test Environment ${JSON.stringify(environmentName)} does not expose ` +
+        `cold test RuntimeProfile ${JSON.stringify(runtimeProfileName)} does not expose ` +
           `the deployment-proven model ${JSON.stringify(model)}; have: ${models.join(', ')}`,
       );
     }
     return this.createAgent({
       name: resolvedName,
       model,
-      environment_name: environmentName,
+      runtime_profile_name: runtimeProfileName,
       prepared_capacity: 0,
     });
   }
 
   /** Reuse a deployed Agent's proven route when a test creates another Agent. */
-  async configuredAgentModel(agentName: string, environmentName: string): Promise<string> {
+  async configuredAgentModel(agentName: string, runtimeProfileName: string): Promise<string> {
     const name = String(agentName || '').trim();
-    const environment = String(environmentName || '').trim();
+    const environment = String(runtimeProfileName || '').trim();
     if (!name || !environment) {
-      throw new Error('configured Agent model requires an Agent and Environment name');
+      throw new Error('configured Agent model requires an Agent and RuntimeProfile name');
     }
     const agent = await this.defaultAgent(name);
     const model = String(agent.model || '').trim();
@@ -568,7 +568,7 @@ export class AstraApi {
     if (!models.includes(model)) {
       throw new Error(
         `agent ${JSON.stringify(name)} model ${JSON.stringify(model)} is not exposed by `
-        + `Environment ${JSON.stringify(environment)}; have: ${models.join(', ')}`,
+        + `RuntimeProfile ${JSON.stringify(environment)}; have: ${models.join(', ')}`,
       );
     }
     return model;
@@ -586,7 +586,7 @@ export class AstraApi {
 
   createAssistant(payload: {
     display_name: string;
-    environment_name: string;
+    runtime_profile_name: string;
     [key: string]: unknown;
   }): Promise<AssistantRecord> {
     return this.data<AssistantRecord>('POST', '/assistants', payload);
@@ -600,21 +600,21 @@ export class AstraApi {
     return this.data<unknown>('DELETE', `/assistants/${assistantId}`, undefined, 60_000);
   }
 
-  /** The configured Assistant fixture; temporary Environments can name unavailable images. */
+  /** The configured Assistant fixture; temporary RuntimeProfiles can name unavailable images. */
   async assistantEnvironmentName(): Promise<string> {
     const expectedName = 'astrabox-e2e-assistant';
-    const environments = await this.data<Array<Record<string, unknown>>>(
+    const runtime_profiles = await this.data<Array<Record<string, unknown>>>(
       'GET',
-      '/admin/environments',
+      '/admin/runtime-profiles',
     );
-    const match = (environments || []).find(
+    const match = (runtime_profiles || []).find(
       (e) => e.name === expectedName
         && String(e.engine_kind || '').trim() === 'assistant' && e.enabled !== false,
     );
     if (!match) {
       throw new Error(
-        `configured Assistant Environment ${JSON.stringify(expectedName)} must be enabled ` +
-          `and run the assistant engine. Have: ${(environments || [])
+        `configured Assistant RuntimeProfile ${JSON.stringify(expectedName)} must be enabled ` +
+          `and run the assistant engine. Have: ${(runtime_profiles || [])
             .map((e) => `${e.name}(engine=${e.engine_kind}, enabled=${e.enabled})`)
             .join(', ')}`,
       );
@@ -623,18 +623,18 @@ export class AstraApi {
   }
 
   /** The OpenAI Chat model proven against the dedicated Assistant environment. */
-  async assistantModelName(environmentName: string): Promise<string> {
-    const environment = String(environmentName || '').trim();
+  async assistantModelName(runtimeProfileName: string): Promise<string> {
+    const environment = String(runtimeProfileName || '').trim();
     const model = String(process.env.ASTRABOX_E2E_ASSISTANT_MODEL || '').trim();
     if (!environment || !model) {
       throw new Error(
-        'Assistant fixture requires an Environment and ASTRABOX_E2E_ASSISTANT_MODEL',
+        'Assistant fixture requires a RuntimeProfile and ASTRABOX_E2E_ASSISTANT_MODEL',
       );
     }
     const models = await this.listEnvironmentModels(environment);
     if (!models.includes(model)) {
       throw new Error(
-        `Assistant Environment ${JSON.stringify(environment)} does not expose the `
+        `Assistant RuntimeProfile ${JSON.stringify(environment)} does not expose the `
         + `configured model ${JSON.stringify(model)}; have: ${models.join(', ')}`,
       );
     }
@@ -964,9 +964,9 @@ export class AstraApi {
   /**
    * Create one Agent through POST /api/v1/agents. The community
    * validator (agent_schema.validate_agent_payload) requires non-blank `name`,
-   * `model`, and `environment_name`, so a throwaway agent needs at least
-   * `{ name, model, environment_name }` — source a valid `model` from
-   * `listEnvironmentModels(environment_name)`. Returns the sanitized agent doc.
+   * `model`, and `runtime_profile_name`, so a throwaway agent needs at least
+   * `{ name, model, runtime_profile_name }` — source a valid `model` from
+   * `listEnvironmentModels(runtime_profile_name)`. Returns the sanitized agent doc.
    */
   async createAgent(config: Record<string, unknown>): Promise<AgentRecord> {
     const requestedAccess = agentAccessPolicy(config);
@@ -1013,11 +1013,11 @@ export class AstraApi {
     return this.data<AgentRecord>('POST', `/agents/${agentId}/wake`);
   }
 
-  /** Model ids the environment's gateway offers (GET /admin/environments/{name}/models). */
-  async listEnvironmentModels(environmentName: string): Promise<string[]> {
+  /** Model ids the environment's gateway offers (GET /admin/runtime-profiles/{name}/models). */
+  async listEnvironmentModels(runtimeProfileName: string): Promise<string[]> {
     const d = await this.data<{ models?: string[] }>(
       'GET',
-      `/admin/environments/${encodeURIComponent(environmentName)}/models`,
+      `/admin/runtime-profiles/${encodeURIComponent(runtimeProfileName)}/models`,
     );
     return d.models ?? [];
   }

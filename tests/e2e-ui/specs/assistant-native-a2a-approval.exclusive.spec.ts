@@ -110,12 +110,12 @@ test('Hermes answers one Codex authorization through the signed A2A interaction 
   const base = await api.getAgent(profile.agent_id);
   const options = object(base.engine_options || {});
   agentId = (await api.createAgent({
-    name: `__e2e_approval_codex_${marker}`, environment_name: profile.environment_name,
+    name: `__e2e_approval_codex_${marker}`, runtime_profile_name: profile.runtime_profile_name,
     model: profile.model, model_catalog: base.model_catalog, prepared_capacity: 0,
     engine_options: { ...options, config: { ...object(options.config || {}), approval_policy: 'on-request' } },
   })).agent_id;
   assistantId = (await api.createAssistant({
-    display_name: `__e2e_approval_hermes_${marker}`, environment_name: await api.assistantEnvironmentName(),
+    display_name: `__e2e_approval_hermes_${marker}`, runtime_profile_name: await api.assistantEnvironmentName(),
   })).assistant_id;
   // Omit model_config_override: exercise the deployment's configured Assistant model.
   expect((await api.getAssistant(assistantId)).model_config_override ?? null).toBeNull();

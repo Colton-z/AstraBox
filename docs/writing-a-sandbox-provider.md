@@ -103,7 +103,7 @@ provider is installed rather than at the first conversation that needs it.
 
 | Flag | The provider also implements |
 | --- | --- |
-| `supports_create_network_policy` | `admit_runtime_egress`; creates each sandbox under the Environment's network access rules |
+| `supports_create_network_policy` | `admit_runtime_egress`; creates each sandbox under the RuntimeProfile's network access rules |
 | `supports_isolated_sessions` | the isolated-session operations and `count_active_isolated_sessions`; `read_memory_headroom` and `read_listening_ports` have defaults that read the sandbox through `commands` |
 | `supports_isolated_session_recovery` | `find_isolated_sessions_by_workspace` |
 | `supports_pause` | `pause` and `resume` |
@@ -114,7 +114,7 @@ provider is installed rather than at the first conversation that needs it.
 | `supports_process_sessions` | the handle's `processes` |
 
 AstraBox refuses configuration that needs a capability the selected backend
-does not declare when that configuration is saved: an Environment on a backend
+does not declare when that configuration is saved: a RuntimeProfile on a backend
 without `supports_create_network_policy`; sandbox sharing without
 `supports_isolated_sessions`; the `Pause` idle behavior without
 `supports_pause`; prepared capacity without a ready client pool; and, without
@@ -149,7 +149,7 @@ sandbox, and otherwise resolves it again from the sandbox id.
 ## Enable the backend
 
 `ASTRABOX_SANDBOX_BACKENDS` lists the backends a deployment enables, and
-`ASTRABOX_SANDBOX_BACKEND` names the default for an Environment that selects
+`ASTRABOX_SANDBOX_BACKEND` names the default for a RuntimeProfile that selects
 none. A record that names an installed backend the deployment has not enabled
 fails with `SANDBOX_BACKEND_DISABLED`. List the environment variables only the
 provider reads in `owned_settings`: AstraBox warns at startup about each one
@@ -234,7 +234,7 @@ another message.
 - [Embed AstraBox](embedding.md) — entry points and startup
 
 Execution ownership is part of provider interface API9. Every `SandboxCreateSpec`
-carries `execution_target`. Add `execution_target_metadata(spec.execution_target)`
+carries `environment_name`. Add `environment_name_metadata(spec.environment_name)`
 to the provider-owned create metadata before allocating a resource, and preserve
 that mapping through adoption and inventory readback. Its opaque value uses the
 complete target digest in a label-safe representation; the readable target name

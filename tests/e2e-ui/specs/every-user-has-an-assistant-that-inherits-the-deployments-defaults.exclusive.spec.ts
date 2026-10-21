@@ -11,7 +11,7 @@
  * a new one, and the old one opens under the Assistant's row with its answer,
  * still not under Sessions. Deleting the Assistant deletes both
  * conversations, and the next visit creates a new primary Assistant. The
- * deployment names no Environment for Assistants and has one, so that is the
+ * deployment names no RuntimeProfile for Assistants and has one, so that is the
  * one used.
  *
  * The other two change the defaults after an Assistant exists and read the
@@ -37,13 +37,13 @@ test.use({ locale: 'en-US' });
 
 const SKILL = 'https://github.com/anthropics/skills.git@683bc88e56f3e09ba94f7055977f3d3aa499f202#skills/brand-guidelines';
 const LAYER_FIELDS = [
-  'environment_name', 'model_name', 'instructions', 'skills',
+  'runtime_profile_name', 'model_name', 'instructions', 'skills',
   'mcp_servers', 'packages', 'engine_options', 'credential_vault_ids',
 ] as const;
 
 type Defaults = Record<(typeof LAYER_FIELDS)[number], unknown> & {
-  effective_environment_name?: string | null;
-  assistant_environment_names?: string[];
+  effective_runtime_profile_name?: string | null;
+  assistant_runtime_profile_names?: string[];
 };
 interface Catalog {
   mcp_servers?: Array<{ id?: string; name?: string }>;
@@ -78,11 +78,11 @@ async function withDefaults(
 }
 
 async function existingAssistant(api: AstraApi, label: string): Promise<string> {
-  const environmentName = await api.assistantEnvironmentName();
+  const runtimeProfileName = await api.assistantEnvironmentName();
   const assistantId = String((await api.createAssistant({
     display_name: `__e2e_${label}_${randomUUID().slice(0, 8)}`,
-    environment_name: environmentName,
-    model_config_override: { model_name: await api.assistantModelName(environmentName) },
+    runtime_profile_name: runtimeProfileName,
+    model_config_override: { model_name: await api.assistantModelName(runtimeProfileName) },
   })).assistant_id || '');
   assistantIds.push(assistantId);
   return assistantId;
@@ -90,14 +90,14 @@ async function existingAssistant(api: AstraApi, label: string): Promise<string> 
 
 test("a user's Assistant opens on one conversation every time and answers in it", async ({ page, request }) => {
   const api = new AstraApi(request);
-  const environmentName = await api.assistantEnvironmentName();
+  const runtimeProfileName = await api.assistantEnvironmentName();
   const defaults = await api.data<Defaults>('GET', '/admin/assistant-defaults');
-  expect(defaults.assistant_environment_names, 'the deployment has one Environment for Assistants')
-    .toEqual([environmentName]);
-  expect(defaults.effective_environment_name, 'with none named, new Assistants use that one')
-    .toBe(environmentName);
+  expect(defaults.assistant_runtime_profile_names, 'the deployment has one RuntimeProfile for Assistants')
+    .toEqual([runtimeProfileName]);
+  expect(defaults.effective_runtime_profile_name, 'with none named, new Assistants use that one')
+    .toBe(runtimeProfileName);
 
-  await withDefaults(api, { model_name: await api.assistantModelName(environmentName) }, async () => {
+  await withDefaults(api, { model_name: await api.assistantModelName(runtimeProfileName) }, async () => {
     const body = { display_name: 'Assistant', timezone: 'UTC' };
     const first = await api.data<{ assistant_id: string; primary?: boolean }>('POST', '/assistants/primary', body);
     const again = await api.data<{ assistant_id: string }>('POST', '/assistants/primary', body);

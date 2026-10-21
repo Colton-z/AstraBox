@@ -9,10 +9,10 @@ that could not talk. So the criterion is the product's own: both
 conversations complete a real model turn, in the same box, as different
 accounts, and neither can see the other's words.
 
-The spec selects the deployment's agent-tenancy Environment for the lane's
+The spec selects the deployment's agent-tenancy RuntimeProfile for the lane's
 engine and exact image, then creates its own Agent. The deployment supplies
 the complete isolation configuration; the test exercises it without copying
-and maintaining a second Environment recipe.
+and maintaining a second RuntimeProfile recipe.
 """
 
 from __future__ import annotations
@@ -75,7 +75,7 @@ def _answered(reply: Reply, marker: str, sid: str) -> str:
 
 
 def _create_shared_agent(e2e_client: httpx.Client, *, prewarm: bool = False) -> str:
-    environment_name = environment_with_tenancy(e2e_client, "agent")
+    runtime_profile_name = environment_with_tenancy(e2e_client, "agent")
     profile = current_profile()
     canonical = data(
         e2e_client.get(f"/api/v1/agents/{profile['agent_id']}")
@@ -86,7 +86,7 @@ def _create_shared_agent(e2e_client: httpx.Client, *, prewarm: bool = False) -> 
             json={
                 "name": f"Cohabitation {uuid.uuid4().hex[:8]}",
                 "model": profile["model"],
-                "environment_name": environment_name,
+                "runtime_profile_name": runtime_profile_name,
                 "prepared_capacity": 1 if prewarm else 0,
                 "engine_options": canonical.get("engine_options") or {},
                 **(
@@ -308,7 +308,7 @@ def test_evicted_last_shared_conversation_reclaims_box(
         json={
             "name": agent["name"],
             "model": agent["model"],
-            "environment_name": agent["environment_name"],
+            "runtime_profile_name": agent["runtime_profile_name"],
             "version": agent["version"],
             "prepared_capacity": 0,
         },

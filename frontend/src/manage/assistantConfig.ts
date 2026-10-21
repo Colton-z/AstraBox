@@ -5,8 +5,8 @@
 // materialize, so only the mutable subset is editable there. These helpers mirror
 // sessionConfig.ts so the two operational surfaces speak the same pill/format grammar.
 import i18n from '@/i18n';
-import { listAdminEnvironments } from '@/api';
-import type { EnvironmentConfig } from '@/types';
+import { listAdminRuntimeProfiles } from '@/api';
+import type { RuntimeProfileConfig } from '@/types';
 
 import type { AssistantRecord } from '@/assistant/types';
 import type { PillTone } from './console';
@@ -110,12 +110,12 @@ export function permissionModeLabel(mode?: string): string {
   return key ? i18n.t(key) : m;
 }
 
-/** Blank create draft. The selected Environment supplies the engine identity. */
+/** Blank create draft. The selected RuntimeProfile supplies the engine identity. */
 export interface AssistantDraft {
   display_name: string;
   description: string;
   engine_kind: string;
-  environment_name: string;
+  runtime_profile_name: string;
   permission_mode_default: string;
   system: string;
   timezone: string;
@@ -135,8 +135,8 @@ export function buildAssistantDraft(): AssistantDraft {
     display_name: '',
     description: '',
     engine_kind: '',
-    environment_name: '',
-    // Chosen with the Environment: only its program knows which modes exist.
+    runtime_profile_name: '',
+    // Chosen with the RuntimeProfile: only its program knows which modes exist.
     permission_mode_default: '',
     system: '',
     timezone: browserTimezone(),
@@ -149,8 +149,8 @@ export function buildAssistantDraft(): AssistantDraft {
  * Eligibility comes from the installed adapter's declaration. A third-party
  * resident engine becomes selectable without teaching this page its name.
  */
-export async function loadAssistantEnvironments(): Promise<EnvironmentConfig[]> {
-  const envs = await listAdminEnvironments();
+export async function loadAssistantRuntimeProfiles(): Promise<RuntimeProfileConfig[]> {
+  const envs = await listAdminRuntimeProfiles();
   return envs
     .filter(
       (e) =>

@@ -3,7 +3,7 @@
 > Connect to a deployed AstraBox API and discover its exact current surface.
 
 The AstraBox API provides full management capabilities for self-hosted cloud
-Agents, covering Agent creation, Environment configuration, Session lifecycle,
+Agents, covering Agent creation, RuntimeProfile configuration, Session lifecycle,
 event streaming, files, Deployments, credentials, and more. REST endpoints use
 JSON for requests and responses; streaming endpoints use Server-Sent Events.
 
@@ -13,7 +13,7 @@ surface of the deployed release.</Note>
 
 ## Gateway URL
 
-| Environment | URL |
+| RuntimeProfile | URL |
 |---|---|
 | Self-hosted production | `https://astrabox.example.com/api/v1` |
 | Local development | `http://127.0.0.1:8088/api/v1` |
@@ -37,7 +37,7 @@ API documentation use top-level paths.
 | Agents | Create, read, update, delete, and authorize Agents | `/agents` |
 | Assistants | Manage Assistants and their persistent workspaces | `/assistants` |
 | Artifacts | Manage durable pages, versions, sharing, and viewer capabilities | `/artifacts`, `/artifact-share/{token}/runtime` |
-| Environments | Manage the infrastructure available to Agents | `/admin/environments` |
+| RuntimeProfiles | Manage the infrastructure available to Agents | `/admin/runtime-profiles` |
 | Sessions | Read Session state, send messages, stream events, and manage lifecycle | `/sessions` |
 | Files | List, upload, move, download, and delete files in a Session workspace | `/sessions/{session_id}/files` |
 | Extensions | Assign remote MCP servers and Skills to an Agent | `/agents/{agent_id}/extensions` |

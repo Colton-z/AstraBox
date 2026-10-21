@@ -41,13 +41,13 @@ PING_AFTER_IDLE_S = 1.0
 #: all of them once warm.
 STATEMENT_CACHE_SIZE = 1024
 
-_ENGINES: dict[tuple[asyncio.AbstractEventLoop, str], AsyncEngine] = {}
-_RUNTIME_LOCK_ENGINES: dict[tuple[asyncio.AbstractEventLoop, str], AsyncEngine] = {}
+_ENGINES: dict[tuple[asyncio.AbstractEventLoop, str, str], AsyncEngine] = {}
+_RUNTIME_LOCK_ENGINES: dict[tuple[asyncio.AbstractEventLoop, str, str], AsyncEngine] = {}
 
 #: Live checkouts, keyed by pool-record identity, with the checkout time and
 #: the task that holds the connection. A pool that runs dry reports only a
 #: count; this names who holds it.
-_CHECKOUTS: dict[int, tuple[str, float, str]] = {}
+_CHECKOUTS: dict[int, tuple[tuple[str, str], float, str]] = {}
 
 
 def database_url(url: str | None = None) -> str:
@@ -80,11 +80,11 @@ def redacted_url(url: str) -> str:
         return url.split("@", 1)[-1]
 
 
-def get_engine(url: str, *, runtime_lock: bool = False) -> AsyncEngine:
+def get_engine(url: str, *, environment_name: str, runtime_lock: bool = False) -> AsyncEngine:
     """The running loop's repository or separately bounded runtime-lock engine."""
     loop = asyncio.get_running_loop()
     url = database_url(url)
-    key = (loop, url)
+    key = (loop, url, environment_name)
     engines = _RUNTIME_LOCK_ENGINES if runtime_lock else _ENGINES
     engine = engines.get(key)
     if engine is None:
@@ -96,19 +96,22 @@ def get_engine(url: str, *, runtime_lock: bool = False) -> AsyncEngine:
             pool_use_lifo=True,
             connect_args={
                 "prepared_statement_cache_size": STATEMENT_CACHE_SIZE,
-                "server_settings": {"application_name": "astrabox"},
+                "server_settings": {
+                    "application_name": "astrabox/" + environment_name,
+                    "search_path": "public",
+                },
             },
         )
         _install_idle_ping(engine)
-        _install_pool_diagnostics(engine, url)
+        _install_pool_diagnostics(engine, url, environment_name)
         engines[key] = engine
     return engine
 
 
-async def dispose_engine(url: str) -> None:
+async def dispose_engine(url: str, *, environment_name: str) -> None:
     """Close this URL's pools for the running loop."""
     loop = asyncio.get_running_loop()
-    key = (loop, database_url(url))
+    key = (loop, database_url(url), environment_name)
     for engines in (_ENGINES, _RUNTIME_LOCK_ENGINES):
         engine = engines.pop(key, None)
         if engine is not None:
@@ -137,10 +140,10 @@ def _install_idle_ping(engine: AsyncEngine) -> None:
             raise DisconnectionError("an idle PostgreSQL connection failed its ping") from exc
 
 
-def _install_pool_diagnostics(engine: AsyncEngine, url: str) -> None:
+def _install_pool_diagnostics(engine: AsyncEngine, url: str, environment_name: str) -> None:
     @event.listens_for(engine.sync_engine, "checkout")
     def _on_checkout(_dbapi_connection: Any, record: Any, _proxy: Any) -> None:
-        _CHECKOUTS[id(record)] = (url, time.monotonic(), _current_holder())
+        _CHECKOUTS[id(record)] = ((url, environment_name), time.monotonic(), _current_holder())
 
     @event.listens_for(engine.sync_engine, "checkin")
     def _on_checkin(_dbapi_connection: Any, record: Any) -> None:
@@ -165,18 +168,22 @@ def _current_holder() -> str:
     return f"{task.get_name()}:{getattr(coro, '__qualname__', '?')}"
 
 
-def pool_report(url: str, *, holders: int = 5) -> str:
+def pool_report(url: str, *, environment_name: str, holders: int = 5) -> str:
     """One line on the running loop's pool and its longest-held connections."""
     try:
         url = database_url(url)
-        engine = _ENGINES.get((asyncio.get_running_loop(), url))
+        engine = _ENGINES.get((asyncio.get_running_loop(), url, environment_name))
     except RuntimeError:
         engine = None
     if engine is None:
         return "no-pool"
     now = time.monotonic()
     held = sorted(
-        ((now - at, holder) for owner_url, at, holder in _CHECKOUTS.values() if owner_url == url),
+        (
+            (now - at, holder)
+            for owner, at, holder in _CHECKOUTS.values()
+            if owner == (url, environment_name)
+        ),
         reverse=True,
     )
     oldest = ",".join(f"{age:.1f}s/{holder}" for age, holder in held[:holders]) or "-"

@@ -23,11 +23,11 @@ test('DSH answers through a configured gateway alias outside its native catalog'
   // Messages clients; it cannot establish generic Chat Completions routing.
   const model = 'openai-compatible/deepseek-flash';
   expect(model).not.toBe(profile.model);
-  expect(await api.listEnvironmentModels(profile.environment_name)).toContain(model);
+  expect(await api.listEnvironmentModels(profile.runtime_profile_name)).toContain(model);
   const marker = `GATEWAY_REPLY_${randomUUID()}`;
   agentId = (await api.createAgent({
     name: `__e2e_dsh_gateway_${randomUUID()}`,
-    environment_name: profile.environment_name,
+    runtime_profile_name: profile.runtime_profile_name,
     model,
     prepared_capacity: 0,
   })).agent_id;

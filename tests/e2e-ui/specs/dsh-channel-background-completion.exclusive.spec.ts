@@ -47,7 +47,7 @@ for (const scenario of cases) test(scenario.title, async ({ request, page }, inf
   try {
     agentId = (await api.createAgent({
       name: `__e2e_dsh_channel_background_${id}`,
-      environment_name: profile.environment_name, model: profile.model, prepared_capacity: 0,
+      runtime_profile_name: profile.runtime_profile_name, model: profile.model, prepared_capacity: 0,
     })).agent_id;
     const deployment = await platform.createDeployment(agentId, { scene: 'channel:generic_json', prompt_prefix: '' });
     deploymentId = deployment.deployment_id;

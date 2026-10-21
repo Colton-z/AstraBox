@@ -28,8 +28,8 @@ research prompt can require the Agent to:
 - explain missing or conflicting data; and
 - save useful tables, scripts, and reports in the workspace.
 
-Choose an Environment that runs the required Agent program and permits the
-connections the research sources need. An Environment determines the sandbox,
+Choose a RuntimeProfile that runs the required Agent program and permits the
+connections the research sources need. A RuntimeProfile determines the sandbox,
 network access, and model connection used for the work.
 
 ## Connect research sources
@@ -39,7 +39,7 @@ internal service provides one. The server remains remote whether its definition
 is entered directly on the Agent or supplied by a Plugin.
 
 When the source requires a credential, store it in a Credential Vault and use
-protected delivery for the source's exact destination. If the Environment uses
+protected delivery for the source's exact destination. If the RuntimeProfile uses
 limited networking, allow the remote host. The Agent should only access data
 that the operator and user are authorized to use.
 

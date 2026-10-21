@@ -40,7 +40,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from astrabox.config.settings import get_settings, validate_execution_target
+from astrabox.config.settings import get_settings, validate_environment_name
 from astrabox.core.model import SessionState
 from astrabox.core.service.orchestrator.engine.interaction_contract import public_interaction_view
 from astrabox.persistence.sql import (
@@ -215,9 +215,9 @@ class HistoryEntry:
 
 
 class SessionRuntimeRepository:
-    def __init__(self, *, execution_target: str | None = None) -> None:
-        self.execution_target = validate_execution_target(
-            get_settings().execution_target if execution_target is None else execution_target
+    def __init__(self, *, environment_name: str | None = None) -> None:
+        self.environment_name = validate_environment_name(
+            get_settings().environment_name if environment_name is None else environment_name
         )
 
     # -- inputs ------------------------------------------------------------
@@ -469,7 +469,7 @@ class SessionRuntimeRepository:
             eligible = await conn.scalar(
                 select(_SESSIONS.c.session_id).where(
                     _SESSIONS.c.session_id == session_id,
-                    _SESSIONS.c.execution_target == self.execution_target,
+                    _SESSIONS.c.environment_name == self.environment_name,
                     ~_WORKSPACE_OWN,
                 )
             )
@@ -571,7 +571,7 @@ class SessionRuntimeRepository:
         rows = await fetch_all(
             select(_SESSIONS.c.session_id)
             .where(
-                _SESSIONS.c.execution_target == self.execution_target,
+                _SESSIONS.c.environment_name == self.environment_name,
                 ~reader_live, ~_WORKSPACE_OWN, or_(ready, responses_open, ended_holding),
             )
             .limit(limit)

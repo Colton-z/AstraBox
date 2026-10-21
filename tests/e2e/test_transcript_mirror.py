@@ -113,7 +113,7 @@ def test_a_replacement_box_answers_from_the_restored_transcript(
         e2e_client,
         name_suffix="mirror-restore",
         engine_options={"settings": pi_settings} if engine_kind() == "pi" else {},
-        environment_name=environment_with_tenancy(e2e_client, "conversation"),
+        runtime_profile_name=environment_with_tenancy(e2e_client, "conversation"),
         permission_mode=permission_mode("unattended"),
     )
     sid = str(created.get("session_id") or "")

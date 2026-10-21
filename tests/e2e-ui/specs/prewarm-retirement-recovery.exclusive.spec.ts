@@ -180,15 +180,15 @@ async function readyCapacity(platform: PlatformApi, agentId: string): Promise<Re
 test('failed pool retirement retains its address and error, then recovers without killing a claimed box', async ({ page, request }) => {
   const api = new AstraApi(request);
   const platform = new PlatformApi(request);
-  const environmentName = String(process.env.ASTRABOX_E2E_PREWARM_CONVERSATION_ENVIRONMENT || '').trim();
+  const runtimeProfileName = String(process.env.ASTRABOX_E2E_PREWARM_CONVERSATION_ENVIRONMENT || '').trim();
   const researchAgent = String(process.env.ASTRABOX_E2E_RESEARCH_AGENT || '').trim();
-  expect(environmentName).not.toBe('');
+  expect(runtimeProfileName).not.toBe('');
   expect(researchAgent).not.toBe('');
-  const environment = (await platform.listEnvironments()).find((row) => row.name === environmentName);
+  const environment = (await platform.listEnvironments()).find((row) => row.name === runtimeProfileName);
   expect(environment?.sandbox_tenancy).toBe('conversation');
-  const model = await api.configuredAgentModel(researchAgent, environmentName);
+  const model = await api.configuredAgentModel(researchAgent, runtimeProfileName);
   const agentName = `__e2e_retirement_recovery_${randomUUID()}`;
-  const agent = await api.createAgent({ name: agentName, model, environment_name: environmentName, prepared_capacity: 1 });
+  const agent = await api.createAgent({ name: agentName, model, runtime_profile_name: runtimeProfileName, prepared_capacity: 1 });
   test.info().annotations.push({ type: 'retirement_agent', description: agent.agent_id });
   const first = await readyCapacity(platform, agent.agent_id);
   const created = await api.startConversation(agent.agent_id);
@@ -242,7 +242,7 @@ test('failed pool retirement retains its address and error, then recovers withou
     expect(armed.stateStoreError!.cause).toContain('WRONGTYPE');
     const current = await api.getAgent(agent.agent_id);
     await api.updateAgent(agent.agent_id, {
-      name: current.name, model: current.model, environment_name: current.environment_name,
+      name: current.name, model: current.model, runtime_profile_name: current.runtime_profile_name,
       version: current.version, prepared_capacity: 0,
     });
     let failed: Record<string, unknown> = {};
@@ -287,7 +287,7 @@ test('failed pool retirement retains its address and error, then recovers withou
 
   const retry = await api.getAgent(agent.agent_id);
   await api.updateAgent(agent.agent_id, {
-    name: retry.name, model: retry.model, environment_name: retry.environment_name,
+    name: retry.name, model: retry.model, runtime_profile_name: retry.runtime_profile_name,
     version: retry.version, prepared_capacity: 0,
   });
   await expect.poll(() => agentRetirement(agent.agent_id), {

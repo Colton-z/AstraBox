@@ -636,7 +636,7 @@ def ensure_sandbox_bridge_isolation(edge_address: str) -> str:
     OpenSandbox's egress sidecar in ``dns+nft`` mode drops IP/CIDR deny
     targets before it consults any allow set, so denying the bridge subnets
     minus the HTTP edge keeps a sandbox off other sandboxes and off the gateway
-    in every networking mode: an Unrestricted Environment, and any allow-list
+    in every networking mode: an Unrestricted RuntimeProfile, and any allow-list
     entry that names a bridge address, included. The edge stays reachable. The
     DNS edge needs no exception: the sidecar's DNS proxy marks its upstream
     traffic, and the sidecar accepts marked packets before the deny set.
@@ -924,6 +924,8 @@ def ensure_sandbox_inference_key() -> str:
     The value is supplied rather than generated: ``/key/generate`` accepts a
     caller-supplied ``key``, and deriving it from the signing secret is what
     lets every replica name the same key without one of them storing it.
+    The optional gateway-global alias is omitted so independent deployment
+    keys can coexist on an external gateway.
     """
 
     import json
@@ -931,7 +933,6 @@ def ensure_sandbox_inference_key() -> str:
     from astrabox.identity.session_signing import session_signing_secret
     from astrabox.providers.model import LiteLLMModelEndpointProvider
     from astrabox.providers.litellm_shared_auth import (
-        SANDBOX_INFERENCE_KEY_ALIAS,
         SANDBOX_INFERENCE_KEY_TYPE,
         inference_key_metadata,
         sandbox_inference_key,
@@ -977,23 +978,20 @@ def ensure_sandbox_inference_key() -> str:
 
     status, body = _call(probe, None)
     if status == 200:
-        logger.info(
-            "sandbox model key %s is already provisioned", SANDBOX_INFERENCE_KEY_ALIAS
-        )
+        logger.info("sandbox model key is already provisioned")
         return _reconcile_metadata(body)
 
     status, body = _call(
         "/key/generate",
         {
             "key": key,
-            "key_alias": SANDBOX_INFERENCE_KEY_ALIAS,
             "key_type": SANDBOX_INFERENCE_KEY_TYPE,
             "metadata": inference_key_metadata(),
             "user_id": "astrabox-sandbox",
         },
     )
     if status // 100 == 2:
-        logger.info("sandbox model key %s provisioned", SANDBOX_INFERENCE_KEY_ALIAS)
+        logger.info("sandbox model key provisioned")
         return _verify_sandbox_inference_key(key, _call)
 
     # A second replica may have created it between the two calls. Re-ask rather
@@ -1001,10 +999,7 @@ def ensure_sandbox_inference_key() -> str:
     # /key/info answers exactly that.
     recheck, existing_body = _call(probe, None)
     if recheck == 200:
-        logger.info(
-            "sandbox model key %s was provisioned concurrently",
-            SANDBOX_INFERENCE_KEY_ALIAS,
-        )
+        logger.info("sandbox model key was provisioned concurrently")
         return _reconcile_metadata(existing_body)
     raise RuntimeError(
         f"could not provision the sandbox model key: /key/generate returned "

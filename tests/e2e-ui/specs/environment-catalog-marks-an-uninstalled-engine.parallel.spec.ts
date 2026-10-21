@@ -1,35 +1,35 @@
 /**
- * E2E: an Environment this release cannot run says so in the catalogue,
+ * E2E: a RuntimeProfile this release cannot run says so in the catalogue,
  * instead of leaving the operator to discover it on the next page.
  *
  * THE JOURNEY. A release ships without one engine — renamed, removed, or a
  * third-party `astrabox.providers.engine` plugin that is absent from it.
- * The Environments stored against it survive that, deliberately
- * (`_environment_with_engine_capabilities`, agent_config_service.py:761-783:
- * "Stored environments survive plugin removal, so the admin catalogue must
- * still render them"). An operator opens /manage/environments, reads the row,
+ * The RuntimeProfiles stored against it survive that, deliberately
+ * (`_runtime_profile_with_engine_capabilities`, agent_config_service.py:761-783:
+ * "Stored runtime_profiles survive plugin removal, so the admin catalogue must
+ * still render them"). An operator opens /manage/runtime-profiles, reads the row,
  * opens the record, then walks to /manage/agents/new to point an Agent at it —
  * and the picker does not offer it. The catalogue is the page that has to say
  * why, because the picker is a list of what CAN be chosen and has no room to
  * explain an absence.
  *
  * WHAT THE PRODUCT ALREADY KNOWS. `engine_available` is computed on every
- * `GET /api/v1/admin/environments` (`_environment_with_engine_capabilities`,
+ * `GET /api/v1/admin/runtime-profiles` (`_runtime_profile_with_engine_capabilities`,
  * agent_config_service.py:760-784) — false exactly when the engine kind the
  * row names is not in the running registry — and its docstring says it exists
  * "to explain why one cannot currently be selected". Four surfaces read it: the
  * Agent form's filter (agentEditConfig.ts:153) and the Assistant form's
  * (assistantConfig.ts:144), which drop the row from a picker, and the two this
- * spec judges — the list row (EnvironmentsListPage.tsx:110) and the record
- * status (EnvironmentDetailPage.tsx:199), each stating the missing engine ahead
+ * spec judges — the list row (RuntimeProfilesListPage.tsx:110) and the record
+ * status (RuntimeProfileDetailPage.tsx:199), each stating the missing engine ahead
  * of the enabled flag. Dropping a record from a picker without a surface that
  * accounts for the absence is the shape under test here: enabled on one page,
  * gone from the picker on the next, with no reason given on either.
  *
  * WHY THIS IS NOT A UNIT TEST'S JOB. The property is a comparison ACROSS two
  * pages fed by two different endpoints — the admin catalogue
- * (`GET /admin/environments`, which computes `engine_available`) and the Agent
- * form's narrow projection (`GET /agent-configuration/environments`, which
+ * (`GET /admin/runtime-profiles`, which computes `engine_available`) and the Agent
+ * form's narrow projection (`GET /agent-configuration/runtime-profiles`, which
  * omits the row server-side via `engine_allowed_for_session_kind`). A jsdom
  * test over either page renders the props it was handed and proves nothing
  * about the other; what goes wrong in production is that one surface drops a
@@ -39,8 +39,8 @@
  *
  * HOW THE RELEASE IS SIMULATED, AND WHY IT IS FAITHFUL. No product API can
  * create this state: `engine_kind` is an enum resolved per call from
- * `known_engine_kinds()` (environment_schema.py:59-62), so `PUT
- * /admin/environments/{name}` answers 400 INVALID_REQUEST for a kind this
+ * `known_engine_kinds()` (runtime_profile_schema.py:59-62), so `PUT
+ * /admin/runtime-profiles/{name}` answers 400 INVALID_REQUEST for a kind this
  * release does not install. Unregistering an adapter inside the server would be
  * process-global and would poison every concurrent worker. So the stored
  * `engine_kind` is moved instead: in production the row keeps its kind and the
@@ -48,25 +48,25 @@
  * changes its kind. Every line under test reads only the predicate
  * `engine_kind ∈ registry`, so the two are indistinguishable to it — and the
  * spec machine-checks both halves of that predicate against the live enum in
- * `GET /admin/environment-schema` rather than assuming them.
+ * `GET /admin/runtime-profile-schema` rather than assuming them.
  *
  * ENGINE-INDEPENDENT. The spec names no engine. It reads the installed kind off
- * whichever Environment the matrix-selected Agent runs on and derives the
+ * whichever RuntimeProfile the matrix-selected Agent runs on and derives the
  * uninstalled one from it, so it runs under every profile. No conversation, no
- * turn, no sandbox, no prepared slot: the Environment it writes is metadata that
+ * turn, no sandbox, no prepared slot: the RuntimeProfile it writes is metadata that
  * never starts a box.
  *
  * WHY PARALLEL. Nothing here is exclusive to the deployment. The only mutated
- * record is a row this spec owns; the donor Environment is read, never
+ * record is a row this spec owns; the donor RuntimeProfile is read, never
  * written. Once its engine kind is retired the row is inert rather than broken —
  * `engine_allowed_for_session_kind` returns False (it never raises) so
- * `/agent-configuration/environments` simply omits it, and
- * `_environment_with_engine_capabilities` catches `EngineKindNotRegistered` so
- * the admin list does not 500. No lane spec asserts an Environment count or the
- * rail's Environments badge.
+ * `/agent-configuration/runtime-profiles` simply omits it, and
+ * `_runtime_profile_with_engine_capabilities` catches `EngineKindNotRegistered` so
+ * the admin list does not 500. No lane spec asserts a RuntimeProfile count or the
+ * rail's RuntimeProfiles badge.
  *
- * WHAT IT LEAVES BEHIND. The Environment name is stable, not run-scoped, for
- * the reason its siblings give: `admin.py` offers environments only GET and PUT,
+ * WHAT IT LEAVES BEHIND. The RuntimeProfile name is stable, not run-scoped, for
+ * the reason its siblings give: `admin.py` offers runtime_profiles only GET and PUT,
  * so a run-scoped name would leave one row per run on the deployment forever
  * (idle-parked-conversation-serves-its-workspace-and-its-next-message.exclusive.spec.ts:306).
  * A pass restores the row's engine kind, leaving an ordinary enabled row that
@@ -90,7 +90,7 @@ import { POSTGRES_CONTAINER_HANDLE, requireServiceContainer } from '../fixtures/
 import { onPassOnly } from '../fixtures/sessionCleanup';
 
 // Both status words this spec reads are localized — `common:enabled`,
-// `common:disabled`, and `manage:environments.engine_missing` — and the console detects
+// `common:disabled`, and `manage:runtime_profiles.engine_missing` — and the console detects
 // language as ['localStorage','navigator']. An unpinned runner locale decides
 // which spelling appears, and a spec written to accept two would accept a third
 // nobody wrote it against. Pin the navigator locale here and the persisted
@@ -98,23 +98,23 @@ import { onPassOnly } from '../fixtures/sessionCleanup';
 test.use({ locale: 'en-US' });
 
 /**
- * Set the engine kind a stored Environment names, in its own `environments`
+ * Set the engine kind a stored RuntimeProfile names, in its own `runtime_profiles`
  * row: the one write no product route accepts for a kind this release does not
  * install. Anything but exactly one changed row is refused, so a name that ever
  * stops being right fails loudly here instead of changing nothing quietly.
  */
-function setStoredEngineKind(environmentName: string, engineKind: string): void {
+function setStoredEngineKind(runtimeProfileName: string, engineKind: string): void {
   const changed = postgresTextRows(
     requireServiceContainer(POSTGRES_CONTAINER_HANDLE),
     process.env.ASTRABOX_E2E_POSTGRES_DB || 'astrabox',
     process.env.ASTRABOX_E2E_POSTGRES_USER || 'astrabox',
-    `UPDATE environments SET engine_kind = ${sqlLiteral(engineKind)} `
-      + `WHERE name = ${sqlLiteral(environmentName)} RETURNING name`,
+    `UPDATE runtime_profiles SET engine_kind = ${sqlLiteral(engineKind)} `
+      + `WHERE name = ${sqlLiteral(runtimeProfileName)} RETURNING name`,
   );
   if (changed.length !== 1) {
     throw new Error(
-      `the engine-kind write must change exactly one environments row named `
-        + `${JSON.stringify(environmentName)}; it changed ${changed.length}`,
+      `the engine-kind write must change exactly one runtime_profiles row named `
+        + `${JSON.stringify(runtimeProfileName)}; it changed ${changed.length}`,
     );
   }
 }
@@ -123,31 +123,31 @@ function setStoredEngineKind(environmentName: string, engineKind: string): void 
 const FAILURE_STATUSES = new Set(['failed', 'timedOut', 'interrupted']);
 
 /** What teardown has to put back, populated only once the release is injected. */
-const retired: { environmentName: string; installedKind: string; uninstalledKind: string } = {
-  environmentName: '',
+const retired: { runtimeProfileName: string; installedKind: string; uninstalledKind: string } = {
+  runtimeProfileName: '',
   installedKind: '',
   uninstalledKind: '',
 };
 
 // A pass puts the row's engine back, by the same single-field write that took it
-// away: restoring through `PUT /admin/environments/{name}` would re-run
+// away: restoring through `PUT /admin/runtime-profiles/{name}` would re-run
 // normalization and validation, which is a second thing that can fail in
 // teardown and a second thing to read when it does.
 onPassOnly(async () => {
-  if (!retired.environmentName) return;
-  setStoredEngineKind(retired.environmentName, retired.installedKind);
+  if (!retired.runtimeProfileName) return;
+  setStoredEngineKind(retired.runtimeProfileName, retired.installedKind);
 });
 
 // Registered as an `afterEach` because that is where the result is real; inside
 // the body a failing test still reads as passing.
 test.afterEach(async ({}, testInfo) => {
-  if (!retired.environmentName || !FAILURE_STATUSES.has(String(testInfo.status || ''))) return;
+  if (!retired.runtimeProfileName || !FAILURE_STATUSES.has(String(testInfo.status || ''))) return;
   // eslint-disable-next-line no-console -- the report tail is where an operator looks
   console.log(
-    `KEPT for diagnosis — this Environment row still names an engine this release does not\n`
+    `KEPT for diagnosis — this RuntimeProfile row still names an engine this release does not\n`
       + `install, so the catalogue will go on marking it until someone clears it:\n`
-      + `  environment=${retired.environmentName} engine_kind=${retired.uninstalledKind}\n`
-      + `  restore: PUT /api/v1/admin/environments/${retired.environmentName} `
+      + `  environment=${retired.runtimeProfileName} engine_kind=${retired.uninstalledKind}\n`
+      + `  restore: PUT /api/v1/admin/runtime-profiles/${retired.runtimeProfileName} `
       + `{"engine_kind": "${retired.installedKind}"} — or rerun this spec, which upserts it back.`,
   );
 });
@@ -155,8 +155,8 @@ test.afterEach(async ({}, testInfo) => {
 /**
  * One catalogue row, addressed by the record name printed under its title.
  *
- * `NameCell` puts `envDisplayName(e)` on the first line and `e.name` on the
- * second (EnvironmentsListPage.tsx:102-117), so an exact match on the name is
+ * `NameCell` puts `runtimeProfileDisplayName(e)` on the first line and `e.name` on the
+ * second (RuntimeProfilesListPage.tsx:102-117), so an exact match on the name is
  * the row's identity rather than a substring of whatever else it renders. The
  * table is laid out as CSS grid, which is why
  * `a-sandbox-record-reports-the-box-not-an-empty-card.parallel.spec.ts:125-127`
@@ -188,28 +188,28 @@ test('an environment whose engine this release no longer installs is marked in t
 
   // ── Premise: which engine this deployment installs, proven not assumed ────
   const laneAgent = await api.defaultAgent();
-  const donorEnvironment = String(laneAgent.environment_name || '').trim();
+  const donorEnvironment = String(laneAgent.runtime_profile_name || '').trim();
   expect(
     donorEnvironment,
-    `the lane's Agent ${JSON.stringify(laneAgent.name)} must name the Environment whose engine `
+    `the lane's Agent ${JSON.stringify(laneAgent.name)} must name the RuntimeProfile whose engine `
       + 'this reads; without it the spec has no installed kind to retire',
   ).not.toEqual('');
 
-  const environments = await platform.listEnvironments();
-  const donor = environments.find((row) => String(row.name || '') === donorEnvironment);
+  const runtime_profiles = await platform.listEnvironments();
+  const donor = runtime_profiles.find((row) => String(row.name || '') === donorEnvironment);
   expect(
     donor,
-    `Environment ${JSON.stringify(donorEnvironment)} is not on this deployment; have: `
-      + environments.map((row) => String(row.name || '')).join(', '),
+    `RuntimeProfile ${JSON.stringify(donorEnvironment)} is not on this deployment; have: `
+      + runtime_profiles.map((row) => String(row.name || '')).join(', '),
   ).toBeTruthy();
   const installedKind = String((donor as Record<string, unknown>).engine_kind || '').trim();
-  expect(installedKind, 'the lane Environment must name the engine it runs on').not.toEqual('');
+  expect(installedKind, 'the lane RuntimeProfile must name the engine it runs on').not.toEqual('');
   // Derived from the installed kind rather than spelled out, so the spec stays
   // engine-independent and the absence below is obvious rather than lucky.
   const uninstalledKind = `${installedKind}_not_installed`;
 
   // The form schema resolves `engine_kind`'s enum from `known_engine_kinds()`
-  // on every request (environment_schema.py:59-62), so this is the running
+  // on every request (runtime_profile_schema.py:59-62), so this is the running
   // registry answering — the one authority on what "installed" means here.
   const schema = await platform.environmentSchema();
   const engineField = (schema.fields || []).find(
@@ -217,7 +217,7 @@ test('an environment whose engine this release no longer installs is marked in t
   );
   expect(
     engineField,
-    'the Environment form schema must declare engine_kind; without it there is no live '
+    'the RuntimeProfile form schema must declare engine_kind; without it there is no live '
       + 'registry reading and the premise below would be an assumption',
   ).toBeTruthy();
   const declaredEnum = (engineField as Record<string, unknown>).enum;
@@ -238,14 +238,14 @@ test('an environment whose engine this release no longer installs is marked in t
   ).not.toContain(uninstalledKind);
 
   // ── The row under test: metadata only, never a box ───────────────────────
-  // Stable, not run-scoped: environments have GET and PUT and no DELETE. It
+  // Stable, not run-scoped: runtime_profiles have GET and PUT and no DELETE. It
   // carries no runtime fields and no credential, unlike the clones the lifecycle
   // specs make, because it exists to be READ in the catalogue — cloning the
   // donor would copy a masked provider secret into a row with no stored key
   // behind it, which is a lie in a record nothing will ever run.
-  const environmentName = `__e2e-engine-retired-${installedKind}`;
-  const stored = await platform.putEnvironment(environmentName, {
-    display_name: environmentName,
+  const runtimeProfileName = `__e2e-engine-retired-${installedKind}`;
+  const stored = await platform.putEnvironment(runtimeProfileName, {
+    display_name: runtimeProfileName,
     description:
       'E2E fixture: how the catalogue reads when this release stops installing its engine. '
       + 'Runs nothing.',
@@ -254,16 +254,16 @@ test('an environment whose engine this release no longer installs is marked in t
   });
   expect(
     String(stored.engine_kind || ''),
-    'the stored Environment must be the one the catalogue will read',
+    'the stored RuntimeProfile must be the one the catalogue will read',
   ).toEqual(installedKind);
 
   const catalogueEntry = async (): Promise<Record<string, unknown>> => {
     const rows = await platform.listEnvironments();
-    const match = rows.find((row) => String(row.name || '') === environmentName);
+    const match = rows.find((row) => String(row.name || '') === runtimeProfileName);
     expect(
       match,
-      `the admin catalogue must still list ${JSON.stringify(environmentName)}; stored `
-        + 'environments outlive plugin removal by design, so a row missing here is the '
+      `the admin catalogue must still list ${JSON.stringify(runtimeProfileName)}; stored `
+        + 'runtime_profiles outlive plugin removal by design, so a row missing here is the '
         + 'catalogue hiding a record rather than marking it',
     ).toBeTruthy();
     return match as Record<string, unknown>;
@@ -272,11 +272,11 @@ test('an environment whose engine this release no longer installs is marked in t
   const runnable = await catalogueEntry();
   expect(
     runnable.engine_available,
-    'the control reading: the catalogue must report this Environment as runnable before '
+    'the control reading: the catalogue must report this RuntimeProfile as runnable before '
       + 'its engine leaves',
   ).toBe(true);
 
-  // ── Control arm, catalogue: nothing is wrong with this Environment ───────
+  // ── Control arm, catalogue: nothing is wrong with this RuntimeProfile ───────
   // Pin the console language before the FIRST navigation (see test.use above):
   // the persisted 'astrabox-lang' outranks navigator in the detection order.
   await page.addInitScript(() => {
@@ -286,33 +286,33 @@ test('an environment whose engine this release no longer installs is marked in t
       /* localStorage unavailable — the en-US navigator locale still applies */
     }
   });
-  await page.goto(appPath('/manage/environments'));
+  await page.goto(appPath('/manage/runtime-profiles'));
 
   // The search field is deliberately NOT driven: `ConsoleSearch` does not render
   // below twelve rows (ConsoleControls.tsx:40), so a spec that typed into it
   // would fail on a small deployment for a reason that has nothing to do with
   // engines. The list renders every row it loaded, so the row is on screen.
-  const runnableRow = catalogueRow(page, environmentName);
+  const runnableRow = catalogueRow(page, runtimeProfileName);
   await expect(
     runnableRow,
-    `exactly one catalogue row must be ${JSON.stringify(environmentName)}`,
+    `exactly one catalogue row must be ${JSON.stringify(runtimeProfileName)}`,
   ).toHaveCount(1);
   const runnableRowPills = await pillTexts(runnableRow);
 
   // Opened by clicking the row, the way a reader opens it.
   await runnableRow.click();
-  const recordPath = appPath(`/manage/environments/${environmentName}`);
+  const recordPath = appPath(`/manage/runtime-profiles/${runtimeProfileName}`);
   await expect(page, 'the row must open the record it names').toHaveURL(
     (url) => url.pathname === recordPath,
   );
 
   // The URL changes before the exiting list disappears. Read the verdict
   // beside this record's heading, then capture text and tone in one render.
-  const recordStatus = page.getByRole('heading', { level: 1, name: environmentName, exact: true })
+  const recordStatus = page.getByRole('heading', { level: 1, name: runtimeProfileName, exact: true })
     .locator('..').getByTestId('status-pill');
   await expect(
     recordStatus,
-    'the Environment record must state exactly one status for the record',
+    'the RuntimeProfile record must state exactly one status for the record',
   ).toHaveCount(1);
   const runnableStatus = await recordStatus.evaluate((element) => ({
     text: (element as HTMLElement).innerText.trim(),
@@ -320,31 +320,31 @@ test('an environment whose engine this release no longer installs is marked in t
   }));
   expect(
     runnableStatus,
-    'a runnable, enabled Environment reads as enabled, in the healthy tone',
+    'a runnable, enabled RuntimeProfile reads as enabled, in the healthy tone',
   ).toEqual({ text: 'Enabled', tone: 'mint' });
 
   // ── Control arm, the other half of the journey: the Agent form offers it ──
   await page.goto(appPath('/manage/agents/new'));
-  // `env_ref` renders as the platform's native select (agentEditConfig.ts:38-40
+  // `runtime_profile_ref` renders as the platform's native select (agentEditConfig.ts:38-40
   // → ConsoleSelect, ConsoleForm.tsx:598), and the control's id is minted from
-  // the page's prefix and the schema key (`agent-new` + `environment_name`,
+  // the page's prefix and the schema key (`agent-new` + `runtime_profile_name`,
   // ConsoleEditSections.tsx:68-78).
-  const environmentPicker = page.locator('#agent-new-environment_name');
+  const environmentPicker = page.locator('#agent-new-runtime_profile_name');
   await expect(
-    environmentPicker.locator(`option[value="${environmentName}"]`),
-    'an Agent author must be offered an Environment the product can run — without this the '
+    environmentPicker.locator(`option[value="${runtimeProfileName}"]`),
+    'an Agent author must be offered a RuntimeProfile the product can run — without this the '
       + 'disappearance below proves nothing, because it would never have been there',
   ).toHaveCount(1);
   await expect(
     environmentPicker.locator(`option[value="${donorEnvironment}"]`),
-    `the picker must also offer the lane's own Environment ${JSON.stringify(donorEnvironment)}`,
+    `the picker must also offer the lane's own RuntimeProfile ${JSON.stringify(donorEnvironment)}`,
   ).toHaveCount(1);
 
   // ── The release: this deployment stops installing that engine ────────────
-  retired.environmentName = environmentName;
+  retired.runtimeProfileName = runtimeProfileName;
   retired.installedKind = installedKind;
   retired.uninstalledKind = uninstalledKind;
-  setStoredEngineKind(environmentName, uninstalledKind);
+  setStoredEngineKind(runtimeProfileName, uninstalledKind);
 
   const orphaned = await catalogueEntry();
   expect(
@@ -354,7 +354,7 @@ test('an environment whose engine this release no longer installs is marked in t
   ).toBe(false);
   expect(
     orphaned.enabled,
-    'nobody disabled this Environment — its engine left. A product that conflates the two '
+    'nobody disabled this RuntimeProfile — its engine left. A product that conflates the two '
       + 'sends the operator to flip a switch that is already on',
   ).not.toBe(false);
 
@@ -363,21 +363,21 @@ test('an environment whose engine this release no longer installs is marked in t
   await expect(
     environmentPicker.locator(`option[value="${donorEnvironment}"]`),
     `the picker must still work — ${JSON.stringify(donorEnvironment)} is the lane's own `
-      + 'Environment, and an empty picker would make the next assertion pass for the wrong reason',
+      + 'RuntimeProfile, and an empty picker would make the next assertion pass for the wrong reason',
   ).toHaveCount(1);
   await expect(
-    environmentPicker.locator(`option[value="${environmentName}"]`),
-    'an Agent can no longer be pointed at an Environment whose engine is not installed. '
+    environmentPicker.locator(`option[value="${runtimeProfileName}"]`),
+    'an Agent can no longer be pointed at a RuntimeProfile whose engine is not installed. '
       + '(ConsoleSelect surfaces an unknown CURRENT value as a real option, but a new Agent '
-      + "draft holds no environment_name, so zero here means the picker dropped it.)",
+      + "draft holds no runtime_profile_name, so zero here means the picker dropped it.)",
   ).toHaveCount(0);
 
   // ── Comparison arm, catalogue: the page that has to say why ──────────────
-  await page.goto(appPath('/manage/environments'));
-  const orphanedRow = catalogueRow(page, environmentName);
+  await page.goto(appPath('/manage/runtime-profiles'));
+  const orphanedRow = catalogueRow(page, runtimeProfileName);
   await expect(
     orphanedRow,
-    'the record must still be listed after its engine leaves: stored environments survive '
+    'the record must still be listed after its engine leaves: stored runtime_profiles survive '
       + 'plugin removal on purpose, so hiding the row is not an answer to this',
   ).toHaveCount(1);
 
@@ -386,15 +386,15 @@ test('an environment whose engine this release no longer installs is marked in t
   const donorRow = catalogueRow(page, donorEnvironment);
   await expect(
     donorRow,
-    `exactly one catalogue row must be the lane's Environment ${JSON.stringify(donorEnvironment)}`,
+    `exactly one catalogue row must be the lane's RuntimeProfile ${JSON.stringify(donorEnvironment)}`,
   ).toHaveCount(1);
   const orphanedRowPills = await pillTexts(orphanedRow);
   const donorRowPills = await pillTexts(donorRow);
 
   expect(
     orphanedRowPills,
-    'THE POINT OF THIS SPEC: the catalogue may not present an Environment the product cannot '
-      + `run exactly as it presents one it can. The Agent form refuses ${JSON.stringify(environmentName)} `
+    'THE POINT OF THIS SPEC: the catalogue may not present a RuntimeProfile the product cannot '
+      + `run exactly as it presents one it can. The Agent form refuses ${JSON.stringify(runtimeProfileName)} `
       + `and offers ${JSON.stringify(donorEnvironment)}, so their rows must not read the same.`,
   ).not.toEqual(donorRowPills);
   expect(

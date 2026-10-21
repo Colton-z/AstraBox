@@ -98,7 +98,7 @@ AstraBox is ready at http://127.0.0.1:8088
 ```
 
 Continue with [Step 2 of the Quickstart](quickstart.md): select an
-Environment, create an Agent and start a Session.
+RuntimeProfile, create an Agent and start a Session.
 
 :::warning
 The console has no login in this setup and is published on your computer's

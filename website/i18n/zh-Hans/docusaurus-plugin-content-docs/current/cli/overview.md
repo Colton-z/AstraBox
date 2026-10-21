@@ -4,7 +4,7 @@
 
 ## 核心优势
 
-- **声明式配置**：通过一个 `astrabox.yaml` 文件管理 Environment 和 Agent，清晰、可移植且易于版本控制。
+- **声明式配置**：通过一个 `astrabox.yaml` 文件管理 RuntimeProfile 和 Agent，清晰、可移植且易于版本控制。
 - **本地与远程使用**：使用同一套资源和 Agent 命令管理官方维护的本地部署或远程自行部署的 AstraBox。
 - **一键启动**：`astrabox up` 会检查本地依赖、启动官方维护的 Compose 部署并等待服务就绪。
 - **适合脚本调用**：资源、状态和 Agent 命令提供 JSON 输出和稳定的退出码，便于在脚本和 CI/CD 流程中使用。
@@ -18,10 +18,10 @@
 | 命令 | 功能描述 |
 | :--- | :--- |
 | `astrabox init` | 创建 `astrabox.yaml` 文件，或从部署中导出一份。 |
-| `astrabox schema` | 查看 Environment 或 Agent 可以配置的字段。 |
-| `astrabox get` | 列出 Agent、Environment、Assistant、Session 或远程 MCP Server 配置。 |
+| `astrabox schema` | 查看 RuntimeProfile 或 Agent 可以配置的字段。 |
+| `astrabox get` | 列出 Agent、RuntimeProfile、Assistant、Session 或远程 MCP Server 配置。 |
 | `astrabox diff` | 预览 `astrabox.yaml` 声明的变更。 |
-| `astrabox apply` | 创建或更新 `astrabox.yaml` 声明的 Environment 和 Agent。 |
+| `astrabox apply` | 创建或更新 `astrabox.yaml` 声明的 RuntimeProfile 和 Agent。 |
 | `astrabox destroy` | 删除 `astrabox.yaml` 声明的 Agent。 |
 | `astrabox run` | 向 Agent 发送任务并流式输出回复。 |
 | `astrabox status` | 查看部署的健康状态、就绪状态和访问地址。 |
@@ -63,12 +63,12 @@
 
 ## 配置文件 (`astrabox.yaml`)
 
-`astrabox.yaml` 以声明式方式定义 **AstraBox** 部署中应当存在的 Environment 和 Agent。使用 `astrabox diff` 预览变更，再使用 `astrabox apply` 创建或更新这些资源。
+`astrabox.yaml` 以声明式方式定义 **AstraBox** 部署中应当存在的 RuntimeProfile 和 Agent。使用 `astrabox diff` 预览变更，再使用 `astrabox apply` 创建或更新这些资源。
 
 ```yaml
 version: 1
 
-environments:
+runtime_profiles:
   - name: default
     engine_kind: <agent-program-id>
     endpoint_provider: <model-connection-id>
@@ -77,13 +77,13 @@ environments:
 agents:
   - name: researcher
     model: <model-name>
-    environment_name: default
+    runtime_profile_name: default
     system: |
       调研指定主题，并列出使用的资料来源。
     enabled: true
 ```
 
-`engine_kind` 是选择已安装 Agent 程序的配置字段，`endpoint_provider` 用于选择模型服务连接。文件规则请查阅 [配置详解](./configuration.md)；当前部署支持哪些字段，可以通过 `astrabox schema environment` 和 `astrabox schema agent` 查看。
+`engine_kind` 是选择已安装 Agent 程序的配置字段，`endpoint_provider` 用于选择模型服务连接。文件规则请查阅 [配置详解](./configuration.md)；当前部署支持哪些字段，可以通过 `astrabox schema runtime_profile` 和 `astrabox schema agent` 查看。
 
 ## 快速上手
 
@@ -100,7 +100,7 @@ make build-agent-image
 # 3. 检查部署状态
 .venv/bin/astrabox status
 
-# 4. 导出当前的 Environment 和 Agent
+# 4. 导出当前的 RuntimeProfile 和 Agent
 .venv/bin/astrabox init --from-deployment
 
 # 5. 预览并应用对 astrabox.yaml 的修改

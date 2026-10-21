@@ -45,7 +45,7 @@ export async function startArtifactScene(
   if (options.assistant) {
     const environment = await api.assistantEnvironmentName();
     const assistant = await api.createAssistant({
-      display_name: marker('__e2e_artifact_assistant'), environment_name: environment,
+      display_name: marker('__e2e_artifact_assistant'), runtime_profile_name: environment,
       model_config_override: { model_name: await api.assistantModelName(environment) },
     });
     assistantId = assistant.assistant_id;

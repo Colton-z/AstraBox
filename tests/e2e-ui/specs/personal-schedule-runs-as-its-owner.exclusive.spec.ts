@@ -19,7 +19,7 @@ let createdAssistantId = '';
 let sourceSessionId = '';
 const planIds = new Set<string>();
 const DEFAULT_FIELDS = [
-  'environment_name', 'model_name', 'instructions', 'skills',
+  'runtime_profile_name', 'model_name', 'instructions', 'skills',
   'mcp_servers', 'packages', 'engine_options', 'credential_vault_ids',
 ] as const;
 let defaultsBefore: Record<string, unknown> | undefined;
@@ -68,8 +68,8 @@ test('an Assistant creates a personal schedule that fires as its owner and refus
     return budget;
   };
   const adminApi = new AstraApi(request);
-  const environmentName = await adminApi.assistantEnvironmentName();
-  const modelName = await adminApi.assistantModelName(environmentName);
+  const runtimeProfileName = await adminApi.assistantEnvironmentName();
+  const modelName = await adminApi.assistantModelName(runtimeProfileName);
   const defaults = await adminApi.data<Record<string, unknown>>('GET', '/admin/assistant-defaults');
   defaultsBefore = Object.fromEntries(DEFAULT_FIELDS.map((field) => [field, defaults[field] ?? null]));
   await adminApi.data('PUT', '/admin/assistant-defaults', { ...defaultsBefore, model_name: modelName });
@@ -151,7 +151,7 @@ test('an Assistant creates a personal schedule that fires as its owner and refus
     scope: 'personal', owner_user_id: owner.user_id, owner_org_id: ownerOrgId, created_by: owner.user_id,
     agent_id: agentId, source_assistant_id: assistant.assistant_id, schedule,
   });
-  expect(plan.assistant_id ?? '', 'the source Assistant is not the execution target').toBe('');
+  expect(plan.assistant_id ?? '', 'the source Assistant is not the Environment').toBe('');
   expect((await api.data<Array<{ deployment_id: string }>>('GET', '/me/schedules'))
     .some((row) => row.deployment_id === deploymentId)).toBe(true);
   expect((await adminApi.data<Array<{ deployment_id: string }>>('GET', '/me/schedules'))

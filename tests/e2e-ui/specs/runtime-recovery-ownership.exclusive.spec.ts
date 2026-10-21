@@ -240,7 +240,7 @@ test('temporary-workspace recovery claims its own replenished pool and preserves
   const platform = new PlatformApi(request);
   const environment = String(process.env.ASTRABOX_E2E_PREWARM_CONVERSATION_ENVIRONMENT || '').trim();
   const researchAgent = String(process.env.ASTRABOX_E2E_RESEARCH_AGENT || '').trim();
-  expect(environment, 'the deployed conversation-tenancy pool Environment is required').not.toBe('');
+  expect(environment, 'the deployed conversation-tenancy pool RuntimeProfile is required').not.toBe('');
   expect(researchAgent, 'the deployed model route is required').not.toBe('');
   const server = requireServiceContainer(SERVER_CONTAINER_HANDLE);
   const volume = execFileSync('docker', ['exec', server, 'python', '-c',
@@ -249,9 +249,9 @@ test('temporary-workspace recovery claims its own replenished pool and preserves
   expect(volume, 'this is the no-volume recovery contract, not a volume replacement').toBe('');
   const model = await api.configuredAgentModel(researchAgent, environment);
   const name = `__e2e_runtime_recovery_same_display_prefix_${Date.now()}`;
-  const agent = await api.createAgent({ name: `${name}_A`, model, environment_name: environment, prepared_capacity: 1 });
+  const agent = await api.createAgent({ name: `${name}_A`, model, runtime_profile_name: environment, prepared_capacity: 1 });
   agents.push(agent.agent_id);
-  const sibling = await api.createAgent({ name: `${name}_B`, model, environment_name: environment, prepared_capacity: 1 });
+  const sibling = await api.createAgent({ name: `${name}_B`, model, runtime_profile_name: environment, prepared_capacity: 1 });
   agents.push(sibling.agent_id);
   async function prepared(id: string, previous = '') {
     let status: Record<string, unknown> = {};

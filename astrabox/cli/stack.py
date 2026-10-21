@@ -151,7 +151,7 @@ def _cmd_up(args: Any) -> int:
         if not image["present"]:
             note += (
                 f"\nThe agent sandbox image {image['name']} is not on this host. "
-                "Sessions on an Environment that uses it will fail to start; "
+                "Sessions on a RuntimeProfile that uses it will fail to start; "
                 "build it with `make build-agent-image`."
             )
     emit(payload, output=args.output, note=note)
@@ -256,7 +256,7 @@ def _docker_server_version() -> str:
 def _agent_image_status() -> dict[str, Any]:
     """Whether the configured agent sandbox image is on this host.
 
-    Reported rather than enforced: an Environment may pin an image of its own,
+    Reported rather than enforced: a RuntimeProfile may pin an image of its own,
     or pull one from a registry, so a missing local image is not always a
     misconfiguration. It is, however, the usual reason a deployment starts
     cleanly and then fails to open its first session.

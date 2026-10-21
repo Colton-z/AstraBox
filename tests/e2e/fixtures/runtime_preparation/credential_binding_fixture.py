@@ -17,7 +17,7 @@ from astrabox.core.service.orchestrator.engine.registry import get_engine_adapte
 from astrabox.core.service.orchestrator.runtime.config_resolver import RuntimeConfigResolver
 from astrabox.persistence.provider import get_persistence
 from astrabox.persistence.repository.agent_repository import AgentRepository
-from astrabox.persistence.repository.environment_repository import EnvironmentRepository
+from astrabox.persistence.repository.runtime_profile_repository import RuntimeProfileRepository
 from astrabox.providers.open_sandbox.sandbox import OpenSandboxSandboxProvider
 from astrabox.seams.egress_credentials import ModelEgressCredentialSubstitution
 from astrabox.seams.model import ModelRequestContext, model_endpoint_for_name
@@ -30,7 +30,7 @@ from astrabox.seams.sandbox import sandbox_for_name
 METADATA = MetaData()
 POLICIES = Table(
     "runtime_preparation_binding_policies", METADATA,
-    Column("environment_name", Text, primary_key=True),
+    Column("runtime_profile_name", Text, primary_key=True),
     Column("session_bound", Boolean, nullable=False),
     Column("users", JSON, nullable=False),
     Column("refuse_binding", Boolean, nullable=False),
@@ -58,12 +58,12 @@ class BindingSandboxProvider(OpenSandboxSandboxProvider):
 
 async def policy(environment):
     async with get_persistence().get_engine().connect() as connection:
-        row = (await connection.execute(select(POLICIES).where(POLICIES.c.environment_name == environment))).mappings().one()
+        row = (await connection.execute(select(POLICIES).where(POLICIES.c.runtime_profile_name == environment))).mappings().one()
     return dict(row)
 
 
 async def plan(config):
-    row = await policy(config["environment_name"])
+    row = await policy(config["runtime_profile_name"])
     return RuntimePreparationPlan(session_bound=row["session_bound"], model_credential_delivery="provider")
 
 
@@ -73,7 +73,7 @@ async def prerequisites(context):
     agent = await AgentRepository().get_agent(context.subject.id)
     if agent is None:
         return None
-    environment = await EnvironmentRepository().get_any_by_name(agent["environment_name"])
+    environment = await RuntimeProfileRepository().get_any_by_name(agent["runtime_profile_name"])
     if environment is None or environment["sandbox_backend"] != BindingSandboxProvider.name:
         return None
     row = await policy(environment["name"])
@@ -83,7 +83,7 @@ async def prerequisites(context):
 
 
 async def bind(context):
-    row = await policy(context.config["environment_name"])
+    row = await policy(context.config["runtime_profile_name"])
     if context.principal_id not in row["users"]:
         raise PreparationUserActionRequired(message="Authorize this identity before binding the model")
     if row["refuse_binding"]:
@@ -137,6 +137,6 @@ def register_routes(app: FastAPI):
             raise APIError(code="FORBIDDEN", message="fixture requires a platform administrator", status_code=403)
         async with get_persistence().get_engine().begin() as connection:
             await connection.run_sync(METADATA.create_all)
-            await connection.execute(POLICIES.delete().where(POLICIES.c.environment_name == environment))
-            await connection.execute(POLICIES.insert().values(environment_name=environment, **payload))
+            await connection.execute(POLICIES.delete().where(POLICIES.c.runtime_profile_name == environment))
+            await connection.execute(POLICIES.insert().values(runtime_profile_name=environment, **payload))
         return success_response({"configured": True})

@@ -3,7 +3,7 @@
  * slot. Prove the conversation qualifies for the real idle sweep, wait across
  * periodic ticks, then drive a tick and inspect the unchanged slot and running
  * box. The next browser conversation must claim that exact isolation and answer.
- * The fixture enables pause on its own shared Environment and retains failures.
+ * The fixture enables pause on its own shared RuntimeProfile and retains failures.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 
@@ -59,7 +59,7 @@ let parkPayload: Record<string, unknown> = {};
 
 // Registration order is teardown order: the conversations go first
 // (trackSessions, registered above), then the Agent whose box they live in,
-// then the Environment nothing references any more.
+// then the RuntimeProfile nothing references any more.
 onPassOnly(async ({ request }) => {
   if (agentId) await new AstraApi(request).deleteAgent(agentId);
 });
@@ -247,7 +247,7 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
   expect(
     ((capability.supported_actions as unknown[] | undefined) || []).map((action) => String(action)),
     'this deployment\'s sandbox backend cannot snapshot, so `idle_action: "pause"` is refused at '
-      + 'the Environment form and this journey has no configuration in which it can pass or fail. '
+      + 'the RuntimeProfile form and this journey has no configuration in which it can pass or fail. '
       + `The route's own reason: ${String(capability.detail ?? '<none given>')} `
       + `(backend=${String(capability.backend ?? '<unnamed>')})`,
   ).toContain('pause');
@@ -263,24 +263,24 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
   ).toBeLessThanOrEqual(MAX_USEFUL_WATCHER_INTERVAL_SECONDS);
   mark('watcher_interval_read', { watcherIntervalSeconds });
 
-  // ── An Environment that parks, over the box shape a slot can live in ─────
-  // Cloned from the deployment's proven Agent-tenancy prewarm Environment: a
+  // ── A RuntimeProfile that parks, over the box shape a slot can live in ─────
+  // Cloned from the deployment's proven Agent-tenancy prewarm RuntimeProfile: a
   // prepared slot exists only inside an Agent-owned shared box (conversation
-  // tenancy prepares whole pool boxes instead), and this is the Environment the
+  // tenancy prepares whole pool boxes instead), and this is the RuntimeProfile the
   // other prepared-slot specs are built on. The only changed field is the one
   // the journey rests on.
   const sourceName = String(process.env.ASTRABOX_E2E_PREWARM_SHARED_ENVIRONMENT || '').trim();
   expect(
     sourceName,
     'ASTRABOX_E2E_PREWARM_SHARED_ENVIRONMENT names the deployment\'s Agent-tenancy prewarm '
-      + 'Environment and the lane must export it; this spec reads it and never writes it',
+      + 'RuntimeProfile and the lane must export it; this spec reads it and never writes it',
   ).not.toEqual('');
-  const environments = await platform.listEnvironments();
-  const source = environments.find((item) => String(item.name || '') === sourceName);
+  const runtime_profiles = await platform.listEnvironments();
+  const source = runtime_profiles.find((item) => String(item.name || '') === sourceName);
   expect(
     source,
-    `Environment ${JSON.stringify(sourceName)} is not on this deployment; have: `
-      + environments.map((item) => String(item.name || '')).join(', '),
+    `RuntimeProfile ${JSON.stringify(sourceName)} is not on this deployment; have: `
+      + runtime_profiles.map((item) => String(item.name || '')).join(', '),
   ).toBeTruthy();
   const sourceEnvironment = source as Record<string, unknown>;
 
@@ -297,7 +297,7 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
     'the environment schema must declare its editable fields',
   ).toBeGreaterThan(0);
 
-  // Stable, not run-scoped: environments have GET and PUT and no DELETE, so a
+  // Stable, not run-scoped: runtime_profiles have GET and PUT and no DELETE, so a
   // run-scoped name would leave one row per run on the deployment forever.
   parkEnvironment = `__e2e-idle-park-slot-${sourceName}`;
   parkPayload = {
@@ -309,7 +309,7 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
     display_name: 'Idle parking over a prepared slot (E2E)',
     description: `Created by ${test.info().titlePath.join(' > ')}.`,
     enabled: true,
-    // The keeper only has business with a conversation whose Environment says
+    // The keeper only has business with a conversation whose RuntimeProfile says
     // pause; under terminate `_idle_window_if_parking` returns None.
     idle_action: 'pause',
   };
@@ -319,7 +319,7 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
   } catch (error) {
     parkEnvironment = '';
     throw new Error(
-      'this deployment refused an Environment that parks idle boxes, so the journey has no '
+      'this deployment refused a RuntimeProfile that parks idle boxes, so the journey has no '
         + 'configuration in which it can pass or fail. Under idle_action "terminate" the keeper '
         + 'leaves every box alone and the box dies at its lease instead, which no 180s spec can '
         + `reach.\n${error instanceof Error ? error.message : String(error)}`,
@@ -327,7 +327,7 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
   }
   expect(
     String(storedEnvironment.idle_action || ''),
-    'the stored Environment must be the one the keeper will read',
+    'the stored RuntimeProfile must be the one the keeper will read',
   ).toEqual('pause');
   expect(
     String(storedEnvironment.sandbox_tenancy || ''),
@@ -339,11 +339,11 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
     String(storedEnvironment.sandbox_permission_level || ''),
     'Agent tenancy carves each conversation a namespace inside one box, which the write path '
       + 'admits only at an elevated permission level (`_assert_tenancy_has_permission_level` in '
-      + 'environment_schema.py)',
+      + 'runtime_profile_schema.py)',
   ).toEqual('advanced');
   expect(
     storedEnvironment.enabled,
-    'a disabled Environment cannot run the Agent this spec creates on it',
+    'a disabled RuntimeProfile cannot run the Agent this spec creates on it',
   ).not.toBe(false);
   mark('park_environment_stored', { parkEnvironment });
 
@@ -359,7 +359,7 @@ test('an idle conversation does not park a box holding the Agent\'s prepared slo
   const created = await api.createAgent({
     name: agentName,
     model,
-    environment_name: parkEnvironment,
+    runtime_profile_name: parkEnvironment,
     // The whole point of the scene: warm capacity parked in the box alongside
     // the one conversation that is about to go quiet.
     prepared_capacity: 2,

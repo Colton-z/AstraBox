@@ -48,18 +48,18 @@ test('a signed deployment trigger runs the agent, and a bad signature is refused
   try {
     // ── Arrange: an isolated agent to bind the trigger to ───────────────────
     const base = await api.defaultAgent();
-    const environmentName = String(base.environment_name || '').trim();
-    expect(environmentName, 'seeded default agent must name an environment').not.toEqual('');
+    const runtimeProfileName = String(base.runtime_profile_name || '').trim();
+    expect(runtimeProfileName, 'seeded default agent must name an environment').not.toEqual('');
     let model = String(base.model || '').trim();
     if (!model || model.includes('*')) {
-      const models = await api.listEnvironmentModels(environmentName);
+      const models = await api.listEnvironmentModels(runtimeProfileName);
       model = models.find((m) => m && !m.includes('*')) || 'deepseek-chat';
     }
     const agentName = `__e2e_deployment_${RUN_ID}`;
     const agent = await api.createAgent({
       name: agentName,
       model,
-      environment_name: environmentName,
+      runtime_profile_name: runtimeProfileName,
       prepared_capacity: 0,
       engine_options: { sdk_options: { max_turns: 6 } },
     });

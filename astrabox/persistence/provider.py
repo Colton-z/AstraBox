@@ -23,7 +23,11 @@ def get_persistence() -> RelationalPersistenceProvider:
     target = load_provider(PERSISTENCE_GROUP, settings.persistence_provider)
     if not isinstance(target, type):
         raise RuntimeError("a persistence entry point must name a provider class")
-    provider = target(database_url=settings.resolved_db_url)
+    provider = target(
+        database_url=settings.resolved_db_url, environment_name=settings.environment_name,
+    )
+    if getattr(provider, "environment_name", None) != settings.environment_name:
+        raise RuntimeError("persistence provider must bind the configured Environment explicitly")
     for name in ("get_engine", "pool_report", "translate_error"):
         if not callable(getattr(provider, name, None)):
             raise RuntimeError(f"persistence provider is missing required operation {name!r}")

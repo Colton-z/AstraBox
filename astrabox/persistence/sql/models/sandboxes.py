@@ -13,7 +13,7 @@ from astrabox.persistence.sql.types import KeyText, payload_text
 
 
 class SandboxCapacity(Base):
-    """One execution target's quota ledger for a sandbox backend.
+    """One Environment's quota ledger for a sandbox backend.
 
     Admitting a reservation and folding in an inventory both hold this row's
     lock, so two replicas that each see room for one more box cannot both
@@ -27,8 +27,8 @@ class SandboxCapacity(Base):
     )
 
     backend: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
-    execution_target: Mapped[str] = mapped_column(
-        KeyText(128), primary_key=True, server_default="astrabox"
+    environment_name: Mapped[str] = mapped_column(
+        KeyText(128), primary_key=True
     )
     #: When the inventory the ledger holds was taken; null until the first one.
     inventory_at: Mapped[datetime | None]
@@ -40,8 +40,8 @@ class SandboxReservation(Base):
     __tablename__ = "sandbox_reservations"
     __table_args__ = (
         ForeignKeyConstraint(
-            ["backend", "execution_target"],
-            ["sandbox_capacity.backend", "sandbox_capacity.execution_target"],
+            ["backend", "environment_name"],
+            ["sandbox_capacity.backend", "sandbox_capacity.environment_name"],
             name="fk_sandbox_reservations_capacity", ondelete="CASCADE",
         ),
         CheckConstraint(
@@ -53,8 +53,8 @@ class SandboxReservation(Base):
     )
 
     backend: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
-    execution_target: Mapped[str] = mapped_column(
-        KeyText(128), primary_key=True, server_default="astrabox"
+    environment_name: Mapped[str] = mapped_column(
+        KeyText(128), primary_key=True
     )
     reservation_key: Mapped[str] = mapped_column(KeyText(512), primary_key=True)
     state: Mapped[str] = mapped_column(payload_text())
@@ -80,8 +80,8 @@ class SandboxInventoryBox(Base):
     __tablename__ = "sandbox_inventory"
     __table_args__ = (
         ForeignKeyConstraint(
-            ["backend", "execution_target"],
-            ["sandbox_capacity.backend", "sandbox_capacity.execution_target"],
+            ["backend", "environment_name"],
+            ["sandbox_capacity.backend", "sandbox_capacity.environment_name"],
             name="fk_sandbox_inventory_capacity", ondelete="CASCADE",
         ),
         *boolean_checks("released"),
@@ -89,8 +89,8 @@ class SandboxInventoryBox(Base):
     )
 
     backend: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
-    execution_target: Mapped[str] = mapped_column(
-        KeyText(128), primary_key=True, server_default="astrabox"
+    environment_name: Mapped[str] = mapped_column(
+        KeyText(128), primary_key=True
     )
     sandbox_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
     #: What the box was created with; a released box holds none of it.

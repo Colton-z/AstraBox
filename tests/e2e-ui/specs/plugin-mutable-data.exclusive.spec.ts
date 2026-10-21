@@ -389,11 +389,11 @@ test('a plugin conversation owns its mutable plugin data and registers every dec
   // Clone the deployment-proven Agent's environment and model so this Agent
   // differs from it only by the plugin under test.
   const base = await api.defaultAgent();
-  const environmentName = String(base.environment_name || '').trim();
-  expect(environmentName, 'the deployed Agent should expose environment_name to clone').not.toEqual('');
+  const runtimeProfileName = String(base.runtime_profile_name || '').trim();
+  expect(runtimeProfileName, 'the deployed Agent should expose runtime_profile_name to clone').not.toEqual('');
   let model = String(base.model || '').trim();
   if (!model || model.includes('*')) {
-    const models = await api.listEnvironmentModels(environmentName);
+    const models = await api.listEnvironmentModels(runtimeProfileName);
     model = models.find((candidate) => candidate && !candidate.includes('*')) || '';
   }
   expect(model, 'a concrete model id is required to mint a throwaway Agent').not.toEqual('');
@@ -402,7 +402,7 @@ test('a plugin conversation owns its mutable plugin data and registers every dec
   const agent = await api.createAgent({
     name: agentName,
     model,
-    environment_name: environmentName,
+    runtime_profile_name: runtimeProfileName,
     prepared_capacity: 0,
     packages: [
       {

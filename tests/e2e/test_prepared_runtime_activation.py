@@ -9,6 +9,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from pathlib import Path
 
 import httpx
 import pytest
@@ -232,7 +233,7 @@ def test_concurrent_conversations_each_claim_a_prepared_sandbox(
     created = data(e2e_client.post("/api/v1/agents", json={
         "name": f"Prepared burst {uuid.uuid4().hex[:8]}",
         "model": profile["model"],
-        "environment_name": environment_with_tenancy(e2e_client, "conversation"),
+        "runtime_profile_name": environment_with_tenancy(e2e_client, "conversation"),
         "prepared_capacity": 1,
         "engine_options": canonical.get("engine_options") or {},
         **({"system": canonical["system"]} if canonical.get("system") else {}),
@@ -243,7 +244,7 @@ def test_concurrent_conversations_each_claim_a_prepared_sandbox(
     resized = data(e2e_client.put(f"/api/v1/agents/{agent_id}", json={
         "name": created["name"],
         "model": created["model"],
-        "environment_name": created["environment_name"],
+        "runtime_profile_name": created["runtime_profile_name"],
         "prepared_capacity": capacity,
         "version": created["version"],
     }))
@@ -301,7 +302,7 @@ def test_a_shared_agent_burst_claims_a_prepared_seat_each(
     created = data(e2e_client.post("/api/v1/agents", json={
         "name": f"Shared burst {uuid.uuid4().hex[:8]}",
         "model": profile["model"],
-        "environment_name": environment_with_tenancy(e2e_client, "agent"),
+        "runtime_profile_name": environment_with_tenancy(e2e_client, "agent"),
         "prepared_capacity": capacity,
         "engine_options": canonical.get("engine_options") or {},
         **({"system": canonical["system"]} if canonical.get("system") else {}),
@@ -341,7 +342,7 @@ def test_claim_activates_the_already_prepared_engine(
     created = data(e2e_client.post("/api/v1/agents", json={
         "name": f"Prepared activation {tenancy} {uuid.uuid4().hex[:8]}",
         "model": profile["model"],
-        "environment_name": environment_with_tenancy(e2e_client, tenancy),
+        "runtime_profile_name": environment_with_tenancy(e2e_client, tenancy),
         "prepared_capacity": 1,
         "engine_options": canonical.get("engine_options") or {},
         **({"system": canonical["system"]} if canonical.get("system") else {}),
@@ -402,7 +403,7 @@ def test_claim_activates_the_already_prepared_engine(
     data(e2e_client.put(f"/api/v1/agents/{agent_id}", json={
         "name": current_agent["name"],
         "model": current_agent["model"],
-        "environment_name": current_agent["environment_name"],
+        "runtime_profile_name": current_agent["runtime_profile_name"],
         "version": current_agent["version"],
         "system": (current_agent.get("system") or "") + "\n解释金融概念时优先使用简洁中文。",
     }))
@@ -479,7 +480,7 @@ def test_prepared_runtime_resumes_native_history_without_disrupting_sibling(
     agent = data(e2e_client.post("/api/v1/agents", json={
         "name": f"Warm resume {tenancy} {uuid.uuid4().hex[:8]}",
         "model": profile["model"],
-        "environment_name": environment_with_tenancy(e2e_client, tenancy),
+        "runtime_profile_name": environment_with_tenancy(e2e_client, tenancy),
         "prepared_capacity": 2 if tenancy == "agent" else 1,
         "engine_options": canonical.get("engine_options") or {},
     }))

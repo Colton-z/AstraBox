@@ -8,7 +8,7 @@
     scripts/installer-engine-acceptance.py restart BASE_URL MODEL COMPOSE_DIR
         [--engine NAME]... [--cycles N] [--expect-text TEXT]
 
-``turns`` does what a new user does for each engine: create an Environment for
+``turns`` does what a new user does for each engine: create a RuntimeProfile for
 it, then an Agent on it (an Assistant for Hermes, whose workspace is woken
 first), and open a conversation. The Session must reach READY, one message must
 stream back one complete reply that finishes normally, and the Session must
@@ -236,7 +236,7 @@ def _owner(api: Api, engine: str, model: str, label: str) -> tuple[str, str]:
         # deployment default. Select this acceptance run's model as a user does.
         selected = api.call("PUT", f"/api/v1/agents/{agent_id}", {
             "name": agent["name"],
-            "environment_name": agent["environment_name"],
+            "runtime_profile_name": agent["runtime_profile_name"],
             "model": model,
             "version": agent["version"],
         })
@@ -245,11 +245,11 @@ def _owner(api: Api, engine: str, model: str, label: str) -> tuple[str, str]:
         return "agent", agent_id
     environment = f"{label}-{engine.replace('_', '-')}"
     engine_kind = "assistant" if engine == "hermes" else engine
-    api.call("PUT", f"/api/v1/admin/environments/{environment}", {"engine_kind": engine_kind, "enabled": True})
+    api.call("PUT", f"/api/v1/admin/runtime-profiles/{environment}", {"engine_kind": engine_kind, "enabled": True})
     if engine == "hermes":
         assistant = api.call("POST", "/api/v1/assistants", {
             "display_name": f"{label} hermes",
-            "environment_name": environment,
+            "runtime_profile_name": environment,
             "model_config_override": {"model_name": model},
         })
         return "assistant", str(assistant["assistant_id"])
@@ -257,7 +257,7 @@ def _owner(api: Api, engine: str, model: str, label: str) -> tuple[str, str]:
     # conversation starts its own sandbox, which is the path this check covers.
     body: dict[str, Any] = {
         "name": f"{label} {engine}",
-        "environment_name": environment,
+        "runtime_profile_name": environment,
         "model": model,
         "prepared_capacity": 0,
     }

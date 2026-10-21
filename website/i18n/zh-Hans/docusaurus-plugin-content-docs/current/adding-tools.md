@@ -5,7 +5,7 @@
 
 MCP 服务器、Skill 和 Plugin 可以扩展 Agent 的能力。在创建或更新 Agent 时配置它们，让 Agent 可以访问外部服务、使用领域流程和打包扩展。
 
-Agent 能添加什么取决于它的 Agent 程序，由程序自己声明；程序不读取的字段会在保存 Agent 时被拒绝。Skill 适用于所有内置程序：Claude Code 从其配置目录读取，Codex、Pi 和 DeepSeek Harness 从三者共同扫描的 `~/.agents/skills` 读取。Codex 接受 Codex 插件（kind 为 `codex-plugin` 的 `packages`）：带 Codex、Claude Code 或 Cursor `plugin.json`，或 Agent Plugins v1.0 `plugin.json` 的插件目录，AstraBox 在 Codex 启动前于对话的 home 中写入一个插件市场，由 Codex 自己安装。作者声明的 MCP 服务器适用于所有程序，各自写入程序自己的配置：Claude Code 和 Hermes 接受 stdio、HTTP 和 SSE 服务器；Codex、Pi 和 DeepSeek Harness 接受 stdio 和 streamable HTTP 服务器。Claude Code 插件（kind 为 `claude-plugin` 的 `packages`）适用于 Claude Code。Pi 从其设置（`engine_options.settings`）的 `packages` 列表安装自己的包，Pi 在启动时拉取它们。DeepSeek Harness 接受插件 Bundle，即其 web profile `package.json` 的 `dependencies`（`engine_options.profile_package`），AstraBox 在 harness 启动前写入并用 `dsh plugin --profile web install` 安装；profile 组装（patch 层）也以 Bundle 的形式打包。受限 Environment 会像放行 Skill 的 Git 来源一样放行这些来源所指的主机（它们的 git 主机和 npm registry）：公网主机会为该 Agent 自动加入，私网主机只有 Environment 列出时才放行。连接器适用于所有程序。原生工具始终可用。
+Agent 能添加什么取决于它的 Agent 程序，由程序自己声明；程序不读取的字段会在保存 Agent 时被拒绝。Skill 适用于所有内置程序：Claude Code 从其配置目录读取，Codex、Pi 和 DeepSeek Harness 从三者共同扫描的 `~/.agents/skills` 读取。Codex 接受 Codex 插件（kind 为 `codex-plugin` 的 `packages`）：带 Codex、Claude Code 或 Cursor `plugin.json`，或 Agent Plugins v1.0 `plugin.json` 的插件目录，AstraBox 在 Codex 启动前于对话的 home 中写入一个插件市场，由 Codex 自己安装。作者声明的 MCP 服务器适用于所有程序，各自写入程序自己的配置：Claude Code 和 Hermes 接受 stdio、HTTP 和 SSE 服务器；Codex、Pi 和 DeepSeek Harness 接受 stdio 和 streamable HTTP 服务器。Claude Code 插件（kind 为 `claude-plugin` 的 `packages`）适用于 Claude Code。Pi 从其设置（`engine_options.settings`）的 `packages` 列表安装自己的包，Pi 在启动时拉取它们。DeepSeek Harness 接受插件 Bundle，即其 web profile `package.json` 的 `dependencies`（`engine_options.profile_package`），AstraBox 在 harness 启动前写入并用 `dsh plugin --profile web install` 安装；profile 组装（patch 层）也以 Bundle 的形式打包。受限 RuntimeProfile 会像放行 Skill 的 Git 来源一样放行这些来源所指的主机（它们的 git 主机和 npm registry）：公网主机会为该 Agent 自动加入，私网主机只有 RuntimeProfile 列出时才放行。连接器适用于所有程序。原生工具始终可用。
 
 ## 扩展的作用
 
@@ -47,16 +47,16 @@ MCP 服务；集中管理只会改变由谁维护它的定义。
 
 任何已登录用户都可以创建 Agent，因此 Agent 自己声明的扩展只能访问管理员提供的范围：
 
-- 在 `limited` Environment 中，Agent 的 Skill 和 Plugin 所在的 Git 主机会加入放行
-  主机；Environment 允许远程 MCP 服务时，Agent 的远程 MCP 服务也会加入。只有公网
-  地址，或 Environment 已列出的主机，才会被加入。
+- 在 `limited` RuntimeProfile 中，Agent 的 Skill 和 Plugin 所在的 Git 主机会加入放行
+  主机；RuntimeProfile 允许远程 MCP 服务时，Agent 的远程 MCP 服务也会加入。只有公网
+  地址，或 RuntimeProfile 已列出的主机，才会被加入。
 - 私有、回环或链路本地地址属于部署自己的网络：平台和其他沙箱所在的 Docker 网桥，
   以及云厂商的元数据服务。使用这类地址的主机，或解析到这类地址、无法解析的名称，
   会在保存 Agent 时以 `AGENT_EGRESS_HOST_REFUSED`（403）拒绝，准备沙箱前还会再检查
-  一次。要开放内网主机，请由管理员把主机、IP 或 CIDR 加入 Environment 的放行主机。
+  一次。要开放内网主机，请由管理员把主机、IP 或 CIDR 加入 RuntimeProfile 的放行主机。
 - 主机名在保存 Agent 时解析。沙箱每次连接时会重新解析，因此这项检查说明的是该名称
   在保存那一刻指向的地址。
-- `unrestricted` Environment 本来就允许所有目标，Agent 的主机不会改变它。
+- `unrestricted` RuntimeProfile 本来就允许所有目标，Agent 的主机不会改变它。
 - Agent 自己的 MCP 定义不能设置 `provider` 或 `credential_target_url`，只有管理员的
   MCP 目录分配可以设置。参见[使用 Vault 认证](credentials.md)。
 - 管理员在 MCP 和 Skill 目录中发布的扩展保留管理员配置的主机。
@@ -65,7 +65,7 @@ MCP 服务；集中管理只会改变由谁维护它的定义。
 
 浏览器和 Web 能力属于所选 Agent 程序，或属于它支持的扩展。AstraBox 没有一套带有独立工具名的平台级浏览器工具集。
 
-Agent 程序本身支持浏览器时，使用它的原生配置；否则添加浏览器 MCP 服务器或经过审核的 Plugin，并在 Environment 网络策略中允许所需的远程地址和包下载地址。
+Agent 程序本身支持浏览器时，使用它的原生配置；否则添加浏览器 MCP 服务器或经过审核的 Plugin，并在 RuntimeProfile 网络策略中允许所需的远程地址和包下载地址。
 
 接入浏览器能力时：
 

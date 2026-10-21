@@ -17,7 +17,7 @@ import { requireServiceContainer, SERVER_CONTAINER_HANDLE } from '../fixtures/se
 import { expectPromptDelivered, startPromptDelivery } from '../fixtures/sessionPage';
 
 // Deployment fixtures. Read and asserted present, never created or rewritten:
-// the lane resolves the Agent-tenancy prewarm Environment per engine profile and
+// the lane resolves the Agent-tenancy prewarm RuntimeProfile per engine profile and
 // validates it against the running agent image, and the research Agent is where
 // a model route this deployment has actually proven comes from.
 const SHARED_ENVIRONMENT = String(
@@ -194,7 +194,7 @@ test('a conversation is not handed a prepared seat in a shared box that filled u
 }) => {
   expect(
     SHARED_ENVIRONMENT,
-    'ASTRABOX_E2E_PREWARM_SHARED_ENVIRONMENT must name the deployed Agent-tenancy prewarm Environment',
+    'ASTRABOX_E2E_PREWARM_SHARED_ENVIRONMENT must name the deployed Agent-tenancy prewarm RuntimeProfile',
   ).not.toEqual('');
   expect(
     RESEARCH_AGENT,
@@ -224,7 +224,7 @@ test('a conversation is not handed a prepared seat in a shared box that filled u
   const created = await api.createAgent({
     name: agentName,
     model: await api.configuredAgentModel(RESEARCH_AGENT, SHARED_ENVIRONMENT),
-    environment_name: SHARED_ENVIRONMENT,
+    runtime_profile_name: SHARED_ENVIRONMENT,
     prepared_capacity: 2,
     terminal_panel: true,
   });

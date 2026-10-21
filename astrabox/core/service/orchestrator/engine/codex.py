@@ -87,7 +87,7 @@ logger = get_logger(__name__)
 #: contain, so the container would exit 127 at boot.
 CODEX_IMAGE_ENTRYPOINT = ("/opt/gem/run.sh",)
 
-#: Release image component an Environment that pins nothing resolves to for
+#: Release image component a RuntimeProfile that pins nothing resolves to for
 #: this engine (:func:`~astrabox.config.release_images.release_image`). Declared
 #: because an adapter without one fails the resolve with a registered error
 #: rather than inheriting another engine's image.

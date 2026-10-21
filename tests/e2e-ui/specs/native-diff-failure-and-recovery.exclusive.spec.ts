@@ -112,16 +112,16 @@ async function settledTurn(api: AstraApi, page: Page, prompt: string): Promise<R
 async function start(api: AstraApi, page: Page, profile: EngineProfile, cold = false): Promise<string> {
   let agentId = profile.agent_id;
   if (cold) {
-    const environments = await api.data<Array<Record<string, unknown>>>('GET', '/admin/environments');
-    const environment = environments.find((item) => item.enabled === true
+    const runtime_profiles = await api.data<Array<Record<string, unknown>>>('GET', '/admin/runtime-profiles');
+    const environment = runtime_profiles.find((item) => item.enabled === true
       && item.sandbox_tenancy === 'conversation' && item.engine_kind === profile.engine_kind
       && item.runtime_template_name === profile.image);
-    expect(environment, `deployment must provide the matching ${profile.engine_kind} cold Environment`).toBeTruthy();
+    expect(environment, `deployment must provide the matching ${profile.engine_kind} cold RuntimeProfile`).toBeTruthy();
     const base = await api.getAgent(agentId);
     const agent = await api.createAgent({
       name: `__e2e_native_diff_${profile.engine_kind}_${Date.now()}`,
       model: base.model, engine_options: base.engine_options,
-      environment_name: environment!.name, prepared_capacity: 0, diff_panel: true,
+      runtime_profile_name: environment!.name, prepared_capacity: 0, diff_panel: true,
     });
     ownedAgent = agent.agent_id;
     agentId = ownedAgent;

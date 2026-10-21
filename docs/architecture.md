@@ -13,7 +13,7 @@ AstraBox accounts and stored product data.
 | --- | --- |
 | **AstraBox service** | Serves the web console and API, authenticates users, authorizes access, stores Agent and Session records, and streams work to clients. |
 | **OpenSandbox** | Creates, connects, pauses, resumes, and deletes isolated sandboxes on Docker or Kubernetes. |
-| **Sandbox** | Contains the Agent program and the operating-system software it can use. The Environment selects its image, network access, and lifecycle behavior. |
+| **Sandbox** | Contains the Agent program and the operating-system software it can use. The RuntimeProfile selects its image, network access, and lifecycle behavior. |
 | **Agent program** | Interprets the task, calls the model and its available capabilities, and continues the work until it needs input or finishes. |
 
 AstraBox coordinates authorization, runtime assignment, credentials, saved
@@ -30,7 +30,7 @@ provided by OpenSandbox; that browser traffic does not pass through the
 AstraBox API.
 
 The model endpoint can be the bundled LiteLLM service, an existing LiteLLM
-deployment, or an endpoint supplied by a model plugin. The Environment form
+deployment, or an endpoint supplied by a model plugin. The RuntimeProfile form
 lists the Agent programs installed in the current deployment and validates the
 selected sandbox image. The repository introduction carries the release roster
 and image names.
@@ -43,7 +43,7 @@ The React console uses the same FastAPI service available to other clients.
 Production images serve both on port `8000` inside the container. The service
 provides:
 
-- Agent, Environment, Session, Deployment, Assistant, and administration APIs;
+- Agent, RuntimeProfile, Session, Deployment, Assistant, and administration APIs;
 - identity and access checks;
 - saved Session history and live server-sent events (SSE);
 - approval and question responses;
@@ -81,10 +81,10 @@ terminal panel that need them when they are configured. See
 
 A deployment can install several sandbox providers and enables the ones it uses
 with `ASTRABOX_SANDBOX_BACKENDS`; `ASTRABOX_SANDBOX_BACKEND` is the default for
-an Environment that names none. An Environment can choose only an enabled
+a RuntimeProfile that names none. A RuntimeProfile can choose only an enabled
 backend. A record that still names an installed backend the deployment does not
 enable fails with `SANDBOX_BACKEND_DISABLED`; AstraBox does not hand it to
-another backend, and startup logs each enabled Environment that selects one. Background sandbox inventory sweeps and workspace-view
+another backend, and startup logs each enabled RuntimeProfile that selects one. Background sandbox inventory sweeps and workspace-view
 reconciliation run for each enabled backend separately, so one unreachable
 control plane does not stop the others.
 
@@ -122,7 +122,7 @@ credentials, restores saved native state, and then activates the adapter. A
 dedicated sandbox and an isolated placement in an Agent-shared sandbox use
 this same orchestration.
 
-An Environment must select an image compatible with its `engine_kind`. See
+A RuntimeProfile must select an image compatible with its `engine_kind`. See
 [Add an Agent program](writing-an-engine-adapter.md) for the required interfaces
 and tests.
 
@@ -209,7 +209,7 @@ the supported delivery mechanism.
 3. One AstraBox process holds the Session's connection to its runtime; any
    replica may accept the input, and a database notice tells that process. If
    the Session has no runtime yet, or its runtime must be rebuilt, AstraBox
-   resolves the current Agent and Environment and asks OpenSandbox to create,
+   resolves the current Agent and RuntimeProfile and asks OpenSandbox to create,
    claim, resume, or reconnect the sandbox.
 4. AstraBox confirms the workspace and credentials, restores native state when
    required, and connects to the selected Agent program. It runs the
@@ -248,18 +248,18 @@ program had taken is not sent again.
 
 | Data | Stored in |
 | --- | --- |
-| Agent, Environment, and Deployment records | The AstraBox PostgreSQL database |
+| Agent, RuntimeProfile, and Deployment records | The AstraBox PostgreSQL database |
 | Credential values | The configured Secret Store |
 | Session records: inputs, responses, approvals and questions, and the output log | The AstraBox PostgreSQL database |
 | Native Agent-program state (SessionStore) | The AstraBox PostgreSQL database, in the program's native record or archive format |
 | Session and Assistant files | `/workspace`, backed by an optional persistent workspace volume; otherwise retained with the sandbox or a supported snapshot |
 
-Inline Environment credentials require a Secret Store derived from
+Inline RuntimeProfile credentials require a Secret Store derived from
 `EncryptedCollectionSecretStore`, so references and ciphertext commit together
 in PostgreSQL and readers obtain one consistent snapshot. Both `local` and
 `aws_kms` support this. Other Secret Store providers can serve credential-free
-Environments; inline credentials are refused with
-`ENVIRONMENT_SECRET_STORE_NOT_TRANSACTIONAL`.
+RuntimeProfiles; inline credentials are refused with
+`RUNTIME_PROFILE_SECRET_STORE_NOT_TRANSACTIONAL`.
 
 Native state includes the records the Agent program needs to resume its
 conversation, including native child-conversation state. AstraBox saves those
@@ -314,7 +314,7 @@ affinity keeps the sandbox on the node that runs its filesystem helper.
 ## Isolation and access
 
 The Agent program does not receive AstraBox login credentials or direct access
-to the AstraBox database. The Environment controls whether its sandbox has
+to the AstraBox database. The RuntimeProfile controls whether its sandbox has
 limited or unrestricted network access. When credential protection is enabled,
 protected model, MCP, and assigned outbound Vault credentials remain outside
 the sandbox and are added only to matching outbound requests. This is not a
@@ -344,7 +344,7 @@ Two separate choices determine how work is distributed:
 
 | Choice | What is shared |
 | --- | --- |
-| AstraBox backend replicas | API and orchestration replicas within one execution target use the same product database, credential configuration, and reachable sandbox service. Saved Session and native state are available independently of a replica's local memory. One replica at a time holds each Session's connection to its runtime; when it stops, another replica takes the Session over. |
+| AstraBox backend replicas | API and orchestration replicas within one Environment use the same product database, credential configuration, and reachable sandbox service. Saved Session and native state are available independently of a replica's local memory. One replica at a time holds each Session's connection to its runtime; when it stops, another replica takes the Session over. |
 | Sandbox worker nodes | The sandbox service places compute on its workers. Persistent workspaces spanning workers require shared backing storage; each mergerfs view runs beside its consuming sandbox. |
 
 Increasing backend replicas does not make a node-local workspace filesystem
@@ -352,14 +352,14 @@ shared. Configure the two independently: database and service access for the
 backend replicas, and suitable compute and workspace storage for sandbox
 workers.
 
-One product database defines one logical control plane. Physical execution
-targets share its definitions, authorization and history while retaining their
-own compute ledgers and worker ownership. Replicas within one target use
-compatible runtime settings and callbacks; a different target does not reconcile
-or clean up their compute. Native SessionStore custody and runtime transport
-remain target-owned core work even when automatic triggers are disabled. See
-[sharing a product database](deploy.md#share-a-product-database) for the
-configuration and rollout requirements.
+Each Environment owns its business database, credentials, configuration,
+authorization, native conversation state and runtime resources. Replicas inside
+that Environment share those resources; another Environment uses independent
+database access and private state. Native engine queues and SessionStore,
+OpenSandbox lifecycle and pools, and the DBOS Run ledger retain their existing
+responsibilities. RuntimeProfiles supply recipes inside the Environment.
+See [Environments](deploy.md#environments) for access, upgrades and deployment
+requirements.
 
 ## Extensions {#plugin-interfaces}
 
@@ -377,7 +377,7 @@ For extension points, see [Embed AstraBox](embedding.md),
 
 ## Related documents
 
-- [Overview](overview.md) — Agent, Environment, and Session.
+- [Overview](overview.md) — Agent, RuntimeProfile, and Session.
 - [Deploy AstraBox](deploy.md) — installation and operations.
 - [OpenSandbox](providers/opensandbox.md) — sandbox behavior and setup.
 - [HTTP API](api.md) — requests, authentication, responses, and streaming.

@@ -1,4 +1,4 @@
-"""Released Assistant compute must not keep an unused Environment in use."""
+"""Released Assistant compute must not keep an unused RuntimeProfile in use."""
 
 import json
 import os
@@ -26,11 +26,11 @@ def test_released_assistant_box_stops_holding_its_environment(
 ) -> None:
     client = e2e_client
     environment = os.environ["ASTRABOX_E2E_ASSISTANT_ENVIRONMENT"]
-    assert environment.startswith("assistant-release-"), "use this case's isolated Environment"
+    assert environment.startswith("assistant-release-"), "use this case's isolated RuntimeProfile"
     model = os.environ["ASTRABOX_E2E_ASSISTANT_MODEL"]
     aid = data(client.post("/api/v1/assistants", json={
         "display_name": f"Runtime release {uuid.uuid4().hex[:8]}",
-        "environment_name": environment, "model_config_override": {"model_name": model},
+        "runtime_profile_name": environment, "model_config_override": {"model_name": model},
     }))["assistant_id"]
     workspace = _wake_assistant(client, aid, timeout=max(.1, live_test_deadline - time.monotonic()))
     first_box = workspace["current_sandbox_id"]
@@ -58,8 +58,8 @@ def test_released_assistant_box_stops_holding_its_environment(
     before_bindings = references()
     assert any(row["hidden"] for row in before_bindings), "include the native workspace's bootstrap Session"
     assert all(row["sandbox_id"] == first_box for row in before_bindings), before_bindings
-    refused = client.delete(f"/api/v1/admin/environments/{environment}")
-    assert refused.status_code == 409 and refused.json()["code"] == "ENVIRONMENT_IN_USE"
+    refused = client.delete(f"/api/v1/admin/runtime-profiles/{environment}")
+    assert refused.status_code == 409 and refused.json()["code"] == "RUNTIME_PROFILE_IN_USE"
     assert any(holder["target_id"] == aid for holder in refused.json()["data"]["holders"])
 
     prompt = (
@@ -88,8 +88,8 @@ def test_released_assistant_box_stops_holding_its_environment(
                     "--for=delete", f"pod/{first_pod}", "--timeout=15s"], check=True, timeout=20)
     assert all(row["sandbox_id"] is None for row in references()), references()
     assert history(client, sid) == original_history
-    still_bound = client.delete(f"/api/v1/admin/environments/{environment}")
-    assert still_bound.status_code == 409 and still_bound.json()["code"] == "ENVIRONMENT_IN_USE"
+    still_bound = client.delete(f"/api/v1/admin/runtime-profiles/{environment}")
+    assert still_bound.status_code == 409 and still_bound.json()["code"] == "RUNTIME_PROFILE_IN_USE"
 
     ready = _wake_assistant(client, aid, timeout=max(.1, live_test_deadline - time.monotonic()))
     second_box = ready["current_sandbox_id"]
@@ -136,10 +136,10 @@ def test_released_assistant_box_stops_holding_its_environment(
     )
     assert any(head["archive"] == "native_session_store" and head["size"] > 0
                and head["chunk_count"] > 0 for head in heads), heads
-    assert data(client.delete(f"/api/v1/admin/environments/{environment}")) == {
+    assert data(client.delete(f"/api/v1/admin/runtime-profiles/{environment}")) == {
         "name": environment, "deleted": True,
     }
-    assert all(row["name"] != environment for row in data(client.get('/api/v1/admin/environments')))
+    assert all(row["name"] != environment for row in data(client.get('/api/v1/admin/runtime-profiles')))
     print(json.dumps({"phase": "assistant-runtime-release-accepted", "assistant_id": aid,
                       "session_id": sid, "boxes": [first_box, second_box],
                       "retained_session_ids": [row["session_id"] for row in after_bindings],

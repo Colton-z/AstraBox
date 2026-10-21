@@ -28,8 +28,8 @@ class AssistantDefaultsFields(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    #: The Environment new Assistants use; unset uses the only one that runs Assistants.
-    environment_name: str | None = None
+    #: The RuntimeProfile new Assistants use; unset uses the only one that runs Assistants.
+    runtime_profile_name: str | None = None
     #: The model Assistants use unless their own override names one.
     model_name: str | None = None
     #: Instructions every Assistant receives before its own.
@@ -42,15 +42,15 @@ class AssistantDefaultsFields(BaseModel):
 
 
 class AssistantDefaults(AssistantDefaultsFields):
-    """The layer as stored, with the Environment new Assistants would use now."""
+    """The layer as stored, with the RuntimeProfile new Assistants would use now."""
 
     model_config = ConfigDict(extra="forbid")
 
     #: What a new Assistant would be created in: the layer's choice, else the
-    #: deployment's only Environment that runs Assistants, else null.
-    effective_environment_name: str | None = None
-    #: The enabled Environments whose engine runs Assistants.
-    assistant_environment_names: list[str]
+    #: deployment's only RuntimeProfile that runs Assistants, else null.
+    effective_runtime_profile_name: str | None = None
+    #: The enabled RuntimeProfiles whose engine runs Assistants.
+    assistant_runtime_profile_names: list[str]
     #: The layer's MCP servers selected from extension catalogs, as stored:
     #: ``{provider, item_id}`` rows. Written only through ``/extensions``.
     mcp_assignments: list[dict[str, Any]] | None = None

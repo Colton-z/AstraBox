@@ -31,7 +31,7 @@ from tests.e2e._sandbox_helpers import (
 HEALTH_TIMEOUT_S = float(os.getenv("ASTRABOX_E2E_HEALTH_TIMEOUT", "60"))
 MAX_E2E_TEST_SECONDS = 180
 E2E_TEST_BUDGETS = {
-    "tests/e2e/execution_target_test.py::test_gray_control_and_cold_conversations_do_not_take_production_compute": 600,
+    "tests/e2e/environment_isolation_test.py::test_environments_isolate_data_access_and_native_execution": 600,
     "tests/e2e/test_files.py::test_a_file_larger_than_the_servers_memory_budget_round_trips": 600,
 }
 #: Left to a poll loop so it can refuse in its own words. pytest-timeout kills

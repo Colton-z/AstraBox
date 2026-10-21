@@ -9,7 +9,7 @@ payload validation on the write path (``AgentConfigService.upsert_agent_config``
 The stored Agent carries ``model`` as a first-class required field, ``system``
 as its prompt, ``mcp_servers`` as a name-keyed server map, and
 ``exposure_mode`` / ``idle_hibernate_seconds`` are runtime settings.
-Model-provider *credentials* do not live here — they are an Environment
+Model-provider *credentials* do not live here — they are a RuntimeProfile
 property (``environment.provider_access``), shared across the agents on an
 environment.
 
@@ -52,7 +52,7 @@ GROUP_MODEL = "model"
 GROUP_TOOLS = "tools"
 GROUP_WORKSPACE = "workspace"
 
-# Choose the runtime before model options: the Environment determines which
+# Choose the runtime before model options: the RuntimeProfile determines which
 # engine-specific fields the form exposes. Group `id` is the stable contract;
 # the label + subtitle are owned by the frontend i18n catalogue, keyed by this id
 # (misc:agent_form.groups.<id>.{label,description}). The backend schema never
@@ -88,7 +88,7 @@ _DEFAULT_REPO_ITEM_SCHEMA: list[dict[str, Any]] = [
 ]
 
 _PACKAGE_ITEM_SCHEMA: list[dict[str, Any]] = [
-    # One of the package kinds the Environment's engine declares.
+    # One of the package kinds the RuntimeProfile's engine declares.
     {"key": "kind", "type": "string", "required": True},
     {"key": "url", "type": "string", "required": True},
     {"key": "protocol", "type": "enum", "enum": _REPO_PROTOCOLS, "advanced": True},
@@ -110,7 +110,7 @@ _PACKAGE_ITEM_SCHEMA: list[dict[str, Any]] = [
 # - created_by: server-stamped ownership; admins / visibility /
 #   allowed_user_ids: the dedicated Agent access endpoint. None is accepted by
 #   the general authoring request.
-# - model_config / provider access: model credentials are an Environment
+# - model_config / provider access: model credentials are a RuntimeProfile
 #   property (environment.provider_access), not an agent field.
 AGENT_FIELD_SCHEMA: list[dict[str, Any]] = [
     # ── identity ──────────────────────────────────────────────────────────
@@ -171,13 +171,13 @@ AGENT_FIELD_SCHEMA: list[dict[str, Any]] = [
     # AstraBox runs Agent programs of any purpose, and a diff view serves only
     # the ones that edit files; a research or support Agent showing a
     # permanently empty Diff tab is a promise the product does not keep. They
-    # sit on the Agent rather than the Environment because the question is what
-    # the Agent is for, not what substrate it runs on — one Environment serves
+    # sit on the Agent rather than the RuntimeProfile because the question is what
+    # the Agent is for, not what substrate it runs on — one RuntimeProfile serves
     # Agents of different purposes.
     #
     # Hiding the terminal is not an access control and must never be read as
     # one: the sandbox stays reachable through the API, and the Agent can run
-    # commands regardless. `sandbox_permission_level` on the Environment owns
+    # commands regardless. `sandbox_permission_level` on the RuntimeProfile owns
     # that question.
     {"key": "terminal_panel", "type": "boolean", "group": GROUP_WORKSPACE},
     {"key": "diff_panel", "type": "boolean", "group": GROUP_WORKSPACE},
@@ -201,7 +201,7 @@ AGENT_FIELD_SCHEMA: list[dict[str, Any]] = [
     # The environment supplies sandbox/image/install + provider access; the
     # agent only names it. exposure_mode / idle_hibernate_seconds are the
     # agent's own runtime settings.
-    {"key": "environment_name", "type": "env_ref", "group": GROUP_RUNTIME, "required": True},
+    {"key": "runtime_profile_name", "type": "runtime_profile_ref", "group": GROUP_RUNTIME, "required": True},
     {
         "key": "exposure_mode",
         "type": "enum",
@@ -280,7 +280,7 @@ def agent_artifacts_enabled(agent: Mapping[str, Any]) -> bool:
 def default_prepared_capacity(sandbox_backend: str | None = None) -> int:
     """The prepared capacity of an Agent created without choosing one.
 
-    One where the Agent's sandbox backend (its Environment's, or the
+    One where the Agent's sandbox backend (its RuntimeProfile's, or the
     deployment's default) declares a client pool and says this deployment
     gives that pool what it needs, and zero elsewhere: an Agent created with
     capacity on a backend whose pool cannot run would only record

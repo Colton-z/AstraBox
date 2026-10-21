@@ -16,11 +16,11 @@ from sqlalchemy.exc import DBAPIError
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.providers.postgres.engine import get_engine, redacted_url
+from astrabox.providers.postgres.environment import notice_channel
 from astrabox.seams.persistence_coordination import NoticeKind, RuntimeLockCheck, SessionNotice
 
 logger = get_logger(__name__)
 _RECONNECT_DELAY_S = 1.0
-_CHANNEL = "astrabox_session"
 
 
 def _parse_notice(payload: str) -> SessionNotice | None:
@@ -32,8 +32,10 @@ def _parse_notice(payload: str) -> SessionNotice | None:
 
 
 class PostgresCoordination:
-    def __init__(self, *, database_url: str) -> None:
+    def __init__(self, *, database_url: str, environment_name: str) -> None:
         self._database_url = database_url
+        self._environment_name = environment_name
+        self._channel = notice_channel(environment_name)
 
     async def notify(self, connection: AsyncConnection, notice: SessionNotice) -> None:
         """Enqueue native NOTIFY inside the shared recipe's transaction."""
@@ -43,7 +45,7 @@ class PostgresCoordination:
         ):
             raise ValueError("transactional notification requires an active database transaction")
         payload = f"{notice.kind}:{notice.seq}:{notice.session_id}"
-        await connection.execute(select(func.pg_notify(_CHANNEL, payload)))
+        await connection.execute(select(func.pg_notify(self._channel, payload)))
 
     @asynccontextmanager
     async def runtime_lock(self, session_id: str) -> AsyncIterator[RuntimeLockCheck]:
@@ -53,7 +55,9 @@ class PostgresCoordination:
         supplier may already have accepted an in-flight request. Repository
         writes use their own pool while this connection retains the lock.
         """
-        async with get_engine(self._database_url, runtime_lock=True).begin() as connection:
+        async with get_engine(
+            self._database_url, environment_name=self._environment_name, runtime_lock=True,
+        ).begin() as connection:
             driver: Any = (await connection.get_raw_connection()).driver_connection
             owner = asyncio.current_task()
             assert owner is not None
@@ -77,7 +81,9 @@ class PostgresCoordination:
                 await connection.execute(
                     select(
                         func.pg_advisory_xact_lock(
-                            func.hashtextextended(f"astrabox.session.runtime:{session_id}", 0)
+                            func.hashtextextended(
+                                f"astrabox:{self._environment_name}:session.runtime:{session_id}", 0,
+                            )
                         )
                     )
                 )
@@ -115,7 +121,7 @@ class PostgresCoordination:
                 connection = await asyncpg.connect(dsn, server_settings={"application_name": "astrabox-feed"})
                 lost = asyncio.Event()
                 connection.add_termination_listener(lambda _conn: lost.set())
-                await connection.add_listener(_CHANNEL, received)
+                await connection.add_listener(self._channel, received)
                 if not first:
                     on_resync()
                 first = False

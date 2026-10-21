@@ -229,7 +229,7 @@ def test_an_interrupt_stops_the_command_in_a_conversation_box_terminal(
         e2e_client,
         name_suffix="terminal-interrupt",
         engine_options={},
-        environment_name=environment_with_tenancy(e2e_client, "conversation"),
+        runtime_profile_name=environment_with_tenancy(e2e_client, "conversation"),
     )
     sid = str(created.get("session_id") or "")
     assert sid, f"no session_id in create response: {created}"
@@ -285,7 +285,7 @@ def test_a_command_after_runner_loss_uses_a_fresh_shell(
         e2e_client,
         name_suffix="terminal-runner-loss",
         engine_options={},
-        environment_name=environment_with_tenancy(e2e_client, "conversation"),
+        runtime_profile_name=environment_with_tenancy(e2e_client, "conversation"),
     )
     sid = str(created["session_id"])
     try:

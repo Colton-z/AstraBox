@@ -1,19 +1,19 @@
 import type { SkillDescriptor } from '@/types';
 // The create-flow and edit-flow edit configs for an Assistant, in the same
-// declarative grammar environmentEditConfig.ts produces (EditSectionSpec[]), so
+// declarative grammar runtimeProfileEditConfig.ts produces (EditSectionSpec[]), so
 // the create page and the record page's edit cards both render console-grammar
 // inputs from config rather than a bespoke form.
 //
-// Identity vs mutable: an assistant's identity (engine_kind / environment_name) is
+// Identity vs mutable: an assistant's identity (engine_kind / runtime_profile_name) is
 // frozen after the workspace materializes (the backend rejects changes with 409),
 // so those fields are locked — present in create, absent from edit. The mutable
 // set the backend PATCH accepts is display_name / icon / description /
 // permission_mode_default / system; only those drive the edit sections. The create form's
 // environment options are injected from the live list of assistant-capable
-// environments, with no free-text fallback for an environment nothing backs.
+// runtime_profiles, with no free-text fallback for an environment nothing backs.
 import i18n from '@/i18n';
 import type { AssistantRecord } from '@/assistant/types';
-import type { EnvironmentConfig } from '@/types';
+import type { RuntimeProfileConfig } from '@/types';
 
 import { permissionModeLabel, type AssistantDraft } from './assistantConfig';
 import type { EditFieldSpec, EditSectionSpec } from './console';
@@ -97,16 +97,16 @@ function field<K extends keyof AssistantDraft>(key: K) {
   };
 }
 
-/** The permission modes the named Environment's program declares. */
-export function environmentPermissionModes(
-  environments: EnvironmentConfig[],
+/** The permission modes the named RuntimeProfile's program declares. */
+export function runtimeProfilePermissionModes(
+  runtime_profiles: RuntimeProfileConfig[],
   name: string,
 ): string[] {
-  return environments.find((environment) => environment.name === name)?.permission_modes ?? [];
+  return runtime_profiles.find((environment) => environment.name === name)?.permission_modes ?? [];
 }
 
 /**
- * Build the create-page edit sections. `environments` is the live list of
+ * Build the create-page edit sections. `runtime_profiles` is the live list of
  * assistant-capable environment presets — an assistant is not an agent: it names
  * an environment (engine + provider access) and layers its own overrides, so the
  * environment is the thing being chosen here. The engine identity is derived
@@ -115,33 +115,33 @@ export function environmentPermissionModes(
  * environment form's two-group rhythm.
  */
 export function buildAssistantCreateSections(
-  environments: EnvironmentConfig[],
-  environmentName: string,
+  runtime_profiles: RuntimeProfileConfig[],
+  runtimeProfileName: string,
 ): EditSectionSpec[] {
-  const environmentField = {
-    key: 'environment_name',
-    label: i18n.t('manage:assistant_form.environment_label'),
+  const runtimeProfileField = {
+    key: 'runtime_profile_name',
+    label: i18n.t('manage:assistant_form.runtime_profile_label'),
     type: 'select' as const,
-    get: (d: Record<string, unknown>) => (d as unknown as AssistantDraft).environment_name,
+    get: (d: Record<string, unknown>) => (d as unknown as AssistantDraft).runtime_profile_name,
     set: (d: Record<string, unknown>, value: unknown) => {
       const name = String(value || '');
-      const environment = environments.find((candidate) => candidate.name === name);
+      const environment = runtime_profiles.find((candidate) => candidate.name === name);
       const modes = environment?.permission_modes ?? [];
       return {
         ...d,
-        environment_name: name,
+        runtime_profile_name: name,
         engine_kind: String(environment?.engine_kind || ''),
         permission_mode_default: modes.includes('default') ? 'default' : (modes[0] ?? ''),
       };
     },
     required: true,
-    idTag: 'environment_name',
-    options: environments.map((environment) => ({
+    idTag: 'runtime_profile_name',
+    options: runtime_profiles.map((environment) => ({
       value: environment.name,
       label: String(environment.display_name || environment.name),
     })),
-    placeholder: i18n.t('manage:assistant_form.environment_select_placeholder'),
-    help: i18n.t('manage:assistant_form.environment_select_help'),
+    placeholder: i18n.t('manage:assistant_form.runtime_profile_select_placeholder'),
+    help: i18n.t('manage:assistant_form.runtime_profile_select_help'),
   };
 
   return [
@@ -168,7 +168,7 @@ export function buildAssistantCreateSections(
           editable: false,
           help: i18n.t('manage:assistant_form.engine_help'),
         },
-        environmentField,
+        runtimeProfileField,
       ],
     },
     {
@@ -184,11 +184,11 @@ export function buildAssistantCreateSections(
           placeholder: i18n.t('manage:assistant_form.description_placeholder'),
           help: i18n.t('manage:assistant_form.description_help'),
         },
-        // Offered only when the chosen Environment's program has modes: one
+        // Offered only when the chosen RuntimeProfile's program has modes: one
         // without them refuses any value, so a select here could only fail.
         ...permissionField(
           field('permission_mode_default'),
-          environmentPermissionModes(environments, environmentName).map((mode) => ({
+          runtimeProfilePermissionModes(runtime_profiles, runtimeProfileName).map((mode) => ({
             value: mode,
             label: permissionModeLabel(mode),
           })),
@@ -201,7 +201,7 @@ export function buildAssistantCreateSections(
 }
 
 // ── Edit flow ────────────────────────────────────────────────────────────────
-// The mutable subset the backend PATCH accepts. engine_kind / environment_name are
+// The mutable subset the backend PATCH accepts. engine_kind / runtime_profile_name are
 // intentionally absent (immutable identity) — they are reported in the record
 // page's fact rail but are never editable here.
 export interface AssistantEditDraft {
@@ -301,12 +301,12 @@ export function buildAssistantEditSections(hasPermissionMode: boolean): EditSect
 
 // ── Extensions ───────────────────────────────────────────────────────────────
 // What the Assistant adds to its program, rendered from the program's own
-// declaration (the Environment's `extensions` and `engine_options_schema`), so
+// declaration (the RuntimeProfile's `extensions` and `engine_options_schema`), so
 // a program offers only what it reads and a new program needs no form change.
 
-/** The extension fields the Environment's program reads, in a PATCH body. */
+/** The extension fields the RuntimeProfile's program reads, in a PATCH body. */
 export function assistantExtensionUpdate(
-  environment: EnvironmentConfig | undefined,
+  environment: RuntimeProfileConfig | undefined,
   draft: AssistantEditDraft,
 ): Record<string, unknown> {
   const extensions = environment?.extensions;
@@ -321,9 +321,9 @@ export function assistantExtensionUpdate(
   };
 }
 
-/** The Extensions card for the Environment's program, or null when it reads none. */
+/** The Extensions card for the RuntimeProfile's program, or null when it reads none. */
 export function buildAssistantExtensionSection(
-  environment: EnvironmentConfig | undefined,
+  environment: RuntimeProfileConfig | undefined,
 ): EditSectionSpec | null {
   const extensions = environment?.extensions;
   if (!extensions) return null;

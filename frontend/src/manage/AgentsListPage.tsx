@@ -130,9 +130,9 @@ export default function AgentsListPage() {
       // reader open each agent to find out.
       key: 'environment',
       intent: 'identifier',
-      header: t('manage:agents.col_environment'),
+      header: t('manage:agents.col_runtime_profile'),
       cell: (row) => (
-        <span className="text-muted-foreground">{row.environment_name || '—'}</span>
+        <span className="text-muted-foreground">{row.runtime_profile_name || '—'}</span>
       ),
     },
     {

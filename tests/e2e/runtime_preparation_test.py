@@ -82,20 +82,20 @@ def test_provider_state_commit_is_fenced_by_current_subject(
     nonce = uuid.uuid4().hex
     path = f"/api/v1/runtime-preparation-fixture/guards/{nonce}"
     principal = data(client.get("/api/v1/user/current"))["user_id"]
-    environments = data(client.get("/api/v1/admin/environments"))
+    runtime_profiles = data(client.get("/api/v1/admin/runtime-profiles"))
     source_name = environment_with_tenancy(client, "agent")
-    source = next(row for row in environments if row["name"] == source_name)
+    source = next(row for row in runtime_profiles if row["name"] == source_name)
     environment = f"guard-{nonce}"
-    data(client.put(f"/api/v1/admin/environments/{environment}", json={**source, "name": environment}))
+    data(client.put(f"/api/v1/admin/runtime-profiles/{environment}", json={**source, "name": environment}))
     agent_fields = {
-        "name": f"Guard {nonce}", "environment_name": environment,
+        "name": f"Guard {nonce}", "runtime_profile_name": environment,
         "model": profile["model"], "prepared_capacity": 0,
     }
     created_agent = data(client.post("/api/v1/agents", json=agent_fields))
     agent = created_agent["agent_id"]
     release_agent(agent)
     assistant = data(client.post("/api/v1/assistants", json={
-        "display_name": f"Guard {nonce}", "environment_name": assistant_environment,
+        "display_name": f"Guard {nonce}", "runtime_profile_name": assistant_environment,
         "model_config_override": {"model_name": assistant_model},
     }, timeout=max(1, live_test_deadline - time.monotonic())))["assistant_id"]
     release_assistant(assistant)
@@ -165,7 +165,7 @@ def test_provider_state_commit_is_fenced_by_current_subject(
             with httpx.Client(base_url=str(client.base_url), timeout=30) as anonymous:
                 response = anonymous.post(f"{path}/capture/agent/{agent}/anonymous")
                 assert response.status_code == 401, response.text
-            data(client.put(f"/api/v1/admin/environments/{environment}", json={
+            data(client.put(f"/api/v1/admin/runtime-profiles/{environment}", json={
                 **source, "name": environment, "enabled": False,
             }))
             capture("agent", agent, "agent-old")
@@ -177,8 +177,8 @@ def test_provider_state_commit_is_fenced_by_current_subject(
                 **agent_fields, "version": created_agent["version"],
             }))
             refused("agent-old", "stale-agent")
-            data(client.put(f"/api/v1/admin/environments/{environment}", json={**source, "name": environment}))
-            print("guard: disabled Environment accepted; stale Agent guard refused", flush=True)
+            data(client.put(f"/api/v1/admin/runtime-profiles/{environment}", json={**source, "name": environment}))
+            print("guard: disabled RuntimeProfile accepted; stale Agent guard refused", flush=True)
 
             capture("assistant", assistant, "assistant-old")
             write = pool.submit(
@@ -278,7 +278,7 @@ def test_provider_state_commit_is_fenced_by_current_subject(
                 data(client.post(f"{path}/release/all"))
                 if passed:
                     data(client.delete(path))
-                    data(client.delete(f"/api/v1/admin/environments/{environment}"))
+                    data(client.delete(f"/api/v1/admin/runtime-profiles/{environment}"))
 
 # Settings come from the running server process, not from `docker exec`'s
 # environment, which lacks what the launcher injects into `astrabox serve`.
@@ -404,9 +404,9 @@ def _transcript_text(sid: str) -> str:
 
 def _gate_environment(client: httpx.Client, tenancy: str, image: str) -> str:
     source = environment_with_tenancy(client, tenancy)
-    row = next(item for item in data(client.get("/api/v1/admin/environments")) if item["name"] == source)
+    row = next(item for item in data(client.get("/api/v1/admin/runtime-profiles")) if item["name"] == source)
     name = f"runtime-preparation-{tenancy}"
-    data(client.put(f"/api/v1/admin/environments/{name}", json={
+    data(client.put(f"/api/v1/admin/runtime-profiles/{name}", json={
         **row, "name": name, "runtime_template_name": image, "enabled": True,
     }))
     return name
@@ -430,7 +430,7 @@ def test_session_materials_gate_native_startup_and_preserve_resume(
 
     def agent(label: str, capacity: int, environment: str = gate) -> str:
         created = data(e2e_client.post("/api/v1/agents", json={
-            "name": f"{label} {suffix}", "environment_name": environment,
+            "name": f"{label} {suffix}", "runtime_profile_name": environment,
             "model": profile["model"], "prepared_capacity": capacity,
         }))
         release_agent(created["agent_id"])
@@ -587,7 +587,7 @@ def test_a_shared_box_burst_starts_each_conversation_on_its_own_material(
     principal = data(e2e_client.get("/api/v1/user/current"))["user_id"]
     created = data(e2e_client.post("/api/v1/agents", json={
         "name": f"Material burst {uuid.uuid4().hex[:8]}",
-        "environment_name": _gate_environment(e2e_client, "agent", image),
+        "runtime_profile_name": _gate_environment(e2e_client, "agent", image),
         "model": profile["model"], "prepared_capacity": capacity,
     }))
     aid = created["agent_id"]
@@ -669,7 +669,7 @@ def test_a_startup_user_action_keeps_the_conversation_until_the_user_acts(
     assert settings["provider"] == "native-startup-material-fixture"
     created = data(e2e_client.post("/api/v1/agents", json={
         "name": f"Material action {uuid.uuid4().hex[:8]}",
-        "environment_name": _gate_environment(e2e_client, "conversation", image),
+        "runtime_profile_name": _gate_environment(e2e_client, "conversation", image),
         "model": profile["model"], "prepared_capacity": 0,
     }))
     aid = created["agent_id"]
@@ -858,7 +858,7 @@ def test_an_assistant_is_prepared_before_its_conversations(
     skills = [f"{_SKILLS}#skills/skill-creator"]
     created = data(e2e_client.post("/api/v1/assistants", json={
         "display_name": f"prepared-{uuid.uuid4().hex[:6]}",
-        "environment_name": environment,
+        "runtime_profile_name": environment,
         "model_config_override": {"model_name": model},
         "skills": skills,
     }))
@@ -923,14 +923,14 @@ def test_an_accepted_message_keeps_its_box_running_during_preparation(
     assert isinstance(settings, dict)
     assert settings["provider"] == "native-startup-material-fixture"
     source = environment_with_tenancy(e2e_client, "conversation")
-    environment = next(row for row in data(e2e_client.get("/api/v1/admin/environments")) if row["name"] == source)
-    assert "••••••••" not in json.dumps(environment), "The test Environment must use deployment model access"
+    environment = next(row for row in data(e2e_client.get("/api/v1/admin/runtime-profiles")) if row["name"] == source)
+    assert "••••••••" not in json.dumps(environment), "The test RuntimeProfile must use deployment model access"
     name = f"runtime-preparation-idle-{source}"
-    data(e2e_client.put(f"/api/v1/admin/environments/{name}", json={
+    data(e2e_client.put(f"/api/v1/admin/runtime-profiles/{name}", json={
         **environment, "name": name, "idle_action": "pause", "enabled": True,
     }))
     agent = data(e2e_client.post("/api/v1/agents", json={
-        "name": f"Preparing input {uuid.uuid4().hex[:8]}", "environment_name": name,
+        "name": f"Preparing input {uuid.uuid4().hex[:8]}", "runtime_profile_name": name,
         "model": profile["model"], "prepared_capacity": 0, "idle_hibernate_seconds": 3600,
     }))
     aid = agent["agent_id"]
@@ -951,7 +951,7 @@ def test_an_accepted_message_keeps_its_box_running_during_preparation(
         data(e2e_client.put(f"/api/v1/agents/{aid}", json={
             "name": current_agent["name"],
             "model": current_agent["model"],
-            "environment_name": current_agent["environment_name"],
+            "runtime_profile_name": current_agent["runtime_profile_name"],
             "version": current_agent["version"],
             "idle_hibernate_seconds": 1,
         }))
@@ -1090,7 +1090,7 @@ def test_a_delivered_message_is_prepared_once_and_streams_while_it_is_answered(
     assert settings["provider"] == "native-startup-material-fixture"
     created = data(e2e_client.post("/api/v1/agents", json={
         "name": f"Streaming {uuid.uuid4().hex[:8]}",
-        "environment_name": environment_with_tenancy(e2e_client, "conversation"),
+        "runtime_profile_name": environment_with_tenancy(e2e_client, "conversation"),
         "model": profile["model"], "prepared_capacity": 0,
     }))
     release_agent(created["agent_id"])

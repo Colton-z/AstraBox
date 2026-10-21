@@ -315,7 +315,7 @@ class SandboxEgressCredentialPlan:
 
     These are application-level requests, not one provider's Vault models.
     Providers translate each category into their own egress mechanism or fail
-    before allocating a sandbox. An Environment network mode is intentionally
+    before allocating a sandbox. A RuntimeProfile network mode is intentionally
     absent; the request-bound destinations are themselves the exact additional
     reachability authorized by attaching this plan.
     """

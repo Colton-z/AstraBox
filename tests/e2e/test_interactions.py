@@ -256,13 +256,13 @@ def test_codex_plan_mode_question_answer_settles(e2e_client: httpx.Client) -> No
 
     profile = current_profile()
     environment_options = data(
-        e2e_client.get("/api/v1/agent-configuration/environments")
+        e2e_client.get("/api/v1/agent-configuration/runtime-profiles")
     )
     assert isinstance(environment_options, list), environment_options
     matches = [
         item
         for item in environment_options
-        if item.get("name") == profile["environment_name"]
+        if item.get("name") == profile["runtime_profile_name"]
     ]
     assert len(matches) == 1, matches
     option_schema = matches[0].get("engine_options_schema") or []

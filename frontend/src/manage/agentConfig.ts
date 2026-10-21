@@ -3,7 +3,7 @@ import type { AgentConfig, AgentDraft, FormSchema } from '@/types';
 
 // Re-export the console's locale-neutral mono date formatter so every manage
 // module importing `formatDateTime` from './agentConfig' (and the
-// environmentConfig / assistantConfig re-exports) renders one compact-ISO
+// runtimeProfileConfig / assistantConfig re-exports) renders one compact-ISO
 // `YYYY-MM-DD HH:mm` shape across every list and record page.
 export { formatDateTime, formatDateTimeSeconds } from './console/format';
 
@@ -64,7 +64,7 @@ export function isEmptyValue(value: unknown): boolean {
 }
 
 // Blank starting draft for the single-step create page. Deliberately almost
-// empty: `model` and `environment_name` are required choices the operator makes
+// empty: `model` and `runtime_profile_name` are required choices the operator makes
 // (the server rejects a payload missing either), and seeding empty containers
 // would only persist `{}` debris the schema-driven form prunes anyway. The one
 // exception is a value the schema serves as this deployment's create-time
