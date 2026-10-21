@@ -201,3 +201,22 @@ def _sandbox_installation_id() -> Iterator[None]:
     finally:
         sandbox_seam._INSTALLATION_LOADER = loader
         sandbox_seam._INSTALLATION_ID = cached
+
+
+@pytest.fixture
+def environment_member_accounts(monkeypatch: pytest.MonkeyPatch) -> set[str]:
+    """Declare fixture identities admitted to the serving Environment.
+
+    Protocol, role and payload tests name their existing members explicitly.
+    Live Environment acceptance exercises the real membership repository.
+    """
+    from astrabox.persistence.provider import get_persistence
+    from astrabox.persistence.repository.environment_repository import EnvironmentRepository
+
+    members: set[str] = set()
+
+    async def has_member(_self: EnvironmentRepository, name: str, user_id: str) -> bool:
+        return name == get_persistence().environment_name and user_id in members
+
+    monkeypatch.setattr(EnvironmentRepository, "has_member", has_member)
+    return members

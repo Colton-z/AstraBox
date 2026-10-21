@@ -29,6 +29,11 @@ from astrabox.providers.identity_sso import (
 )
 from astrabox.web.identity_middleware import WebIdentityMiddleware
 
+
+@pytest.fixture(autouse=True)
+def _environment_membership(environment_member_accounts: set[str]) -> None:
+    environment_member_accounts.update({'u', 'api-client'})
+
 # >= 32 bytes: silence PyJWT's InsecureKeyLengthWarning for HS256 in tests.
 _JWT_SECRET = "unit-test-shared-secret-0123456789abcdef"
 _OTHER_SECRET = "a-different-secret-0123456789abcdef-xyz"

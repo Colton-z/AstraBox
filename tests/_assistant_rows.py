@@ -15,6 +15,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from astrabox.core.service.orchestrator.assistant.assistant_workspace_service import (
     assistant_profile_marker_key,
 )
+from astrabox.persistence.repository.assistant_workspace_repository import AssistantWorkspaceRepository
 from astrabox.persistence.sql import execute, from_iso
 from astrabox.persistence.sql.models.assistants import (
     Assistant,
@@ -81,6 +82,7 @@ async def workspace(
     **values: Any,
 ) -> None:
     """The Assistant's workspace row; ``profiles`` maps each user to the box their profile is in."""
+    values.setdefault("environment_name", AssistantWorkspaceRepository().environment_name)
     await execute(
         insert(AssistantWorkspace.__table__).values(
             assistant_id=assistant_id,

@@ -13,6 +13,8 @@ from typing import Any
 from sqlalchemy.dialects.postgresql import insert
 
 from astrabox.persistence.repository.agent_repository import AgentRepository
+from astrabox.persistence.repository.deployment_repository import DeploymentRepository
+from astrabox.persistence.repository.session_repository import SessionRepository
 from astrabox.persistence.sql import execute
 from astrabox.persistence.sql.models.deployments import Deployment
 from astrabox.persistence.sql.models.sessions import Session
@@ -29,6 +31,7 @@ async def seed_binding(
     """A binding row on an Agent the repository wrote, with any other columns given."""
     if await AgentRepository().get_agent(agent_id) is None:
         await create_agent(agent_id)
+    columns.setdefault("environment_name", DeploymentRepository().environment_name)
     await execute(
         insert(Deployment.__table__)
         .values(
@@ -52,6 +55,7 @@ async def seed_sessions(*session_ids: str, user_id: str = "creator", state: str 
             insert(Session.__table__)
             .values(
                 session_id=session_id,
+                environment_name=SessionRepository().environment_name,
                 user_id=user_id,
                 session_kind="agent_chat",
                 workspace_kind="agent",

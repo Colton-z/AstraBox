@@ -71,7 +71,7 @@ describe('ManageSidebar collection counts', () => {
     renderSidebar('/manage/credentials');
 
     await waitFor(() => expect(badgeFor('Agents')?.textContent).toBe('3'));
-    expect(badgeFor('RuntimeProfiles')?.textContent).toBe('4');
+    expect(badgeFor('Runtime profiles')?.textContent).toBe('4');
     expect(badgeFor('Sessions')?.textContent).toBe('5');
     expect(api.adminNavigationSummary).toHaveBeenCalledTimes(1);
     expect(api.listAgents).not.toHaveBeenCalled();
