@@ -52,7 +52,7 @@ dependencies = [
   # Official A2A HTTP transport; tasks project the existing Session/turn ledger.
   "a2a-sdk[http-server]==1.2.2",
   # persistence: PostgreSQL through SQLAlchemy 2.0, schema migrated by Alembic
-  "sqlalchemy==2.0.52",
+  "sqlalchemy==2.1.4",
   "asyncpg==0.31.0",
   "alembic==1.20.0",
   # Embedded durable schedule/run engine. DBOS owns cron dispatch, distributed
