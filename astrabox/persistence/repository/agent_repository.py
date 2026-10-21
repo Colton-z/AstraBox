@@ -117,6 +117,8 @@ _COLUMN_FIELDS = (
     "system",
     "engine_options",
     "artifacts_enabled",
+    "a2a_access",
+    "a2a_agent_ids",
     "skills",
     "mcp_servers",
     "packages",
@@ -316,6 +318,8 @@ def _view(row: Mapping[str, Any]) -> dict[str, Any]:
         "categories": list(row["categories"] or []),
         "model": row["model"],
         "artifacts_enabled": row["artifacts_enabled"],
+        "a2a_access": row["a2a_access"],
+        "a2a_agent_ids": list(row["a2a_agent_ids"] or []),
         "skills": list(row["skills"] or []),
         "packages": list(row["packages"] or []),
         "terminal_panel": row["terminal_panel"],
@@ -542,7 +546,7 @@ def _column_values(fields: Mapping[str, Any]) -> dict[str, Any]:
         if field not in fields:
             continue
         value = fields[field]
-        if field in ("use_cases", "admins", "allowed_user_ids", "skills", "packages"):
+        if field in ("use_cases", "admins", "allowed_user_ids", "skills", "packages", "a2a_agent_ids"):
             value = list(value or [])
         elif field in ("artifacts_enabled", "enabled"):
             value = value is not False

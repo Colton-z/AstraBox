@@ -594,7 +594,8 @@ class SessionRepository:
         )
 
     async def list_user_sessions_page(
-        self, user_id: str, *, limit: int = 50, cursor: str | None = None
+        self, user_id: str, *, limit: int = 50, cursor: str | None = None,
+        agent_ids: list[str] | None = None, query: str = "",
     ) -> dict[str, Any]:
         """One page of the user's visible sessions, newest activity first."""
         page_limit = max(1, min(int(limit or 50), 100))
@@ -603,6 +604,10 @@ class SessionRepository:
             _live(),
             _SESSIONS.c.hidden.is_(False),
         ]
+        if agent_ids is not None:
+            conditions.append(_SESSIONS.c.agent_id.in_(agent_ids))
+        if query.strip():
+            conditions.append(_SESSIONS.c.title.icontains(query.strip(), autoescape=True))
         position = _decode_session_list_cursor(cursor)
         if position is not None:
             at = from_iso(position["updated_at"])

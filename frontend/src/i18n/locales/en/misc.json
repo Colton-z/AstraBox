@@ -228,6 +228,10 @@
       "runtime": {
         "label": "Runtime and availability",
         "description": "Agent program, sandbox setup, entry points, and idle behavior"
+      },
+      "collaboration": {
+        "label": "Agent collaboration",
+        "description": "Which Agents this Agent can contact on behalf of the conversation owner"
       }
     },
     "fields": {
@@ -326,6 +330,20 @@
       "enabled": {
         "label": "Enabled",
         "help": "When off, users cannot start a new conversation with this Agent"
+      },
+      "a2a_access": {
+        "label": "A2A access",
+        "help": "Discover and message this user's existing conversations. This never grants access to another user's conversations.",
+        "options": {
+          "disabled": "Disabled",
+          "all": "All accessible Agents",
+          "selected": "Selected Agents"
+        }
+      },
+      "a2a_agent_ids": {
+        "label": "Allowed Agents",
+        "help": "The user's existing access to each target Agent still applies.",
+        "unavailable": "Agent unavailable"
       }
     }
   },

@@ -58,6 +58,37 @@ Repeating an identical `messageId` reuses its input. Reusing it with different
 message content is refused. Hermes generates its own message ids, so asking
 the Assistant to call again is a new request, not an idempotent retry.
 
+## Message an existing conversation
+
+Agent administrators configure **Agent collaboration** on the Agent's management
+page: **Disabled**, **All accessible Agents**, or **Selected Agents**. Selected
+Agents are picked by name. The Agent configuration in the database is the
+source of this scope; conversations do not store a separate copy. Enabling the
+tools takes effect when a new runtime loads the Agent configuration.
+
+The built-in `agents` MCP server exposes these tools to enabled Agent
+conversations and to Assistants:
+
+- `list_agent_conversations` searches Agent names and current conversation
+  titles, including AI-generated titles. It returns
+  Session IDs, A2A context IDs and console links. Use `next_cursor` to continue
+  a page. Names and titles can repeat or change; route by the returned IDs.
+- `send_agent_message` sends to an existing `agent_id` and `session_id`, using a
+  stable `message_id` for an identical retry. It returns an A2A Task; read
+  `get_agent_task` for its result. This does not create another conversation.
+
+Discovery and messaging are limited to the caller's own Agent conversations in
+this Environment. The Agent's configured scope does not grant access to another
+user's history or bypass the target Agent's existing access control. Channel
+conversations do not receive these personal tools.
+
+Messages include the platform-resolved sender identity and conversation link,
+and are labelled as messages from another conversation rather than direct user
+instructions. The target continues its native Session context. Busy-input
+admission, scheduling and response boundaries remain the target engine's;
+AstraBox does not add a messaging queue. A pending Task does not mean the target
+has already answered.
+
 ## Interaction boundaries
 
 The pinned Hermes toolset sends text and returns text, context and state. It

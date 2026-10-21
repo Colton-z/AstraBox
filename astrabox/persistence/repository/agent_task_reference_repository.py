@@ -26,6 +26,7 @@ _RESERVED_FIELDS = (
     "message_id",
     "task_id",
     "fingerprint",
+    "origin",
 )
 
 

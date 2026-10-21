@@ -11,6 +11,11 @@ from google.protobuf.struct_pb2 import Value
 from starlette.exceptions import HTTPException
 
 from astrabox.common.utils.errors import APIError
+from astrabox.deploy.public_path import public_path
+from astrabox.core.service.orchestrator.agent.agent_collaboration import (
+    collaboration_access, collaboration_peers,
+)
+from astrabox.persistence.repository.session_repository import SessionRepository
 from astrabox.common.utils.user_context import (
     UserContext,
     reset_current_user_context,
@@ -30,6 +35,17 @@ def agent_tools() -> list[dict[str, Any]]:
         "timezone": _string("IANA timezone, for example Asia/Shanghai."),
     }, "required": ["cron", "timezone"], "additionalProperties": False}
     definitions = [
+        ("list_agent_conversations", "Find the current user's existing Agent conversations by Agent name and conversation title. Returns current names, stable Session IDs and A2A context IDs. Use the returned IDs for messaging; names can change or repeat. A page can be continued with next_cursor.", {
+            "agent_id": agent, "agent_query": _string("Search the Agent's name or display name."),
+            "query": _string("Search the conversation title."),
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+            "cursor": _string("The preceding page's next_cursor."),
+        }, []),
+        ("send_agent_message", "Send one message through A2A to an existing conversation from list_agent_conversations. Keeps that conversation and its native context; never starts a replacement conversation. Returns the A2A Task; use get_agent_task for a pending result. A busy runtime applies its own input policy.", {
+            "agent_id": agent, "session_id": _string("The exact existing Session ID from discovery."),
+            "message": _string("The message to deliver to the other conversation."),
+            "message_id": _string("A unique stable message ID. Reuse it only for the identical message to the same conversation."),
+        }, ["agent_id", "session_id", "message", "message_id"]),
         ("get_agent_task", "Read an A2A Task and its current public interaction contract. Use the explicit Task ID from a2a_call; inspect the declared options before answering. This does not approve anything.", {
             "agent_id": agent, "task_id": _string("The exact A2A Task ID from the peer response."),
         }, ["agent_id", "task_id"]),
@@ -88,11 +104,22 @@ def _validate(args: dict[str, Any], schema: dict[str, Any]) -> None:
 
 async def call_agent_tool(
     *, name: str, args: dict[str, Any], user: UserContext, assistant_id: str,
-    deployments: Any,
+    deployments: Any, source_binding: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     schema = next(tool["inputSchema"] for tool in agent_tools() if tool["name"] == name)
     _validate(args, schema)
-    if name in {"get_agent_task", "answer_agent_task"}:
+    source_agent = (source_binding or {}).get("source_agent")
+    if name == "list_agent_conversations":
+        return await _list_conversations(args, user, source_agent=source_agent)
+    if name in {"get_agent_task", "answer_agent_task", "send_agent_message"}:
+        if source_agent is not None:
+            mode, selected = collaboration_access(source_agent)
+            if mode == "disabled" or (mode == "selected" and args["agent_id"] not in selected):
+                raise APIError(code="NOT_FOUND", message="Agent is not available for collaboration", status_code=404)
+        if name == "send_agent_message":
+            if args["session_id"] == (source_binding or {}).get("session_id"):
+                raise APIError(code="INVALID_REQUEST", message="Choose another conversation", status_code=400)
+            return await _call_a2a_tool(name, args, user, source_binding=source_binding)
         return await _call_a2a_tool(name, args, user)
     if name == "list_schedules":
         return {"schedules": await deployments.list_personal_schedules(user, source_assistant_id=assistant_id)}
@@ -115,14 +142,63 @@ async def call_agent_tool(
     raise APIError(code="INVALID_REQUEST", message="unknown schedule tool", status_code=400)
 
 
-async def _call_a2a_tool(name: str, args: dict[str, Any], user: UserContext) -> dict[str, Any]:
+async def _list_conversations(
+    args: dict[str, Any], user: UserContext, *, source_agent: dict[str, Any] | None,
+) -> dict[str, Any]:
+    from astrabox.core.service.orchestrator.service_registry import get_agent_a2a_service
+
+    peers = await collaboration_peers(user, source_agent=source_agent)
+    needle = str(args.get("agent_query") or "").casefold()
+    peers = [peer for peer in peers if (not args.get("agent_id") or peer["agent_id"] == args["agent_id"])
+             and (not needle or needle in str(peer.get("name") or "").casefold()
+                  or needle in str((peer.get("display_meta") or {}).get("display_name") or "").casefold())]
+    by_id = {str(peer["agent_id"]): peer for peer in peers}
+    page = await SessionRepository().list_user_sessions_page(
+        user.user_id, agent_ids=list(by_id), query=str(args.get("query") or ""),
+        limit=args.get("limit", 20), cursor=args.get("cursor"),
+    )
+    service = get_agent_a2a_service()
+    conversations = []
+    for session in page["sessions"]:
+        agent_id = str(session["agent_id"])
+        context_id = await service.context_for_session(user, agent_id, session["session_id"])
+        peer = by_id[agent_id]
+        conversations.append({
+            "agent_id": agent_id,
+            "agent_name": str((peer.get("display_meta") or {}).get("display_name") or peer["name"]),
+            "session_id": session["session_id"], "title": session.get("title"),
+            "context_id": context_id, "peer_key": "astrabox/" + agent_id,
+            "state": session["state"], "source_type": session.get("source_type"),
+            "updated_at": session["updated_at"],
+            "session_url_path": public_path('/sessions/' + session["session_id"]),
+        })
+    return {"conversations": conversations, "has_more": page["has_more"], "next_cursor": page["next_cursor"]}
+
+
+async def _call_a2a_tool(
+    name: str, args: dict[str, Any], user: UserContext, *, source_binding: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Adapt explicit interaction tools to the same A2A service as native peers."""
     from astrabox.core.service.orchestrator.service_registry import get_agent_a2a_service
 
     service = get_agent_a2a_service()
     token = set_current_user_context(user)
     try:
-        if name == "get_agent_task":
+        if name == "send_agent_message":
+            context_id = await service.context_for_session(user, args["agent_id"], args["session_id"])
+            if source_binding is None:
+                raise APIError(code="MCP_BINDING_NOT_FOUND", message="Message sender binding is required", status_code=404)
+            source_id = str(source_binding.get("session_id") or source_binding.get("assistant_id") or "")
+            kind = "session" if source_binding.get("session_id") else "assistant"
+            origin = {"kind": kind, "id": source_id, "title": source_binding.get("title"),
+                      "url_path": public_path(f'/{"sessions" if kind == "session" else "assistants"}/{source_id}')}
+            task = await service.send(user, args["agent_id"], a2a.SendMessageRequest(
+                message=a2a.Message(
+                    message_id=args["message_id"], context_id=context_id, role=a2a.ROLE_USER,
+                    parts=[a2a.Part(text=args["message"])],
+                ), configuration=a2a.SendMessageConfiguration(return_immediately=True),
+            ), origin=origin)
+        elif name == "get_agent_task":
             task = await service.get(user, args["agent_id"], a2a.GetTaskRequest(id=args["task_id"]))
         else:
             task = await service.send(user, args["agent_id"], a2a.SendMessageRequest(

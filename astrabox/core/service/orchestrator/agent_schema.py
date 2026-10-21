@@ -19,11 +19,10 @@ Design notes:
   JSON-serializable for the GET endpoint.
 - Validation here is intentionally thin: types / required / enum only. Deep
   normalization (packages, default_repo, mcp) stays in its existing owners.
-  The payload is never rewritten here and defaults are never filled in. Two
+  The payload is never rewritten here and defaults are never filled in. Some
   fields serve a ``default`` so the form shows what an Agent saved without
-  touching them gets: ``prepared_capacity``, which the create path writes from
-  :func:`default_prepared_capacity`, and ``artifacts_enabled``, whose absence
-  :func:`agent_artifacts_enabled` reads as on. The top-level wire shape and
+  touching them gets: ``prepared_capacity`` is written by the create path,
+  ``artifacts_enabled`` reads as on, and ``a2a_access`` reads as disabled. The top-level wire shape and
   fixed nested objects are closed:
   undeclared input fails loud instead of entering the Agent document's open
   storage shape.
@@ -51,6 +50,7 @@ GROUP_RUNTIME = "runtime"
 GROUP_MODEL = "model"
 GROUP_TOOLS = "tools"
 GROUP_WORKSPACE = "workspace"
+GROUP_COLLABORATION = "collaboration"
 
 # Choose the runtime before model options: the RuntimeProfile determines which
 # engine-specific fields the form exposes. Group `id` is the stable contract;
@@ -62,6 +62,7 @@ AGENT_GROUPS: list[dict[str, str]] = [
     {"id": GROUP_RUNTIME},
     {"id": GROUP_MODEL},
     {"id": GROUP_TOOLS},
+    {"id": GROUP_COLLABORATION},
     {"id": GROUP_WORKSPACE},
 ]
 
@@ -157,6 +158,11 @@ AGENT_FIELD_SCHEMA: list[dict[str, Any]] = [
     # The built-in `artifacts` platform MCP server, which every Agent
     # conversation receives unless its owner turns it off here.
     {"key": "artifacts_enabled", "type": "boolean", "group": GROUP_TOOLS, "default": True},
+    {
+        "key": "a2a_access", "type": "enum", "group": GROUP_COLLABORATION,
+        "enum": ["disabled", "all", "selected"], "default": "disabled",
+    },
+    {"key": "a2a_agent_ids", "type": "string_list", "group": GROUP_COLLABORATION},
     {"key": "skills", "type": "skill_list", "group": GROUP_TOOLS, "complex": True},
     # mcp_servers is a name-keyed map of server definitions; the console edits
     # it as a list and serializes to and from the map.
@@ -362,6 +368,9 @@ def validate_agent_payload(
 
     _reject_unknown_fields(payload, allow_version=allow_version)
     validate_payload(payload, AGENT_FIELD_SCHEMA, payload_label="agent payload")
+    from astrabox.core.service.orchestrator.agent.agent_collaboration import collaboration_access
+
+    collaboration_access(payload)
     capacity = payload.get("prepared_capacity")
     if capacity is not None and not 0 <= capacity <= MAX_PREPARED_CAPACITY:
         raise invalid_request(
