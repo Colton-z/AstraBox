@@ -61,8 +61,32 @@ const load = (name: string): Promise<void> => {
       new Promise((resolve, reject) => {
         const script = document.createElement('script');
         script.src = `${page.__artifactBase}/lib-${bundle}.js?release=${encodeURIComponent(page.__artifactRelease)}`;
-        script.onload = () => resolve();
-        script.onerror = () => reject(new Error(`Could not load ${name}.`));
+        let executionError: unknown;
+        const captureError = (event: ErrorEvent) => {
+          if (event.filename === script.src)
+            executionError ??= event.error ?? new Error(event.message);
+        };
+        page.addEventListener('error', captureError);
+        const cleanup = () => page.removeEventListener('error', captureError);
+        script.onload = () => {
+          cleanup();
+          if (executionError) return reject(executionError);
+          const expected = bundle === 'react'
+            ? ['react', 'react/jsx-runtime', 'react/jsx-dev-runtime']
+            : bundle === 'react-dom'
+              ? ['react-dom', 'react-dom/client']
+              : bundle === 'ui'
+                ? ui.map((component) => `@/components/ui/${component}`)
+                : bundle === 'tailwind' ? [] : [bundle];
+          const missing = expected.filter((module) => !registry[module]);
+          if (missing.length)
+            reject(new Error(`Artifact library "${bundle}" did not initialize: missing ${missing.join(', ')}.`));
+          else resolve();
+        };
+        script.onerror = () => {
+          cleanup();
+          reject(new Error(`Could not load artifact library "${bundle}".`));
+        };
         document.head.append(script);
       }),
     );
