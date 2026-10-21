@@ -346,6 +346,8 @@ class SessionReader:
                 batch.facts.append(InteractionOpen(item.response_id, interaction_id, item.contract))
         if state.admitted_input_ids:
             batch.facts.append(InputsAdmitted(tuple(state.admitted_input_ids)))
+        for refused in state.refused_inputs:
+            batch.facts.append(InputsFailed((refused.input_id,), refused.failure))
         batch.output.extend(lost_parts)
         batch.status = state.status
         batch.cursor = state.cursor.as_json() if state.cursor is not None else None

@@ -39,10 +39,10 @@ PROCESS_BLOCK_PART = "data-process-block"
 #: Data parts the console shows on their own: an outcome, a decision, a fold or
 #: a platform tool's card. They never join a process group.
 _STANDALONE_PARTS = frozenset(
-    {"data-result", "data-api-retry", "data-interaction", "data-tool-card", "data-input-consumed", PROCESS_BLOCK_PART}
+    {"data-result", "data-raw-event", "data-api-retry", "data-interaction", "data-tool-card", "data-input-consumed", PROCESS_BLOCK_PART}
 )
 #: Standalone parts a fold leaves in view wherever they sit.
-_ALERT_PARTS = frozenset({"data-result", "data-api-retry", "data-interaction", "data-input-consumed"})
+_ALERT_PARTS = frozenset({"data-result", "data-raw-event", "data-api-retry", "data-interaction", "data-input-consumed"})
 _FAILED_TOOL_STATES = frozenset({"output-error", "output-denied"})
 #: A call that never returned: the one a stop landed on, or one waiting on a person.
 _UNFINISHED_TOOL_STATES = frozenset(
