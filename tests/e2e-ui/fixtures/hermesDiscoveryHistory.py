@@ -8,9 +8,9 @@ import json
 import os
 from pathlib import Path
 
-from tui_gateway import methods_session
+from tui_gateway import server
 
-_create_session = methods_session._create_session
+_create_session = server._create_session
 
 
 def create_session(rid, params, *, copy_parent_history=False):
@@ -22,4 +22,4 @@ def create_session(rid, params, *, copy_parent_history=False):
     return _create_session(rid, params, copy_parent_history=copy_parent_history)
 
 
-methods_session._create_session = create_session
+server._create_session = create_session
