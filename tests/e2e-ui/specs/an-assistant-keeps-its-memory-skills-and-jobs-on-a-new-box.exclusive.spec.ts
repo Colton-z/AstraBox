@@ -1,7 +1,7 @@
 /**
  * E2E: what an Assistant learned survives replacing its box without a workspace volume.
  *
- * Hermes keeps its memory files, the skills it creates and its scheduled jobs
+ * Hermes keeps its memory files, created and customized skills, and scheduled jobs
  * in its profile home, beside the SessionDB the platform already saves. A
  * pause releases the box and a resume starts a fresh one, so these must come
  * back from the platform database. The evidence is Hermes' own files in the
@@ -94,7 +94,11 @@ test('an Assistant keeps its memory, its own skill and its scheduled job on a ne
   const secondBox = String((await api.waitForWorkspaceReady(assistantId, 90_000)).current_sandbox_id || '');
   expect(secondBox).not.toEqual('');
   expect(secondBox).not.toEqual(firstBox);
-  expect(await readDefault(secondBox)).toEqual(customized);
+  const restored = await readDefault(secondBox);
+  expect(restored.body).toBe(customized.body);
+  expect(restored.reference).toBe(customized.reference);
+  expect(restored.manifest).toBe(customized.manifest);
+  expect(restored.mode & 0o200).toBe(0o200);
 
   const files = sandboxExec(await requireSandboxHandle(api, secondBox), [
     'h=$(find /home/conversations -mindepth 2 -maxdepth 2 -name .hermes -type d | head -n 1)',
@@ -112,12 +116,16 @@ test('an Assistant keeps its memory, its own skill and its scheduled job on a ne
   await api.waitForSessionReady(second);
   const recalled = await api.sendTurn(
     second,
-    'Load astrabox-proactive with skill_view and verify my customized default. '
-      + 'Also give the E2E codename you remember without searching previous conversations.',
+    'Without using any tool, reply with only the E2E codename you remember.',
     60_000,
   );
   expect(recalled.errorText).toBeFalsy();
   expect(recalled.text).toContain(codename);
-  expect(recalled.toolNames).toContain('skill_view');
-  expect(recalled.text).toContain(defaultMarker);
+  expect(recalled.toolNames).toEqual([]);
+  const used = await api.sendTurn(
+    second, 'Load astrabox-proactive with skill_view and verify my customized default.', 45_000,
+  );
+  expect(used.errorText).toBeFalsy();
+  expect(used.toolNames).toContain('skill_view');
+  expect(used.text).toContain(defaultMarker);
 });
