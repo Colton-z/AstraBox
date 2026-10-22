@@ -31,7 +31,7 @@ case "$workspace_source" in
     ;;
 esac
 
-mkdir -p "$workspace_source" "$hermes_home/logs"
+runuser -u "$linux_user" -- mkdir -p "$workspace_source" "$hermes_home/logs"
 
 if [ "$workspace" != "$workspace_source" ]; then
   if [ -L "$workspace" ]; then
@@ -77,11 +77,9 @@ else
   rm -f -- "$managed_dir/config.yaml"
 fi
 
-# This directory is the workload account's persistent profile, never a shared
-# system path. The env file was written through the sandbox file API as root;
-# hand the entire newly-provisioned profile back to its owner before Hermes
-# opens state.db or writes logs.
-chown -R "$linux_user:$linux_user" "$profile_home"
+# Identity provisioning owns the profile roots; native files stay owned by
+# Hermes, and the platform publishes its private files with an explicit owner.
+# A running profile's snapshot and PM workers may remove temporary files here.
 if ! runuser -u "$linux_user" -- test -w "$workspace"; then
   printf 'HERMES_PROFILE_WORKSPACE_NOT_WRITABLE user=%s workspace=%s source=%s\n' \
     "$linux_user" "$workspace" "$workspace_source" >&2
