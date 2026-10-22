@@ -35,6 +35,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, runtime_checkable
 
+from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator.engine.base import (
     EngineCapabilityManifest,
     validate_manifest_vocabulary,
@@ -91,6 +92,21 @@ class RuntimeCursorExpired(RuntimeError):
     """The cursor names a runtime generation that does not exist, or a
     position the runtime does not retain. The reader resumes from
     :meth:`RuntimeClient.state` instead."""
+
+
+RUNTIME_PROTOCOL_INCOMPATIBLE = "runtime_protocol_incompatible"
+
+
+class RuntimeProtocolError(APIError):
+    """The runtime's protocol cannot be read; its execution outcome is unknown.
+
+    Retain the last readable cursor and native execution facts. Reconnecting
+    cannot repair this contract; an operator must correct the runtime first.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(code="RUNTIME_PROTOCOL_INCOMPATIBLE", message=message,
+                         status_code=502, retryable=False)
 
 
 class RuntimeInputRefused(RuntimeError):

@@ -1,8 +1,12 @@
 --- a/tui_gateway/tool_progress.py
 +++ b/tui_gateway/tool_progress.py
-@@ -284,13 +284,16 @@
- 
- 
+@@ -283,14 +283,20 @@
+     return {"tool_result_metadata": metadata} if metadata else {}
+
+
++EXECUTION_TOOL_COMPLETION_IS_ERROR = True
++
++
  def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result: str):
 +    from agent.display import _detect_tool_failure
 +
@@ -21,10 +25,35 @@
 --- a/tui_gateway/contracts/events.py
 +++ b/tui_gateway/contracts/events.py
 @@ -276,6 +276,7 @@
- 
+
      tool_id: str
      name: str
 +    is_error: bool | None = None  # executor completions; synthetic child watch rows omit it
      args: dict[str, JsonValue] | None = None  # mirrored child rows / room relays omit it
      duration_s: float | None = None
      result: JsonValue = None
+--- a/tui_gateway/contracts/liveness.py
++++ b/tui_gateway/contracts/liveness.py
+@@ -20,6 +20,7 @@
+
+ class GatewayCapabilitiesResult(Result):
+     per_session_exclusive_submit: bool
++    execution_tool_completion_is_error: bool
+
+
+ method("gateway.capabilities", params=PingParams, result=GatewayCapabilitiesResult,
+--- a/tui_gateway/methods_voice.py
++++ b/tui_gateway/methods_voice.py
+@@ -436,7 +436,11 @@
+     """What THIS BUILD enforces (a client withholds unless advertised), sourced from the enforcing
+     module, never config: a believed-but-absent capability is worse."""
+     from hermes_cli.active_sessions import PER_SESSION_EXCLUSIVE_SUBMIT
+-    return _ok(rid, {"per_session_exclusive_submit": bool(PER_SESSION_EXCLUSIVE_SUBMIT)})
++    from tui_gateway.tool_progress import EXECUTION_TOOL_COMPLETION_IS_ERROR
++    return _ok(rid, {
++        "per_session_exclusive_submit": bool(PER_SESSION_EXCLUSIVE_SUBMIT),
++        "execution_tool_completion_is_error": bool(EXECUTION_TOOL_COMPLETION_IS_ERROR),
++    })
+
+
+ @method("client.capabilities")
