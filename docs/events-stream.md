@@ -134,7 +134,7 @@ vocabulary. These are the part families an integration normally handles:
 | Interaction | A question, decision, or approval that requires a response. | `data-interaction` |
 | Failed message | A message that will not be answered; it starts no response. | `data-input-failed` |
 | Tool cards | A card a platform tool recorded for the conversation, such as an artifact, bound to that tool call. | `data-tool-card` |
-| Session change | Transient: the Session record changed, such as its generated title; read the Session again. | `data-session-changed` |
+| Session change | Transient: the Session record changed, such as startup progress, readiness, failure or its generated title; read the Session again. | `data-session-changed` |
 | Child runs | A child run's lifecycle or messages; read the Session child-run endpoint for their current state. | `data-subagent` |
 | File changes | The files a tool call changed. | `data-file-changes` |
 | Results | Usage or cost an Agent program reports for a response, when its adapter reports them. | `data-result` |
@@ -209,6 +209,13 @@ optional URL. A message that failed is not sent again; send its text as a new
 message.
 
 ## Connection lifecycle
+
+The stream sends `data-session-changed` after subscribing, when startup progress
+or lifecycle state changes, and after its database listener reconnects. Read the
+Session detail on this notification; it carries no state snapshot or output
+sequence of its own. This catches changes missed before subscription or during
+a connection gap without polling startup state. Detail reads remain read-only
+and do not start or recover a runtime.
 
 - A `finish` part ends the current reply and the connection, after a
   `data-resume-cursor` part and `[DONE]`.
