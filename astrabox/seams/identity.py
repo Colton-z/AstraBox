@@ -30,8 +30,8 @@ class WebIdentityResolver(Protocol):
     Resolution contract:
 
     * a :class:`UserContext` — the authenticated user (bound for the request);
-    * ``None`` — "no identity asserted"; the request proceeds anonymous and the
-      reader falls through to the deployment's default local identity;
+    * ``None`` — no identity asserted; public capability routes authenticate
+      their own callers, while protected API routes refuse anonymous entry;
     * raise an ``APIError`` with status ``401`` — reject the request. A strict
       deployment's resolver raises here for a missing or invalid credential.
 

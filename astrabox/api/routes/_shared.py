@@ -183,9 +183,8 @@ async def _resolve_user(request: Request) -> UserContext:
 
     The web identity middleware (:mod:`astrabox.web.identity_middleware`) has
     already run the configured ``astrabox.web.identity`` resolver for this
-    request and bound any resolved identity; this reads it back. The default
-    resolver asserts no identity, so every request is the single local user;
-    register an alternate resolver at the ``astrabox.web.identity`` entry-point
-    to add authentication with no change to this call site.
+    request and bound its resolved identity; this reads it back. The default
+    resolver explicitly asserts the single local administrator. Protected API
+    routes reject an anonymous result before reaching their handlers.
     """
     return await get_current_user_context(request)

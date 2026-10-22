@@ -1204,6 +1204,25 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
     ),
     # ---- identity: one HTTP resolver selection -----------------------------
     (
+        "ASTRABOX_E2E_ENVIRONMENT_ENTRY_FIXTURE",
+        "internal",
+        "",
+        "Private fixture JSON for the isolated Environment entry-policy E2E, "
+        "containing deployment URLs and test identity credentials.",
+        "tests.e2e.environment_entry_policy_test",
+    ),
+    (
+        "ASTRABOX_ENVIRONMENT_ENTRY_POLICY",
+        "public",
+        "members",
+        "Environment entry policy from astrabox.environment.entry. The default "
+        "requires explicit membership; a deployment may select an installed "
+        "policy for verified enterprise identities. Does not grant resource "
+        "permissions or roles. Unknown policies refuse startup; policy failures "
+        "refuse entry.",
+        "astrabox.providers.environment_entry",
+    ),
+    (
         "ASTRABOX_WEB_IDENTITY",
         "public",
         "local",
