@@ -10,7 +10,8 @@
  *
  * This journey provisions a workspace and its replacement. It stays in the
  * suite contract's one-worker serial group so unrelated cold workspaces
- * cannot consume its fixed 180-second budget.
+ * cannot consume its ordinary 180-second budget. Image-upgrade acceptance also
+ * includes a second image's cold pull and native startup.
  */
 import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
@@ -39,6 +40,8 @@ onPassOnly(async ({ request }) => {
 });
 
 test('an Assistant keeps its memory, its own skill and its scheduled job on a new box', async ({ request }) => {
+  const upgrading = Boolean(process.env.ASTRABOX_E2E_RUNTIME_UPGRADE_FILE);
+  if (upgrading) test.slow();
   const api = new AstraApi(request);
   const id = randomUUID().slice(0, 8);
   const codename = `KESTREL-${id}`;
@@ -54,7 +57,7 @@ test('an Assistant keeps its memory, its own skill and its scheduled job on a ne
   });
   assistantId = String(assistant.assistant_id || '');
   // Hidden workspace initialization includes native MCP discovery and session
-  // finalization; both remain inside this journey's fixed 180-second budget.
+  // finalization; both remain inside this journey's bounded budget.
   const firstBox = String((await api.waitForWorkspaceReady(assistantId, 90_000)).current_sandbox_id || '');
   expect(firstBox).not.toEqual('');
   const first = String((await api.startAssistantConversation(assistantId)).session_id || '');
@@ -97,14 +100,17 @@ test('an Assistant keeps its memory, its own skill and its scheduled job on a ne
   await recordRuntimeImage(api, firstBox, String(profiles.find((profile) => profile.name === runtimeProfileName)?.runtime_template_name));
   await api.hibernateWorkspace(assistantId);
   const upgradedImage = await upgradeRuntimeImage(api, runtimeProfileName);
-  const secondBox = String((await api.waitForWorkspaceReady(assistantId, 90_000)).current_sandbox_id || '');
+  const secondBox = String((await api.waitForWorkspaceReady(assistantId, upgrading ? 180_000 : 90_000)).current_sandbox_id || '');
   expect(secondBox).not.toEqual('');
   expect(secondBox).not.toEqual(firstBox);
   await recordRuntimeImage(api, secondBox, upgradedImage ?? undefined);
   const restored = await readDefault(secondBox);
   expect(restored.body).toBe(customized.body);
   expect(restored.reference).toBe(customized.reference);
-  expect(restored.manifest).toBe(customized.manifest);
+  // A new release updates untouched bundled Skills. The user's edited
+  // default retains its original native provenance entry.
+  const origin = (manifest: string) => manifest.split('\n').find((line) => line.startsWith('astrabox-proactive:'));
+  expect(origin(restored.manifest)).toBe(origin(customized.manifest));
   expect(restored.mode & 0o200).toBe(0o200);
 
   const files = sandboxExec(await requireSandboxHandle(api, secondBox), [
