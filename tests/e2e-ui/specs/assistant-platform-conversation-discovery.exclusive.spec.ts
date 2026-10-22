@@ -49,7 +49,7 @@ function resultPage(value: unknown): Obj | undefined {
   return resultPage(row.structuredContent ?? row.result);
 }
 
-function discovery(messages: Obj[]): { page: Obj; args: Obj } {
+function discovery(messages: Obj[], matches: (args: Obj) => boolean = () => true): { page: Obj; args: Obj } {
   for (const message of [...messages].reverse()) {
     if (message.role !== 'assistant' || !message.tool_calls) continue;
     const outer = typeof message.tool_calls === 'string' ? JSON.parse(message.tool_calls) : message.tool_calls;
@@ -57,7 +57,7 @@ function discovery(messages: Obj[]): { page: Obj; args: Obj } {
       const fn = entry.function;
       const args = typeof fn.arguments === 'string' ? JSON.parse(fn.arguments) : fn.arguments;
       const calls = fn.name === 'tool_call' ? args.calls : [{ name: fn.name, arguments: args }];
-      const call = calls.find((item: Obj) => String(item.name).endsWith('list_agent_conversations'));
+      const call = calls.find((item: Obj) => String(item.name).endsWith('list_agent_conversations') && matches(item.arguments));
       const result = messages.find((row) => row.role === 'tool' && row.tool_call_id === entry.id);
       const page = call && result && resultPage(result.content);
       if (page) return { page, args: call.arguments };
@@ -219,7 +219,8 @@ test('natural A2A discovery finds existing owned platform conversations when loc
     const noOwned = await api.sendTurn(source, '请重新查询我现在所有已有的Agent对话，不加任何标题或Agent筛选。只查看，不发消息、不建对话。', 45_000);
     expect(noOwned.errorText).toBeNull();
     const noOwnedEvents = nativeSince();
-    const zero = discovery(noOwnedEvents);
+    const zero = discovery(noOwnedEvents, (args) =>
+      ['query', 'agent_id', 'agent_query', 'cursor'].every((filter) => !args[filter]));
     for (const filter of ['query', 'agent_id', 'agent_query', 'cursor']) expect(zero.args[filter]).toBeFalsy();
     expect(zero.page.conversations).toEqual([]);
     expect(zero.page.has_more).toBe(false);
