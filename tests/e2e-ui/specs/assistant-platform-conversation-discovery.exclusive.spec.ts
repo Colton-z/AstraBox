@@ -178,6 +178,29 @@ test('natural A2A discovery finds existing owned platform conversations when loc
     await expect(page.getByTestId('run-view')).toContainText(two.title);
     await page.reload();
     await expect(page.getByTestId('run-view')).toContainText(two.title);
+
+    // A title filter with no match is not the same as an owner with no
+    // visible conversations. Archive only this fixture's two owned Sessions;
+    // the other owner's Session stays visible to its own identity.
+    for (const sid of owned) await api.archiveSession(sid);
+    const owner = postgresRows<Obj>(`SELECT user_id FROM sessions WHERE session_id=${sqlLiteral(source)}`)[0]!.user_id;
+    expect(postgresRows<Obj>(`SELECT session_id FROM sessions WHERE user_id=${sqlLiteral(owner)} AND agent_id IS NOT NULL AND hidden=false`)).toEqual([]);
+    expect(postgresRows<Obj>(`SELECT hidden FROM sessions WHERE session_id=${sqlLiteral(foreignId)}`)[0]!.hidden).toBe(false);
+    const emptyInventoryBefore = agentSessions();
+    const noOwned = await api.sendTurn(source, '请重新查询我现在所有已有的Agent对话，不加任何标题或Agent筛选。只查看，不发消息、不建对话。', 45_000);
+    expect(noOwned.errorText).toBeNull();
+    const noOwnedEvents = nativeSince();
+    const zero = discovery(noOwnedEvents);
+    for (const filter of ['query', 'agent_id', 'agent_query', 'cursor']) expect(zero.args[filter]).toBeFalsy();
+    expect(zero.page.conversations).toEqual([]);
+    expect(zero.page.has_more).toBe(false);
+    expect(noOwned.text).toMatch(/没有|暂无|0\s*条|无.*对话/);
+    expect(agentSessions()).toEqual(emptyInventoryBefore);
+    for (const sid of [...owned, foreignId]) expect(sessionInputRows(sid)).toEqual(inputs.get(sid));
+    evidence.turns.push({ prompt: '无筛选且用户没有可见Agent对话', answer: noOwned.text, native: noOwnedEvents, listing: zero });
+    evidence.emptyOwner = { archived: owned, visibleOwned: 0, foreignStillVisibleToOwner: true };
+    await page.reload();
+    await expect(page.getByTestId('assistant-text').last()).toContainText(/没有|暂无|0\s*条|无.*对话/);
     evidence.history = await api.getMessages(source);
     evidence.localAfter = localCount();
     await info.attach('platform-conversation-discovery-cold', { body: await page.screenshot(), contentType: 'image/png' });
