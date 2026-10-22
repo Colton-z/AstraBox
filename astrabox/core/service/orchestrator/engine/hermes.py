@@ -745,13 +745,15 @@ HERMES_EXTENSIONS = EngineExtensions(
             target="{config}/plugins/astrabox",
             takes_effect="restart",
             installed_by_engine=True,
-            # Hermes' installer (tools/lazy_deps.py) resolves with uv against
-            # the default index: the simple API on pypi.org, files from
-            # files.pythonhosted.org.
-            installer_hosts=("pypi.org", "files.pythonhosted.org"),
+            # Native PM resolves the core and plugin dependency graph together.
+            # Its pinned GitHub wheels redirect to the release asset host.
+            installer_hosts=(
+                "pypi.org", "files.pythonhosted.org", "github.com",
+                "release-assets.githubusercontent.com",
+            ),
             help="A Hermes plugin directory with plugin.yaml: tools, hooks, slash commands, "
-            "Skills or system prompt sections. Its declared Python dependencies are installed "
-            "from PyPI when it is placed.",
+            "Skills or system prompt sections. Hermes' package manager prepares its Python "
+            "dependencies together with Hermes' own dependency graph.",
         ),
         PackageKind(
             name="agent-plugin",
@@ -932,6 +934,7 @@ async def _prepare_hermes_profile(
         path=posixpath.join(normalized["config_dir"], _HERMES_RUNTIME_STATE_FILENAME),
         content=json.dumps(runtime_state_store, ensure_ascii=False, sort_keys=True),
         runtime_identity=normalized,
+        owner_user=normalized["linux_user"],
         mode=0o600,
         error_code="HERMES_PROFILE_ENV_INSTALL_FAILED",
         error_message="failed to install Hermes runtime-state target",
@@ -1006,6 +1009,7 @@ async def _prepare_hermes_profile(
         path=process_digest_path,
         content=process_digest,
         runtime_identity=normalized,
+        owner_user=normalized["linux_user"],
         mode=0o600,
         error_code="HERMES_PROFILE_ENV_INSTALL_FAILED",
         error_message="failed to record the Hermes backend's process configuration",
@@ -1034,13 +1038,6 @@ async def _prepare_hermes_extensions(
     )
     env = {
         "HERMES_MANAGED_DIR": _HERMES_MANAGED_DIR,
-        # Hermes installs a plugin's Python dependencies here rather than into
-        # its root-owned virtualenv (``tools/lazy_deps.py``), and puts it on
-        # the import path when it starts. Outside the profile: it is rebuilt
-        # from the plugins' declarations, not kept with the profile.
-        "HERMES_LAZY_INSTALL_TARGET": posixpath.join(
-            normalized["home_dir"], ".cache", "astrabox-hermes-plugin-packages"
-        ),
     }
     if skills:
         env[_HERMES_SKILLS_CACHE_ENV] = skill_cache_dir(skills)
@@ -1122,10 +1119,10 @@ def _hermes_process_digest(env: dict[str, str], overwrite_blob: dict[str, Any]) 
 #: itself binds loopback (see `astrabox-hermes-serve` for why); this is the
 #: one the sandbox's endpoint face knows about.
 HERMES_BACKEND_PORT = 9118
-#: How long a new attachment waits for the backend to answer. A cold backend
-#: loads its profile, plugins and model configuration before it serves the
-#: first request, which takes seconds, not milliseconds.
-_BACKEND_ANSWER_BUDGET_SECONDS = 120
+#: A cold attachment includes Hermes PM resolving and installing the owner's
+#: plugin dependencies before the backend serves requests. Keep that native
+#: preparation inside one bounded wait; a healthy cold install can exceed 120s.
+_BACKEND_ANSWER_BUDGET_SECONDS = 300
 
 
 async def _wait_until_backend_answers(commands: SandboxCommands) -> None:
@@ -1435,6 +1432,7 @@ async def _install_hermes_profile_env_file(
         path=path,
         content=content,
         runtime_identity=runtime_identity,
+        owner_user=runtime_identity["linux_user"],
         mode=0o600,
         error_code="HERMES_PROFILE_ENV_INSTALL_FAILED",
         error_message="failed to install Hermes profile env file",
@@ -1579,8 +1577,8 @@ def _build_hermes_config_overwrite(
     hosts are outside the box's egress policy, and models use the custom
     provider. Package installs (``security.allow_lazy_installs``) are enabled
     for native Hermes plugins, whose declaration admits PyPI and whose
-    dependencies the profile merger installs through Hermes' own installer
-    into ``HERMES_LAZY_INSTALL_TARGET``. Other profiles keep installs disabled.
+    dependencies the profile merger prepares through Hermes' package manager
+    in its per-home environment. Other profiles keep installs disabled.
     """
     model_base_url = _resolve_hermes_openai_base_url(model_access)
     if not model_base_url:

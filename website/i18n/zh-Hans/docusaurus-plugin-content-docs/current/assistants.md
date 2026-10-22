@@ -107,9 +107,10 @@ Assistant 可以给它的 Agent 程序添加该程序接受的内容。Assistant
 - **扩展包。** 每一项注明它的 `kind` 和 Git 来源（`url`、`protocol`、`branch` 或固定的
   `sha`，以及仓库中扩展包目录的 `paths`）。Hermes 加载两种：
   - `hermes-plugin`：带 `plugin.yaml` 的目录，可以添加工具、钩子、斜杠命令、技能和
-    系统提示片段。放置时会从 PyPI 安装它声明的 Python 依赖；依赖装不上时，对话的准备会
-    停止并写明插件名。网络为“受限”时，带 Hermes 插件的 Assistant 会放行 PyPI
-    （`pypi.org`、`files.pythonhosted.org`），与扩展包的 Git 来源一样。
+    系统提示片段。Hermes 的包管理器将插件声明的 Python 依赖与 Hermes 自身的依赖一起
+    准备；安装失败会停止对话准备。网络为“受限”时，会在与扩展包 Git 来源相同的授权边界内
+    放行 PyPI（`pypi.org`、`files.pythonhosted.org`）及 Hermes 固定依赖的 GitHub 下载主机
+    （`github.com`、`release-assets.githubusercontent.com`）。
   - `agent-plugin`：Agent Plugins v1.0 包，即带技能和 `mcp.json` 的 `plugin.json`。
 
   扩展包目录会成为插件 `astrabox/<目录名>`，目录名取自它的路径；位于仓库根目录的

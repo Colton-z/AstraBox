@@ -41,7 +41,7 @@ FROM ${SANDBOX_BASE_IMAGE}
 # and its Node floor so npm cannot silently select a different release line.
 # The supported embedding surface remains the SDK and stdio RPC; the
 # experimental client/server source exports are not a replacement transport.
-ARG PI_VERSION=1.0.0
+ARG PI_VERSION=1.4.0
 ARG PI_NODE_MINIMUM=22.19.0
 # Pi delegates sub-agents to extensions. This package supplies them. It was chosen over `@everyx/pi-subagent` and
 # `@tintinweb/pi-subagents`, which give the same background children and the
@@ -143,7 +143,7 @@ RUN set -eux; \
     test "${installed}" = "${PI_SUBAGENTS_VERSION}" \
       || { echo "requested pi-subagents ${PI_SUBAGENTS_VERSION} but ${installed} is installed" >&2; exit 1; }
 
-# Pi 1.0 does not export agent-core/node; pi-subagents 0.74.0 imports it.
+# Pi 1.4 does not export agent-core/node; pi-subagents 0.74.0 imports it.
 # Apply the supplier's optional-export patch with exact input/output hashes;
 # remove this backport when the pinned npm release includes that handling.
 COPY --chmod=u=rw,go=r containers/sandbox-pi/patches/pi-subagents-pi1.patch /tmp/pi-subagents-pi1.patch
