@@ -31,10 +31,14 @@ case "$workspace_source" in
     ;;
 esac
 
-runuser -u "$linux_user" -- mkdir -p "$workspace_source" "$hermes_home/logs"
+runuser -u "$linux_user" -- mkdir -p "$workspace_source" "$hermes_home/logs" "$hermes_home/plugins"
 # Hermes installs native plugins as the profile account. The common CLI
 # bootstrap creates this root as a platform constraint; Hermes needs it mutable.
-install -d -o "$linux_user" -g "$linux_user" -m 0700 "$hermes_home/plugins"
+if [ -L "$hermes_home/plugins" ]; then
+  printf 'HERMES_PROFILE_PLUGIN_ROOT_INVALID path=%s\n' "$hermes_home/plugins" >&2
+  exit 68
+fi
+chown -h "$linux_user:$linux_user" "$hermes_home/plugins"
 
 if [ "$workspace" != "$workspace_source" ]; then
   if [ -L "$workspace" ]; then
