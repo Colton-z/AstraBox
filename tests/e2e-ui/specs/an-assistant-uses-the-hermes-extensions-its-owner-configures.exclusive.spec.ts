@@ -85,8 +85,16 @@ async function readProfile(api: AstraApi, id: string): Promise<Record<string, st
     'echo "skill=$(test -f "$h/skills/astrabox/brand-guidelines/SKILL.md" && echo present || echo absent)"',
     'echo "plugin=$(test -f "$h/plugins/astrabox/plugin-tool-example/plugin.yaml" && echo present || echo absent)"',
     'echo "dependent=$(test -f "$h/plugins/astrabox/hermes-plugin-gonogo/plugin.yaml" && echo present || echo absent)"',
-    // HERMES_LAZY_INSTALL_TARGET: the home's .cache, beside the profile.
-    `echo "dependency=$(ls "$(dirname "$h")/.cache/astrabox-hermes-plugin-packages" 2>/dev/null | grep -c '^gonogo_eval-.*\\.dist-info$')"`,
+    'if test -f "$h/plugins/astrabox/hermes-plugin-gonogo/plugin.yaml"; then',
+    'HERMES_HOME="$h" "$HERMES_VENV/bin/python" - <<\'PY\'',
+    'import subprocess',
+    'from pm.environments import selected_venv, venv_python',
+    'from pm.paths import repo_root',
+    'python = venv_python(selected_venv(repo_root()))',
+    `version = subprocess.check_output([str(python), "-c", "import gonogo; import importlib.metadata; print(importlib.metadata.version('gonogo-eval'))"], text=True).strip()`,
+    'print("dependency=" + version)',
+    'PY',
+    'fi',
     `echo "enabled=$(grep -c '${PLUGIN_KEY}' "$h/config.yaml")"`,
     'echo "managed=$(cat /etc/astrabox/hermes/config.yaml 2>/dev/null | tr "\\n" " ")"',
   ].join('\n')));
@@ -173,8 +181,9 @@ test('an Assistant uses the Skill, Hermes plugin and configuration its owner add
 
   const installed = await readProfile(api, assistantId);
   expect(installed).toMatchObject({
-    skill: 'present', plugin: 'present', dependent: 'present', dependency: '1', enabled: '1',
+    skill: 'present', plugin: 'present', dependent: 'present', enabled: '1',
   });
+  expect(installed.dependency, 'the supplier-selected environment imports the real plugin dependency').toMatch(/^\d+\.\d+/);
   expect(installed.managed).toContain(`personality: ${PERSONALITY}`);
 
   await skills.fill('[]');

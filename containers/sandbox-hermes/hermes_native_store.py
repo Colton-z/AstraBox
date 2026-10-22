@@ -11,11 +11,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from hermes_cli.backup import (
-    _safe_restore_db,
-    copy_db_and_verify,
-    verify_sqlite_integrity,
-)
+from hermes_cli.backup import verify_sqlite_integrity
+from hermes_cli.backup_restore import _safe_restore_db
+from hermes_cli.backup_sqlite import _safe_copy_db
 
 
 def _verify(path: Path) -> None:
@@ -41,7 +39,7 @@ def snapshot(home: str | os.PathLike[str], destination: str | os.PathLike[str]) 
     descriptor = os.open(destination_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     os.close(descriptor)
     try:
-        if not copy_db_and_verify(source, destination_path):
+        if not _safe_copy_db(source, destination_path):
             raise RuntimeError("Hermes could not snapshot SessionDB")
         _verify(destination_path)
     except Exception:

@@ -1034,13 +1034,6 @@ async def _prepare_hermes_extensions(
     )
     env = {
         "HERMES_MANAGED_DIR": _HERMES_MANAGED_DIR,
-        # Hermes installs a plugin's Python dependencies here rather than into
-        # its root-owned virtualenv (``tools/lazy_deps.py``), and puts it on
-        # the import path when it starts. Outside the profile: it is rebuilt
-        # from the plugins' declarations, not kept with the profile.
-        "HERMES_LAZY_INSTALL_TARGET": posixpath.join(
-            normalized["home_dir"], ".cache", "astrabox-hermes-plugin-packages"
-        ),
     }
     if skills:
         env[_HERMES_SKILLS_CACHE_ENV] = skill_cache_dir(skills)
@@ -1579,8 +1572,8 @@ def _build_hermes_config_overwrite(
     hosts are outside the box's egress policy, and models use the custom
     provider. Package installs (``security.allow_lazy_installs``) are enabled
     for native Hermes plugins, whose declaration admits PyPI and whose
-    dependencies the profile merger installs through Hermes' own installer
-    into ``HERMES_LAZY_INSTALL_TARGET``. Other profiles keep installs disabled.
+    dependencies the profile merger prepares through Hermes' package manager
+    in its per-home environment. Other profiles keep installs disabled.
     """
     model_base_url = _resolve_hermes_openai_base_url(model_access)
     if not model_base_url:

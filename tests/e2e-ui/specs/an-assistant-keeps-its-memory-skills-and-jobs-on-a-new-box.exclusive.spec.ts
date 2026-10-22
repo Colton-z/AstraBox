@@ -18,6 +18,7 @@ import { expect, test } from '@playwright/test';
 import { AstraApi } from '../fixtures/astraApi';
 import { postgresRows, sqlLiteral } from '../fixtures/dbOracle';
 import { requireSandboxHandle, sandboxExec } from '../fixtures/sandboxOps';
+import { recordRuntimeImage, upgradeRuntimeImage } from '../fixtures/runtimeUpgrade';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 
 /**
@@ -92,10 +93,14 @@ test('an Assistant keeps its memory, its own skill and its scheduled job on a ne
   // The mirror publishes the profile on its own; pausing also saves it.
   await expect.poll(() => profileStateHeads(assistantId).length, { timeout: 30_000 }).toBe(1);
 
+  const profiles = await api.data<Array<Record<string, unknown>>>('GET', '/admin/runtime-profiles');
+  await recordRuntimeImage(api, firstBox, String(profiles.find((profile) => profile.name === runtimeProfileName)?.runtime_template_name));
   await api.hibernateWorkspace(assistantId);
+  const upgradedImage = await upgradeRuntimeImage(api, runtimeProfileName);
   const secondBox = String((await api.waitForWorkspaceReady(assistantId, 90_000)).current_sandbox_id || '');
   expect(secondBox).not.toEqual('');
   expect(secondBox).not.toEqual(firstBox);
+  await recordRuntimeImage(api, secondBox, upgradedImage ?? undefined);
   const restored = await readDefault(secondBox);
   expect(restored.body).toBe(customized.body);
   expect(restored.reference).toBe(customized.reference);

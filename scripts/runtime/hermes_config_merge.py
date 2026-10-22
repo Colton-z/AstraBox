@@ -19,7 +19,7 @@ Reads up to two env JSON blobs and deep-merges them into
 - ``ASTRABOX_HERMES_PLUGINS`` - JSON ``[{"kind", "key", "source"}]``: each
   cached plugin directory is placed at ``plugins/<key>`` (keys are
   ``astrabox/<directory>``), enabled, and its declared Python dependencies
-  installed into ``HERMES_LAZY_INSTALL_TARGET``. The ``astrabox`` category and
+  prepared in Hermes' per-home dependency environment. The ``astrabox`` category and
   the keys the platform enabled are the platform's; every other plugin and
   Skill in the profile is left alone.
 
@@ -279,32 +279,16 @@ def materialize_plugins(cfg: dict[str, Any], plugins: list[dict[str, str]], home
         _write_private(managed_path, json.dumps(keys).encode("utf-8"))
 
 
-def install_plugin_dependencies(plugins: list[dict[str, str]], home: Path) -> None:
-    """Install each Hermes plugin's declared Python dependencies, or fail.
+def install_plugin_dependencies() -> None:
+    """Prepare the enabled native plugin set through Hermes' package manager.
 
-    Hermes' own installer (``hermes_cli/plugin_python_deps.py``, what
-    ``hermes plugins enable`` runs) puts them in ``HERMES_LAZY_INSTALL_TARGET``
-    and reports a failure without raising, leaving a plugin that cannot import;
-    here that stops the start. Skipped while the target records this plugin
-    set, so a lost target is filled again.
+    PM owns the configuration discovery, per-home dependency environment,
+    currency check and locked publication. A failed preparation stops startup.
     """
+    from pm import sync_venv, venv_is_current
 
-    native = [plugin for plugin in plugins if plugin["kind"] == "hermes-plugin"]
-    lazy_target = (os.environ.get("HERMES_LAZY_INSTALL_TARGET") or "").strip()
-    if not native or not lazy_target:
-        return
-    marker = Path(lazy_target) / ".astrabox-plugins.sha256"
-    digest = _sha256(json.dumps(native, sort_keys=True).encode("utf-8"))
-    if marker.exists() and marker.read_text(encoding="utf-8").strip() == digest:
-        return
-    from hermes_cli.plugin_python_deps import install_for_plugin_dir
-
-    for plugin in native:
-        outcome = install_for_plugin_dir(home / "plugins" / plugin["key"])
-        if outcome.status not in {"none", "installed"}:
-            raise RuntimeError(f"plugin {plugin['key']}: {outcome.message}")
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    _write_private(marker, f"{digest}\n".encode("ascii"))
+    if not venv_is_current():
+        sync_venv(explicit=True)
     print("ASTRABOX_HERMES_PLUGIN_DEPENDENCIES_READY")
 
 
@@ -449,7 +433,7 @@ def main() -> int:
     # After config.yaml: Hermes resolves a plugin's dependencies together with
     # those of every plugin config.yaml enables.
     try:
-        install_plugin_dependencies(plugins, home)
+        install_plugin_dependencies()
         if assistant_a2a:
             enable_assistant_a2a_tools()
     except (OSError, RuntimeError) as exc:

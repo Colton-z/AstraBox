@@ -8,6 +8,7 @@ import { engineCases, engineProfileFor, type EngineProfile } from '../fixtures/e
 import { browserStreamFrames, object } from '../fixtures/nativeMcpServer';
 import { killSandbox, requireSandboxHandle, sandboxRunning, waitForSandboxStopped } from '../fixtures/sandboxOps';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
+import { recordRuntimeImage, upgradeRuntimeImage } from '../fixtures/runtimeUpgrade';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
 import { sessionStreamBodies, mirrorSseBodies } from '../fixtures/sseBodies';
 
@@ -246,23 +247,36 @@ for (const declared of engineCases()) {
     const visible = await content.innerText();
     const applied = changes(await api.getMessages(sessionId, 50));
     expect(applied).toHaveLength(1);
+    await expect.poll(() => postgresRows(
+      `SELECT e.seq FROM transcript_entries e JOIN transcript_scopes s ON s.scope_id = e.scope_id `
+        + `WHERE s.platform_session_id = ${sqlLiteral(sessionId)} `
+        + `AND e.entry_json LIKE ${sqlLiteral(`%${before}%`)} `
+        + `AND e.entry_json LIKE ${sqlLiteral(`%${after}%`)} LIMIT 1`,
+    ).length, { message: 'the old native input must be in database custody before the upgrade', timeout: 30_000 }).toBe(1);
     const oldBox = String((await api.getSession(sessionId)).sandbox_id);
     await noWorkspacePvc(api, oldBox);
+    await recordRuntimeImage(api, oldBox, String(profile.image));
     const handle = await requireSandboxHandle(api, oldBox);
     await page.goto('about:blank');
     killSandbox(handle);
     await waitForSandboxStopped(handle, 30_000);
     expect(sandboxRunning(handle)).toBe(false);
+    const upgradedImage = await upgradeRuntimeImage(api, profile.runtime_profile_name);
     await openSessionView(page, sessionId);
     await expect(diffTab).toHaveText('Diff (1)');
     await diffTab.click();
     await expect(content).toHaveText(visible, { useInnerText: true });
     retainedMetrics(await api.getMessages(sessionId, 50), [first]);
-    const second = await settledTurn(api, page, 'Explain briefly what a file diff shows. Do not use tools or modify any files.');
+    const second = await settledTurn(api, page, 'Recall the exact old and new text values in the file edit we just made. Quote both verbatim from our earlier conversation. Do not use tools or modify files.');
+    const history = await api.getMessages(sessionId, 50);
+    const reply = history.messages.find((message) => message.id === second.responseId);
+    expect(JSON.stringify(reply)).toContain(before);
+    expect(JSON.stringify(reply)).toContain(after);
     const replacement = String((await api.getSession(sessionId)).sandbox_id);
     expect(replacement).not.toBe(oldBox);
     expect(replacement).not.toBe('');
     await noWorkspacePvc(api, replacement);
+    await recordRuntimeImage(api, replacement, upgradedImage ?? String(profile.image));
     expect(changes(await api.getMessages(sessionId, 50))).toEqual(applied);
     await page.reload({ waitUntil: 'domcontentloaded' });
     await expect(diffTab).toHaveText('Diff (1)');

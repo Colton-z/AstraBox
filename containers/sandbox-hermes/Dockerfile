@@ -24,12 +24,12 @@ ARG SANDBOX_BASE_IMAGE=ghcr.io/agent-infra/sandbox:1.11.0
 # already holds the same verified bytes supplies them with
 # `--build-context hermes-source=DIR` instead of downloading again.
 FROM scratch AS hermes-source
-ADD --checksum=sha256:babbdb9706ad1c96708d75914afb45d809cd4b73dec1ceae233a6814f5ed97e3 https://github.com/NousResearch/hermes-agent/archive/f97608f178d1ffeca59860195ab7da295f7c8e5f.tar.gz /hermes-source.tar.gz
+ADD --checksum=sha256:147a567a05402c2832ca12d7e0a33f48fc0e7f627018687cbae1f333dafff0c2 https://github.com/NousResearch/hermes-agent/archive/4d04303818b61bf3aa09278af48356315515965b.tar.gz /hermes-source.tar.gz
 
 FROM ${SANDBOX_BASE_IMAGE}
 
-# The installed version must match the release the pinned source belongs to.
-ARG HERMES_AGENT_VERSION=0.21.5
+# The native install stamp binds the release to its checksum-pinned source.
+ARG HERMES_AGENT_VERSION=0.22.4
 ARG HERMES_EXTRAS=all
 ARG HERMES_VENV=/opt/hermes/.venv
 # Optional memory-provider client(s) to pre-bake for fast first-use, as a
@@ -47,25 +47,41 @@ ENV HERMES_VENV=${HERMES_VENV} \
     BOOTSTRAP_CMD="bash -c '/usr/local/bin/astrabox-hermes-bootstrap'"
 
 # Keep the vendor source and virtualenv outside the mutable profile home.
+# Native PM owns the pinned interpreter, tools and dependency lock; the fixed
+# source location keeps its editable entry points valid in this image.
 RUN --mount=type=bind,from=hermes-source,source=/hermes-source.tar.gz,target=/tmp/astrabox-hermes-source.tar.gz \
     set -eux; \
     mkdir -p /opt/hermes/source; \
     tar -xzf /tmp/astrabox-hermes-source.tar.gz --strip-components=1 --no-same-owner -C /opt/hermes/source; \
-    uv venv --python python3.11 "${HERMES_VENV}"; \
-    if [ -n "${HERMES_EXTRAS}" ]; then \
-      HERMES_SPEC="/opt/hermes/source[${HERMES_EXTRAS}]"; \
-    else \
-      HERMES_SPEC=/opt/hermes/source; \
-    fi; \
-    uv pip install --python "${HERMES_VENV}/bin/python" --no-cache -e "${HERMES_SPEC}"; \
+    cd /opt/hermes/source; \
+    export HERMES_RUNTIME_DIR=/opt/hermes/source/tools; \
+    python3.12 -c 'from pm import ensure; [ensure(name, explicit=True) for name in ("python", "uv", "npm", "chromium", "ffmpeg", "ripgrep")]'; \
+    hermes_python="$(python3.12 -c 'from pm import installed_package; print(installed_package("python").binary)')"; \
+    set --; \
+    if [ -n "${HERMES_EXTRAS}" ]; then set -- --extra "${HERMES_EXTRAS}"; fi; \
+    CC=gcc CXX=g++ python3.12 -m pm.build_env --source /opt/hermes/source \
+      --python "${hermes_python}" --out "${HERMES_VENV}" \
+      --cache /opt/hermes/source/uv-cache "$@" --record-selection; \
+    ln -s "${HERMES_VENV}" /opt/hermes/source/.venv; \
+    "${hermes_python}" -c 'from pathlib import Path; from pm import stage_manager_runtime; from scripts.bundles.payload import seal_pm_runtime; root = Path("/opt/hermes/source"); import sys; python = Path(sys.executable).resolve(); stage_manager_runtime(python=python, destination=root / "pm-runtime", project=root / "pm"); seal_pm_runtime(root, python)'; \
+    python3.12 scripts/write_install_stamp.py --output install-stamp.json \
+      --commit 4d04303818b61bf3aa09278af48356315515965b --base-version "${HERMES_AGENT_VERSION}" \
+      --display-version "${HERMES_AGENT_VERSION}" --distance 0 \
+      --source docker --distribution docker --update-mechanism external --runtime-dir tools; \
+    "${hermes_python}" -c 'import json; from pathlib import Path; path = Path("install-stamp.json"); stamp = json.loads(path.read_text()); stamp["pmRuntime"] = "/opt/hermes/source/pm-runtime"; path.write_text(json.dumps(stamp) + "\n")'; \
     ln -sf "${HERMES_VENV}/bin/hermes" /usr/local/bin/hermes; \
-    "${HERMES_VENV}/bin/python" -c 'import importlib.metadata, sys; assert importlib.metadata.version("hermes-agent") == sys.argv[1]' "${HERMES_AGENT_VERSION}"; \
+    "${HERMES_VENV}/bin/python" -c 'from hermes_cli.version_info import get_version_info; import sys; info = get_version_info(); assert info.base_version == sys.argv[1] and info.commit == "4d04303818b61bf3aa09278af48356315515965b"' "${HERMES_AGENT_VERSION}"; \
+    unset HERMES_RUNTIME_DIR; \
     command -v hermes; \
     hermes --version; \
     hermes serve --help; \
     hermes backup --help; \
     hermes import --help; \
     "${HERMES_VENV}/bin/python" -c 'import tui_gateway.entry'
+
+# Native PM metadata is non-secret and must be readable by sandbox accounts.
+RUN chmod 0644 /opt/hermes/source/tools/facts.json && \
+    rm -f "${HERMES_VENV}/.lock" /opt/hermes/source/pm-runtime/.lock
 
 # The editable supplier install keeps this typed extension in the image without
 # rebuilding its dependencies or changing its native SessionStore and loop.
@@ -80,7 +96,7 @@ RUN git -C /opt/hermes/source apply --check /opt/astrabox/hermes-patches/tool-co
 # astrabox-hermes-config-merge installs plugin dependencies with Hermes' own
 # installer, and the profile setup writes the owner's configuration to its
 # managed scope; a Hermes that moved either fails here, not in a box.
-RUN "${HERMES_VENV}/bin/python" -c 'from hermes_cli.plugin_python_deps import install_for_plugin_dir; from hermes_cli.managed_scope import get_managed_dir'
+RUN "${HERMES_VENV}/bin/python" -c 'from pm import sync_venv, venv_is_current; from hermes_cli.managed_scope import get_managed_dir'
 
 # Optionally pre-bake a memory-provider client (see HERMES_MEMORY_PROVIDER_PIP).
 # Empty → plugin-neutral image: Hermes runs with no external memory provider, and

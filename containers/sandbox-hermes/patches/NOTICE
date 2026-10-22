@@ -1,4 +1,5 @@
-Hermes Agent0.21.5, commit f97608f178d1ffeca59860195ab7da295f7c8e5f
+Hermes Agent 0.22.4, commit 4d04303818b61bf3aa09278af48356315515965b
+Patches originally derived from Hermes Agent 0.21.5, commit f97608f178d1ffeca59860195ab7da295f7c8e5f
 https://github.com/NousResearch/hermes-agent
 
 AstraBox patch: typed per-Session tool environment carried by the native
