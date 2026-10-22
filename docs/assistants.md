@@ -167,6 +167,14 @@ Assistant's own fields. For Hermes:
   `plugins.enabled` and `plugins.disabled`. `skills` is refused too, because
   Hermes does not read Skills settings from the managed scope.
 
+You can ask your Assistant to create or edit its own Skills using Hermes'
+native `skill_manage` tool, including customizing the defaults AstraBox ships.
+These live in the Assistant's private profile, not its task workspace. Hermes
+updates unmodified defaults and keeps your edits; the platform saves the Skill
+files and Hermes' sync records in the database for restoration into a new box.
+Skills supplied through the Assistant's `skills` configuration remain managed
+by those sources: update the source to change what the configuration supplies.
+
 ## When a change takes effect
 
 Saving a change never ends a reply in progress. When the change reaches a
@@ -369,9 +377,10 @@ workspace files across it, configure that volume or export the files first.
 
 Select **Resume workspace**, or simply start another conversation, to restore
 the saved native state into a new sandbox. The saved state is Hermes'
-conversation store and its profile: its memory, the skills it created or
-installed, and its scheduled jobs. Skills that ship with the image are seeded
-again, and Hermes configuration is written again from the Assistant's settings.
+conversation store and its profile: its memory, Skills (including edited
+defaults and their native sync records), and its scheduled jobs. Hermes seeds
+new defaults and updates unchanged ones without replacing user edits. Hermes
+configuration is written again from the Assistant's settings.
 With persistent workspace storage, the same Assistant files are mounted there;
 without it, other files start fresh. This Assistant operation releases and
 recreates compute; it does not use OpenSandbox's sandbox pause/resume

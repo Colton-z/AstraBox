@@ -452,6 +452,11 @@ def main() -> int:
         install_plugin_dependencies(plugins, home)
         if assistant_a2a:
             enable_assistant_a2a_tools()
+        # The headless serve path skips the CLI's startup Skill sync. Run the
+        # same native sync once per backend start, after restoring the profile.
+        from tools.skills_sync import sync_skills
+
+        sync_skills(quiet=True)
     except (OSError, RuntimeError) as exc:
         sys.stderr.write(f"ASTRABOX_HERMES_EXTENSIONS_FAILED {exc}\n")
         return 65

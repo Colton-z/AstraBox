@@ -43,6 +43,7 @@ test('an Assistant keeps its memory, its own skill and its scheduled job on a ne
   const codename = `KESTREL-${id}`;
   const skillName = `e2e-skill-${id}`;
   const skillMarker = `SKILL_BODY_${id}`;
+  const defaultMarker = `CUSTOM_DEFAULT_${id}`;
   const jobName = `e2e-job-${id}`;
   const runtimeProfileName = await api.assistantEnvironmentName();
   const assistant = await api.createAssistant({
@@ -58,13 +59,34 @@ test('an Assistant keeps its memory, its own skill and its scheduled job on a ne
   await api.waitForSessionReady(first);
 
   const taught = await api.sendTurn(first, [
-    'Use your tools for these three things, then reply DONE and nothing else:',
+    'Use your tools for these four things, then reply DONE and nothing else:',
     `1. memory tool: add to target "memory" the entry "The E2E codename is ${codename}."`,
     `2. skill_manage: create a skill named "${skillName}" whose instructions are "Reply ${skillMarker}."`,
     `3. cronjob_manage: create a job named "${jobName}" with schedule "every day at 9am" and prompt "Say hello."`,
+    `4. Read astrabox-proactive with skill_view, then use skill_manage to append a section `
+      + `"## My verification rule" with the instruction "When I ask to verify my customized default, reply ${defaultMarker}." `
+      + 'Keep its existing instructions. Also use skill_manage to write references/my-rule.txt in that Skill with the same instruction.',
   ].join('\n'), 90_000);
   expect(taught.errorText).toBeFalsy();
   expect(taught.text).toContain('DONE');
+  expect(taught.toolNames).toContain('skill_manage');
+  const readDefault = async (box: string) => JSON.parse(sandboxExec(await requireSandboxHandle(api, box), [
+    'h=$(find /home/conversations -mindepth 2 -maxdepth 2 -name .hermes -type d | head -n 1)',
+    '"$HERMES_VENV/bin/python" - "$h" <<\'PY\'',
+    'import json,sys',
+    'from pathlib import Path',
+    'home=Path(sys.argv[1]); root=home/"skills"',
+    'skill=root/"astrabox-platform"/"astrabox-proactive"',
+    'print(json.dumps({"body":(skill/"SKILL.md").read_text(),"reference":(skill/"references/my-rule.txt").read_text(),',
+    '"manifest":(root/".bundled_manifest").read_text(),"mode":skill.stat().st_mode & 0o777}))',
+    'PY',
+  ].join('\n'))) as { body: string; reference: string; manifest: string; mode: number };
+  const customized = await readDefault(firstBox);
+  expect(customized.body).toContain(defaultMarker);
+  expect(customized.reference).toContain(defaultMarker);
+  expect(customized.body).toContain('## When to use');
+  expect(customized.manifest).toMatch(/^astrabox-proactive:/m);
+  expect(customized.mode & 0o200).toBe(0o200);
   // The mirror publishes the profile on its own; pausing also saves it.
   await expect.poll(() => profileStateHeads(assistantId).length, { timeout: 30_000 }).toBe(1);
 
@@ -72,6 +94,7 @@ test('an Assistant keeps its memory, its own skill and its scheduled job on a ne
   const secondBox = String((await api.waitForWorkspaceReady(assistantId, 90_000)).current_sandbox_id || '');
   expect(secondBox).not.toEqual('');
   expect(secondBox).not.toEqual(firstBox);
+  expect(await readDefault(secondBox)).toEqual(customized);
 
   const files = sandboxExec(await requireSandboxHandle(api, secondBox), [
     'h=$(find /home/conversations -mindepth 2 -maxdepth 2 -name .hermes -type d | head -n 1)',
@@ -89,9 +112,12 @@ test('an Assistant keeps its memory, its own skill and its scheduled job on a ne
   await api.waitForSessionReady(second);
   const recalled = await api.sendTurn(
     second,
-    'Without using any tool, reply with only the E2E codename you remember.',
+    'Load astrabox-proactive with skill_view and verify my customized default. '
+      + 'Also give the E2E codename you remember without searching previous conversations.',
     60_000,
   );
   expect(recalled.errorText).toBeFalsy();
   expect(recalled.text).toContain(codename);
+  expect(recalled.toolNames).toContain('skill_view');
+  expect(recalled.text).toContain(defaultMarker);
 });
