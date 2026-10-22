@@ -30,7 +30,7 @@
       }
     },
     "tests": {
-      "no_volume_core": 602,
+      "no_volume_core": 603,
       "persistent_files": 19
     }
   },
@@ -42,7 +42,7 @@
   ],
   "playwright": {
     "exclusive": {
-      "files": 189,
+      "files": 190,
       "parallel_files": 120,
       "parallel_tests": 214,
       "serial_files": [
@@ -64,6 +64,7 @@
         "specs/assistant-a2a-peer-auth-errors.exclusive.spec.ts",
         "specs/assistant-channel-cron-result-reaches-the-chat.exclusive.spec.ts",
         "specs/assistant-native-a2a-approval.exclusive.spec.ts",
+        "specs/assistant-platform-conversation-discovery.exclusive.spec.ts",
         "specs/assistant-runtime-availability-status.exclusive.spec.ts",
         "specs/assistant-tool-card-live-and-cold.exclusive.spec.ts",
         "specs/assistant-tool-errors-live-and-cold.exclusive.spec.ts",
@@ -116,9 +117,9 @@
         "specs/subagent-replay-recovery.exclusive.spec.ts",
         "specs/untouched-tab-catches-up-after-backend-restart.exclusive.spec.ts"
       ],
-      "serial_tests": 110,
+      "serial_tests": 111,
       "serial_workers": 1,
-      "tests": 324,
+      "tests": 325,
       "workers": 5
     },
     "parallel": {
