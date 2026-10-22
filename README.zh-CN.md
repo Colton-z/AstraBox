@@ -11,8 +11,8 @@
 <h3 align="center"><a href="https://demo.astrabox.ai/">在线体验 AstraBox →</a></h3>
 
 <p align="center">
-  无需注册，用免费模型让 Agent 编写并运行代码。<br />
-  离线沙箱 · 每次会话约 2 分钟。
+  体验控制台，让 Agent 在沙箱中执行任务。<br />
+  演示站使用独立的模型、网络和会话限制。
 </p>
 
 <p align="center">
@@ -35,7 +35,7 @@
 </p>
 
 AstraBox 在你自己的基础设施上，把你已经在使用的 Agent 程序（Claude Code、Codex、
-DeepSeek Harness、Pi 和 Hermes）变成云端 Agent，模型任选。沙箱、流式输出、状态和凭证
+DeepSeek Harness、Pi 和 Hermes）变成云端 Agent，并连接所选 Agent 程序支持的模型服务。沙箱、流式输出、状态和凭证
 都由它负责，你无需自己把 Agent 程序改造成服务。
 
 ```bash
@@ -48,8 +48,8 @@ curl -fsSL https://raw.githubusercontent.com/Colton-z/AstraBox/main/scripts/inst
 - **运行厂商自己的 Agent 程序**——每个 Agent 在沙箱里运行真正的 Claude Code、Codex
   等程序，程序自带的工具和会话格式原样可用。
 - **秒级启动，沙箱丢了也不丢对话**——预热沙箱让对话快速拉起；各程序的原生会话保存在平台数据库中，
-  下一条消息到来时恢复到新的沙箱里。
-- **密钥不进沙箱**——凭证在出口边界注入，Agent 只能看到占位符。
+  下一条消息到来时恢复到新的沙箱里。确认沙箱丢失后，受影响的执行会失败；平台不会自动重放任务。
+- **凭证保护**——启用受保护的凭证交付后，凭证在出口边界注入，Agent 只能看到占位符。
 - **随处可达**——网页控制台、HTTP API、CLI、MCP、定时任务、签名 Webhook，以及 Slack、
   Discord、Telegram、WhatsApp、LINE 等消息平台。
 
@@ -65,8 +65,10 @@ MCP 客户端启动任务。[Assistant](https://www.astrabox.ai/zh-Hans/docs/ass
 
 | 概念 | 说明 | 类比 |
 | --- | --- | --- |
-| **Agent** | 由已安装 Agent 程序驱动的云端 Agent | “云端同事” |
-| **Environment** | Session 使用的 Agent 程序、沙箱、模型连接、网络访问和生命周期设置 | “办公桌和工具箱” |
+| **Environment** | 独立的部署边界，拥有自己的 Agent、授权、凭证、对话、任务和运行资源 | “隔离的业务环境” |
+| **Agent** | 由已安装 Agent 程序驱动的可复用云端 Agent 配置 | “云端同事” |
+| **Assistant** | 个人工作区，所有对话共享原生记忆、Skill 和任务 | “个人云端助手” |
+| **RuntimeProfile** | Environment 内的运行配方：Agent 程序、沙箱镜像、模型连接、网络访问和生命周期 | “办公桌和工具箱” |
 | **Session** | Agent 的一次有状态运行，包含消息、Event 和当前状态 | “一项具体工作” |
 | **Event** | Session 产生的实时输出和状态变化 | “工作进度实时播报” |
 
@@ -76,7 +78,24 @@ Skill 和代码仓库，通过定时任务、Webhook、API 和消息平台触发
 
 [查看 AstraBox 能力 →](https://www.astrabox.ai/zh-Hans/docs/capabilities)
 
+## 查找、分享和连接 Agent
+
+- **Agent 详情与分享链接**——打开 `/agents/{agent_id}` 查看并分享 Agent 页面。接收者按部署要求登录，
+  在已有权限范围内创建自己的新对话；分享链接本身不授予权限。
+- **已有对话 A2A**——按自动生成的标题和 Agent 名称查找自己的 Agent 对话，向选定对话发送任务，
+  继续使用它的原生上下文。Agent 管理员可以关闭目标发现、允许全部可访问的 Agent，或选择部分 Agent。
+  这不会开放其他用户的对话或消息通道对话。
+- **按 Agent 授权管理**——Agent 管理员可以管理其 Agent 的触发器和运行记录，查看会话日志，
+  并导出所管理 Agent 的日志。平台级设置仍由平台管理员管理。
+
+参见 [Agent 配置](docs/authoring-agents.md)、[A2A](docs/a2a.md)、
+[会话](docs/sessions.md)和[自动化](docs/deployments.md)。
+
 ## 开箱即用的企业级基建
+
+每个 Environment 拥有自己的部署状态和业务数据库。不同 Environment 使用独立的数据库角色与凭证，
+即使共用一个 PostgreSQL 服务，也不共用业务数据。RuntimeProfile 配置 Environment 内的运行方式，
+不会创建另一个 Environment。参见[部署隔离](docs/deploy.md#environments)。
 
 一次部署就带齐团队通常要自己拼装的几块：
 
@@ -91,7 +110,8 @@ Skill 和代码仓库，通过定时任务、Webhook、API 和消息平台触发
   参见[团队身份验证](https://www.astrabox.ai/zh-Hans/docs/team-login)。
 - **隔离沙箱**——基于 [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox)，单台 Docker 主机
   或 Kubernetes 集群都行，并预留热容量，对话秒级拉起。
-- **凭证不进沙箱**——Vault 凭证在沙箱的出站边界注入，Agent 只看得到占位符。
+- **凭证不进沙箱**——启用受保护的凭证交付后，Vault 凭证在沙箱的出站边界注入，Agent 只看得到占位符。
+  参见[凭证保护](docs/egress-credential-injection.md)。
 - **消息通道与触发器**——定时任务、签名 Webhook，以及基于官方
   [Satori](https://github.com/satorijs/satori) 适配器接入的消息平台。
 
@@ -100,7 +120,7 @@ Skill 和代码仓库，通过定时任务、Webhook、API 和消息平台触发
 `astrabox` 命令行工具无需打开网页控制台，就能配置和使用本地或远程部署。命令结果可以输出为
 JSON，Claude Code、Codex 等编程助手也能替你运行这些命令。
 
-- **配置即代码**——`astrabox init --from-deployment` 把部署中的 Environment 和 Agent 导出为
+- **配置即代码**——`astrabox init --from-deployment` 把部署中的 RuntimeProfile 和 Agent 导出为
   `astrabox.yaml`；`astrabox diff` 预览修改，`astrabox apply` 创建或更新资源，从不删除。
 - **在命令行派发任务**——`astrabox run <agent> "<task>"` 会启动 Session、发送任务并流式输出回复；
   加上 `--session` 可以继续已有的 Session。
@@ -143,6 +163,8 @@ AstraBox 中每个可替换的部分都是一个 Python 接口，并有对应的
 | Secret Store | `astrabox.providers.secrets` | 本地加密、AWS KMS |
 | 工作区存储 | `astrabox.providers.storage` | 挂载卷、Amazon EFS |
 | 远程 MCP 服务来源 | `astrabox.providers.extensions` | 管理员在 AstraBox 中保存的配置、LiteLLM MCP 网关 |
+| [运行准备集成](docs/providers/runtime-preparation.md) | `astrabox.providers.runtime_preparation` | 可选的部署自有 Agent 资源、Session 材料、逐消息准备与用户前置条件 |
+| [通道响应判断](docs/providers/channel-response.md) | `astrabox.providers.channel_response` | 内置标题模型判断、部署自有判断器 |
 
 - **接口版本**——`astrabox.providers.*` 下的插件可以用 `seams_api_version` 声明构建时依据的接口
   版本；与当前 AstraBox 不一致时，AstraBox 会拒绝加载。
@@ -159,9 +181,9 @@ AstraBox 中每个可替换的部分都是一个 Python 接口，并有对应的
 
 1. **部署 AstraBox**——在一台 Docker 主机、Kubernetes 或已有基础设施中运行 AstraBox
    和 OpenSandbox。
-2. **配置 Environment**——选择 Agent 程序、沙箱镜像、模型连接、网络访问和
+2. **配置 RuntimeProfile**——选择 Agent 程序、沙箱镜像、模型连接、网络访问和
    生命周期。
-3. **创建 Agent**——在网页控制台选择 Environment 和模型；只有 Agent 需要时，才添加
+3. **创建 Agent**——在网页控制台选择 RuntimeProfile 和模型；只有 Agent 需要时，才添加
    系统提示词、MCP 服务器、Plugin、Skill 或代码仓库。
 4. **启动 Session**——打开 Agent，启动一个 Session。
 5. **发送消息并接收 Event**——查看实时输出，回答问题或审批；浏览器关闭后，
@@ -183,7 +205,7 @@ curl -fsSL https://raw.githubusercontent.com/Colton-z/AstraBox/main/scripts/inst
 ```
 
 安装脚本会询问 Agent 使用哪个模型服务，把部署安装到 `~/astrabox`，拉取已发布的镜像
-并启动，控制台能够响应后打印其地址。打开 <http://127.0.0.1:8088>，选择 Environment，
+并启动，控制台能够响应后打印其地址。打开 <http://127.0.0.1:8088>，选择 RuntimeProfile，
 在控制台创建 Agent，然后启动第一个 Session。
 
 ![在 AstraBox 控制台创建 Agent](website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/img/agent-create-console-zh.png)
@@ -193,7 +215,9 @@ curl -fsSL https://raw.githubusercontent.com/Colton-z/AstraBox/main/scripts/inst
 [团队身份验证](https://www.astrabox.ai/zh-Hans/docs/team-login#put-the-login-flow-behind-a-proxy)
 把它放在 HTTPS 代理之后。
 
-升级时再次运行安装脚本：它会在原处安装最新发布版本，并保留 Session、凭证和设置。
+升级前先阅读[发布说明](https://github.com/Colton-z/AstraBox/releases)。再次运行安装脚本可安装最新发布版本，
+并保留 Session、凭证和设置。服务端与运行时镜像应使用匹配的版本；已有沙箱保留原来的 CLI，换箱后才使用新镜像。
+首次启动前选定 `ASTRABOX_ENVIRONMENT_NAME`，之后保持不变；修改名称不会把数据复制到另一个 Environment。
 
 ### 从源码运行
 
@@ -242,6 +266,8 @@ scripts/compose.sh up --build -d
 - [接入消息平台](https://www.astrabox.ai/zh-Hans/docs/channels)
 - [部署 AstraBox](https://www.astrabox.ai/zh-Hans/docs/deploy)
 - [HTTP API](https://www.astrabox.ai/zh-Hans/docs/api)
+- [Agent 间通信](docs/a2a.md)
+- [发布说明 · 简体中文与 English](https://github.com/Colton-z/AstraBox/releases)
 
 ## 开发
 
