@@ -31,6 +31,7 @@ import { useTranscriptAccess } from '../TranscriptAccess';
 import { cardArtifacts } from '@/artifacts/marker';
 import type { ArtifactMarker } from '@/artifacts/types';
 import { createClientMessageId } from '../utils/chatHelpers';
+import { hasRuntimeProtocolError } from '../sessionAuthority';
 
 /**
  * How long a lost session stream is retried in silence before the page says
@@ -657,9 +658,9 @@ export function useSessionChat({
   return {
     messages,
     /** The response the stream is writing now. */
-    writingMessageId: writing,
+    writingMessageId: hasRuntimeProtocolError(session) ? null : writing,
     /** A response is running: on this page's stream, or by the session's own account. */
-    isWorking: writing !== null || session.state === 'PROCESSING',
+    isWorking: !hasRuntimeProtocolError(session) && (writing !== null || session.state === 'PROCESSING'),
     /** A message is on its way to the session. */
     isSending: sendsInFlight > 0,
     isStopping: stopping !== null,

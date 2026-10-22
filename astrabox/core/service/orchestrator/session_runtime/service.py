@@ -16,6 +16,7 @@ from typing import Any
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.model import AgentState, SessionState
+from astrabox.core.service.orchestrator.engine.runtime import RUNTIME_PROTOCOL_INCOMPATIBLE, RuntimeProtocolError
 from astrabox.core.service.orchestrator.engine.interaction_contract import (
     public_interaction_view,
     resolve_interaction_permission_mode,
@@ -84,7 +85,7 @@ def runtime_view_state(session: dict[str, Any], activity: dict[str, Any]) -> str
     lifecycle = str(session.get("state") or "")
     if lifecycle != SessionState.READY.value:
         return lifecycle
-    if session.get("runtime_unavailable"):
+    if session.get("runtime_unavailable") or session.get("recovery_reason") == RUNTIME_PROTOCOL_INCOMPATIBLE:
         return SessionState.RECOVERY_REQUIRED.value
     status = str(session.get("runtime_status") or "idle")
     if status == "waiting" or activity["open_interactions"]:
@@ -251,6 +252,8 @@ class SessionRuntimeService:
         session = await self._sessions.get_session_including_deleted(session_id)
         if session is None or (owner_user_id is not None and session.get("user_id") != owner_user_id):
             return APIError(code="SESSION_NOT_FOUND", message="session not found", status_code=404)
+        if session.get("recovery_reason") == RUNTIME_PROTOCOL_INCOMPATIBLE:
+            return RuntimeProtocolError(str(session.get("last_error") or "Runtime protocol is incompatible."))
         if not session.get("deleted") and session.get("state") not in (
             SessionState.TERMINATED.value, SessionState.DELETED.value,
         ):

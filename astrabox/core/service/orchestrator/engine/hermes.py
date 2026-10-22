@@ -73,7 +73,7 @@ from astrabox.core.service.orchestrator.engine.hermes_gateway import (
     wait_until_backend_idle,
 )
 from astrabox.core.service.orchestrator.engine.hermes_runtime_client import HermesRuntimeClient
-from astrabox.core.service.orchestrator.engine.runtime import RuntimeCursor, initialize_runtime_client
+from astrabox.core.service.orchestrator.engine.runtime import RuntimeCursor, RuntimeProtocolError, initialize_runtime_client
 from astrabox.core.service.orchestrator.runtime.pty_terminal import (
     resolve_sandbox_endpoint,
 )
@@ -439,6 +439,10 @@ class HermesEngineAdapter(EngineAdapter):
             if engine_client is not None:
                 with contextlib.suppress(BaseException):
                     await engine_client.close()
+            if isinstance(exc, RuntimeProtocolError):
+                # A protocol mismatch says nothing about native execution.
+                # Do not quiesce a live backend to make the attachment fail.
+                raise
             if profile_prepared and workspace_plan.operation == "runtime_start" and runtime_identity:
                 try:
                     await self.quiesce_and_save_runtime_state(sandbox, runtime_identity=runtime_identity)
