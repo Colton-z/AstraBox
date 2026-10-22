@@ -27,8 +27,9 @@ Shared invariants with the rest of the identity seam:
   ``create_app``, so a broken auth config breaks boot, not individual requests.
 * **Never silently degrade a *present* credential.** A supplied-but-invalid
   token / gateway secret is always a hard reject; the strict/lenient switch only
-  governs the *absent*-credential case (strict → 401; lenient → ``None`` = fall
-  through to the anonymous/local no-auth default).
+  governs the *absent*-credential case (strict → 401; lenient → ``None``).
+  An anonymous identity cannot enter protected API routes; capability routes
+  authenticate their own callers.
 * **Config is read once, at ``__init__``.** Header names, claim names, key
   material and the strict flag are captured when the resolver is constructed (at
   ``create_app``); per-request code only reads request data.
@@ -179,7 +180,7 @@ class TrustedHeaderWebIdentityResolver:
 
     **Strictness.** Default strict: an absent user header is a 401. Lenient
     (``ASTRABOX_TRUSTED_HEADER_STRICT=0``) returns ``None`` — no identity
-    asserted — so the request falls through to the anonymous/local default.
+    asserted. Protected API routes still refuse Environment entry.
 
     **Roles.** The groups header (comma/whitespace-delimited) becomes
     ``roles`` verbatim; membership in ``ASTRABOX_ADMIN_GROUP`` additionally adds
@@ -244,7 +245,7 @@ class TrustedHeaderWebIdentityResolver:
                     message="trusted identity header missing",
                     status_code=401,
                 )
-            # Lenient: no identity asserted -> anonymous/local fall-through.
+            # A lenient resolver leaves capability routes to authenticate their callers.
             return None
 
         org = str(headers.get(self._org_header, "") or "").strip() if self._org_header else ""
@@ -284,8 +285,8 @@ class VerifiedJwtWebIdentityResolver:
     per PyJWT defaults.
 
     **Strictness.** Default strict: no token → 401. Lenient
-    (``ASTRABOX_JWT_STRICT=0``): no token → ``None`` (anonymous fall-through). A
-    token that IS present but fails verification (bad signature, expired, wrong
+    (``ASTRABOX_JWT_STRICT=0``): no token → ``None``; protected API entry
+    still requires an identity. A token that IS present but fails verification (bad signature, expired, wrong
     audience, missing subject) is ALWAYS a hard 401 — a present credential is
     never silently degraded.
     """
@@ -353,7 +354,7 @@ class VerifiedJwtWebIdentityResolver:
                     message="bearer token required",
                     status_code=401,
                 )
-            # Lenient: no credential -> anonymous/local fall-through.
+            # A lenient resolver leaves capability routes to authenticate their callers.
             return None
 
         # A present token is verified and fails closed: any verification/key error

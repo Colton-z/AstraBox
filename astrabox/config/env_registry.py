@@ -1329,7 +1329,8 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "true",
         "Absent-session behaviour under the oidc resolver: strict (default) rejects "
         "with 401 AUTH_REQUIRED so the console redirects to login; an explicit "
-        "falsey value lets anonymous requests fall through to the local identity. "
+        "falsey value leaves the request anonymous; protected API entry still "
+        "requires an identity. "
         "A present-but-invalid session is always rejected regardless.",
         "astrabox.providers.identity_oidc",
     ),
