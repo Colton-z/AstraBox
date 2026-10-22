@@ -103,6 +103,26 @@ test('natural A2A discovery finds existing owned platform conversations when loc
   const profile = await api.assistantEnvironmentName();
   assistantId = (await api.createAssistant({ display_name: `__e2e_discovery_source_${marker}`, runtime_profile_name: profile,
     model_config_override: { model_name: await api.assistantModelName(profile) } })).assistant_id;
+  const workspace = await api.waitForWorkspaceReady(assistantId, 90_000);
+  const seedHandle = await requireSandboxHandle(api, String(workspace.current_sandbox_id));
+  // The acceptance image passes this fixture transcript to native session.create;
+  // it represents the old failed context, not tool executions in the new turn.
+  const failedHistory = [
+    { role: 'user', content: '我有哪些对话？只查看，不要替我发消息或创建新的对话。' },
+    { role: 'assistant', content: null, tool_calls: [{ id: 'historical-local-search', type: 'function',
+      function: { name: 'session_search', arguments: '{"limit":10}' } }] },
+    { role: 'tool', tool_call_id: 'historical-local-search', name: 'session_search', content: '{"sessions":[]}' },
+    { role: 'assistant', content: '没有找到任何已有对话。' },
+    { role: 'user', content: 'a2a的呢？' },
+    { role: 'assistant', content: null, tool_calls: [{ id: 'historical-local-a2a', type: 'function',
+      function: { name: 'a2a_list', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'historical-local-a2a', name: 'a2a_list',
+      content: 'No persisted conversations. Metrics: 0 in / 0 out, 0 completed, 0 failed.' },
+    { role: 'assistant', content: '全部为空，A2A侧没有任何对话记录。' },
+  ];
+  const seed = Buffer.from(JSON.stringify(failedHistory)).toString('base64');
+  sandboxExec(seedHandle, `h=$(find /home/conversations -mindepth 2 -maxdepth 2 -name .hermes -type d | head -n 1)\n` +
+    `printf '%s' '${seed}' | base64 -d > "$h/.astrabox-e2e-discovery-history.json"`);
   const source = (await api.startAssistantConversation(assistantId)).session_id;
   sessions.push(source);
   await api.waitForSessionReady(source, 90_000);
@@ -115,7 +135,11 @@ test('natural A2A discovery finds existing owned platform conversations when loc
   const agentSessions = () => postgresRows<Obj>('SELECT session_id FROM sessions WHERE agent_id IS NOT NULL AND hidden=false ORDER BY session_id');
   const before = agentSessions();
   const inputs = new Map([...owned, foreignId].map((sid) => [sid, sessionInputRows(sid)]));
-  let cursor = 0;
+  const seededKey = postgresRows<Obj>(`SELECT engine_session_key FROM sessions WHERE session_id=${sqlLiteral(source)}`)[0]?.engine_session_key;
+  expect(seededKey).toBeTruthy();
+  const seeded = nativeMessages(handle, home, seededKey, 0);
+  expect(seeded.filter((row) => row.role === 'assistant').map((row) => row.content)).toContain('全部为空，A2A侧没有任何对话记录。');
+  let cursor = Number(seeded.at(-1)!.id);
   const nativeSince = () => {
     // Native drafts acquire their SessionDB key on the first submitted turn.
     // Read the current binding after that turn, not the earlier READY detail.
@@ -127,11 +151,16 @@ test('natural A2A discovery finds existing owned platform conversations when loc
     if (events.length) cursor = Number(events.at(-1)!.id);
     return events;
   };
-  const evidence: Obj = { owned, titles: Object.fromEntries(titles), foreignId, source, localBefore: 0, turns: [] };
+  const evidence: Obj = { owned, titles: Object.fromEntries(titles), foreignId, source, localBefore: 0, seeded, turns: [] };
   try {
     const first = await api.sendTurn(source, '我有哪些对话？只查看，不要替我发消息或创建新的对话。', 45_000);
     expect(first.errorText).toBeNull();
-    evidence.turns.push({ prompt: '我有哪些对话', answer: first.text, native: nativeSince() });
+    const firstEvents = nativeSince();
+    const firstListing = discovery(firstEvents);
+    expect(firstListing.page.conversations.map((row: Obj) => row.session_id).sort()).toEqual([...owned].sort());
+    expect(firstListing.page.has_more).toBe(false);
+    for (const sid of owned) expect(first.text).toContain(titles.get(sid)!);
+    evidence.turns.push({ prompt: '我有哪些对话', answer: first.text, native: firstEvents, listing: firstListing });
     const reply = await api.sendTurn(source, 'a2a的呢？先列1条已有的Agent对话，告诉我Agent名称、对话标题，以及是否还有下一页。仍然只查看。', 45_000);
     expect(reply.errorText).toBeNull();
     const secondEvents = nativeSince();

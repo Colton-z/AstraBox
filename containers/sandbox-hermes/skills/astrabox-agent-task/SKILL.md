@@ -1,6 +1,6 @@
 ---
 name: astrabox-agent-task
-description: "Find existing AstraBox Agent conversations by title, contact one, delegate work, and report a long task result, including after the current reply."
+description: "List the user's existing platform conversations by title, including broad requests to find their conversations. Contact an Agent or delegate work when asked."
 version: 0.1.0
 author: AstraBox
 license: Apache-2.0
@@ -17,8 +17,10 @@ references in this conversation until the result has been reported.
 
 ## Find an existing conversation
 
-When the user asks which Agent or A2A conversations they have or can continue,
-use the `agents` MCP tool `list_agent_conversations`. It reads the user's platform
+When the user asks which conversations they have, use the `agents` MCP tool
+`list_agent_conversations`, including when they do not mention Agent or A2A.
+The result is the user's visible Agent conversations; name that scope in the reply.
+Use it for explicit Agent or A2A conversation questions too. It reads the user's platform
 conversations, including ones started in the console without a previous A2A
 exchange. Return their current Agent names and conversation titles. Follow
 `next_cursor` when another page is requested; a page with `has_more=true` is not
@@ -30,6 +32,9 @@ configured peers and exchanges saved in this Hermes profile; `a2a_history` reads
 one of those saved exchanges. Neither local history is the platform's Agent
 conversation inventory, so a local zero cannot answer that platform question.
 Use `a2a_list` to discover peer keys when starting new delegated work.
+An earlier reply based on local history does not establish the current platform
+inventory. Query the platform for a new inventory request even if an earlier
+reply claimed there were no conversations.
 
 For an existing conversation, use `send_agent_message` only when the user asks
 to send something, with the exact Agent and Session IDs returned by platform
