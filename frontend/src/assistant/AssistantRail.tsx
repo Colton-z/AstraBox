@@ -62,10 +62,12 @@ function startedLabel(iso: string | null | undefined): string {
  */
 export function usePrimaryAssistant() {
   const { t } = useTranslation();
+  // This endpoint resolves the owner's single primary record, so repeated
+  // reads use the shared transient-error retry policy despite its POST method.
   return useSWR('assistant:primary', () => ensurePrimaryAssistant({
     display_name: t('shell:assistant_default_name'),
     timezone: browserTimezone(),
-  }), { revalidateOnFocus: false, shouldRetryOnError: false });
+  }), { revalidateOnFocus: false });
 }
 
 /** The caller's Assistants, once the primary one exists. */
@@ -129,7 +131,9 @@ export function AssistantRail({
   // does. A first read that fails is reported.
   const listError = keepsLastRead(list.error, { background: true }, list.data !== undefined)
     ? undefined : list.error;
-  const error = (primary.error ?? listError) as Error | undefined;
+  const primaryError = keepsLastRead(primary.error, { background: true }, primary.data !== undefined)
+    ? undefined : primary.error;
+  const error = (primaryError ?? listError) as Error | undefined;
 
   return (
     <SidebarGroup data-testid="assistant-rail">

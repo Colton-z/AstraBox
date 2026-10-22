@@ -102,3 +102,91 @@ for (const subject of ['agents', 'assistants'] as const) {
     }
   });
 }
+
+test('primary Assistant recovers transient reads without online events and retains its last successful row', async ({ page, context, request }, info) => {
+  const path = apiPath('/assistants/primary');
+  let failNext = true;
+  let failures = 0;
+  let answered = 0;
+  const primaryIds: string[] = [];
+  await page.addInitScript(() => {
+    localStorage.setItem('astrabox-lang', 'en');
+    const state = window as typeof window & { primaryDocument: string; primaryOnlineEvents: number };
+    state.primaryDocument = String(performance.timeOrigin);
+    state.primaryOnlineEvents = 0;
+    window.addEventListener('online', () => { state.primaryOnlineEvents += 1; });
+  });
+  await page.route(url => url.pathname === path, async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    const response = await route.fetch();
+    expect(response.ok()).toBe(true);
+    primaryIds.push((await response.json()).data.assistant_id);
+    if (failNext) {
+      failNext = false;
+      failures += 1;
+      // The server committed its answer; only its delivery to this tab is lost.
+      return route.abort('connectionreset');
+    }
+    answered += 1;
+    return route.fulfill({ response });
+  });
+  await page.goto(appPath('/agents'), { waitUntil: 'domcontentloaded' });
+  const rail = page.getByTestId('assistant-rail');
+  await expect(rail.getByRole('alert').filter({ hasText: 'NETWORK_ERROR' })).toBeVisible();
+  const documentId = await page.evaluate(() => (
+    window as typeof window & { primaryDocument: string }
+  ).primaryDocument);
+  await expect.poll(() => answered, { timeout: 30_000 }).toBeGreaterThan(0);
+  await expect(rail.getByTestId('assistant-row').first()).toBeVisible();
+  await expect(rail.getByRole('alert')).toHaveCount(0);
+  expect(await page.evaluate(() => (
+    window as typeof window & { primaryOnlineEvents: number }
+  ).primaryOnlineEvents)).toBe(0);
+
+  const rows = rail.getByTestId('assistant-row');
+  const before = await rows.allTextContents();
+  await watchAlerts(page);
+  const beforeRecovery = answered;
+  failNext = true;
+  await page.evaluate(() => window.dispatchEvent(new Event('online')));
+  await expect.poll(() => failures).toBe(2);
+  expect(await rows.allTextContents()).toEqual(before);
+  await expect(rail.getByRole('alert')).toHaveCount(0);
+  await expect.poll(() => answered, { timeout: 30_000 }).toBeGreaterThan(beforeRecovery);
+  expect(await rows.allTextContents()).toEqual(before);
+  await expectNoAlertFlashes(page);
+  expect(await page.evaluate(() => ({
+    document: (window as typeof window & { primaryDocument: string }).primaryDocument,
+    online: (window as typeof window & { primaryOnlineEvents: number }).primaryOnlineEvents,
+  }))).toEqual({ document: documentId, online: 1 });
+  expect(new Set(primaryIds).size).toBe(1);
+  const owned = await request.get(apiPath('/assistants'));
+  expect(owned.ok()).toBe(true);
+  expect((await owned.json()).data.filter((row: { primary?: boolean }) => row.primary)
+    .map((row: { assistant_id: string }) => row.assistant_id)).toEqual([primaryIds[0]]);
+
+  const denied = await context.newPage();
+  let permanentReads = 0;
+  try {
+    await denied.route(url => url.pathname === path, async route => {
+      permanentReads += 1;
+      return route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({
+        code: 'ASSISTANT_ACCESS_DENIED', message: 'Primary access denied', data: null,
+        error: { code: 'ASSISTANT_ACCESS_DENIED', user_message: 'Primary access denied', retryable: false },
+      }) });
+    });
+    await denied.goto(appPath('/agents'), { waitUntil: 'domcontentloaded' });
+    await expect(denied.getByTestId('assistant-rail').getByRole('alert')).toContainText('Primary access denied');
+    // SWR2.5.1's first backoff is at most20s, including its slow-network interval.
+    await denied.waitForTimeout(22_000);
+    expect(permanentReads).toBe(1);
+    await expect(denied.getByTestId('assistant-rail').getByRole('alert')).toContainText('Primary access denied');
+    await info.attach('primary-network-recovery', {
+      body: JSON.stringify({ failures, answered, primaryIds, permanentReads, documentId, before }),
+      contentType: 'application/json',
+    });
+    await page.screenshot({ path: info.outputPath('primary-recovered.png'), fullPage: true });
+  } finally {
+    await denied.close();
+  }
+});
