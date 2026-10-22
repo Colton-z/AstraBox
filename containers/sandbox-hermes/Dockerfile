@@ -133,10 +133,9 @@ RUN set -eux; \
 # outward itself, and the relay why a byte-for-byte TCP proxy is not enough.
 COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/astrabox-hermes-serve /usr/local/bin/astrabox-hermes-serve
 COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/astrabox-hermes-forward /usr/local/bin/astrabox-hermes-forward
-# Skills AstraBox ships with every Assistant. Hermes reads them through
-# `skills.external_dirs`, which the profile merge sets: listed and loadable like
-# its own, and read-only to Hermes' curator, which never rewrites external dirs.
-COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/skills/ /opt/astrabox/hermes/skills/
+# Hermes seeds these defaults into each writable profile and keeps user edits
+# through its native bundled-skill manifest, including across image updates.
+COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/skills/ /opt/hermes/source/skills/astrabox-platform/
 COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/hermes_native_store.py containers/sandbox-hermes/hermes_profile_state.py containers/sandbox-hermes/hermes_state_transport.py containers/sandbox-hermes/hermes_state_bootstrap.py containers/sandbox-hermes/hermes_state_mirror.py containers/sandbox-hermes/hermes_host_relay.py /opt/astrabox/hermes/
 COPY --chmod=u=rwX,go=rX astrabox/core/service/orchestrator/runtime/astrabox-transcript-mirror /usr/local/bin/astrabox-transcript-mirror
 COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/supervisord.hermes.conf /opt/gem/supervisord/supervisord.hermes.conf
