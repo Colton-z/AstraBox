@@ -1590,6 +1590,7 @@ class RemoteAgentRuntimeManager:
         *,
         sandbox_id: str | None = None,
         engine_kind: str | None = None,
+        runtime_identity: dict[str, Any] | None = None,
         engine_session_key: str | None = None,
         runtime_cursor: dict[str, Any] | None = None,
         workspace_ref: dict[str, Any] | None = None,
@@ -1627,12 +1628,20 @@ class RemoteAgentRuntimeManager:
         disposal = get_engine_adapter(resolved_kind).process_disposal()
         if not isinstance(disposal, EngineProcessDisposalCapability):
             return
-        await disposal.dispose_process(
-            sandbox_id=normalized_sandbox_id,
-            engine_session_key=native_key,
-            runtime_cursor=runtime_cursor,
-            workspace_ref=dict(workspace_ref or {}),
-        )
+        sandbox = await self.connect_sandbox_only(normalized_sandbox_id)
+        try:
+            await disposal.dispose_process(
+                sandbox=sandbox,
+                runtime_identity=runtime_identity,
+                engine_session_key=native_key,
+                runtime_cursor=runtime_cursor,
+                workspace_ref=dict(workspace_ref or {}),
+            )
+        finally:
+            close = getattr(sandbox, "close", None)
+            if callable(close):
+                with contextlib.suppress(Exception):
+                    await close()
         logger.info(
             "finished native disposal request session=%s engine=%s source=native-identity",
             session_id,
