@@ -28,7 +28,7 @@ the Hermes runtime image: adding profile config/materialization fields should
 only require platform-side payload changes. It runs before the backend starts
 and again while it runs, so every file it writes is replaced atomically.
 
-Exit codes: 0 OK, 65 EX_DATAERR (PyYAML missing, malformed env JSON, etc).
+Exit codes: 0 OK, 65 EX_DATAERR (native YAML support missing, malformed env JSON, etc).
 """
 from __future__ import annotations
 
@@ -356,9 +356,9 @@ def enable_assistant_a2a_tools() -> None:
 
 def main() -> int:
     try:
-        import yaml
+        import hermes_yaml as yaml
     except ImportError as exc:
-        sys.stderr.write(f"PyYAML required to write Hermes config: {exc}\n")
+        sys.stderr.write(f"Hermes native YAML support required to write config: {exc}\n")
         return 65
 
     home = Path(os.environ.get("HERMES_HOME") or "/root/.hermes")
