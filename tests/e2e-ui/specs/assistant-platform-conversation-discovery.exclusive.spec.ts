@@ -37,7 +37,10 @@ function resultPage(value: unknown): Obj | undefined {
   // The pinned MCP client wraps its text/structured payload in result; deferred
   // batches may wrap those same results in a results list.
   if (typeof value === 'string') {
-    try { return resultPage(JSON.parse(value)); } catch { return undefined; }
+    // Hermes stores sufficiently long external results in its native
+    // untrusted-data envelope before writing the tool message to SessionDB.
+    const wrapped = value.match(/^<untrusted_tool_result source="[^"]+">\n[^\n]+\n\n([\s\S]*)\n<\/untrusted_tool_result>$/);
+    try { return resultPage(JSON.parse(wrapped ? wrapped[1]! : value)); } catch { return undefined; }
   }
   if (!value || typeof value !== 'object') return undefined;
   const row = value as Obj;
