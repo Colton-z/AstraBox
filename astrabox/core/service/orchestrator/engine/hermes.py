@@ -745,13 +745,15 @@ HERMES_EXTENSIONS = EngineExtensions(
             target="{config}/plugins/astrabox",
             takes_effect="restart",
             installed_by_engine=True,
-            # Hermes' installer (tools/lazy_deps.py) resolves with uv against
-            # the default index: the simple API on pypi.org, files from
-            # files.pythonhosted.org.
-            installer_hosts=("pypi.org", "files.pythonhosted.org"),
+            # Native PM resolves the core and plugin dependency graph together.
+            # Its pinned GitHub wheels redirect to the release asset host.
+            installer_hosts=(
+                "pypi.org", "files.pythonhosted.org", "github.com",
+                "release-assets.githubusercontent.com",
+            ),
             help="A Hermes plugin directory with plugin.yaml: tools, hooks, slash commands, "
-            "Skills or system prompt sections. Its declared Python dependencies are installed "
-            "from PyPI when it is placed.",
+            "Skills or system prompt sections. Hermes' package manager prepares its Python "
+            "dependencies together with Hermes' own dependency graph.",
         ),
         PackageKind(
             name="agent-plugin",

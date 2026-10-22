@@ -146,11 +146,12 @@ Assistant's own fields. For Hermes:
   directories in the repository). Hermes loads two kinds:
   - `hermes-plugin`: a directory with `plugin.yaml`, which can add tools,
     hooks, slash commands, Skills and system prompt sections. Its declared
-    Python dependencies are installed from PyPI when it is placed; a
-    dependency that cannot be installed stops the conversation's preparation
-    with the plugin's name. With a Limited network, PyPI (`pypi.org`,
-    `files.pythonhosted.org`) is admitted for an Assistant with a Hermes
-    plugin, as a package's Git origin is.
+    Python dependencies are prepared by Hermes' package manager together with
+    Hermes' own dependency graph; installation failure stops preparation.
+    With a Limited network, PyPI (`pypi.org`, `files.pythonhosted.org`) and
+    Hermes' pinned GitHub dependencies (`github.com`,
+    `release-assets.githubusercontent.com`) are admitted within the same
+    author boundary as a package's Git origin.
   - `agent-plugin`: an Agent Plugins v1.0 package, a `plugin.json` with Skills
     and an `mcp.json`.
 
