@@ -58,7 +58,8 @@ install -d -o root -g root -m 0755 "$managed_dir"
 if [ -n "${ASTRABOX_HERMES_MANAGED_CONFIG:-}" ]; then
   managed_tmp="$(mktemp "$managed_dir/.config.yaml.XXXXXX")"
   "$HERMES_VENV/bin/python" -c '
-import json, os, sys, yaml
+import json, os, sys
+import hermes_yaml as yaml
 config = json.loads(os.environ["ASTRABOX_HERMES_MANAGED_CONFIG"])
 overwrite = json.loads(os.environ.get("ASTRABOX_HERMES_CONFIG_OVERWRITE") or "{}")
 agent = config.get("agent")
