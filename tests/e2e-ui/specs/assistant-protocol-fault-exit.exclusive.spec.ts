@@ -122,7 +122,14 @@ test('a real old-contract Assistant fault can end or archive after restart witho
     // A second restart leaves blocked readers without any process-local gateway attachment.
     await restartServer(api, false);
     const siblingHistory = await api.getMessages(sibling);
-    const siblingNative = live().find((row) => row.id === nativeBySession.get(sibling)!.id)!;
+    const beforeExit = live();
+    // The isolated old-contract fixture uses the supplier's 600s orphan grace.
+    // Missing targets cannot exercise native close or sibling preservation.
+    for (const sid of [target, archive, sibling]) {
+      expect(beforeExit.some((row) => row.id === nativeBySession.get(sid)!.id)).toBe(true);
+    }
+    evidence.nativeBeforeExit = beforeExit;
+    const siblingNative = beforeExit.find((row) => row.id === nativeBySession.get(sibling)!.id)!;
     const inputBefore = sessionInputRows(target);
     await expect(api.data('POST', `/sessions/${target}/inputs`, { content: 'must be refused' })).rejects.toThrow(/RUNTIME_PROTOCOL_INCOMPATIBLE/);
     expect(sessionInputRows(target)).toEqual(inputBefore);
