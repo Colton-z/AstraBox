@@ -67,7 +67,7 @@ RUN --mount=type=bind,from=hermes-source,source=/hermes-source.tar.gz,target=/tm
     python3.12 scripts/write_install_stamp.py --output install-stamp.json \
       --commit 4d04303818b61bf3aa09278af48356315515965b --base-version "${HERMES_AGENT_VERSION}" \
       --display-version "${HERMES_AGENT_VERSION}" --distance 0 \
-      --source docker --distribution docker --update-mechanism external --runtime-dir tools; \
+      --source docker --distribution docker --update-mechanism external --runtime-dir /opt/hermes/source/tools; \
     "${hermes_python}" -c 'import json; from pathlib import Path; path = Path("install-stamp.json"); stamp = json.loads(path.read_text()); stamp["pmRuntime"] = "/opt/hermes/source/pm-runtime"; path.write_text(json.dumps(stamp) + "\n")'; \
     ln -sf "${HERMES_VENV}/bin/hermes" /usr/local/bin/hermes; \
     "${HERMES_VENV}/bin/python" -c 'from hermes_cli.version_info import get_version_info; import sys; info = get_version_info(); assert info.base_version == sys.argv[1] and info.commit == "4d04303818b61bf3aa09278af48356315515965b"' "${HERMES_AGENT_VERSION}"; \
