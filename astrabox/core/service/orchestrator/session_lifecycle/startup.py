@@ -580,7 +580,7 @@ class _StartupProgress:
 
     async def _write(self, label: str) -> None:
         try:
-            await self._ownership.update({"startup_progress": label})
+            await self._ownership.update({"startup_progress": label}, notify="session")
         except Exception as exc:
             logger.warning(
                 "startup progress write failed session=%s progress=%s err=%s",
