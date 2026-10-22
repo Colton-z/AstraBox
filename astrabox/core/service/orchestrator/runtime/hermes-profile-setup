@@ -32,6 +32,9 @@ case "$workspace_source" in
 esac
 
 runuser -u "$linux_user" -- mkdir -p "$workspace_source" "$hermes_home/logs"
+# Hermes installs native plugins as the profile account. The common CLI
+# bootstrap creates this root as a platform constraint; Hermes needs it mutable.
+install -d -o "$linux_user" -g "$linux_user" -m 0700 "$hermes_home/plugins"
 
 if [ "$workspace" != "$workspace_source" ]; then
   if [ -L "$workspace" ]; then
