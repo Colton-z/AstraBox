@@ -122,7 +122,7 @@ test('a real old-contract Assistant fault can end or archive after restart witho
     // A second restart leaves blocked readers without any process-local gateway attachment.
     await restartServer(api, false);
     const siblingHistory = await api.getMessages(sibling);
-    const siblingNative = nativeBySession.get(sibling)!;
+    const siblingNative = live().find((row) => row.id === nativeBySession.get(sibling)!.id)!;
     const inputBefore = sessionInputRows(target);
     await expect(api.data('POST', `/sessions/${target}/inputs`, { content: 'must be refused' })).rejects.toThrow(/RUNTIME_PROTOCOL_INCOMPATIBLE/);
     expect(sessionInputRows(target)).toEqual(inputBefore);
