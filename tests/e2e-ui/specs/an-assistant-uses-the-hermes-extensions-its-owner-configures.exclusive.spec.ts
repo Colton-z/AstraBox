@@ -104,6 +104,8 @@ test('an Assistant uses the Skill, Hermes plugin and configuration its owner add
   page,
   request,
 }) => {
+  const upgrading = Boolean(process.env.ASTRABOX_E2E_RUNTIME_UPGRADE_FILE);
+  if (upgrading) test.slow();
   const api = new AstraApi(request);
   const id = randomUUID().slice(0, 8);
   const codename = `ORCHID-${id}`;
@@ -152,7 +154,7 @@ test('an Assistant uses the Skill, Hermes plugin and configuration its owner add
 
   const first = String((await api.startAssistantConversation(assistantId)).session_id || '');
   sessions.push(first);
-  await api.waitForSessionReady(first);
+  await api.waitForSessionReady(first, upgrading ? 360_000 : undefined);
   const used = await api.sendTurn(first, [
     'Do these six things, then reply with exactly one line in the format',
     'STATS=<number>; ACCENT=<hex>; ZONE=<name>; CODENAME=<codename|NONE>; WEEKLY=<cron>; VERDICT=<verdict|ERROR>',
