@@ -1117,10 +1117,10 @@ def _hermes_process_digest(env: dict[str, str], overwrite_blob: dict[str, Any]) 
 #: itself binds loopback (see `astrabox-hermes-serve` for why); this is the
 #: one the sandbox's endpoint face knows about.
 HERMES_BACKEND_PORT = 9118
-#: How long a new attachment waits for the backend to answer. A cold backend
-#: loads its profile, plugins and model configuration before it serves the
-#: first request, which takes seconds, not milliseconds.
-_BACKEND_ANSWER_BUDGET_SECONDS = 120
+#: A cold attachment includes Hermes PM resolving and installing the owner's
+#: plugin dependencies before the backend serves requests. Keep that native
+#: preparation inside one bounded wait; a healthy cold install can exceed 120s.
+_BACKEND_ANSWER_BUDGET_SECONDS = 300
 
 
 async def _wait_until_backend_answers(commands: SandboxCommands) -> None:
