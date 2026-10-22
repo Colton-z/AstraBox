@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 @runtime_checkable
 class EngineProcessDisposalCapability(Protocol):
@@ -17,7 +17,8 @@ class EngineProcessDisposalCapability(Protocol):
     async def dispose_process(
         self,
         *,
-        sandbox_id: str,
+        sandbox: Any,
+        runtime_identity: dict[str, Any] | None,
         engine_session_key: str,
         runtime_cursor: dict | None,
         workspace_ref: dict,

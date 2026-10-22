@@ -68,7 +68,6 @@ from astrabox.core.service.orchestrator.engine.hermes_cron import CronRunOutput
 from astrabox.core.service.orchestrator.engine.hermes_client import HermesTuiRpcError
 from astrabox.core.service.orchestrator.engine.hermes_gateway import (
     HermesGatewayHandle,
-    gateway_handle_for_profile,
     resolve_gateway_handle,
     wait_until_backend_idle,
 )
@@ -252,7 +251,7 @@ class HermesEngineAdapter(EngineAdapter):
     """EngineAdapter for Hermes — declares and connects its gateway client."""
 
     def process_disposal(self) -> Any:
-        return _HERMES_PROCESS_DISPOSAL
+        return HermesProcessDisposal(self)
 
     def stored_child_resource_facts(
         self,
@@ -1731,10 +1730,14 @@ def _looks_anthropic_compatible_base_url(value: str) -> bool:
 class HermesProcessDisposal:
     """Close a recorded native session on its existing profile attachment."""
 
+    def __init__(self, adapter: HermesEngineAdapter) -> None:
+        self._adapter = adapter
+
     async def dispose_process(
         self,
         *,
-        sandbox_id: str,
+        sandbox: Any,
+        runtime_identity: dict[str, Any] | None,
         engine_session_key: str,
         runtime_cursor: dict | None,
         workspace_ref: dict,
@@ -1744,12 +1747,12 @@ class HermesProcessDisposal:
         profile = _resolve_hermes_profile_ref(
             user_id=workspace_ref.get("user_id"), assistant_id=workspace_ref.get("assistant_id"),
         )
-        gateway = gateway_handle_for_profile(sandbox_id=sandbox_id, profile_key=profile["profile_key"])
-        if gateway is None:
-            # This capability only acts through the attachment this host owns;
-            # a different host's cleanup retains its established behavior.
-            logger.info("Hermes final disposal has no local profile attachment sandbox=%s", sandbox_id)
-            return
+        gateway = await self._adapter._resident_backend(
+            sandbox,
+            identity=runtime_identity,
+            profile_ref=profile,
+            spawn_fingerprint=None,
+        )
         live = await gateway.request("session.active_list", {})
         sessions = live.get("sessions")
         if not isinstance(sessions, list) or any(
@@ -1775,7 +1778,6 @@ class HermesProcessDisposal:
                 raise RuntimeError("Hermes did not confirm native session closure")
 
 
-_HERMES_PROCESS_DISPOSAL = HermesProcessDisposal()
 
 
 # Self-register on import. Idempotent — registry guards against duplicates.
