@@ -52,7 +52,9 @@ test('an Assistant keeps its memory, its own skill and its scheduled job on a ne
     model_config_override: { model_name: await api.assistantModelName(runtimeProfileName) },
   });
   assistantId = String(assistant.assistant_id || '');
-  const firstBox = String((await api.waitForWorkspaceReady(assistantId, 60_000)).current_sandbox_id || '');
+  // Hidden workspace initialization includes native MCP discovery and session
+  // finalization; both remain inside this journey's fixed 180-second budget.
+  const firstBox = String((await api.waitForWorkspaceReady(assistantId, 90_000)).current_sandbox_id || '');
   expect(firstBox).not.toEqual('');
   const first = String((await api.startAssistantConversation(assistantId)).session_id || '');
   sessions.push(first);
