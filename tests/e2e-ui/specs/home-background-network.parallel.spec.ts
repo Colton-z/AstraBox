@@ -146,6 +146,8 @@ test('primary Assistant recovers transient reads without online events and retai
   const rows = rail.getByTestId('assistant-row');
   const before = await rows.allTextContents();
   await watchAlerts(page);
+  // Reconnect reuses SWR's last request until the shared two-second dedupe expires.
+  await page.waitForTimeout(2_000);
   const beforeRecovery = answered;
   failNext = true;
   await page.evaluate(() => window.dispatchEvent(new Event('online')));
