@@ -24,19 +24,13 @@ onPassOnly(async ({ request }) => {
 });
 test.afterEach(async () => { await foreign?.dispose(); });
 
-function nativeRpc(handle: SandboxHandle, home: string, method: string, params: Obj): Obj {
-  const program = `import asyncio,json,os,aiohttp
-async def main():
- async with aiohttp.ClientSession() as client:
-  async with client.ws_connect('http://127.0.0.1:9118/api/ws',headers={'X-AstraBox-Hermes-Token':os.environ['HERMES_DASHBOARD_SESSION_TOKEN']}) as ws:
-   await ws.send_json({'jsonrpc':'2.0','id':'discovery-evidence','method':${JSON.stringify(method)},'params':json.loads(${JSON.stringify(JSON.stringify(params))})})
-   while True:
-    answer=await ws.receive_json(timeout=15)
-    if answer.get('id')=='discovery-evidence':
-     assert 'error' not in answer,answer
-     print(json.dumps(answer['result']));return
-asyncio.run(main())`;
-  return JSON.parse(sandboxExec(handle, `source '${home}/astrabox-hermes.env'; "$HERMES_VENV/bin/python" - <<'PY'\n${program}\nPY`));
+function nativeMessages(handle: SandboxHandle, home: string, key: string, after: number): Obj[] {
+  const program = `import json,sqlite3
+connection=sqlite3.connect(${JSON.stringify(`file:${home}/state.db?mode=ro`)},uri=True)
+connection.row_factory=sqlite3.Row
+rows=connection.execute("SELECT id,role,content,tool_calls,tool_call_id FROM messages WHERE session_id=? AND id>? ORDER BY id",(${JSON.stringify(key)},${after}))
+print(json.dumps([dict(row) for row in rows]))`;
+  return JSON.parse(sandboxExec(handle, `"$HERMES_VENV/bin/python" - <<'PY'\n${program}\nPY`));
 }
 
 function resultPage(value: unknown): Obj | undefined {
@@ -52,16 +46,21 @@ function resultPage(value: unknown): Obj | undefined {
   return resultPage(row.structuredContent ?? row.result);
 }
 
-function discovery(events: Obj[]): { page: Obj; args: Obj } {
-  for (const event of [...events].reverse()) {
-    if (event.type !== 'tool.complete') continue;
-    const p = event.payload;
-    const calls = p.name === 'tool_call' ? (Array.isArray(p.args.calls) ? p.args.calls : [p.args]) : [{ name: p.name, arguments: p.args }];
-    const call = calls.find((item: Obj) => String(item.name).endsWith('list_agent_conversations'));
-    const page = call && resultPage(p.result);
-    if (page) return { page, args: call.arguments };
+function discovery(messages: Obj[]): { page: Obj; args: Obj } {
+  for (const message of [...messages].reverse()) {
+    if (message.role !== 'assistant' || !message.tool_calls) continue;
+    const outer = typeof message.tool_calls === 'string' ? JSON.parse(message.tool_calls) : message.tool_calls;
+    for (const entry of outer) {
+      const fn = entry.function;
+      const args = typeof fn.arguments === 'string' ? JSON.parse(fn.arguments) : fn.arguments;
+      const calls = fn.name === 'tool_call' ? args.calls : [{ name: fn.name, arguments: args }];
+      const call = calls.find((item: Obj) => String(item.name).endsWith('list_agent_conversations'));
+      const result = messages.find((row) => row.role === 'tool' && row.tool_call_id === entry.id);
+      const page = call && result && resultPage(result.content);
+      if (page) return { page, args: call.arguments };
+    }
   }
-  throw new Error(`native completion has no executed platform discovery result: ${JSON.stringify(events)}`);
+  throw new Error(`native SessionDB has no executed platform discovery result: ${JSON.stringify(messages)}`);
 }
 
 test('natural A2A discovery finds existing owned platform conversations when local exchange history is empty', async ({ request, playwright, page }, info) => {
@@ -119,12 +118,10 @@ test('natural A2A discovery finds existing owned platform conversations when loc
     // Read the current binding after that turn, not the earlier READY detail.
     const key = postgresRows<Obj>(`SELECT engine_session_key FROM sessions WHERE session_id=${sqlLiteral(source)}`)[0]?.engine_session_key;
     expect(key).toBeTruthy();
-    const native = (nativeRpc(handle, home, 'session.active_list', {}).sessions as Obj[]).find((row) => row.session_key === key);
-    expect(native).toBeTruthy();
-    const ring = nativeRpc(handle, home, 'session.events.since', { session_id: native!.id, last_seen: cursor });
-    expect(ring.truncated).toBe(false);
-    const events = ring.events as Obj[];
-    if (events.length) cursor = Number(events.at(-1)!.seq);
+    // Replay is a bounded reconnect buffer (512 events), not a turn archive.
+    // SessionDB retains the actual tool call and its matching supplier result.
+    const events = nativeMessages(handle, home, key, cursor);
+    if (events.length) cursor = Number(events.at(-1)!.id);
     return events;
   };
   const evidence: Obj = { owned, titles: Object.fromEntries(titles), foreignId, source, localBefore: 0, turns: [] };
