@@ -108,8 +108,6 @@ test('natural A2A discovery finds existing owned platform conversations when loc
   const home = String(detail.runtime_identity?.config_dir);
   expect(home).toMatch(/^\/home\//);
   const handle = await requireSandboxHandle(api, String(detail.sandbox_id));
-  const native = (nativeRpc(handle, home, 'session.active_list', {}).sessions as Obj[]).find((row) => row.session_key === detail.engine_session_key)!;
-  expect(native).toBeTruthy();
   const localCount = () => Number(sandboxExec(handle, `find '${home}/a2a_conversations' -maxdepth 1 -name '*.jsonl' 2>/dev/null | wc -l`).trim());
   expect(localCount()).toBe(0);
   const agentSessions = () => postgresRows<Obj>('SELECT session_id FROM sessions WHERE agent_id IS NOT NULL AND hidden=false ORDER BY session_id');
@@ -117,13 +115,18 @@ test('natural A2A discovery finds existing owned platform conversations when loc
   const inputs = new Map([...owned, foreignId].map((sid) => [sid, sessionInputRows(sid)]));
   let cursor = 0;
   const nativeSince = () => {
-    const ring = nativeRpc(handle, home, 'session.events.since', { session_id: native.id, last_seen: cursor });
+    // Native drafts acquire their SessionDB key on the first submitted turn.
+    // Read the current binding after that turn, not the earlier READY detail.
+    const key = postgresRows<Obj>(`SELECT engine_session_key FROM sessions WHERE session_id=${sqlLiteral(source)}`)[0]?.engine_session_key;
+    expect(key).toBeTruthy();
+    const native = (nativeRpc(handle, home, 'session.active_list', {}).sessions as Obj[]).find((row) => row.session_key === key);
+    expect(native).toBeTruthy();
+    const ring = nativeRpc(handle, home, 'session.events.since', { session_id: native!.id, last_seen: cursor });
     expect(ring.truncated).toBe(false);
     const events = ring.events as Obj[];
     if (events.length) cursor = Number(events.at(-1)!.seq);
     return events;
   };
-  nativeSince();
   const evidence: Obj = { owned, titles: Object.fromEntries(titles), foreignId, source, localBefore: 0, turns: [] };
   try {
     const first = await api.sendTurn(source, '我有哪些对话？只查看，不要替我发消息或创建新的对话。', 45_000);
