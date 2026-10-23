@@ -106,6 +106,7 @@ from astrabox.core.service.orchestrator.engine.interaction_contract import (
 )
 from astrabox.core.service.orchestrator.engine.runtime import (
     InputAdmitted,
+    InputMessageObserved,
     InteractionClosed,
     InteractionNotOpen,
     InteractionOpened,
@@ -518,6 +519,7 @@ class _Translation:
             "messageMetadata": {"response_id": response_id, "input_ids": list(inputs), "origin": self.turn.origin},
         }
         return [
+            *[InputMessageObserved(None, input_id) for input_id in inputs],
             ResponseStarted(None, response_id, self.turn.origin, inputs),
             ResponseOutput(None, response_id, start),
         ]

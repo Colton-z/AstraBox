@@ -56,6 +56,7 @@ from astrabox.core.service.orchestrator.engine.interaction_contract import (
 from astrabox.core.service.orchestrator.engine.runner_link import DeliveryCommand, RunnerLink
 from astrabox.core.service.orchestrator.engine.runtime import (
     InputAdmitted,
+    InputMessageObserved,
     InputRefused,
     InteractionClosed,
     InteractionNotOpen,
@@ -203,7 +204,7 @@ class _Translation:
             emission = emission_from_translated_frame(translated)
             if isinstance(emission, InputConsumed):
                 additional_input = self.response_id is not None
-                events += [InputAdmitted(None, emission.input_id)]
+                events += [InputMessageObserved(None, emission.input_id), InputAdmitted(None, emission.input_id)]
                 events += self._start(
                     emission.response_message_id, "input", (emission.input_id,),
                     interrupt_target=emission.input_id,
@@ -271,6 +272,7 @@ class _Translation:
         ]
         native_reason = str(message.get("terminal_reason") or message.get("subtype") or message.get("type") or "") or None
         return [
+            *[InputMessageObserved(None, input_id) for input_id in input_ids],
             ResponseStarted(None, response_id, "input" if input_ids else "engine", input_ids),
             *[ResponseOutput(None, response_id, part) for part in chunks],
             ResponseEnded(None, response_id, outcome, native_reason),

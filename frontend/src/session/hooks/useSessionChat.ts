@@ -18,6 +18,7 @@ import { SessionFollower, type FollowerHost } from '../sessionFollower';
 import {
   inputFailure,
   inputMetadata,
+  orderConversationMessages,
   mergeLatestMessages,
   prependOlderMessages,
   updateMessages,
@@ -95,7 +96,13 @@ export function useSessionChat({
   // The page is keyed by session, so the chat is created once per page with
   // the history it opened with.
   const [chat] = useState(() => new Chat<UIMessage>({ id: sessionId, messages: history.messages }));
-  const { messages, setMessages, addToolApprovalResponse } = useChat({ chat, throttle: 50 });
+  const { messages, setMessages: writeMessages, addToolApprovalResponse } = useChat({ chat, throttle: 50 });
+  const nativeOrderRef = useRef(new Map<string, number>());
+  const setMessages = useCallback((update: Parameters<typeof writeMessages>[0]) => {
+    writeMessages((current) => orderConversationMessages(
+      typeof update === 'function' ? update(current) : update, nativeOrderRef.current,
+    ));
+  }, [writeMessages]);
 
   const [followFrom, setFollowFrom] = useState(() => ({ seq: history.outputSeq }));
   const followerRef = useRef<SessionFollower | null>(null);
@@ -397,6 +404,15 @@ export function useSessionChat({
       }
       refreshDetail();
     },
+    messageOrdered: (position) => {
+      const key = `${position.kind}:${position.id}`;
+      const retained = nativeOrderRef.current.get(key);
+      nativeOrderRef.current.set(key, retained === undefined ? position.order : Math.min(retained, position.order));
+      setMessages((current) => current);
+      if (position.kind === 'input' && !chat.messages.some((message) => (
+        message.role === 'user' && inputMetadata(message).input_id === position.id
+      ))) noteUnknownInputs();
+    },
     interactionOpened: (interaction) => {
       setLiveInteraction(interaction);
       refreshDetail();
@@ -441,6 +457,7 @@ export function useSessionChat({
       responsePaused: (...args) => hostRef.current.responsePaused(...args),
       responseEnded: (...args) => hostRef.current.responseEnded(...args),
       inputFailed: (...args) => hostRef.current.inputFailed(...args),
+      messageOrdered: (...args) => hostRef.current.messageOrdered(...args),
       interactionOpened: (...args) => hostRef.current.interactionOpened(...args),
       interactionClosed: (...args) => hostRef.current.interactionClosed(...args),
       childRunsChanged: () => hostRef.current.childRunsChanged(),

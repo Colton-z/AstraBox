@@ -28,6 +28,7 @@ from typing import Any, Literal
 from sqlalchemy import (
     ColumnElement,
     and_,
+    case,
     exists,
     func,
     insert,
@@ -138,6 +139,13 @@ class ResponseStart:
 
 
 @dataclass(frozen=True, slots=True)
+class MessagePosition:
+    kind: Literal["input", "response"]
+    message_id: str
+    output_seq: int
+
+
+@dataclass(frozen=True, slots=True)
 class ResponseEnd:
     response_id: str
     outcome: str
@@ -173,7 +181,7 @@ class InputsFailed:
     failure: dict[str, Any]
 
 
-Fact = ResponseStart | ResponseEnd | InteractionOpen | InteractionClose | InputsAdmitted | InputsFailed
+Fact = ResponseStart | ResponseEnd | MessagePosition | InteractionOpen | InteractionClose | InputsAdmitted | InputsFailed
 
 
 @dataclass(slots=True)
@@ -616,6 +624,21 @@ class SessionRuntimeRepository:
                 await _apply(conn, sid, fact)
             output = {part.seq: part for part in batch.output}
             for fact in batch.facts:
+                if isinstance(fact, MessagePosition):
+                    table = _INPUTS if fact.kind == "input" else _RESPONSES
+                    identity = table.c.input_id if fact.kind == "input" else table.c.response_id
+                    order = (await conn.execute(
+                        select(table.c.conversation_order).where(
+                            table.c.session_id == sid, identity == fact.message_id,
+                        )
+                    )).scalar_one()
+                    output[fact.output_seq] = OutputPart(
+                        fact.output_seq, None,
+                        {"type": "data-message-order", "transient": True, "data": {
+                            "kind": fact.kind, "id": fact.message_id, "order": order,
+                        }},
+                    )
+                    continue
                 if not isinstance(fact, InteractionClose) or fact.output_seq is None:
                     continue
                 row = (await conn.execute(select(_INTERACTIONS).where(
@@ -746,36 +769,38 @@ class SessionRuntimeRepository:
         return list(reversed(newest)), int(total or 0)
 
     async def history_page(
-        self, session_id: str, *, before: tuple[str, int, int] | None, limit: int
+        self, session_id: str, *, before: tuple[int, int, int, int] | None, limit: int,
+        through_seq: int | None = None,
     ) -> dict[str, Any]:
-        """One page of the conversation's entries, newest first, returned oldest first.
+        """One page in native conversation order, returned oldest first.
 
-        An entry is an input (``kind`` 0) or a response (``kind`` 1), ordered by
-        when it was accepted or started; at the same instant an input comes
-        before the response to it. ``before`` is the ``(at, kind, seq)`` of the
-        oldest entry already shown. The page carries the full rows and the
-        response-to-input links among them.
+        Imported history keeps its declared source order before native output.
+        Inputs not yet observed by the engine stay at the queued tail, ordered
+        by acceptance sequence. Native positions share the output log's clock;
+        receipt timestamps do not decide conversation order. ``through_seq``
+        pins a paged read before later native observations.
         """
+        def entry(table: Any, kind: int, imported: ColumnElement[bool]) -> Any:
+            order = table.c.conversation_order
+            observed = order.is_not(None)
+            if through_seq is not None:
+                observed = and_(observed, or_(imported, order <= through_seq * 2))
+            return select(
+                case((imported, 0), (observed, 1), else_=2).label("phase"),
+                case((observed, order), else_=table.c.seq).label("position"),
+                literal(kind).label("kind"),
+                table.c.seq.label("seq"),
+            ).where(table.c.session_id == session_id)
+
         entries = union_all(
-            select(
-                _INPUTS.c.created_at.label("at"),
-                literal(0).label("kind"),
-                _INPUTS.c.seq.label("seq"),
-            ).where(_INPUTS.c.session_id == session_id),
-            select(
-                _RESPONSES.c.started_at.label("at"),
-                literal(1).label("kind"),
-                _RESPONSES.c.seq.label("seq"),
-            ).where(_RESPONSES.c.session_id == session_id),
+            entry(_INPUTS, 0, _INPUTS.c.source == IMPORTED_SOURCE),
+            entry(_RESPONSES, 1, _RESPONSES.c.origin == IMPORTED_ORIGIN),
         ).subquery("entries")
-        position = tuple_(entries.c.at, entries.c.kind, entries.c.seq)
-        query = select(entries.c.kind, entries.c.seq, entries.c.at)
+        position = tuple_(entries.c.phase, entries.c.position, entries.c.kind, entries.c.seq)
+        query = select(entries)
         if before is not None:
-            at, kind, seq = before
-            query = query.where(position < tuple_(literal(from_iso(at)), literal(kind), literal(seq)))
-        rows = await fetch_all(
-            query.order_by(entries.c.at.desc(), entries.c.kind.desc(), entries.c.seq.desc()).limit(limit + 1)
-        )
+            query = query.where(position < tuple_(*(literal(value) for value in before)))
+        rows = await fetch_all(query.order_by(*(entries.c[key].desc() for key in ("phase", "position", "kind", "seq"))).limit(limit + 1))
         has_more = len(rows) > limit
         rows = list(reversed(rows[:limit]))
         input_seqs = [int(row["seq"]) for row in rows if row["kind"] == 0]
@@ -819,7 +844,7 @@ class SessionRuntimeRepository:
             "responses": responses,
             "links": links,
             "has_more": has_more,
-            "before": (to_iso(oldest["at"]), int(oldest["kind"]), int(oldest["seq"])) if has_more and oldest else None,
+            "before": tuple(int(oldest[key]) for key in ("phase", "position", "kind", "seq")) if has_more and oldest else None,
         }
 
     async def activity(self, session_id: str) -> dict[str, Any]:
@@ -1022,8 +1047,8 @@ class SessionRuntimeRepository:
         A user message becomes an ``imported`` input, never handed to a
         runtime; a reply becomes an ended response whose parts live in its
         ``import_record``. A reply answers the imported user message its
-        ``parent_source_id`` names. Both keep the source's timestamp, which
-        places them in the conversation's order. Returns ``False``, storing
+        ``parent_source_id`` names. Both keep the source's declared order and
+        original timestamp. Returns ``False``, storing
         nothing, when the conversation already has a message of its own:
         history cannot be placed before messages it has ordered.
         """
@@ -1066,6 +1091,7 @@ class SessionRuntimeRepository:
                             content=entry.content,
                             content_blocks=entry.content_blocks,
                             import_record=entry.record,
+                            conversation_order=int(entry.record["position"]),
                             created_at=at,
                         )
                     )
@@ -1080,6 +1106,7 @@ class SessionRuntimeRepository:
                         status="ended",
                         outcome=entry.outcome,
                         import_record=entry.record,
+                        conversation_order=int(entry.record["position"]),
                         started_at=at,
                         ended_at=at,
                     )
@@ -1139,6 +1166,18 @@ async def _apply(conn: AsyncConnection, session_id: str, fact: Fact) -> None:
                 .where(_INPUTS.c.session_id == session_id, _INPUTS.c.input_id.in_(list(fact.input_ids)))
                 .values(response_id=fact.response_id)
             )
+    elif isinstance(fact, MessagePosition):
+        table = _INPUTS if fact.kind == "input" else _RESPONSES
+        identity = table.c.input_id if fact.kind == "input" else table.c.response_id
+        await conn.execute(
+            update(table)
+            .where(
+                table.c.session_id == session_id,
+                identity == fact.message_id,
+                table.c.conversation_order.is_(None),
+            )
+            .values(conversation_order=fact.output_seq * 2)
+        )
     elif isinstance(fact, ResponseEnd):
         await conn.execute(
             update(_RESPONSES)

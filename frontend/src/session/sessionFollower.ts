@@ -3,7 +3,7 @@ import { DefaultChatTransport, JSONParseError, TypeValidationError } from 'ai';
 import type { UIMessage, UIMessageChunk } from 'ai';
 import { buildSessionStreamUrl } from '../api';
 import type { PendingInteraction } from '../types';
-import { lastOpenResponse, responseMetadata, retractMessageParts, type InputFailure, type ResponseMetadata } from './sessionMessages';
+import { lastOpenResponse, responseMetadata, retractMessageParts, type InputFailure, type MessageOrder, type ResponseMetadata } from './sessionMessages';
 import { withStreamLiveness } from './streamLiveness';
 import { consoleFetch } from '../consoleTransport';
 
@@ -46,6 +46,7 @@ export interface FollowerHost {
   responsePaused(messageId: string): void;
   responseEnded(messageId: string): void;
   inputFailed(failure: InputFailure & { input_id: string }): void;
+  messageOrdered(position: MessageOrder): void;
   interactionOpened(interaction: PendingInteraction): void;
   interactionClosed(interactionId: string): void;
   childRunsChanged(): void;
@@ -247,9 +248,9 @@ export class SessionFollower {
       return [];
     }
     if ((chunk as { transient?: unknown }).transient === true) {
-      // A transient part is never stored, so a request resuming at the
-      // cursor does not deliver it again: it is neither skipped as a replay
-      // nor counted as one.
+      // Transient parts update the host rather than a Chat segment. Durable
+      // observation receipts can repeat on reconnect and are idempotent;
+      // ephemeral connection notices have no replay position.
       await this.handle(chunk);
       return replay;
     }
@@ -262,6 +263,17 @@ export class SessionFollower {
 
   private async handle(chunk: UIMessageChunk): Promise<void> {
     switch (chunk.type) {
+      case 'data-message-order': {
+        const data = chunk.data as Partial<MessageOrder> | undefined;
+        if (!data || (data.kind !== 'input' && data.kind !== 'response')
+          || typeof data.id !== 'string' || !data.id
+          || typeof data.order !== 'number' || !Number.isSafeInteger(data.order)) {
+          this.fail(new Error(`SESSION_MESSAGE_ORDER_INVALID: ${chunkKey(chunk)}`));
+          return;
+        }
+        this.host.messageOrdered({ kind: data.kind, id: data.id, order: data.order });
+        return;
+      }
       case 'start':
         await this.startResponse(chunk);
         return;
