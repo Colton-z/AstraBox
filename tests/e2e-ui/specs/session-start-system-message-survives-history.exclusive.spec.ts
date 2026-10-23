@@ -64,6 +64,22 @@ test('SessionStart systemMessage appears once before a turn and after history re
   sessions.push(sessionId);
   test.info().annotations.push({ type: 'e2e_session_id', description: sessionId });
   await openSessionView(page, sessionId);
+  // Retain the first rendered order. A later history refresh must not hide
+  // an initially wrong live placement of the queued input.
+  await page.evaluate(({ welcome, prompt }) => {
+    const state = window as Window & { nativeFirstOrder?: string[] };
+    const observer = new MutationObserver(() => {
+      const texts = [...document.querySelectorAll(
+        '[data-testid="user-message"], [data-testid="assistant-message"]',
+      )].map((element) => element.textContent || '');
+      if (texts.some((text) => text.includes(welcome)) && texts.some((text) => text.includes(prompt))) {
+        state.nativeFirstOrder = texts.filter((text) => text.includes(welcome) || text.includes(prompt))
+          .map((text) => text.includes(welcome) ? 'welcome' : 'input');
+        observer.disconnect();
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+  }, { welcome, prompt });
   const accepted = await sendPrompt(page, sessionId, prompt);
   expect((await api.getMessages(sessionId)).messages.some((message) => (
     messageText(message).includes(welcome)
@@ -78,6 +94,8 @@ test('SessionStart systemMessage appears once before a turn and after history re
   await api.waitForSessionReady(sessionId);
   const expected = [welcome, prompt, answer];
   await visibleOrder(page, expected);
+  const firstOrder = await page.evaluate(() => (window as Window & { nativeFirstOrder?: string[] }).nativeFirstOrder);
+  expect(firstOrder, 'the first live render must already follow native order').toEqual(['welcome', 'input']);
   await expect(page.getByText(welcome, { exact: true })).toHaveCount(1);
   await expect(page.getByText('SessionStart:startup', { exact: false })).toHaveCount(0);
 
@@ -116,7 +134,7 @@ test('SessionStart systemMessage appears once before a turn and after history re
   expect(replyIndex, 'the native answer follows that input').toBeGreaterThan(userIndex);
   expect(Date.parse(native[userIndex]!.timestamp!)).toBeGreaterThanOrEqual(receipt.completed_at * 1000);
   await test.info().attach('native-startup-order.json', {
-    body: JSON.stringify({ receipt, input, native, history }, null, 2), contentType: 'application/json',
+    body: JSON.stringify({ receipt, input, native, history, firstOrder }, null, 2), contentType: 'application/json',
   });
 
   const replay = await api.resumeStream(sessionId, 0, 30_000);
