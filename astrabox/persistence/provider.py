@@ -43,8 +43,9 @@ def get_persistence() -> RelationalPersistenceProvider:
     if not inspect.iscoroutinefunction(getattr(statements, "insert_if_absent", None)):
         raise RuntimeError("persistence provider requires async statements.insert_if_absent")
     coordination = getattr(provider, "coordination", None)
-    if not callable(getattr(coordination, "runtime_lock", None)):
-        raise RuntimeError("persistence provider requires coordination.runtime_lock")
+    for name in ("runtime_lock", "startup_lock"):
+        if not callable(getattr(coordination, name, None)):
+            raise RuntimeError(f"persistence provider requires coordination.{name}")
     if not inspect.iscoroutinefunction(getattr(coordination, "listen", None)):
         raise RuntimeError("persistence provider requires async coordination.listen")
     if not inspect.iscoroutinefunction(getattr(coordination, "notify", None)):
