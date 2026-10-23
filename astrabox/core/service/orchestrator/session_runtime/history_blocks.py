@@ -49,7 +49,7 @@ _UNFINISHED_TOOL_STATES = frozenset(
     {"input-streaming", "input-available", "approval-requested", "approval-responded"}
 )
 
-_CURSOR_VERSION = 1
+_CURSOR_VERSION = 2
 
 
 class HistoryCursorError(ValueError):
@@ -216,7 +216,7 @@ def fold_parts(
 # --------------------------------------------------------------------------
 
 
-def encode_cursor(through_seq: int, before: tuple[str, int, int] | None = None) -> str:
+def encode_cursor(through_seq: int, before: tuple[int, int, int, int] | None = None) -> str:
     """A history position: the output ``seq`` the read is pinned to and, for a page, the oldest entry shown."""
     payload: dict[str, Any] = {"v": _CURSOR_VERSION, "through_seq": int(through_seq)}
     if before is not None:
@@ -225,7 +225,7 @@ def encode_cursor(through_seq: int, before: tuple[str, int, int] | None = None) 
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
-def decode_cursor(value: str) -> tuple[int, tuple[str, int, int] | None]:
+def decode_cursor(value: str) -> tuple[int, tuple[int, int, int, int] | None]:
     """``(through_seq, before)`` from a cursor :func:`encode_cursor` issued."""
     text = str(value or "").strip()
     if not text:
@@ -243,8 +243,8 @@ def decode_cursor(value: str) -> tuple[int, tuple[str, int, int] | None]:
     if before is None:
         return through_seq, None
     try:
-        at, kind, seq = before
-        return through_seq, (str(at), int(kind), int(seq))
+        phase, position, kind, seq = before
+        return through_seq, (int(phase), int(position), int(kind), int(seq))
     except (TypeError, ValueError) as exc:
         raise HistoryCursorError("history cursor names no history entry") from exc
 
@@ -290,7 +290,7 @@ async def load_history_page(
         through_seq, before = decode_cursor(cursor)
         if before is None:
             raise HistoryCursorError("a history page needs a page cursor, not a header's")
-    page = await facts.history_page(session_id, before=before, limit=limit)
+    page = await facts.history_page(session_id, before=before, limit=limit, through_seq=through_seq)
     response_ids = [str(row["response_id"]) for row in page["responses"]]
     outputs = await facts.output_for_responses(session_id, response_ids, through_seq=through_seq)
     interactions = await facts.response_interactions(session_id, response_ids)

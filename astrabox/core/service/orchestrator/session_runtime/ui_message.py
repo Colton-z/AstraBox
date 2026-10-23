@@ -151,6 +151,7 @@ def input_message(row: Mapping[str, Any]) -> dict[str, Any]:
     metadata = {
         "input_id": row.get("input_id"),
         "created_at": row.get("created_at"),
+        "conversation_order": row.get("conversation_order"),
         "state": row.get("state"),
         "author_user_id": row.get("author_user_id"),
         "source": row.get("source"),
@@ -237,6 +238,7 @@ def history_messages(
                 "native_reason": response.get("native_reason"),
                 "started_at": response.get("started_at"),
                 "ended_at": response.get("ended_at"),
+                "conversation_order": response.get("conversation_order"),
             }
         )
         if response.get("error"):

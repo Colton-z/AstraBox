@@ -75,6 +75,7 @@ from astrabox.core.service.orchestrator.engine.interaction_contract import (
 )
 from astrabox.core.service.orchestrator.engine.runtime import (
     InputAdmitted,
+    InputMessageObserved,
     InteractionClosed,
     InteractionNotOpen,
     InteractionOpened,
@@ -503,7 +504,10 @@ class _Translation:
         input_ids = tuple(item.input for item in chosen)
         # Replayed turn events can consume the pending entry before its
         # synthetic submit receipt is read. Starting the turn proves admission.
-        events: list[RuntimeEvent] = [InputAdmitted(None, item.input) for item in chosen]
+        events: list[RuntimeEvent] = [
+            event for item in chosen
+            for event in (InputMessageObserved(None, item.input), InputAdmitted(None, item.input))
+        ]
         if input_ids:
             origin: ResponseOrigin = "input"
             response_id = input_response_message_id(input_ids[0])
