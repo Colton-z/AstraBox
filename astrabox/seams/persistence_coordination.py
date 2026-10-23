@@ -41,6 +41,10 @@ class Resync:
 RuntimeLockCheck = Callable[[], Awaitable[None]]
 
 
+class RuntimeLockBusy(Exception):
+    """Another replica holds the Session's runtime lock; no work was acquired."""
+
+
 @runtime_checkable
 class PersistenceCoordination(Protocol):
     async def notify(self, connection: AsyncConnection, notice: SessionNotice) -> None:
@@ -59,6 +63,17 @@ class PersistenceCoordination(Protocol):
         context exit refuse success. Repository work uses independent resources.
         Call the check before publishing completed supplier work. This does not
         retract an accepted supplier request or fence an undetected partition.
+        """
+        ...
+
+    def startup_lock(
+        self, session_id: str, *, wait: bool = True,
+    ) -> AbstractAsyncContextManager[RuntimeLockCheck]:
+        """Own one startup without blocking input acceptance under ``runtime_lock``.
+
+        Ownership loss has the same cancellation/check behavior as the runtime
+        lock. With ``wait=False``, raise :class:`RuntimeLockBusy` immediately
+        when another startup holder owns it. Process loss releases ownership.
         """
         ...
 

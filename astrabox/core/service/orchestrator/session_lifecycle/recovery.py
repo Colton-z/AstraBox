@@ -31,6 +31,7 @@ from astrabox.core.service.orchestrator.session_lifecycle.startup import (
     SessionStartup,
     runtime_initialization_metadata,
 )
+from astrabox.seams.persistence_coordination import RuntimeLockCheck
 from astrabox.seams.sandbox import SANDBOX_LIFECYCLE_PROBE_OK
 from astrabox.seams.sandbox_disposal import SandboxDestruction
 
@@ -71,16 +72,15 @@ class SessionRecovery:
         self._runtime_subjects = runtime_subjects
         self._startup = startup
 
-    async def run(self, *, session: dict[str, Any], owner: str) -> None:
+    async def run(self, *, session: dict[str, Any], owner: str, check_lock: RuntimeLockCheck) -> None:
         """Recover ``session``, which the caller claimed for ``owner``.
 
-        ``session`` is the row as observed before the claim, a startup past its
-        creation timeout reading as ``TERMINATED``. A recovery that ends without
+        ``session`` is the row as observed before the claim. A recovery that ends without
         reattaching or starting a box gives the session back in that state,
         never leaving a ``CREATING`` row with nothing driving it.
         """
         session_id = str(session["session_id"])
-        ownership = RecoveryOwnership(self._sessions, session_id, owner)
+        ownership = RecoveryOwnership(self._sessions, session_id, owner, check_lock)
         observed_runtime = self._runtime_manager.get_runtime(session_id)
         restart: _Restart | None = None
         settled = False
@@ -110,6 +110,7 @@ class SessionRecovery:
             await self._startup.run(
                 session_id=session_id,
                 owner=owner,
+                check_lock=check_lock,
                 sandbox_generation=restart.sandbox_generation,
                 resume_engine_session_key=restart.resume_engine_session_key,
                 replacing=True,

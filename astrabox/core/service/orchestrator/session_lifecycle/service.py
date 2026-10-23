@@ -42,6 +42,7 @@ from astrabox.core.service.orchestrator.session_lifecycle.recovery import Sessio
 from astrabox.core.service.orchestrator.session_lifecycle.startup import SessionStartup
 from astrabox.core.service.orchestrator.session_service import SessionService
 from astrabox.persistence.provider import get_persistence
+from astrabox.seams.persistence_coordination import RuntimeLockCheck
 from astrabox.seams.admission import (
     ADMISSION_KIND_SANDBOX,
     AdmissionRequest,
@@ -54,6 +55,7 @@ from astrabox.seams.sandbox_disposal import (
     SANDBOX_DESTRUCTION_REFUSED,
     SANDBOX_DESTRUCTION_RETAINED,
     SANDBOX_DESTRUCTION_UNCONFIRMED,
+    SandboxDestruction,
 )
 
 logger = get_logger(__name__)
@@ -75,6 +77,7 @@ class SessionLifecycleService:
         spawn_background_task: Callable[..., asyncio.Task[Any]],
     ) -> None:
         self._sessions = sessions_repo
+        self._runtime_subjects = runtime_subjects
         self._session_service = session_service
         self._agent_config = agent_config
         self._runtime_manager = runtime_manager
@@ -195,15 +198,28 @@ class SessionLifecycleService:
         self._spawn(
             f"session-startup-{session_id}",
             session_id,
-            lambda: self._startup.run(
+            lambda check_lock: self._startup.run(
                 session_id=session_id,
                 owner=owner,
+                check_lock=check_lock,
                 sandbox_generation=generation,
                 resume_engine_session_key=None,
             ),
         )
 
     # -- recover -------------------------------------------------------------
+
+    async def converge_abandoned_startup(
+        self, session: dict[str, Any], cleanup: SandboxDestruction | None,
+    ) -> None:
+        """Converge the runtime subject before an unowned startup is ended."""
+        allocation = session.get("startup_allocation")
+        await self._runtime_subjects.converge_startup_failure(
+            session=session,
+            failure_phase="startup_owner_exited",
+            created_sandbox_id=allocation.get("sandbox_id") if isinstance(allocation, dict) else None,
+            cleanup=cleanup,
+        )
 
     async def recover_session(self, user: UserContext, session_id: str) -> dict[str, Any]:
         """Recover the owner's conversation; the session as it stands once recovery started.
@@ -252,13 +268,9 @@ class SessionLifecycleService:
         state = str(session.get("state") or "")
         observed = state
         if state == SessionState.CREATING.value:
-            # A startup or recovery drives this session and its READY write
-            # announces the runtime, unless it has been creating past the
-            # creation timeout: the session then reads as terminated, and its
-            # startup, likely lost with the process that ran it, is superseded.
-            if SessionService._sanitize_session(session).get("state") == SessionState.CREATING.value:
-                return
-            observed = SessionState.TERMINATED.value
+            # Only the startup sweep can end an abandoned claim, after it
+            # excludes a live driver through the shared startup lock.
+            return
         elif state not in {SessionState.READY.value, SessionState.TERMINATED.value}:
             raise APIError(
                 code="INVALID_REQUEST",
@@ -295,7 +307,7 @@ class SessionLifecycleService:
         self._spawn(
             f"session-recovery-{session_id}",
             session_id,
-            lambda: self._recovery.run(session=observed_session, owner=owner),
+            lambda check_lock: self._recovery.run(session=observed_session, owner=owner, check_lock=check_lock),
         )
 
     async def _refuse_while_startup_waits_on_user(self, session: dict[str, Any]) -> None:
@@ -688,10 +700,12 @@ class SessionLifecycleService:
 
     # -- tasks -------------------------------------------------------------------
 
-    def _spawn(self, name: str, session_id: str, work: Callable[[], Awaitable[Any]]) -> None:
+    def _spawn(self, name: str, session_id: str, work: Callable[[RuntimeLockCheck], Awaitable[Any]]) -> None:
         async def run() -> None:
             try:
-                await work()
+                async with get_persistence().coordination.startup_lock(session_id) as check_lock:
+                    await work(check_lock)
+                    await check_lock()
             except asyncio.CancelledError:
                 raise
             except APIError as exc:

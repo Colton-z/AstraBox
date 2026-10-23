@@ -11,33 +11,75 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import faulthandler
 import json
 import os
 from pathlib import Path
 
 
 
-async def wait_file(path: Path) -> None:
-    async with asyncio.timeout(120):
+async def wait_file(path: Path, *, timeout: float = 120) -> None:
+    async with asyncio.timeout(timeout):
         while not path.exists():
             await asyncio.sleep(0.1)
+
+
+def inherit_serving_environment() -> None:
+    """Use the launcher's complete environment without starting another launcher."""
+    serving: list[Path] = []
+    for process in Path("/proc").iterdir():
+        if not process.name.isdigit():
+            continue
+        try:
+            argv = (process / "cmdline").read_bytes().split(b"\0")
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            continue
+        if any(
+            index + 1 < len(argv)
+            and Path(os.fsdecode(value)).name == "astrabox"
+            and argv[index + 1] == b"serve"
+            for index, value in enumerate(argv[:2])
+        ):
+            serving.append(process)
+    if len(serving) != 1:
+        raise RuntimeError(f"expected one serving AstraBox process, found {len(serving)}")
+    environment = {
+        os.fsdecode(key): os.fsdecode(value)
+        for entry in (serving[0] / "environ").read_bytes().split(b"\0") if entry
+        for key, _, value in [entry.partition(b"=")]
+    }
+    os.environ.clear()
+    os.environ.update(environment)
 
 
 async def run(args: argparse.Namespace) -> None:
     directory = Path(args.directory)
     (directory / f"{args.mode}.pid").write_text(str(os.getpid()))
+    configuration_log = (directory / f"{args.mode}.configuration.log").open("w")
+    faulthandler.dump_traceback_later(45, file=configuration_log)
+    print("inheriting serving configuration", file=configuration_log, flush=True)
+    inherit_serving_environment()
+    print("importing service composition", file=configuration_log, flush=True)
     from astrabox.bootstrap import bootstrap
     from astrabox.common.utils.user_context import UserContext
-    from astrabox.core.service.orchestrator.platform_service import AgentPlatformService
-    from astrabox.deploy.onebox import _export_backend_wiring, ensure_database_wiring, needs_sandbox_server
+    from astrabox.core.service.orchestrator.service_registry import get_platform_service, get_assistant_service
 
-    ensure_database_wiring()
-    if needs_sandbox_server():
-        _export_backend_wiring()
+    print("composing providers", file=configuration_log, flush=True)
     bootstrap()
-    platform = AgentPlatformService()
+    platform = get_platform_service()
+    faulthandler.cancel_dump_traceback_later()
+    print("configured; no Session action started", file=configuration_log, flush=True)
+    configuration_log.close()
+    (directory / f"{args.mode}.ready").write_text("configured; no Session action started")
+    request_file = directory / f"{args.mode}.request.json"
+    await wait_file(request_file, timeout=360)
+    request = json.loads(request_file.read_text())
+    args.session_id = str(request["session_id"])
+    args.assistant_id = str(request.get("assistant_id") or "")
     session = await platform._sessions_repo.get_session(args.session_id)
-    if not session or session.get("sandbox_id"):
+    if not session:
+        raise RuntimeError("replica requires its parent E2E Session")
+    if args.mode in {"follower", "winner"} and session.get("sandbox_id"):
         raise RuntimeError("replica requires the test Session's cleared dead binding")
     agent = await platform._agent_repo.get_agent(str(session.get("agent_id") or ""))
     if not agent or not str(agent.get("name") or "").startswith("__e2e_runtime_recovery_"):
@@ -46,10 +88,24 @@ async def run(args: argparse.Namespace) -> None:
     created: list[str] = []
     create = platform._runtime_manager.create_runtime
 
-    async def observed_create(*positional, **keywords):
-        runtime = await create(*positional, **keywords)
+    def accepted(session_id: str) -> None:
+        from astrabox.core.service.orchestrator.bootstrap_reconciler import STARTUP_ALLOCATION_GRACE_SECONDS
+        from astrabox.common.utils.settings import load_astrabox_settings
+
+        (directory / "accepted.json").write_text(json.dumps({
+            "session_id": session_id,
+            "grace_seconds": STARTUP_ALLOCATION_GRACE_SECONDS,
+            "scan_interval_seconds": load_astrabox_settings().expiration_watcher_interval_seconds,
+        }))
+
+    async def observed_create(session_id: str, *positional, **keywords):
+        if args.mode in {"before-allocation", "assistant-before-allocation"}:
+            accepted(session_id)
+            (directory / "before-create.json").write_text(json.dumps({"session_id": session_id}))
+            await wait_file(directory / "allocate")
+        runtime = await create(session_id, *positional, **keywords)
         created.append(runtime.sandbox_id)
-        if args.mode == "winner":
+        if args.mode in {"winner", "after-allocation"}:
             (directory / "created.json").write_text(json.dumps({"sandbox_id": runtime.sandbox_id}))
             await wait_file(directory / "publish")
         return runtime
@@ -79,7 +135,18 @@ async def run(args: argparse.Namespace) -> None:
     # The real lifecycle entry performs ownership and admission before the
     # claim. A standalone request does not start deployment-global background
     # sweeps, so it skips the platform's bootstrap.
-    await lifecycle.recover_session(user, args.session_id)
+    if args.mode in {"before-allocation", "after-allocation"}:
+        created_session = await lifecycle.create_session(
+            user, session_kind="agent_chat", workspace_ref=session["workspace_ref"],
+            permission_mode=session.get("permission_mode"), agent_id=session["agent_id"],
+        )
+        accepted(created_session["session_id"])
+    elif args.mode == "assistant-before-allocation":
+        if not args.assistant_id:
+            raise RuntimeError("Assistant startup fixture requires its owned Assistant id")
+        await get_assistant_service().wake_workspace(user, args.assistant_id)
+    else:
+        await lifecycle.recover_session(user, args.session_id)
     # recover_session answers once its recovery task runs; the task writes
     # READY. Leaving asyncio.run before it finishes cancels it, and the
     # Session reads CREATING until the creation timeout.
@@ -87,16 +154,15 @@ async def run(args: argparse.Namespace) -> None:
         await asyncio.gather(*spawned)
     if args.mode == "winner":
         current = await platform._sessions_repo.get_session(args.session_id)
-        if not current or current.get("state") != "READY":
+        if not current or current.get("state") != "READY" or not created:
             state = current.get("state") if current else None
             error = current.get("last_error") if current else None
-            raise RuntimeError(f"recovery did not publish READY: state={state} last_error={error}")
+            raise RuntimeError(f"recovery did not create and publish its runtime: state={state} last_error={error} created={created}")
     (directory / f"{args.mode}.json").write_text(json.dumps({"created": created}))
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--session-id", required=True)
     parser.add_argument("--directory", required=True)
-    parser.add_argument("--mode", choices=("winner", "follower"), required=True)
+    parser.add_argument("--mode", choices=("winner", "follower", "before-allocation", "after-allocation", "assistant-before-allocation"), required=True)
     asyncio.run(run(parser.parse_args()))

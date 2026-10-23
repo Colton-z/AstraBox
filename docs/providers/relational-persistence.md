@@ -117,6 +117,16 @@ and reports reconnect gaps so consumers reread durable state. Runtime ownership
 must preserve exclusion, detected-loss behavior and the yielded ownership check;
 a successful ping or an engine alone does not establish those guarantees.
 
+`coordination.startup_lock(session_id, wait=False)` must raise `RuntimeLockBusy`
+immediately if another holder owns the lock. The ordinary call waits. Startup
+and recovery tasks hold this same lock while driving their Session; the periodic
+startup sweep skips live holders and ends abandoned claims after their grace
+period, including starts that never acquired a sandbox allocation. A provider
+must support both modes with the same ownership boundary. The built-in provider
+uses PostgreSQL transaction advisory locks and their native nonblocking form.
+The startup lock has a separate key from `runtime_lock`: accepting an input
+must remain possible while its Session starts.
+
 Schema/type mappings, constraints, isolation and database time must support the
 shared recipes. The built-in DBOS scheduler separately requires PostgreSQL;
 selecting a persistence provider does not make that scheduler portable. Driver
