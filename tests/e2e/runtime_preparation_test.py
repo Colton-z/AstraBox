@@ -1076,12 +1076,9 @@ import json, sys
 from model_header_gate import CONFIG, CONTROL
 assert CONFIG.is_file(), 'the latency deployment needs the model-header gate on the shipped edge path'
 value = json.load(sys.stdin)
-if value is None:
-    CONTROL.unlink(missing_ok=True)
-else:
-    temporary = CONTROL.with_suffix('.tmp')
-    temporary.write_text(json.dumps({'marker': value, 'seconds': 65}))
-    temporary.replace(CONTROL)
+temporary = CONTROL.with_suffix('.tmp')
+temporary.write_text(json.dumps(None if value is None else {'marker': value, 'seconds': 65}))
+temporary.replace(CONTROL)
 """
     subprocess.run(
         ["docker", "exec", "-i", server, "python", "-c", program],
@@ -1180,8 +1177,15 @@ def test_a_delivered_message_is_prepared_once_and_streams_while_it_is_answered(
         for part in entry["message"]["content"] if part.get("type") == "text"
     )
     assert native_text.strip() == replies[0][0].text.strip(), "the complete native reply must reach the stream"
+    retained = [message for message in history(e2e_client, sid)
+                if message.get("id") == replies[0][0].response_id]
+    assert len(retained) == 1, "the delayed native reply must be retained once in history"
+    assert message_text(retained[0]).strip() == native_text.strip(), "history must retain the complete native reply"
+    assert retained[0]["metadata"]["status"] == "ended"
+    assert retained[0]["metadata"]["outcome"] == "completed"
     print(json.dumps({"model_proxy": {
         "receipts": gateway, "edge": edge["Id"], "native_input_count": len(users),
+        "retained_response": retained[0]["id"],
         "native_reply_sha256": hashlib.sha256(native_text.encode()).hexdigest(),
     }}), flush=True)
 
