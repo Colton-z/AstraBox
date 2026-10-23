@@ -17,17 +17,20 @@ onPassOnly(async ({ request }) => {
   agentId = '';
 });
 
-async function visibleOrder(page: Page, expected: string[]): Promise<void> {
-  await expect.poll(async () => page.locator(
-    '[data-testid="user-message"], [data-testid="assistant-message"]',
-  ).allTextContents(), { timeout: 30_000 }).toEqual(expect.arrayContaining(
-    expected.map((text) => expect.stringContaining(text)),
-  ));
-  const texts = await page.locator(
-    '[data-testid="user-message"], [data-testid="assistant-message"]',
-  ).allTextContents();
-  expect(expected.map((value) => texts.findIndex((text) => text.includes(value))))
-    .toEqual(expected.map((_value, index) => index));
+async function visibleOrder(
+  page: Page,
+  expected: readonly { role: 'user' | 'assistant'; text: string }[],
+): Promise<void> {
+  const rows = page.locator('[data-testid="user-message"], [data-testid="assistant-message"]');
+  await expect.poll(async () => {
+    const messages = await rows.evaluateAll((elements) => elements.map((element) => ({
+      role: element.getAttribute('data-testid'), text: element.textContent || '',
+    })));
+    return expected.map((item) => messages.findIndex((message) => (
+      message.role === `${item.role}-message` && message.text.includes(item.text)
+    )));
+  }, { timeout: 30_000 }).toEqual(expected.map((_item, index) => index));
+  expect(await rows.count(), 'no duplicate or invented message rows').toBe(expected.length);
 }
 
 test('SessionStart systemMessage appears once before a turn and after history reload', async ({
@@ -92,8 +95,13 @@ test('SessionStart systemMessage appears once before a turn and after history re
     && messageText(message).includes(answer)
   ), 60_000);
   await api.waitForSessionReady(sessionId);
-  const expected = [welcome, prompt, answer];
-  await visibleOrder(page, expected);
+  const expectedMessages = [
+    { role: 'assistant', text: welcome },
+    { role: 'user', text: prompt },
+    { role: 'assistant', text: answer },
+  ] as const;
+  const expected = expectedMessages.map((message) => message.text);
+  await visibleOrder(page, expectedMessages);
   const firstOrder = await page.evaluate(() => (window as Window & { nativeFirstOrder?: string[] }).nativeFirstOrder);
   expect(firstOrder, 'the first live render must already follow native order').toEqual(['welcome', 'input']);
   await expect(page.getByText(welcome, { exact: true })).toHaveCount(1);
@@ -168,7 +176,7 @@ test('SessionStart systemMessage appears once before a turn and after history re
 
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(page.getByTestId('run-view')).toBeVisible();
-  await visibleOrder(page, expected);
+  await visibleOrder(page, expectedMessages);
   // Retain the real messages/output/native store and exercise the shipped
   // upgrade on the previous schema's projection. No source records are seeded
   // or rewritten: a missing backfill must reproduce the old wrong order.
@@ -193,7 +201,7 @@ test('SessionStart systemMessage appears once before a turn and after history re
     'SELECT version_num FROM alembic_version')).toEqual(['0011']);
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(page.getByTestId('run-view')).toBeVisible();
-  await visibleOrder(page, expected);
+  await visibleOrder(page, expectedMessages);
   const afterTakeover = await api.getMessages(sessionId);
   expect(afterTakeover.messages.map((message) => message.id)).toEqual(history.messages.map((message) => message.id));
   expect(afterTakeover.messages.map(messageText).map((text) => text.trim())).toEqual(expected);
@@ -223,5 +231,7 @@ test('SessionStart systemMessage appears once before a turn and after history re
     .toEqual([...expected, nextPrompt, nextAnswer]);
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(page.getByTestId('run-view')).toBeVisible();
-  await visibleOrder(page, [...expected, nextPrompt, nextAnswer]);
+  await visibleOrder(page, [
+    ...expectedMessages, { role: 'user', text: nextPrompt }, { role: 'assistant', text: nextAnswer },
+  ]);
 });
