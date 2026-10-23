@@ -94,9 +94,12 @@ test('SessionStart systemMessage appears once before a turn and after history re
   expect(input.state).toBe('admitted');
   expect(Date.parse(input.admitted_at!)).toBeGreaterThanOrEqual(Date.parse(greeting.metadata!.ended_at!));
 
-  const receipt = JSON.parse((await api.runTerminalCommand(
+  const terminal = sseFrames(await api.runTerminalCommand(
     sessionId, `cat ${hookReceipt}`, '/workspace',
-  )).trim()) as { welcome: string; completed_at: number };
+  ));
+  expect(terminal.filter((frame) => frame.type === 'exit').map((frame) => frame.exit_code)).toEqual([0]);
+  const receipt = JSON.parse(terminal.filter((frame) => frame.type === 'stdout')
+    .map((frame) => String(frame.text ?? '')).join('').trim()) as { welcome: string; completed_at: number };
   expect(receipt.welcome).toBe(welcome);
   // The supplier's JSONL is independent of the browser/output projection.
   // Hook systemMessage is an SDK event, not a user/assistant JSONL entry.
