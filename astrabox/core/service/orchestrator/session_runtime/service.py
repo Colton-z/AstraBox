@@ -58,7 +58,7 @@ def response_view(row: dict[str, Any]) -> dict[str, Any]:
     """A recorded response as a page shows it."""
     return {
         key: row.get(key)
-        for key in ("response_id", "origin", "status", "outcome", "native_reason", "error", "started_at", "ended_at", "conversation_order")
+        for key in ("response_id", "origin", "status", "outcome", "native_reason", "error", "started_at", "ended_at")
     }
 
 
