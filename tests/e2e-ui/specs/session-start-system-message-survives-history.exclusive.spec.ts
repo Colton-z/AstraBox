@@ -1,12 +1,14 @@
 /** Native startup output and a queued first input keep one order on every read. */
+import { execFileSync } from 'node:child_process';
 import { expect, test, type Page } from '@playwright/test';
 
 import { AstraApi, messageText, sseFrames, type MessageRecord } from '../fixtures/astraApi';
-import { nativeTranscriptRows, sessionInputRows } from '../fixtures/dbOracle';
+import { nativeTranscriptRows, postgresTextRows, sessionInputRows } from '../fixtures/dbOracle';
 import { absoluteBaseUrl, apiPath } from '../fixtures/env';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
 import { restartServerContainer } from '../fixtures/sandboxOps';
+import { POSTGRES_CONTAINER_HANDLE, SERVER_CONTAINER_HANDLE, requireServiceContainer } from '../fixtures/serviceContainer';
 
 const sessions = trackSessions();
 let agentId = '';
@@ -145,13 +147,43 @@ test('SessionStart systemMessage appears once before a turn and after history re
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(page.getByTestId('run-view')).toBeVisible();
   await visibleOrder(page, expected);
-  await restartServerContainer(absoluteBaseUrl(), 30_000);
+  // Retain the real messages/output/native store and exercise the shipped
+  // upgrade on the previous schema's projection. No source records are seeded
+  // or rewritten: a missing backfill must reproduce the old wrong order.
+  const server = requireServiceContainer(SERVER_CONTAINER_HANDLE);
+  const postgres = requireServiceContainer(POSTGRES_CONTAINER_HANDLE);
+  const database = process.env.ASTRABOX_E2E_POSTGRES_DB;
+  const databaseUser = process.env.ASTRABOX_E2E_POSTGRES_USER;
+  if (!database || !databaseUser) throw new Error('the selected upgrade case needs explicit isolated database handles');
+  expect(postgresTextRows(postgres, database, databaseUser,
+    'SELECT version_num FROM alembic_version')).toEqual(['0011']);
+  execFileSync('docker', ['stop', '--time', '10', server], { timeout: 20_000 });
+  expect(postgresTextRows(postgres, database, databaseUser, `
+    BEGIN;
+    ALTER TABLE session_inputs DROP COLUMN conversation_order;
+    ALTER TABLE session_responses DROP COLUMN conversation_order;
+    UPDATE alembic_version SET version_num = '0010' WHERE version_num = '0011';
+    COMMIT;
+    SELECT version_num FROM alembic_version;
+  `)).toEqual(['0010']);
+  await restartServerContainer(absoluteBaseUrl(), 30_000, server);
+  expect(postgresTextRows(postgres, database, databaseUser,
+    'SELECT version_num FROM alembic_version')).toEqual(['0011']);
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(page.getByTestId('run-view')).toBeVisible();
   await visibleOrder(page, expected);
   const afterTakeover = await api.getMessages(sessionId);
   expect(afterTakeover.messages.map((message) => message.id)).toEqual(history.messages.map((message) => message.id));
   expect(afterTakeover.messages.map(messageText).map((text) => text.trim())).toEqual(expected);
+  expect(afterTakeover.messages.map((message) => ({
+    id: message.id, role: message.role, parts: message.parts,
+    created_at: message.metadata?.created_at,
+    started_at: message.metadata?.started_at, ended_at: message.metadata?.ended_at,
+  }))).toEqual(history.messages.map((message) => ({
+    id: message.id, role: message.role, parts: message.parts,
+    created_at: message.metadata?.created_at,
+    started_at: message.metadata?.started_at, ended_at: message.metadata?.ended_at,
+  })));
   const nextAnswer = `AFTER_READER_TAKEOVER_${runId}`;
   const nextPrompt = `Reply with exactly ${nextAnswer}. Do not use tools.`;
   await sendPrompt(page, sessionId, nextPrompt);
