@@ -72,7 +72,8 @@ test('SessionStart systemMessage appears once before a turn and after history re
   const inputId = acceptance.data.input_id;
   expect(inputId).not.toEqual('');
   await api.waitForAssistantMessageMatching(sessionId, 0, (message) => (
-    messageText(message).includes(answer)
+    message.metadata?.status === 'ended' && message.metadata?.outcome === 'completed'
+    && messageText(message).includes(answer)
   ), 60_000);
   await api.waitForSessionReady(sessionId);
   const expected = [welcome, prompt, answer];
@@ -188,7 +189,8 @@ test('SessionStart systemMessage appears once before a turn and after history re
   const nextPrompt = `Reply with exactly ${nextAnswer}. Do not use tools.`;
   await sendPrompt(page, sessionId, nextPrompt);
   await api.waitForAssistantMessageMatching(sessionId, 2, (message) => (
-    messageText(message).includes(nextAnswer)
+    message.metadata?.status === 'ended' && message.metadata?.outcome === 'completed'
+    && messageText(message).includes(nextAnswer)
   ), 60_000);
   await api.waitForSessionReady(sessionId);
   await api.adminSessionTranscript(sessionId);
