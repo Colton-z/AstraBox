@@ -328,6 +328,7 @@ def run_engine(api: Api, engine: str, model: str, *, label: str, expect_text: st
         _wake(api, owner_id)
     session_id = str(api.call("POST", f"/api/v1/{kind}s/{owner_id}/conversations", {})["session_id"])
     print(f"  {engine}: Session {session_id} for {kind} {owner_id}", flush=True)
+    passed = False
     try:
         _await_state(api, session_id, "READY", timeout=READY_TIMEOUT_SECONDS, allowed={"CREATING"})
         stream = api.send(session_id, MESSAGE, f"installer-engine-{engine}-{uuid.uuid4().hex[:8]}")
@@ -337,12 +338,16 @@ def run_engine(api: Api, engine: str, model: str, *, label: str, expect_text: st
         if expect_text and expect_text not in reply:
             raise AcceptanceFailure(f"the reply does not carry {expect_text!r}: {reply[:200]!r}")
         _await_settled(api, session_id)
+        passed = True
         return reply
     finally:
-        try:
-            api.call("DELETE", f"/api/v1/sessions/{session_id}")
-        except AcceptanceFailure as error:
-            print(f"  {engine}: could not delete Session {session_id}: {error}", flush=True)
+        if passed:
+            try:
+                api.call("DELETE", f"/api/v1/sessions/{session_id}")
+            except AcceptanceFailure as error:
+                print(f"  {engine}: could not delete Session {session_id}: {error}", flush=True)
+        else:
+            print(f"  {engine}: retained failed Session {session_id} for diagnosis", flush=True)
 
 
 def turns(base_url: str, model: str, engines: list[str], expect_text: str) -> int:

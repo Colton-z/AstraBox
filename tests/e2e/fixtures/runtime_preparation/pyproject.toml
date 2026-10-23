@@ -17,4 +17,4 @@ credential_binding_fixture = "credential_binding_fixture:register_routes"
 binding_fixture = "credential_binding_fixture:BindingSandboxProvider"
 
 [tool.setuptools]
-py-modules = ["preparation_fixture", "credential_binding_fixture"]
+py-modules = ["preparation_fixture", "credential_binding_fixture", "model_header_gate"]
