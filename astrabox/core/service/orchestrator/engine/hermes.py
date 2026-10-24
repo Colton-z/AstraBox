@@ -155,7 +155,6 @@ _HERMES_PLUGINS_ENV = "ASTRABOX_HERMES_PLUGINS"
 # change it; the profile setup writes it from ``_HERMES_MANAGED_CONFIG_ENV``
 # and removes it when that is absent.
 _HERMES_MANAGED_DIR = "/etc/astrabox/hermes"
-_HERMES_IMAGE_SKILLS_DIR = "/opt/astrabox/hermes/skills"
 _HERMES_MANAGED_CONFIG_ENV = "ASTRABOX_HERMES_MANAGED_CONFIG"
 # What the merge prints last when it finished: it wrote config.yaml, or had
 # nothing to write.
@@ -1626,10 +1625,6 @@ def _build_hermes_config_overwrite(
         # reads cron schedules in. Empty is Hermes' own "unset": the
         # server's local time.
         "timezone": str(getattr(template, "timezone", None) or ""),
-        # The Skills AstraBox ships in the image (containers/sandbox-hermes/
-        # skills), which teach the Assistant to offer scheduled briefings
-        # and monitors. Hermes reads this key from the profile's config.yaml.
-        "skills": {"external_dirs": [_HERMES_IMAGE_SKILLS_DIR]},
     }
     artifacts_enabled = getattr(template, "artifacts_enabled", True)
     if binding_mcp_server_definitions(
