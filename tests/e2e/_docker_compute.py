@@ -49,11 +49,14 @@ def image_at(endpoint: str) -> str:
 
 
 def durable_mounts(name: str) -> list[dict]:
-    return [mount for mount in inspect(name)["Mounts"]
-            if mount["Type"] == "volume" or any(
-                mount["Destination"] == root or mount["Destination"].startswith(root + "/")
-                for root in ("/home", "/root", "/workspace")
-            )]
+    """Exclude only OpenSandbox's private, uniquely per-box control volume."""
+    row = inspect(name)
+    sandbox_id = str(row["Name"]).removeprefix("/sandbox-")
+    return [mount for mount in row["Mounts"] if not (
+        mount["Type"] == "volume"
+        and mount["Destination"] == "/opt/opensandbox"
+        and mount["Name"] == "opensandbox-runtime-" + sandbox_id
+    )]
 
 
 def kill(sandbox_id: str, *, workload: str | None = None) -> str:
