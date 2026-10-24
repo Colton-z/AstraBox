@@ -174,8 +174,12 @@ def test_a_response_in_progress_completes_once_across_a_platform_restart(
             # parts the platform recorded for the response, in the same order.
             ran = wait_for_file(client, sid, ran_path, timeout=10.0)
             assert ran == b"ran\n", f"the command ran other than once: {ran!r}"
-            recorded = recorded_output(sid, str(running.response_id))
             # Transient notifications update session state outside response content.
+            recorded = [
+                part
+                for part in recorded_output(sid, str(running.response_id))
+                if part.get("transient") is not True
+            ]
             streamed = [
                 part
                 for part in running.response.parts
