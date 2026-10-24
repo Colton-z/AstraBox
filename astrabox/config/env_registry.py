@@ -2944,14 +2944,6 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "astrabox.testing.e2e_faults",
     ),
     (
-        "ASTRABOX_E2E_MODEL_OIDC_FIXTURE_FILE",
-        "internal",
-        "",
-        "Private independent OIDC inference E2E fixture manifest, including "
-        "task-owned identity, gateway, native grants and receipt paths.",
-        "tests/e2e-ui/specs/oidc-model-applications.exclusive.spec.ts",
-    ),
-    (
         "ASTRABOX_E2E_FAULT_FILE",
         "test",
         "/tmp/astrabox-e2e-faults.json",

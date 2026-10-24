@@ -225,7 +225,6 @@ Timeouts, retries, and intervals for deployments that need to tune specific oper
 | `ASTRABOX_DB_PASSWORD_FILE` | *(none)* | Compose secret file containing only the AstraBox PostgreSQL role password. The bundled launcher builds ASTRABOX_DB_URL at process start; an explicit URL takes precedence. |
 | `ASTRABOX_DB_PORT` | `5432` | PostgreSQL service port used only with ASTRABOX_DB_PASSWORD_FILE. |
 | `ASTRABOX_DEFAULT_ORG` | `default` | The implicit organization id every identity belongs to, absent a resolver override. |
-| `ASTRABOX_E2E_MODEL_OIDC_FIXTURE_FILE` | *(none)* | Private independent OIDC inference E2E fixture manifest, including task-owned identity, gateway, native grants and receipt paths. |
 | `ASTRABOX_ENV_FILE` | `.env` | Path to the .env file loaded into the process environment at startup and read by the pydantic-settings dotenv source; lets an operator point at an alternate env file. |
 | `ASTRABOX_EXPIRATION_WATCHER_INTERVAL_SECONDS` | `300` | Poll interval for the background watcher that renews/expires sandboxes nearing lease end. |
 | `ASTRABOX_EXPIRATION_WATCHER_THRESHOLD_SECONDS` | `3600` | How far ahead of lease expiry the watcher treats a sandbox as due for renewal. |
