@@ -2,7 +2,6 @@ import type { SessionRecord } from '../types';
 
 type PollingSession = Pick<SessionRecord, 'state' | 'current_responses' | 'pending_interaction' | 'held_inputs'>;
 
-const CREATING_POLL_INTERVAL_MS = 500;
 const WORKING_POLL_INTERVAL_MS = 3000;
 const SETTLING_POLL_INTERVAL_MS = 1500;
 
@@ -23,8 +22,8 @@ export function isSessionAtRest(session: PollingSession | null | undefined): boo
 /**
  * How long until the session's detail is read again, or `null` while nothing
  * about it is expected to change. The conversation's stream asks for a read
- * itself when a response starts or ends; the timer covers what the stream does
- * not carry (startup progress, inputs held, the state the header shows).
+ * itself when startup changes or a response starts or ends; the timer covers
+ * inputs held and runtime activity while a conversation is not at rest.
  */
 export function sessionDetailPollInterval(
   lifecycleState: string,
@@ -32,7 +31,6 @@ export function sessionDetailPollInterval(
   detailStale: boolean,
 ): number | null {
   if (detailStale) return SETTLING_POLL_INTERVAL_MS;
-  if (lifecycleState === 'creating') return CREATING_POLL_INTERVAL_MS;
   if (lifecycleState === 'busy') return WORKING_POLL_INTERVAL_MS;
   if (lifecycleState !== 'ready') return null;
   if (isSessionAtRest(session)) return null;
