@@ -296,6 +296,7 @@ class RuntimeState:
     cursor: RuntimeCursor | None = None
     #: Native closure receipts retained by the runtime for reader recovery.
     closed_interactions: tuple[InteractionClosed, ...] = ()
+    refused_inputs: tuple[InputRefused, ...] = ()
 
 
 # --------------------------------------------------------------------------

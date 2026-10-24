@@ -1102,8 +1102,12 @@ class RunnerLink:
         """
         if frame.get("requires_persistence") is None:
             return
-        if frame.get("requires_persistence") is not True or frame.get("op") not in {"event", "interaction_closed", "error"}:
-            raise RunnerLinkError("only runner events, errors and interaction closures may require persistence, as true")
+        if frame.get("requires_persistence") is not True or frame.get("op") not in {
+            "event", "interaction_closed", "error", "input_completed", "input_refused",
+        }:
+            raise RunnerLinkError(
+                "only runner events, errors, interaction closures and input outcomes may require persistence, as true"
+            )
         self._durable_unacked.add(int(frame["seq"]))
 
 
