@@ -415,6 +415,37 @@ ASTRABOX_CASDOOR_ADMIN_URL='http://127.0.0.1:8087'
 ASTRABOX_CASDOOR_API_ACCESS_URL='http://127.0.0.1:8087/applications/astrabox/astrabox-api'
 ```
 
+### Environment entry policy
+
+Authentication establishes identity. `ASTRABOX_ENVIRONMENT_ENTRY_POLICY=members`
+requires an explicit grant in the serving Environment's member list. Platform
+administrators may enter under their administrator role; that entry is logged
+when they are not members.
+
+A deployment can install a policy under the `astrabox.environment.entry`
+entry-point group and select its name with `ASTRABOX_ENVIRONMENT_ENTRY_POLICY`.
+Implement `astrabox.seams.environment_entry.EnvironmentEntryPolicy`:
+
+```python
+async def can_enter(self, user, *, environment_name: str, operation: str) -> bool:
+    return await self.directory.can_enter_environment(user.user_id, environment_name)
+```
+
+The platform supplies the verified identity, its database-bound Environment
+and the operation. The policy returns a bool; an exception or another result
+refuses access with `ENVIRONMENT_ENTRY_POLICY_UNAVAILABLE`. Unknown policy names
+refuse startup. A bootstrap embedding the service may instead register an
+instance with `register_environment_entry_policy` in
+`astrabox.providers.environment_entry` before constructing the app.
+
+Use the same policy and authoritative identity source on every replica. Decisions
+are evaluated when entering; the platform does not copy enterprise users into
+its member table. An anonymous identity is never passed to a policy. API and
+protocol entry and the accessible-Environment list use the same decision; the
+client cannot select another Environment through a header or resource id.
+Agent and personal-resource ACLs, administrator roles and credential delegation
+still apply after entry. Capability links retain their own authorization.
+
 ### Before inviting users
 
 For any team deployment:
