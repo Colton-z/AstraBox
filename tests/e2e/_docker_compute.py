@@ -19,11 +19,23 @@ def selected() -> bool:
 
 
 def inspect(name: str) -> dict:
+    """Resolve a workload or its observed egress namespace owner to the workload."""
     rows = json.loads(subprocess.check_output(
         ["docker", "inspect", name], text=True, timeout=20,
     ))
-    assert len(rows) == 1 and rows[0]["Name"].startswith("/sandbox-"), name
-    return rows[0]
+    assert len(rows) == 1, name
+    row = rows[0]
+    if row["Name"].startswith("/sandbox-egress-"):
+        namespace_owner = row
+        sandbox_id = str(row["Name"]).removeprefix("/sandbox-egress-")
+        rows = json.loads(subprocess.check_output(
+            ["docker", "inspect", "sandbox-" + sandbox_id], text=True, timeout=20,
+        ))
+        assert len(rows) == 1 and rows[0]["Name"] == "/sandbox-" + sandbox_id
+        row = rows[0]
+        assert row["HostConfig"]["NetworkMode"] == "container:" + namespace_owner["Id"]
+    assert row["Name"].startswith("/sandbox-") and not row["Name"].startswith("/sandbox-egress-"), name
+    return row
 
 
 def image_at(endpoint: str) -> str:
@@ -45,7 +57,7 @@ def image_at(endpoint: str) -> str:
     )]
     assert len(matches) == 1, f"endpoint {endpoint} resolves to {len(matches)} Docker workloads"
     assert matches[0]["State"]["Running"], matches[0]["State"]
-    return str(matches[0]["Config"]["Image"])
+    return str(inspect(matches[0]["Id"])["Config"]["Image"])
 
 
 def durable_mounts(name: str) -> list[dict]:
