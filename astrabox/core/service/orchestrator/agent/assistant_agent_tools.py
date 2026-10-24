@@ -35,7 +35,7 @@ def agent_tools() -> list[dict[str, Any]]:
         "timezone": _string("IANA timezone, for example Asia/Shanghai."),
     }, "required": ["cron", "timezone"], "additionalProperties": False}
     definitions = [
-        ("list_agent_conversations", "Find the current user's existing Agent conversations by Agent name and conversation title. Returns current names, stable Session IDs and A2A context IDs. Use the returned IDs for messaging; names can change or repeat. A page can be continued with next_cursor.", {
+        ("list_agent_conversations", "List the user's existing platform conversations by title. This inventory contains AstraBox Agent conversations, including those started in the console before any A2A exchange. Use it for broad questions such as which conversations the user has, as well as explicit Agent or A2A conversation questions. State that the returned scope is Agent conversations. Native session_search, a2a_list and a2a_history recall Hermes-local records, not this inventory. Search by Agent name or conversation title. Returns current names, stable Session IDs and A2A context IDs; use these IDs for messaging. Continue a page with next_cursor. Reading does not send a message or start a business conversation.", {
             "agent_id": agent, "agent_query": _string("Search the Agent's name or display name."),
             "query": _string("Search the conversation title."),
             "limit": {"type": "integer", "minimum": 1, "maximum": 100},
