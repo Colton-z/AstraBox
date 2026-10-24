@@ -2190,6 +2190,17 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "astrabox.deploy.onebox",
     ),
     (
+        "ASTRABOX_MODEL_GATEWAY_OIDC_CONFIG_FILE",
+        "public",
+        "",
+        "Read-only YAML policy for independent employee OIDC applications using "
+        "the bundled model gateway. Separate from console/API login clients. "
+        "Mount the policy and its server-only introspection secret files into "
+        "the gateway container. Policy changes apply to the next request; invalid "
+        "edits refuse OIDC inference. Rejected when the bundled gateway is disabled.",
+        "containers.litellm.custom_auth",
+    ),
+    (
         "LITELLM_MASTER_KEY",
         "public",
         "",
@@ -2931,6 +2942,14 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "transcript-append-5xx, sandbox-egress). This setting is reserved for the "
         "automated test deployment.",
         "astrabox.testing.e2e_faults",
+    ),
+    (
+        "ASTRABOX_E2E_MODEL_OIDC_FIXTURE_FILE",
+        "internal",
+        "",
+        "Private independent OIDC inference E2E fixture manifest, including "
+        "task-owned identity, gateway, native grants and receipt paths.",
+        "tests/e2e-ui/specs/oidc-model-applications.exclusive.spec.ts",
     ),
     (
         "ASTRABOX_E2E_FAULT_FILE",

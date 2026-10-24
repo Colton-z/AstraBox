@@ -1571,6 +1571,11 @@ def main(
 
     run_sandbox_server = needs_sandbox_server()
     run_litellm = needs_litellm_gateway()
+    if _env("ASTRABOX_MODEL_GATEWAY_OIDC_CONFIG_FILE", "") and not run_litellm:
+        raise OneBoxError(
+            "ASTRABOX_MODEL_GATEWAY_OIDC_CONFIG_FILE configures the bundled gateway; "
+            "configure independent OIDC applications on the external gateway itself"
+        )
     run_gateway_dns = needs_gateway_dns()
     run_channel_gateway = needs_channel_gateway()
     ensure_channel_gateway_wiring(embedded=run_channel_gateway)
