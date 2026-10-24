@@ -54,6 +54,11 @@ network policy, storage and service authorization; an Environment name or sandbo
 label alone supplies none of those permissions. A shared business database with
 separate schema names is not a supported Environment topology.
 
+Within one Environment, every replica must resolve a given sandbox backend name
+to the same lifecycle service and pool-coordination scope. Rolling application
+updates keep that runtime configuration and callback URL consistent; the
+prewarming switch does not create another execution owner.
+
 A gray deployment can accept interactive conversations while leaving prewarming
 and automatic channel/scheduler workers off:
 
@@ -72,6 +77,11 @@ Agent's configured prepared capacity. Read `GET /api/v1/environments/current`
 for the serving Environment and its effective runtime policy. A control-only
 DBOS process initializes its local native tables with DBOS migrations and starts
 no workflow worker.
+
+Runtime generation reconciliation and retirement of existing capacity continue
+when prewarming is disabled. Replicas sharing one Environment's inventory must
+use the same prewarming policy. Production and gray deployments that need
+independent runtime policies use separate Environments and business databases.
 
 ### Access and upgrades
 
