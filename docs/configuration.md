@@ -329,7 +329,6 @@ Values prepared by the AstraBox service and read by code inside a sandbox. If on
 | `GIT_HTTPS_TOKEN` | *(none)* | Invocation-local copy of CONV_DEFAULT_REPO_HTTPS_TOKEN read by the temporary Git askpass helper; it is not a deployment setting. |
 | `HERMES_DASHBOARD_SESSION_TOKEN` | *(none)* | Credential the in-box Hermes backend checks a WebSocket upgrade against, written into the Assistant profile's env file and read by the image-owned service that starts `hermes serve`. Vendor-named: it is the variable Hermes' own desktop shell injects for the same purpose. Absent, the backend mints a random one per start and no caller can present it. |
 | `HERMES_HOME` | `/root/.hermes` | Root directory of the Hermes profile the config-merge runtime materializes into. |
-| `HERMES_LAZY_INSTALL_TARGET` | *(none)* | Hermes' own variable: the writable directory Hermes installs plugin Python dependencies into and puts on its import path, outside the root-owned virtualenv and outside the profile. |
 | `HERMES_MANAGED_DIR` | `/etc/astrabox/hermes` | Hermes' own variable: its managed-scope directory, root-owned, whose config.yaml wins over the profile's key by key. |
 | `REDACT_SECRET` | *(none)* | Invocation-local secret used to redact the repository HTTPS credential from bootstrap diagnostics. |
 

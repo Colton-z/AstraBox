@@ -85,8 +85,16 @@ async function readProfile(api: AstraApi, id: string): Promise<Record<string, st
     'echo "skill=$(test -f "$h/skills/astrabox/brand-guidelines/SKILL.md" && echo present || echo absent)"',
     'echo "plugin=$(test -f "$h/plugins/astrabox/plugin-tool-example/plugin.yaml" && echo present || echo absent)"',
     'echo "dependent=$(test -f "$h/plugins/astrabox/hermes-plugin-gonogo/plugin.yaml" && echo present || echo absent)"',
-    // HERMES_LAZY_INSTALL_TARGET: the home's .cache, beside the profile.
-    `echo "dependency=$(ls "$(dirname "$h")/.cache/astrabox-hermes-plugin-packages" 2>/dev/null | grep -c '^gonogo_eval-.*\\.dist-info$')"`,
+    'if test -f "$h/plugins/astrabox/hermes-plugin-gonogo/plugin.yaml"; then',
+    'HERMES_HOME="$h" "$HERMES_VENV/bin/python" - <<\'PY\'',
+    'import subprocess',
+    'from pm.environments import selected_venv, venv_python',
+    'from pm.paths import repo_root',
+    'python = venv_python(selected_venv(repo_root()))',
+    `version = subprocess.check_output([str(python), "-c", "import gonogo; import importlib.metadata; print(importlib.metadata.version('gonogo-eval'))"], text=True).strip()`,
+    'print("dependency=" + version)',
+    'PY',
+    'fi',
     `echo "enabled=$(grep -c '${PLUGIN_KEY}' "$h/config.yaml")"`,
     'echo "managed=$(cat /etc/astrabox/hermes/config.yaml 2>/dev/null | tr "\\n" " ")"',
   ].join('\n')));
@@ -96,6 +104,8 @@ test('an Assistant uses the Skill, Hermes plugin and configuration its owner add
   page,
   request,
 }) => {
+  const upgrading = Boolean(process.env.ASTRABOX_E2E_RUNTIME_UPGRADE_FILE);
+  if (upgrading) test.slow();
   const api = new AstraApi(request);
   const id = randomUUID().slice(0, 8);
   const codename = `ORCHID-${id}`;
@@ -144,7 +154,7 @@ test('an Assistant uses the Skill, Hermes plugin and configuration its owner add
 
   const first = String((await api.startAssistantConversation(assistantId)).session_id || '');
   sessions.push(first);
-  await api.waitForSessionReady(first);
+  await api.waitForSessionReady(first, upgrading ? 360_000 : undefined);
   const used = await api.sendTurn(first, [
     'Do these six things, then reply with exactly one line in the format',
     'STATS=<number>; ACCENT=<hex>; ZONE=<name>; CODENAME=<codename|NONE>; WEEKLY=<cron>; VERDICT=<verdict|ERROR>',
@@ -173,8 +183,9 @@ test('an Assistant uses the Skill, Hermes plugin and configuration its owner add
 
   const installed = await readProfile(api, assistantId);
   expect(installed).toMatchObject({
-    skill: 'present', plugin: 'present', dependent: 'present', dependency: '1', enabled: '1',
+    skill: 'present', plugin: 'present', dependent: 'present', enabled: '1',
   });
+  expect(installed.dependency, 'the supplier-selected environment imports the real plugin dependency').toMatch(/^\d+\.\d+/);
   expect(installed.managed).toContain(`personality: ${PERSONALITY}`);
 
   await skills.fill('[]');

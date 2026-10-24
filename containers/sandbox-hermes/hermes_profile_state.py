@@ -25,10 +25,10 @@ import tarfile
 import tempfile
 from typing import Any
 
+from hermes_cli.backup_restore import _safe_restore_db
+from hermes_cli.backup_sqlite import _safe_copy_db
 from hermes_cli.backup import (
-    _safe_restore_db,
     _should_exclude,
-    copy_db_and_verify,
     verify_sqlite_integrity,
 )
 
@@ -120,8 +120,11 @@ def pack(home: str | os.PathLike[str]) -> bytes:
             if not (root / name).is_file():
                 continue
             copy = Path(scratch) / name.replace("/", "__")
-            if not copy_db_and_verify(root / name, copy):
+            if not _safe_copy_db(root / name, copy):
                 raise RuntimeError(f"Hermes could not snapshot {name}")
+            integrity = verify_sqlite_integrity(copy, max_bytes=0)
+            if not integrity.get("valid"):
+                raise RuntimeError(f"Hermes profile snapshot {name} failed its integrity check")
             manifest["databases"].append(name)
             _add_file(archive, copy, name)
         encoded = json.dumps(manifest, sort_keys=True).encode("utf-8")

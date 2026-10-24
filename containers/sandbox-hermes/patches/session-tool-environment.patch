@@ -119,14 +119,12 @@
              "agent": None, "agent_error": None, "agent_ready": threading.Event(), "attached_images": [],
              "close_on_disconnect": _flag(params, "close_on_disconnect"),
              "active_session_lease": None,  # claimed lazily on the first turn (_ensure_active_session_slot)
-@@ -575,6 +582,7 @@
+@@ -575,4 +582,5 @@
              self.target, cols=self.cols, cwd=cwd, history=history, lease=None, source=source,
              close_on_disconnect=_flag(self.params, "close_on_disconnect"),
              profile_home=self.profile_home, explicit_cwd=bool(self.profile_resume_cwd), **extra)
 +        record["tool_environment"] = dict(self.params.get("tool_environment") or {})
          if follows_profile:
-             record.update(
-                 follow_profile_config=True,
 @@ -634,6 +642,8 @@
          _release_db(ctx.db)
      with _session_resume_lock:

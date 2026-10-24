@@ -2454,15 +2454,6 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "scripts/runtime/hermes_config_merge.py (image: astrabox-hermes-config-merge)",
     ),
     (
-        "HERMES_LAZY_INSTALL_TARGET",
-        "injected",
-        "",
-        "Hermes' own variable: the writable directory Hermes installs plugin "
-        "Python dependencies into and puts on its import path, outside the "
-        "root-owned virtualenv and outside the profile.",
-        "scripts/runtime/hermes_config_merge.py (image: astrabox-hermes-config-merge)",
-    ),
-    (
         "ASTRABOX_HERMES_MANAGED_CONFIG",
         "injected",
         "",

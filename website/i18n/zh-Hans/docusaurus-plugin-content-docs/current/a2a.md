@@ -5,9 +5,9 @@ Assistant 使用 Hermes 自带的 A2A 工具发现并调用其他 Agent。AstraB
 和每个目标之内。目标在一个普通的 AstraBox Session 中执行，这个 Session 归调用方所有，
 并使用目标配置的引擎。
 
-Hermes 固定使用 0.21.5 版本，提交
-`f97608f178d1ffeca59860195ab7da295f7c8e5f`。它的
-[A2A 插件](https://github.com/NousResearch/hermes-agent/blob/f97608f178d1ffeca59860195ab7da295f7c8e5f/website/docs/user-guide/messaging/a2a.md)
+Hermes 固定使用 0.22.4 版本，提交
+`4d04303818b61bf3aa09278af48356315515965b`。它的
+[A2A 插件](https://github.com/NousResearch/hermes-agent/blob/4d04303818b61bf3aa09278af48356315515965b/website/docs/user-guide/messaging/a2a.md)
 提供 `a2a_discover`、`a2a_call`、`a2a_list`、`a2a_history` 和
 `a2a_orchestrate`。AstraBox 执行由它管理的 Agent 时，不会启动 Hermes 的入站消息网关：
 该网关有自己的另一套执行生命周期。
