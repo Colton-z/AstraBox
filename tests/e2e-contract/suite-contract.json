@@ -30,7 +30,7 @@
       }
     },
     "tests": {
-      "no_volume_core": 603,
+      "no_volume_core": 605,
       "persistent_files": 19
     }
   },
@@ -42,7 +42,7 @@
   ],
   "playwright": {
     "exclusive": {
-      "files": 190,
+      "files": 194,
       "parallel_files": 121,
       "parallel_tests": 215,
       "serial_files": [
@@ -120,9 +120,9 @@
         "specs/subagent-replay-recovery.exclusive.spec.ts",
         "specs/untouched-tab-catches-up-after-backend-restart.exclusive.spec.ts"
       ],
-      "serial_tests": 111,
+      "serial_tests": 114,
       "serial_workers": 1,
-      "tests": 325,
+      "tests": 329,
       "workers": 5
     },
     "parallel": {
