@@ -20,6 +20,8 @@ import uuid
 import httpx
 import pytest
 
+from tests.e2e import _docker_compute
+
 from tests.e2e._sandbox_helpers import (
     assert_database_is_the_live_stack,
     conversation_workspace_source,
@@ -146,6 +148,8 @@ def _destroy_assistant_box(
     *, pod: str, sandbox_id: str, kubeconfig: str, namespace: str, deadline: float
 ) -> str:
     """Check the owned Pod, then inject the shared abrupt whole-sandbox loss."""
+    if _docker_compute.selected():
+        return _docker_compute.kill(sandbox_id, workload=pod)
     command = ["kubectl", "--kubeconfig", kubeconfig, "--namespace", namespace]
 
     def kubectl(*args: str) -> str:

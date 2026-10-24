@@ -39,6 +39,8 @@ import uuid
 import httpx
 import pytest
 
+from tests.e2e import _docker_compute
+
 from tests.e2e._sandbox_helpers import (
     answer_in_history,
     assert_kubernetes_runtime_image,
@@ -132,9 +134,11 @@ def _assistant_runtime(
     namespace = os.getenv("ASTRABOX_E2E_KUBE_NAMESPACE", "").strip()
     assert expected_name and expected_image and expected_digest and expected_model, (
         "assistant_live requires the exact Assistant RuntimeProfile, Hermes image digest, "
-        "and smoke-proven model"
+        "and configured model"
     )
-    assert kubeconfig and namespace, "assistant_live requires Kubernetes proof inputs"
+    assert _docker_compute.selected() or (kubeconfig and namespace), (
+        "assistant_live requires its selected Docker substrate or Kubernetes proof inputs"
+    )
     runtime_profiles = data(e2e_client.get("/api/v1/admin/runtime-profiles"))
     matches = [item for item in runtime_profiles if item.get("name") == expected_name]
     assert len(matches) == 1, (

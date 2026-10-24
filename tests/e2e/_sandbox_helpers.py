@@ -23,6 +23,8 @@ from urllib.parse import urlparse
 import httpx
 import pytest
 
+from tests.e2e import _docker_compute
+
 from tests.e2e._service_containers import (
     POSTGRES_CONTAINER_HANDLE,
     require_service_container,
@@ -306,6 +308,8 @@ def durable_mounts_of_sandbox(
     only the second one keeps a user's files.
     """
 
+    if _docker_compute.selected():
+        return _docker_compute.durable_mounts(pod)
     spec = json.loads(
         subprocess.run(
             [
@@ -341,6 +345,8 @@ def pod_uid(*, pod: str, kubeconfig: str, namespace: str) -> str:
     read the very box it just destroyed and call the medium durable.
     """
 
+    if _docker_compute.selected():
+        return str(_docker_compute.inspect(pod)["Id"])
     result = subprocess.run(
         ["kubectl", "--kubeconfig", kubeconfig, "--namespace", namespace,
          "get", "pod", pod, "-o", "jsonpath={.metadata.uid}"],
@@ -483,6 +489,8 @@ def destroy_sandbox_pod(*, pod: str, kubeconfig: str, namespace: str) -> None:
 
 def kube_access() -> tuple[str, str]:
     """The deployment's cluster access: kubeconfig path and sandbox namespace."""
+    if _docker_compute.selected():
+        return "", ""
     kubeconfig = os.getenv("ASTRABOX_E2E_KUBECONFIG", "").strip()
     namespace = os.getenv("ASTRABOX_E2E_KUBE_NAMESPACE", "").strip()
     assert kubeconfig and namespace, (
@@ -506,6 +514,9 @@ def destroy_box(sandbox_id: str) -> None:
     the platform reacting to a box that is really gone. The Pods are found by
     their owner reference, as :func:`assert_kubernetes_runtime_image` finds them.
     """
+    if _docker_compute.selected():
+        _docker_compute.kill(sandbox_id)
+        return
     kubeconfig, namespace = kube_access()
     command = ["kubectl", "--kubeconfig", kubeconfig, "--namespace", namespace]
     resource = "batchsandboxes.sandbox.opensandbox.io"
@@ -571,10 +582,19 @@ def assert_kubernetes_runtime_image(
     kubeconfig: str,
     namespace: str,
 ) -> None:
-    """Prove one live BatchSandbox Pod runs the manifest's exact image bytes."""
+    """Prove the selected substrate runs the manifest's exact image bytes."""
 
     assert sandbox_id and expected_image
     assert re.fullmatch(r"sha256:[0-9a-f]{64}", expected_digest)
+    if _docker_compute.selected():
+        observed = _docker_compute.inspect("sandbox-" + sandbox_id)
+        assert observed["Config"]["Image"] == expected_image
+        expected = json.loads(subprocess.check_output(
+            ["docker", "image", "inspect", expected_image], text=True, timeout=20,
+        ))[0]
+        assert expected_image.endswith("@" + expected_digest)
+        assert observed["State"]["Running"] and observed["Image"] == expected["Id"]
+        return
     kubeconfig_path = Path(kubeconfig)
     assert kubeconfig_path.is_absolute() and kubeconfig_path.is_file()
     assert not kubeconfig_path.is_symlink()
@@ -679,6 +699,8 @@ def running_sandbox_image(*, endpoint: str) -> str:
     is never coming back.
     """
 
+    if _docker_compute.selected():
+        return _docker_compute.image_at(endpoint)
     kubeconfig = os.getenv("ASTRABOX_E2E_KUBECONFIG", "").strip()
     namespace = os.getenv("ASTRABOX_E2E_KUBE_NAMESPACE", "").strip()
     assert kubeconfig and namespace, (
