@@ -23,6 +23,7 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.model import SessionState
+from astrabox.core.service.orchestrator.engine.runtime import RUNTIME_PROTOCOL_INCOMPATIBLE
 from astrabox.core.service.orchestrator.runtime.environment_ownership import require_environment_ownership
 from astrabox.core.service.orchestrator.runtime.preparation import require_session_user_prerequisites
 from astrabox.core.service.orchestrator.engine_kind_utils import resolve_session_engine_kind
@@ -615,9 +616,17 @@ class SessionLifecycleService:
             session = await self._sessions.get_session(session_id)
             if session is None:
                 raise RuntimeError("conversation record is unavailable for final disposal")
+            _session, binding = await reconcile_session_runtime_binding(
+                session=session,
+                sessions_repo=self._sessions,
+                assistant_workspace_service=self._assistant_workspace_service,
+            )
+            if binding.sandbox_id != sandbox_id:
+                raise RuntimeError("conversation workspace binding changed before final disposal")
             await self._runtime_manager.dispose_runtime_session(
                 session_id,
                 sandbox_id=sandbox_id,
+                runtime_identity=binding.owner_runtime_identity,
                 engine_kind=resolve_session_engine_kind(session),
                 engine_session_key=session.get("engine_session_key"),
                 runtime_cursor=session.get("reader_cursor"),
@@ -736,9 +745,15 @@ def _refuse_while_working(session: dict[str, Any], operation: str) -> None:
     the conversation offline would cut off. Neither is a runtime the platform
     has confirmed gone (``runtime_unavailable``): its last report describes a
     process that died with its box, and honouring it would keep the
-    conversation from ever being taken offline.
+    conversation from ever being taken offline. A protocol fault prevents further
+    status reads, so its last working snapshot cannot veto explicit disposal;
+    the finalizer must still confirm that disposal before ending the Session.
     """
-    if str(session.get("runtime_status") or "") != _WORKING or session.get("runtime_unavailable"):
+    if (
+        str(session.get("runtime_status") or "") != _WORKING
+        or session.get("runtime_unavailable")
+        or session.get("recovery_reason") == RUNTIME_PROTOCOL_INCOMPATIBLE
+    ):
         return
     logger.info("reject %s while the runtime is working session=%s", operation, session.get("session_id"))
     raise APIError(

@@ -30,7 +30,7 @@
       }
     },
     "tests": {
-      "no_volume_core": 602,
+      "no_volume_core": 603,
       "persistent_files": 19
     }
   },
@@ -64,6 +64,7 @@
         "specs/assistant-a2a-peer-auth-errors.exclusive.spec.ts",
         "specs/assistant-channel-cron-result-reaches-the-chat.exclusive.spec.ts",
         "specs/assistant-native-a2a-approval.exclusive.spec.ts",
+        "specs/assistant-protocol-fault-exit.exclusive.spec.ts",
         "specs/assistant-runtime-availability-status.exclusive.spec.ts",
         "specs/assistant-tool-card-live-and-cold.exclusive.spec.ts",
         "specs/assistant-tool-errors-live-and-cold.exclusive.spec.ts",

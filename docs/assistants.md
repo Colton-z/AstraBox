@@ -455,3 +455,10 @@ Correct the runtime protocol before explicitly recovering the Session. If the
 same native epoch retains the event ring, recovery reads from the stored cursor.
 Replacing the native process or box does not retain that ring; this mechanism
 alone does not recover previously unread completed tool events from SessionDB.
+
+A conversation blocked by a runtime protocol fault can still be ended or
+archived. These operations close its recorded native conversation on the existing
+workspace; they do not require execution protocol compatibility or release the
+shared sandbox. A native cleanup failure returns an error and leaves the
+conversation open for a retry. Ordinary working conversations remain protected
+from end or archive.
