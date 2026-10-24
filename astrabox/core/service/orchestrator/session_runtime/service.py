@@ -37,20 +37,20 @@ from astrabox.seams.runtime_preparation import validated_user_action
 _HISTORY_PAGE_LIMIT = 100
 
 
-def _encode_before(before: tuple[str, int, int] | None) -> str | None:
+def _encode_before(before: tuple[int, int, int, int] | None) -> str | None:
     if before is None:
         return None
     raw = json.dumps(list(before), separators=(",", ":")).encode()
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
-def _decode_before(cursor: str | None) -> tuple[str, int, int] | None:
+def _decode_before(cursor: str | None) -> tuple[int, int, int, int] | None:
     value = str(cursor or "").strip()
     if not value:
         return None
     try:
-        at, kind, seq = json.loads(base64.urlsafe_b64decode(value + "=" * (-len(value) % 4)))
-        return str(at), int(kind), int(seq)
+        phase, position, kind, seq = json.loads(base64.urlsafe_b64decode(value + "=" * (-len(value) % 4)))
+        return int(phase), int(position), int(kind), int(seq)
     except (ValueError, TypeError) as exc:
         raise APIError(code="INVALID_REQUEST", message="invalid history cursor", status_code=400) from exc
 
@@ -362,7 +362,8 @@ class SessionRuntimeService:
     ) -> dict[str, Any]:
         output_seq, _cursor = await self._repo.resume_point(session_id)
         page = await self._repo.history_page(
-            session_id, before=_decode_before(before), limit=max(1, min(int(limit), _HISTORY_PAGE_LIMIT))
+            session_id, before=_decode_before(before), limit=max(1, min(int(limit), _HISTORY_PAGE_LIMIT)),
+            through_seq=output_seq,
         )
         response_ids = [str(r["response_id"]) for r in page["responses"]]
         outputs = await self._repo.output_for_responses(session_id, response_ids, through_seq=output_seq)

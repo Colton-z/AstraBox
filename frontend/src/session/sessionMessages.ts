@@ -26,6 +26,8 @@ export interface HistoryImport {
 /** What the runtime reported about one response (`session_runtime/ui_message.py`). */
 export interface ResponseMetadata {
   response_id?: string;
+  /** First native content position in the session's ordered output log. */
+  conversation_order?: number | null;
   /** Open text/reasoning prefixes in a history snapshot, addressed by their output chunk ids. */
   continuation_parts?: Array<{ index: number; id: string }>;
   /** Preview chunks the adapter withdrew, addressed by providerMetadata.astrabox.part_id. */
@@ -59,6 +61,8 @@ export interface InputFailure {
 /** What the session recorded about one input. */
 export interface InputMetadata {
   input_id?: string;
+  /** Native conversation position; an input still held in a queue has none. */
+  conversation_order?: number | null;
   created_at?: string | null;
   /** `pending`, `delivered`, `admitted`, `completed` or `failed`. */
   state?: string | null;
@@ -71,6 +75,49 @@ export interface InputMetadata {
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' ? value as Record<string, unknown> : {};
+}
+
+export interface MessageOrder {
+  kind: 'input' | 'response';
+  id: string;
+  order: number;
+}
+
+/** Native messages in recorded order, followed by inputs not yet observed there. */
+export function orderConversationMessages(
+  messages: readonly UIMessage[],
+  observed: ReadonlyMap<string, number>,
+): UIMessage[] {
+  let updated = messages as UIMessage[];
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    const metadata = record(message.metadata);
+    const key = message.role === 'user' ? `input:${String(metadata.input_id || '')}` : `response:${message.id}`;
+    const known = observed.get(key);
+    const retained = metadata.conversation_order;
+    if (known === undefined || (typeof retained === 'number' && retained <= known)) continue;
+    if (updated === messages) updated = [...messages];
+    updated[index] = withMetadata(message, { conversation_order: known });
+  }
+  const position = (message: UIMessage): [number, number] => {
+    const metadata = record(message.metadata);
+    const value = metadata.conversation_order;
+    const known = typeof value === 'number' && Number.isSafeInteger(value);
+    return [metadata.history_import ? 0 : known ? 1 : 2, known ? value : 0];
+  };
+  const compare = (left: UIMessage, right: UIMessage): number => {
+    const a = position(left);
+    const b = position(right);
+    return a[0] - b[0] || a[1] - b[1];
+  };
+  // Most writes only append text to a message whose position is unchanged.
+  // Sort only when an observed native position actually changes the order.
+  for (let index = 1; index < updated.length; index += 1) {
+    if (compare(updated[index - 1], updated[index]) > 0) {
+      return [...updated].sort(compare);
+    }
+  }
+  return updated;
 }
 
 export function responseMetadata(message: UIMessage): ResponseMetadata {

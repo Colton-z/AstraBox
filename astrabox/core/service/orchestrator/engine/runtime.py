@@ -170,6 +170,20 @@ class InputAdmitted(RuntimeEvent):
 
 
 @dataclass(frozen=True, slots=True)
+class InputMessageObserved(RuntimeEvent):
+    """An exact input observed in the native conversation, in native event order.
+
+    Queue admission is not a conversation position. The adapter emits this
+    from the native user message or an exact native command-consumption
+    record, never from the fact that a queued submit succeeded. The platform
+    records the message with the same cursor and ordered output log as native
+    reply content, retaining its first position without changing timestamps.
+    """
+
+    input_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class InputRefused(RuntimeEvent):
     """The runtime declined this input before starting a response."""
 

@@ -12,7 +12,8 @@ Four writers, each with its own statements:
 * An operator imports another system's history before the conversation starts
   (:meth:`SessionRuntimeRepository.import_history`); it writes inputs and
   responses no runtime handles, and never the output log.
-* Page reads (history, the follow stream, the session view) only read.
+* History fills missing display positions from immutable output facts; the
+  follow stream and session view only read. Source messages are never rewritten.
 
 Rows are returned as dicts keyed by column name with times as ISO-8601 strings.
 """
@@ -28,6 +29,8 @@ from typing import Any, Literal
 from sqlalchemy import (
     ColumnElement,
     and_,
+    bindparam,
+    case,
     exists,
     func,
     insert,
@@ -139,6 +142,13 @@ class ResponseStart:
 
 
 @dataclass(frozen=True, slots=True)
+class MessagePosition:
+    kind: Literal["input", "response"]
+    message_id: str
+    output_seq: int
+
+
+@dataclass(frozen=True, slots=True)
 class ResponseEnd:
     response_id: str
     outcome: str
@@ -174,7 +184,7 @@ class InputsFailed:
     failure: dict[str, Any]
 
 
-Fact = ResponseStart | ResponseEnd | InteractionOpen | InteractionClose | InputsAdmitted | InputsFailed
+Fact = ResponseStart | ResponseEnd | MessagePosition | InteractionOpen | InteractionClose | InputsAdmitted | InputsFailed
 
 
 @dataclass(slots=True)
@@ -617,10 +627,29 @@ class SessionRuntimeRepository:
             if held.rowcount == 0:
                 return False
             sid = lease.session_id
+            if any(isinstance(fact, MessagePosition) for fact in batch.facts):
+                # A replay must retain an older native position even when its
+                # materialized column did not exist when the output was stored.
+                await self._index_recorded_messages(sid, connection=conn)
             for fact in batch.facts:
                 await _apply(conn, sid, fact)
             output = {part.seq: part for part in batch.output}
             for fact in batch.facts:
+                if isinstance(fact, MessagePosition):
+                    table = _INPUTS if fact.kind == "input" else _RESPONSES
+                    identity = table.c.input_id if fact.kind == "input" else table.c.response_id
+                    order = (await conn.execute(
+                        select(table.c.conversation_order).where(
+                            table.c.session_id == sid, identity == fact.message_id,
+                        )
+                    )).scalar_one()
+                    output[fact.output_seq] = OutputPart(
+                        fact.output_seq, None,
+                        {"type": "data-message-order", "transient": True, "data": {
+                            "kind": fact.kind, "id": fact.message_id, "order": order,
+                        }},
+                    )
+                    continue
                 if not isinstance(fact, InteractionClose) or fact.output_seq is None:
                     continue
                 row = (await conn.execute(select(_INTERACTIONS).where(
@@ -758,37 +787,159 @@ class SessionRuntimeRepository:
         )
         return list(reversed(newest)), int(total or 0)
 
-    async def history_page(
-        self, session_id: str, *, before: tuple[str, int, int] | None, limit: int
-    ) -> dict[str, Any]:
-        """One page of the conversation's entries, newest first, returned oldest first.
+    async def _index_recorded_messages(
+        self, session_id: str, *, connection: AsyncConnection | None = None,
+    ) -> None:
+        """Fill missing display positions from the shared immutable output log.
 
-        An entry is an input (``kind`` 0) or a response (``kind`` 1), ordered by
-        when it was accepted or started; at the same instant an input comes
-        before the response to it. ``before`` is the ``(at, kind, seq)`` of the
-        oldest entry already shown. The page carries the full rows and the
-        response-to-input links among them.
+        Providers install the schema, not the meaning of native receipts.
+        History can index an older record on any relational provider. The
+        reader row serializes this with ``record``; only absent positions are
+        written, never source messages, clocks, custody or response state.
         """
-        entries = union_all(
-            select(
-                _INPUTS.c.created_at.label("at"),
-                literal(0).label("kind"),
-                _INPUTS.c.seq.label("seq"),
-            ).where(_INPUTS.c.session_id == session_id),
-            select(
-                _RESPONSES.c.started_at.label("at"),
-                literal(1).label("kind"),
-                _RESPONSES.c.seq.label("seq"),
-            ).where(_RESPONSES.c.session_id == session_id),
-        ).subquery("entries")
-        position = tuple_(entries.c.at, entries.c.kind, entries.c.seq)
-        query = select(entries.c.kind, entries.c.seq, entries.c.at)
-        if before is not None:
-            at, kind, seq = before
-            query = query.where(position < tuple_(literal(from_iso(at)), literal(kind), literal(seq)))
-        rows = await fetch_all(
-            query.order_by(entries.c.at.desc(), entries.c.kind.desc(), entries.c.seq.desc()).limit(limit + 1)
+        part_type = _OUTPUT.c.part["type"].as_string()
+        structural = ("start", "message-metadata", "data-input-consumed")
+        native_content = and_(
+            part_type.not_in(structural),
+            _OUTPUT.c.part["transient"].as_boolean().is_not(True),
         )
+        input_marker = select(_OUTPUT.c.seq).where(
+            _OUTPUT.c.session_id == _INPUTS.c.session_id,
+            _OUTPUT.c.response_id.is_(None),
+            part_type == "data-message-order",
+            _OUTPUT.c.part["data"]["kind"].as_string() == "input",
+            _OUTPUT.c.part["data"]["id"].as_string() == _INPUTS.c.input_id,
+        ).exists()
+        input_boundary = select(_OUTPUT.c.seq).where(
+            _OUTPUT.c.session_id == _INPUTS.c.session_id,
+            _OUTPUT.c.response_id == _INPUTS.c.response_id,
+        ).exists()
+        response_body = select(_OUTPUT.c.seq).where(
+            _OUTPUT.c.session_id == _RESPONSES.c.session_id,
+            _OUTPUT.c.response_id == _RESPONSES.c.response_id,
+            native_content,
+        ).exists()
+        missing_input = select(_INPUTS.c.input_id).where(
+            _INPUTS.c.session_id == session_id, _INPUTS.c.conversation_order.is_(None),
+            or_(_INPUTS.c.source == IMPORTED_SOURCE, input_marker, input_boundary),
+        ).exists()
+        missing_response = select(_RESPONSES.c.response_id).where(
+            _RESPONSES.c.session_id == session_id, _RESPONSES.c.conversation_order.is_(None),
+            or_(_RESPONSES.c.origin == IMPORTED_ORIGIN, response_body),
+        ).exists()
+        query = select(or_(missing_input, missing_response))
+        missing = (
+            await fetch_value(query) if connection is None
+            else (await connection.execute(query)).scalar_one()
+        )
+        if not missing:
+            return
+
+        async def write(conn: AsyncConnection) -> None:
+            await conn.execute(select(_READERS.c.session_id).where(
+                _READERS.c.session_id == session_id,
+            ).with_for_update())
+            inputs = (await conn.execute(select(
+                _INPUTS.c.input_id, _INPUTS.c.conversation_order, _INPUTS.c.import_record,
+            ).where(_INPUTS.c.session_id == session_id))).mappings().all()
+            responses = (await conn.execute(select(
+                _RESPONSES.c.response_id, _RESPONSES.c.conversation_order, _RESPONSES.c.import_record,
+            ).where(_RESPONSES.c.session_id == session_id))).mappings().all()
+            boundaries = dict((await conn.execute(select(
+                _OUTPUT.c.response_id, (func.min(_OUTPUT.c.seq) * 2).label("position"),
+            ).where(
+                _OUTPUT.c.session_id == session_id, _OUTPUT.c.response_id.is_not(None),
+            ).group_by(_OUTPUT.c.response_id))).all())
+            bodies = dict((await conn.execute(select(
+                _OUTPUT.c.response_id, (func.min(_OUTPUT.c.seq) * 2).label("position"),
+            ).where(
+                _OUTPUT.c.session_id == session_id, _OUTPUT.c.response_id.is_not(None),
+                native_content,
+            ).group_by(_OUTPUT.c.response_id))).all())
+            native_input_id = _OUTPUT.c.part["data"]["inputId"].as_string()
+            consumed = dict((await conn.execute(select(
+                native_input_id, (func.min(_OUTPUT.c.seq) * 2).label("position"),
+            ).where(
+                _OUTPUT.c.session_id == session_id, part_type == "data-input-consumed",
+            ).group_by(native_input_id))).all())
+            observed: dict[str, dict[str, int]] = {"input": {}, "response": {}}
+            markers = await conn.execute(select(_OUTPUT.c.part).where(
+                _OUTPUT.c.session_id == session_id, _OUTPUT.c.response_id.is_(None),
+                part_type == "data-message-order",
+            ).order_by(_OUTPUT.c.seq))
+            for marker in markers.scalars():
+                data = marker["data"]
+                lane = observed[data["kind"]]
+                identity, position = str(data["id"]), int(data["order"])
+                lane[identity] = min(lane.get(identity, position), position)
+            anchors: dict[str, int] = {}
+            links = await conn.execute(select(
+                _RESPONSE_INPUTS.c.input_id, _RESPONSE_INPUTS.c.response_id,
+            ).where(_RESPONSE_INPUTS.c.session_id == session_id))
+            for input_id, response_id in links:
+                boundary = boundaries.get(response_id)
+                if boundary is not None:
+                    position = int(boundary) - 1
+                    anchors[input_id] = min(anchors.get(input_id, position), position)
+            for table, key, rows, positions in (
+                (_INPUTS, "input_id", inputs, {**anchors, **consumed, **observed["input"]}),
+                (_RESPONSES, "response_id", responses, {**bodies, **observed["response"]}),
+            ):
+                values = []
+                for row in rows:
+                    if row["conversation_order"] is not None:
+                        continue
+                    record = row["import_record"]
+                    position = int(record["position"]) if record is not None else positions.get(row[key])
+                    if position is not None:
+                        values.append({"_message_id": row[key], "_position": int(position)})
+                if values:
+                    await conn.execute(update(table).where(
+                        table.c.session_id == session_id,
+                        table.c[key] == bindparam("_message_id"),
+                        table.c.conversation_order.is_(None),
+                    ).values(conversation_order=bindparam("_position")), values)
+
+        if connection is None:
+            await transaction(write)
+        else:
+            await write(connection)
+
+    async def history_page(
+        self, session_id: str, *, before: tuple[int, int, int, int] | None, limit: int,
+        through_seq: int | None = None,
+    ) -> dict[str, Any]:
+        """One page in native conversation order, returned oldest first.
+
+        Imported history keeps its declared source order before native output.
+        Inputs not yet observed by the engine stay at the queued tail, ordered
+        by acceptance sequence. Native positions share the output log's clock;
+        receipt timestamps do not decide conversation order. ``through_seq``
+        pins a paged read before later native observations.
+        """
+        await self._index_recorded_messages(session_id)
+
+        def entry(table: Any, kind: int, imported: ColumnElement[bool]) -> Any:
+            order = table.c.conversation_order
+            observed = order.is_not(None)
+            if through_seq is not None:
+                observed = and_(observed, or_(imported, order <= through_seq * 2))
+            return select(
+                case((imported, 0), (observed, 1), else_=2).label("phase"),
+                case((observed, order), else_=table.c.seq).label("position"),
+                literal(kind).label("kind"),
+                table.c.seq.label("seq"),
+            ).where(table.c.session_id == session_id)
+
+        entries = union_all(
+            entry(_INPUTS, 0, _INPUTS.c.source == IMPORTED_SOURCE),
+            entry(_RESPONSES, 1, _RESPONSES.c.origin == IMPORTED_ORIGIN),
+        ).subquery("entries")
+        position = tuple_(entries.c.phase, entries.c.position, entries.c.kind, entries.c.seq)
+        query = select(entries)
+        if before is not None:
+            query = query.where(position < tuple_(*(literal(value) for value in before)))
+        rows = await fetch_all(query.order_by(*(entries.c[key].desc() for key in ("phase", "position", "kind", "seq"))).limit(limit + 1))
         has_more = len(rows) > limit
         rows = list(reversed(rows[:limit]))
         input_seqs = [int(row["seq"]) for row in rows if row["kind"] == 0]
@@ -832,7 +983,7 @@ class SessionRuntimeRepository:
             "responses": responses,
             "links": links,
             "has_more": has_more,
-            "before": (to_iso(oldest["at"]), int(oldest["kind"]), int(oldest["seq"])) if has_more and oldest else None,
+            "before": tuple(int(oldest[key]) for key in ("phase", "position", "kind", "seq")) if has_more and oldest else None,
         }
 
     async def activity(self, session_id: str) -> dict[str, Any]:
@@ -1035,8 +1186,8 @@ class SessionRuntimeRepository:
         A user message becomes an ``imported`` input, never handed to a
         runtime; a reply becomes an ended response whose parts live in its
         ``import_record``. A reply answers the imported user message its
-        ``parent_source_id`` names. Both keep the source's timestamp, which
-        places them in the conversation's order. Returns ``False``, storing
+        ``parent_source_id`` names. Both keep the source's declared order and
+        original timestamp. Returns ``False``, storing
         nothing, when the conversation already has a message of its own:
         history cannot be placed before messages it has ordered.
         """
@@ -1079,6 +1230,7 @@ class SessionRuntimeRepository:
                             content=entry.content,
                             content_blocks=entry.content_blocks,
                             import_record=entry.record,
+                            conversation_order=int(entry.record["position"]),
                             created_at=at,
                         )
                     )
@@ -1093,6 +1245,7 @@ class SessionRuntimeRepository:
                         status="ended",
                         outcome=entry.outcome,
                         import_record=entry.record,
+                        conversation_order=int(entry.record["position"]),
                         started_at=at,
                         ended_at=at,
                     )
@@ -1163,6 +1316,18 @@ async def _apply(conn: AsyncConnection, session_id: str, fact: Fact) -> None:
                 .where(_INPUTS.c.session_id == session_id, _INPUTS.c.input_id.in_(list(fact.input_ids)))
                 .values(response_id=fact.response_id)
             )
+    elif isinstance(fact, MessagePosition):
+        table = _INPUTS if fact.kind == "input" else _RESPONSES
+        identity = table.c.input_id if fact.kind == "input" else table.c.response_id
+        await conn.execute(
+            update(table)
+            .where(
+                table.c.session_id == session_id,
+                identity == fact.message_id,
+                table.c.conversation_order.is_(None),
+            )
+            .values(conversation_order=fact.output_seq * 2)
+        )
     elif isinstance(fact, ResponseEnd):
         await conn.execute(
             update(_RESPONSES)
