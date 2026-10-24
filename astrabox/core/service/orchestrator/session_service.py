@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import time
 import uuid
 from typing import Any
@@ -29,6 +28,7 @@ from astrabox.seams.sandbox import (
 # bootstrap, so no side-effect import is needed here.
 from astrabox.core.service.orchestrator.sandbox_lifecycle import new_sandbox_callback_fields
 from astrabox.core.service.orchestrator.session_lifecycle.permission_modes import resolve_initial_mode
+from astrabox.core.service.orchestrator.engine.runtime import RUNTIME_PROTOCOL_INCOMPATIBLE
 from astrabox.core.service.orchestrator.engine.capabilities import (
     require_engine_for_session_kind,
 )
@@ -40,11 +40,6 @@ from astrabox.core.service.orchestrator.agent_config_service import AgentConfigS
 from astrabox.core.service.orchestrator.vault_service import VaultService
 
 logger = get_logger(__name__)
-
-_SESSION_CREATION_TIMEOUT_SECONDS = int(
-    os.getenv("ASTRABOX_SESSION_CREATION_TIMEOUT_SECONDS", "") or 300
-)
-
 
 class SessionService:
     def __init__(
@@ -370,27 +365,10 @@ class SessionService:
             clean["runtime_unavailable"] = True
             clean["last_error"] = "sandbox expired"
             return clean
-        if state == SessionState.CREATING.value:
-            latest_touch = None
-            for key in ("updated_at", "created_at"):
-                raw_value = str(clean.get(key) or "").strip()
-                if not raw_value:
-                    continue
-                try:
-                    parsed = parse_iso(raw_value)
-                except (TypeError, ValueError):
-                    continue
-                if latest_touch is None or parsed > latest_touch:
-                    latest_touch = parsed
-            if latest_touch is not None:
-                if (utcnow() - latest_touch).total_seconds() > _SESSION_CREATION_TIMEOUT_SECONDS:
-                    clean["state"] = SessionState.TERMINATED.value
-                    clean["runtime_unavailable"] = True
-                    clean["last_error"] = "session creation timed out"
-                    return clean
         if (
             str(clean.get("state") or "") == SessionState.READY.value
-            and bool(clean.get("runtime_unavailable"))
+            and (bool(clean.get("runtime_unavailable"))
+                 or clean.get("recovery_reason") == RUNTIME_PROTOCOL_INCOMPATIBLE)
         ):
             clean["state"] = SessionState.RECOVERY_REQUIRED.value
         (

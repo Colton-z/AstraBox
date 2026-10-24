@@ -244,6 +244,7 @@ for _code, _status, _category, _retryable, _owner in (
     ("ENVIRONMENT_MISMATCH", 409, "state", False, "client"),
     ("ENVIRONMENT_NOT_FOUND", 404, "request", False, "client"),
     ("ENVIRONMENT_ACCESS_DENIED", 403, "authorization", False, "client"),
+    ("ENVIRONMENT_ENTRY_POLICY_UNAVAILABLE", 503, "authorization", True, "platform"),
     ("ENVIRONMENT_VERSION_CONFLICT", 409, "state", True, "client"),
     ("AGENT_PREWARM_DISABLED", 409, "configuration", False, "platform"),
     # A RuntimeProfile naming a permission level the platform does not define.
@@ -634,6 +635,7 @@ for _code, _status, _category, _retryable, _owner in (
     # is none to open; the console offers the entry only when one is declared.
     ("EXTENSION_CONSOLE_UNSUPPORTED", 409, "configuration", False, "platform"),
     ("AGENT_RUNTIME_ERROR", 502, "runtime", True, "runtime"),
+    ("RUNTIME_PROTOCOL_INCOMPATIBLE", 502, "runtime", False, "platform"),
     (
         "SANDBOX_EGRESS_MUTATION_UNSUPPORTED",
         501,

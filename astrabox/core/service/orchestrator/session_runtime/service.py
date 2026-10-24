@@ -16,6 +16,7 @@ from typing import Any
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.model import AgentState, SessionState
+from astrabox.core.service.orchestrator.engine.runtime import RUNTIME_PROTOCOL_INCOMPATIBLE, RuntimeProtocolError
 from astrabox.core.service.orchestrator.engine.interaction_contract import (
     public_interaction_view,
     resolve_interaction_permission_mode,
@@ -36,20 +37,20 @@ from astrabox.seams.runtime_preparation import validated_user_action
 _HISTORY_PAGE_LIMIT = 100
 
 
-def _encode_before(before: tuple[str, int, int] | None) -> str | None:
+def _encode_before(before: tuple[int, int, int, int] | None) -> str | None:
     if before is None:
         return None
     raw = json.dumps(list(before), separators=(",", ":")).encode()
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
-def _decode_before(cursor: str | None) -> tuple[str, int, int] | None:
+def _decode_before(cursor: str | None) -> tuple[int, int, int, int] | None:
     value = str(cursor or "").strip()
     if not value:
         return None
     try:
-        at, kind, seq = json.loads(base64.urlsafe_b64decode(value + "=" * (-len(value) % 4)))
-        return str(at), int(kind), int(seq)
+        phase, position, kind, seq = json.loads(base64.urlsafe_b64decode(value + "=" * (-len(value) % 4)))
+        return int(phase), int(position), int(kind), int(seq)
     except (ValueError, TypeError) as exc:
         raise APIError(code="INVALID_REQUEST", message="invalid history cursor", status_code=400) from exc
 
@@ -84,7 +85,7 @@ def runtime_view_state(session: dict[str, Any], activity: dict[str, Any]) -> str
     lifecycle = str(session.get("state") or "")
     if lifecycle != SessionState.READY.value:
         return lifecycle
-    if session.get("runtime_unavailable"):
+    if session.get("runtime_unavailable") or session.get("recovery_reason") == RUNTIME_PROTOCOL_INCOMPATIBLE:
         return SessionState.RECOVERY_REQUIRED.value
     status = str(session.get("runtime_status") or "idle")
     if status == "waiting" or activity["open_interactions"]:
@@ -251,6 +252,8 @@ class SessionRuntimeService:
         session = await self._sessions.get_session_including_deleted(session_id)
         if session is None or (owner_user_id is not None and session.get("user_id") != owner_user_id):
             return APIError(code="SESSION_NOT_FOUND", message="session not found", status_code=404)
+        if session.get("recovery_reason") == RUNTIME_PROTOCOL_INCOMPATIBLE:
+            return RuntimeProtocolError(str(session.get("last_error") or "Runtime protocol is incompatible."))
         if not session.get("deleted") and session.get("state") not in (
             SessionState.TERMINATED.value, SessionState.DELETED.value,
         ):
@@ -359,7 +362,8 @@ class SessionRuntimeService:
     ) -> dict[str, Any]:
         output_seq, _cursor = await self._repo.resume_point(session_id)
         page = await self._repo.history_page(
-            session_id, before=_decode_before(before), limit=max(1, min(int(limit), _HISTORY_PAGE_LIMIT))
+            session_id, before=_decode_before(before), limit=max(1, min(int(limit), _HISTORY_PAGE_LIMIT)),
+            through_seq=output_seq,
         )
         response_ids = [str(r["response_id"]) for r in page["responses"]]
         outputs = await self._repo.output_for_responses(session_id, response_ids, through_seq=output_seq)

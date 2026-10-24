@@ -1,8 +1,9 @@
 """LiteLLM custom-auth adapter for AstraBox's shared OIDC identity.
 
-The adapter recognises three credential forms of AstraBox's own: the embedded
-gateway's private service credential, an AstraBox-signed browser capability, and
-an access token from the same OIDC provider AstraBox uses.
+The adapter recognises the embedded gateway's private service credential,
+AstraBox-signed browser capabilities, platform OIDC access tokens, and explicitly
+configured independent OIDC inference applications. Independent applications
+have their own trust policy and never inherit platform administrator roles.
 
 It is NOT the gateway's only authenticator. ``custom_auth_settings.mode: auto``
 in the proxy config makes LiteLLM fall back to its own key authentication when
@@ -62,6 +63,18 @@ _PUBLIC_NO_CREDENTIAL_PATHS = {
 _identity_mode = str(os.getenv("ASTRABOX_WEB_IDENTITY") or "local").strip().lower()
 _oidc_config = OidcProviderConfig.load() if _identity_mode == "oidc" else None
 _capability_secret = read_session_signing_secret()
+_application_policy_path = str(os.getenv("ASTRABOX_MODEL_GATEWAY_OIDC_CONFIG_FILE") or "").strip()
+_application_auth = None
+if _application_policy_path:
+    from oidc_app_auth import OidcApplicationAuth
+
+    _application_auth = OidcApplicationAuth(
+        _application_policy_path,
+        platform_issuer=_oidc_config.issuer if _oidc_config else "",
+        platform_clients=(
+            (_oidc_config.client_id, _oidc_config.api_client_id) if _oidc_config else ()
+        ),
+    )
 
 
 def _credential(value: Any) -> str:
@@ -168,6 +181,16 @@ async def user_api_key_auth(request: Request, api_key: str) -> UserAPIKeyAuth:
             user_role=LitellmUserRoles.PROXY_ADMIN,
             allowed_routes=allowed_routes,
         )
+
+    if _application_auth is not None and looks_like_access_token(credential):
+        try:
+            application = await _application_auth.authenticate(request, credential)
+        except ProxyException:
+            raise
+        except Exception as exc:
+            raise _auth_error("OIDC inference authentication is unavailable", 503) from exc
+        if application is not None:
+            return application
 
     # Everything left is an access token or it belongs to LiteLLM. Shape decides,
     # not exclusion: a LiteLLM virtual key reaching the OIDC provider would be

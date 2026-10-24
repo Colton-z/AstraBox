@@ -44,6 +44,7 @@ from astrabox.core.service.orchestrator.sandbox_names import (
     read_undestroyed,
 )
 from astrabox.core.service.orchestrator.session_lifecycle.ownership import RecoveryOwnership
+from astrabox.seams.persistence_coordination import RuntimeLockCheck
 from astrabox.seams.runtime_preparation import (
     TURN_PREPARATION_USER_ACTION_REQUIRED,
     validated_user_action,
@@ -73,6 +74,7 @@ class SessionStartup:
         *,
         session_id: str,
         owner: str | None,
+        check_lock: RuntimeLockCheck,
         sandbox_generation: str,
         resume_engine_session_key: str | None,
         replacing: bool = False,
@@ -90,6 +92,7 @@ class SessionStartup:
             self._sessions,
             session_id,
             owner,
+            check_lock,
             sandbox_generation=sandbox_generation,
             assignment_id=str(uuid.uuid4()),
         )
@@ -580,7 +583,7 @@ class _StartupProgress:
 
     async def _write(self, label: str) -> None:
         try:
-            await self._ownership.update({"startup_progress": label})
+            await self._ownership.update({"startup_progress": label}, notify="session")
         except Exception as exc:
             logger.warning(
                 "startup progress write failed session=%s progress=%s err=%s",

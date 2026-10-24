@@ -18,6 +18,7 @@ import { SessionFollower, type FollowerHost } from '../sessionFollower';
 import {
   inputFailure,
   inputMetadata,
+  orderConversationMessages,
   mergeLatestMessages,
   prependOlderMessages,
   updateMessages,
@@ -31,6 +32,7 @@ import { useTranscriptAccess } from '../TranscriptAccess';
 import { cardArtifacts } from '@/artifacts/marker';
 import type { ArtifactMarker } from '@/artifacts/types';
 import { createClientMessageId } from '../utils/chatHelpers';
+import { hasRuntimeProtocolError } from '../sessionAuthority';
 
 /**
  * How long a lost session stream is retried in silence before the page says
@@ -95,7 +97,13 @@ export function useSessionChat({
   // The page is keyed by session, so the chat is created once per page with
   // the history it opened with.
   const [chat] = useState(() => new Chat<UIMessage>({ id: sessionId, messages: history.messages }));
-  const { messages, setMessages, addToolApprovalResponse } = useChat({ chat, throttle: 50 });
+  const { messages, setMessages: writeMessages, addToolApprovalResponse } = useChat({ chat, throttle: 50 });
+  const nativeOrderRef = useRef(new Map<string, number>());
+  const setMessages = useCallback((update: Parameters<typeof writeMessages>[0]) => {
+    writeMessages((current) => orderConversationMessages(
+      typeof update === 'function' ? update(current) : update, nativeOrderRef.current,
+    ));
+  }, [writeMessages]);
 
   const [followFrom, setFollowFrom] = useState(() => ({ seq: history.outputSeq }));
   const followerRef = useRef<SessionFollower | null>(null);
@@ -397,6 +405,15 @@ export function useSessionChat({
       }
       refreshDetail();
     },
+    messageOrdered: (position) => {
+      const key = `${position.kind}:${position.id}`;
+      const retained = nativeOrderRef.current.get(key);
+      nativeOrderRef.current.set(key, retained === undefined ? position.order : Math.min(retained, position.order));
+      setMessages((current) => current);
+      if (position.kind === 'input' && !chat.messages.some((message) => (
+        message.role === 'user' && inputMetadata(message).input_id === position.id
+      ))) noteUnknownInputs();
+    },
     interactionOpened: (interaction) => {
       setLiveInteraction(interaction);
       refreshDetail();
@@ -441,6 +458,7 @@ export function useSessionChat({
       responsePaused: (...args) => hostRef.current.responsePaused(...args),
       responseEnded: (...args) => hostRef.current.responseEnded(...args),
       inputFailed: (...args) => hostRef.current.inputFailed(...args),
+      messageOrdered: (...args) => hostRef.current.messageOrdered(...args),
       interactionOpened: (...args) => hostRef.current.interactionOpened(...args),
       interactionClosed: (...args) => hostRef.current.interactionClosed(...args),
       childRunsChanged: () => hostRef.current.childRunsChanged(),
@@ -657,9 +675,9 @@ export function useSessionChat({
   return {
     messages,
     /** The response the stream is writing now. */
-    writingMessageId: writing,
+    writingMessageId: hasRuntimeProtocolError(session) ? null : writing,
     /** A response is running: on this page's stream, or by the session's own account. */
-    isWorking: writing !== null || session.state === 'PROCESSING',
+    isWorking: !hasRuntimeProtocolError(session) && (writing !== null || session.state === 'PROCESSING'),
     /** A message is on its way to the session. */
     isSending: sendsInFlight > 0,
     isStopping: stopping !== null,

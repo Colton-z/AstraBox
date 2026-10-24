@@ -75,6 +75,7 @@ from astrabox.core.service.orchestrator.engine.interaction_contract import (
 )
 from astrabox.core.service.orchestrator.engine.runtime import (
     InputAdmitted,
+    InputMessageObserved,
     InteractionClosed,
     InteractionNotOpen,
     InteractionOpened,
@@ -91,6 +92,7 @@ from astrabox.core.service.orchestrator.engine.runtime import (
     RuntimeEvent,
     RuntimeInput,
     RuntimeInputRefused,
+    RuntimeProtocolError,
     RuntimeState,
     RuntimeStatus,
     StatusChanged,
@@ -503,7 +505,10 @@ class _Translation:
         input_ids = tuple(item.input for item in chosen)
         # Replayed turn events can consume the pending entry before its
         # synthetic submit receipt is read. Starting the turn proves admission.
-        events: list[RuntimeEvent] = [InputAdmitted(None, item.input) for item in chosen]
+        events: list[RuntimeEvent] = [
+            event for item in chosen
+            for event in (InputMessageObserved(None, item.input), InputAdmitted(None, item.input))
+        ]
         if input_ids:
             origin: ResponseOrigin = "input"
             response_id = input_response_message_id(input_ids[0])
@@ -723,7 +728,8 @@ class _Translation:
         tool_id = str(payload.get("tool_id") or response.tool or "").strip()
         is_error = payload.get("is_error")
         if not isinstance(is_error, bool):
-            raise ValueError("Hermes tool.complete omitted its native is_error classification")
+            raise RuntimeProtocolError("Hermes tool.complete omitted its native boolean is_error classification. "
+                                       "Align the sandbox image with the core protocol before recovering this conversation.")
         if is_error:
             result = payload.get("result")
             error_text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
@@ -828,6 +834,17 @@ class HermesRuntimeClient:
         epoch = str(gateway.replay_epoch or "").strip()
         if not epoch:
             raise RuntimeError("the Hermes backend announced no replay epoch in gateway.ready")
+        try:
+            capabilities = await gateway.request("gateway.capabilities", {})
+        except HermesTuiRpcError as exc:
+            if exc.code != -32601:
+                raise
+            raise RuntimeProtocolError("Hermes does not expose the required gateway.capabilities protocol.") from exc
+        if capabilities.get("execution_tool_completion_is_error") is not True:
+            raise RuntimeProtocolError(
+                "Hermes does not advertise native execution tool-completion classification. "
+                "Deploy the sandbox image matching this core before starting or recovering conversations."
+            )
         key = str(resume_session_key or "").strip()
         if not key:
             listed = await gateway.request("session.list", {"title": platform_session_id})

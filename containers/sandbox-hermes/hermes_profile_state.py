@@ -6,8 +6,9 @@ otherwise lose with the box: the built-in memory files, skills the user created
 or installed, scheduled jobs and their run history, and Hermes' other
 per-profile user stores (``hermes_cli/backup.py`` ``_QUICK_STATE_FILES`` at the
 pinned commit). Configuration, credentials and messaging-gateway pairing are
-written by the platform or unused here and are left out. Skills that ship in
-the image are left out too: Hermes seeds them when it starts.
+written by the platform or unused here and are left out. The complete Skills
+tree includes customized defaults and Hermes' bundled-skill origin manifest,
+so its native sync can preserve user edits after restoring into a new image.
 
 Run as the profile's Linux owner. The archive is a gzip tar with a manifest
 naming what it governs; restore replaces exactly those paths.
@@ -24,12 +25,16 @@ import tarfile
 import tempfile
 from typing import Any
 
-import hermes_constants
-from hermes_cli.backup import _safe_restore_db, copy_db_and_verify, verify_sqlite_integrity
+from hermes_cli.backup_restore import _safe_restore_db
+from hermes_cli.backup_sqlite import _safe_copy_db
+from hermes_cli.backup import (
+    _should_exclude,
+    verify_sqlite_integrity,
+)
 
 MANIFEST_NAME = "astrabox-profile.json"
 #: Directories restored as a whole.
-DIRECTORIES = ("memories", "kanban/boards", "a2a_conversations")
+DIRECTORIES = ("memories", "kanban/boards", "a2a_conversations", "skills")
 #: Plain files.
 FILES = ("cron/jobs.json", "a2a_audit.jsonl")
 #: SQLite stores, copied and restored through Hermes' own backup API.
@@ -43,34 +48,23 @@ DATABASES = (
 SKILLS = "skills"
 
 
-def _user_skill_dirs(home: Path) -> list[str]:
-    """Skill directories under ``skills/`` that the image does not ship."""
-
-    root = home / SKILLS
-    if not root.is_dir():
-        return []
-    # The directory Hermes seeds skills from, resolved as its skill sync does
-    # (``tools/skills_sync.py`` ``_get_bundled_dir``). Without the source-tree
-    # default, ``get_bundled_skills_dir`` answers with the profile's own
-    # ``skills/`` and every skill would read as shipped.
-    bundled = hermes_constants.get_bundled_skills_dir(
-        Path(hermes_constants.__file__).resolve().parent / "skills"
-    )
-    found: list[str] = []
-    for skill_md in sorted(root.rglob("SKILL.md")):
-        relative = skill_md.parent.relative_to(root)
-        if any(part.startswith(".") for part in relative.parts):
-            continue
-        if (bundled / relative).is_dir():
-            continue
-        text = relative.as_posix()
-        if any(text.startswith(parent + "/") for parent in found):
-            continue
-        found.append(text)
-    return found
-
-
 def _regular_files(directory: Path) -> list[Path]:
+    if directory.name == SKILLS:
+        # Apply Hermes' full-backup policy relative to HERMES_HOME: archived
+        # Skills and origin metadata stay; dependency trees and caches do not.
+        files = []
+        for parent, directories, names in os.walk(directory, followlinks=False):
+            base = Path(parent)
+            directories[:] = [
+                name for name in directories
+                if not _should_exclude((base / name).relative_to(directory.parent))
+            ]
+            files.extend(
+                base / name for name in names
+                if (base / name).is_file() and not (base / name).is_symlink()
+                and not _should_exclude((base / name).relative_to(directory.parent))
+            )
+        return sorted(files)
     return sorted(
         path for path in directory.rglob("*")
         if path.is_file() and not path.is_symlink()
@@ -88,8 +82,6 @@ def stamp(home: Path) -> tuple[Any, ...]:
     for name in (*FILES, *DATABASES, *(f"{db}-wal" for db in DATABASES)):
         if (home / name).is_file():
             paths.append(home / name)
-    for skill in _user_skill_dirs(home):
-        paths.extend(_regular_files(home / SKILLS / skill))
     for path in paths:
         metadata = path.stat()
         values.append((str(path.relative_to(home)), metadata.st_size, metadata.st_mtime_ns))
@@ -128,14 +120,13 @@ def pack(home: str | os.PathLike[str]) -> bytes:
             if not (root / name).is_file():
                 continue
             copy = Path(scratch) / name.replace("/", "__")
-            if not copy_db_and_verify(root / name, copy):
+            if not _safe_copy_db(root / name, copy):
                 raise RuntimeError(f"Hermes could not snapshot {name}")
+            integrity = verify_sqlite_integrity(copy, max_bytes=0)
+            if not integrity.get("valid"):
+                raise RuntimeError(f"Hermes profile snapshot {name} failed its integrity check")
             manifest["databases"].append(name)
             _add_file(archive, copy, name)
-        for skill in _user_skill_dirs(root):
-            manifest["skills"].append(skill)
-            for path in _regular_files(root / SKILLS / skill):
-                _add_file(archive, path, path.relative_to(root).as_posix())
         encoded = json.dumps(manifest, sort_keys=True).encode("utf-8")
         info = tarfile.TarInfo(MANIFEST_NAME)
         info.size = len(encoded)
@@ -154,8 +145,8 @@ def _governed(name: str, manifest: dict[str, list[str]]) -> bool:
 def restore(payload: bytes, home: str | os.PathLike[str]) -> None:
     """Replace the paths ``payload`` governs in ``home`` (HERMES_HOME).
 
-    Hermes must not be running on this profile. Paths the archive does not
-    name are left as they are, so skills the image ships stay seeded.
+    Hermes must not be running on this profile. Its next native Skill sync
+    updates pristine defaults and retains edited ones using the saved manifest.
     """
 
     root = Path(home).resolve(strict=True)

@@ -222,6 +222,10 @@ exec runuser -u "$ASTRABOX_HERMES_PROFILE_LINUX_USER" -- env \
       >> $(printf '%q' "$log_dir/astrabox-hermes-serve.log") 2>&1
     \"\$HERMES_VENV/bin/python\" /usr/local/bin/astrabox-hermes-config-merge \
       >> $(printf '%q' "$log_dir/astrabox-hermes-serve.log") 2>&1
+    # The headless serve entry skips the CLI's bundled Skill startup sync.
+    # Restore and merge first so native origin records protect user edits.
+    \"\$HERMES_VENV/bin/python\" -c 'from tools.skills_sync import sync_skills; sync_skills(quiet=True)' \
+      >> $(printf '%q' "$log_dir/astrabox-hermes-serve.log") 2>&1
     # --skip-build: there is no npm in this image and no SPA to serve. The
     # vendor added this flag for exactly this kind of non-interactive host.
     exec \"\$HERMES_VENV/bin/hermes\" serve \

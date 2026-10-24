@@ -103,6 +103,7 @@ from astrabox.core.service.orchestrator.engine.interaction_contract import (
 )
 from astrabox.core.service.orchestrator.engine.runtime import (
     InputAdmitted,
+    InputMessageObserved,
     InteractionClosed,
     InteractionNotOpen,
     InteractionOpened,
@@ -431,6 +432,10 @@ class _Stream:
             raise CodexProtocolError(f"{method} for {item.get('type')!r} has no id")
         if item_id in self._done:
             return
+        if str(item.get("type") or "") == "userMessage":
+            client_id = str(item.get("clientId") or "").strip()
+            if client_id:
+                self._emit(InputMessageObserved(None, client_id))
         if not self._ensure_response(str(params.get("turnId") or ""), item):
             return
         completed = method == "item/completed"

@@ -702,10 +702,9 @@ def create_app() -> FastAPI:
 
     # Web identity: run the configured resolver per request and bind the result
     # so every handler's get_current_user_context sees it. The no-auth default
-    # resolver returns None (identity unasserted → local user), so this is a
-    # no-op by default; registering a resolver at the astrabox.web.identity group
-    # is what turns on authentication. Resolved once at construction (fail-loud on
-    # an unknown configured name).
+    # resolver explicitly asserts the local administrator; another resolver
+    # supplies authenticated identities. Resolve the selection at construction
+    # so an unknown configured name refuses startup.
     from astrabox.providers.identity import load_web_identity_resolver
     from astrabox.web.identity_middleware import WebIdentityMiddleware
 
@@ -714,6 +713,9 @@ def create_app() -> FastAPI:
     )
 
     web_identity_resolver = load_web_identity_resolver()
+    from astrabox.providers.environment_entry import configured_environment_entry_policy
+
+    configured_environment_entry_policy()
     app.state.web_identity_resolver = web_identity_resolver
     app.add_middleware(
         WebIdentityMiddleware,

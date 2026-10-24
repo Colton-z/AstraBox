@@ -242,6 +242,7 @@ class SessionInput(Base):
         UniqueConstraint("session_id", "client_message_id"),
         GeneratedOrderIndex("seq", name="ix_session_inputs_generated_seq").ddl_if(dialect="mysql"),
         Index(None, "session_id", "created_at", "seq"),
+        Index("ix_session_inputs_conversation_order", "session_id", "conversation_order", "seq"),
         Index(
             "ix_session_inputs_open",
             "session_id",
@@ -270,6 +271,9 @@ class SessionInput(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     delivered_at: Mapped[datetime | None]
     admitted_at: Mapped[datetime | None]
+    #: Position of the native user message in the reader's ordered output log.
+    #: None while an input has no observed native conversation message.
+    conversation_order: Mapped[int | None] = mapped_column(BigInteger)
 
 
 class SessionControl(Base):
@@ -318,6 +322,7 @@ class SessionResponse(Base):
     __tablename__ = "session_responses"
     __table_args__ = (
         Index(None, "session_id", "started_at", "seq"),
+        Index("ix_session_responses_conversation_order", "session_id", "conversation_order", "seq"),
         Index(
             "ix_session_responses_open",
             "session_id",
@@ -345,6 +350,8 @@ class SessionResponse(Base):
     import_record: Mapped[dict[str, Any] | None]
     started_at: Mapped[datetime] = mapped_column(server_default=func.now())
     ended_at: Mapped[datetime | None]
+    #: First native content position, independent of response lifecycle timing.
+    conversation_order: Mapped[int | None] = mapped_column(BigInteger)
 
 
 class SessionResponseInput(Base):

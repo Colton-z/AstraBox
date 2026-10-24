@@ -17,7 +17,7 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.providers.postgres.engine import get_engine, redacted_url
 from astrabox.providers.postgres.environment import notice_channel
-from astrabox.seams.persistence_coordination import NoticeKind, RuntimeLockCheck, SessionNotice
+from astrabox.seams.persistence_coordination import NoticeKind, RuntimeLockBusy, RuntimeLockCheck, SessionNotice
 
 logger = get_logger(__name__)
 _RECONNECT_DELAY_S = 1.0
@@ -47,8 +47,16 @@ class PostgresCoordination:
         payload = f"{notice.kind}:{notice.seq}:{notice.session_id}"
         await connection.execute(select(func.pg_notify(self._channel, payload)))
 
+    def runtime_lock(self, session_id: str) -> contextlib.AbstractAsyncContextManager[RuntimeLockCheck]:
+        return self._lock(f"session.runtime:{session_id}", wait=True)
+
+    def startup_lock(
+        self, session_id: str, *, wait: bool = True,
+    ) -> contextlib.AbstractAsyncContextManager[RuntimeLockCheck]:
+        return self._lock(f"session.startup:{session_id}", wait=wait)
+
     @asynccontextmanager
-    async def runtime_lock(self, session_id: str) -> AsyncIterator[RuntimeLockCheck]:
+    async def _lock(self, name: str, *, wait: bool) -> AsyncIterator[RuntimeLockCheck]:
         """Hold the Session's transaction advisory lock on a dedicated connection.
 
         Detected connection loss cancels the owner and refuses success. The
@@ -62,31 +70,31 @@ class PostgresCoordination:
             owner = asyncio.current_task()
             assert owner is not None
             active = True
+            checking = asyncio.Lock()
 
             def disconnected(_connection: Any) -> None:
                 if active:
                     owner.cancel()
 
             async def check() -> None:
-                if driver.is_closed():
-                    raise APIError(
-                        code="SESSION_RUNTIME_LOCK_LOST",
-                        message="runtime coordination connection was lost; supplier work may be incomplete",
-                        status_code=502,
-                    )
-                await connection.execute(select(1))
+                async with checking:
+                    if driver.is_closed():
+                        raise APIError(
+                            code="SESSION_RUNTIME_LOCK_LOST",
+                            message="runtime coordination connection was lost; supplier work may be incomplete",
+                            status_code=502,
+                        )
+                    await connection.execute(select(1))
 
             driver.add_termination_listener(disconnected)
             try:
-                await connection.execute(
-                    select(
-                        func.pg_advisory_xact_lock(
-                            func.hashtextextended(
-                                f"astrabox:{self._environment_name}:session.runtime:{session_id}", 0,
-                            )
-                        )
-                    )
+                key = func.hashtextextended(
+                    f"astrabox:{self._environment_name}:{name}", 0,
                 )
+                if wait:
+                    await connection.execute(select(func.pg_advisory_xact_lock(key)))
+                elif not (await connection.execute(select(func.pg_try_advisory_xact_lock(key)))).scalar_one():
+                    raise RuntimeLockBusy(name)
                 yield check
                 await check()
             except (asyncio.CancelledError, DBAPIError):

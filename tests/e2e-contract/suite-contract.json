@@ -30,7 +30,7 @@
       }
     },
     "tests": {
-      "no_volume_core": 602,
+      "no_volume_core": 605,
       "persistent_files": 19
     }
   },
@@ -42,9 +42,9 @@
   ],
   "playwright": {
     "exclusive": {
-      "files": 189,
-      "parallel_files": 120,
-      "parallel_tests": 214,
+      "files": 194,
+      "parallel_files": 121,
+      "parallel_tests": 215,
       "serial_files": [
         "specs/a-prepared-seat-is-not-a-promise-the-box-can-still-keep.exclusive.spec.ts",
         "specs/a2a-stream-and-interaction.exclusive.spec.ts",
@@ -64,6 +64,8 @@
         "specs/assistant-a2a-peer-auth-errors.exclusive.spec.ts",
         "specs/assistant-channel-cron-result-reaches-the-chat.exclusive.spec.ts",
         "specs/assistant-native-a2a-approval.exclusive.spec.ts",
+        "specs/assistant-platform-conversation-discovery.exclusive.spec.ts",
+        "specs/assistant-protocol-fault-exit.exclusive.spec.ts",
         "specs/assistant-runtime-availability-status.exclusive.spec.ts",
         "specs/assistant-tool-card-live-and-cold.exclusive.spec.ts",
         "specs/assistant-tool-errors-live-and-cold.exclusive.spec.ts",
@@ -80,6 +82,7 @@
         "specs/channel-message-supersedes-exited-question.exclusive.spec.ts",
         "specs/channel-observed-message-runs-once-after-authorization.exclusive.spec.ts",
         "specs/channel-response-policy-judges-ordinary-messages.exclusive.spec.ts",
+        "specs/claude-local-command-lifecycle.exclusive.spec.ts",
         "specs/console-axe.exclusive.spec.ts",
         "specs/console-extension-save-reschedules-prewarm.exclusive.spec.ts",
         "specs/cross-host-backend-claim.exclusive.spec.ts",
@@ -97,6 +100,7 @@
         "specs/investment-research-production-journey.exclusive.spec.ts",
         "specs/native-diff-failure-and-recovery.exclusive.spec.ts",
         "specs/non-terminal-background-bash-task-update.exclusive.spec.ts",
+        "specs/oidc-model-applications.exclusive.spec.ts",
         "specs/opensandbox-agent-prewarm-real-extensions.exclusive.spec.ts",
         "specs/ordinary-process-opens-once.exclusive.spec.ts",
         "specs/ownerless-sandbox-reaping-preserves-prepared-capacity.exclusive.spec.ts",
@@ -116,14 +120,14 @@
         "specs/subagent-replay-recovery.exclusive.spec.ts",
         "specs/untouched-tab-catches-up-after-backend-restart.exclusive.spec.ts"
       ],
-      "serial_tests": 110,
+      "serial_tests": 114,
       "serial_workers": 1,
-      "tests": 324,
+      "tests": 329,
       "workers": 5
     },
     "parallel": {
       "files": 33,
-      "tests": 47,
+      "tests": 48,
       "workers": 5
     }
   },

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "astrabox"
-version = "0.1.11"
+version = "0.1.12"
 description = "AstraBox Community — an open, self-hosted agent runtime that streams a sandboxed coding agent to your frontend over the AI-SDK Data-Stream-Protocol."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -242,8 +242,11 @@ dbos = "astrabox.providers.scheduler_dbos:DbosSchedulerProvider"
 # a downstream registers its controller here (self-registers on import via
 # register_admission_controller) so the turn/session hot path never needs a fork.
 
-# Community default identity: no API auth. One web identity seam covers the
-# browser, JSON API, and public MCP transport.
+# Environment authorization is independent of authentication and resource ACLs.
+[project.entry-points."astrabox.environment.entry"]
+members = "astrabox.providers.environment_entry:MembersEnvironmentEntryPolicy"
+
+# One web identity seam covers the browser, JSON API, and public MCP transport.
 [project.entry-points."astrabox.web.identity"]
 local = "astrabox.providers.identity:LocalNoAuthWebIdentityResolver"
 # Config-only SSO resolvers (loader instantiates the class; VerifiedJwt fails

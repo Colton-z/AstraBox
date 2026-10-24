@@ -11,7 +11,8 @@ from astrabox.api.routes._shared import _resolve_user
 from astrabox.api.routes.response_envelope import ApiEnvelope
 from astrabox.common.utils.api_response import success_response
 from astrabox.common.utils.errors import APIError
-from astrabox.common.utils.user_context import PLATFORM_ADMIN_ROLE
+from astrabox.common.utils.user_context import get_asserted_user_context
+from astrabox.core.service.environment_access import can_enter_environment
 from astrabox.config.settings import get_settings, validate_environment_name
 from astrabox.persistence.repository.environment_repository import EnvironmentRepository
 from astrabox.seams.scheduler import configured_scheduler, configured_scheduler_name
@@ -80,10 +81,10 @@ async def _get(name: str) -> dict:
 
 @router.get("/api/v1/environments", response_model=ApiEnvelope[list[EnvironmentView]])
 async def list_accessible_environments(request: Request):
-    user = await _resolve_user(request)
-    rows = await EnvironmentRepository().list_accessible(
-        user.user_id, platform_admin=PLATFORM_ADMIN_ROLE in user.roles,
-    )
+    if not await can_enter_environment(get_asserted_user_context(), operation="list Environments"):
+        return success_response([])
+    row = await _get(get_settings().environment_name)
+    rows = [row]
     return success_response(rows)
 
 

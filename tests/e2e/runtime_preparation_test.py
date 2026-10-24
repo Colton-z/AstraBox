@@ -7,6 +7,7 @@ the platform, and each message is prepared once.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -1069,6 +1070,38 @@ def _console_reply(client: httpx.Client, sid: str, content: str) -> tuple[Reply,
     return reply, receipt_wall
 
 
+def _model_header_gate(server: str, marker: str | None) -> None:
+    program = """
+import json, sys
+from model_header_gate import CONFIG, CONTROL
+assert CONFIG.is_file(), 'the latency deployment needs the model-header gate on the shipped edge path'
+value = json.load(sys.stdin)
+temporary = CONTROL.with_suffix('.tmp')
+temporary.write_text(json.dumps(None if value is None else {'marker': value, 'seconds': 65}))
+temporary.replace(CONTROL)
+"""
+    subprocess.run(
+        ["docker", "exec", "-i", server, "python", "-c", program],
+        input=json.dumps(marker), text=True, capture_output=True, check=True, timeout=30,
+    )
+
+
+def _model_header_receipts(server: str, marker: str) -> dict:
+    program = """
+import json, sys
+from model_header_gate import CONFIG, RECEIPTS
+marker = sys.argv[1]
+rows = [json.loads(line) for line in RECEIPTS.read_text().splitlines()]
+print(json.dumps({
+    'events': [row for row in rows if row['marker'] == marker],
+    'edge': json.loads(CONFIG.read_text())['edge_container'],
+}))
+"""
+    rows = _run_json(["docker", "exec", server, "python", "-c", program, marker])
+    assert isinstance(rows, dict)
+    return rows
+
+
 def test_a_delivered_message_is_prepared_once_and_streams_while_it_is_answered(
     e2e_client: httpx.Client, live_test_deadline: float,
 ) -> None:
@@ -1082,6 +1115,10 @@ def test_a_delivered_message_is_prepared_once_and_streams_while_it_is_answered(
     the runtime receives it. The first text reaching the console within
     moments of reaching the platform is also what shows the reply streams:
     held back until the end, it would wait out the reply.
+
+    One real model response is silent for 65 seconds before its headers reach
+    the shipped sandbox edge. Its request receipt and native store must show
+    one attempt and one input; an SDK retry must not hide an edge 504.
     """
     profile = current_profile()
     server = require_service_container(SERVER_CONTAINER_HANDLE)
@@ -1104,12 +1141,53 @@ def test_a_delivered_message_is_prepared_once_and_streams_while_it_is_answered(
     _set_turn_delay(server, None)
     measured_from = time.time()
     replies: list[tuple[Reply, float]] = []
-    for topic in ("why the sky is blue", "how tides work", "why leaves change colour"):
-        replies.append(_console_reply(e2e_client, sid, (
-            f"Write about 150 words explaining {topic}. Plain prose, no lists, no tools."
-        )))
-        wait_until_settled(e2e_client, sid)
+    marker = "MODEL_IDLE_" + uuid.uuid4().hex
+    _model_header_gate(server, marker)
+    try:
+        for index, topic in enumerate(("why the sky is blue", "how tides work", "why leaves change colour")):
+            context = f" Context label: {marker}." if index == 0 else ""
+            replies.append(_console_reply(e2e_client, sid, (
+                f"Write about 150 words explaining {topic}.{context} Plain prose, no lists, no tools."
+            )))
+            wait_until_settled(e2e_client, sid)
+            if index == 0:
+                _model_header_gate(server, None)
+    finally:
+        _model_header_gate(server, None)
     log = _server_log(server, measured_from)
+
+    proxy_evidence = _model_header_receipts(server, marker)
+    gateway = proxy_evidence["events"]
+    attempts = [row for row in gateway if row["phase"] == "received"]
+    headers = [row for row in gateway if row["phase"] == "headers"]
+    assert len(attempts) == len(headers) == 1, f"the silent model response was retried: {gateway}"
+    edge = _run_json(["docker", "inspect", proxy_evidence["edge"]])[0]
+    addresses = {network["IPAddress"] for network in edge["NetworkSettings"]["Networks"].values()}
+    assert attempts[0]["peer"] in addresses, "the native model request must traverse the actual nginx edge"
+    assert headers[0]["status"] == 200 and headers[0]["quiet_seconds"] >= 65, gateway
+    assert not [row for row in gateway if row["phase"] == "failed"], gateway
+    native = [row["entry"] for row in transcript_entries(sid) if not row["subpath"]]
+    users = [index for index, entry in enumerate(native)
+             if entry.get("type") == "user" and marker in json.dumps(entry.get("message", {}).get("content"))]
+    assert len(users) == 1, "the same delayed input must occur once in the native store"
+    end = next((index for index in range(users[0] + 1, len(native))
+                if native[index].get("type") == "user"), len(native))
+    native_text = "".join(
+        part["text"] for entry in native[users[0] + 1:end] if entry.get("type") == "assistant"
+        for part in entry["message"]["content"] if part.get("type") == "text"
+    )
+    assert native_text.strip() == replies[0][0].text.strip(), "the complete native reply must reach the stream"
+    retained = [message for message in history(e2e_client, sid)
+                if message.get("id") == replies[0][0].response_id]
+    assert len(retained) == 1, "the delayed native reply must be retained once in history"
+    assert message_text(retained[0]).strip() == native_text.strip(), "history must retain the complete native reply"
+    assert retained[0]["metadata"]["status"] == "ended"
+    assert retained[0]["metadata"]["outcome"] == "completed"
+    print(json.dumps({"model_proxy": {
+        "receipts": gateway, "edge": edge["Id"], "native_input_count": len(users),
+        "retained_response": retained[0]["id"],
+        "native_reply_sha256": hashlib.sha256(native_text.encode()).hexdigest(),
+    }}), flush=True)
 
     received = [float(m["at"]) for m in _RECEIVED.finditer(log) if m["sid"] == sid]
     inbound: list[float] = []

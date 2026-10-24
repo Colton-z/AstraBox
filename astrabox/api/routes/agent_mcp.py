@@ -132,7 +132,11 @@ def register_agent_mcp_routes(
         if presented.lower().startswith("bearer "):
             secret = presented[7:].strip()
             if secret.startswith(SECRET_PREFIX):
-                return await token_service.resolve(secret)
+                user, token_scope = await token_service.resolve(secret)
+                from astrabox.core.service.environment_access import require_environment_access
+
+                await require_environment_access(user, operation="MCP client key")
+                return user, token_scope
         # This path is exempt from the front-door reject (the middleware
         # cannot judge which credential kind a bearer is), so only an identity
         # the middleware actually stamped counts here. The never-raising

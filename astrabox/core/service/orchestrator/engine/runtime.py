@@ -35,6 +35,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, runtime_checkable
 
+from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator.engine.base import (
     EngineCapabilityManifest,
     validate_manifest_vocabulary,
@@ -93,6 +94,21 @@ class RuntimeCursorExpired(RuntimeError):
     :meth:`RuntimeClient.state` instead."""
 
 
+RUNTIME_PROTOCOL_INCOMPATIBLE = "runtime_protocol_incompatible"
+
+
+class RuntimeProtocolError(APIError):
+    """The runtime's protocol cannot be read; its execution outcome is unknown.
+
+    Retain the last readable cursor and native execution facts. Reconnecting
+    cannot repair this contract; an operator must correct the runtime first.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(code="RUNTIME_PROTOCOL_INCOMPATIBLE", message=message,
+                         status_code=502, retryable=False)
+
+
 class RuntimeInputRefused(RuntimeError):
     """The runtime declined an input; ``code`` and ``message`` are the user-facing reason."""
 
@@ -149,6 +165,20 @@ class InputAdmitted(RuntimeEvent):
     process it would still answer it (or has answered it). Until this event the
     platform keeps custody of the input and resubmits it to a replacement
     runtime."""
+
+    input_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class InputMessageObserved(RuntimeEvent):
+    """An exact input observed in the native conversation, in native event order.
+
+    Queue admission is not a conversation position. The adapter emits this
+    from the native user message or an exact native command-consumption
+    record, never from the fact that a queued submit succeeded. The platform
+    records the message with the same cursor and ordered output log as native
+    reply content, retaining its first position without changing timestamps.
+    """
 
     input_id: str
 
@@ -296,6 +326,7 @@ class RuntimeState:
     cursor: RuntimeCursor | None = None
     #: Native closure receipts retained by the runtime for reader recovery.
     closed_interactions: tuple[InteractionClosed, ...] = ()
+    refused_inputs: tuple[InputRefused, ...] = ()
 
 
 # --------------------------------------------------------------------------

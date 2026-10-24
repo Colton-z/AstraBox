@@ -11,8 +11,8 @@
 <h3 align="center"><a href="https://demo.astrabox.ai/">Try AstraBox online →</a></h3>
 
 <p align="center">
-  No signup. Ask an Agent to write and run code with a free model.<br />
-  Offline sandbox · Sessions last about 2 minutes.
+  Explore the console and run an Agent in a sandbox.<br />
+  The demo has its own model, network and session limits.
 </p>
 
 <p align="center">
@@ -36,8 +36,9 @@
 
 AstraBox runs the Agent programs you already use (Claude Code, Codex,
 DeepSeek Harness, Pi and Hermes) as cloud Agents on your own infrastructure,
-with any model. It handles the sandboxes, streaming, state and credentials, so
-you do not have to turn an Agent program into a service yourself.
+with a model service compatible with the selected Agent program. It handles
+sandboxes, streaming, state and credentials, so you do not have to turn an
+Agent program into a service yourself.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Colton-z/AstraBox/main/scripts/install.sh | bash
@@ -52,9 +53,11 @@ See the [Quickstart](#quickstart) for requirements.
   session format carry over.
 - **Starts in seconds, survives a lost sandbox** — prewarmed sandboxes start
   conversations quickly, and each program's native session is kept in the
-  platform database and restored into a new sandbox on the next message.
-- **Keys stay outside the sandbox** — credentials are injected at the egress
-  boundary; the Agent only ever sees a placeholder.
+  platform database and restored into a new sandbox on the next message. A
+  confirmed sandbox loss fails the affected execution; AstraBox does not
+  automatically replay its task.
+- **Protected credentials** — with protected delivery enabled, credentials are
+  injected at the egress boundary and the Agent sees a placeholder.
 - **Reachable from anywhere** — the web console, HTTP API, CLI, MCP, schedules,
   signed webhooks, and messaging platforms such as Slack, Discord, Telegram,
   WhatsApp and LINE.
@@ -73,8 +76,10 @@ workspace and the Agent program's state.
 
 | Concept | Description | Analogy |
 | --- | --- | --- |
-| **Agent** | A cloud Agent powered by an installed Agent program | "Cloud teammate" |
-| **RuntimeProfile** | The Agent program, sandbox, model connection, network access, and lifecycle used for a Session | "Desk and toolbox" |
+| **Environment** | A deployment boundary with its own Agents, access rules, credentials, conversations, jobs and runtime resources | "An isolated business environment" |
+| **Agent** | A reusable configuration for a cloud Agent powered by an installed Agent program | "Cloud teammate" |
+| **Assistant** | A personal workspace with native memory, Skills and jobs shared across its conversations | "Personal cloud assistant" |
+| **RuntimeProfile** | An Environment-local recipe selecting the Agent program, sandbox image, model connection, network access and lifecycle | "Desk and toolbox" |
 | **Session** | One stateful Agent execution, including its messages, Events, and current state | "A specific piece of work" |
 | **Event** | The real-time output and state changes produced by a Session | "Live progress feed" |
 
@@ -86,7 +91,29 @@ credentials.
 
 [Explore AstraBox capabilities →](docs/capabilities.md)
 
+## Find, share and connect Agents
+
+- **Agent pages and share links** — open `/agents/{agent_id}` for an Agent
+  and share that page. Recipients sign in when required and start their own
+  conversation under the existing access rules. A share link does not grant access.
+- **Existing-conversation A2A** — discover your own Agent conversations by their
+  generated titles and Agent names, then send work to a selected conversation
+  with its native context intact. An Agent administrator configures whether its
+  Agent can discover no targets, all accessible Agents, or selected Agents.
+  This does not expose another user's conversations or channel conversations.
+- **Scoped administration** — Agent administrators manage their Agents'
+  triggers and runs, inspect session logs, and export logs for the Agents they
+  administer. Platform-wide settings remain with platform administrators.
+
+See [Agent authoring](docs/authoring-agents.md), [A2A](docs/a2a.md),
+[Sessions](docs/sessions.md) and [automation](docs/deployments.md).
+
 ## Enterprise infrastructure included
+
+Each Environment has its own deployment state and business database. Separate
+Environments use distinct database roles and credentials, even when they share
+a PostgreSQL service. RuntimeProfiles configure execution inside an Environment;
+they do not create another Environment. See [deployment isolation](docs/deploy.md#environments).
 
 One deployment brings up the pieces a team usually assembles by hand:
 
@@ -104,8 +131,9 @@ One deployment brings up the pieces a team usually assembles by hand:
 - **Isolated sandboxes** — [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox)
   on one Docker host or a Kubernetes cluster, with warm capacity so
   conversations start in seconds.
-- **Credentials outside the sandbox** — Vault credentials are injected at the
-  sandbox's egress boundary; the Agent only ever sees a placeholder.
+- **Credentials outside the sandbox** — enable protected delivery to inject
+  Vault credentials at the sandbox's egress boundary, with placeholders in
+  the Agent program. See [credential protection](docs/egress-credential-injection.md).
 - **Channels and triggers** — schedules, signed webhooks and messaging
   platforms through official [Satori](https://github.com/satorijs/satori)
   adapters.
@@ -224,8 +252,12 @@ on team login, which the installer does with `ASTRABOX_INSTALL_TEAM_LOGIN=casdoo
 Before exposing it to another network, put it behind an HTTPS proxy as described
 in [Team login](https://www.astrabox.ai/docs/team-login#put-the-login-flow-behind-a-proxy).
 
-Run the installer again to upgrade: it installs the latest release over the
-current one and keeps your Sessions, credentials and settings.
+Read the [release notes](https://github.com/Colton-z/AstraBox/releases) before
+upgrading. Run the installer again to install the latest release while retaining
+Sessions, credentials and settings. Use matching server and runtime image
+versions; existing sandboxes keep their installed CLI until they are replaced.
+Choose `ASTRABOX_ENVIRONMENT_NAME` before the first startup and keep it stable;
+changing it does not copy data into another Environment.
 
 ### Run from a clone
 
@@ -281,6 +313,8 @@ systems; the two approaches complement each other.
 - [Connect messaging platforms](docs/channels.md)
 - [Deploy AstraBox](docs/deploy.md)
 - [HTTP API](docs/api.md)
+- [Agent-to-Agent communication](docs/a2a.md)
+- [Release notes · English and 简体中文](https://github.com/Colton-z/AstraBox/releases)
 
 ## Development
 

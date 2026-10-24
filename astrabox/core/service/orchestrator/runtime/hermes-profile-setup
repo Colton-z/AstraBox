@@ -31,7 +31,14 @@ case "$workspace_source" in
     ;;
 esac
 
-mkdir -p "$workspace_source" "$hermes_home/logs"
+runuser -u "$linux_user" -- mkdir -p "$workspace_source" "$hermes_home/logs" "$hermes_home/plugins"
+# Hermes installs native plugins as the profile account. The common CLI
+# bootstrap creates this root as a platform constraint; Hermes needs it mutable.
+if [ -L "$hermes_home/plugins" ]; then
+  printf 'HERMES_PROFILE_PLUGIN_ROOT_INVALID path=%s\n' "$hermes_home/plugins" >&2
+  exit 68
+fi
+chown -h "$linux_user:$linux_user" "$hermes_home/plugins"
 
 if [ "$workspace" != "$workspace_source" ]; then
   if [ -L "$workspace" ]; then
@@ -58,7 +65,8 @@ install -d -o root -g root -m 0755 "$managed_dir"
 if [ -n "${ASTRABOX_HERMES_MANAGED_CONFIG:-}" ]; then
   managed_tmp="$(mktemp "$managed_dir/.config.yaml.XXXXXX")"
   "$HERMES_VENV/bin/python" -c '
-import json, os, sys, yaml
+import json, os, sys
+import hermes_yaml as yaml
 config = json.loads(os.environ["ASTRABOX_HERMES_MANAGED_CONFIG"])
 overwrite = json.loads(os.environ.get("ASTRABOX_HERMES_CONFIG_OVERWRITE") or "{}")
 agent = config.get("agent")
@@ -76,11 +84,9 @@ else
   rm -f -- "$managed_dir/config.yaml"
 fi
 
-# This directory is the workload account's persistent profile, never a shared
-# system path. The env file was written through the sandbox file API as root;
-# hand the entire newly-provisioned profile back to its owner before Hermes
-# opens state.db or writes logs.
-chown -R "$linux_user:$linux_user" "$profile_home"
+# Identity provisioning owns the profile roots; native files stay owned by
+# Hermes, and the platform publishes its private files with an explicit owner.
+# A running profile's snapshot and PM workers may remove temporary files here.
 if ! runuser -u "$linux_user" -- test -w "$workspace"; then
   printf 'HERMES_PROFILE_WORKSPACE_NOT_WRITABLE user=%s workspace=%s source=%s\n' \
     "$linux_user" "$workspace" "$workspace_source" >&2
