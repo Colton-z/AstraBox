@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import time
 import uuid
 from typing import Any
@@ -41,11 +40,6 @@ from astrabox.core.service.orchestrator.agent_config_service import AgentConfigS
 from astrabox.core.service.orchestrator.vault_service import VaultService
 
 logger = get_logger(__name__)
-
-_SESSION_CREATION_TIMEOUT_SECONDS = int(
-    os.getenv("ASTRABOX_SESSION_CREATION_TIMEOUT_SECONDS", "") or 300
-)
-
 
 class SessionService:
     def __init__(
@@ -371,24 +365,6 @@ class SessionService:
             clean["runtime_unavailable"] = True
             clean["last_error"] = "sandbox expired"
             return clean
-        if state == SessionState.CREATING.value:
-            latest_touch = None
-            for key in ("updated_at", "created_at"):
-                raw_value = str(clean.get(key) or "").strip()
-                if not raw_value:
-                    continue
-                try:
-                    parsed = parse_iso(raw_value)
-                except (TypeError, ValueError):
-                    continue
-                if latest_touch is None or parsed > latest_touch:
-                    latest_touch = parsed
-            if latest_touch is not None:
-                if (utcnow() - latest_touch).total_seconds() > _SESSION_CREATION_TIMEOUT_SECONDS:
-                    clean["state"] = SessionState.TERMINATED.value
-                    clean["runtime_unavailable"] = True
-                    clean["last_error"] = "session creation timed out"
-                    return clean
         if (
             str(clean.get("state") or "") == SessionState.READY.value
             and (bool(clean.get("runtime_unavailable"))

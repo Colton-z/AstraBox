@@ -2263,9 +2263,9 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ASTRABOX_SESSION_CREATION_TIMEOUT_SECONDS",
         "internal",
         "300",
-        "Timeout for the full Session creation pipeline (provision and connect). "
-        "The request returns a timeout error after this limit.",
-        "astrabox.core.service.orchestrator.session_service",
+        "Grace period before the startup sweep terminates a CREATING Session "
+        "whose startup lock has no holder. Active startup owners are not timed out by age.",
+        "astrabox.core.service.orchestrator.bootstrap_reconciler",
     ),
     (
         "ASTRABOX_SANDBOX_CONTROL_DEADLINE_S",

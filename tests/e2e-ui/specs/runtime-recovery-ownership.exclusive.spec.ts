@@ -1,10 +1,9 @@
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
-import path from 'node:path';
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
+import { execFileSync } from 'node:child_process';
+import { expect, test as base, type APIRequestContext, type Page } from '@playwright/test';
 
 import { AstraApi, messageText } from '../fixtures/astraApi';
 import { postgresRows, postgresTextRows, sqlLiteral } from '../fixtures/dbOracle';
-import { repoRoot } from '../fixtures/env';
+import { configuredRecoveryReplicas, servicePython, type RecoveryReplica } from '../fixtures/recoveryReplicas';
 import { PlatformApi } from '../fixtures/platformApi';
 import { killSandbox, requireSandboxHandle, waitForSandboxStopped } from '../fixtures/sandboxOps';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
@@ -15,10 +14,18 @@ import {
   SERVER_CONTAINER_HANDLE,
 } from '../fixtures/serviceContainer';
 
+const test = base.extend<{}, { recoveryReplicas: { directory: string; children: RecoveryReplica[] } }>({
+  recoveryReplicas: [async ({}, use) => {
+    await use(configuredRecoveryReplicas());
+  }, { scope: 'worker' }],
+});
+
 const sessions = trackSessions();
 const agents: string[] = [];
+const assistants: string[] = [];
 onPassOnly(async ({ request }) => {
   for (const id of agents.splice(0)) await new AstraApi(request).deleteAgent(id);
+  for (const id of assistants.splice(0)) await new AstraApi(request).deleteAssistant(id);
 });
 
 /** The session row's box binding and the claim of the recovery driving it. */
@@ -53,7 +60,15 @@ function clearBinding(sessionId: string, sandboxId: string): string[] {
 
 async function start(api: AstraApi) {
   return test.step('Create a cold Agent Session and reach READY before recovery', async () => {
-    const agent = await api.createColdTestAgent(`__e2e_runtime_recovery_${Date.now()}`);
+    const configured = await api.defaultAgent();
+    const model = String(configured.model || '').trim();
+    const runtimeProfile = String(process.env.ASTRABOX_E2E_CREDENTIAL_COLD_ENVIRONMENT || '').trim();
+    expect(model, 'the deployed Agent declares this case model route').not.toBe('');
+    expect(runtimeProfile, 'the deployment declares its cold RuntimeProfile').not.toBe('');
+    const agent = await api.createAgent({
+      name: `__e2e_runtime_recovery_${Date.now()}`, model,
+      runtime_profile_name: runtimeProfile, prepared_capacity: 0,
+    });
     agents.push(agent.agent_id);
     const created = await api.startConversation(agent.agent_id);
     sessions.push(created.session_id);
@@ -136,52 +151,147 @@ test('explicit recovery replaces a cleared dead cache and keeps browser history'
   await explicitRecovery(page, request, 'cleared');
 });
 
-test('independent recovery replicas converge before the first created runtime publishes its binding', async ({ page, request }) => {
+test('independent recovery replicas converge before the first created runtime publishes its binding', async ({ page, request, recoveryReplicas }) => {
   const api = new AstraApi(request);
   const sessionId = await start(api);
   const marker = `REPLICA_MEMORY_${Date.now()}`;
   const first = await remember(api, page, sessionId, marker);
   const dead = await clearAndKill(api, sessionId);
   const server = requireServiceContainer(SERVER_CONTAINER_HANDLE);
-  const directory = `/tmp/astrabox-recovery-${sessionId}`;
-  const python = (program: string, ...args: string[]) => execFileSync('docker', [
-    'exec', server, 'python', '-c', program, ...args,
-  ], { encoding: 'utf8', timeout: 20_000 });
-  python('import pathlib,sys; pathlib.Path(sys.argv[1]).mkdir()', directory);
-  execFileSync('docker', ['cp', path.join(repoRoot, 'tests/e2e-ui/fixtures/runtime_recovery_replica.py'), `${server}:${directory}/replica.py`], { timeout: 20_000 });
-  const read = (file: string): string => python('import pathlib,sys; p=pathlib.Path(sys.argv[1]); print(p.read_text() if p.exists() else "")', `${directory}/${file}`).trim();
+  const { directory, children } = recoveryReplicas;
+  const python = (program: string, ...args: string[]) => servicePython(server, program, ...args);
+  const read = (file: string, location = directory): string => python('import pathlib,sys; p=pathlib.Path(sys.argv[1]); print(p.read_text() if p.exists() else "")', `${location}/${file}`).trim();
   const release = (file: string) => python('import pathlib,sys; pathlib.Path(sys.argv[1]).touch()', `${directory}/${file}`);
-  const children: { process: ChildProcess; output: string; done: Promise<number | null> }[] = [];
-  const settledWithin = async (done: Promise<number | null>, milliseconds: number) => {
-    let timer: NodeJS.Timeout | undefined;
-    try {
-      return await Promise.race([
-        done.then(() => true), new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), milliseconds); }),
-      ]);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-  };
-  const replica = (mode: string) => {
-    const process = spawn('docker', ['exec', server, 'python', `${directory}/replica.py`, '--session-id', sessionId, '--directory', directory, '--mode', mode]);
-    const item = { process, output: '', done: new Promise<number | null>((resolve, reject) => {
-      process.on('error', reject); process.on('close', resolve);
-    }) };
-    process.stdout.on('data', (part) => { item.output += part.toString(); });
-    process.stderr.on('data', (part) => { item.output += part.toString(); });
-    children.push(item);
-    return item;
+  const replica = (mode: string, location = directory, assistantId = '') => {
+    const child = children.find((candidate) => candidate.mode === mode);
+    if (!child || child.location !== location) throw new Error(`replica ${mode} was not configured for this location`);
+    python('import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2])',
+      `${location}/${mode}.request.json`, JSON.stringify({ session_id: sessionId, assistant_id: assistantId }));
+    return child;
   };
   const recoveryOwner = () => sessionBinding(sessionId)?.runtime_recovery_owner ?? null;
-  try {
+  const interruptedStartups = async () => {
+    // The startup runs in a separate real process, and the serving replica's
+    // periodic watcher was already bootstrapped before this Session existed.
+    // Neither scenario writes Session state or substitutes the clock/provider.
+    await Promise.all(['before-allocation', 'after-allocation', 'assistant-before-allocation'].map(async (mode) => {
+      await test.step(`An interrupted ${mode} startup settles through the periodic sweep`, async () => {
+        const location = `${directory}/${mode}`;
+        let assistantId = '';
+        if (mode === 'assistant-before-allocation') {
+          const profile = await api.assistantEnvironmentName();
+          const assistant = await api.createAssistant({
+            display_name: `__e2e_orphan_materializer_${Date.now()}`,
+            runtime_profile_name: profile,
+            model_config_override: { model_name: await api.assistantModelName(profile) },
+          });
+          assistantId = assistant.assistant_id;
+          assistants.push(assistantId);
+        }
+        const child = replica(mode, location, assistantId);
+        await expect.poll(() => {
+          if (child.process.exitCode !== null) throw new Error(`${mode} exited ${child.process.exitCode}: ${child.output.slice(-4000)}`);
+          return read('accepted.json', location);
+        }, { timeout: 30_000 }).not.toBe('');
+        const accepted = JSON.parse(read('accepted.json', location)) as {
+          session_id: string; grace_seconds: number; scan_interval_seconds: number;
+        };
+        const sid = accepted.session_id;
+        sessions.push(sid);
+        expect(accepted.grace_seconds, 'this candidate declares a short real startup grace').toBeGreaterThan(0);
+        expect(accepted.grace_seconds).toBeLessThanOrEqual(10);
+        expect(accepted.scan_interval_seconds).toBeLessThanOrEqual(2);
+        const gate = mode === 'after-allocation' ? 'created.json' : 'before-create.json';
+        await expect.poll(() => read(gate, location), { timeout: 90_000 }).not.toBe('');
+        const rows = () => postgresRows<{
+          state: string; sandbox_id: string | null; startup_allocation: { sandbox_id: string } | null;
+          runtime_recovery_owner: string | null; last_error: string | null; elapsed: number;
+        }>(`SELECT state, sandbox_id, startup_allocation, runtime_recovery_owner, last_error, `
+          + `EXTRACT(EPOCH FROM clock_timestamp()-GREATEST(updated_at,created_at)) AS elapsed `
+          + `FROM sessions WHERE session_id=${sqlLiteral(sid)}`)[0]!;
+        const held = rows();
+        expect(held.state).toBe('CREATING');
+        expect(held.sandbox_id).toBeNull();
+        expect(held.runtime_recovery_owner).toBeTruthy();
+        if (mode !== 'after-allocation') expect(held.startup_allocation).toBeNull();
+        const receipt = assistantId ? null : await api.postTurnInput(sid, `QUEUED_BEFORE_STARTUP_${sid}`);
+        if (receipt) expect(receipt.state, 'holding a startup lock must not block accepted input custody').toBe('pending');
+        let box: Awaited<ReturnType<typeof requireSandboxHandle>> | undefined;
+        if (mode === 'after-allocation') {
+          const native = JSON.parse(read('created.json', location)) as { sandbox_id: string };
+          expect(held.startup_allocation?.sandbox_id).toBe(native.sandbox_id);
+          box = await requireSandboxHandle(api, native.sandbox_id);
+          // Age exceeds both grace and multiple watcher ticks, but an active
+          // replica still owns this slow startup and no cleanup may kill it.
+          await expect.poll(() => Number(rows().elapsed), { timeout: 30_000 })
+            .toBeGreaterThan(accepted.grace_seconds + 2 * accepted.scan_interval_seconds);
+          expect(rows().state).toBe('CREATING');
+          expect((await api.getSession(sid)).state).toBe('CREATING');
+        } else {
+          expect(Number(rows().elapsed), 'kill the allocation-free owner inside its grace period')
+            .toBeLessThan(accepted.grace_seconds);
+        }
+        python(`import os,pathlib,signal,sys
+root=pathlib.Path(sys.argv[1]); mode=sys.argv[2]
+pid=int((root/(mode+'.pid')).read_text())
+parts=(pathlib.Path('/proc')/str(pid)/'cmdline').read_bytes().split(b'\\0')
+if sys.argv[3].encode() not in parts or str(root).encode() not in parts:
+    raise RuntimeError('startup PID does not belong to this fixture')
+os.kill(pid,signal.SIGKILL)
+`, location, mode, `${directory}/replica.py`);
+        expect(await child.done, child.output.slice(-4000)).not.toBe(0);
+        const ended = await api.waitForSessionState(sid, 'TERMINATED', 30_000);
+        expect(ended.last_error).toContain('startup abandoned');
+        expect(rows().state, 'terminal state must be durable, not a read-time age projection').toBe('TERMINATED');
+        if (receipt) {
+          await expect.poll(async () => (await api.getMessages(sid)).messages.find(
+            (message) => (message.metadata as { input_id?: string } | undefined)?.input_id === receipt.input_id,
+          )?.metadata, { timeout: 30_000 }).toMatchObject({ state: 'failed' });
+        }
+        if (assistantId) {
+          expect((await api.getAssistant(assistantId)).workspace_state,
+            'the actual failed Assistant materializer must not leave its owner MATERIALIZING')
+            .toBe('HIBERNATING');
+          const workspace = postgresRows<Record<string, unknown>>(
+            `SELECT state, current_sandbox_id, provisioning_session_id, `
+              + `provisioning_sandbox_generation, last_error FROM assistant_workspaces `
+              + `WHERE assistant_id=${sqlLiteral(assistantId)}`,
+          )[0];
+          expect(workspace, 'an allocation-free failure releases the materializer claim and retains its cause')
+            .toEqual({
+              state: 'HIBERNATING', current_sandbox_id: null,
+              provisioning_session_id: null, provisioning_sandbox_generation: null,
+              last_error: 'materialization_startup_owner_exited',
+            });
+          await test.info().attach('assistant-startup-owner.json', {
+            body: JSON.stringify({ assistantId, workspace }), contentType: 'application/json',
+          });
+        }
+        if (box) {
+          await waitForSandboxStopped(box, 30_000);
+          await expect.poll(() => rows().startup_allocation, { timeout: 30_000 }).toBeNull();
+        }
+        const observer = await page.context().newPage();
+        await openSessionView(observer, sid);
+        await expect(observer.getByTestId('run-view')).toBeVisible();
+        await expect(observer.getByText(String(ended.last_error), { exact: false })).toBeVisible();
+        await observer.close();
+        await test.info().attach(`startup-owner-${mode}.json`, {
+          body: JSON.stringify({ accepted, held, ended, durable: rows(), receipt, native: box }),
+          contentType: 'application/json',
+        });
+      });
+    }));
+  };
+  const concurrentRecovery = async () => {
     const follower = replica('follower');
     await expect.poll(() => {
-      if (follower.process.exitCode !== null) throw new Error(follower.output.slice(-4000));
+      if (follower.process.exitCode !== null) throw new Error(`follower exited ${follower.process.exitCode}: ${follower.output.slice(-4000)}`);
       return read('admitted');
     }, { timeout: 60_000 }).not.toBe('');
     const winner = replica('winner');
     await expect.poll(() => {
-      if (winner.process.exitCode !== null) throw new Error(winner.output.slice(-4000));
+      if (winner.process.exitCode !== null) throw new Error(`winner exited ${winner.process.exitCode}: ${winner.output.slice(-4000)}`);
       return read('created.json');
     }, { timeout: 90_000 }).not.toBe('');
     const winnerId = (JSON.parse(read('created.json')) as { sandbox_id: string }).sandbox_id;
@@ -211,25 +321,13 @@ test('independent recovery replicas converge before the first created runtime pu
     expect(messageText(reply).trim()).toBe(marker);
     await expect(page.getByTestId('assistant-message').last().getByTestId('assistant-text')).toHaveText(marker);
     expect((await api.waitForSessionReady(sessionId)).sandbox_id).toBe(winnerId);
+    await api.archiveSession(sessionId);
+  };
+  try {
+    await Promise.all([interruptedStartups(), concurrentRecovery()]);
   } finally {
     release('recover'); release('publish');
     for (const [index, child] of children.entries()) {
-      const finished = await settledWithin(child.done, 10_000);
-      if (!finished) {
-        const mode = index === 0 ? 'follower' : 'winner';
-        python(`import os,pathlib,signal,sys
-root=pathlib.Path(sys.argv[1]); mode=sys.argv[2]
-pid=int((root/(mode+'.pid')).read_text())
-cmd=pathlib.Path('/proc')/str(pid)/'cmdline'
-if cmd.exists():
-    parts=cmd.read_bytes().split(b'\\0')
-    if str(root/'replica.py').encode() not in parts: raise RuntimeError('replica PID no longer belongs to this probe')
-    os.kill(pid, signal.SIGTERM)
-`, directory, mode);
-        if (!await settledWithin(child.done, 5_000)) {
-          throw new Error(`owned ${mode} replica did not exit after verified SIGTERM: ${child.output.slice(-4000)}`);
-        }
-      }
       await test.info().attach(`recovery-replica-${index}.log`, { body: child.output, contentType: 'text/plain' });
     }
   }

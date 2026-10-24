@@ -82,6 +82,8 @@ from astrabox.persistence.repository.keyset import (
 )
 from astrabox.persistence.repository.session_repository import SessionRepository
 from astrabox.persistence.repository.session_runtime_repository import SessionRuntimeRepository
+from astrabox.persistence.provider import get_persistence
+from astrabox.seams.persistence_coordination import RuntimeLockBusy, RuntimeLockCheck
 from astrabox.core.service.orchestrator.runtime.storage import (
     clone_default_repo,
 )
@@ -2929,13 +2931,15 @@ class RemoteAgentRuntimeManager:
         self,
         *,
         stale_before: datetime,
+        on_abandoned: Callable[[dict[str, Any], SandboxDestruction | None], Awaitable[None]],
         limit: int = 50,
     ) -> dict[str, int]:
         """Adopt READY allocations and release abandoned startup resources.
 
-        Candidate rows are hints. Each row is re-read before acting so a worker
-        that publishes READY after the scan cannot have its live sandbox reaped
-        by this reconciler. Recent CREATING rows remain owned by their worker.
+        Candidate rows are hints. Each row is re-read under its startup lock;
+        a lock held by a startup or another replica defers this row immediately.
+        Unowned CREATING rows past their grace period become TERMINATED, even
+        if they never acquired an allocation. Recent starts stay candidates.
         A READY Session can also allocate a replacement while its reader
         reconnects it; the reader lease protects that allocation across backend
         processes.
@@ -2955,6 +2959,7 @@ class RemoteAgentRuntimeManager:
         )
         summary = {
             "startup_allocation_candidates": len(candidates),
+            "startup_sessions_terminated": 0,
             "startup_allocations_adopted": 0,
             "startup_allocations_released": 0,
             "startup_allocations_deferred": 0,
@@ -2965,138 +2970,167 @@ class RemoteAgentRuntimeManager:
             if not session_id:
                 summary["startup_allocation_failures"] += 1
                 continue
-            current = await self._sessions_repo.get_session_including_deleted(session_id)
-            for retained in (current or {}).get("retained_startup_allocations", ()):
-                try:
-                    allocation = SandboxAllocation.from_record(retained["allocation"])
-                    # A rejected owner can have handed shared compute to a
-                    # successor. Do not infer destruction authority from its
-                    # Session label: only an absent supplier box can be forgotten.
-                    if await self._allocation_box_is_gone(allocation):
-                        await self._sessions_repo.clear_retained_startup_allocation(
-                            session_id, retained
-                        )
-                        self._forget_pending_allocation(session_id, allocation)
-                        summary["startup_allocations_released"] += 1
-                    else:
-                        summary["startup_allocations_deferred"] += 1
-                        logger.warning(
-                            "retained startup allocation requires scoped cleanup session=%s receipt=%s",
-                            session_id,
-                            retained,
-                        )
-                except Exception:
+            try:
+                async with get_persistence().coordination.startup_lock(session_id, wait=False) as check_lock:
+                    await check_lock()
+                    await self._reconcile_startup_allocation(session_id, stale_before, summary, on_abandoned, check_lock)
+            except RuntimeLockBusy:
+                summary["startup_allocations_deferred"] += 1
+            except Exception:
+                summary["startup_allocation_failures"] += 1
+                logger.exception("startup reconciliation failed session=%s", session_id)
+        return summary
+
+    async def _reconcile_startup_allocation(
+        self, session_id: str, stale_before: datetime, summary: dict[str, int],
+        on_abandoned: Callable[[dict[str, Any], SandboxDestruction | None], Awaitable[None]],
+        check_lock: RuntimeLockCheck,
+    ) -> None:
+        """Converge an unowned startup and its resources while holding its startup lock."""
+        current = await self._sessions_repo.get_session_including_deleted(session_id)
+        if not current:
+            return
+        if not current.get("deleted") and current.get("state") == SessionState.CREATING.value:
+            touches = [parse_iso(value) for key in ("updated_at", "created_at") if (value := current.get(key))]
+            if touches and max(touches) > stale_before:
+                summary["startup_allocations_deferred"] += 1
+                return
+            cleanup = None
+            if isinstance(current.get("startup_allocation"), dict):
+                cleanup = await self.cleanup_startup_allocation(session_id)
+                if cleanup.released and cleanup.record_cleared:
+                    summary["startup_allocations_released"] += 1
+                else:
                     summary["startup_allocation_failures"] += 1
-                    logger.exception(
-                        "retained startup allocation reconciliation failed session=%s receipt=%s",
+            await check_lock()
+            await on_abandoned(current, cleanup.destruction if cleanup is not None else None)
+            expected = {key: current.get(key) for key in (
+                "state", "runtime_recovery_owner", "sandbox_generation", "updated_at",
+            )}
+            await check_lock()
+            ended = await self._sessions_repo.compare_and_update_session(
+                session_id,
+                expected=expected,
+                updates={
+                    "state": SessionState.TERMINATED.value,
+                    "runtime_unavailable": True,
+                    "last_error": "startup abandoned after its runtime owner exited",
+                    "startup_progress": None,
+                },
+                notify="session",
+            )
+            if not ended:
+                summary["startup_allocations_deferred"] += 1
+                return
+            summary["startup_sessions_terminated"] += 1
+            logger.info("startup sweep: session %s abandoned CREATING → TERMINATED", session_id)
+            return
+        for retained in (current or {}).get("retained_startup_allocations", ()):
+            try:
+                allocation = SandboxAllocation.from_record(retained["allocation"])
+                # A rejected owner can have handed shared compute to a
+                # successor. Do not infer destruction authority from its
+                # Session label: only an absent supplier box can be forgotten.
+                if await self._allocation_box_is_gone(allocation):
+                    await self._sessions_repo.clear_retained_startup_allocation(
+                        session_id, retained
+                    )
+                    self._forget_pending_allocation(session_id, allocation)
+                    summary["startup_allocations_released"] += 1
+                else:
+                    summary["startup_allocations_deferred"] += 1
+                    logger.warning(
+                        "retained startup allocation requires scoped cleanup session=%s receipt=%s",
                         session_id,
                         retained,
                     )
-            raw = (current or {}).get("startup_allocation")
-            if not isinstance(current, dict) or not isinstance(raw, dict):
-                continue
-            try:
-                allocation = SandboxAllocation.from_record(raw)
-            except ValueError:
+            except Exception:
                 summary["startup_allocation_failures"] += 1
                 logger.exception(
-                    "startup allocation reconcile found invalid record session=%s",
+                    "retained startup allocation reconciliation failed session=%s receipt=%s",
                     session_id,
+                    retained,
                 )
-                continue
+        raw = (current or {}).get("startup_allocation")
+        if not isinstance(current, dict) or not isinstance(raw, dict):
+            return
+        try:
+            allocation = SandboxAllocation.from_record(raw)
+        except ValueError:
+            summary["startup_allocation_failures"] += 1
+            logger.exception(
+                "startup allocation reconcile found invalid record session=%s",
+                session_id,
+            )
+            return
 
-            state = str(current.get("state") or "").strip()
-            bound_sandbox_id = str(current.get("sandbox_id") or "").strip()
-            if (
-                not bool(current.get("deleted"))
-                and state == SessionState.READY.value
-                and bound_sandbox_id == allocation.sandbox_id
-            ):
-                try:
-                    await self._complete_startup_allocation(
-                        session_id,
-                        allocation,
-                    )
-                except Exception:
-                    summary["startup_allocation_failures"] += 1
-                    logger.exception(
-                        "startup allocation adoption failed session=%s sandbox=%s",
-                        session_id,
-                        allocation.sandbox_id,
-                    )
-                else:
-                    summary["startup_allocations_adopted"] += 1
-                continue
-
-            if not bool(current.get("deleted")) and state == SessionState.READY.value:
-                # A READY session replaces its box in place only from the
-                # process that holds its reader lease, which connects the
-                # session to its runtime. While that lease lives, the
-                # replacement is in flight, not abandoned.
-                try:
-                    reader = await SessionRuntimeRepository().reader_owner(session_id)
-                except Exception:
-                    summary["startup_allocation_failures"] += 1
-                    logger.exception(
-                        "startup allocation reader lease read failed session=%s sandbox=%s",
-                        session_id,
-                        allocation.sandbox_id,
-                    )
-                    continue
-                if reader is not None:
-                    summary["startup_allocations_deferred"] += 1
-                    continue
-
-            if (
-                not bool(current.get("deleted"))
-                and state == SessionState.CREATING.value
-                and allocation
-                in self._pending_startup_allocations.get(session_id, ())
-            ):
-                summary["startup_allocations_deferred"] += 1
-                continue
-
-            updated_at = str(current.get("updated_at") or "").strip()
-            updated = None
-            if updated_at:
-                with contextlib.suppress(TypeError, ValueError):
-                    updated = parse_iso(updated_at)
-            if (
-                not bool(current.get("deleted"))
-                and
-                state == SessionState.CREATING.value
-                and updated is not None
-                and updated > stale_before
-            ):
-                summary["startup_allocations_deferred"] += 1
-                continue
-
-            # A terminal Session proves execution ended, not that cleanup
-            # succeeded. Keep its exact scope until the same supplier release
-            # path used during startup confirms it, including isolated ids in
-            # a shared box that must remain alive for other conversations.
+        state = str(current.get("state") or "").strip()
+        bound_sandbox_id = str(current.get("sandbox_id") or "").strip()
+        if (
+            not bool(current.get("deleted"))
+            and state == SessionState.READY.value
+            and bound_sandbox_id == allocation.sandbox_id
+        ):
             try:
-                cleanup = await self.cleanup_startup_allocation(session_id)
-            except BaseException:
+                await self._complete_startup_allocation(
+                    session_id,
+                    allocation,
+                )
+            except Exception:
                 summary["startup_allocation_failures"] += 1
                 logger.exception(
-                    "startup allocation reconcile raised session=%s sandbox=%s",
+                    "startup allocation adoption failed session=%s sandbox=%s",
                     session_id,
                     allocation.sandbox_id,
                 )
-                continue
-            if cleanup.released and cleanup.record_cleared:
-                summary["startup_allocations_released"] += 1
             else:
+                summary["startup_allocations_adopted"] += 1
+            return
+
+        if not bool(current.get("deleted")) and state == SessionState.READY.value:
+            # A READY session replaces its box in place only from the
+            # process that holds its reader lease, which connects the
+            # session to its runtime. While that lease lives, the
+            # replacement is in flight, not abandoned.
+            try:
+                reader = await SessionRuntimeRepository().reader_owner(session_id)
+            except Exception:
                 summary["startup_allocation_failures"] += 1
-                logger.error(
-                    "startup allocation reconcile retained session=%s sandbox=%s "
-                    "detail=%s",
+                logger.exception(
+                    "startup allocation reader lease read failed session=%s sandbox=%s",
                     session_id,
                     allocation.sandbox_id,
-                    cleanup.detail,
                 )
-        return summary
+                return
+            if reader is not None:
+                summary["startup_allocations_deferred"] += 1
+                return
+
+        # A terminal Session proves execution ended, not that cleanup
+        # succeeded. Keep its exact scope until the same supplier release
+        # path used during startup confirms it, including isolated ids in
+        # a shared box that must remain alive for other conversations.
+        try:
+            cleanup = await self.cleanup_startup_allocation(session_id)
+        except Exception:
+            summary["startup_allocation_failures"] += 1
+            logger.exception(
+                "startup allocation reconcile raised session=%s sandbox=%s",
+                session_id,
+                allocation.sandbox_id,
+            )
+            return
+        if cleanup.released and cleanup.record_cleared:
+            summary["startup_allocations_released"] += 1
+        else:
+            summary["startup_allocation_failures"] += 1
+            logger.error(
+                "startup allocation reconcile retained session=%s sandbox=%s "
+                "detail=%s",
+                session_id,
+                allocation.sandbox_id,
+                cleanup.detail,
+            )
 
     async def agent_box_has_other_recorded_occupants(
         self, sandbox_id: str, *, excluding: str,

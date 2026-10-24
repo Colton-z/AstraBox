@@ -4,8 +4,9 @@ A startup or a recovery owns a session while its row is ``CREATING`` with
 ``runtime_recovery_owner`` naming it (and, once a box generation is chosen,
 ``sandbox_generation`` naming that). Every write it makes compares the claim,
 so a superseded startup cannot publish a box over its successor's. The claim
-is a compare-and-set on the row, not a renewable lease: a startup abandoned by
-a process restart is ended by the bootstrap reconciliation, never resumed.
+is a compare-and-set on the row. The driving task holds the persistence
+provider's startup lock; the periodic startup sweep ends an abandoned claim
+after its grace period, never replaying a supplier create.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, NoReturn
 
 from astrabox.common.utils.errors import APIError
-from astrabox.seams.persistence_coordination import NoticeKind
+from astrabox.seams.persistence_coordination import NoticeKind, RuntimeLockCheck
 
 #: The startup (by its assignment id) that last reached the sandbox provider
 #: for this session; see :meth:`RecoveryOwnership.claim_first_provider_attempt`.
@@ -29,6 +30,7 @@ class RecoveryOwnership:
     repository: Any
     session_id: str
     owner: str | None
+    check_lock: RuntimeLockCheck
     sandbox_generation: str | None = None
     assignment_id: str | None = None
     allocations: list[Any] = field(default_factory=list, compare=False)
@@ -49,6 +51,7 @@ class RecoveryOwnership:
         return expected
 
     async def require_current(self) -> dict[str, Any]:
+        await self.check_lock()
         current = await self.repository.get_session(self.session_id)
         if not current or any(current.get(key) != value for key, value in self.expected.items()):
             await self.raise_lost()
@@ -101,6 +104,7 @@ class RecoveryOwnership:
 
         if not self.assignment_id:
             return False
+        await self.check_lock()
         return bool(
             await self.repository.compare_and_update_session(
                 self.session_id,
@@ -114,6 +118,7 @@ class RecoveryOwnership:
 
     async def update(self, updates: dict[str, Any], *, notify: NoticeKind | None = None) -> bool:
         """Write ``updates`` while this claim holds; ``notify`` rides the same statement."""
+        await self.check_lock()
         applied = await self.repository.compare_and_update_session(
             self.session_id,
             expected=self.expected,
