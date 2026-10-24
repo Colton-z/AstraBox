@@ -120,7 +120,7 @@ def _interrupt_running_command(
     release_path = path_for("release")
     exited_path = path_for("exited")
     on_exit = f"printf exited > {shlex.quote(exited_path)}"
-    command = "sh -c " + shlex.quote(
+    command = (
         f"trap {shlex.quote(on_exit)} EXIT; "
         f"printf started > {shlex.quote(started_path)}; "
         f"while [ ! -e {shlex.quote(release_path)} ]; do sleep 0.1; done"
