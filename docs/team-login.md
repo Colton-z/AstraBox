@@ -464,3 +464,7 @@ For any team deployment:
 - [Deploy AstraBox](deploy.md)
 - [API authentication](api-authentication.md)
 - [Agent authorization](authoring-agents.md)
+
+For desktop applications that only need model inference, configure
+[independent OIDC model applications](oidc-model-applications.md) instead of
+reusing either platform client or granting AstraBox membership.

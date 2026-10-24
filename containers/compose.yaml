@@ -336,6 +336,8 @@ services:
       # LITELLM_MASTER_KEY only to rotate/fix it (multi-replica: same value in
       # every replica). `${VAR:-}` keeps `compose config` valid when unset.
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-}
+      # Independent inference clients use a separately mounted trust policy.
+      ASTRABOX_MODEL_GATEWAY_OIDC_CONFIG_FILE:
       # External LiteLLM deployments use the same provider contract as the
       # embedded process. These values must reach AstraBox itself: Compose's
       # .env file only supplies interpolation and does not inject undeclared

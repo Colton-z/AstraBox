@@ -100,6 +100,7 @@
         "specs/investment-research-production-journey.exclusive.spec.ts",
         "specs/native-diff-failure-and-recovery.exclusive.spec.ts",
         "specs/non-terminal-background-bash-task-update.exclusive.spec.ts",
+        "specs/oidc-model-applications.exclusive.spec.ts",
         "specs/opensandbox-agent-prewarm-real-extensions.exclusive.spec.ts",
         "specs/ordinary-process-opens-once.exclusive.spec.ts",
         "specs/ownerless-sandbox-reaping-preserves-prepared-capacity.exclusive.spec.ts",
