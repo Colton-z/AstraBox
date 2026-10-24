@@ -20,6 +20,7 @@ from typing import Any
 from astrabox.persistence.repository.session_repository import SessionRepository
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
+from astrabox.core.service.orchestrator.engine.runtime import RUNTIME_PROTOCOL_INCOMPATIBLE, RuntimeProtocolError
 from astrabox.common.utils.time_utils import utcnow_iso
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.service.orchestrator.runtime.conversation_identity import normalize_runtime_identity
@@ -270,6 +271,8 @@ class RuntimeEnsure:
                 runtime_identity=runtime_identity,
             )
         except Exception as exc:
+            if isinstance(exc, RuntimeProtocolError):
+                raise
             error_text = str(exc)
             logger.warning(
                 "%s failed session=%s sandbox=%s: %s",
@@ -548,6 +551,8 @@ class RuntimeEnsure:
         user: UserContext | None = None,
     ) -> _RuntimeEnsureResult:
         require_environment_ownership(session)
+        if session.get("recovery_reason") == RUNTIME_PROTOCOL_INCOMPATIBLE:
+            raise RuntimeProtocolError(str(session.get("last_error") or "Runtime protocol is incompatible."))
         session_id = str(session["session_id"])
         session_kind = require_session_kind(session.get("session_kind"))
         if session_kind == "agent_chat":
@@ -613,6 +618,8 @@ class RuntimeEnsure:
                 session=session,
             )
         except Exception as lightweight_exc:
+            if isinstance(lightweight_exc, RuntimeProtocolError):
+                raise
             _raise_user_action_refusal(lightweight_exc, session_id)
             try:
                 if isinstance(lightweight_exc, APIError) and not lightweight_exc.retryable:
@@ -652,6 +659,8 @@ class RuntimeEnsure:
                     session=session,
                 )
             except Exception as full_exc:
+                if isinstance(full_exc, RuntimeProtocolError):
+                    raise
                 _raise_user_action_refusal(full_exc, session_id)
                 error_text = str(full_exc)
                 logger.warning(

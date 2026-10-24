@@ -51,6 +51,7 @@ from astrabox.core.service.orchestrator.engine.runtime import (
     RuntimeEvent,
     RuntimeInput,
     RuntimeInputRefused,
+    RuntimeProtocolError,
     RuntimeState,
     StatusChanged,
 )
@@ -109,7 +110,7 @@ class ReaderHooks:
     permission_mode: Callable[[], Awaitable[None]]
 
 
-ReaderExit = Literal["stream_ended", "lease_lost"]
+ReaderExit = Literal["stream_ended", "lease_lost", "protocol_error"]
 
 
 class _LeaseLost(Exception):
@@ -176,6 +177,7 @@ class SessionReader:
         self._urgent = asyncio.Event()
         self._commit_lock = asyncio.Lock()
         self._closing = False
+        self._protocol_error = False
         #: Responses whose first text this reader has read (for the delay stamp).
         self._texted: set[str] = set()
 
@@ -208,11 +210,21 @@ class SessionReader:
             lost = True
         finally:
             subscription.close()
-        return "lease_lost" if lost else "stream_ended"
+        return "lease_lost" if lost else "protocol_error" if self._protocol_error else "stream_ended"
 
     # -- reading -----------------------------------------------------------
 
     async def _read(self, cursor: RuntimeCursor | None) -> None:
+        try:
+            await self._read_events(cursor)
+        except RuntimeProtocolError as exc:
+            # Return normally so the task group stops delivery and flushes the
+            # readable prefix together with this fault under its reader lease.
+            self._protocol_error = True
+            self._batch.protocol_error = str(exc)
+            logger.error("session %s runtime protocol incompatible: %s", self._sid, exc)
+
+    async def _read_events(self, cursor: RuntimeCursor | None) -> None:
         events = await self._open_events(cursor)
         async for event in events:
             if isinstance(event, InputAdmitted):

@@ -635,6 +635,7 @@ for _code, _status, _category, _retryable, _owner in (
     # is none to open; the console offers the entry only when one is declared.
     ("EXTENSION_CONSOLE_UNSUPPORTED", 409, "configuration", False, "platform"),
     ("AGENT_RUNTIME_ERROR", 502, "runtime", True, "runtime"),
+    ("RUNTIME_PROTOCOL_INCOMPATIBLE", 502, "runtime", False, "platform"),
     (
         "SANDBOX_EGRESS_MUTATION_UNSUPPORTED",
         501,

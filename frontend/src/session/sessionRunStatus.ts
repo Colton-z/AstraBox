@@ -1,4 +1,5 @@
 import type { SessionRecord } from '../types';
+import { hasRuntimeProtocolError } from './sessionAuthority';
 import {
   isTransparentlyRecoverableAgentSession,
   sessionOperationalStatusLabel,
@@ -48,51 +49,59 @@ export function computeSessionRunStatus({
   t: TranslateFn;
 }): SessionRunStatus {
   const transparentlyRecoverable = isTransparentlyRecoverableAgentSession(session);
+  const protocolError = hasRuntimeProtocolError(session);
   const accepting = !isTerminated
+    && !protocolError
     && (lifecycleState === 'ready' || lifecycleState === 'busy' || lifecycleState === 'creating')
     && !hasPendingInteraction
     && !isStopping;
   const waits = isWorking || lifecycleState === 'creating';
   const canSendNow = accepting && !waits;
   const canQueueMessage = accepting && waits;
-  const headerIsLive = !isTerminated && (isWorking || isSending);
+  const headerIsLive = !isTerminated && !protocolError && (isWorking || isSending);
   const headerStatusLabel = isTerminated
     ? t('chat:status.terminated')
-    : hasPendingInteraction
-      ? t('chat:status.awaiting_answer')
-      : isStopping
-        ? t('chat:status.stopping')
-        : isWorking
-          ? t('chat:status.processing')
-          : isSending
-            ? t('chat:status.sending')
-            : transparentlyRecoverable
-              // A conversation whose sandbox is gone borrows a new one with the
-              // next message, so it reads ready.
-              ? t('chat:status.ready')
-              : sessionOperationalStatusLabel(session);
+    : protocolError
+      ? sessionOperationalStatusLabel(session)
+      : hasPendingInteraction
+        ? t('chat:status.awaiting_answer')
+        : isStopping
+          ? t('chat:status.stopping')
+          : isWorking
+            ? t('chat:status.processing')
+            : isSending
+              ? t('chat:status.sending')
+              : transparentlyRecoverable
+                // A conversation whose sandbox is gone borrows a new one with the
+                // next message, so it reads ready.
+                ? t('chat:status.ready')
+                : sessionOperationalStatusLabel(session);
   // Derive tone from state because the label is translated. Matching English
   // label text would classify localized live states as idle.
   const headerTone: PillTone = isTerminated
     ? 'idle'
-    : hasPendingInteraction
-      ? 'pending'
-      : headerIsLive
-        ? 'running'
-        : transparentlyRecoverable
-          ? 'done'
-          : toneForState(session.state);
+    : protocolError
+      ? toneForState('RECOVERY_REQUIRED')
+      : hasPendingInteraction
+        ? 'pending'
+        : headerIsLive
+          ? 'running'
+          : transparentlyRecoverable
+            ? 'done'
+            : toneForState(session.state);
   // Raw run-state string for the pill's `data-state`, kept consistent with the
   // tone above so a live response reads PROCESSING and a settled one READY.
   const headerRunState: string = isTerminated
     ? 'TERMINATED'
-    : hasPendingInteraction
-      ? 'WAITING_INPUT'
-      : headerIsLive
-        ? 'PROCESSING'
-        : lifecycleState === 'creating'
-          ? 'CREATING'
-          : String(session.state || 'READY').toUpperCase();
+    : protocolError
+      ? 'RECOVERY_REQUIRED'
+      : hasPendingInteraction
+        ? 'WAITING_INPUT'
+        : headerIsLive
+          ? 'PROCESSING'
+          : lifecycleState === 'creating'
+            ? 'CREATING'
+            : String(session.state || 'READY').toUpperCase();
 
   return {
     transparentlyRecoverable,

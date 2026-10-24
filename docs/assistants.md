@@ -435,3 +435,23 @@ request conventions.
 - [Schedules](schedules.md)
 - [Credentials](credentials.md)
 - [Connect model services](models.md)
+
+## Runtime protocol compatibility
+
+Hermes images advertise their executor completion classification through the
+native `gateway.capabilities` build probe. A core requiring that classification
+refuses an image that does not advertise it before opening a native conversation
+or submitting a prompt. Deploy the core and its corresponding sandbox image
+together; an application version alone does not identify an overlay image's protocol.
+
+An unreadable execution event stops that Session's reader with
+`runtime_protocol_incompatible`. The page shows recovery required and the
+specific protocol error, and refuses new input. Reader sweeps do not retry it.
+The readable prefix, native response and input facts, and last readable cursor
+remain intact. The platform does not mark a live box unavailable, guess a tool's
+outcome, skip the event, or replay an admitted task.
+
+Correct the runtime protocol before explicitly recovering the Session. If the
+same native epoch retains the event ring, recovery reads from the stored cursor.
+Replacing the native process or box does not retain that ring; this mechanism
+alone does not recover previously unread completed tool events from SessionDB.

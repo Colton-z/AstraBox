@@ -43,6 +43,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from astrabox.config.settings import get_settings, validate_environment_name
 from astrabox.core.model import SessionState
 from astrabox.core.service.orchestrator.engine.interaction_contract import public_interaction_view
+from astrabox.core.service.orchestrator.engine.runtime import RUNTIME_PROTOCOL_INCOMPATIBLE
 from astrabox.persistence.sql import (
     execute,
     fetch_all,
@@ -190,9 +191,11 @@ class FactBatch:
     facts: list[Fact] = field(default_factory=list)
     cursor: dict[str, Any] | None = None
     status: str | None = None
+    protocol_error: str | None = None
 
     def __bool__(self) -> bool:
-        return bool(self.output or self.facts or self.cursor is not None or self.status is not None)
+        return bool(self.output or self.facts or self.cursor is not None or self.status is not None
+                    or self.protocol_error is not None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -471,6 +474,7 @@ class SessionRuntimeRepository:
                     _SESSIONS.c.session_id == session_id,
                     _SESSIONS.c.environment_name == self.environment_name,
                     ~_WORKSPACE_OWN,
+                    _reader_protocol_eligible(),
                 )
             )
             if eligible is None:
@@ -572,6 +576,7 @@ class SessionRuntimeRepository:
             select(_SESSIONS.c.session_id)
             .where(
                 _SESSIONS.c.environment_name == self.environment_name,
+                _reader_protocol_eligible(),
                 ~reader_live, ~_WORKSPACE_OWN, or_(ready, responses_open, ended_holding),
             )
             .limit(limit)
@@ -639,6 +644,10 @@ class SessionRuntimeRepository:
                     ],
                 )
             session_values: dict[str, Any] = {}
+            if batch.protocol_error is not None:
+                session_values.update(
+                    recovery_reason=RUNTIME_PROTOCOL_INCOMPATIBLE, last_error=batch.protocol_error,
+                )
             if batch.cursor is not None:
                 session_values["reader_cursor"] = batch.cursor
             if batch.status is not None:
@@ -661,6 +670,10 @@ class SessionRuntimeRepository:
                         )
                 else:
                     await conn.execute(statement)
+                if batch.protocol_error is not None:
+                    await get_persistence().coordination.notify(
+                        conn, SessionNotice(session_id=sid, kind="session", seq=0),
+                    )
             return True
 
         if not batch:
@@ -1105,12 +1118,23 @@ def _accepting(owner_user_id: str | None) -> list[ColumnElement[bool]]:
     conditions: list[ColumnElement[bool]] = [
         _SESSIONS.c.deleted.is_(False),
         _SESSIONS.c.state.notin_((SessionState.TERMINATED.value, SessionState.DELETED.value)),
+        func.coalesce(_SESSIONS.c.recovery_reason, "") != RUNTIME_PROTOCOL_INCOMPATIBLE,
         # A deleted Agent's conversations keep their history and take nothing new.
         ~exists().where(_AGENTS.c.agent_id == _SESSIONS.c.agent_id, _AGENTS.c.state != "ACTIVE"),
     ]
     if owner_user_id is not None:
         conditions.append(_SESSIONS.c.user_id == owner_user_id)
     return conditions
+
+
+def _reader_protocol_eligible() -> ColumnElement[bool]:
+    """Blocked readers need an operator; ended sessions still drain their held inputs."""
+    return or_(
+        _SESSIONS.c.deleted.is_(True),
+        _SESSIONS.c.archived_at.is_not(None),
+        _SESSIONS.c.state.in_((SessionState.TERMINATED.value, SessionState.DELETED.value)),
+        func.coalesce(_SESSIONS.c.recovery_reason, "") != RUNTIME_PROTOCOL_INCOMPATIBLE,
+    )
 
 
 def _holds(lease: ReaderLease) -> list[ColumnElement[bool]]:

@@ -29,6 +29,7 @@ from astrabox.seams.sandbox import (
 # bootstrap, so no side-effect import is needed here.
 from astrabox.core.service.orchestrator.sandbox_lifecycle import new_sandbox_callback_fields
 from astrabox.core.service.orchestrator.session_lifecycle.permission_modes import resolve_initial_mode
+from astrabox.core.service.orchestrator.engine.runtime import RUNTIME_PROTOCOL_INCOMPATIBLE
 from astrabox.core.service.orchestrator.engine.capabilities import (
     require_engine_for_session_kind,
 )
@@ -390,7 +391,8 @@ class SessionService:
                     return clean
         if (
             str(clean.get("state") or "") == SessionState.READY.value
-            and bool(clean.get("runtime_unavailable"))
+            and (bool(clean.get("runtime_unavailable"))
+                 or clean.get("recovery_reason") == RUNTIME_PROTOCOL_INCOMPATIBLE)
         ):
             clean["state"] = SessionState.RECOVERY_REQUIRED.value
         (

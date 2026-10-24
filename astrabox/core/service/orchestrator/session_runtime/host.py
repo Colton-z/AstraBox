@@ -27,7 +27,7 @@ from typing import Any, Protocol
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.fault_injection import pass_fault_barrier
 from astrabox.common.utils.errors import APIError
-from astrabox.core.service.orchestrator.engine.runtime import RuntimeClient
+from astrabox.core.service.orchestrator.engine.runtime import RuntimeClient, RuntimeProtocolError
 from astrabox.core.service.orchestrator.session_runtime.feed import LivePart, SessionFeed
 from astrabox.core.service.orchestrator.session_runtime.reader import (
     LEASE_TTL_S,
@@ -197,6 +197,10 @@ class ReaderHost:
                     connected = await self._connector.connect(session_id)
                 except RuntimeNotReady:
                     return
+                except RuntimeProtocolError as exc:
+                    if await self._repo.record(lease, FactBatch(protocol_error=str(exc)), ttl_s=LEASE_TTL_S):
+                        logger.error("session %s runtime protocol incompatible: %s", session_id, exc)
+                    return
                 except RuntimeGone:
                     await self._runtime_gone(lease, reason="sandbox_lost")
                     return
@@ -218,7 +222,7 @@ class ReaderHost:
                 finally:
                     with contextlib.suppress(Exception):
                         await connected.client.close()
-                if ended == "lease_lost":
+                if ended in ("lease_lost", "protocol_error"):
                     return
                 logger.info("session %s runtime stream ended; reconnecting in %.1fs", session_id, delay)
                 await asyncio.sleep(delay)
