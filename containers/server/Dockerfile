@@ -245,6 +245,7 @@ COPY --chmod=u=rwX,go=rX astrabox/identity/oidc.py /opt/astrabox/litellm/astrabo
 COPY --chmod=u=rwX,go=rX astrabox/identity/session_signing.py /opt/astrabox/litellm/astrabox_identity_session.py
 COPY --chmod=u=rwX,go=rX astrabox/providers/litellm_shared_auth.py /opt/astrabox/litellm/astrabox_litellm_auth.py
 COPY --chmod=u=rwX,go=rX containers/litellm/custom_auth.py /opt/astrabox/litellm/custom_auth.py
+COPY --chmod=u=rwX,go=rX containers/litellm/oidc_app_auth.py /opt/astrabox/litellm/oidc_app_auth.py
 COPY --chmod=u=rwX,go=rX containers/litellm/langfuse_session_hook.py /opt/astrabox/litellm/langfuse_session_hook.py
 COPY --chmod=u=rwX,go=rX containers/litellm/langfuse_tracing.py /opt/astrabox/litellm/langfuse_tracing.py
 COPY --chmod=u=rwX,go=rX containers/litellm/stream_normalization_hook.py /opt/astrabox/litellm/stream_normalization_hook.py

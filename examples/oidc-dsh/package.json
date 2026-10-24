@@ -1,0 +1,11 @@
+{
+  "name": "astrabox-oidc-dsh-example",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@deepseek-ai/dsh-sdk-client": "0.2.0-rc.2",
+    "openid-client": "6.8.8",
+    "open": "11.0.4"
+  }
+}

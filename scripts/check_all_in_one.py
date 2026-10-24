@@ -61,6 +61,8 @@ PASS_THROUGH = frozenset(
         "LANGFUSE_SECRET_KEY",
         "LANGFUSE_HOST",
         "LITELLM_MASTER_KEY",
+        # Inherits the server image and the same onebox gateway/auth path.
+        "ASTRABOX_MODEL_GATEWAY_OIDC_CONFIG_FILE",
         # The embedded gateway serves the litellm catalog; none and an
         # installed provider's name take effect as in Compose.
         "ASTRABOX_EXTENSION_PROVIDER",

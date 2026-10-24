@@ -267,3 +267,9 @@ Before making an Agent available:
 - [RuntimeProfiles](runtime-profiles.md)
 - [Deploy AstraBox](deploy.md)
 - [Protect credentials used by Agents](egress-credential-injection.md)
+
+## Independent desktop and CLI applications
+
+For employee Access Tokens from separate OIDC clients, see
+[independent OIDC model applications](oidc-model-applications.md). This opt-in
+inference grant is separate from console/API login and requires no Agent.
