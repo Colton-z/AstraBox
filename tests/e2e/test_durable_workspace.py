@@ -72,12 +72,8 @@ _READ_ASSISTANT_DATABASE = _READ_NATIVE_SQLITE + """
 import asyncio, sys, tempfile
 from dataclasses import asdict
 from pathlib import Path
-from astrabox.deploy.onebox import ensure_database_wiring, needs_sandbox_server, _export_backend_wiring
+from astrabox.deploy.onebox import ensure_database_wiring
 ensure_database_wiring()
-if needs_sandbox_server():
-    _export_backend_wiring()
-from astrabox.bootstrap import bootstrap
-bootstrap()
 from astrabox.persistence.repository.session_repository import SessionRepository
 from astrabox.persistence.repository.assistant_workspace_repository import AssistantWorkspaceRepository
 from astrabox.persistence.repository.runtime_state_snapshot_repository import (
