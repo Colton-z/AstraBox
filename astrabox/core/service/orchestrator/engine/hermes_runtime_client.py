@@ -108,6 +108,9 @@ _METHOD_NOT_FOUND = -32601
 #: A ``session.events.since`` watermark past any ``seq``: the reply carries no
 #: events, only the ring's ``latest_seq``, ``epoch`` and ``open_requests``.
 _LATEST = 2**53
+#: Hermes' own bound on building a session's agent (``_wait_agent`` in
+#: ``server.py``): a prompt sent later than this fails with its timeout.
+_AGENT_BUILD_TIMEOUT_SECONDS = 30.0
 #: Context occupancy, in percent of the model's window, at which an idle
 #: conversation is compressed ahead of need. Hermes compresses inside a turn
 #: at 50% of the window, or 75% for windows under 512K tokens
@@ -796,6 +799,7 @@ class HermesRuntimeClient:
         self._refused: set[str] = set()
         self._reading = False
         self._closed = False
+        self._agent_built = asyncio.Event()
         self._forwarder: asyncio.Task[None] | None = None
         self._cron: HermesCronWatch | None = None
         self._cron_reports: list[CronRunReport] = []
@@ -863,8 +867,9 @@ class HermesRuntimeClient:
         sid = str(result.get("session_id") or "").strip()
         if not sid:
             raise RuntimeError("Hermes did not return a TUI session id")
-        # Hermes builds the agent after opening the session. Subscribe before
-        # any other await so its session.info reaches this client.
+        # A created session builds its agent after the reply and announces it
+        # with ``session.info``, which reaches only a subscriber, so the
+        # subscription exists before anything else is awaited.
         subscription = gateway.subscribe(sid)
         try:
             if not key:
@@ -901,12 +906,34 @@ class HermesRuntimeClient:
             server_info=dict(info) if isinstance(info, dict) else None,
         )
         client._received_seq = int(since.get("latest_seq") or 0)
+        if not (isinstance(info, dict) and info.get("lazy")):
+            client._agent_built.set()
         client._forwarder = asyncio.create_task(client._forward(), name=f"hermes-session-{sid}")
-        # The native session accepts prompts while its agent builds. Hermes
-        # owns that queue and reports build failures through its event stream.
+        await client._await_agent_build()
         if read_cron_run_output is not None:
             client._start_cron(cron_store or HermesCronJobRepository(), read_cron_run_output)
         return client
+
+    async def _await_agent_build(self) -> None:
+        """Wait for Hermes to build this session's agent.
+
+        Hermes builds an agent — its tools, Skills and model metadata — after
+        ``session.create`` answers, and a prompt waits for that build. Waiting
+        here makes the build part of activating the conversation, so the
+        backend a workspace publishes as ready has already done it.
+        """
+
+        try:
+            async with asyncio.timeout(_AGENT_BUILD_TIMEOUT_SECONDS):
+                await self._agent_built.wait()
+        except TimeoutError:
+            # Hermes fails the first prompt with its own timeout, which is the
+            # outcome the conversation reports.
+            logger.warning(
+                "Hermes did not build the agent of session=%s within %ss",
+                self._sid,
+                _AGENT_BUILD_TIMEOUT_SECONDS,
+            )
 
     def _start_cron(
         self,
@@ -941,6 +968,9 @@ class HermesRuntimeClient:
                     kind = str(wire.event.get("type") or "")
                     if kind == "session.info" and isinstance(wire.event.get("payload"), dict):
                         self._server_info = dict(wire.event["payload"])
+                    if kind == "session.info" or (kind == "error" and wire.session_id):
+                        # A failed build is announced as an error; the prompt reports it.
+                        self._agent_built.set()
                 self._inbox.put_nowait(("wire", wire))
         except asyncio.CancelledError:
             raise
