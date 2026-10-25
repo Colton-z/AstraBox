@@ -23,6 +23,7 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.model import SessionState
+from astrabox.core.service.orchestrator.engine.runtime import RUNTIME_PROTOCOL_INCOMPATIBLE
 from astrabox.core.service.orchestrator.runtime.environment_ownership import require_environment_ownership
 from astrabox.core.service.orchestrator.runtime.preparation import require_session_user_prerequisites
 from astrabox.core.service.orchestrator.engine_kind_utils import resolve_session_engine_kind
@@ -42,6 +43,7 @@ from astrabox.core.service.orchestrator.session_lifecycle.recovery import Sessio
 from astrabox.core.service.orchestrator.session_lifecycle.startup import SessionStartup
 from astrabox.core.service.orchestrator.session_service import SessionService
 from astrabox.persistence.provider import get_persistence
+from astrabox.seams.persistence_coordination import RuntimeLockCheck
 from astrabox.seams.admission import (
     ADMISSION_KIND_SANDBOX,
     AdmissionRequest,
@@ -54,6 +56,7 @@ from astrabox.seams.sandbox_disposal import (
     SANDBOX_DESTRUCTION_REFUSED,
     SANDBOX_DESTRUCTION_RETAINED,
     SANDBOX_DESTRUCTION_UNCONFIRMED,
+    SandboxDestruction,
 )
 
 logger = get_logger(__name__)
@@ -75,6 +78,7 @@ class SessionLifecycleService:
         spawn_background_task: Callable[..., asyncio.Task[Any]],
     ) -> None:
         self._sessions = sessions_repo
+        self._runtime_subjects = runtime_subjects
         self._session_service = session_service
         self._agent_config = agent_config
         self._runtime_manager = runtime_manager
@@ -195,15 +199,28 @@ class SessionLifecycleService:
         self._spawn(
             f"session-startup-{session_id}",
             session_id,
-            lambda: self._startup.run(
+            lambda check_lock: self._startup.run(
                 session_id=session_id,
                 owner=owner,
+                check_lock=check_lock,
                 sandbox_generation=generation,
                 resume_engine_session_key=None,
             ),
         )
 
     # -- recover -------------------------------------------------------------
+
+    async def converge_abandoned_startup(
+        self, session: dict[str, Any], cleanup: SandboxDestruction | None,
+    ) -> None:
+        """Converge the runtime subject before an unowned startup is ended."""
+        allocation = session.get("startup_allocation")
+        await self._runtime_subjects.converge_startup_failure(
+            session=session,
+            failure_phase="startup_owner_exited",
+            created_sandbox_id=allocation.get("sandbox_id") if isinstance(allocation, dict) else None,
+            cleanup=cleanup,
+        )
 
     async def recover_session(self, user: UserContext, session_id: str) -> dict[str, Any]:
         """Recover the owner's conversation; the session as it stands once recovery started.
@@ -252,13 +269,9 @@ class SessionLifecycleService:
         state = str(session.get("state") or "")
         observed = state
         if state == SessionState.CREATING.value:
-            # A startup or recovery drives this session and its READY write
-            # announces the runtime, unless it has been creating past the
-            # creation timeout: the session then reads as terminated, and its
-            # startup, likely lost with the process that ran it, is superseded.
-            if SessionService._sanitize_session(session).get("state") == SessionState.CREATING.value:
-                return
-            observed = SessionState.TERMINATED.value
+            # Only the startup sweep can end an abandoned claim, after it
+            # excludes a live driver through the shared startup lock.
+            return
         elif state not in {SessionState.READY.value, SessionState.TERMINATED.value}:
             raise APIError(
                 code="INVALID_REQUEST",
@@ -295,7 +308,7 @@ class SessionLifecycleService:
         self._spawn(
             f"session-recovery-{session_id}",
             session_id,
-            lambda: self._recovery.run(session=observed_session, owner=owner),
+            lambda check_lock: self._recovery.run(session=observed_session, owner=owner, check_lock=check_lock),
         )
 
     async def _refuse_while_startup_waits_on_user(self, session: dict[str, Any]) -> None:
@@ -615,9 +628,17 @@ class SessionLifecycleService:
             session = await self._sessions.get_session(session_id)
             if session is None:
                 raise RuntimeError("conversation record is unavailable for final disposal")
+            _session, binding = await reconcile_session_runtime_binding(
+                session=session,
+                sessions_repo=self._sessions,
+                assistant_workspace_service=self._assistant_workspace_service,
+            )
+            if binding.sandbox_id != sandbox_id:
+                raise RuntimeError("conversation workspace binding changed before final disposal")
             await self._runtime_manager.dispose_runtime_session(
                 session_id,
                 sandbox_id=sandbox_id,
+                runtime_identity=binding.owner_runtime_identity,
                 engine_kind=resolve_session_engine_kind(session),
                 engine_session_key=session.get("engine_session_key"),
                 runtime_cursor=session.get("reader_cursor"),
@@ -688,10 +709,12 @@ class SessionLifecycleService:
 
     # -- tasks -------------------------------------------------------------------
 
-    def _spawn(self, name: str, session_id: str, work: Callable[[], Awaitable[Any]]) -> None:
+    def _spawn(self, name: str, session_id: str, work: Callable[[RuntimeLockCheck], Awaitable[Any]]) -> None:
         async def run() -> None:
             try:
-                await work()
+                async with get_persistence().coordination.startup_lock(session_id) as check_lock:
+                    await work(check_lock)
+                    await check_lock()
             except asyncio.CancelledError:
                 raise
             except APIError as exc:
@@ -736,9 +759,15 @@ def _refuse_while_working(session: dict[str, Any], operation: str) -> None:
     the conversation offline would cut off. Neither is a runtime the platform
     has confirmed gone (``runtime_unavailable``): its last report describes a
     process that died with its box, and honouring it would keep the
-    conversation from ever being taken offline.
+    conversation from ever being taken offline. A protocol fault prevents further
+    status reads, so its last working snapshot cannot veto explicit disposal;
+    the finalizer must still confirm that disposal before ending the Session.
     """
-    if str(session.get("runtime_status") or "") != _WORKING or session.get("runtime_unavailable"):
+    if (
+        str(session.get("runtime_status") or "") != _WORKING
+        or session.get("runtime_unavailable")
+        or session.get("recovery_reason") == RUNTIME_PROTOCOL_INCOMPATIBLE
+    ):
         return
     logger.info("reject %s while the runtime is working session=%s", operation, session.get("session_id"))
     raise APIError(

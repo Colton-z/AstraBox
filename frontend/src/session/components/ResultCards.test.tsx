@@ -51,21 +51,6 @@ describe('the engine retrying a refused request', () => {
     expect(container.querySelector('[data-slot="verbatim"]')).toBeNull();
   });
 
-  it('does not render a generic raw event', () => {
-    const { container } = renderPart(
-      {
-        type: 'data-raw-event',
-        data: {
-          event_type: 'vendor.internal',
-          raw: { secret: 'must-not-render' },
-        },
-      } as never,
-    );
-
-    expect(container.innerHTML).toBe('');
-    expect(container.textContent).not.toContain('must-not-render');
-  });
-
   it('renders only the four retry fields', () => {
     const { container } = renderPart(apiRetryPart({
       ...refused,

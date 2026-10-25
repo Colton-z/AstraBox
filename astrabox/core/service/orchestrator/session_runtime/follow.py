@@ -6,7 +6,7 @@ straight from a reader in this process; a reader in another process is heard
 through its commit notices and read back from the log. Each yielded burst ends
 with a ``data-resume-cursor`` part carrying the last sequence, which the page
 sends back as ``after_seq`` when it reconnects. A change to what the page shows
-of the session record (its generated title) arrives as a transient
+of the session record (startup state or its generated title) arrives as a transient
 ``data-session-changed`` part, after which the page reads the session again.
 
 One call ends after the part that finishes a response, so each HTTP response
@@ -46,7 +46,9 @@ async def follow_output(
     with feed.subscribe(session_id) as subscription:
         last = after_seq
         held: dict[int, dict[str, Any]] = {}
-        # A reconnect may have missed a mirror commit with no newer output cursor.
+        # Subscribe before asking the page to reread: startup can finish between
+        # its initial detail read and this connection, without any output.
+        yield dict(SESSION_CHANGED_PART)
         yield dict(TRANSCRIPT_CHANGED_PART)
 
         def emit(seq: int, stored: dict[str, Any]) -> list[dict[str, Any]]:
@@ -86,7 +88,7 @@ async def follow_output(
             item = await subscription.get()
             burst: list[dict[str, Any]] = []
             ended = False
-            if isinstance(item, Notice) and item.kind == "session":
+            if isinstance(item, Notice) and item.kind in ("session", "reader"):
                 burst.append(dict(SESSION_CHANGED_PART))
             elif isinstance(item, Notice) and item.kind == "transcript":
                 burst.append(dict(TRANSCRIPT_CHANGED_PART))
@@ -97,6 +99,7 @@ async def follow_output(
                 item, Resync
             ):
                 if isinstance(item, Resync):
+                    burst.append(dict(SESSION_CHANGED_PART))
                     burst.append(dict(TRANSCRIPT_CHANGED_PART))
                 async for out in from_log():
                     burst.append(out)

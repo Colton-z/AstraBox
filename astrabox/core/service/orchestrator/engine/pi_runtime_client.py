@@ -100,6 +100,7 @@ from astrabox.core.service.orchestrator.engine.pi_events import (
 from astrabox.core.service.orchestrator.engine.pi_pipe import PiRpcProcess, PiWireRecord
 from astrabox.core.service.orchestrator.engine.runtime import (
     InputAdmitted,
+    InputMessageObserved,
     InputRefused,
     InteractionNotOpen,
     InteractionOpened,
@@ -432,7 +433,7 @@ class _Translation:
             self.queued.remove(input_id)
         self.taking = input_id
         self.resync = False
-        events: list[RuntimeEvent] = []
+        events: list[RuntimeEvent] = [InputMessageObserved(None, input_id)]
         if self.response is not None and self.response["answered"]:
             events += self._end(without_stop="message_start")
         if self.response is None:

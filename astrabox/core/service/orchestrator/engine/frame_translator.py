@@ -55,8 +55,8 @@ Assistant Runs SSE mapping (legacy diagnostic path):
     run.cancelled        → result {finishReason: "cancelled"}
 
 Unrecognized semantic events hard-fail when continuing would require guessing.
-Diagnostic events are retained privately and never rendered as raw browser
-JSON.
+Native presentation messages retain their JSON when no dedicated card exists;
+control diagnostics remain private.
 """
 
 from __future__ import annotations
@@ -876,6 +876,12 @@ def translate_claude_sdk_message(
     message or block types — callers surface it, never swallow it.
     """
     sdk_type = str(message.get("__sdk_type") or "")
+    if sdk_type == "NativeSDKMessage":
+        native = message.get("data")
+        if not isinstance(native, dict):
+            raise ValueError("native SDK message requires its original JSON object")
+        yield _claude_raw_frame(str(native.get("type") or "unknown"), native)
+        return
     if sdk_type not in CLAUDE_SDK_MESSAGE_TYPES:
         raise UnknownWireEvent(
             f"claude sdk message type={sdk_type!r} has no registered translation; "

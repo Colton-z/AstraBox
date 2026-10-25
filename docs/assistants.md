@@ -146,11 +146,12 @@ Assistant's own fields. For Hermes:
   directories in the repository). Hermes loads two kinds:
   - `hermes-plugin`: a directory with `plugin.yaml`, which can add tools,
     hooks, slash commands, Skills and system prompt sections. Its declared
-    Python dependencies are installed from PyPI when it is placed; a
-    dependency that cannot be installed stops the conversation's preparation
-    with the plugin's name. With a Limited network, PyPI (`pypi.org`,
-    `files.pythonhosted.org`) is admitted for an Assistant with a Hermes
-    plugin, as a package's Git origin is.
+    Python dependencies are prepared by Hermes' package manager together with
+    Hermes' own dependency graph; installation failure stops preparation.
+    With a Limited network, PyPI (`pypi.org`, `files.pythonhosted.org`) and
+    Hermes' pinned GitHub dependencies (`github.com`,
+    `release-assets.githubusercontent.com`) are admitted within the same
+    author boundary as a package's Git origin.
   - `agent-plugin`: an Agent Plugins v1.0 package, a `plugin.json` with Skills
     and an `mcp.json`.
 
@@ -166,6 +167,14 @@ Assistant's own fields. For Hermes:
   `timezone` (set it as the Assistant's [timezone](#timezone)),
   `plugins.enabled` and `plugins.disabled`. `skills` is refused too, because
   Hermes does not read Skills settings from the managed scope.
+
+You can ask your Assistant to create or edit its own Skills using Hermes'
+native `skill_manage` tool, including customizing the defaults AstraBox ships.
+These live in the Assistant's private profile, not its task workspace. Hermes
+updates unmodified defaults and keeps your edits; the platform saves the Skill
+files and Hermes' sync records in the database for restoration into a new box.
+Skills supplied through the Assistant's `skills` configuration remain managed
+by those sources: update the source to change what the configuration supplies.
 
 ## When a change takes effect
 
@@ -369,9 +378,10 @@ workspace files across it, configure that volume or export the files first.
 
 Select **Resume workspace**, or simply start another conversation, to restore
 the saved native state into a new sandbox. The saved state is Hermes'
-conversation store and its profile: its memory, the skills it created or
-installed, and its scheduled jobs. Skills that ship with the image are seeded
-again, and Hermes configuration is written again from the Assistant's settings.
+conversation store and its profile: its memory, Skills (including edited
+defaults and their native sync records), and its scheduled jobs. Hermes seeds
+new defaults and updates unchanged ones without replacing user edits. Hermes
+configuration is written again from the Assistant's settings.
 With persistent workspace storage, the same Assistant files are mounted there;
 without it, other files start fresh. This Assistant operation releases and
 recreates compute; it does not use OpenSandbox's sandbox pause/resume
@@ -435,3 +445,30 @@ request conventions.
 - [Schedules](schedules.md)
 - [Credentials](credentials.md)
 - [Connect model services](models.md)
+
+## Runtime protocol compatibility
+
+Hermes images advertise their executor completion classification through the
+native `gateway.capabilities` build probe. A core requiring that classification
+refuses an image that does not advertise it before opening a native conversation
+or submitting a prompt. Deploy the core and its corresponding sandbox image
+together; an application version alone does not identify an overlay image's protocol.
+
+An unreadable execution event stops that Session's reader with
+`runtime_protocol_incompatible`. The page shows recovery required and the
+specific protocol error, and refuses new input. Reader sweeps do not retry it.
+The readable prefix, native response and input facts, and last readable cursor
+remain intact. The platform does not mark a live box unavailable, guess a tool's
+outcome, skip the event, or replay an admitted task.
+
+Correct the runtime protocol before explicitly recovering the Session. If the
+same native epoch retains the event ring, recovery reads from the stored cursor.
+Replacing the native process or box does not retain that ring; this mechanism
+alone does not recover previously unread completed tool events from SessionDB.
+
+A conversation blocked by a runtime protocol fault can still be ended or
+archived. These operations close its recorded native conversation on the existing
+workspace; they do not require execution protocol compatibility or release the
+shared sandbox. A native cleanup failure returns an error and leaves the
+conversation open for a retry. Ordinary working conversations remain protected
+from end or archive.

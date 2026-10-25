@@ -1,7 +1,8 @@
 # Examples
 
 Runnable scripts against a deployment you already started
-([Quickstart](../docs/quickstart.md)). They use `httpx` and nothing else.
+([Quickstart](../docs/quickstart.md)). The Python example uses `httpx`. The [OIDC desktop example](oidc-dsh/README.md)
+uses the pinned native DSH SDK and runs in a desktop main process.
 
 | Script | What it shows |
 |---|---|

@@ -1,5 +1,9 @@
 import type { SessionRecord } from '../types';
 
+export function hasRuntimeProtocolError(session: SessionRecord): boolean {
+  return session.recovery_reason === 'runtime_protocol_incompatible';
+}
+
 export function shouldShowRuntimeUnavailableBanner(
   session: SessionRecord,
   hasPendingInteraction: boolean,
@@ -26,7 +30,8 @@ export function shouldShowSessionLastError(
   if (lifecycleDetailStale || transparentlyRecoverable) {
     return false;
   }
-  return (isTerminated || !!session.runtime_unavailable) && !!String(session.last_error ?? '').trim();
+  return (isTerminated || !!session.runtime_unavailable || hasRuntimeProtocolError(session))
+    && !!String(session.last_error ?? '').trim();
 }
 
 export function shouldShowSessionErrorBanner(

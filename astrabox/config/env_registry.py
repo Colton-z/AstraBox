@@ -1204,6 +1204,17 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
     ),
     # ---- identity: one HTTP resolver selection -----------------------------
     (
+        "ASTRABOX_ENVIRONMENT_ENTRY_POLICY",
+        "public",
+        "members",
+        "Environment entry policy from astrabox.environment.entry. The default "
+        "requires explicit membership; a deployment may select an installed "
+        "policy for verified enterprise identities. Does not grant resource "
+        "permissions or roles. Unknown policies refuse startup; policy failures "
+        "refuse entry.",
+        "astrabox.providers.environment_entry",
+    ),
+    (
         "ASTRABOX_WEB_IDENTITY",
         "public",
         "local",
@@ -1310,7 +1321,8 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "true",
         "Absent-session behaviour under the oidc resolver: strict (default) rejects "
         "with 401 AUTH_REQUIRED so the console redirects to login; an explicit "
-        "falsey value lets anonymous requests fall through to the local identity. "
+        "falsey value leaves the request anonymous; protected API entry still "
+        "requires an identity. "
         "A present-but-invalid session is always rejected regardless.",
         "astrabox.providers.identity_oidc",
     ),
@@ -2190,6 +2202,17 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "astrabox.deploy.onebox",
     ),
     (
+        "ASTRABOX_MODEL_GATEWAY_OIDC_CONFIG_FILE",
+        "public",
+        "",
+        "Read-only YAML policy for independent employee OIDC applications using "
+        "the bundled model gateway. Separate from console/API login clients. "
+        "Mount the policy and its server-only introspection secret files into "
+        "the gateway container. Policy changes apply to the next request; invalid "
+        "edits refuse OIDC inference. Rejected when the bundled gateway is disabled.",
+        "containers.litellm.custom_auth",
+    ),
+    (
         "LITELLM_MASTER_KEY",
         "public",
         "",
@@ -2251,9 +2274,9 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ASTRABOX_SESSION_CREATION_TIMEOUT_SECONDS",
         "internal",
         "300",
-        "Timeout for the full Session creation pipeline (provision and connect). "
-        "The request returns a timeout error after this limit.",
-        "astrabox.core.service.orchestrator.session_service",
+        "Grace period before the startup sweep terminates a CREATING Session "
+        "whose startup lock has no holder. Active startup owners are not timed out by age.",
+        "astrabox.core.service.orchestrator.bootstrap_reconciler",
     ),
     (
         "ASTRABOX_SANDBOX_CONTROL_DEADLINE_S",
@@ -2439,15 +2462,6 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "plugin directory is placed at plugins/<key>, enabled in config.yaml, and "
         "its declared Python dependencies installed. Absent when the Assistant has "
         "no packages, which removes the plugins the platform placed.",
-        "scripts/runtime/hermes_config_merge.py (image: astrabox-hermes-config-merge)",
-    ),
-    (
-        "HERMES_LAZY_INSTALL_TARGET",
-        "injected",
-        "",
-        "Hermes' own variable: the writable directory Hermes installs plugin "
-        "Python dependencies into and puts on its import path, outside the "
-        "root-owned virtualenv and outside the profile.",
         "scripts/runtime/hermes_config_merge.py (image: astrabox-hermes-config-merge)",
     ),
     (

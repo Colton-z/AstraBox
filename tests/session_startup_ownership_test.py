@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from astrabox.core.service.orchestrator.session_lifecycle.ownership import RecoveryOwnership
+from astrabox.persistence.provider import get_persistence
 from astrabox.persistence.repository.session_repository import SessionRepository
 
 pytestmark = pytest.mark.usefixtures("database")
@@ -23,19 +24,21 @@ async def test_only_the_first_attempt_under_an_assignment_skips_the_provider_loo
     sessions = SessionRepository()
     await _session(sessions, "s", state="CREATING", sandbox_generation="generation-1")
 
-    def attempt(assignment: str) -> RecoveryOwnership:
-        return RecoveryOwnership(
-            sessions, "s", None, sandbox_generation="generation-1", assignment_id=assignment
+    async with get_persistence().coordination.startup_lock("s") as check_lock:
+        def attempt(assignment: str) -> RecoveryOwnership:
+            return RecoveryOwnership(
+                sessions, "s", None, check_lock, sandbox_generation="generation-1", assignment_id=assignment
+            )
+
+        outcomes = await asyncio.gather(
+            attempt("startup-1").claim_first_provider_attempt(),
+            attempt("startup-1").claim_first_provider_attempt(),
         )
 
-    outcomes = await asyncio.gather(
-        attempt("startup-1").claim_first_provider_attempt(),
-        attempt("startup-1").claim_first_provider_attempt(),
-    )
+        assert sorted(outcomes) == [False, True]
+        assert await attempt("startup-1").claim_first_provider_attempt() is False
+        assert await attempt("startup-2").claim_first_provider_attempt() is True
 
-    assert sorted(outcomes) == [False, True]
-    assert await attempt("startup-1").claim_first_provider_attempt() is False
-    assert await attempt("startup-2").claim_first_provider_attempt() is True
 
 
 def _receipt(assignment: str) -> dict[str, Any]:

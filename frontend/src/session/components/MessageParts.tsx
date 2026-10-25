@@ -28,7 +28,7 @@ import { cardArtifacts } from '@/artifacts/marker';
 import { ConnectionRequestCard } from '@/connections/ConnectionRequestCard';
 import { ArtifactToolCard } from '@/artifacts/ArtifactToolCard';
 import { ToolPartCard } from './ToolParts';
-import { ApiRetryNote, ResponseFailureCard, ResultPartCard } from './ResultCards';
+import { ApiRetryNote, RawEventCard, ResponseFailureCard, ResultPartCard } from './ResultCards';
 import type { ApiRetryData } from './ResultCards';
 import { UserMessageStatus } from './UserMessageStatus';
 
@@ -46,6 +46,7 @@ interface PartGroup {
 // What a reader acts on or reads as the turn's outcome. These never join a
 // process group, and when a whole turn folds they stay outside its header.
 const STANDALONE_DATA_PARTS = new Set([
+  'data-raw-event',
   'data-result',
   'data-api-retry',
   'data-process-block',
@@ -58,6 +59,7 @@ const STANDALONE_DATA_PARTS = new Set([
 // never folded behind the turn's own header, whichever side of the last tool
 // call it sits on. A folded header is not one of them: it is already a fold.
 const ALERT_DATA_PARTS = new Set([
+  'data-raw-event',
   'data-result',
   'data-api-retry',
   'data-interaction',
@@ -773,6 +775,9 @@ export function PartRenderer({
       }
       if (typeof anyPart.type === 'string' && anyPart.type === 'data-result' && anyPart.data) {
         return <ResultPartCard data={anyPart.data as Record<string, unknown>} />;
+      }
+      if (anyPart.type === 'data-raw-event' && anyPart.data) {
+        return <RawEventCard data={anyPart.data as Record<string, unknown>} />;
       }
       if (typeof anyPart.type === 'string' && anyPart.type === 'data-api-retry' && anyPart.data) {
         return <ApiRetryNote payload={anyPart.data as ApiRetryData} />;

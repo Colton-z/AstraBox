@@ -194,8 +194,14 @@ class ExecdCommands:
                 while True:
                     try:
                         return await self._run_once(command, opts)
-                    except (SandboxConnectionException, httpx.TransportError) as exc:
+                    except (
+                        SandboxCommandOutcomeUnknown,
+                        SandboxConnectionException,
+                        httpx.TransportError,
+                    ) as exc:
                         if attempt == retries:
+                            if isinstance(exc, SandboxCommandOutcomeUnknown):
+                                raise
                             raise SandboxUnreachable(
                                 self._sandbox_id, f"execd could not run {command[:200]!r}: {exc}"
                             ) from exc

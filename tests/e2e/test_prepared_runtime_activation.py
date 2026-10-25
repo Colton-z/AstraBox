@@ -14,6 +14,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from tests.e2e import _docker_compute
 from tests.e2e._sandbox_helpers import (
     Reply,
     current_profile,
@@ -39,6 +40,10 @@ def _run_json(command: list[str]) -> dict | list:
 
 
 def _sandbox_exec(sandbox_id: str) -> list[str]:
+    if _docker_compute.selected():
+        workload = _docker_compute.inspect("sandbox-" + sandbox_id)
+        assert workload["State"]["Running"], "The evidence workload is not running"
+        return ["docker", "exec", str(workload["Id"])]
     kubeconfig = os.environ["ASTRABOX_E2E_KUBECONFIG"]
     namespace = os.environ["ASTRABOX_E2E_KUBE_NAMESPACE"]
     kubectl = ["kubectl", "--kubeconfig", kubeconfig, "--namespace", namespace]

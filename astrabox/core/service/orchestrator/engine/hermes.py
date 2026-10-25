@@ -68,12 +68,11 @@ from astrabox.core.service.orchestrator.engine.hermes_cron import CronRunOutput
 from astrabox.core.service.orchestrator.engine.hermes_client import HermesTuiRpcError
 from astrabox.core.service.orchestrator.engine.hermes_gateway import (
     HermesGatewayHandle,
-    gateway_handle_for_profile,
     resolve_gateway_handle,
     wait_until_backend_idle,
 )
 from astrabox.core.service.orchestrator.engine.hermes_runtime_client import HermesRuntimeClient
-from astrabox.core.service.orchestrator.engine.runtime import RuntimeCursor, initialize_runtime_client
+from astrabox.core.service.orchestrator.engine.runtime import RuntimeCursor, RuntimeProtocolError, initialize_runtime_client
 from astrabox.core.service.orchestrator.runtime.pty_terminal import (
     resolve_sandbox_endpoint,
 )
@@ -156,7 +155,6 @@ _HERMES_PLUGINS_ENV = "ASTRABOX_HERMES_PLUGINS"
 # change it; the profile setup writes it from ``_HERMES_MANAGED_CONFIG_ENV``
 # and removes it when that is absent.
 _HERMES_MANAGED_DIR = "/etc/astrabox/hermes"
-_HERMES_IMAGE_SKILLS_DIR = "/opt/astrabox/hermes/skills"
 _HERMES_MANAGED_CONFIG_ENV = "ASTRABOX_HERMES_MANAGED_CONFIG"
 # What the merge prints last when it finished: it wrote config.yaml, or had
 # nothing to write.
@@ -252,7 +250,7 @@ class HermesEngineAdapter(EngineAdapter):
     """EngineAdapter for Hermes — declares and connects its gateway client."""
 
     def process_disposal(self) -> Any:
-        return _HERMES_PROCESS_DISPOSAL
+        return HermesProcessDisposal(self)
 
     def stored_child_resource_facts(
         self,
@@ -439,6 +437,10 @@ class HermesEngineAdapter(EngineAdapter):
             if engine_client is not None:
                 with contextlib.suppress(BaseException):
                     await engine_client.close()
+            if isinstance(exc, RuntimeProtocolError):
+                # A protocol mismatch says nothing about native execution.
+                # Do not quiesce a live backend to make the attachment fail.
+                raise
             if profile_prepared and workspace_plan.operation == "runtime_start" and runtime_identity:
                 try:
                     await self.quiesce_and_save_runtime_state(sandbox, runtime_identity=runtime_identity)
@@ -742,13 +744,15 @@ HERMES_EXTENSIONS = EngineExtensions(
             target="{config}/plugins/astrabox",
             takes_effect="restart",
             installed_by_engine=True,
-            # Hermes' installer (tools/lazy_deps.py) resolves with uv against
-            # the default index: the simple API on pypi.org, files from
-            # files.pythonhosted.org.
-            installer_hosts=("pypi.org", "files.pythonhosted.org"),
+            # Native PM resolves the core and plugin dependency graph together.
+            # Its pinned GitHub wheels redirect to the release asset host.
+            installer_hosts=(
+                "pypi.org", "files.pythonhosted.org", "github.com",
+                "release-assets.githubusercontent.com",
+            ),
             help="A Hermes plugin directory with plugin.yaml: tools, hooks, slash commands, "
-            "Skills or system prompt sections. Its declared Python dependencies are installed "
-            "from PyPI when it is placed.",
+            "Skills or system prompt sections. Hermes' package manager prepares its Python "
+            "dependencies together with Hermes' own dependency graph.",
         ),
         PackageKind(
             name="agent-plugin",
@@ -929,6 +933,7 @@ async def _prepare_hermes_profile(
         path=posixpath.join(normalized["config_dir"], _HERMES_RUNTIME_STATE_FILENAME),
         content=json.dumps(runtime_state_store, ensure_ascii=False, sort_keys=True),
         runtime_identity=normalized,
+        owner_user=normalized["linux_user"],
         mode=0o600,
         error_code="HERMES_PROFILE_ENV_INSTALL_FAILED",
         error_message="failed to install Hermes runtime-state target",
@@ -1003,6 +1008,7 @@ async def _prepare_hermes_profile(
         path=process_digest_path,
         content=process_digest,
         runtime_identity=normalized,
+        owner_user=normalized["linux_user"],
         mode=0o600,
         error_code="HERMES_PROFILE_ENV_INSTALL_FAILED",
         error_message="failed to record the Hermes backend's process configuration",
@@ -1031,13 +1037,6 @@ async def _prepare_hermes_extensions(
     )
     env = {
         "HERMES_MANAGED_DIR": _HERMES_MANAGED_DIR,
-        # Hermes installs a plugin's Python dependencies here rather than into
-        # its root-owned virtualenv (``tools/lazy_deps.py``), and puts it on
-        # the import path when it starts. Outside the profile: it is rebuilt
-        # from the plugins' declarations, not kept with the profile.
-        "HERMES_LAZY_INSTALL_TARGET": posixpath.join(
-            normalized["home_dir"], ".cache", "astrabox-hermes-plugin-packages"
-        ),
     }
     if skills:
         env[_HERMES_SKILLS_CACHE_ENV] = skill_cache_dir(skills)
@@ -1119,10 +1118,10 @@ def _hermes_process_digest(env: dict[str, str], overwrite_blob: dict[str, Any]) 
 #: itself binds loopback (see `astrabox-hermes-serve` for why); this is the
 #: one the sandbox's endpoint face knows about.
 HERMES_BACKEND_PORT = 9118
-#: How long a new attachment waits for the backend to answer. A cold backend
-#: loads its profile, plugins and model configuration before it serves the
-#: first request, which takes seconds, not milliseconds.
-_BACKEND_ANSWER_BUDGET_SECONDS = 120
+#: A cold attachment includes Hermes PM resolving and installing the owner's
+#: plugin dependencies before the backend serves requests. Keep that native
+#: preparation inside one bounded wait; a healthy cold install can exceed 120s.
+_BACKEND_ANSWER_BUDGET_SECONDS = 300
 
 
 async def _wait_until_backend_answers(commands: SandboxCommands) -> None:
@@ -1432,6 +1431,7 @@ async def _install_hermes_profile_env_file(
         path=path,
         content=content,
         runtime_identity=runtime_identity,
+        owner_user=runtime_identity["linux_user"],
         mode=0o600,
         error_code="HERMES_PROFILE_ENV_INSTALL_FAILED",
         error_message="failed to install Hermes profile env file",
@@ -1576,8 +1576,8 @@ def _build_hermes_config_overwrite(
     hosts are outside the box's egress policy, and models use the custom
     provider. Package installs (``security.allow_lazy_installs``) are enabled
     for native Hermes plugins, whose declaration admits PyPI and whose
-    dependencies the profile merger installs through Hermes' own installer
-    into ``HERMES_LAZY_INSTALL_TARGET``. Other profiles keep installs disabled.
+    dependencies the profile merger prepares through Hermes' package manager
+    in its per-home environment. Other profiles keep installs disabled.
     """
     model_base_url = _resolve_hermes_openai_base_url(model_access)
     if not model_base_url:
@@ -1623,10 +1623,6 @@ def _build_hermes_config_overwrite(
         # reads cron schedules in. Empty is Hermes' own "unset": the
         # server's local time.
         "timezone": str(getattr(template, "timezone", None) or ""),
-        # The Skills AstraBox ships in the image (containers/sandbox-hermes/
-        # skills), which teach the Assistant to offer scheduled briefings
-        # and monitors. Hermes reads this key from the profile's config.yaml.
-        "skills": {"external_dirs": [_HERMES_IMAGE_SKILLS_DIR]},
     }
     artifacts_enabled = getattr(template, "artifacts_enabled", True)
     if binding_mcp_server_definitions(
@@ -1727,10 +1723,14 @@ def _looks_anthropic_compatible_base_url(value: str) -> bool:
 class HermesProcessDisposal:
     """Close a recorded native session on its existing profile attachment."""
 
+    def __init__(self, adapter: HermesEngineAdapter) -> None:
+        self._adapter = adapter
+
     async def dispose_process(
         self,
         *,
-        sandbox_id: str,
+        sandbox: Any,
+        runtime_identity: dict[str, Any] | None,
         engine_session_key: str,
         runtime_cursor: dict | None,
         workspace_ref: dict,
@@ -1740,12 +1740,12 @@ class HermesProcessDisposal:
         profile = _resolve_hermes_profile_ref(
             user_id=workspace_ref.get("user_id"), assistant_id=workspace_ref.get("assistant_id"),
         )
-        gateway = gateway_handle_for_profile(sandbox_id=sandbox_id, profile_key=profile["profile_key"])
-        if gateway is None:
-            # This capability only acts through the attachment this host owns;
-            # a different host's cleanup retains its established behavior.
-            logger.info("Hermes final disposal has no local profile attachment sandbox=%s", sandbox_id)
-            return
+        gateway = await self._adapter._resident_backend(
+            sandbox,
+            identity=runtime_identity,
+            profile_ref=profile,
+            spawn_fingerprint=None,
+        )
         live = await gateway.request("session.active_list", {})
         sessions = live.get("sessions")
         if not isinstance(sessions, list) or any(
@@ -1771,7 +1771,6 @@ class HermesProcessDisposal:
                 raise RuntimeError("Hermes did not confirm native session closure")
 
 
-_HERMES_PROCESS_DISPOSAL = HermesProcessDisposal()
 
 
 # Self-register on import. Idempotent — registry guards against duplicates.

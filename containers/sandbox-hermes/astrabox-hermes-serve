@@ -148,14 +148,9 @@ mkdir -p "$log_dir"
 
 # ── the scheduler ────────────────────────────────────────────────────────
 #
-# Hermes runs scheduled jobs in its gateway process, not in `hermes serve`:
-# `website/docs/user-guide/features/cron.md` ("cron runs in the gateway")
-# at the pinned commit. With no messaging platform configured the gateway
-# stays up for cron alone (`gateway/run_startup.py`), so the Assistant's own
-# jobs fire without any platform credential in the box. It starts once the
-# backend answers, because the backend's start is what restores native state
-# and merges the profile config; a scheduler started earlier would read the
-# image's empty profile.
+# Hermes' CronScheduler provider owns profile-local jobs without a messaging
+# gateway. Start after the backend restores state and merges configuration;
+# a scheduler started earlier would read the image's empty profile.
 if [ "$scheduler_mode" -eq 1 ]; then
   deadline=$(( SECONDS + DEADLINE_SECONDS ))
   until curl -sS -o /dev/null -m 3 "http://127.0.0.1:${LOOPBACK_PORT}/api/auth/me" 2>/dev/null; do
@@ -176,7 +171,7 @@ if [ "$scheduler_mode" -eq 1 ]; then
       export HOME=$(printf '%q' "$ASTRABOX_HERMES_PROFILE_HOME")
       export TERMINAL_CWD=$(printf '%q' "$ASTRABOX_HERMES_WORKSPACE")
       cd $(printf '%q' "$ASTRABOX_HERMES_WORKSPACE")
-      exec \"\$HERMES_VENV/bin/hermes\" gateway run \
+      exec \"\$HERMES_VENV/bin/python\" /opt/astrabox/hermes/hermes_scheduler.py \
         2>> $(printf '%q' "$log_dir/astrabox-hermes-scheduler.log")
     "
 fi
@@ -221,6 +216,10 @@ exec runuser -u "$ASTRABOX_HERMES_PROFILE_LINUX_USER" -- env \
       restore --profile-env $(printf '%q' "$profile_env") \
       >> $(printf '%q' "$log_dir/astrabox-hermes-serve.log") 2>&1
     \"\$HERMES_VENV/bin/python\" /usr/local/bin/astrabox-hermes-config-merge \
+      >> $(printf '%q' "$log_dir/astrabox-hermes-serve.log") 2>&1
+    # The headless serve entry skips the CLI's bundled Skill startup sync.
+    # Restore and merge first so native origin records protect user edits.
+    \"\$HERMES_VENV/bin/python\" -c 'from tools.skills_sync import sync_skills; sync_skills(quiet=True)' \
       >> $(printf '%q' "$log_dir/astrabox-hermes-serve.log") 2>&1
     # --skip-build: there is no npm in this image and no SPA to serve. The
     # vendor added this flag for exactly this kind of non-interactive host.

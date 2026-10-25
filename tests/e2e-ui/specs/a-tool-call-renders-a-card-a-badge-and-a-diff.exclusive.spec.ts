@@ -43,7 +43,7 @@
 import { test, expect, type Locator } from '@playwright/test';
 
 import { AstraApi, messageToolCalls, visibleMessages } from '../fixtures/astraApi';
-import { openLiveProcessGroup, revealAssistantProcess } from '../fixtures/assistantProcess';
+import { revealAssistantProcess } from '../fixtures/assistantProcess';
 import { trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
 
@@ -160,14 +160,13 @@ test('a completed tool call reads Done, opens on its header, and lands in the di
   const toolCards = transcript.locator('[data-tool-call-id]');
 
   try {
-    // A tool call lands inside the running turn's process group, which starts
-    // closed, so the card is on screen only once the reader opens it. The group
-    // is waited for on the card's own budget: opening it is the step that can be
-    // instant, reaching for a tool is the step the model takes its time over.
-    await expect(transcript.getByTestId('assistant-process').first())
-      .toBeAttached({ timeout: TOOL_CARD_MS });
-    await openLiveProcessGroup(page, { within: transcript });
-    await expect(toolCards.first()).toBeVisible({ timeout: TOOL_CARD_MS });
+    // The response may finish before the browser observes its live group.
+    // Both live work and the completed turn's disclosure identify that work;
+    // open the settled disclosure below before reading its tool cards.
+    await expect(
+      transcript.getByTestId('assistant-process')
+        .or(transcript.getByTestId('assistant-turn-process')).first(),
+    ).toBeAttached({ timeout: TOOL_CARD_MS });
   } catch {
     throw new Error(
       `no tool card reached the transcript within ${TOOL_CARD_MS}ms; the engine drove: `
@@ -195,17 +194,14 @@ test('a completed tool call reads Done, opens on its header, and lands in the di
     'a bypassPermissions turn must not park on an interaction — the tool should just run',
   ).toHaveCount(0);
 
-  // A settled turn that ran tools folds its work behind one header, and folding
-  // rebuilds the groups it folds — so the group opened above is closed again.
-  // The card assertions below are about the CARD, so the fold in front of it is
-  // opened first, the way a reader opens it, and waited for rather than assumed:
-  // this turn ran a tool and then said it was done, which is exactly the shape
-  // that folds.
+  // A completed tool response folds its work behind one disclosure. Open it
+  // the way a reader does before inspecting the card it contains.
   await expect(
     transcript.getByTestId('assistant-turn-process'),
     'a settled tool response must fold into one header the reader can open',
   ).toHaveCount(1, { timeout: TURN_SETTLE_MS });
   await revealAssistantProcess(page, { within: transcript });
+  await expect(toolCards.first()).toBeVisible({ timeout: TOOL_CARD_MS });
 
   // The card under test is the one that names the file in its header: that is
   // the Edit/Write card, and Edit/Write is the only thing `computeFileChanges`

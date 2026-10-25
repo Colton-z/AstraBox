@@ -4,11 +4,12 @@ import { expect, test } from '@playwright/test';
 
 import { AstraApi, messageToolCalls } from '../fixtures/astraApi';
 import { revealAssistantProcess } from '../fixtures/assistantProcess';
-import { sessionInputRows, sessionOutputRows } from '../fixtures/dbOracle';
+import { postgresRows, sqlLiteral, sessionInputRows, sessionOutputRows } from '../fixtures/dbOracle';
 import { browserStreamFrames, terminalOutput } from '../fixtures/nativeMcpServer';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
 import { mirrorSseBodies } from '../fixtures/sseBodies';
+import { requireSandboxHandle, sandboxExec } from '../fixtures/sandboxOps';
 
 const sessions = trackSessions();
 let assistantId = '';
@@ -52,8 +53,52 @@ test('an Assistant native tool validation error stays failed live and cold while
     await openSessionView(page, sessionId);
     await expect.poll(() => initialReads).toBeGreaterThan(0);
     await expect(page.getByTestId('composer-prompt')).toBeEnabled();
+    // The isolated protocol acceptance supplies the wire-fault image and explicitly selects this variant.
+    const injectProtocolFault = process.env.ASTRABOX_E2E_HERMES_PROTOCOL_FAULT === '1';
+    const initial = await api.adminSessionDetail(sessionId);
+    const handle = await requireSandboxHandle(api, String(initial.sandbox_id));
+    const faultRoot = '/tmp/astrabox-hermes-protocol-fault';
+    if (injectProtocolFault) sandboxExec(handle, `mkdir -p ${faultRoot} && chmod 777 ${faultRoot} && touch ${faultRoot}/strip-classification`);
     holdHistory = true;
     await sendPrompt(page, sessionId, prompt);
+    if (injectProtocolFault) {
+      await expect.poll(async () => (await api.adminSessionDetail(sessionId)).recovery_reason,
+        { timeout: 60_000 }).toBe('runtime_protocol_incompatible');
+      await expect(page.getByTestId('composer-prompt')).toBeDisabled();
+      await expect(page.getByText(/omitted its native boolean is_error classification/)).toBeVisible();
+      await expect(page.locator('[data-state="PROCESSING"]')).toHaveCount(0);
+      function readFault() {
+        return postgresRows<{ reader_cursor: unknown; generation: number; runtime_status: string }>(
+          `SELECT s.reader_cursor,r.generation,s.runtime_status FROM sessions s JOIN session_readers r USING(session_id) WHERE s.session_id=${sqlLiteral(sessionId)}`)[0]!;
+      }
+      const fault = readFault();
+      expect(fault.runtime_status).toBe('working');
+      expect(sessionInputRows(sessionId)).toHaveLength(1);
+      await expect(api.data('POST', `/sessions/${sessionId}/inputs`, { content: `refused_${marker}` }))
+        .rejects.toThrow(/RUNTIME_PROTOCOL_INCOMPATIBLE/);
+      expect(sessionInputRows(sessionId)).toHaveLength(1);
+      // Two actual five-second reader sweeps must leave the same cursor and lease generation.
+      await page.waitForTimeout(11_000);
+      expect(readFault()).toEqual(fault);
+      await expect.poll(() => sandboxExec(handle, `cat ${faultRoot}/native-events.jsonl`),
+        { timeout: 45_000 }).toContain('message.complete');
+      const nativeWire = sandboxExec(handle, `cat ${faultRoot}/native-events.jsonl`).trim().split('\n')
+        .map((line) => JSON.parse(line) as { type: string; seq: number; payload?: { is_error?: boolean } });
+      const completions = nativeWire.filter((event) => event.type === 'tool.complete');
+      expect(completions.length).toBeGreaterThanOrEqual(2);
+      expect(completions.every((event) => typeof event.payload?.is_error === 'boolean')).toBe(true);
+      evidence.readFault = { ...fault, nativeWire };
+      // The build probe must refuse an unadvertised contract without touching the task.
+      sandboxExec(handle, `touch ${faultRoot}/hide-capability`);
+      await api.recoverSession(sessionId);
+      await expect.poll(async () => String((await api.adminSessionDetail(sessionId)).last_error || ''),
+        { timeout: 30_000 }).toContain('does not advertise native execution');
+      expect(readFault().reader_cursor).toEqual(fault.reader_cursor);
+      expect(sessionInputRows(sessionId)).toHaveLength(1);
+      await expect(page.getByTestId('session-recover')).toBeVisible();
+      sandboxExec(handle, `rm ${faultRoot}/hide-capability ${faultRoot}/strip-classification`);
+      await page.getByTestId('session-recover').click();
+    }
     await expect(page.getByTestId('assistant-text').filter({ hasText: marker })).toBeVisible({ timeout: 60_000 });
     await api.waitForSessionReady(sessionId, 30_000);
     const detail = await api.adminSessionDetail(sessionId);

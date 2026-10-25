@@ -472,10 +472,11 @@ class SessionRepository:
     async def list_startup_allocation_candidates(
         self, *, after_session_id: str | None = None, limit: int = 50
     ) -> list[dict[str, Any]]:
-        """One page, in ``session_id`` order, of rows with an active or retained allocation."""
+        """One page of unfinished startups or active/retained allocations."""
         conditions: list[ColumnElement[bool]] = [
             _SESSIONS.c.environment_name == self.environment_name,
             or_(
+                and_(_live(), _SESSIONS.c.state == SessionState.CREATING.value),
                 _SESSIONS.c.startup_allocation.isnot(None),
                 _SESSIONS.c.retained_startup_allocations != json_literal([]),
             )
@@ -722,25 +723,6 @@ class SessionRepository:
             .where(_live(), _SESSIONS.c.agent_id == agent_id)
             .order_by(_SESSIONS.c.created_at.desc())
             .limit(limit)
-        )
-
-    async def list_bootstrap_reconcile_candidates(
-        self, *, after_session_id: str | None = None, limit: int = 200
-    ) -> list[dict[str, Any]]:
-        """One page, in ``session_id`` order, of sessions whose startup was interrupted."""
-        conditions: list[ColumnElement[bool]] = [
-            _SESSIONS.c.environment_name == self.environment_name,
-            _live(),
-            _SESSIONS.c.state == SessionState.CREATING.value,
-        ]
-        after = str(after_session_id or "").strip()
-        if after:
-            conditions.append(_SESSIONS.c.session_id > after)
-        return await _many(
-            _selected()
-            .where(*conditions)
-            .order_by(_SESSIONS.c.session_id)
-            .limit(max(1, min(int(limit or 200), 10_000)))
         )
 
     async def list_assistant_conversations(self, user_id: str, assistant_id: str) -> list[dict[str, Any]]:

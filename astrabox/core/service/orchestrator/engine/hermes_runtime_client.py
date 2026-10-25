@@ -75,6 +75,7 @@ from astrabox.core.service.orchestrator.engine.interaction_contract import (
 )
 from astrabox.core.service.orchestrator.engine.runtime import (
     InputAdmitted,
+    InputMessageObserved,
     InteractionClosed,
     InteractionNotOpen,
     InteractionOpened,
@@ -91,6 +92,7 @@ from astrabox.core.service.orchestrator.engine.runtime import (
     RuntimeEvent,
     RuntimeInput,
     RuntimeInputRefused,
+    RuntimeProtocolError,
     RuntimeState,
     RuntimeStatus,
     StatusChanged,
@@ -106,9 +108,6 @@ _METHOD_NOT_FOUND = -32601
 #: A ``session.events.since`` watermark past any ``seq``: the reply carries no
 #: events, only the ring's ``latest_seq``, ``epoch`` and ``open_requests``.
 _LATEST = 2**53
-#: Hermes' own bound on building a session's agent (``_wait_agent`` in
-#: ``server.py``): a prompt sent later than this fails with its timeout.
-_AGENT_BUILD_TIMEOUT_SECONDS = 30.0
 #: Context occupancy, in percent of the model's window, at which an idle
 #: conversation is compressed ahead of need. Hermes compresses inside a turn
 #: at 50% of the window, or 75% for windows under 512K tokens
@@ -503,7 +502,10 @@ class _Translation:
         input_ids = tuple(item.input for item in chosen)
         # Replayed turn events can consume the pending entry before its
         # synthetic submit receipt is read. Starting the turn proves admission.
-        events: list[RuntimeEvent] = [InputAdmitted(None, item.input) for item in chosen]
+        events: list[RuntimeEvent] = [
+            event for item in chosen
+            for event in (InputMessageObserved(None, item.input), InputAdmitted(None, item.input))
+        ]
         if input_ids:
             origin: ResponseOrigin = "input"
             response_id = input_response_message_id(input_ids[0])
@@ -723,7 +725,8 @@ class _Translation:
         tool_id = str(payload.get("tool_id") or response.tool or "").strip()
         is_error = payload.get("is_error")
         if not isinstance(is_error, bool):
-            raise ValueError("Hermes tool.complete omitted its native is_error classification")
+            raise RuntimeProtocolError("Hermes tool.complete omitted its native boolean is_error classification. "
+                                       "Align the sandbox image with the core protocol before recovering this conversation.")
         if is_error:
             result = payload.get("result")
             error_text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
@@ -793,7 +796,6 @@ class HermesRuntimeClient:
         self._refused: set[str] = set()
         self._reading = False
         self._closed = False
-        self._agent_built = asyncio.Event()
         self._forwarder: asyncio.Task[None] | None = None
         self._cron: HermesCronWatch | None = None
         self._cron_reports: list[CronRunReport] = []
@@ -828,6 +830,17 @@ class HermesRuntimeClient:
         epoch = str(gateway.replay_epoch or "").strip()
         if not epoch:
             raise RuntimeError("the Hermes backend announced no replay epoch in gateway.ready")
+        try:
+            capabilities = await gateway.request("gateway.capabilities", {})
+        except HermesTuiRpcError as exc:
+            if exc.code != -32601:
+                raise
+            raise RuntimeProtocolError("Hermes does not expose the required gateway.capabilities protocol.") from exc
+        if capabilities.get("execution_tool_completion_is_error") is not True:
+            raise RuntimeProtocolError(
+                "Hermes does not advertise native execution tool-completion classification. "
+                "Deploy the sandbox image matching this core before starting or recovering conversations."
+            )
         key = str(resume_session_key or "").strip()
         if not key:
             listed = await gateway.request("session.list", {"title": platform_session_id})
@@ -850,9 +863,8 @@ class HermesRuntimeClient:
         sid = str(result.get("session_id") or "").strip()
         if not sid:
             raise RuntimeError("Hermes did not return a TUI session id")
-        # A created session builds its agent after the reply and announces it
-        # with ``session.info``, which reaches only a subscriber, so the
-        # subscription exists before anything else is awaited.
+        # Hermes builds the agent after opening the session. Subscribe before
+        # any other await so its session.info reaches this client.
         subscription = gateway.subscribe(sid)
         try:
             if not key:
@@ -889,34 +901,12 @@ class HermesRuntimeClient:
             server_info=dict(info) if isinstance(info, dict) else None,
         )
         client._received_seq = int(since.get("latest_seq") or 0)
-        if not (isinstance(info, dict) and info.get("lazy")):
-            client._agent_built.set()
         client._forwarder = asyncio.create_task(client._forward(), name=f"hermes-session-{sid}")
-        await client._await_agent_build()
+        # The native session accepts prompts while its agent builds. Hermes
+        # owns that queue and reports build failures through its event stream.
         if read_cron_run_output is not None:
             client._start_cron(cron_store or HermesCronJobRepository(), read_cron_run_output)
         return client
-
-    async def _await_agent_build(self) -> None:
-        """Wait for Hermes to build this session's agent.
-
-        Hermes builds an agent — its tools, Skills and model metadata — after
-        ``session.create`` answers, and a prompt waits for that build. Waiting
-        here makes the build part of activating the conversation, so the
-        backend a workspace publishes as ready has already done it.
-        """
-
-        try:
-            async with asyncio.timeout(_AGENT_BUILD_TIMEOUT_SECONDS):
-                await self._agent_built.wait()
-        except TimeoutError:
-            # Hermes fails the first prompt with its own timeout, which is the
-            # outcome the conversation reports.
-            logger.warning(
-                "Hermes did not build the agent of session=%s within %ss",
-                self._sid,
-                _AGENT_BUILD_TIMEOUT_SECONDS,
-            )
 
     def _start_cron(
         self,
@@ -951,9 +941,6 @@ class HermesRuntimeClient:
                     kind = str(wire.event.get("type") or "")
                     if kind == "session.info" and isinstance(wire.event.get("payload"), dict):
                         self._server_info = dict(wire.event["payload"])
-                    if kind == "session.info" or (kind == "error" and wire.session_id):
-                        # A failed build is announced as an error; the prompt reports it.
-                        self._agent_built.set()
                 self._inbox.put_nowait(("wire", wire))
         except asyncio.CancelledError:
             raise

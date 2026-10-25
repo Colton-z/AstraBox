@@ -1,6 +1,6 @@
 ---
 name: astrabox-agent-task
-description: "Delegate work to an AstraBox Agent, retain its task reference, and report the result when a long task finishes, including after the current reply."
+description: "List the user's existing platform conversations by title, including broad requests to find their conversations. Contact an Agent or delegate work when asked."
 version: 0.1.0
 author: AstraBox
 license: Apache-2.0
@@ -11,10 +11,36 @@ metadata:
 
 # Delegate an Agent task
 
-Use this skill for the configured `astrabox/<agent_id>` peers discovered with
-`a2a_list`. It uses the same A2A service and Assistant owner as those peers.
-The task runs in the target Agent's conversation. Keep its returned task and
-context references in this conversation until the result has been reported.
+Use this skill to find the owner's existing Agent conversations and contact an
+Agent through AstraBox's A2A service. Keep the returned task and context
+references in this conversation until the result has been reported.
+
+## Find an existing conversation
+
+When the user asks which conversations they have, use the `agents` MCP tool
+`list_agent_conversations`, including when they do not mention Agent or A2A.
+The result is the user's visible Agent conversations; name that scope in the reply.
+Use it for explicit Agent or A2A conversation questions too. It reads the user's platform
+conversations, including ones started in the console without a previous A2A
+exchange. Return their current Agent names and conversation titles. Follow
+`next_cursor` when another page is requested; a page with `has_more=true` is not
+the complete inventory. An empty result means no visible conversations matched
+that query, not that no conversations exist anywhere.
+
+Hermes `session_search` recalls Hermes session history. Native `a2a_list` discovers
+configured peers and exchanges saved in this Hermes profile; `a2a_history` reads
+one of those saved exchanges. Neither local history is the platform's Agent
+conversation inventory, so a local zero cannot answer that platform question.
+Use `a2a_list` to discover peer keys when starting new delegated work.
+An earlier reply based on local history does not establish the current platform
+inventory. Query the platform for a new inventory request even if an earlier
+reply claimed there were no conversations.
+
+For an existing conversation, use `send_agent_message` only when the user asks
+to send something, with the exact Agent and Session IDs returned by platform
+discovery. Listing conversations sends no message and starts no replacement
+business conversation. Retain the returned Task ID for `get_agent_task` or the
+watcher below. A request to list or find conversations authorizes no message.
 
 ## Submit once
 

@@ -251,7 +251,7 @@ class WebIdentityMiddleware:
             return
 
         if (
-            user is not None and path.startswith("/api/") and not _is_exempt_path(path)
+            path.startswith("/api/") and not _is_exempt_path(path)
             and path not in {"/api/v1/user/current", "/api/v1/environments"}
         ):
             from astrabox.core.service.environment_access import require_environment_access

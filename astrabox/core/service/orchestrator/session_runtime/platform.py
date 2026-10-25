@@ -18,7 +18,9 @@ from typing import Any
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.time_utils import parse_iso
 from astrabox.core.model import SessionState
-from astrabox.core.service.orchestrator.engine.runtime import RuntimeClient, RuntimeInput
+from astrabox.core.service.orchestrator.engine.runtime import (
+    RUNTIME_PROTOCOL_INCOMPATIBLE, RuntimeClient, RuntimeInput,
+)
 from astrabox.core.service.orchestrator.session_lifecycle.startup import runtime_initialization_metadata
 from astrabox.core.service.orchestrator.session_runtime.host import (
     ConnectedRuntime,
@@ -77,6 +79,8 @@ class PlatformRuntimeConnector:
             ):
                 raise RuntimeEnded(session_id)
             if session.get("state") != SessionState.READY.value:
+                raise RuntimeNotReady(session_id)
+            if session.get("recovery_reason") == RUNTIME_PROTOCOL_INCOMPATIBLE:
                 raise RuntimeNotReady(session_id)
             if not session.get("sandbox_id"):
                 if session.get("runtime_unavailable"):

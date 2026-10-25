@@ -197,6 +197,7 @@ class ExpirationWatcher:
                 await self._platform._runtime_manager.reconcile_startup_allocations(
                     stale_before=datetime.now(timezone.utc)
                     - timedelta(seconds=STARTUP_ALLOCATION_GRACE_SECONDS),
+                    on_abandoned=self._platform._session_lifecycle.converge_abandoned_startup,
                     limit=_DEAD_BINDING_SCAN_LIMIT,
                 )
             )
