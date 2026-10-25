@@ -98,7 +98,7 @@ RUN git -C /opt/hermes/source apply --check /opt/astrabox/hermes-patches/tool-co
 # astrabox-hermes-config-merge installs plugin dependencies with Hermes' own
 # installer, and the profile setup writes the owner's configuration to its
 # managed scope; a Hermes that moved either fails here, not in a box.
-RUN "${HERMES_VENV}/bin/python" -c 'from pm import sync_venv, venv_is_current; from hermes_cli.managed_scope import get_managed_dir'
+RUN "${HERMES_VENV}/bin/python" -c 'from pm import sync_venv, venv_is_current; from hermes_cli.managed_scope import get_managed_dir; from cron.scheduler_provider import resolve_cron_scheduler'
 
 # Optionally pre-bake a memory-provider client (see HERMES_MEMORY_PROVIDER_PIP).
 # Empty → plugin-neutral image: Hermes runs with no external memory provider, and
@@ -154,7 +154,7 @@ COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/astrabox-hermes-forward /usr/
 # Hermes seeds these defaults into each writable profile and keeps user edits
 # through its native bundled-skill manifest, including across image updates.
 COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/skills/ /opt/hermes/source/skills/astrabox-platform/
-COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/hermes_native_store.py containers/sandbox-hermes/hermes_profile_state.py containers/sandbox-hermes/hermes_state_transport.py containers/sandbox-hermes/hermes_state_bootstrap.py containers/sandbox-hermes/hermes_state_mirror.py containers/sandbox-hermes/hermes_host_relay.py /opt/astrabox/hermes/
+COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/hermes_native_store.py containers/sandbox-hermes/hermes_profile_state.py containers/sandbox-hermes/hermes_state_transport.py containers/sandbox-hermes/hermes_state_bootstrap.py containers/sandbox-hermes/hermes_state_mirror.py containers/sandbox-hermes/hermes_host_relay.py containers/sandbox-hermes/hermes_scheduler.py /opt/astrabox/hermes/
 COPY --chmod=u=rwX,go=rX astrabox/core/service/orchestrator/runtime/astrabox-transcript-mirror /usr/local/bin/astrabox-transcript-mirror
 COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/supervisord.hermes.conf /opt/gem/supervisord/supervisord.hermes.conf
 RUN set -eux; \
