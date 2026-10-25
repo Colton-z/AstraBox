@@ -98,7 +98,7 @@ RUN git -C /opt/hermes/source apply --check /opt/astrabox/hermes-patches/tool-co
 # astrabox-hermes-config-merge installs plugin dependencies with Hermes' own
 # installer, and the profile setup writes the owner's configuration to its
 # managed scope; a Hermes that moved either fails here, not in a box.
-RUN "${HERMES_VENV}/bin/python" -c 'from pm import sync_venv, venv_is_current; from hermes_cli.managed_scope import get_managed_dir; from cron.scheduler_provider import resolve_cron_scheduler'
+RUN "${HERMES_VENV}/bin/python" -c 'from pm import sync_venv, venv_is_current; from hermes_cli.managed_scope import get_managed_dir'
 
 # Optionally pre-bake a memory-provider client (see HERMES_MEMORY_PROVIDER_PIP).
 # Empty → plugin-neutral image: Hermes runs with no external memory provider, and
@@ -165,7 +165,7 @@ RUN set -eux; \
     bash -n /usr/local/bin/astrabox-hermes-forward; \
     "${HERMES_VENV}/bin/python" -c 'import ast, pathlib; [ast.parse(p.read_text()) for p in pathlib.Path("/opt/astrabox/hermes").glob("*.py")]'; \
     "${HERMES_VENV}/bin/python" -c 'import ast, pathlib; ast.parse(pathlib.Path("/usr/local/bin/astrabox-transcript-mirror").read_text())'; \
-    PYTHONPATH=/opt/astrabox/hermes "${HERMES_VENV}/bin/python" -c 'import hermes_native_store, hermes_profile_state, hermes_state_transport, hermes_state_bootstrap, hermes_state_mirror, hermes_host_relay'; \
+    PYTHONPATH=/opt/astrabox/hermes "${HERMES_VENV}/bin/python" -c 'import hermes_native_store, hermes_profile_state, hermes_state_transport, hermes_state_bootstrap, hermes_state_mirror, hermes_host_relay, hermes_scheduler'; \
     supervisord --version
 
 # Bootstrap only the base sandbox services; the backend above is supervised.
