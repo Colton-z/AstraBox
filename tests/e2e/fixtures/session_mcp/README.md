@@ -5,8 +5,17 @@ pointer using the public runtime preparation seam. Its private token map binds
 two synthetic platform users through the public identity seam. It contains no
 external service endpoints or customer account configuration.
 
-Bake the read-only stdio service and installed Plugin with this directory's
-Dockerfile over the candidate Claude image. Install this Python package only
+Bake the read-only stdio service and the configured Plugin's package cache with
+this directory's Dockerfile over the candidate Claude image. Supply
+`PLUGIN_SHA`, `PLUGIN_CACHE_TARGET` and `PLUGIN_CACHE_HASH` from the platform's
+existing package checkout/hash helpers. The Plugin commit uses the fixture
+files, author `Fixture <fixture@example.invalid>`, message `Read-only identity
+fixture`, and author/committer date `2026-10-26T00:00:00Z`. Configure the canonical
+Agent with that exact package descriptor; the selected case copies it through
+the ordinary Agent package API. Each isolated account then receives the
+platform's normal private Plugin link. No build-user home is shared.
+
+Install this Python package only
 in the isolated candidate server. Configure the server's web identity as
 `fixture`, with `/data/session-mcp-fixture/identities.private.json` containing
 task-owned token, user_id and roles records. The test toggles its own blocked

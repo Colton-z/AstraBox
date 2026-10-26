@@ -73,10 +73,14 @@ def test_user_bound_mcp_activates_in_the_prepared_process_and_recovers(
         owners = [data(client.get("/api/v1/user/current"))["user_id"] for client in (a, b)]
         assert len(set(owners)) == 2
         environment = environment_with_tenancy(a, "agent")
+        canonical = data(a.get(f"/api/v1/agents/{profile['agent_id']}"))
+        packages = canonical["packages"]
+        assert len(packages) == 1 and len(packages[0]["sha"]) == 40, packages
         agent = data(a.post("/api/v1/agents", json={
             "name": "Session MCP " + uuid.uuid4().hex[:8],
             "runtime_profile_name": environment, "model": profile["model"],
             "prepared_capacity": 2,
+            "packages": packages,
             "mcp_servers": {kind: {"command": "python3", "args": [
                 "/opt/astrabox/session-mcp-fixture/personal_mcp.py", kind,
             ]} for kind in ("personal", "shared")},

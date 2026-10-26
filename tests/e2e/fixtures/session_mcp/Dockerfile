@@ -2,11 +2,16 @@
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 USER root
+ARG PLUGIN_CACHE_HASH
+ARG PLUGIN_SHA
+ARG PLUGIN_CACHE_TARGET
 COPY tests/e2e/fixtures/session_mcp/personal_mcp.py /opt/astrabox/session-mcp-fixture/personal_mcp.py
-COPY --chmod=u=rwX,go=rX tests/e2e/fixtures/session_mcp/plugin /opt/session-mcp-marketplace/plugins/fixture-identity
-COPY tests/e2e/fixtures/session_mcp/marketplace.json /opt/session-mcp-marketplace/.claude-plugin/marketplace.json
-RUN install -d -m 0700 -o 1000 -g 1000 /home/agent && \
-    HOME=/home/agent CLAUDE_CONFIG_DIR=/home/agent/.claude \
-    /usr/local/bin/claude plugin install fixture-identity \
-    --marketplace /opt/session-mcp-marketplace --scope user --yes --json && \
-    chown -R 1000:1000 /home/agent
+COPY --chmod=u=rwX,go=rX tests/e2e/fixtures/session_mcp/plugin ${PLUGIN_CACHE_TARGET}
+RUN test -n "$PLUGIN_CACHE_HASH" && test -n "$PLUGIN_SHA" && test -n "$PLUGIN_CACHE_TARGET" && \
+    git -C "$PLUGIN_CACHE_TARGET" init --initial-branch=main && \
+    git -C "$PLUGIN_CACHE_TARGET" add . && \
+    GIT_AUTHOR_DATE=2026-10-26T00:00:00Z GIT_COMMITTER_DATE=2026-10-26T00:00:00Z \
+    git -C "$PLUGIN_CACHE_TARGET" -c user.name=Fixture -c user.email=fixture@example.invalid \
+    commit -m 'Read-only identity fixture' && \
+    test "$(git -C "$PLUGIN_CACHE_TARGET" rev-parse HEAD)" = "$PLUGIN_SHA" && \
+    printf '%s\n' "$PLUGIN_CACHE_HASH" > /opt/conversation-runtime/claude-plugin-repos-cache/.plugin-cache-hash

@@ -258,7 +258,9 @@ def _build_claude_options(
     )
 
 
-def _disable_plugin_mcp_autostart(options: Any, server_ids: list[str]) -> Any:
+def _disable_plugin_mcp_autostart(
+    options: Any, server_ids: list[str], session_mcp: list[dict[str, Any]],
+) -> Any:
     """Keep Plugin capabilities while refusing its implicit MCP connections.
 
     Claude Code starts a Plugin's MCP servers automatically. AstraBox
@@ -268,8 +270,9 @@ def _disable_plugin_mcp_autostart(options: Any, server_ids: list[str]) -> Any:
     not rewrite the Plugin checkout or invent another MCP vocabulary.
     """
 
+    deferred = {f"plugin:{ref['plugin']}:{ref['name']}" for ref in session_mcp if ref.get("plugin")}
     identities = sorted(
-        {str(server_id).strip() for server_id in server_ids if str(server_id).strip()}
+        {str(server_id).strip() for server_id in server_ids if str(server_id).strip()} - deferred
     )
     if not identities:
         return options
@@ -374,6 +377,7 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
                     )
                     or []
                 ),
+                session_mcp,
             )
             engine_client, how = await _attach_runner_engine_client(
                 runner_uri,
@@ -424,6 +428,7 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
                     )
                     or []
                 ),
+                session_mcp,
             )
             # A start that claimed nothing is this seat's setup: the runner
             # admits the prepare inside configure only against this file.

@@ -1538,7 +1538,8 @@ class RunnerSession:
         if self._session_mcp_servers:
             statuses = await self._mcp_status()
             if any(statuses.get(name) != "disabled" for name in self._session_mcp_servers):
-                raise RunnerProtocolError("native Session MCP servers were not deferred before claim")
+                actual = {name: statuses.get(name, "missing") for name in self._session_mcp_servers}
+                raise RunnerProtocolError(f"native Session MCP servers were not deferred before claim: {actual!r}")
         self._prepared = True
 
     async def bind_environment(self, environment: dict[str, str]) -> None:
