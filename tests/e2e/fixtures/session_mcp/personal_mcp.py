@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 import sys
 import time
-from mcp.server.fastmcp import FastMCP
 
 kind = sys.argv[1]
 home = Path.home()
@@ -31,14 +30,28 @@ else:
         raise RuntimeError("Identity material and process environment differ")
     time.sleep(max(0, identity.pop("not_before") - time.time()))
 record("identity_bound", **identity)
-server = FastMCP("fixture-" + kind)
 
-
-@server.tool()
-def whoami() -> dict:
-    """Return this connection's identity without changing any business data."""
-    record("call", **identity)
-    return {"kind": kind, **identity}
-
-
-server.run(transport="stdio")
+# The same dependency-free fixture transport as fixtures/prepared_plugin/server.py.
+for line in sys.stdin:
+    message = json.loads(line)
+    if "id" not in message:
+        continue
+    method = message["method"]
+    if method == "initialize":
+        result = {"protocolVersion": message["params"]["protocolVersion"],
+                  "capabilities": {"tools": {}},
+                  "serverInfo": {"name": "fixture-" + kind, "version": "1.0.0"}}
+    elif method == "tools/list":
+        result = {"tools": [{"name": "whoami", "description": "Read this connection's identity.",
+                             "inputSchema": {"type": "object", "properties": {},
+                                             "additionalProperties": False}}]}
+    elif method == "tools/call" and message["params"]["name"] == "whoami":
+        record("call", **identity)
+        result = {"content": [{"type": "text", "text": json.dumps({"kind": kind, **identity})}]}
+    elif method == "ping":
+        result = {}
+    else:
+        print(json.dumps({"jsonrpc": "2.0", "id": message["id"],
+                          "error": {"code": -32601, "message": "Unknown fixture method"}}), flush=True)
+        continue
+    print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}), flush=True)
