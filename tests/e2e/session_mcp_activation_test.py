@@ -193,9 +193,26 @@ print(json.dumps({'engine_initialized':seat['engine_initialized'],
 from pathlib import Path
 import os,signal,sys
 home,pid=Path(sys.argv[1]),int(sys.argv[2])
-assert b'/opt/astrabox/session-mcp-fixture/personal_mcp.py' in Path(f'/proc/{pid}/cmdline').read_bytes()
+matching=[]
+for proc in Path('/proc').iterdir():
+    if not proc.name.isdecimal():
+        continue
+    try:
+        args=proc.joinpath('cmdline').read_bytes().split(b'\\0')
+        if b'/opt/astrabox/session-mcp-fixture/personal_mcp.py' not in args or b'plugin' not in args:
+            continue
+        env=dict(item.split(b'=',1) for item in proc.joinpath('environ').read_bytes().split(b'\\0') if b'=' in item)
+        if env.get(b'HOME',b'').decode()!=str(home):
+            continue
+        status=proc.joinpath('status').read_text().splitlines()
+        nspid=next(line.split()[1:] for line in status if line.startswith('NSpid:'))
+        if int(nspid[-1])==pid:
+            matching.append(int(proc.name))
+    except (FileNotFoundError,ProcessLookupError):
+        continue
+assert len(matching)==1,matching
 (home/'.session-mcp-deny').touch()
-os.kill(pid,signal.SIGTERM)
+os.kill(matching[0],signal.SIGTERM)
 """, identity["home_dir"], str(plugin["pid"])], check=True, capture_output=True, timeout=15)
         failed = _settled_recovery(a, sid_a, live_test_deadline)
         assert failed.get("last_error") and "MCP" in failed["last_error"], failed
