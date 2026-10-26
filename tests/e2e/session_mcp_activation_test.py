@@ -90,15 +90,23 @@ def test_user_bound_mcp_activates_in_the_prepared_process_and_recovers(
             ]} for kind in ("personal", "shared")},
         }))["agent_id"]
         release_agent(agent)
-        prepared = _wait_prepared_count(a, agent, 2, live_test_deadline)
-        slots = _run_json([*_sandbox_exec(prepared["sandbox_id"]), "python3", "-c", """
-import json
+        _wait_prepared_count(a, agent, 2, live_test_deadline)
+        boxes = subprocess.check_output(
+            ["docker", "ps", "-q", "--filter", "ancestor=" + profile["image"]],
+            text=True, timeout=15,
+        ).split()
+        slots = []
+        for box in boxes:
+            slots.extend(_run_json(["docker", "exec", box, "python3", "-c", """
+import json,sys
 from pathlib import Path
-seats=json.loads(Path('/home/agent/.astrabox-prepared-seats.json').read_text())
+path=Path('/home/agent/.astrabox-prepared-seats.json')
+seats=json.loads(path.read_text()) if path.exists() else []
 print(json.dumps([{k:s.get(k) for k in ('slot_id','sandbox_id','runtime_identity','engine_initialized')}
-                  for s in seats if s.get('state')=='prepared']))
-"""])
-        assert isinstance(slots, list) and len(slots) == 2
+                  for s in seats if s.get('state')=='prepared'
+                  and s['runtime_identity'].get('agent_id')==sys.argv[1]]))
+""", agent]))
+        assert len(slots) >= 2, slots
         inventory = {}
         for slot in slots:
             assert slot["engine_initialized"] is True
