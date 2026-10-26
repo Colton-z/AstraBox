@@ -119,7 +119,7 @@ print(json.dumps([{k:s.get(k) for k in ('slot_id','sandbox_id','runtime_identity
 
         # Missing authorization must not claim/start a personal MCP or persist input.
         _block(server, [owners[1]])
-        sid_b = data(b.post(f"/api/v1/agents/{agent}/conversations", json={"permission_mode": "bypassPermissions"}))["session_id"]
+        sid_b = data(b.post(f"/api/v1/agents/{agent}/conversations", json={}))["session_id"]
         release_session(sid_b)
         while get_session(b, sid_b).get("state") == "CREATING":
             assert time.monotonic() < live_test_deadline
@@ -137,13 +137,13 @@ print(json.dumps([{k:s.get(k) for k in ('slot_id','sandbox_id','runtime_identity
             marker = "IDENTITY_OK_" + uuid.uuid4().hex
             reply = send_and_follow(client, sid,
                 "Call each of the three MCP whoami tools once: personal, shared, and the fixture-identity Plugin's personal server. "
-                "Return their exact JSON results, then " + marker + ". Do not use Bash or change files.", until="end")
+                "Return their exact JSON results, then " + marker + ". Do not use Bash or change files.", until="end", permission_mode="bypassPermissions")
             assert reply.error is None and marker in reply.text, reply
             wait_until_settled(client, sid)
             return marker, reply
 
         with ThreadPoolExecutor(max_workers=2) as pool:
-            sid_a = data(a.post(f"/api/v1/agents/{agent}/conversations", json={"permission_mode": "bypassPermissions"}))["session_id"]
+            sid_a = data(a.post(f"/api/v1/agents/{agent}/conversations", json={}))["session_id"]
             release_session(sid_a)
             first_a = pool.submit(read_identity, a, sid_a)
             _block(server, [])
