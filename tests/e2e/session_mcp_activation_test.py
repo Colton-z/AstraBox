@@ -128,23 +128,6 @@ print(json.dumps([{k:s.get(k) for k in ('slot_id','sandbox_id','runtime_identity
             assert not any(row["kind"] in {"personal", "plugin"}
                            for row in _journals(_sandbox_exec(slot["sandbox_id"]), slot["runtime_identity"]))
 
-        sid_a = data(a.post(f"/api/v1/agents/{agent}/conversations", json={"permission_mode": "bypassPermissions"}))["session_id"]
-        release_session(sid_a)
-        _block(server, [])
-        repaired = _settled_recovery(b, sid_b, live_test_deadline)
-        assert repaired.get("state") == "READY" and not repaired.get("last_error"), repaired
-        while get_session(a, sid_a).get("state") == "CREATING":
-            assert time.monotonic() < live_test_deadline
-            time.sleep(0.2)
-        details = [get_admin_session_detail(a, sid) for sid in (sid_a, sid_b)]
-        # The two claimed runtimes are the fixture; do not keep replenishing
-        # unrelated waiting inventory while testing their connection recovery.
-        data(a.put(f"/api/v1/agents/{agent}", json={"prepared_capacity": 0}))
-        for detail in details:
-            identity = detail["runtime_identity"]
-            assert identity["home_dir"] in inventory, "claim bypassed initialized inventory"
-            assert _supplier_processes(_sandbox_exec(detail["sandbox_id"]), identity, "claude_code") == inventory[identity["home_dir"]]["native"]
-
         def read_identity(client: httpx.Client, sid: str) -> tuple[str, object]:
             marker = "IDENTITY_OK_" + uuid.uuid4().hex
             reply = send_and_follow(client, sid,
@@ -155,8 +138,26 @@ print(json.dumps([{k:s.get(k) for k in ('slot_id','sandbox_id','runtime_identity
             return marker, reply
 
         with ThreadPoolExecutor(max_workers=2) as pool:
-            futures = [pool.submit(read_identity, client, sid) for client, sid in ((a, sid_a), (b, sid_b))]
-            answers = [future.result() for future in futures]
+            sid_a = data(a.post(f"/api/v1/agents/{agent}/conversations", json={"permission_mode": "bypassPermissions"}))["session_id"]
+            release_session(sid_a)
+            first_a = pool.submit(read_identity, a, sid_a)
+            _block(server, [])
+            data(b.post(f"/api/v1/sessions/{sid_b}/recover"))
+            first_b = pool.submit(read_identity, b, sid_b)
+            for client, sid in ((a, sid_a), (b, sid_b)):
+                while get_session(client, sid).get("state") == "CREATING":
+                    assert time.monotonic() < live_test_deadline
+                    time.sleep(0.2)
+                ready = get_session(client, sid)
+                assert ready.get("state") == "READY" and not ready.get("last_error"), ready
+            details = [get_admin_session_detail(a, sid) for sid in (sid_a, sid_b)]
+            # Stop replenishing unrelated waiting inventory after the claims.
+            data(a.put(f"/api/v1/agents/{agent}", json={"prepared_capacity": 0}))
+            for detail in details:
+                identity = detail["runtime_identity"]
+                assert identity["home_dir"] in inventory, "claim bypassed initialized inventory"
+                assert _supplier_processes(_sandbox_exec(detail["sandbox_id"]), identity, "claude_code") == inventory[identity["home_dir"]]["native"]
+            answers = [first_a.result(), first_b.result()]
         for index, (client, sid, detail) in enumerate(((a, sid_a, details[0]), (b, sid_b, details[1]))):
             identity = detail["runtime_identity"]
             rows = _journals(_sandbox_exec(detail["sandbox_id"]), identity)
@@ -200,9 +201,10 @@ os.kill(pid,signal.SIGTERM)
         assert [row for row in failed_native if row.get("type") == "user"] == [row for row in old_native if row.get("type") == "user"], "recovery replayed native input"
         subprocess.run([*execute, "rm", str(Path(identity["home_dir"]) / ".session-mcp-deny")],
                        check=True, capture_output=True, timeout=15)
-        restored = _settled_recovery(a, sid_a, live_test_deadline)
+        data(a.post(f"/api/v1/sessions/{sid_a}/recover"))
+        recovered_marker, recovered_reply = read_identity(a, sid_a)
+        restored = get_session(a, sid_a)
         assert restored.get("state") == "READY" and not restored.get("last_error"), restored
-        read_identity(a, sid_a)
         assert _supplier_processes(execute, identity, "claude_code") == inventory[identity["home_dir"]]["native"]
         after = _journals(execute, identity)
         assert {row["pid"] for row in after if row["kind"] == "shared"} == {row["pid"] for row in old_rows if row["kind"] == "shared"}
@@ -210,10 +212,23 @@ os.kill(pid,signal.SIGTERM)
                    and row["pid"] != plugin["pid"] and row["principal_id"] == owners[0] for row in after)
         for sid in (sid_a, sid_b):
             native = transcript_entries(sid)
+            assert "MUST_NOT_REACH_NATIVE" not in json.dumps(native)
             for marker, _reply in answers:
                 count = sum(entry.get("type") == "user" and marker in json.dumps(entry.get("message", {})) for entry in native)
                 assert count == (1 if marker == answers[0 if sid == sid_a else 1][0] else 0)
+        final_native = transcript_entries(sid_a)
+        recovered_input = [entry for entry in final_native if entry.get("type") == "user"
+                           and recovered_marker in json.dumps(entry.get("message", {}))]
+        assert len(recovered_input) == 1
+        consumed_at = datetime.fromisoformat(recovered_input[0]["timestamp"].replace("Z", "+00:00")).timestamp()
+        assert consumed_at >= max(row["at"] for row in after if row["event"] == "identity_bound")
         print(json.dumps({"phase": "session-mcp-activation-accepted", "agent_id": agent,
                           "sessions": [sid_a, sid_b], "owners": owners,
                           "inventory": inventory, "claimed": [{key: detail.get(key) for key in ("session_id", "sandbox_id", "runtime_identity")} for detail in details],
-                          "native_mcp_receipts": after, "persistent_workspace_volume": False}))
+                          "native_mcp_receipts": {sid_a: after, sid_b: _journals(_sandbox_exec(details[1]["sandbox_id"]), details[1]["runtime_identity"])},
+                          "native_history": {sid_a: final_native, sid_b: transcript_entries(sid_b)},
+                          "visible_history": {sid_a: history(a, sid_a), sid_b: history(b, sid_b)},
+                          "first_live_answers": [{"marker": marker, "text": reply.text} for marker, reply in answers],
+                          "recovery_live_answer": {"marker": recovered_marker, "text": recovered_reply.text},
+                          "failed_recovery": {"session": failed, "native_history": failed_native},
+                          "persistent_workspace_volume": False}))
