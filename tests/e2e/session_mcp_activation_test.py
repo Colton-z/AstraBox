@@ -13,13 +13,13 @@ import uuid
 import httpx
 import pytest
 
+from tests.e2e import _docker_compute
 from tests.e2e._sandbox_helpers import (
     current_profile, data, environment_with_tenancy, get_admin_session_detail,
     get_session, history, release_agent, release_session, send_and_follow,
-    transcript_entries, wait_until_settled,
+    transcript_entries, wait_until_settled, psql_rows, sql_literal,
 )
 from tests.e2e._service_containers import SERVER_CONTAINER_HANDLE, require_service_container
-from tests.e2e.runtime_preparation_test import _SERVER_SETTINGS
 from tests.e2e.test_prepared_runtime_activation import (
     _run_json, _sandbox_exec, _supplier_processes, _wait_prepared_count,
 )
@@ -65,8 +65,6 @@ def test_user_bound_mcp_activates_in_the_prepared_process_and_recovers(
     profile = current_profile()
     assert profile["engine_kind"] == "claude_code"
     server = require_service_container(SERVER_CONTAINER_HANDLE)
-    settings = _run_json(["docker", "exec", server, "python", "-c", _SERVER_SETTINGS])
-    assert settings["volume"] == "" and settings["provider"] == "session-mcp-fixture", settings
     token_path = Path(os.environ["ASTRABOX_E2E_SECOND_AUTH_TOKEN_FILE"])
     assert token_path.is_absolute() and token_path.is_file() and not token_path.is_symlink()
     with httpx.Client(base_url=e2e_base_url, headers={
@@ -85,19 +83,16 @@ def test_user_bound_mcp_activates_in_the_prepared_process_and_recovers(
         }))["agent_id"]
         release_agent(agent)
         _wait_prepared_count(a, agent, 2, live_test_deadline)
-        slots = _run_json(["docker", "exec", server, "python", "-c", """
-import asyncio,json,sys
-from astrabox.deploy.onebox import ensure_database_wiring
-from astrabox.persistence.repository.agent_repository import AgentRepository
-ensure_database_wiring()
-r=asyncio.run(AgentRepository().read_ledger(sys.argv[1]))
-print(json.dumps([{k:s.get(k) for k in ('slot_id','sandbox_id','runtime_identity','engine_initialized')}
-                  for s in r['_prepared_slots'] if s.get('state')=='prepared']))
-""", agent])
+        slots = psql_rows(
+            "SELECT slot_id, sandbox_id, manifest->'runtime_identity' AS runtime_identity, "
+            "manifest->'engine_initialized' AS engine_initialized FROM agent_prepared_slots "
+            "WHERE agent_id=" + sql_literal(agent) + " AND state='prepared'",
+        )
         assert isinstance(slots, list) and len(slots) == 2
         inventory = {}
         for slot in slots:
             assert slot["engine_initialized"] is True
+            assert not _docker_compute.durable_mounts("sandbox-" + slot["sandbox_id"]), "core MCP lifecycle used a persistent mount"
             identity = slot["runtime_identity"]
             execute = _sandbox_exec(slot["sandbox_id"])
             native = _supplier_processes(execute, identity, "claude_code")
