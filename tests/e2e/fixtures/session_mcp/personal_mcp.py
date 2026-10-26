@@ -26,6 +26,9 @@ else:
         record("authorization_required")
         raise RuntimeError("Personal authorization required")
     identity = json.loads(Path(path).read_text())
+    if identity["revision"] != os.environ.get("MCP_IDENTITY_REVISION"):
+        record("stale_environment")
+        raise RuntimeError("Identity material and process environment differ")
     time.sleep(max(0, identity.pop("not_before") - time.time()))
 record("identity_bound", **identity)
 server = FastMCP("fixture-" + kind)

@@ -2,6 +2,7 @@
 import json
 import secrets
 import time
+import uuid
 from pathlib import Path
 from astrabox.seams.runtime_preparation import (
     PreparationUserActionRequired, RuntimeFile, RuntimeMaterials,
@@ -35,13 +36,13 @@ class SessionMCPFixture(RuntimePreparationProvider):
         if blocked(context.principal_id):
             raise PreparationUserActionRequired(message="Authorize your personal tools")
         STATE.mkdir(exist_ok=True)
-        material = {"session_id": context.session_id, "principal_id": context.principal_id, "not_before": time.time() + 2.0}
+        material = {"session_id": context.session_id, "principal_id": context.principal_id, "not_before": time.time() + 2.0, "revision": uuid.uuid4().hex}
         with (STATE / "bindings.jsonl").open("a") as journal:
             journal.write(json.dumps({**material, "sandbox_id": context.sandbox_id,
                                       "engine_initialized": context.engine_initialized}) + "\n")
         return RuntimeMaterials(
             files=(RuntimeFile("mcp-owner.json", json.dumps(material).encode()),),
-            environment={"MCP_IDENTITY_MATERIAL": context.file_path("mcp-owner.json")},
+            environment={"MCP_IDENTITY_MATERIAL": context.file_path("mcp-owner.json"), "MCP_IDENTITY_REVISION": material["revision"]},
         )
 
 
