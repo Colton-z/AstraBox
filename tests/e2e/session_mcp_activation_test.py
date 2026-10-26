@@ -91,39 +91,7 @@ def test_user_bound_mcp_activates_in_the_prepared_process_and_recovers(
         }))["agent_id"]
         release_agent(agent)
         _wait_prepared_count(a, agent, 2, live_test_deadline)
-        boxes = subprocess.check_output(
-            ["docker", "ps", "-q", "--filter", "ancestor=" + profile["image"]],
-            text=True, timeout=15,
-        ).split()
-        slots = []
-        for box in boxes:
-            slots.extend(_run_json(["docker", "exec", box, "python3", "-c", """
-import json,sys
-from pathlib import Path
-path=Path('/home/agent/.astrabox-prepared-seats.json')
-seats=json.loads(path.read_text()) if path.exists() else []
-print(json.dumps([{k:s.get(k) for k in ('slot_id','sandbox_id','runtime_identity','engine_initialized')}
-                  for s in seats if s.get('state')=='prepared'
-                  and s['runtime_identity'].get('agent_id')==sys.argv[1]]))
-""", agent]))
-        assert len(slots) >= 2, slots
         inventory = {}
-        for slot in slots:
-            assert slot["engine_initialized"] is True
-            assert not _docker_compute.durable_mounts("sandbox-" + slot["sandbox_id"]), "core MCP lifecycle used a persistent mount"
-            identity = slot["runtime_identity"]
-            execute = _sandbox_exec(slot["sandbox_id"])
-            native = _supplier_processes(execute, identity, "claude_code")
-            assert len(native) == 1
-            while time.monotonic() < live_test_deadline:
-                rows = _journals(execute, identity)
-                assert not any(row["kind"] in {"personal", "plugin"} for row in rows), rows
-                if any(row["event"] == "identity_bound" and row["kind"] == "shared" for row in rows):
-                    break
-                time.sleep(0.1)
-            else:
-                pytest.fail("ordinary shared MCP did not start in prepared inventory")
-            inventory[identity["home_dir"]] = {"native": native, "rows": rows}
 
         # Missing authorization must not claim/start a personal MCP or persist input.
         _block(server, [owners[1]])
@@ -149,10 +117,12 @@ print(json.dumps([{k:s.get(k) for k in ('slot_id','sandbox_id','runtime_identity
             return marker, reply
 
         with ThreadPoolExecutor(max_workers=2) as pool:
+            claim_a_at = time.time()
             sid_a = data(a.post(f"/api/v1/agents/{agent}/conversations", json={}))["session_id"]
             release_session(sid_a)
             first_a = pool.submit(read_identity, a, sid_a)
             _block(server, [])
+            claim_b_at = time.time()
             data(b.post(f"/api/v1/sessions/{sid_b}/recover"))
             first_b = pool.submit(read_identity, b, sid_b)
             for client, sid in ((a, sid_a), (b, sid_b)):
@@ -164,10 +134,29 @@ print(json.dumps([{k:s.get(k) for k in ('slot_id','sandbox_id','runtime_identity
             details = [get_admin_session_detail(a, sid) for sid in (sid_a, sid_b)]
             # Stop replenishing unrelated waiting inventory after the claims.
             data(a.put(f"/api/v1/agents/{agent}", json={"prepared_capacity": 0, "model": profile["model"], "runtime_profile_name": environment}))
-            for detail in details:
+            for detail, claimed_at in zip(details, (claim_a_at, claim_b_at)):
                 identity = detail["runtime_identity"]
-                assert identity["home_dir"] in inventory, "claim bypassed initialized inventory"
-                assert _supplier_processes(_sandbox_exec(detail["sandbox_id"]), identity, "claude_code") == inventory[identity["home_dir"]]["native"]
+                execute = _sandbox_exec(detail["sandbox_id"])
+                assert not _docker_compute.durable_mounts("sandbox-" + detail["sandbox_id"])
+                native = _supplier_processes(execute, identity, "claude_code")
+                assert len(native) == 1
+                facts = _run_json([*execute, "python3", "-c", """
+import json,os,sys,time
+from pathlib import Path
+home,ticks=sys.argv[1:]
+seats=json.loads(Path('/home/agent/.astrabox-prepared-seats.json').read_text())
+seat=next(s for s in seats if s['runtime_identity']['home_dir']==home)
+print(json.dumps({'engine_initialized':seat['engine_initialized'],
+                  'native_started_at':time.time()-time.clock_gettime(time.CLOCK_BOOTTIME)+int(ticks)/os.sysconf('SC_CLK_TCK')}))
+""", identity["home_dir"], native[0]["start_ticks"]])
+                assert facts["engine_initialized"] is True and facts["native_started_at"] < claimed_at, facts
+                rows = _journals(execute, identity)
+                shared = [row for row in rows if row["kind"] == "shared" and row["event"] == "identity_bound"]
+                assert len(shared) == 1 and shared[0]["at"] < claimed_at, rows
+                assert all(row["at"] >= claimed_at for row in rows
+                           if row["kind"] in {"personal", "plugin"} and row["event"] == "start"), rows
+                inventory[identity["home_dir"]] = {"native": native, "facts": facts,
+                                                   "claim_requested_at": claimed_at, "rows": rows}
             answers = [first_a.result(), first_b.result()]
             for client, sid in ((a, sid_a), (b, sid_b)):
                 assert get_session(client, sid)["state"] == "READY"
