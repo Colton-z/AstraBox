@@ -160,7 +160,7 @@ print(json.dumps([{k:s.get(k) for k in ('slot_id','sandbox_id','runtime_identity
                     assert time.monotonic() < live_test_deadline
                     time.sleep(0.2)
                 ready = get_session(client, sid)
-                assert ready.get("state") == "READY" and not ready.get("last_error"), ready
+                assert ready.get("state") in {"READY", "PROCESSING"} and not ready.get("last_error"), ready
             details = [get_admin_session_detail(a, sid) for sid in (sid_a, sid_b)]
             # Stop replenishing unrelated waiting inventory after the claims.
             data(a.put(f"/api/v1/agents/{agent}", json={"prepared_capacity": 0, "model": profile["model"], "runtime_profile_name": environment}))
@@ -169,6 +169,8 @@ print(json.dumps([{k:s.get(k) for k in ('slot_id','sandbox_id','runtime_identity
                 assert identity["home_dir"] in inventory, "claim bypassed initialized inventory"
                 assert _supplier_processes(_sandbox_exec(detail["sandbox_id"]), identity, "claude_code") == inventory[identity["home_dir"]]["native"]
             answers = [first_a.result(), first_b.result()]
+            for client, sid in ((a, sid_a), (b, sid_b)):
+                assert get_session(client, sid)["state"] == "READY"
         for index, (client, sid, detail) in enumerate(((a, sid_a, details[0]), (b, sid_b, details[1]))):
             identity = detail["runtime_identity"]
             rows = _journals(_sandbox_exec(detail["sandbox_id"]), identity)
