@@ -699,6 +699,7 @@ for _code, _status, _category, _retryable, _owner in (
     # `credential_target_url`, which choose the credential the egress sidecar
     # attaches; only a catalog assignment writes them.
     ("AGENT_MCP_FIELD_RESERVED", 403, "configuration.agent", False, "template"),
+    ("MCP_ACTIVATION_UNSUPPORTED", 400, "configuration.agent", False, "template"),
     # A repository names a deploy-key secret the administrator did not list in
     # ASTRABOX_DEPLOY_KEY_SECRET_NAMES. The author picks a listed key, or an
     # administrator lists this one.

@@ -369,6 +369,10 @@ class EngineAdapter(ABC):
         """Whether native activation can acknowledge environment after initialization."""
         return False
 
+    def supports_session_mcp_activation(self) -> bool:
+        """Whether native MCP startup can wait for bound Session materials."""
+        return False
+
     def startup_material_request(
         self,
         *,

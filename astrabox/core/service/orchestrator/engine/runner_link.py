@@ -172,6 +172,7 @@ class RunnerLink:
         self._answer_acks: dict[str, asyncio.Future[bool]] = {}
         self._permission_mode_acks: dict[str, asyncio.Future[str]] = {}
         self._flag_settings_acks: dict[str, asyncio.Future[bool]] = {}
+        self._mcp_activation_acks: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._init_info: asyncio.Future[dict[str, Any] | None] | None = None
         self._state_requests: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._events: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
@@ -732,6 +733,33 @@ class RunnerLink:
             action="background task stop",
         )
 
+    async def activate_mcp(
+        self, servers: list[dict[str, Any]], *, environment: dict[str, str] | None = None, reconnect: bool = True,
+    ) -> dict[str, str]:
+        if self._hello is None or not self._hello.done():
+            raise RunnerLinkError("MCP activation before runner handshake")
+        _validate_runner_engine_contract(self._hello.result(), {
+            **dict(self._opening_engine_requirements or {}),
+            "required_control_requests": ["mcp_toggle", "mcp_reconnect", "mcp_status"],
+        })
+        request_id = uuid.uuid4().hex
+        future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+        self._mcp_activation_acks[request_id] = future
+        try:
+            await self._send_wire(json.dumps({
+                "op": "activate_mcp", "request_id": request_id, "servers": servers,
+                "environment": environment or {}, "reconnect": reconnect,
+            }), action="Session MCP activation")
+            result = await asyncio.wait_for(future, timeout=60.0)
+            if "error" in result:
+                raise RuntimeControlRefused("MCP_ACTIVATION_FAILED", str(result["error"]))
+            statuses = result.get("statuses")
+            if not isinstance(statuses, dict):
+                raise RunnerLinkError("MCP activation carries no native statuses")
+            return statuses
+        finally:
+            self._mcp_activation_acks.pop(request_id, None)
+
     async def apply_flag_settings(self, settings: dict[str, Any], *, timeout_s: float = 30.0) -> None:
         if self._ws is None:
             raise RunnerLinkError("link not connected")
@@ -893,6 +921,9 @@ class RunnerLink:
                     state_future.set_exception(
                         EngineStreamDetached("runner link closed before a state reply")
                     )
+            for mcp_future in self._mcp_activation_acks.values():
+                if not mcp_future.done():
+                    mcp_future.set_exception(RunnerLinkError("runner disconnected during MCP activation"))
             for settings_future in self._flag_settings_acks.values():
                 if not settings_future.done():
                     settings_future.set_exception(
@@ -971,6 +1002,13 @@ class RunnerLink:
             if state_future is None or state_future.done() or not isinstance(snapshot, dict):
                 raise RunnerLinkError(f"unexpected state reply for {request_id!r}")
             state_future.set_result(snapshot)
+            return
+        if op == "mcp_activation_ack":
+            request_id = str(frame.get("request_id") or "")
+            future = self._mcp_activation_acks.get(request_id)
+            if future is None or future.done():
+                raise RunnerLinkError("unexpected MCP activation acknowledgement")
+            future.set_result(frame)
             return
         if op == "flag_settings_ack":
             request_id = str(frame.get("request_id") or "")

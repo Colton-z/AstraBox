@@ -271,6 +271,7 @@ def _detached_exception(exc: Exception) -> Exception:
 RUNNER_OPTION_KEYS: frozenset[str] = frozenset({
     "interaction_wait_s",
     "resume_transcript",
+    "session_mcp_servers",
 })
 
 # Select the image-pinned CLI through the SDK's native override. The SDK's
@@ -326,7 +327,7 @@ def _runner_engine_contract() -> dict[str, Any]:
         ) from exc
     return {
         "adapter": "claude_code",
-        "control_request_subtypes": ["apply_flag_settings", "get_settings"],
+        "control_request_subtypes": ["apply_flag_settings", "get_settings", "mcp_toggle", "mcp_reconnect", "mcp_status"],
         "sdk_version": sdk_version,
         "accepted_option_keys": accepted_option_keys,
         "permission_modes": permission_modes,
@@ -497,6 +498,8 @@ class SdkSession(Protocol):
     async def apply_flag_settings(self, settings: dict[str, Any]) -> None: ...
 
     async def get_settings(self) -> dict[str, Any]: ...
+
+    async def toggle_mcp_server(self, server_name: str, enabled: bool) -> None: ...
 
     async def reconnect_mcp_server(self, server_name: str) -> None: ...
 
@@ -1385,6 +1388,8 @@ class RunnerSession:
         ) = None,
         interaction_wait_s: float = DEFAULT_INTERACTION_WAIT_S,
         permission_mode: str = "default",
+        session_mcp_servers: tuple[str, ...] = (),
+        resolve_mcp_servers: Callable[[list[dict[str, Any]]], list[str]] | None = None,
     ) -> None:
         # Before activation this is a slot id, used only for local task names
         # and diagnostics.  No envelope is emitted under it.  Activation
@@ -1408,6 +1413,11 @@ class RunnerSession:
         self._client: SdkSession | None = None
         self._stream_error: Exception | None = None
         self._store_bound_to: str | None = None
+        self._session_mcp_servers = session_mcp_servers
+        self._resolve_mcp_servers = resolve_mcp_servers
+        self._mcp_lock = asyncio.Lock()
+        self._mcp_ready = asyncio.Event()
+        self._mcp_ready.set()
         self._prepared = False
         self._active = False
         self._deliveries: asyncio.Queue[_QueuedDelivery | object] = asyncio.Queue()
@@ -1525,6 +1535,11 @@ class RunnerSession:
             raise RunnerProtocolError("runner slot is already prepared")
         self._client = self._client_factory(self.broker)
         await self._client.connect()
+        if self._session_mcp_servers:
+            statuses = await self._mcp_status()
+            if any(statuses.get(name) != "disabled" for name in self._session_mcp_servers):
+                actual = {name: statuses.get(name, "missing") for name in self._session_mcp_servers}
+                raise RunnerProtocolError(f"native Session MCP servers were not deferred before claim: {actual!r}")
         self._prepared = True
 
     async def bind_environment(self, environment: dict[str, str]) -> None:
@@ -1548,6 +1563,64 @@ class RunnerSession:
         except Exception:
             # Native errors may quote settings, including credentials.
             raise RunnerProtocolError("native Session environment binding failed") from None
+
+    async def _mcp_status(self) -> dict[str, str]:
+        if self._client is None:
+            raise RunnerProtocolError("MCP status before native initialization")
+        try:
+            response = await self._client.get_mcp_status()
+        except Exception:
+            raise RunnerProtocolError("Native MCP status query failed") from None
+        rows = response.get("mcpServers")
+        if not isinstance(rows, list):
+            raise RunnerProtocolError("native MCP status carries no mcpServers list")
+        return {row["name"]: row["status"] for row in rows
+                if isinstance(row, dict) and isinstance(row.get("name"), str)
+                and isinstance(row.get("status"), str)}
+
+    async def _activate_mcp_names(self, names: list[str], *, reconnect: bool = True) -> None:
+        if not names:
+            return
+        if self._client is None:
+            raise RunnerProtocolError("MCP activation before native initialization")
+        self._mcp_ready.clear()
+        statuses = await self._mcp_status()
+        for name in names if reconnect else []:
+            status = statuses.get(name)
+            try:
+                if status == "disabled":
+                    await self._client.toggle_mcp_server(name, True)
+                else:
+                    await self._client.reconnect_mcp_server(name)
+            except Exception:
+                # Supplier failures can quote authentication URLs and headers.
+                raise RunnerProtocolError(f"Session MCP connection failed: {name!r}") from None
+        statuses = await self._mcp_status()
+        deadline = asyncio.get_running_loop().time() + 30.0
+        while any(statuses.get(name) == "pending" for name in names):
+            if asyncio.get_running_loop().time() >= deadline:
+                break
+            await asyncio.sleep(0.1)
+            statuses = await self._mcp_status()
+        unusable = {name: statuses.get(name, "missing") for name in names if statuses.get(name) != "connected"}
+        if unusable:
+            raise RunnerProtocolError(f"Session MCP servers are not connected: {unusable!r}")
+        self._mcp_ready.set()
+
+    async def activate_mcp(
+        self, references: list[dict[str, Any]], *, environment: dict[str, str], reconnect: bool = True,
+    ) -> dict[str, str]:
+        """The same owner-material barrier on reattachment, without replaying input."""
+        if self._resolve_mcp_servers is None:
+            raise RunnerProtocolError("runner has no native MCP resolver")
+        names = self._resolve_mcp_servers(references)
+        async with self._mcp_lock:
+            if reconnect and (self._busy or self._open_tasks or self._pending_prompt_consumptions):
+                raise RunnerProtocolError("cannot activate Session MCP servers while Claude is working")
+            self._mcp_ready.clear()
+            await self.bind_environment(environment)
+            await self._activate_mcp_names(names, reconnect=reconnect)
+            return await self._mcp_status()
 
     async def activate(
         self,
@@ -1598,41 +1671,8 @@ class RunnerSession:
             await self._client.set_permission_mode(requested_mode)
             self.broker.set_permission_mode(requested_mode)
             self._permission_mode = requested_mode
-        required_mcp = [
-            str(name).strip() for name in (mcp_servers or []) if str(name).strip()
-        ]
-        if len(required_mcp) != len(set(required_mcp)):
-            raise RunnerProtocolError("activate mcp_servers contains duplicates")
-        for server_name in required_mcp:
-            await self._client.reconnect_mcp_server(server_name)
-        if required_mcp:
-            status_response = await self._client.get_mcp_status()
-            raw_statuses = (
-                status_response.get("mcpServers")
-                if isinstance(status_response, dict)
-                else None
-            )
-            if not isinstance(raw_statuses, list):
-                raise RunnerProtocolError(
-                    "MCP activation status carries no mcpServers list"
-                )
-            statuses = {
-                str(item.get("name") or "").strip(): str(
-                    item.get("status") or ""
-                ).strip()
-                for item in raw_statuses
-                if isinstance(item, dict) and str(item.get("name") or "").strip()
-            }
-            unusable = {
-                name: statuses.get(name, "missing")
-                for name in required_mcp
-                if statuses.get(name) != "connected"
-            }
-            if unusable:
-                raise RunnerProtocolError(
-                    "required MCP servers are not connected after activation: "
-                    f"{unusable!r}"
-                )
+        required_mcp = list(dict.fromkeys([*self._session_mcp_servers, *(mcp_servers or [])]))
+        await self._activate_mcp_names(required_mcp)
         self._active = True
         if self._store is not None and not self._store_bound:
             self._store.start_flusher()
@@ -1890,6 +1930,14 @@ class RunnerSession:
                     queued.accepted.set_result(None)
 
     async def _query_delivery(self, command: DeliveryCommand) -> None:
+        while True:
+            await self._mcp_ready.wait()
+            async with self._mcp_lock:
+                if self._mcp_ready.is_set():
+                    await self._query_ready_delivery(command)
+                    return
+
+    async def _query_ready_delivery(self, command: DeliveryCommand) -> None:
         """Hand an input to Claude's native queue and track its consumption."""
 
         if self._client is None:
@@ -2807,6 +2855,23 @@ class RunnerWsServer:
             ):
                 raise RunnerProtocolError("event_persisted requires a positive seq")
             await session.sender.acknowledge_event_persistence(sequence)
+        elif op == "activate_mcp":
+            request_id = str(frame.get("request_id") or "").strip()
+            references = frame.get("servers")
+            if not request_id or not isinstance(references, list) or not references:
+                raise RunnerProtocolError("activate_mcp requires a request_id and server references")
+            try:
+                reconnect = frame.get("reconnect", True)
+                if type(reconnect) is not bool:
+                    raise RunnerProtocolError("MCP reconnect must be a boolean")
+                statuses = await session.activate_mcp(
+                    references, environment=frame.get("environment", {}), reconnect=reconnect,
+                )
+            except Exception as exc:
+                await link.send({"op": "mcp_activation_ack", "request_id": request_id,
+                                 "error": str(exc) if isinstance(exc, RunnerProtocolError) else "Native MCP activation failed"})
+            else:
+                await link.send({"op": "mcp_activation_ack", "request_id": request_id, "statuses": statuses})
         elif op == "apply_flag_settings":
             request_id = str(frame.get("request_id") or "").strip()
             settings = frame.get("settings")
@@ -3368,6 +3433,63 @@ def _materialize_sdk_wire_value(value: Any, annotation: Any, *, path: str) -> An
     return value
 
 
+def _resolve_session_mcp_servers(options: dict[str, Any], references: list[dict[str, Any]]) -> list[str]:
+    """Resolve authored keys with Claude's documented Plugin namespace."""
+    names: list[str] = []
+    for reference in references:
+        if not isinstance(reference, dict) or set(reference) - {"name", "plugin"}:
+            raise RunnerProtocolError("invalid Session MCP reference")
+        name, plugin = reference.get("name"), reference.get("plugin")
+        if not isinstance(name, str) or not name.strip():
+            raise RunnerProtocolError("Session MCP reference requires a server name")
+        if plugin is None:
+            if name not in options.get("mcp_servers", {}):
+                raise RunnerProtocolError(f"Session MCP server is not configured: {name!r}")
+            names.append(name)
+            continue
+        if not isinstance(plugin, str) or not plugin.strip():
+            raise RunnerProtocolError("Session MCP reference requires a Plugin manifest name")
+        # This is the supplier's documented namespace, not a repository or
+        # installation-path guess. prepare() verifies the actual native server
+        # is present and disabled; Claude resolves its definition and ownership.
+        names.append(f"plugin:{plugin}:{name}")
+    if len(names) != len(set(names)):
+        raise RunnerProtocolError("Session MCP references resolve to duplicate native servers")
+    return names
+
+
+def _defer_session_mcp(options: dict[str, Any], names: list[str]) -> None:
+    """Seed Claude's per-project disabled list before its first MCP handshake.
+
+    This is supplier-owned user configuration, not a security deny policy.
+    Native mcp_toggle removes these entries after the owner materials exist.
+    The pinned Python SDK copies this file into a materialized resume's config.
+    """
+    if not names:
+        return
+    config_dir = options.get("env", {}).get("CLAUDE_CONFIG_DIR")
+    if not isinstance(config_dir, str) or not Path(config_dir).is_absolute():
+        raise RunnerProtocolError("Session MCP deferral requires a private Claude config directory")
+    path = Path(config_dir) / ".claude.json"
+    config = json.loads(path.read_text()) if path.exists() else {}
+    if not isinstance(config, dict):
+        raise RunnerProtocolError("Claude user configuration must be an object")
+    projects = config.setdefault("projects", {})
+    project = projects.setdefault(str(Path(options["cwd"]).resolve()), {})
+    disabled = project.setdefault("disabledMcpServers", [])
+    if not isinstance(disabled, list) or any(not isinstance(name, str) for name in disabled):
+        raise RunnerProtocolError("Claude disabledMcpServers must be a list of names")
+    project["disabledMcpServers"] = list(dict.fromkeys([*disabled, *names]))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".claude.json.{uuid_mod.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(config, ensure_ascii=False))
+        temporary.chmod(0o600)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _real_session_factory(opening: dict[str, Any], link: HostLink) -> RunnerSession:
     """Build one unclaimed Claude process and its local transcript spool."""
     from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, HookMatcher
@@ -3404,6 +3526,11 @@ def _real_session_factory(opening: dict[str, Any], link: HostLink) -> RunnerSess
 
     slot_id = str(opening["slot_id"])
     options_in = opening.get("options") or {}
+    references = options_in.get("session_mcp_servers", [])
+    if not isinstance(references, list):
+        raise RunnerProtocolError("session_mcp_servers must be a list")
+    deferred_mcp = _resolve_session_mcp_servers(options_in, references)
+    _defer_session_mcp(options_in, deferred_mcp)
     store_target = _DeferredHttpStoreTarget()
     resume_session_key = str(options_in.get("resume") or "").strip()
     resume_transcript = options_in.get("resume_transcript")
@@ -3520,6 +3647,8 @@ def _real_session_factory(opening: dict[str, Any], link: HostLink) -> RunnerSess
         activation_callback=store_target.activate,
         interaction_wait_s=wait_s,
         permission_mode=str(options_in.get("permission_mode") or "default"),
+        session_mcp_servers=tuple(deferred_mcp),
+        resolve_mcp_servers=lambda references: _resolve_session_mcp_servers(options_in, references),
     )
     return session
 

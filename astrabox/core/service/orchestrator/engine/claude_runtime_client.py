@@ -702,6 +702,11 @@ class ClaudeRuntimeClient:
     async def set_permission_mode(self, mode: str) -> None:
         await self._link.set_permission_mode(mode)
 
+    async def activate_mcp(
+        self, servers: list[dict[str, Any]], *, environment: dict[str, str] | None = None, reconnect: bool = True,
+    ) -> dict[str, str]:
+        return await self._link.activate_mcp(servers, environment=environment, reconnect=reconnect)
+
     async def bind_environment(self, environment: dict[str, str]) -> None:
         await self._link.apply_flag_settings({"env": environment})
 

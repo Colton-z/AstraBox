@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+[project]
+name = "astrabox-session-mcp-fixture"
+version = "0.0.1"
+[project.entry-points."astrabox.providers.runtime_preparation"]
+fixture = "session_mcp_fixture:SessionMCPFixture"
+[project.entry-points."astrabox.web.identity"]
+fixture = "session_mcp_fixture:SessionMCPIdentity"
+[tool.setuptools]
+py-modules = ["session_mcp_fixture"]

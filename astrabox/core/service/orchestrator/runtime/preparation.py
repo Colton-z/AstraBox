@@ -421,6 +421,10 @@ async def prepare_session_runtime_context(context: EngineStartupContext) -> Engi
     """
     provider = runtime_preparation_provider()
     prepared = context.prepared_manifest
+    if (runtime_preparation_plan(context.template).session_mcp_servers
+            and not get_engine_adapter(context.template.engine_kind).supports_session_mcp_activation()):
+        raise APIError(code="MCP_ACTIVATION_UNSUPPORTED", status_code=400,
+                       message="This engine cannot defer Session MCP connections")
     if prepared is not None and not prepared["engine_initialized"]:
         context = dataclasses.replace(context, prepared_manifest=None)
     if provider is None:
@@ -478,7 +482,7 @@ async def prepare_session_runtime_context(context: EngineStartupContext) -> Engi
                 scope = adapter.startup_environment_scope()
                 if scope not in {"process", "session"}:
                     raise ValueError("engine cannot deliver Session startup environment")
-                if (scope == "process" and request.engine_initialized
+                if (scope == "process" and (request.engine_initialized or context.attach_mode is not None)
                         and not adapter.supports_initialized_environment()):
                     raise ValueError("an initialized engine cannot receive new startup environment")
                 request_env = adapter.sandbox_request(
@@ -512,6 +516,6 @@ async def prepare_session_runtime_context(context: EngineStartupContext) -> Engi
                 ) from None
         raise APIError(code="RUNTIME_PREPARATION_FAILED", status_code=502,
                        message="Session runtime preparation failed; inspect the deployment integration") from None
-    if environment and (scope == "session" or request.engine_initialized):
+    if environment and (scope == "session" or request.engine_initialized or context.attach_mode is not None):
         return dataclasses.replace(context, session_env=environment)
     return dataclasses.replace(context, runtime_env={**dict(context.runtime_env or {}), **environment})
