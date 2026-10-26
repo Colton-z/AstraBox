@@ -1566,7 +1566,10 @@ class RunnerSession:
     async def _mcp_status(self) -> dict[str, str]:
         if self._client is None:
             raise RunnerProtocolError("MCP status before native initialization")
-        response = await self._client.get_mcp_status()
+        try:
+            response = await self._client.get_mcp_status()
+        except Exception:
+            raise RunnerProtocolError("Native MCP status query failed") from None
         rows = response.get("mcpServers")
         if not isinstance(rows, list):
             raise RunnerProtocolError("native MCP status carries no mcpServers list")

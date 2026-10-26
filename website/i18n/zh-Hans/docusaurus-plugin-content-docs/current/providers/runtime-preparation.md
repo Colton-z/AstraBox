@@ -68,8 +68,7 @@ Plugin 并解析供应商规定的服务别名，provider 不需要拼接 `plugi
 Claude 用私有原生项目配置中的 `disabledMcpServers` 暂停这些连接，并在发布预热库存前
 核对原生禁用状态。引擎仍已初始化，receipt 为 `engine_initialized=true`。领取时先核对
 持久化 Session 用户和授权前置条件，再交付该用户的文件与环境，通过原生启用／重连操作
-连接指定 MCP，核对 `connected` 后才放行输入。普通 MCP 不会因此一律重连，已经连接的
-服务也保持连接。provider 必须在缺少授权时明确拒绝或抛出 `PreparationUserActionRequired`。
+连接指定 MCP，核对 `connected` 后才放行输入。普通 MCP 不会因此一律重连。主机重连只核对已有连接；显式恢复会刷新已声明的个人连接。provider 必须在缺少授权时明确拒绝或抛出 `PreparationUserActionRequired`。
 
 已有空闲会话完成授权并配置声明后，可调用公开的
 `POST /api/v1/sessions/{session_id}/recover`。它重新执行同一材料与连接屏障，保留仍存活的

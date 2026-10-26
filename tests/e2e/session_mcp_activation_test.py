@@ -137,6 +137,9 @@ print(json.dumps([{k:s.get(k) for k in ('slot_id','sandbox_id','runtime_identity
             assert time.monotonic() < live_test_deadline
             time.sleep(0.2)
         details = [get_admin_session_detail(a, sid) for sid in (sid_a, sid_b)]
+        # The two claimed runtimes are the fixture; do not keep replenishing
+        # unrelated waiting inventory while testing their connection recovery.
+        data(a.put(f"/api/v1/agents/{agent}", json={"prepared_capacity": 0}))
         for detail in details:
             identity = detail["runtime_identity"]
             assert identity["home_dir"] in inventory, "claim bypassed initialized inventory"
