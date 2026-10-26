@@ -104,6 +104,29 @@ class ResourcePreparationContext:
 
 
 @dataclass(frozen=True)
+class SessionMCPServer:
+    """An MCP connection that requires the persisted Session owner's materials.
+
+    ``name`` is the configured server key. For a Plugin, ``plugin`` is its
+    manifest name; the engine resolves the native scoped server identity.
+    Neither field contains credentials or a vendor-generated alias.
+    """
+
+    name: str
+    plugin: str | None = None
+
+    def __post_init__(self) -> None:
+        for value in (self.name, self.plugin):
+            if value is not None and (
+                not isinstance(value, str) or not value.strip() or value != value.strip()
+                or any(ord(char) < 32 for char in value)
+            ):
+                raise ValueError("Session MCP references require non-empty names")
+        if not isinstance(self.name, str) or not self.name:
+            raise ValueError("Session MCP reference requires a server name")
+
+
+@dataclass(frozen=True)
 class RuntimePreparationPlan:
     """Whether engine initialization needs a bound Session's materials.
 
@@ -112,14 +135,26 @@ class RuntimePreparationPlan:
     ``model_credential_delivery="provider"`` delegates model protection and
     claim binding to this integration. The engine receives only a unique inert
     placeholder; MCP and environment credential protection stay independent.
+    ``session_mcp_servers`` defers only the named connections until the persisted
+    Session owner's materials exist, without deferring the engine process.
     This declaration contains no credentials and participates in generation.
     """
     session_bound: bool = False
     model_credential_delivery: Literal["platform", "provider"] = "platform"
+    session_mcp_servers: tuple[SessionMCPServer, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.session_bound) is not bool or self.model_credential_delivery not in ("platform", "provider"):
             raise TypeError("runtime preparation requires session_bound and a model credential delivery owner")
+        references = tuple(
+            SessionMCPServer(**dict(item)) if isinstance(item, Mapping) else item
+            for item in self.session_mcp_servers
+        )
+        if any(not isinstance(item, SessionMCPServer) for item in references):
+            raise TypeError("session_mcp_servers requires SessionMCPServer references")
+        if len(set(references)) != len(references):
+            raise ValueError("session_mcp_servers contains duplicate references")
+        object.__setattr__(self, "session_mcp_servers", references)
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,1 @@
+{"mcpServers": {"personal": {"command": "python3", "args": ["/opt/astrabox/session-mcp-fixture/personal_mcp.py", "plugin"]}}}

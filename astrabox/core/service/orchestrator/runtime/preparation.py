@@ -421,6 +421,10 @@ async def prepare_session_runtime_context(context: EngineStartupContext) -> Engi
     """
     provider = runtime_preparation_provider()
     prepared = context.prepared_manifest
+    if (runtime_preparation_plan(context.template).session_mcp_servers
+            and not get_engine_adapter(context.template.engine_kind).supports_session_mcp_activation()):
+        raise APIError(code="MCP_ACTIVATION_UNSUPPORTED", status_code=400,
+                       message="This engine cannot defer Session MCP connections")
     if prepared is not None and not prepared["engine_initialized"]:
         context = dataclasses.replace(context, prepared_manifest=None)
     if provider is None:

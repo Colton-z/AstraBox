@@ -1,0 +1,1 @@
+{"name": "session-mcp-fixture", "owner": {"name": "AstraBox E2E"}, "plugins": [{"name": "fixture-identity", "source": "./plugins/fixture-identity", "version": "1.0.0"}]}
