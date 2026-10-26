@@ -137,9 +137,7 @@ print(json.dumps([{k:s.get(k) for k in ('slot_id','sandbox_id','runtime_identity
             "content": "MUST_NOT_REACH_NATIVE", "client_message_id": str(uuid.uuid4()),
         })
         assert refused.status_code == 409, refused.text
-        for slot in slots:
-            assert not any(row["kind"] in {"personal", "plugin"}
-                           for row in _journals(_sandbox_exec(slot["sandbox_id"]), slot["runtime_identity"]))
+        assert not get_session(b, sid_b).get("sandbox_id"), "unauthorized user claimed a native box"
 
         def read_identity(client: httpx.Client, sid: str) -> tuple[str, object]:
             marker = "IDENTITY_OK_" + uuid.uuid4().hex
@@ -174,6 +172,8 @@ print(json.dumps([{k:s.get(k) for k in ('slot_id','sandbox_id','runtime_identity
         for index, (client, sid, detail) in enumerate(((a, sid_a, details[0]), (b, sid_b, details[1]))):
             identity = detail["runtime_identity"]
             rows = _journals(_sandbox_exec(detail["sandbox_id"]), identity)
+            assert not any(row["event"] in {"authorization_required", "stale_environment"}
+                           for row in rows), "personal MCP attempted a handshake before its owner material"
             calls = [row for row in rows if row["event"] == "call"]
             assert {row["kind"] for row in calls} == {"personal", "plugin", "shared"}, rows
             for row in calls:
