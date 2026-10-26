@@ -152,7 +152,7 @@ print(json.dumps([{k:s.get(k) for k in ('slot_id','sandbox_id','runtime_identity
                 assert ready.get("state") == "READY" and not ready.get("last_error"), ready
             details = [get_admin_session_detail(a, sid) for sid in (sid_a, sid_b)]
             # Stop replenishing unrelated waiting inventory after the claims.
-            data(a.put(f"/api/v1/agents/{agent}", json={"prepared_capacity": 0}))
+            data(a.put(f"/api/v1/agents/{agent}", json={"prepared_capacity": 0, "model": profile["model"], "runtime_profile_name": environment}))
             for detail in details:
                 identity = detail["runtime_identity"]
                 assert identity["home_dir"] in inventory, "claim bypassed initialized inventory"
