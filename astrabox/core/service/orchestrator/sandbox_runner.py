@@ -1586,7 +1586,7 @@ class RunnerSession:
             try:
                 if status == "disabled":
                     await self._client.toggle_mcp_server(name, True)
-                elif status != "connected":
+                else:
                     await self._client.reconnect_mcp_server(name)
             except Exception:
                 # Supplier failures can quote authentication URLs and headers.

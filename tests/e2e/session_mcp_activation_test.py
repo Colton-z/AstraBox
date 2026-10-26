@@ -192,7 +192,9 @@ os.kill(pid,signal.SIGTERM)
         failed = _settled_recovery(a, sid_a, live_test_deadline)
         assert failed.get("last_error") and "MCP" in failed["last_error"], failed
         assert _supplier_processes(execute, identity, "claude_code") == inventory[identity["home_dir"]]["native"]
-        assert transcript_entries(sid_a) == old_native, "recovery replayed or replaced native history"
+        failed_native = transcript_entries(sid_a)
+        assert failed_native[:len(old_native)] == old_native, "recovery replaced native history"
+        assert [row for row in failed_native if row.get("type") == "user"] == [row for row in old_native if row.get("type") == "user"], "recovery replayed native input"
         subprocess.run([*execute, "rm", str(Path(identity["home_dir"]) / ".session-mcp-deny")],
                        check=True, capture_output=True, timeout=15)
         restored = _settled_recovery(a, sid_a, live_test_deadline)
@@ -201,7 +203,8 @@ os.kill(pid,signal.SIGTERM)
         assert _supplier_processes(execute, identity, "claude_code") == inventory[identity["home_dir"]]["native"]
         after = _journals(execute, identity)
         assert {row["pid"] for row in after if row["kind"] == "shared"} == {row["pid"] for row in old_rows if row["kind"] == "shared"}
-        assert len([row for row in after if row["event"] == "start" and row["kind"] == "personal"]) == 1
+        assert any(row["event"] == "identity_bound" and row["kind"] == "plugin"
+                   and row["pid"] != plugin["pid"] and row["principal_id"] == owners[0] for row in after)
         for sid in (sid_a, sid_b):
             native = transcript_entries(sid)
             for marker, _reply in answers:

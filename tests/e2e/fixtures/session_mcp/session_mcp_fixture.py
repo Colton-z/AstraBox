@@ -1,5 +1,6 @@
 """Isolated identity-material provider for the Session MCP lifecycle journey."""
 import json
+import secrets
 import time
 from pathlib import Path
 from astrabox.seams.runtime_preparation import (
@@ -42,3 +43,22 @@ class SessionMCPFixture(RuntimePreparationProvider):
             files=(RuntimeFile("mcp-owner.json", json.dumps(material).encode()),),
             environment={"MCP_IDENTITY_MATERIAL": context.file_path("mcp-owner.json")},
         )
+
+
+class SessionMCPIdentity:
+    """Two task-owned opaque tokens, confined to this isolated fixture."""
+
+    async def resolve(self, headers):
+        from astrabox.common.utils.user_context import UserContext
+
+        path = STATE / "identities.private.json"
+        if not path.is_file():
+            return None
+        presented = headers.get("authorization", "")
+        for row in json.loads(path.read_text()):
+            if secrets.compare_digest(presented, "Bearer " + row["token"]):
+                return UserContext(user_id=row["user_id"], roles=row["roles"])
+        return None
+
+    def login_url(self, next_url="/"):
+        return None

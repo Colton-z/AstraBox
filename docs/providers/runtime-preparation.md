@@ -105,11 +105,13 @@ before publishing prepared inventory (`engine_initialized=true`). Ordinary MCPs
 keep their existing startup behavior. This uses Claude's `disabledMcpServers`
 configuration and `mcp_toggle`/`mcp_reconnect` controls, not a security denylist.
 Plugin loading and native command/environment resolution remain Claude's job.
+See the vendor's [MCP configuration and scoped Plugin names](https://code.claude.com/docs/en/mcp).
 
 On claim, the platform validates the persisted Session owner, checks provider
 prerequisites, delivers `prepare_session` files and environment, enables or
 reconnects the declared servers, and requires native `connected` results before
-input. A connected server is left connected. Preparation failures are visible;
+input. Host reconnection verifies existing connections without restarting them.
+Explicit recovery refreshes only the declared personal connections. Preparation failures are visible;
 they never release input with a missing required MCP. A provider must refuse or
 raise `PreparationUserActionRequired` when authorization is absent. It must not
 silently return another person's materials or initiate consent itself.
