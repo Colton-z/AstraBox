@@ -17,7 +17,7 @@ from tests.e2e import _docker_compute
 from tests.e2e._sandbox_helpers import (
     current_profile, data, environment_with_tenancy, get_admin_session_detail,
     get_session, history, release_agent, release_session, send_and_follow,
-    transcript_entries, wait_until_settled, psql_rows, sql_literal,
+    transcript_entries, wait_until_settled,
 )
 from tests.e2e._service_containers import SERVER_CONTAINER_HANDLE, require_service_container
 from tests.e2e.test_prepared_runtime_activation import (
@@ -25,6 +25,10 @@ from tests.e2e.test_prepared_runtime_activation import (
 )
 
 pytestmark = [pytest.mark.e2e, pytest.mark.deployment_shape]
+
+
+def _native_history(sid: str) -> list[dict]:
+    return [row["entry"] for row in transcript_entries(sid) if not row["subpath"]]
 
 
 def _journals(execute: list[str], identity: dict) -> list[dict]:
@@ -86,12 +90,14 @@ def test_user_bound_mcp_activates_in_the_prepared_process_and_recovers(
             ]} for kind in ("personal", "shared")},
         }))["agent_id"]
         release_agent(agent)
-        _wait_prepared_count(a, agent, 2, live_test_deadline)
-        slots = psql_rows(
-            "SELECT slot_id, sandbox_id, manifest->'runtime_identity' AS runtime_identity, "
-            "manifest->'engine_initialized' AS engine_initialized FROM agent_prepared_slots "
-            "WHERE agent_id=" + sql_literal(agent) + " AND state='prepared'",
-        )
+        prepared = _wait_prepared_count(a, agent, 2, live_test_deadline)
+        slots = _run_json([*_sandbox_exec(prepared["sandbox_id"]), "python3", "-c", """
+import json
+from pathlib import Path
+seats=json.loads(Path('/home/agent/.astrabox-prepared-seats.json').read_text())
+print(json.dumps([{k:s.get(k) for k in ('slot_id','sandbox_id','runtime_identity','engine_initialized')}
+                  for s in seats if s.get('state')=='prepared']))
+"""])
         assert isinstance(slots, list) and len(slots) == 2
         inventory = {}
         for slot in slots:
@@ -168,7 +174,7 @@ def test_user_bound_mcp_activates_in_the_prepared_process_and_recovers(
             visible = json.dumps(history(client, sid), ensure_ascii=False)
             assert owners[index] in visible and sid in visible and answers[index][0] in visible
             assert owners[1-index] not in visible
-            native = transcript_entries(sid)
+            native = _native_history(sid)
             root_inputs = [entry for entry in native if entry.get("type") == "user"
                            and "IDENTITY_OK_" in json.dumps(entry.get("message", {}))]
             assert len(root_inputs) == 1
@@ -183,7 +189,7 @@ def test_user_bound_mcp_activates_in_the_prepared_process_and_recovers(
         execute = _sandbox_exec(detail["sandbox_id"])
         old_rows = _journals(execute, identity)
         plugin = next(row for row in reversed(old_rows) if row["kind"] == "plugin" and row["event"] == "identity_bound")
-        old_native = transcript_entries(sid_a)
+        old_native = _native_history(sid_a)
         subprocess.run([*execute, "python3", "-c", """
 from pathlib import Path
 import os,signal,sys
@@ -195,7 +201,7 @@ os.kill(pid,signal.SIGTERM)
         failed = _settled_recovery(a, sid_a, live_test_deadline)
         assert failed.get("last_error") and "MCP" in failed["last_error"], failed
         assert _supplier_processes(execute, identity, "claude_code") == inventory[identity["home_dir"]]["native"]
-        failed_native = transcript_entries(sid_a)
+        failed_native = _native_history(sid_a)
         assert failed_native[:len(old_native)] == old_native, "recovery replaced native history"
         assert [row for row in failed_native if row.get("type") == "user"] == [row for row in old_native if row.get("type") == "user"], "recovery replayed native input"
         subprocess.run([*execute, "rm", str(Path(identity["home_dir"]) / ".session-mcp-deny")],
@@ -210,12 +216,12 @@ os.kill(pid,signal.SIGTERM)
         assert any(row["event"] == "identity_bound" and row["kind"] == "plugin"
                    and row["pid"] != plugin["pid"] and row["principal_id"] == owners[0] for row in after)
         for sid in (sid_a, sid_b):
-            native = transcript_entries(sid)
+            native = _native_history(sid)
             assert "MUST_NOT_REACH_NATIVE" not in json.dumps(native)
             for marker, _reply in answers:
                 count = sum(entry.get("type") == "user" and marker in json.dumps(entry.get("message", {})) for entry in native)
                 assert count == (1 if marker == answers[0 if sid == sid_a else 1][0] else 0)
-        final_native = transcript_entries(sid_a)
+        final_native = _native_history(sid_a)
         recovered_input = [entry for entry in final_native if entry.get("type") == "user"
                            and recovered_marker in json.dumps(entry.get("message", {}))]
         assert len(recovered_input) == 1
@@ -225,7 +231,7 @@ os.kill(pid,signal.SIGTERM)
                           "sessions": [sid_a, sid_b], "owners": owners,
                           "inventory": inventory, "claimed": [{key: detail.get(key) for key in ("session_id", "sandbox_id", "runtime_identity")} for detail in details],
                           "native_mcp_receipts": {sid_a: after, sid_b: _journals(_sandbox_exec(details[1]["sandbox_id"]), details[1]["runtime_identity"])},
-                          "native_history": {sid_a: final_native, sid_b: transcript_entries(sid_b)},
+                          "native_history": {sid_a: final_native, sid_b: _native_history(sid_b)},
                           "visible_history": {sid_a: history(a, sid_a), sid_b: history(b, sid_b)},
                           "first_live_answers": [{"marker": marker, "text": reply.text} for marker, reply in answers],
                           "recovery_live_answer": {"marker": recovered_marker, "text": recovered_reply.text},
