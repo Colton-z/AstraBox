@@ -80,6 +80,11 @@ logger = logging.getLogger("astrabox.sandbox_runner")
 #: copies equal.
 RUNNER_PROTOCOL = "astrabox.runner-wire.v1"
 
+#: The largest message either end of the wire accepts; the host keeps its own
+#: copy (runner_link.py), which says why the bound is twice the Messages API's
+#: request limit.
+RUNNER_MESSAGE_MAX_BYTES = 64 * 1024 * 1024
+
 #: This runner process's identity. Journal sequences restart in a new process,
 #: so a host cursor names the boot it was read from and is refused by another.
 RUNNER_BOOT_ID = uuid_mod.uuid4().hex
@@ -2480,6 +2485,7 @@ class RunnerWsServer:
         self._server = await websocket_serve(
             self._handle, self._host, self._port,
             process_request=self._process_request,
+            max_size=RUNNER_MESSAGE_MAX_BYTES,
         )
         if self._port == 0:  # tests bind ephemeral ports
             self._port = self._server.sockets[0].getsockname()[1]

@@ -24,11 +24,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from websockets.asyncio.client import connect as websocket_connect
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosed, ConnectionClosedError
+from websockets.frames import CloseCode
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.core.service.orchestrator.engine.base import EngineStreamDetached
-from astrabox.core.service.orchestrator.engine.runtime import RuntimeControlRefused
+from astrabox.core.service.orchestrator.engine.runtime import (
+    RuntimeControlRefused,
+    RuntimeInputRefused,
+)
 
 logger = get_logger(__name__)
 
@@ -36,6 +40,16 @@ logger = get_logger(__name__)
 #: the constant because it ships standalone, and
 #: ``tests/runner_link_wire_test.py`` pins both copies equal.
 RUNNER_PROTOCOL = "astrabox.runner-wire.v1"
+
+#: The largest message either end of this wire accepts. A Claude Code message
+#: can carry its model-facing content twice: an image or document a tool read
+#: rides in the tool result's content and again in ``tool_use_result``, the
+#: CLI's structured result. The Messages API refuses a request over 32 MB, so
+#: twice that admits every message whose content the model can take; Edit and
+#: Write results also carry the original file there, and one above this limit
+#: is refused like any message that breaks the wire contract.
+#: ``sandbox_runner.py`` repeats the constant because it ships standalone.
+RUNNER_MESSAGE_MAX_BYTES = 64 * 1024 * 1024
 
 
 #: The file in the seat's home the platform writes the runner's credential
@@ -190,6 +204,7 @@ class RunnerLink:
         self._connection_generation = 0
         self._reconnect_lock = asyncio.Lock()
         self._closed = False
+        self._protocol_fault: str | None = None
 
     async def __aenter__(self) -> "RunnerLink":
         await self._connect()
@@ -197,6 +212,17 @@ class RunnerLink:
 
     async def __aexit__(self, *exc: Any) -> None:
         await self.close()
+
+    @property
+    def protocol_fault(self) -> str | None:
+        """Why this wire cannot carry the runner's next message, once it cannot.
+
+        Set when the runner sent a message over :data:`RUNNER_MESSAGE_MAX_BYTES`.
+        The frame stream has then ended, and attaching again replays the same
+        message, so the runtime that reads this link reports a protocol fault
+        instead of reconnecting.
+        """
+        return self._protocol_fault
 
     @property
     def is_live(self) -> bool:
@@ -231,7 +257,7 @@ class RunnerLink:
 
     async def _connect(self) -> None:
         try:
-            self._ws = await websocket_connect(self._uri)
+            self._ws = await websocket_connect(self._uri, max_size=RUNNER_MESSAGE_MAX_BYTES)
         except Exception as exc:  # noqa: BLE001 - vendor transport boundary
             raise EngineStreamDetached(
                 f"runner transport could not connect to {self._uri!r}: {exc}"
@@ -542,9 +568,6 @@ class RunnerLink:
             raise RunnerLinkError("input requires sdk_input")
         if command_id in self._input_acks:
             raise RunnerLinkError(f"input already in flight for command {command_id!r}")
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[dict[str, Any]] = loop.create_future()
-        self._input_acks[command_id] = future
         frame = json.dumps(
             {
                 "op": "input",
@@ -554,6 +577,21 @@ class RunnerLink:
                 "sdk_input": command.sdk_input,
             }
         )
+        size = len(frame.encode("utf-8"))
+        if size > RUNNER_MESSAGE_MAX_BYTES:
+            # Sending it would only make the runner close the link, and the
+            # retry after reattaching would send it again.
+            raise RuntimeInputRefused(
+                code="RUNTIME_INPUT_TOO_LARGE",
+                message=(
+                    f"The message is {size} bytes for the Agent's runtime, above its "
+                    f"{RUNNER_MESSAGE_MAX_BYTES}-byte limit. Send smaller attachments."
+                ),
+                status_code=413,
+            )
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[dict[str, Any]] = loop.create_future()
+        self._input_acks[command_id] = future
         logger.info(
             "input delivery: session=%s command_id=%s sequence=%s",
             session_id,
@@ -862,6 +900,17 @@ class RunnerLink:
         try:
             async for raw in ws:
                 await self._route(json.loads(raw), ws=ws)
+        except ConnectionClosedError as exc:
+            if exc.sent is not None and exc.sent.code == CloseCode.MESSAGE_TOO_BIG:
+                # The runner replays the same message after the same cursor,
+                # so reconnecting would only repeat this close.
+                self._protocol_fault = (
+                    "the runner sent a message over the runner link's "
+                    f"{RUNNER_MESSAGE_MAX_BYTES}-byte limit: {exc.sent.reason}"
+                )
+                logger.error("runner link refused an oversized message: %s", exc.sent.reason)
+            elif not self._closed:
+                logger.info("runner link closed: %s", exc)
         except Exception as exc:  # noqa: BLE001 — connection teardown path
             if not self._closed:
                 logger.info("runner link closed: %s", exc)

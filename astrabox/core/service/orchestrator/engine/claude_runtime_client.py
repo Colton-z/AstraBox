@@ -72,6 +72,7 @@ from astrabox.core.service.orchestrator.engine.runtime import (
     RuntimeDiagnostic,
     RuntimeEvent,
     RuntimeInput,
+    RuntimeProtocolError,
     RuntimeState,
     RuntimeStatus,
     StatusChanged,
@@ -569,6 +570,8 @@ class ClaudeRuntimeClient:
                         continue
                     cursor = RuntimeCursor(self._boot_id, {"seq": seq, "index": index})
                     yield dataclasses.replace(event, cursor=cursor)
+            if (fault := self._link.protocol_fault) is not None:
+                raise RuntimeProtocolError(fault)
         finally:
             self._reading = False
 
