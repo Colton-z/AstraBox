@@ -150,8 +150,8 @@ class Session(Base):
     sandbox_parked_at: Mapped[datetime | None]
     #: A browser endpoint keeps this box out of conversation-idle parking.
     exposed_sandbox_id: Mapped[str | None] = mapped_column(payload_text())
-    #: When the last replacement runtime failed to start; inputs accepted
-    #: before it are failed rather than handed to another attempt.
+    #: When the last start that left the conversation open failed; inputs
+    #: accepted before it are failed rather than handed to another attempt.
     runtime_start_failed_at: Mapped[datetime | None]
     sandbox_resumed_at: Mapped[datetime | None]
     sandbox_liveness_suspect_at: Mapped[datetime | None]

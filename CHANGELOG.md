@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Runtime and recovery
+
+- Answer messages that were waiting for a start stopped by a user action with that action, instead of starting another sandbox for them each time the runtime-preparation provider next reports its prerequisite met. A message sent afterwards starts the runtime again.
+
 ## [0.1.10] - 2026-10-20
 
 This release collects the fixes and developer-facing improvements made after 0.1.9.

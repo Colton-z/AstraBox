@@ -793,6 +793,66 @@ def test_a_startup_user_action_keeps_the_conversation_until_the_user_acts(
                       "prerequisite_reads_after_ordinary": provider_calls("user-action-reads")}))
 
 
+def test_a_message_whose_start_waits_on_the_user_gets_no_second_box(
+    e2e_client: httpx.Client, live_test_deadline: float,
+) -> None:
+    """A start refused for the user answers its waiting message with the action.
+
+    The prerequisite read reports nothing to do and the box's preparation then
+    asks the user to act. The message that start was for is answered with the
+    action instead of taking another box; one sent once the requirement is met
+    starts the runtime.
+    """
+    profile = current_profile()
+    server = require_service_container(SERVER_CONTAINER_HANDLE)
+    settings = _run_json(["docker", "exec", server, "python", "-c", _SERVER_SETTINGS])
+    assert isinstance(settings, dict)
+    assert settings["provider"] == "native-startup-material-fixture"
+    created = data(e2e_client.post("/api/v1/agents", json={
+        "name": f"Late action {uuid.uuid4().hex[:8]}",
+        "runtime_profile_name": environment_with_tenancy(e2e_client, "conversation"),
+        "model": profile["model"], "prepared_capacity": 0,
+    }))
+    aid = created["agent_id"]
+    release_agent(aid)
+    sid = ""
+
+    def started_boxes() -> list[str]:
+        receipts = subprocess.run([
+            "docker", "exec", server, "sh", "-c",
+            "cat /data/runtime-preparation-startups.jsonl 2>/dev/null || true",
+        ], check=True, timeout=30, capture_output=True, text=True).stdout
+        return [row["sandbox_id"] for row in map(json.loads, receipts.splitlines()) if row["session_id"] == sid]
+
+    _hold(server, "late-startup-user-actions", aid, True)
+    try:
+        sid = data(e2e_client.post(f"/api/v1/agents/{aid}/conversations", json={}))["session_id"]
+        release_session(sid)
+        session = get_session(e2e_client, sid)
+        while session.get("state") == "CREATING":
+            assert time.monotonic() < live_test_deadline, "the conversation never left CREATING"
+            time.sleep(0.5)
+            session = get_session(e2e_client, sid)
+        # A READY conversation without a runtime reads as RECOVERY_REQUIRED.
+        assert session.get("state") == "RECOVERY_REQUIRED" and not session.get("sandbox_id"), session
+        assert len(started_boxes()) == 1, started_boxes()
+
+        failure = _refused(e2e_client, sid, "LATE_" + uuid.uuid4().hex, "TURN_PREPARATION_USER_ACTION_REQUIRED")
+        assert (failure.get("user_action") or {}).get("url") == "https://example.com/authorize", failure
+        refused = started_boxes()
+        assert len(set(refused)) == len(refused) == 2, f"one box per start was expected: {refused}"
+        time.sleep(15)
+        assert started_boxes() == refused, f"the refused message kept taking boxes: {started_boxes()}"
+    finally:
+        _hold(server, "late-startup-user-actions", aid, False)
+
+    marker = "MET_" + uuid.uuid4().hex
+    reply = send_and_follow(e2e_client, sid, f"Reply with exactly {marker}, without tools.", until="end")
+    assert reply.error is None and marker in reply.text, reply.error or reply.text
+    wait_until_settled(e2e_client, sid)
+    print(json.dumps({"session": sid, "refused_starts": refused, "started": started_boxes()}), flush=True)
+
+
 def _assistant_workspace(client: httpx.Client, assistant_id: str, deadline: float) -> dict:
     """The Assistant as its owner reads it, once its workspace is READY."""
     while True:
