@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Runtime and recovery
+
+- Synchronize an Agent's prepared resources when a conversation starts without claiming waiting inventory, including every start of an Agent without prepared capacity, so a runtime-preparation provider has read the Skills and packages placed in the box before `prepare_session` runs.
+
 ## [0.1.10] - 2026-10-20
 
 This release collects the fixes and developer-facing improvements made after 0.1.9.

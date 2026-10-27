@@ -567,6 +567,44 @@ def test_session_materials_gate_native_startup_and_preserve_resume(
                       "claimed": original["sandbox_id"], "restored": restored["sandbox_id"]}), flush=True)
 
 
+@pytest.mark.parametrize("tenancy", ["conversation", "agent"])
+def test_an_agent_without_prepared_capacity_declares_its_resources_before_it_runs(
+    e2e_client: httpx.Client, tenancy: str,
+) -> None:
+    """A cold start synchronizes the Skills it placed before the engine runs them.
+
+    The deployment starts this Agent's Sessions only on resources synchronized
+    for its version, and without prepared capacity no inventory does that.
+    """
+    profile = current_profile()
+    server = require_service_container(SERVER_CONTAINER_HANDLE)
+    settings = _run_json(["docker", "exec", server, "python", "-c", _SERVER_SETTINGS])
+    assert isinstance(settings, dict)
+    assert settings["provider"] == "native-startup-material-fixture"
+    created = data(e2e_client.post("/api/v1/agents", json={
+        "name": f"Declared {uuid.uuid4().hex[:8]}",
+        "runtime_profile_name": environment_with_tenancy(e2e_client, tenancy),
+        "model": profile["model"], "prepared_capacity": 0,
+        "skills": [f"{_SKILLS}#skills/skill-creator"],
+    }))
+    aid = created["agent_id"]
+    release_agent(aid)
+    sid = data(e2e_client.post(f"/api/v1/agents/{aid}/conversations", json={}))["session_id"]
+    release_session(sid)
+    poll_until_ready(e2e_client, sid)
+    receipts = _synchronized(server, "agent", aid)
+    assert [row["revision"] for row in receipts] == [str(created["version"])], receipts
+    prepared = receipts[0]["prepared_paths"]
+    assert prepared and all(prepared.values()), (
+        f"the Agent's Skills were synchronized before they were in its box: {receipts}"
+    )
+    marker = "DECLARED_" + uuid.uuid4().hex
+    reply = send_and_follow(e2e_client, sid, f"Reply with exactly {marker}, without tools.", until="end")
+    assert reply.error is None and marker in reply.text, reply.error or reply.text
+    wait_until_settled(e2e_client, sid)
+    print(json.dumps({"tenancy": tenancy, "session": sid, "synchronized": receipts}), flush=True)
+
+
 def test_a_shared_box_burst_starts_each_conversation_on_its_own_material(
     e2e_client: httpx.Client, live_test_deadline: float,
 ) -> None:

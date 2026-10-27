@@ -5,7 +5,9 @@ writes which Sessions to refuse or to hold for a user action, which Agents'
 conversations wait on a user action at startup and how long turn preparation
 takes, and reads each turn preparation and which
 Agents and Assistants were synchronized, with whether the prepared Skills and
-packages were already in the box when they were.
+packages were already in the box when they were. An Agent named ``Declared …``
+starts only on resources synchronized for its version, as a deployment that
+registers an Agent's declared resources requires.
 """
 import asyncio
 import json
@@ -164,6 +166,15 @@ def _listed(path: Path, session_id: str) -> bool:
     return path.is_file() and session_id in json.loads(path.read_text())
 
 
+def _declared(subject, revision: str) -> bool:
+    receipts = SYNCHRONIZED.read_text().splitlines() if SYNCHRONIZED.is_file() else []
+    return any(
+        row.get("subject") == {"kind": subject.kind, "id": subject.id}
+        and row.get("revision") == revision and all(row.get("prepared_paths", {}).values())
+        for row in map(json.loads, receipts)
+    )
+
+
 class PreparationFixture(RuntimePreparationProvider):
     name = "native-startup-material-fixture"
 
@@ -237,6 +248,9 @@ class PreparationFixture(RuntimePreparationProvider):
             return RuntimeMaterials(files=(self._material(context, "startup"),), environment=environment)
         if _listed(STARTUP_USER_ACTIONS, context.subject.id):
             raise PreparationUserActionRequired(message="Authorize this Agent to continue", url=ACTION_URL)
+        if (str(context.config.get("name", "")).startswith("Declared ")
+                and not _declared(context.subject, context.revision)):
+            raise RuntimeError("the Agent's resources were not declared before its Session started")
         hold = STATE / f"runtime-preparation-ui-startup-{context.subject.id}"
         if hold.is_file():
             hold.write_text(context.session_id)

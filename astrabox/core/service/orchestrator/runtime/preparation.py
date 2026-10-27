@@ -49,8 +49,8 @@ from astrabox.seams.sandbox import SandboxHandle
 logger = get_logger(__name__)
 
 _OPERATION = "_prepared_resources_operation"
-_ASSISTANT_SYNC_TIMEOUT_SECONDS = 600.0
-_ASSISTANT_SYNC_WAIT_SECONDS = 1.0
+_SYNC_TIMEOUT_SECONDS = 600.0
+_SYNC_WAIT_SECONDS = 1.0
 
 
 def preparation_subject(session: Mapping[str, Any] | None) -> PreparationSubject:
@@ -242,7 +242,7 @@ def _prepared_paths(config: Mapping[str, Any]) -> tuple[tuple[PreparedPackage, .
 async def synchronize_prepared_resources(
     template: Any, sandbox: SandboxHandle, *, timeout_seconds: float, agent_repo: Any = None,
 ) -> None:
-    """Synchronize an Agent's prepared resources before its inventory is published."""
+    """Synchronize an Agent's prepared resources before its inventory or cold-started engine runs them."""
     provider = runtime_preparation_provider()
     if provider is None:
         return
@@ -290,10 +290,25 @@ async def synchronize_prepared_resources(
     ), timeout_seconds=timeout_seconds)
 
 
+async def _synchronize_waiting(
+    synchronize: Callable[[], Awaitable[None]], *, timeout_seconds: float,
+) -> None:
+    """Synchronize for a starting conversation, waiting out a running synchronization of its subject."""
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            await synchronize()
+            return
+        except APIError as exc:
+            if exc.code != "RESOURCE_SYNC_BUSY" or time.monotonic() >= deadline:
+                raise
+        await asyncio.sleep(_SYNC_WAIT_SECONDS)
+
+
 async def _synchronize_assistant_resources(
     context: EngineStartupContext, *, provider: Any, subject: PreparationSubject,
     revision: str, config: dict[str, Any], owner_user_id: str,
-    timeout_seconds: float = _ASSISTANT_SYNC_TIMEOUT_SECONDS,
+    timeout_seconds: float = _SYNC_TIMEOUT_SECONDS,
 ) -> None:
     """Place an Assistant's extensions, then synchronize them before Hermes runs this revision.
 
@@ -367,15 +382,10 @@ async def _synchronize_assistant_resources(
         ),
         context=build,
     )
-    deadline = time.monotonic() + timeout_seconds
-    while True:
-        try:
-            await _synchronize(provider, guard, timeout_seconds=timeout_seconds)
-            return
-        except APIError as exc:
-            if exc.code != "RESOURCE_SYNC_BUSY" or time.monotonic() >= deadline:
-                raise
-        await asyncio.sleep(_ASSISTANT_SYNC_WAIT_SECONDS)
+    await _synchronize_waiting(
+        lambda: _synchronize(provider, guard, timeout_seconds=timeout_seconds),
+        timeout_seconds=timeout_seconds,
+    )
 
 
 async def deliver_runtime_files(
@@ -439,11 +449,22 @@ async def prepare_session_runtime_context(context: EngineStartupContext) -> Engi
     subject = preparation_subject(session)
     revision = subject_revision(subject, config)
     if subject.kind == "assistant" and context.attach_mode != "lightweight":
-        # An Agent synchronizes where its waiting inventory is prepared; an
-        # Assistant has none, so it does here, before Hermes runs this revision.
+        # An Assistant has no waiting inventory; it synchronizes here, before
+        # Hermes runs this revision.
         await _synchronize_assistant_resources(
             context, provider=provider, subject=subject, revision=revision,
             config=config, owner_user_id=principal,
+        )
+    elif subject.kind == "agent" and context.attach_mode is None and prepared is None:
+        # Claimed inventory was synchronized before it was published. A cold
+        # start placed this box's Skills and packages itself, so the provider
+        # reads them here, before the engine runs them.
+        await _synchronize_waiting(
+            lambda: synchronize_prepared_resources(
+                context.template, get_underlying_sandbox(context.sandbox),
+                timeout_seconds=_SYNC_TIMEOUT_SECONDS,
+            ),
+            timeout_seconds=_SYNC_TIMEOUT_SECONDS,
         )
     if is_assistant_workspace_bootstrap(session):
         # A workspace prepared without a conversation has no Session to bind
