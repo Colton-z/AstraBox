@@ -214,8 +214,8 @@ servers. Fix the cause, then start a new conversation.
 
 Select the Assistant in the rail. It opens the Assistant's **main
 conversation**, the same one every time, starting it when the Assistant has
-none; AstraBox prepares or restores the workspace when needed. Scheduled jobs
-created there report back there, and the Assistant's row in the rail is
+none; AstraBox prepares or restores the workspace when needed. Its routines
+and watches report there, and the Assistant's row in the rail is
 marked unread when a reply arrives while the owner is elsewhere. The main
 conversation is that row, so it is not listed again under Sessions.
 
@@ -223,10 +223,8 @@ Before the first message, the conversation lists what the Assistant can use:
 the apps connected for it, its Skills and tools, its own and inherited, and the
 apps the owner could connect. **Assistant** in the conversation header opens
 its profile: name, timezone, the owner's instructions, connected apps switched
-on or off for it, its scheduled jobs, what it inherits, and deletion. The
-scheduled jobs are read from the Agent program's own job store while the
-workspace runs (`GET /api/v1/assistants/{assistant_id}/scheduled-jobs`);
-while it does not, the profile says so, and the jobs run once it is back.
+on or off for it, the **Proactive** switch for its watches, what it inherits,
+and deletion. See [Routines and watches](#routines-and-watches).
 
 Ending the main conversation is how an owner starts afresh: the next time the
 Assistant is opened, a new main conversation starts. The API can still start
@@ -242,10 +240,12 @@ workspace storage.
 Messages, approvals, questions, files, and share links use the common Session
 interface described in [Sessions](sessions.md).
 
-## Reach it from messaging apps and on a schedule {#triggers}
+## Reach it from messaging apps {#triggers}
 
 An Assistant can have its own triggers, the same Deployments an Agent has:
-a messaging channel such as Telegram or Slack, a schedule, or a webhook.
+a messaging channel such as Telegram or Slack, or a webhook. Its schedules are
+its owner's personal schedules instead; see
+[Routines and watches](#routines-and-watches).
 Open **Management console → Deployments**, select **New trigger**, and pick
 the Assistant under **Agent or Assistant**. Only the Assistant's owner can
 create or change its triggers, and every conversation they start runs as the
@@ -262,29 +262,54 @@ are ignored and never reach the Assistant or its later context.
 Each channel conversation is one Assistant conversation in the shared
 workspace. Replies go back to the chat, and so does anything the Assistant
 produces on its own afterwards in that conversation: a scheduled job's
-result, a finished background task, or a reply Hermes starts itself. A
-schedule starts a new Assistant conversation at each due time; see
-[Schedules](schedules.md).
+result, a finished background task, or a reply Hermes starts itself.
 
-## Scheduled jobs it creates itself
+## Routines and watches {#routines-and-watches}
 
-Ask the Assistant to do something on a schedule, such as "every weekday at 8,
-summarize my unread email", and Hermes creates a scheduled job in its own
-scheduler. The job runs in the Assistant's workspace even when no
-conversation is open, and AstraBox reports each run back into the
+An Assistant does two kinds of work without being asked each time, and the
+owner manages them in different places.
+
+**Routines** are work at a time the owner names, such as "every weekday at 8,
+summarize my unread email". The Assistant creates one with its
+`create_schedule` tool, as a personal schedule run by the platform's scheduler
+as its owner. Each run is a message in the Assistant's main conversation,
+marked as sent by a schedule, and the reply arrives there; if the owner is
+mid-conversation, the run waits its turn. The owner lists, edits, disables,
+runs and deletes routines in the account menu under **Personal schedules**,
+beside the schedules the Assistant hands to an Agent
+([Personal schedules](a2a.md#personal-agent-schedules)). A routine does not
+wait for the workspace to be up: the platform's scheduler fires it, and the
+main conversation prepares the workspace as it does for any message.
+
+**Watches** are the Assistant keeping an eye on something and speaking up only
+when it matters, such as "tell me when an email from my manager mentions a
+deadline". Hermes runs these as jobs in its own scheduler, inside the
+Assistant's workspace, and AstraBox reports each run back into the
 conversation that created the job: a channel chat receives it right away, and
 a console conversation shows it unread in the list, with a browser
-notification when notifications are on. A run that answers `[SILENT]`, which a
-monitor does when nothing meets its bar, is kept but not delivered. The job is
-kept in the platform database with the rest of Hermes' profile state, so it
-survives replacing the workspace's sandbox.
+notification when notifications are on. A run that answers `[SILENT]`, which
+a watch does when nothing meets its bar, is kept but not delivered. The jobs
+are kept in the platform database with the rest of Hermes' profile state, so
+they survive replacing the workspace's sandbox.
+
+Watches are not listed one by one. The **Proactive** switch in the
+Assistant's profile governs them all: switched off, the workspace's scheduler
+stops and none runs; the jobs stay, and the owner can still ask the Assistant
+to change or remove one. Switched on again, the jobs follow Hermes' own
+catch-up rule: a recurring job's occurrence missed while the switch was off
+runs once when the scheduler starts, unless the profile sets Hermes'
+`cron.catch_up_missed` to `false`, and a one-time job more than two minutes
+overdue is retired without running. Changing the switch prepares a running workspace's profile again,
+which restarts Hermes there once no reply is running; a workspace that is not
+running starts with the new setting.
 
 Every Assistant also has AstraBox's `astrabox-proactive` Skill, shipped in the
-Hermes image. It teaches the Assistant to offer such jobs when it notices
-recurring work (a morning briefing, an important-mail monitor, meeting prep, a
-weekly review), to create one only after the user agrees, to write each job so
-it runs on its own with the user's connected apps, and to keep monitors quiet
-until something is worth reporting.
+Hermes image. It teaches the Assistant to offer routines and watches when it
+notices recurring work (a morning briefing, an important-mail watch, meeting
+prep, a weekly review), to tell the two apart by whether the owner named a
+time, to create one only after the owner agrees, to write each one so it runs
+on its own with the owner's connected apps, and to keep watches quiet until
+something is worth reporting.
 
 ## Connect work apps {#connectors}
 

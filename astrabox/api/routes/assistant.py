@@ -73,24 +73,6 @@ class InheritedExtensions(BaseModel):
     credential_vaults: int
 
 
-class AssistantScheduledJobs(BaseModel):
-    """What an Assistant scheduled for itself, read from its program's own store.
-
-    Each job carries the program's own field names (Hermes: ``id``, ``name``,
-    ``prompt``, ``schedule_display``, ``state``, ``next_run_at``,
-    ``last_run_at``, ``last_status``, ...). ``jobs`` is null when there is no
-    live list to read, and ``reason`` says why: ``workspace_not_running`` or
-    ``engine_keeps_no_schedule``.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    assistant_id: str
-    workspace_state: str
-    jobs: list[dict[str, Any]] | None
-    reason: str | None
-
-
 class EnsurePrimaryAssistantRequest(BaseModel):
     """What a first-created primary Assistant starts with; ignored when it exists."""
 
@@ -130,6 +112,9 @@ class Assistant(BaseModel):
     system: str | None = None
     #: The owner's IANA timezone, which the Agent program keeps time in.
     timezone: str | None = None
+    #: Whether the jobs the Agent program scheduled for itself run. Switching
+    #: it off stops the program's scheduler without removing its jobs.
+    proactive: bool | None = None
     model_config_override: dict[str, Any] | None = None
     mcp_servers: dict[str, Any] | None = None
     #: MCP servers selected from extension catalogs, as stored:
@@ -403,15 +388,6 @@ def register_assistant_routes(app: Any) -> None:
         user = await get_current_user_context(request)
         result = await _service.destroy_workspace(user, assistant_id)
         return success_response(result)
-
-    @app.get(
-        "/api/v1/assistants/{assistant_id}/scheduled-jobs",
-        response_model=ApiEnvelope[AssistantScheduledJobs],
-        response_model_exclude_unset=True,
-    )
-    async def list_assistant_scheduled_jobs(assistant_id: str, request: Request):
-        user = await get_current_user_context(request)
-        return success_response(await _service.list_scheduled_jobs(user, assistant_id))
 
     @app.post(
         "/api/v1/assistants/{assistant_id}/main-conversation",

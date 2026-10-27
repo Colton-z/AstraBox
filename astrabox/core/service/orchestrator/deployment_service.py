@@ -501,12 +501,24 @@ class DeploymentService:
         return visible
 
     async def _assert_personal_target_access(
-        self, agent_id: str, owner_user_id: str,
+        self, row: dict[str, Any], owner_user_id: str,
     ) -> ConversationTarget:
-        target = await self._targets.resolve({"agent_id": agent_id})
+        """The Agent or Assistant a personal schedule names, if its owner may start work there.
+
+        An Agent applies its own access rule; an Assistant is its owner's alone.
+        """
+        target = await self._targets.resolve(row)
         if target is None or not owner_user_id or not await self._targets.may_start_as(target, owner_user_id):
-            raise APIError(code="NOT_FOUND", message="agent not found or unavailable", status_code=404)
+            raise APIError(code="NOT_FOUND", message="schedule target not found or unavailable", status_code=404)
         return target
+
+    @staticmethod
+    def _target_ids(row: dict[str, Any]) -> tuple[str, str]:
+        """``(agent_id, assistant_id)`` of the one target a stored row names."""
+        ref = target_ref(row)
+        if ref is None:
+            raise APIError(code="NOT_FOUND", message="scheduled Deployment not found", status_code=404)
+        return (ref[1], "") if ref[0] == TARGET_AGENT else ("", ref[1])
 
     async def _personal_schedule(
         self, user: UserContext, deployment_id: str,
@@ -528,12 +540,19 @@ class DeploymentService:
         return [self._sanitize(row) for row in rows]
 
     async def create_personal_schedule(
-        self, user: UserContext, *, agent_id: str, source_assistant_id: str,
+        self, user: UserContext, *, agent_id: str | None, source_assistant_id: str,
         name: str, prompt_prefix: str, schedule: dict[str, Any],
     ) -> dict[str, Any]:
-        """Create an Agent schedule that always executes as its authenticated owner."""
+        """Create a schedule that always executes as its authenticated owner.
+
+        It runs on ``agent_id``, or, without one, on the Assistant it is created
+        from, whose runs land in that Assistant's main conversation.
+        """
+        on_agent = bool(str(agent_id or "").strip())
         return await self.create(
-            agent_id=agent_id, creator_user_id=user.user_id, scene=SCENE_SCHEDULE,
+            agent_id=str(agent_id or "").strip() if on_agent else "",
+            assistant_id="" if on_agent else source_assistant_id,
+            creator_user_id=user.user_id, scene=SCENE_SCHEDULE,
             name=name, prompt_prefix=prompt_prefix, schedule=schedule,
             personal_user=user, source_assistant_id=source_assistant_id,
         )
@@ -547,38 +566,44 @@ class DeploymentService:
         if "enabled" in patch and not isinstance(patch["enabled"], bool):
             raise APIError(code="INVALID_REQUEST", message="enabled must be a boolean", status_code=400)
         if patch.get("enabled", row.get("enabled")) is not False:
-            await self._assert_personal_target_access(str(row["agent_id"]), user.user_id)
-        return await self.update(deployment_id, agent_id=str(row["agent_id"]),
+            await self._assert_personal_target_access(row, user.user_id)
+        agent_id, assistant_id = self._target_ids(row)
+        return await self.update(deployment_id, agent_id=agent_id, assistant_id=assistant_id,
                                  owner_user_id=user.user_id, owner_org_id=user.org_id, patch=patch)
 
     async def delete_personal_schedule(self, user: UserContext, deployment_id: str) -> None:
         row = await self._personal_schedule(user, deployment_id)
-        await self.delete(deployment_id, agent_id=str(row["agent_id"]), owner_user_id=user.user_id, owner_org_id=user.org_id)
+        agent_id, assistant_id = self._target_ids(row)
+        await self.delete(deployment_id, agent_id=agent_id, assistant_id=assistant_id,
+                          owner_user_id=user.user_id, owner_org_id=user.org_id)
 
     async def list_personal_schedule_runs(
         self, user: UserContext, deployment_id: str, *, limit: int = 50,
     ) -> list[dict[str, Any]]:
         row = await self._personal_schedule(user, deployment_id)
+        agent_id, assistant_id = self._target_ids(row)
         return await self.list_runs_for_deployment(
-            deployment_id, agent_id=str(row["agent_id"]), owner_user_id=user.user_id, owner_org_id=user.org_id,
-            limit=max(1, min(limit, 100)),
+            deployment_id, agent_id=agent_id, assistant_id=assistant_id,
+            owner_user_id=user.user_id, owner_org_id=user.org_id, limit=max(1, min(limit, 100)),
         )
 
     async def trigger_personal_schedule(
         self, user: UserContext, deployment_id: str,
     ) -> dict[str, Any]:
         row = await self._personal_schedule(user, deployment_id)
-        await self._assert_personal_target_access(str(row["agent_id"]), user.user_id)
-        return await self.trigger_now(deployment_id, agent_id=str(row["agent_id"]),
+        await self._assert_personal_target_access(row, user.user_id)
+        agent_id, assistant_id = self._target_ids(row)
+        return await self.trigger_now(deployment_id, agent_id=agent_id, assistant_id=assistant_id,
                                       owner_user_id=user.user_id, owner_org_id=user.org_id)
 
     async def replay_personal_schedule_run(
         self, user: UserContext, deployment_id: str, run_id: str,
     ) -> dict[str, Any]:
         row = await self._personal_schedule(user, deployment_id)
-        await self._assert_personal_target_access(str(row["agent_id"]), user.user_id)
-        return await self.replay_run(run_id, deployment_id=deployment_id,
-                                     agent_id=str(row["agent_id"]), owner_user_id=user.user_id, owner_org_id=user.org_id)
+        await self._assert_personal_target_access(row, user.user_id)
+        agent_id, assistant_id = self._target_ids(row)
+        return await self.replay_run(run_id, deployment_id=deployment_id, agent_id=agent_id,
+                                     assistant_id=assistant_id, owner_user_id=user.user_id, owner_org_id=user.org_id)
 
     async def create(
         self,
@@ -611,10 +636,27 @@ class DeploymentService:
                 status_code=400,
             )
         if personal_user is not None:
-            if not personal_user.user_id or target[0] != TARGET_AGENT or scene != SCENE_SCHEDULE:
-                raise APIError(code="INVALID_REQUEST", message="personal plans require an Agent schedule", status_code=400)
+            if not personal_user.user_id or scene != SCENE_SCHEDULE:
+                raise APIError(code="INVALID_REQUEST", message="a personal plan is a schedule", status_code=400)
             await self.assert_can_manage_assistant(personal_user, source_assistant_id)
-            await self._assert_personal_target_access(agent_id, personal_user.user_id)
+            if target[0] != TARGET_AGENT and target[1] != source_assistant_id:
+                raise APIError(
+                    code="INVALID_REQUEST",
+                    message="an Assistant's own schedule is created from that Assistant",
+                    status_code=400,
+                )
+            await self._assert_personal_target_access(target_fields(*target), personal_user.user_id)
+        elif target[0] != TARGET_AGENT and scene == SCENE_SCHEDULE:
+            # One list holds everything that runs on its owner's behalf: an
+            # Assistant's schedules are its owner's personal schedules.
+            raise APIError(
+                code="INVALID_REQUEST",
+                message=(
+                    "an Assistant's schedules are its owner's personal schedules; ask the "
+                    "Assistant to create one, or use POST /api/v1/me/schedules"
+                ),
+                status_code=400,
+            )
         on_assistant = target[0] != TARGET_AGENT
         scene = str(scene or "").strip()
         channel_name = channel_scene_name(scene)
@@ -1575,9 +1617,9 @@ class DeploymentService:
         if context.get("trigger", "schedule") == "schedule" and deployment.get("enabled") is False:
             raise RunPermanentError("personal schedule is disabled")
         try:
-            await self._assert_personal_target_access(str(deployment["agent_id"]), owner)
+            await self._assert_personal_target_access(deployment, owner)
         except APIError as exc:
-            raise RunPermanentError("personal schedule owner cannot use the target Agent") from exc
+            raise RunPermanentError("personal schedule owner cannot use its target") from exc
         return UserContext(user_id=owner, org_id=owner_org)
 
     async def start_run_session(
@@ -1585,8 +1627,9 @@ class DeploymentService:
     ) -> str:
         """Create (or find) one Run's Session; the scheduler provider calls this.
 
-        The Session's idempotency key is the Run id, so a provider that calls
-        again for the same Run gets the same Session.
+        An Agent's Session is keyed by the Run id, so a provider that calls
+        again for the same Run gets the same Session. An Assistant's Run uses
+        its main conversation (:meth:`ConversationTargets.scheduled_conversation`).
         """
 
         deployment_id = str(context.get("deployment_id") or "").strip()
@@ -1619,7 +1662,7 @@ class DeploymentService:
             raise RunPermanentError("personal schedule invocation has no captured owner")
         user = (await self._personal_run_user(context) if context.get("scope") == "personal"
                 else UserContext(user_id=target.owner_user_id))
-        started = await self._targets.start_conversation(
+        started = await self._targets.scheduled_conversation(
             target, user, idempotency_key=f"deployment-run:{run_id}",
         )
         session_id = str((started or {}).get("session_id") or "").strip()

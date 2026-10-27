@@ -9,6 +9,11 @@ webhook code never branch on the target kind.
 An Agent conversation runs as the initiating user, a platform binding's Agent
 owner, or an administrator-chosen execution account. An Assistant is owner-only (docs/domain-model.md §2), so its
 conversations always run as its owner.
+
+A scheduled Run asks for its conversation through
+:meth:`ConversationTargets.scheduled_conversation`: an Agent starts one per
+Run, while an Assistant's runs land in its main conversation, where its owner
+reads everything it does on their behalf.
 """
 
 from __future__ import annotations
@@ -119,6 +124,32 @@ class ConversationTargets:
             agent = await self._agent_repo.get_agent(target.target_id)
             return bool(agent) and can_view_agent(agent, user_id, [])
         return user_id == target.owner_user_id
+
+    async def scheduled_conversation(
+        self,
+        target: ConversationTarget,
+        user: UserContext,
+        *,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        """The conversation one scheduled Run's input goes to, as ``user``.
+
+        An Agent starts a conversation per Run, keyed by ``idempotency_key``.
+        An Assistant's Run goes to its main conversation, started when it has
+        none; the Run's input queues there behind whatever the owner is doing.
+        """
+
+        if target.kind == TARGET_AGENT:
+            return await self.start_conversation(target, user, idempotency_key=idempotency_key)
+        if user.user_id != target.owner_user_id:
+            raise APIError(
+                code="ASSISTANT_NOT_FOUND",
+                message=f"assistant={target.target_id} not found",
+                status_code=404,
+            )
+        if self._assistant_service_getter is None:
+            raise RuntimeError("Assistant conversations are not available in this process")
+        return await self._assistant_service_getter().open_main_conversation(user, target.target_id)
 
     async def start_conversation(
         self,

@@ -2308,23 +2308,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/assistants/{assistant_id}/scheduled-jobs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Assistant Scheduled Jobs */
-        get: operations["list_assistant_scheduled_jobs_api_v1_assistants__assistant_id__scheduled_jobs_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/assistants/{assistant_id}/workspace": {
         parameters: {
             query?: never;
@@ -5293,14 +5276,6 @@ export interface components {
             /** Message */
             message: string;
         };
-        /** ApiEnvelope[AssistantScheduledJobs] */
-        ApiEnvelope_AssistantScheduledJobs_: {
-            /** Code */
-            code: string;
-            data: components["schemas"]["AssistantScheduledJobs"];
-            /** Message */
-            message: string;
-        };
         /** ApiEnvelope[AssistantWorkspaceDestruction] */
         ApiEnvelope_AssistantWorkspaceDestruction_: {
             /** Code */
@@ -6378,6 +6353,8 @@ export interface components {
             permission_mode_default?: string | null;
             /** Primary */
             primary?: boolean | null;
+            /** Proactive */
+            proactive?: boolean | null;
             /** Runtime Profile Name */
             runtime_profile_name?: string | null;
             /** Skills */
@@ -6547,28 +6524,6 @@ export interface components {
             ready?: number | null;
             /** Total */
             total?: number | null;
-        };
-        /**
-         * AssistantScheduledJobs
-         * @description What an Assistant scheduled for itself, read from its program's own store.
-         *
-         *     Each job carries the program's own field names (Hermes: ``id``, ``name``,
-         *     ``prompt``, ``schedule_display``, ``state``, ``next_run_at``,
-         *     ``last_run_at``, ``last_status``, ...). ``jobs`` is null when there is no
-         *     live list to read, and ``reason`` says why: ``workspace_not_running`` or
-         *     ``engine_keeps_no_schedule``.
-         */
-        AssistantScheduledJobs: {
-            /** Assistant Id */
-            assistant_id: string;
-            /** Jobs */
-            jobs: {
-                [key: string]: unknown;
-            }[] | null;
-            /** Reason */
-            reason: string | null;
-            /** Workspace State */
-            workspace_state: string;
         };
         /**
          * AssistantWorkspace
@@ -7506,7 +7461,7 @@ export interface components {
          */
         PersonalScheduleCreate: {
             /** Agent Id */
-            agent_id: string;
+            agent_id?: string | null;
             /** Name */
             name: string;
             /** Prompt Prefix */
@@ -13676,37 +13631,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_StartedAssistantConversation_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_assistant_scheduled_jobs_api_v1_assistants__assistant_id__scheduled_jobs_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                assistant_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_AssistantScheduledJobs_"];
                 };
             };
             /** @description Validation Error */

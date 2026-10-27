@@ -2483,6 +2483,16 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
     ),
     # ---- Hermes profile setup and TUI process (sandbox-side) ----------------
     (
+        "ASTRABOX_HERMES_PROACTIVE",
+        "injected",
+        "",
+        "true or false: the Assistant owner's proactivity switch. false keeps the "
+        "in-box scheduler from running the jobs the Assistant scheduled for itself; "
+        "the jobs stay in Hermes' store. Required: a profile without it starts no "
+        "scheduler.",
+        "containers/sandbox-hermes/astrabox-hermes-serve --scheduler",
+    ),
+    (
         "ASTRABOX_HERMES_MODEL_API_KEY",
         "injected",
         "",

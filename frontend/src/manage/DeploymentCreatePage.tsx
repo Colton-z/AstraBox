@@ -32,6 +32,15 @@ import {
 
 const BUILTIN_SCENES = ['schedule', 'hmac', 'scheduler'] as const;
 
+/**
+ * The built-in scenes a target takes. An Assistant's schedules are its owner's
+ * personal schedules, created by asking the Assistant, so it has no schedule
+ * trigger here.
+ */
+function builtinScenes(kind: 'agent' | 'assistant' | undefined) {
+  return BUILTIN_SCENES.filter((scene) => kind !== 'assistant' || scene !== 'schedule');
+}
+
 /** A target select value: ``agent:<id>`` or ``assistant:<id>``. */
 function parseTarget(value: unknown): { kind: 'agent' | 'assistant'; id: string } | null {
   const [kind, ...rest] = String(value ?? '').split(':');
@@ -85,7 +94,7 @@ export default function DeploymentCreatePage() {
       setDraft({
         target: firstTarget,
         allowed_participants: '',
-        scene: BUILTIN_SCENES[0],
+        scene: builtinScenes(parseTarget(firstTarget)?.kind)[0],
         name: '',
         prompt_prefix: '',
         attention_policy: 'all',
@@ -135,7 +144,11 @@ export default function DeploymentCreatePage() {
           })),
         ],
         get: (value) => value.target,
-        set: (value, next) => ({ ...value, target: next }),
+        set: (value, next) => {
+          const scenes: readonly string[] = builtinScenes(parseTarget(next)?.kind);
+          const kept = scenes.includes(String(value.scene)) || !BUILTIN_SCENES.some((scene) => scene === value.scene);
+          return { ...value, target: next, ...(kept ? {} : { scene: scenes[0] }) };
+        },
         help: t('manage:deployments.target_help'),
       },
       {
@@ -145,7 +158,7 @@ export default function DeploymentCreatePage() {
         required: true,
         idTag: 'scene',
         options: [
-          ...BUILTIN_SCENES.map((scene) => ({
+          ...builtinScenes(onAssistant ? 'assistant' : 'agent').map((scene) => ({
             value: scene,
             label: t(`manage:deployments.scene_${scene}`),
           })),
@@ -165,7 +178,7 @@ export default function DeploymentCreatePage() {
           channel_config: {},
           credentials: {},
         }),
-        help: t('manage:deployments.scene_help'),
+        help: t(onAssistant ? 'manage:deployments.scene_help_assistant' : 'manage:deployments.scene_help'),
       },
     ];
     if (draftScene === 'schedule') {

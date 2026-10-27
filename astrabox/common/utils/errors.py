@@ -469,9 +469,6 @@ for _code, _status, _category, _retryable, _owner in (
     # exact-id convergence fence is a transient state conflict worth retrying.
     ("ASSISTANT_WORKSPACE_NOT_FOUND", 500, "state", False, "platform"),
     ("ASSISTANT_WORKSPACE_CONVERGENCE_FAILED", 503, "state", True, "platform"),
-    # The running workspace did not answer its program's job store; asking
-    # again after the box settles can succeed.
-    ("ASSISTANT_SCHEDULED_JOBS_UNAVAILABLE", 503, "state", True, "platform"),
     # Hibernation is a storage transaction followed by a fenced sandbox
     # release. Malformed transition input is a platform invariant.
     ("ASSISTANT_WORKSPACE_HIBERNATE_CONFLICT", 409, "state", True, "platform"),

@@ -535,18 +535,6 @@ class EngineAdapter(ABC):
             f"engine_kind={self.engine_kind!r} cannot quiesce and save runtime state"
         )
 
-    async def list_scheduled_jobs(
-        self, sandbox: Any, *, runtime_identity: dict[str, Any]
-    ) -> list[dict[str, Any]] | None:
-        """The jobs the program scheduled for itself, read from its own store in a running box.
-
-        ``None`` means the program keeps no schedule of its own. One that does
-        answers its records in its own vocabulary, which the platform carries
-        to the owner unchanged.
-        """
-
-        return None
-
     def process_disposal(self) -> Any | None:
         """Optional vendor process finalizer for a recorded native conversation."""
 

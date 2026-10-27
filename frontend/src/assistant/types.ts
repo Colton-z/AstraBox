@@ -20,7 +20,6 @@ export type AssistantConversationResult = Schemas['StartedAssistantConversation'
 export type AssistantWorkspaceResult = Schemas['AssistantWorkspace'];
 export type AssistantExtensionCatalog = Schemas['AssistantExtensionCatalog'];
 export type AssistantDefaults = Schemas['AssistantDefaults'];
-export type AssistantScheduledJobs = Schemas['AssistantScheduledJobs'];
 export type AssistantDefaultsFields = Schemas['AssistantDefaultsFields'];
 export type AssistantDefaultsExtensionCatalog = Schemas['AssistantDefaultsExtensionCatalog'];
 
@@ -42,6 +41,8 @@ export interface AssistantRecord {
   permission_mode_default: string;
   system?: string | null;
   timezone?: string | null;
+  /** Whether the jobs it scheduled for itself run; switched off, none does. */
+  proactive?: boolean | null;
   mcp_servers?: Record<string, unknown> | null;
   skills?: SkillDescriptor[] | null;
   packages?: Record<string, unknown>[] | null;

@@ -10,7 +10,6 @@ import type {
   AssistantExtensionCatalog,
   AssistantListPage,
   AssistantRecord,
-  AssistantScheduledJobs,
   AssistantWorkspaceResult,
 } from './types';
 import { apiClient, listPageQuery, sendApi, startConversationRequest } from '../api';
@@ -143,14 +142,6 @@ export async function ensurePrimaryAssistant(
       got: data === null ? 'null' : typeof data,
     }),
   );
-}
-
-/** What the Assistant scheduled for itself, read live from its running workspace. */
-export async function listAssistantScheduledJobs(assistantId: string): Promise<AssistantScheduledJobs> {
-  return await sendApi((wire) => apiClient.GET('/api/v1/assistants/{assistant_id}/scheduled-jobs', {
-    ...wire,
-    params: { path: { assistant_id: assistantId } },
-  })) as AssistantScheduledJobs;
 }
 
 /** The conversation opening this Assistant lands in, started when it has none. */

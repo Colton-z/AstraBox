@@ -340,6 +340,7 @@
     "scene_schedule": "定时计划",
     "select_agent": "选择 Agent",
     "scene_help": "选择定时计划、经过鉴权的外部请求，或具体的消息平台。",
+    "scene_help_assistant": "选择经过鉴权的外部请求，或具体的消息平台。Assistant 的定时任务属于个人计划：让 Assistant 创建，在“个人计划”里管理。",
     "name_help": "用一个简短名称区分同一 Agent 上的不同定时任务。",
     "prompt_prefix_help": "可选。加在这个触发投递的每条消息前面。",
     "prompt_help": "每次计划触发时，希望 Agent 完成的任务。",

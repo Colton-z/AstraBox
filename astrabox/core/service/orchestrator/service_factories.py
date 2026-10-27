@@ -93,7 +93,7 @@ class DeploymentServiceReplacement(Protocol):
     ) -> list[dict[str, Any]]: ...
 
     async def create_personal_schedule(
-        self, user: Any, *, agent_id: str, source_assistant_id: str,
+        self, user: Any, *, agent_id: str | None, source_assistant_id: str,
         name: str, prompt_prefix: str, schedule: dict[str, Any],
     ) -> dict[str, Any]: ...
 

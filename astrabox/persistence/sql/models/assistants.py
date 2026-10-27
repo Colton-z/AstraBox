@@ -49,7 +49,7 @@ class Assistant(Base):
             predicate=text("is_primary AND NOT deleted"), marker="_primary_slot",
         ),
         CheckConstraint("deleted OR runtime_profile_name IS NOT NULL", name="live_runtime_profile"),
-        *boolean_checks("is_primary", "deleted"),
+        *boolean_checks("is_primary", "proactive", "deleted"),
         MYSQL_TABLE_OPTIONS,
     )
 
@@ -69,6 +69,9 @@ class Assistant(Base):
     permission_mode_default: Mapped[str | None] = mapped_column(payload_text())
     system: Mapped[str | None] = mapped_column(payload_text())
     timezone: Mapped[str | None] = mapped_column(payload_text())
+    #: Whether the jobs the Agent program scheduled for itself run (its
+    #: proactivity). Off stops the program's scheduler; the jobs are kept.
+    proactive: Mapped[bool] = mapped_column(server_default=text("true"))
     #: The model the Assistant's own override names; the inherited layers'
     #: model applies when it is NULL.
     model_name: Mapped[str | None] = mapped_column(payload_text())

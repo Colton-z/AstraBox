@@ -30,7 +30,7 @@
       }
     },
     "tests": {
-      "no_volume_core": 605,
+      "no_volume_core": 607,
       "persistent_files": 19
     }
   },
@@ -42,7 +42,7 @@
   ],
   "playwright": {
     "exclusive": {
-      "files": 194,
+      "files": 196,
       "parallel_files": 121,
       "parallel_tests": 215,
       "serial_files": [
@@ -55,8 +55,10 @@
         "specs/agent-workspace-resume.exclusive.spec.ts",
         "specs/an-artifact-an-agent-publishes-outlives-its-sandbox.exclusive.spec.ts",
         "specs/an-assistant-keeps-its-memory-skills-and-jobs-on-a-new-box.exclusive.spec.ts",
+        "specs/an-assistant-runs-its-owners-routine-in-its-main-conversation.exclusive.spec.ts",
         "specs/an-assistant-used-today-keeps-its-box-overnight.exclusive.spec.ts",
         "specs/an-assistant-uses-the-hermes-extensions-its-owner-configures.exclusive.spec.ts",
+        "specs/an-assistants-proactive-switch-decides-whether-its-watches-run.exclusive.spec.ts",
         "specs/an-assistants-scheduled-reply-marks-its-conversation-unread.exclusive.spec.ts",
         "specs/an-expired-oauth-credential-is-reported-before-a-conversation-dies-on-it.exclusive.spec.ts",
         "specs/an-exposed-port-outlives-the-idle-window.exclusive.spec.ts",
@@ -120,9 +122,9 @@
         "specs/subagent-replay-recovery.exclusive.spec.ts",
         "specs/untouched-tab-catches-up-after-backend-restart.exclusive.spec.ts"
       ],
-      "serial_tests": 114,
+      "serial_tests": 116,
       "serial_workers": 1,
-      "tests": 329,
+      "tests": 331,
       "workers": 5
     },
     "parallel": {

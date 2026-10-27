@@ -186,19 +186,22 @@ test('SessionStart systemMessage appears once before a turn and after history re
   const databaseUser = process.env.ASTRABOX_E2E_POSTGRES_USER;
   if (!database || !databaseUser) throw new Error('the selected upgrade case needs explicit isolated database handles');
   expect(postgresTextRows(postgres, database, databaseUser,
-    'SELECT version_num FROM alembic_version')).toEqual(['0011']);
+    'SELECT version_num FROM alembic_version')).toEqual(['0012']);
   execFileSync('docker', ['stop', '--time', '10', server], { timeout: 20_000 });
+  // Back to the schema before 0011, so the upgrade replays 0011's backfill;
+  // the later revisions' columns go too, as they did not exist then.
   expect(postgresTextRows(postgres, database, databaseUser, `
     BEGIN;
+    ALTER TABLE assistants DROP COLUMN proactive;
     ALTER TABLE session_inputs DROP COLUMN conversation_order;
     ALTER TABLE session_responses DROP COLUMN conversation_order;
-    UPDATE alembic_version SET version_num = '0010' WHERE version_num = '0011';
+    UPDATE alembic_version SET version_num = '0010' WHERE version_num = '0012';
     COMMIT;
     SELECT version_num FROM alembic_version;
   `)).toEqual(['0010']);
   await restartServerContainer(absoluteBaseUrl(), 30_000, server);
   expect(postgresTextRows(postgres, database, databaseUser,
-    'SELECT version_num FROM alembic_version')).toEqual(['0011']);
+    'SELECT version_num FROM alembic_version')).toEqual(['0012']);
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(page.getByTestId('run-view')).toBeVisible();
   await visibleOrder(page, expectedMessages);

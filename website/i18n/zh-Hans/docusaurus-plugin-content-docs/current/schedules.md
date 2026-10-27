@@ -3,22 +3,21 @@
 > 按照定时计划自动运行 Agent 或 Assistant。
 
 在 AstraBox 中，Schedule 是一种触发配置，它把 Agent 或 Assistant、时间规则
-和提示词关联起来。每个到期时刻都会启动一个新的 Session，无需保持已有 Session
-在线。对 Assistant 而言，这个 Session 是 Assistant 共享工作区中的一次新对话，
-以归属用户身份运行。
+和提示词关联起来。对 Agent 而言，每个到期时刻都会启动一个新的 Session，无需保持
+已有 Session 在线。对 Assistant 而言，每个到期时刻是它主对话里的一条消息，以归属
+用户身份运行。
 
-可以在 Web 控制台中创建、查询、修改、停用、立即运行、重放和删除 Schedule。
+以你的身份定时运行的一切都是个人计划：Assistant 自己做的，以及它交给你能使用的
+Agent 做的。让 Assistant 创建，然后在账号设置菜单中点击**个人计划**，在弹窗里查看
+和管理。参见[个人计划](a2a.md#personal-agent-schedules)和
+[例行任务与盯梢](assistants.md#routines-and-watches)。
 
-个人 Agent 计划可以让 Assistant 创建，然后在账号设置菜单中点击**个人计划**，
-在弹窗里查看和管理。你需要有目标 Agent 的使用权限。参见
-[个人 Agent 计划](a2a.md#personal-agent-schedules)。下面的控制台操作说明适用于
-有管理权限的 Agent 计划，以及仅归属用户可管理的 Assistant 触发配置。
+下面的控制台操作说明适用于 Agent 所有者或管理员为 Agent 创建的托管计划。
 
 ## 使用前提
 
-- 创建负责处理每次任务的 Agent 或 Assistant。
-- 以 Agent 所有者或 AstraBox 管理员身份登录。只有 Assistant 的归属用户可以为它
-  设置定时计划。
+- 创建负责处理每次任务的 Agent。
+- 以 Agent 所有者或 AstraBox 管理员身份登录。
 - AstraBox 安装需要运行一个 scheduler provider。内置 provider 把 Schedule 和运行记录
   保存在 AstraBox 已使用的 PostgreSQL 数据库中。设置了
   `ASTRABOX_SCHEDULER_PROVIDER=none` 的安装不能创建、启用或运行 Schedule。
@@ -28,7 +27,7 @@
 
 | 字段 | 说明 |
 | --- | --- |
-| Agent 或 Assistant | 每次触发后负责处理任务的 Agent 或 Assistant。 |
+| Agent | 每次触发后负责处理任务的 Agent。 |
 | 名称 | 用于区分不同 Schedule 的简短名称。 |
 | 提示词 | 每次计划触发时，希望 Agent 完成的任务。 |
 | Cron 表达式 | 五段 Cron 表达式：分钟、小时、日期、月份和星期。 |
@@ -103,14 +102,15 @@ Agent、Schedule 名称、触发方式或 ID 搜索，也可以按启用或停�
 
 ## 查看执行结果
 
-- 每次定时触发都会创建一条运行记录和一个新的 Session。
+- 每次定时触发都会创建一条运行记录。对 Agent 还会创建一个新的 Session；对
+  Assistant 则是主对话里的一条消息。
 - 选择**立即运行**，无需修改时间规则即可启动一次新任务。
 - 在历史运行记录上选择**重放**，会使用该次运行保存的提示词创建另一条运行
   记录。
 - 打开包含 `session_id` 的运行记录，可以查看 Session 的消息、文件和状态。
 
-运行记录会标明本次任务来自定时计划、**立即运行**还是**重放**。不同运行记录
-之间不共享对话上下文。
+运行记录会标明本次任务来自定时计划、**立即运行**还是**重放**。Agent 的不同运行
+记录之间不共享对话上下文；Assistant 的运行记录共用它的主对话。
 
 ## 使用限制
 

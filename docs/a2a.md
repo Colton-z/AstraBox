@@ -146,21 +146,25 @@ responses the Agent's runtime reports.
 Hermes' native A2A conversation files and audit file are included in the profile
 state archive, outside the user's workspace.
 
-## Personal Agent schedules
+## Personal schedules {#personal-agent-schedules}
 
 The Assistant's built-in schedule tools manage `/api/v1/me/schedules`. These
 reuse the platform scheduler, Deployment and Run records. The source Assistant
-records where the plan was created; the target Agent performs the work.
+records where the plan was created. A plan with an `agent_id` is performed by
+that Agent in a conversation of its own; a plan without one is performed by the
+source Assistant itself, each run a message in its main conversation
+([Routines and watches](assistants.md#routines-and-watches)).
 
 A personal schedule always executes as its authenticated creator. Creating,
-enabling or firing a plan checks target access. Revoking access blocks new work
-while the owner can still inspect, disable or remove the plan. Another user,
-including the target Agent's owner, cannot manage that personal plan through
-the Agent's deployment administration. A2A communication does not create a
-second scheduler.
+enabling or firing a plan checks target access: the creator's access to the
+Agent, or ownership of the Assistant. Revoking access blocks new work while the
+owner can still inspect, disable or remove the plan. Another user, including
+the target Agent's owner, cannot manage that personal plan through the Agent's
+deployment administration. A2A communication does not create a second
+scheduler.
 
 Open the account settings menu and choose **Personal schedules** to inspect
 these plans. Select a plan in the dialog to edit its name, prompt, cron and
 timezone, enable or disable it, run it now, replay a previous Run, or delete it.
 Each Run with a Session links to its conversation. Create a plan by asking the
-Assistant which Agent should perform the work and when it should run.
+Assistant what should be done and when, and whether an Agent should do it.

@@ -156,6 +156,11 @@ _HERMES_PLUGINS_ENV = "ASTRABOX_HERMES_PLUGINS"
 # and removes it when that is absent.
 _HERMES_MANAGED_DIR = "/etc/astrabox/hermes"
 _HERMES_MANAGED_CONFIG_ENV = "ASTRABOX_HERMES_MANAGED_CONFIG"
+# Whether the in-box scheduler runs the jobs the Assistant scheduled for
+# itself: ``true`` or ``false``, the owner's proactivity switch. Read only when
+# the scheduler starts (``astrabox-hermes-serve --scheduler``), so it is part of
+# the process configuration and a change restarts the scheduler.
+_HERMES_PROACTIVE_ENV = "ASTRABOX_HERMES_PROACTIVE"
 # What the merge prints last when it finished: it wrote config.yaml, or had
 # nothing to write.
 _HERMES_CONFIG_MERGE_MARKERS = ("ASTRABOX_HERMES_CONFIG_READY", "ASTRABOX_HERMES_CONFIG_NOOP")
@@ -682,39 +687,6 @@ class HermesEngineAdapter(EngineAdapter):
         if result.exit_code != 0 or len(markers) != 1:
             raise RuntimeError("native state save did not confirm its snapshot")
 
-    async def list_scheduled_jobs(
-        self, sandbox: Any, *, runtime_identity: dict[str, Any]
-    ) -> list[dict[str, Any]] | None:
-        """The profile's cron jobs, from Hermes' own store (``cron.jobs.list_jobs``).
-
-        Runs as the profile's owner with its environment, as the state save
-        does, so Hermes resolves the profile's ``HERMES_HOME`` and nothing in
-        the store is touched by another account. Each job keeps Hermes' field
-        names; only the ones an owner reads are carried.
-        """
-
-        profile_env = posixpath.join(runtime_identity["config_dir"], _HERMES_PROFILE_ENV_FILENAME)
-        command = shlex.join([
-            "runuser", "-u", runtime_identity["linux_user"], "--", "env",
-            f"HOME={runtime_identity['home_dir']}",
-            "bash", "--noprofile", "--norc", "-c",
-            'set -euo pipefail; source "$1"; exec "$HERMES_VENV/bin/python" -c "$2"',
-            "astrabox-hermes-cron-list", profile_env, _CRON_JOBS_LISTER,
-        ])
-        result = await sandbox.commands.run(command)
-        output = result.output
-        # Hermes' own log lines can land next to the answer, so it is found by
-        # its marker and read as one JSON value from there.
-        start = output.rfind(_CRON_JOBS_MARKER)
-        if result.exit_code != 0 or start < 0:
-            raise RuntimeError("Hermes did not list its cron jobs: " + output.strip()[-400:])
-        jobs, _end = json.JSONDecoder().raw_decode(output, start + len(_CRON_JOBS_MARKER))
-        return [
-            {field: job.get(field) for field in _CRON_JOB_FIELDS}
-            for job in jobs
-            if isinstance(job, dict)
-        ]
-
 
 # The shared assistant workspace root baked into the Hermes runtime image (WORKDIR).
 # Per-(user, assistant) profile homes live under it; used as the container cwd when
@@ -881,6 +853,7 @@ async def _prepare_hermes_profile(
             defaults_blob, ensure_ascii=False, sort_keys=True
         ),
         _HERMES_MODEL_API_KEY_ENV: normalized_model_api_key,
+        _HERMES_PROACTIVE_ENV: "true" if getattr(template, "proactive", True) else "false",
         "HERMES_HOME": normalized["config_dir"],
         **dict(runtime_env or {}),
     }
@@ -1453,22 +1426,6 @@ if runs:
     response = text.split("## Response", 1)[1] if "## Response" in text else ""
     print(json.dumps({"output": text, "silent": is_autonomous_silence_response(response)}))
 """
-
-
-#: Lists the profile's jobs through Hermes' own store API, disabled ones included.
-_CRON_JOBS_MARKER = "ASTRABOX_HERMES_CRON_JOBS "
-_CRON_JOBS_LISTER = r"""
-import json, sys
-from cron.jobs import list_jobs
-jobs = json.dumps(list_jobs(include_disabled=True), default=str)
-sys.stdout.write("\nASTRABOX_HERMES_CRON_JOBS " + jobs + "\n")
-sys.stdout.flush()
-"""
-#: The fields of a Hermes job record (``cron/jobs.py`` ``create_job``) an owner reads.
-_CRON_JOB_FIELDS = (
-    "id", "name", "prompt", "schedule_display", "state", "enabled",
-    "next_run_at", "last_run_at", "last_status", "last_error", "created_at", "repeat",
-)
 
 
 def _cron_run_output_reader(

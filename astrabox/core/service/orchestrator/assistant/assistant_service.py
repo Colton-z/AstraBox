@@ -780,51 +780,6 @@ class AssistantService:
             current = await self._catalog_repo.get_owner_primary(owner_id)
             return str(current["assistant_id"]) if current is not None else None
 
-    async def list_scheduled_jobs(self, user: UserContext, assistant_id: str) -> dict[str, Any]:
-        """The jobs an Assistant scheduled for itself, read live from its running workspace.
-
-        The program keeps them in its own store in the box. A workspace that is
-        not running answers no list: the copy saved when it was put away is the
-        program's to restore, and its jobs run only once the box is back.
-        ``jobs`` is null with ``reason`` saying why.
-        """
-
-        assistant = await self._must_use_assistant(user, assistant_id)
-        adapter = get_engine_adapter(self._require_engine_kind(assistant))
-        workspace = await self._workspace_service.get_owned_workspace(
-            user_id=user.user_id, assistant_id=assistant_id
-        )
-        state = str((workspace or {}).get("state") or "").strip() or "NOT_MATERIALIZED"
-        answer: dict[str, Any] = {"assistant_id": assistant_id, "workspace_state": state}
-        sandbox_id = str((workspace or {}).get("current_sandbox_id") or "").strip()
-        identity = normalize_runtime_identity((workspace or {}).get("runtime_identity"))
-        if state != "READY" or not sandbox_id or identity is None:
-            return {**answer, "jobs": None, "reason": "workspace_not_running"}
-        if self._runtime_manager is None:
-            raise APIError(
-                code="ASSISTANT_RUNTIME_MANAGER_UNAVAILABLE",
-                message="cannot read an assistant workspace without runtime manager",
-                status_code=500,
-            )
-        box = None
-        try:
-            box = await self._runtime_manager.connect_sandbox_only(sandbox_id)
-            jobs = await adapter.list_scheduled_jobs(box, runtime_identity=identity)
-        except Exception as exc:
-            raise APIError(
-                code="ASSISTANT_SCHEDULED_JOBS_UNAVAILABLE",
-                message=f"assistant={assistant_id} could not read its scheduled jobs: {exc}",
-                status_code=503,
-            ) from exc
-        finally:
-            close = getattr(box, "close", None) if box is not None else None
-            if callable(close):
-                with contextlib.suppress(Exception):
-                    await close()
-        if jobs is None:
-            return {**answer, "jobs": None, "reason": "engine_keeps_no_schedule"}
-        return {**answer, "jobs": jobs, "reason": None}
-
     async def open_main_conversation(self, user: UserContext, assistant_id: str) -> dict[str, Any]:
         """The Assistant's main conversation, started when it has none.
 
@@ -893,6 +848,7 @@ class AssistantService:
                 "permission_mode_default",
                 "system",
                 "timezone",
+                "proactive",
                 "model_config_override",
                 "mcp_servers",
                 "packages",
@@ -900,6 +856,8 @@ class AssistantService:
                 "engine_options",
             }
         }
+        if "proactive" in sanitized_updates and not isinstance(sanitized_updates["proactive"], bool):
+            raise APIError(code="ASSISTANT_INVALID", message="proactive must be a boolean", status_code=400)
         if "system" in sanitized_updates:
             sanitized_updates["system"] = _normalize_system(sanitized_updates["system"])
         if "timezone" in sanitized_updates:

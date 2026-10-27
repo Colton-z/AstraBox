@@ -322,10 +322,10 @@ export interface DeploymentRun {
   created_at?: string | null;
 }
 
+/** A schedule run as its owner: by an Agent (`agent_id`) or by the source Assistant itself (`assistant_id`). */
 export interface PersonalSchedule extends AgentDeployment {
   scope: 'personal';
   scene: 'schedule';
-  agent_id: string;
   source_assistant_id: string;
   owner_user_id: string;
   owner_org_id: string;

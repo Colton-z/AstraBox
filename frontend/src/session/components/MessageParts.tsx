@@ -22,7 +22,7 @@ import type { HistoricalQuestionnaireInteraction, ProcessDetails, ProcessSummary
 import { QuestionnaireHistoryCard } from '@/components/composer/QuestionnaireHistoryCard';
 import { localizeDisplayText, toolPreview } from '../../utils/format';
 import { filterSupersededSingletonInteractionParts } from '../toolState';
-import { isOpenResponse, responseMetadata } from '../sessionMessages';
+import { inputMetadata, isOpenResponse, responseMetadata } from '../sessionMessages';
 import { LazyProcessBlock, ProcessSummaryCache, useProcessOpen } from './LazyProcessBlock';
 import { cardArtifacts } from '@/artifacts/marker';
 import { ConnectionRequestCard } from '@/connections/ConnectionRequestCard';
@@ -520,6 +520,12 @@ export function MessageBubble({
           </div>
         )}
       </MessageContent>
+      {/* A schedule delivered this input, not the person typing it. */}
+      {isUser && inputMetadata(message).source === 'schedule' && (
+        <p data-testid="scheduled-input" className="text-xs text-muted-foreground">
+          {t('chat:message.scheduled')}
+        </p>
+      )}
       {isUser && <UserMessageStatus message={message} includedInResponse={includedInResponse} />}
     </Message>
   );

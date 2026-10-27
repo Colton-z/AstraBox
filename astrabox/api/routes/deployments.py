@@ -55,7 +55,9 @@ class PersonalScheduleCreate(BaseModel):
     """The owner and execution identity come only from the authenticated request."""
 
     model_config = ConfigDict(extra="forbid")
-    agent_id: str
+    #: The Agent that does the work. Without one, the source Assistant runs the
+    #: schedule itself and each run lands in its main conversation.
+    agent_id: str | None = None
     source_assistant_id: str
     name: str
     prompt_prefix: str

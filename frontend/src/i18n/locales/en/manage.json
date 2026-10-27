@@ -340,6 +340,7 @@
     "scene_schedule": "Schedule",
     "select_agent": "Select an agent",
     "scene_help": "Choose a schedule, an authenticated request, or a concrete messaging platform.",
+    "scene_help_assistant": "Choose an authenticated request or a concrete messaging platform. An Assistant's schedules are personal: ask the Assistant to create one and manage it in Personal schedules.",
     "name_help": "A short name that distinguishes this schedule from other work on the same Agent.",
     "prompt_prefix_help": "Optional. Prepended to every message this trigger delivers.",
     "prompt_help": "What the Agent should do every time the schedule fires.",

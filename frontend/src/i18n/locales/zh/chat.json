@@ -96,7 +96,8 @@
     "thought_process": "思考过程",
     "pasted_image": "粘贴的图片",
     "additional_input": "已接收追加消息",
-    "included_in_response": "已并入上方回复"
+    "included_in_response": "已并入上方回复",
+    "scheduled": "定时任务发出"
   },
   "process": {
     "title": "执行过程",
@@ -278,12 +279,8 @@
     "advanced": "在控制台中编辑",
     "delete_title": "删除助手",
     "delete_confirm": "删除 {{name}}?它的工作区会被移除,之后无法再打开。",
-    "activity": "定时任务",
-    "activity_not_running": "它的工作区没有在运行;运行时这里会列出定时任务。",
-    "activity_unsupported": "这个助手的程序不维护自己的定时计划。",
-    "activity_empty": "暂无定时任务。可以在对话里让它定时做某件事。",
-    "activity_next": "下次 {{time}}",
-    "activity_last": "上次 {{time}} {{status}}"
+    "proactive": "主动提醒",
+    "proactive_hint": "它会替你盯着你让它关注的事，有情况再来找你。关闭后，它给自己安排的检查都不会运行。你指定了时间的例行任务在“个人计划”里管理。"
   },
   "user_action": {
     "open": "前往完成操作",

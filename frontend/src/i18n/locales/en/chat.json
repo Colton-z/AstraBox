@@ -96,7 +96,8 @@
     "thought_process": "Reasoning",
     "pasted_image": "Pasted image",
     "additional_input": "Additional input received",
-    "included_in_response": "Added to the response above"
+    "included_in_response": "Added to the response above",
+    "scheduled": "Sent by a schedule"
   },
   "process": {
     "title": "Process",
@@ -278,12 +279,8 @@
     "advanced": "Edit in the console",
     "delete_title": "Delete Assistant",
     "delete_confirm": "Delete {{name}}? Its workspace is removed and it can no longer be opened.",
-    "activity": "Scheduled jobs",
-    "activity_not_running": "Its workspace is not running; scheduled jobs show here while it is.",
-    "activity_unsupported": "This Assistant's program keeps no schedule of its own.",
-    "activity_empty": "Nothing scheduled. Ask it in the conversation to do something on a schedule.",
-    "activity_next": "next {{time}}",
-    "activity_last": "last {{time}} {{status}}"
+    "proactive": "Proactive",
+    "proactive_hint": "It keeps an eye on what you asked it to watch and speaks up when something matters. Switched off, nothing it scheduled for itself runs. Routines you asked for at a set time are in Personal schedules."
   },
   "user_action": {
     "open": "Open required action",

@@ -3,24 +3,24 @@
 > Run an Agent or an Assistant automatically on a recurring schedule.
 
 In AstraBox, a Schedule is a trigger configuration that connects an Agent or an
-Assistant to a calendar and a prompt. Each due time starts a fresh Session, so
-no existing Session needs to remain online. On an Assistant, that Session is a
-new conversation in the Assistant's shared workspace, run as its owner.
+Assistant to a calendar and a prompt. On an Agent, each due time starts a fresh
+Session, so no existing Session needs to remain online. On an Assistant, each
+due time is a message in the Assistant's main conversation, run as its owner.
 
-Use the web console to create, list, update, disable, run, replay, and delete
-Schedules.
+Everything that runs on a schedule as you is a personal schedule: what your
+Assistant does itself, and what it hands to an Agent you may use. Ask your
+Assistant to create one, then open the account settings menu → **Personal
+schedules** to manage it in a dialog. See
+[Personal schedules](a2a.md#personal-agent-schedules) and
+[Routines and watches](assistants.md#routines-and-watches).
 
-For a personal Agent plan, ask your Assistant to create it, then open the account
-settings menu → **Personal schedules** to manage it in a dialog. You need
-permission to use the target Agent. See [Personal Agent schedules](a2a.md#personal-agent-schedules).
-The console instructions below cover managed Agent schedules and owner-only
-Assistant triggers.
+The console instructions below cover managed Agent schedules, which an Agent's
+owner or an administrator creates for the Agent.
 
 ## Prerequisites
 
-- Create the Agent or Assistant that should handle each invocation.
-- Sign in as the Agent's owner or an AstraBox administrator. Only an
-  Assistant's owner can schedule it.
+- Create the Agent that should handle each invocation.
+- Sign in as the Agent's owner or an AstraBox administrator.
 - The AstraBox installation must run a scheduler provider. The built-in one
   keeps Schedules and their Run history in the PostgreSQL database AstraBox
   already uses. An installation that sets `ASTRABOX_SCHEDULER_PROVIDER=none`
@@ -39,7 +39,7 @@ contains the complete Schedule definition:
 
 | Field | Description |
 | --- | --- |
-| Agent or Assistant | The Agent or Assistant that handles every invocation. |
+| Agent | The Agent that handles every invocation. |
 | Name | A short name that distinguishes this Schedule. |
 | Prompt | What the Agent should do each time the Schedule fires. |
 | Cron expression | A five-field cron expression: minute, hour, day of month, month, and day of week. |
@@ -122,7 +122,8 @@ later.
 
 ## View execution results
 
-- Each scheduled invocation creates a Run and a fresh Session.
+- Each scheduled invocation creates a Run. On an Agent it also creates a
+  fresh Session; on an Assistant it is a message in the main conversation.
 - Select **Run now** to start a new Run without changing the calendar.
 - Select **Replay** on a previous Run to create another Run with that Run's
   captured prompt.
@@ -130,8 +131,8 @@ later.
   status.
 
 The Runs table identifies whether each invocation came from the Schedule,
-**Run now**, or **Replay**. Runs do not share conversation context with one
-another.
+**Run now**, or **Replay**. An Agent's Runs do not share conversation context
+with one another; an Assistant's Runs share its main conversation.
 
 ## Limitations
 

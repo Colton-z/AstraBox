@@ -1040,7 +1040,7 @@ class AgentPlatformService:
         )
 
     async def create_personal_schedule(
-        self, user: UserContext, *, agent_id: str, source_assistant_id: str,
+        self, user: UserContext, *, agent_id: str | None, source_assistant_id: str,
         name: str, prompt_prefix: str, schedule: dict[str, Any],
     ) -> dict[str, Any]:
         return await self._deployment_service.create_personal_schedule(

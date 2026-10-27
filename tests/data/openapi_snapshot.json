@@ -3889,28 +3889,6 @@
         "title": "ApiEnvelope[AssistantListPage]",
         "type": "object"
       },
-      "ApiEnvelope_AssistantScheduledJobs_": {
-        "properties": {
-          "code": {
-            "title": "Code",
-            "type": "string"
-          },
-          "data": {
-            "$ref": "#/components/schemas/AssistantScheduledJobs"
-          },
-          "message": {
-            "title": "Message",
-            "type": "string"
-          }
-        },
-        "required": [
-          "code",
-          "message",
-          "data"
-        ],
-        "title": "ApiEnvelope[AssistantScheduledJobs]",
-        "type": "object"
-      },
       "ApiEnvelope_AssistantWorkspaceDestruction_": {
         "properties": {
           "code": {
@@ -6922,6 +6900,17 @@
             ],
             "title": "Primary"
           },
+          "proactive": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proactive"
+          },
           "runtime_profile_name": {
             "anyOf": [
               {
@@ -7488,54 +7477,6 @@
           "has_more"
         ],
         "title": "AssistantListPage",
-        "type": "object"
-      },
-      "AssistantScheduledJobs": {
-        "additionalProperties": false,
-        "description": "What an Assistant scheduled for itself, read from its program's own store.\n\nEach job carries the program's own field names (Hermes: ``id``, ``name``,\n``prompt``, ``schedule_display``, ``state``, ``next_run_at``,\n``last_run_at``, ``last_status``, ...). ``jobs`` is null when there is no\nlive list to read, and ``reason`` says why: ``workspace_not_running`` or\n``engine_keeps_no_schedule``.",
-        "properties": {
-          "assistant_id": {
-            "title": "Assistant Id",
-            "type": "string"
-          },
-          "jobs": {
-            "anyOf": [
-              {
-                "items": {
-                  "additionalProperties": true,
-                  "type": "object"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Jobs"
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reason"
-          },
-          "workspace_state": {
-            "title": "Workspace State",
-            "type": "string"
-          }
-        },
-        "required": [
-          "assistant_id",
-          "workspace_state",
-          "jobs",
-          "reason"
-        ],
-        "title": "AssistantScheduledJobs",
         "type": "object"
       },
       "AssistantWorkspace": {
@@ -10050,8 +9991,15 @@
         "description": "The owner and execution identity come only from the authenticated request.",
         "properties": {
           "agent_id": {
-            "title": "Agent Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
           },
           "name": {
             "title": "Name",
@@ -10072,7 +10020,6 @@
           }
         },
         "required": [
-          "agent_id",
           "source_assistant_id",
           "name",
           "prompt_prefix",
@@ -19808,45 +19755,6 @@
           }
         },
         "summary": "Open Main Conversation"
-      }
-    },
-    "/api/v1/assistants/{assistant_id}/scheduled-jobs": {
-      "get": {
-        "operationId": "list_assistant_scheduled_jobs_api_v1_assistants__assistant_id__scheduled_jobs_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "assistant_id",
-            "required": true,
-            "schema": {
-              "title": "Assistant Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_AssistantScheduledJobs_"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "List Assistant Scheduled Jobs"
       }
     },
     "/api/v1/assistants/{assistant_id}/workspace": {

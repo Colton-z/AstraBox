@@ -151,7 +151,18 @@ mkdir -p "$log_dir"
 # Hermes' CronScheduler provider owns profile-local jobs without a messaging
 # gateway. Start after the backend restores state and merges configuration;
 # a scheduler started earlier would read the image's empty profile.
+#
+# The owner can switch the Assistant's proactive work off. Nothing then fires
+# the jobs it scheduled for itself; they stay in Hermes' store and run again,
+# under Hermes' own catch-up rule, once it is switched back on. The program
+# stays up rather than exiting, so supervisord does not read the switch as a
+# crash, and a profile change restarts it under the new setting.
 if [ "$scheduler_mode" -eq 1 ]; then
+  : "${ASTRABOX_HERMES_PROACTIVE:?profile env does not say whether proactive jobs run}"
+  if [ "$ASTRABOX_HERMES_PROACTIVE" = "false" ]; then
+    printf 'astrabox-hermes-serve: proactive jobs are switched off; no scheduler\n'
+    exec sleep infinity
+  fi
   deadline=$(( SECONDS + DEADLINE_SECONDS ))
   until curl -sS -o /dev/null -m 3 "http://127.0.0.1:${LOOPBACK_PORT}/api/auth/me" 2>/dev/null; do
     if [ "$SECONDS" -ge "$deadline" ]; then
