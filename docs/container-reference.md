@@ -66,9 +66,13 @@ does not create a separate File resource or use a `mount_path`. See
 
 Platform runtime logs and transport buffers belong outside this directory.
 Isolated engine services keep them in their private Home; their launch-failure
-diagnostics read the same locations. The bundled AIO browser remains disabled,
-and its startup download directory is configured as
-`/tmp/astrabox-browser-downloads`, not a folder in the user workspace.
+diagnostics read the same locations. The bundled AIO browser is disabled in
+shared sandboxes, and its startup download directory is configured as
+`/tmp/astrabox-browser-downloads`, not a folder in the user workspace. Where it
+runs, it starts with `--no-sandbox`: Chrome's own sandbox needs a setuid
+helper, which the sandbox's `no_new_privileges` disables, or an unprivileged
+user namespace, which hosts that restrict them refuse. The sandbox is the
+browser's isolation boundary.
 Custom images must likewise keep service logs and caches out of Workspace.
 
 Engine instruction files are task context, not operational artifacts. Pi and
