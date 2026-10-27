@@ -65,7 +65,7 @@ dependencies = [
   # observability seam — official Prometheus client (spec-correct exposition)
   "prometheus-client==0.26.0",
   # resilience + token decode + misc (source-real open deps)
-  "tenacity==9.1.4",
+  "tenacity==9.2.1",
   "pyjwt==2.15.0",
   "python-dateutil==2.9.0.post0",
   "dacite==1.9.2",
