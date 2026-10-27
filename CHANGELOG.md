@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Console
+
+- Rename a conversation from its row's **More actions** menu, which also holds **Archive**, or from its title above the conversation. `PATCH /api/v1/sessions/{session_id}` sets the title through the API; automatic title generation never replaces a title the owner set.
+
 ## [0.1.10] - 2026-10-20
 
 This release collects the fixes and developer-facing improvements made after 0.1.9.

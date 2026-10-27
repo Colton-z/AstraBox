@@ -2534,6 +2534,14 @@ export async function deleteSession(sessionId: string): Promise<{ deleted: boole
   })) as Promise<{ deleted: boolean }>;
 }
 
+export async function renameSession(sessionId: string, title: string): Promise<{ session_id: string; title: string }> {
+  return send((wire) => client.PATCH('/api/v1/sessions/{session_id}', {
+    ...wire,
+    params: { path: { session_id: sessionId } },
+    body: { title },
+  })) as Promise<{ session_id: string; title: string }>;
+}
+
 export async function archiveSession(sessionId: string): Promise<{ archived: boolean }> {
   return send((wire) => client.POST('/api/v1/sessions/{session_id}/archive', {
     ...wire,

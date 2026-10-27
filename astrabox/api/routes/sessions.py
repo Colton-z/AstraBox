@@ -1,8 +1,8 @@
 """Session CRUD/lifecycle — the ``/api/v1/sessions`` resource family.
 
-Covers list/create/get/delete/archive/recover, message history and history
-blocks, child runs, file changes, the read marker, the permission mode, and
-the two sandbox/shell routes (``sandbox/terminate``, ``webshell``). Handler
+Covers list/create/get/rename/delete/archive/recover, message history and
+history blocks, child runs, file changes, the read marker, the permission mode,
+and the two sandbox/shell routes (``sandbox/terminate``, ``webshell``). Handler
 bodies rely on shared trace/error machinery from
 :mod:`astrabox.api.routes._shared`.
 
@@ -664,6 +664,33 @@ async def get_webshell(session_id: str, request: Request):
 async def delete_session(session_id: str, request: Request):
     user = await _resolve_user(request)
     result = await _svc().delete_session(user, session_id)
+    return success_response(result)
+
+
+class SessionUpdate(BaseModel):
+    """The Session fields its owner may change: the title."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str
+
+
+class SessionTitle(BaseModel):
+    """The title the owner gave a conversation, as stored."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    title: str
+
+
+@router.patch(
+    "/api/v1/sessions/{session_id}",
+    response_model=ApiEnvelope[SessionTitle],
+)
+async def update_session(session_id: str, body: SessionUpdate, request: Request):
+    user = await _resolve_user(request)
+    result = await _svc().rename_session(user, session_id, body.title)
     return success_response(result)
 
 

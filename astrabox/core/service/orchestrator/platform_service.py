@@ -69,7 +69,10 @@ from astrabox.core.service.orchestrator.agent_config_service import AgentConfigS
 
 from astrabox.core.service.orchestrator.session_service import SessionService
 from astrabox.core.service.orchestrator.session_share_service import SessionShareService
-from astrabox.core.service.orchestrator.session_title_service import SessionTitleService
+from astrabox.core.service.orchestrator.session_title_service import (
+    TITLE_SOURCE_USER,
+    SessionTitleService,
+)
 from astrabox.core.service.orchestrator.session_lifecycle.service import (
     SessionLifecycleService,
 )
@@ -102,6 +105,8 @@ logger = get_logger(__name__)
 
 #: Deployment fields that change whom a channel's messages run as.
 _CHANGES_EXECUTION = frozenset({"execution_mode", "execution_user_id"})
+#: The longest title an owner may give a conversation, as an artifact's.
+_SESSION_TITLE_MAX_CHARACTERS = 200
 
 
 class AgentPlatformService:
@@ -877,6 +882,36 @@ class AgentPlatformService:
             session_id, {"read_at": read_at}, touch_updated_at=False
         )
         return {"session_id": session_id, "read_at": read_at}
+
+    async def rename_session(self, user: UserContext, session_id: str, title: str) -> dict[str, Any]:
+        """Set the title the owner chose; title generation never replaces it.
+
+        The title is one line: runs of whitespace, line breaks included,
+        become one space. Renaming is not activity, so the list keeps its
+        order, and the conversation's open pages reread it from the notice.
+        """
+
+        await self.ensure_bootstrap()
+        clean = " ".join(str(title or "").split())
+        if not clean:
+            raise APIError(code="INVALID_REQUEST", message="title is required", status_code=400)
+        if len(clean) > _SESSION_TITLE_MAX_CHARACTERS:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message=f"title exceeds {_SESSION_TITLE_MAX_CHARACTERS} characters",
+                status_code=400,
+            )
+        await self._session_service.must_get_owned_session(user, session_id)
+        renamed = await self._sessions_repo.compare_and_update_session(
+            session_id,
+            expected={},
+            updates={"title": clean, "title_source": TITLE_SOURCE_USER},
+            touch_updated_at=False,
+            notify="session",
+        )
+        if not renamed:
+            raise APIError(code="SESSION_NOT_FOUND", message="session not found", status_code=404)
+        return {"session_id": session_id, "title": clean}
 
     async def archive_session(self, user: UserContext, session_id: str) -> dict[str, Any]:
         await self.ensure_bootstrap()

@@ -5055,6 +5055,28 @@
         "title": "ApiEnvelope[SessionRecord]",
         "type": "object"
       },
+      "ApiEnvelope_SessionTitle_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/SessionTitle"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[SessionTitle]",
+        "type": "object"
+      },
       "ApiEnvelope_SessionUserActionView_": {
         "properties": {
           "code": {
@@ -11600,6 +11622,41 @@
           "session_id"
         ],
         "title": "SessionRecord",
+        "type": "object"
+      },
+      "SessionTitle": {
+        "additionalProperties": false,
+        "description": "The title the owner gave a conversation, as stored.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "title"
+        ],
+        "title": "SessionTitle",
+        "type": "object"
+      },
+      "SessionUpdate": {
+        "additionalProperties": false,
+        "description": "The Session fields its owner may change: the title.",
+        "properties": {
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "title": "SessionUpdate",
         "type": "object"
       },
       "SessionUserActionView": {
@@ -21411,6 +21468,53 @@
           }
         },
         "summary": "Get Session"
+      },
+      "patch": {
+        "operationId": "update_session_api_v1_sessions__session_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_SessionTitle_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Session"
       }
     },
     "/api/v1/sessions/{session_id}/archive": {

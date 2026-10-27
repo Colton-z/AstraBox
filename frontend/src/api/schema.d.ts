@@ -2922,7 +2922,8 @@ export interface paths {
         delete: operations["delete_session_api_v1_sessions__session_id__delete"];
         options?: never;
         head?: never;
-        patch?: never;
+        /** Update Session */
+        patch: operations["update_session_api_v1_sessions__session_id__patch"];
         trace?: never;
     };
     "/api/v1/sessions/{session_id}/archive": {
@@ -5717,6 +5718,14 @@ export interface components {
             /** Message */
             message: string;
         };
+        /** ApiEnvelope[SessionTitle] */
+        ApiEnvelope_SessionTitle_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["SessionTitle"];
+            /** Message */
+            message: string;
+        };
         /** ApiEnvelope[SessionUserActionView] */
         ApiEnvelope_SessionUserActionView_: {
             /** Code */
@@ -8089,6 +8098,24 @@ export interface components {
             workspace_panels?: {
                 [key: string]: boolean;
             } | null;
+        };
+        /**
+         * SessionTitle
+         * @description The title the owner gave a conversation, as stored.
+         */
+        SessionTitle: {
+            /** Session Id */
+            session_id: string;
+            /** Title */
+            title: string;
+        };
+        /**
+         * SessionUpdate
+         * @description The Session fields its owner may change: the title.
+         */
+        SessionUpdate: {
+            /** Title */
+            title: string;
         };
         /** SessionUserActionView */
         SessionUserActionView: {
@@ -14888,6 +14915,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_SessionDeletion_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_session_api_v1_sessions__session_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SessionUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_SessionTitle_"];
                 };
             };
             /** @description Validation Error */
