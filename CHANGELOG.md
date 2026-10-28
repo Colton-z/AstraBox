@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Runtime and recovery
+
+- Record a Claude runner frame the platform has read whole as whole, and acknowledge that frame itself. A later replay that translated the same frame differently, as a Result does once compaction has dropped the frame that opened its response, could otherwise report the difference as new output the platform could not record; this also holds for sandboxes still running an earlier runner.
+
 ## [0.1.10] - 2026-10-20
 
 This release collects the fixes and developer-facing improvements made after 0.1.9.
