@@ -767,6 +767,8 @@
     "load_more": "加载更多",
     "error_default_title": "没能加载",
     "json_invalid": "不是合法的 JSON，先修正再保存。",
+    "json_duplicate_key": "“{{path}}”定义了两次（第 {{first}} 行和第 {{second}} 行），保存时只会留下一个。改掉其中一个的名字，或删掉多余的那个。",
+    "json_unchanged": "这次修改没有改变配置：键的顺序和格式不属于保存的内容。",
     "example_tab_hint": "空白时按 Tab 填入示例。",
     "select_placeholder": "请选择",
     "no_search_results": "没有匹配结果。",

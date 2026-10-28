@@ -767,6 +767,8 @@
     "load_more": "Load more",
     "error_default_title": "Couldn't load",
     "json_invalid": "Not valid JSON — fix it before saving.",
+    "json_duplicate_key": "\"{{path}}\" is defined twice (lines {{first}} and {{second}}), and only one would be saved. Rename one or remove the extra.",
+    "json_unchanged": "This edit changes nothing: key order and formatting are not part of what is saved.",
     "example_tab_hint": "Press Tab in an empty field to use the example.",
     "select_placeholder": "Select…",
     "no_search_results": "No matches found.",

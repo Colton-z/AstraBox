@@ -81,13 +81,9 @@ export function ConsoleEditSections({
                 help={f.example && f.editable !== false && !f.disabled ? (
                   <>{f.help}{f.help && ' '}{t('manage:console.example_tab_hint')}</>
                 ) : f.help}
-                error={
-                  invalidKeys.has(f.key)
-                    ? t('manage:console.json_invalid')
-                    : refused
-                      ? t('manage:console.field_refused')
-                      : undefined
-                }
+                // A field that will not save as typed says why itself, under
+                // the control (ConsoleJsonField): only it knows the reason.
+                error={refused ? t('manage:console.field_refused') : undefined}
               >
                 <EditFieldControl
                   id={`${idPrefix}-${f.key}`}

@@ -1,4 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { visit, type JSONPath } from 'jsonc-parser';
+import isEqual from 'lodash/isEqual';
 import { Check, Plus, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -987,10 +989,50 @@ export function ConsoleListField({
   );
 }
 
+/** An object key a JSON text defines twice: its path and the lines of both. */
+type DuplicateKey = { path: string; first: number; second: number };
+
+/**
+ * The first object key `text` defines twice, at any depth.
+ *
+ * `JSON.parse` keeps the last definition and drops the earlier one without a
+ * word, and the value it returns cannot show there were two. So the text
+ * itself is read for it.
+ */
+function duplicateKeyIn(text: string): DuplicateKey | null {
+  const objects: Map<string, number>[] = [];
+  let found: DuplicateKey | null = null;
+  visit(text, {
+    onObjectBegin: () => {
+      objects.push(new Map());
+    },
+    onObjectEnd: () => {
+      objects.pop();
+    },
+    onObjectProperty: (key, _offset, _length, line, _character, enclosing) => {
+      const keys = objects[objects.length - 1];
+      const earlier = keys.get(key);
+      if (earlier === undefined) keys.set(key, line);
+      else found ??= { path: keyPath([...enclosing(), key]), first: earlier + 1, second: line + 1 };
+    },
+  });
+  return found;
+}
+
+/** `servers.github.env`, `[0].name`: a key's path as a reader writes it. */
+function keyPath(path: JSONPath): string {
+  return path
+    .map((segment, i) => (typeof segment === 'number' ? `[${segment}]` : i === 0 ? segment : `.${segment}`))
+    .join('');
+}
+
 /** Mono JSON escape hatch — the catch-all for structurally rich config blocks
- *  (key_value / object / object_list). Edits a text buffer; commits the parsed
- *  value on blur, keeping the last good value if the buffer is mid-edit invalid,
- *  and reports a parse error so the user knows the field won't save as typed. */
+ *  (key_value / object / object_list). Edits a text buffer and commits the
+ *  parsed value on blur. A buffer that will not save as typed keeps the last
+ *  good value and says why under the field: it does not parse, or it defines
+ *  a key twice, which parsing would silently collapse to one. A buffer that
+ *  parses to the value already held commits nothing and says so, so an edit
+ *  that only moved keys or spacing is not mistaken for one the form lost. */
 export function ConsoleJsonField({
   id,
   value,
@@ -1004,83 +1046,115 @@ export function ConsoleJsonField({
   id?: string;
   value: unknown;
   onChange: (v: unknown) => void;
-  /** Reports whether the current buffer parses — drives the field's error line. */
+  /** Reports whether the current buffer will save — drives the card's Save. */
   onValidityChange?: (ok: boolean) => void;
   placeholder?: string;
   example?: string;
   rows?: number;
   disabled?: boolean;
 }) {
-  // The border says the same thing the error line says, at the place the caret
   const aria = useFieldAria();
-  // already is. Held here rather than passed back down: the buffer is this
-  // component's, and so is the answer to whether it parses.
-  const [parses, setParses] = useState(true);
+  const { t } = useTranslation();
+  // Held here rather than passed back down: the buffer is this component's,
+  // and so is the answer to whether it will save as typed.
+  const [problem, setProblem] = useState<'invalid' | DuplicateKey | null>(null);
+  // The value an edit was found to leave as it was. The note stands while the
+  // field still holds that value; a revert or a save that replaces it ends it.
+  const [unchangedAt, setUnchangedAt] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const serializedValue = value == null ? '' : JSON.stringify(value, null, 2);
+  const report = (next: 'invalid' | DuplicateKey | null) => {
+    setProblem(next);
+    onValidityChange?.(next === null);
+  };
   // Keep local typing across unrelated renders; a committed value replaces
   // the buffer when a save masks credentials or the reader reverts a field.
+  // A committed value parsed when it was committed, so a refusal of the text
+  // it replaces does not apply to it.
   useEffect(() => {
-    if (inputRef.current) inputRef.current.value = serializedValue;
+    if (!inputRef.current) return;
+    inputRef.current.value = serializedValue;
+    report(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serializedValue]);
-  const report = (ok: boolean) => {
-    setParses(ok);
-    onValidityChange?.(ok);
+  /** The value `raw` holds, or undefined after reporting why it will not save. */
+  const read = (raw: string): { value: unknown } | undefined => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      report('invalid');
+      return undefined;
+    }
+    const duplicate = duplicateKeyIn(raw);
+    report(duplicate);
+    return duplicate ? undefined : { value: parsed };
   };
+  const statusId = id ? `${id}-status` : undefined;
+  const status = problem ? (
+    <FieldError id={statusId} className="text-11 leading-snug">
+      {problem === 'invalid'
+        ? t('manage:console.json_invalid')
+        : t('manage:console.json_duplicate_key', problem)}
+    </FieldError>
+  ) : unchangedAt !== null && unchangedAt === serializedValue ? (
+    <FieldDescription id={statusId} className="text-11 leading-snug">
+      {t('manage:console.json_unchanged')}
+    </FieldDescription>
+  ) : null;
+  const describedBy = [aria['aria-describedby'], status ? statusId : undefined]
+    .filter(Boolean)
+    .join(' ') || undefined;
   // Uncontrolled buffer (defaultValue) so an in-progress invalid edit isn't
   // stomped by a re-render of the parsed value.
   return (
-    <Textarea
-      ref={inputRef}
-      {...aria}
-      id={id}
-      rows={rows}
-      className="field-sizing-fixed resize-y font-mono text-11 leading-5"
-      defaultValue={serializedValue}
-      placeholder={example ?? placeholder}
-      spellCheck={false}
-      disabled={disabled}
-      aria-invalid={!parses || undefined}
-      onKeyDown={(e) => acceptFieldExample(e, example, (v) => {
-        e.currentTarget.value = v;
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(v);
-        } catch {
-          report(false);
-          return;
-        }
-        report(true);
-        onChange(parsed);
-      })}
-      onChange={(e) => {
-        const raw = e.target.value.trim();
-        if (raw === '') return report(true);
-        try {
-          JSON.parse(raw);
-          report(true);
-        } catch {
-          report(false);
-        }
-      }}
-      onBlur={(e) => {
-        const raw = e.target.value.trim();
-        if (raw === '') {
-          report(true);
-          // Emptying a saved value is an explicit clear, sent as null; leaving
-          // an untouched field empty changes nothing. Undefined would read as
-          // "not edited" and the update would keep the stored value.
-          if (value != null) onChange(null);
-          return;
-        }
-        try {
-          onChange(JSON.parse(raw));
-          report(true);
-        } catch {
-          report(false);
-        }
-      }}
-    />
+    <div className="flex min-w-0 flex-col gap-1.5">
+      <Textarea
+        ref={inputRef}
+        {...aria}
+        aria-describedby={describedBy}
+        id={id}
+        rows={rows}
+        className="field-sizing-fixed resize-y font-mono text-11 leading-5"
+        defaultValue={serializedValue}
+        placeholder={example ?? placeholder}
+        spellCheck={false}
+        disabled={disabled}
+        // The border says the same thing the status line says, at the place
+        // the caret already is.
+        aria-invalid={problem !== null || undefined}
+        onKeyDown={(e) => acceptFieldExample(e, example, (v) => {
+          e.currentTarget.value = v;
+          const reading = read(v);
+          if (reading) onChange(reading.value);
+        })}
+        onChange={(e) => {
+          setUnchangedAt(null);
+          const raw = e.target.value.trim();
+          if (raw === '') return report(null);
+          read(raw);
+        }}
+        onBlur={(e) => {
+          const raw = e.target.value.trim();
+          if (raw === '') {
+            report(null);
+            // Emptying a saved value is an explicit clear, sent as null; leaving
+            // an untouched field empty changes nothing. Undefined would read as
+            // "not edited" and the update would keep the stored value.
+            if (value != null) onChange(null);
+            return;
+          }
+          const reading = read(raw);
+          if (!reading) return;
+          if (isEqual(reading.value, value)) {
+            if (raw !== serializedValue) setUnchangedAt(serializedValue);
+            return;
+          }
+          onChange(reading.value);
+        }}
+      />
+      {status}
+    </div>
   );
 }
 

@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Console and diagnostics
+
+- Refuse a console JSON block that defines an object key twice, naming the key's path and both lines, instead of silently keeping one definition. An edit that only reorders keys or changes formatting now says it changes nothing.
+
 ## [0.1.10] - 2026-10-20
 
 This release collects the fixes and developer-facing improvements made after 0.1.9.
