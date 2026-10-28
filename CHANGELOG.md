@@ -7,6 +7,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Console and diagnostics
+
+- Compare console JSON fields by value, ignoring object key order but not list order, so a saved block reads as saved when the server returns its keys in another order.
+
 ## [0.1.10] - 2026-10-20
 
 This release collects the fixes and developer-facing improvements made after 0.1.9.

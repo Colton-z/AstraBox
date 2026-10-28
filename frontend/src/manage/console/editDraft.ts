@@ -1,3 +1,5 @@
+import isEqual from 'lodash/isEqual';
+
 import { ApiError } from '@/api';
 
 import type { EditFieldSpec, EditSectionSpec } from './editFields';
@@ -14,13 +16,24 @@ import type { EditFieldSpec, EditSectionSpec } from './editFields';
  * and a pure function is testable without rendering anything to ask it.
  */
 
-/** JSON rather than `===`: a field's value may be a list or an object. */
+/**
+ * By the JSON the write would send, compared as a structure rather than as
+ * text. The server's JSON columns keep no key order, so a record read back
+ * after a save lists an object's keys in the database's order rather than the
+ * order they were typed in; comparing the two texts would leave a saved field
+ * dirty. A list's order is part of its value and still counts.
+ */
 function fieldChanged(
   field: EditFieldSpec,
   draft: Record<string, unknown>,
   baseline: Record<string, unknown>,
 ): boolean {
-  return JSON.stringify(field.get(draft) ?? null) !== JSON.stringify(field.get(baseline) ?? null);
+  return !isEqual(asSent(field.get(draft)), asSent(field.get(baseline)));
+}
+
+/** The value as the request body carries it: absent keys dropped, absence as null. */
+function asSent(value: unknown): unknown {
+  return JSON.parse(JSON.stringify(value ?? null));
 }
 
 /**
