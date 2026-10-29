@@ -178,6 +178,7 @@
     "close_aria": "Close subagent activity",
     "waiting_output": "Waiting for subagent output…",
     "no_transcript": "This subagent has no activity to show yet.",
+    "children": "Child tasks — open one to read its activity",
     "load_failed": "Could not load subagent activity",
     "transcript_failed": "Could not load this subagent transcript",
     "retry": "Retry"

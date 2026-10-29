@@ -29,6 +29,7 @@ from typing import Any
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.core.service.orchestrator.engine.base import (
+    EngineStoredChildRuns,
     EngineStoredChildToolResults,
     EngineStoredChildTranscript,
 )
@@ -43,6 +44,7 @@ from astrabox.core.service.orchestrator.engine.frame_scope import pop_engine_fra
 from astrabox.core.service.orchestrator.engine.registry import get_engine_adapter
 from astrabox.core.service.orchestrator.message_blocks import merge_projected_message_blocks
 from astrabox.persistence.repository.session_read_repository import SessionReadRepository
+from astrabox.persistence.repository.transcript_entry_repository import TranscriptEntryRepository
 
 logger = get_logger(__name__)
 
@@ -287,16 +289,40 @@ def public_child_run(entry: dict[str, Any]) -> dict[str, Any]:
 
 async def list_child_runs(reads: SessionReadRepository, session_id: str) -> list[dict[str, Any]]:
     """Every child run of the session, parents before their children."""
+    return [public_child_run(entry) for entry in await _child_run_entries(reads, session_id)]
+
+
+async def _child_run_entries(reads: SessionReadRepository, session_id: str) -> list[dict[str, Any]]:
+    """Combine streamed children with native children that never reached the stream."""
     parts = await reads.child_run_parts(session_id, with_content=False)
-    return [public_child_run(entry) for entry in fold_child_runs(session_id, parts, with_messages=False)]
+    entries = fold_child_runs(session_id, parts, with_messages=False)
+    known = {entry["child_run_id"] for entry in entries}
+    for engine_kind in dict.fromkeys(entry["engine_kind"] for entry in entries):
+        adapter = get_engine_adapter(engine_kind)
+        if not isinstance(adapter, EngineStoredChildRuns):
+            continue
+        facts = adapter.stored_child_run_facts(
+            main_entries=await TranscriptEntryRepository().load_subpath_entries_by_platform_session(session_id, subpath=None),
+            raw_scopes=await reads.child_transcript_scopes(session_id),
+        )
+        for fact in facts:
+            frame = fact.as_frame()
+            if pop_engine_frame_scope(frame) != "session" or frame.get("type") != "data-subagent":
+                raise ChildRunProjectionError("stored child registry returned a non-child fact")
+            data = canonical_child_run_data(frame["data"], engine_kind=engine_kind)
+            if data["kind"] != "lifecycle":
+                raise ChildRunProjectionError("stored child registry returned a non-lifecycle fact")
+            child_id = public_child_run_id(session_id=session_id, engine_kind=engine_kind, engine_ref=data["engineRef"])
+            if child_id not in known:
+                parts.append({"id": frame["id"], "data": data})
+    return fold_child_runs(session_id, parts, with_messages=False)
 
 
 async def find_child_run(
     reads: SessionReadRepository, session_id: str, child_run_id: str
 ) -> dict[str, Any] | None:
     """One child's entry with its private references, or ``None``."""
-    parts = await reads.child_run_parts(session_id, with_content=False)
-    for entry in fold_child_runs(session_id, parts, with_messages=False):
+    for entry in await _child_run_entries(reads, session_id):
         if entry["child_run_id"] == child_run_id:
             return entry
     return None

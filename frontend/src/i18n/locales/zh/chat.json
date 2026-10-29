@@ -178,6 +178,7 @@
     "close_aria": "关闭子 Agent 活动",
     "waiting_output": "等待子 Agent 输出…",
     "no_transcript": "该子 Agent 暂无可显示的活动。",
+    "children": "内部子任务：点击查看完整活动记录",
     "load_failed": "无法加载子 Agent 活动",
     "transcript_failed": "无法加载该子 Agent 的会话记录",
     "retry": "重试"

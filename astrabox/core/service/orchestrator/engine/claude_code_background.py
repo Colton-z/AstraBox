@@ -43,6 +43,7 @@ from astrabox.core.service.orchestrator.engine.child_runs import (
 from astrabox.core.service.orchestrator.engine.claude_child_runs import (
     CLAUDE_CODE_ENGINE_KIND,
     ClaudeChildIdentities,
+    claude_message_role,
     claude_tool_receipt,
 )
 from astrabox.core.service.orchestrator.engine.claude_message_blocks import (
@@ -77,6 +78,87 @@ _LIFECYCLE_MESSAGE_SDK_TYPES = frozenset(
     }
 )
 _AGENT_TRANSCRIPT_PREFIX = "subagents/agent-"
+
+
+def _workflow_agent_scopes(raw_scopes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Read native Workflow run directories without treating a task as an Agent."""
+    scopes: list[dict[str, Any]] = []
+    for raw_scope in raw_scopes:
+        path = str(raw_scope.get("subpath") or "").split("/")
+        if len(path) != 4 or path[:2] != ["subagents", "workflows"] or not path[3].startswith("agent-"):
+            continue
+        entries = raw_scope["entries"]
+        metadata = [entry for entry in entries if entry.get("type") == "agent_metadata"]
+        identity = metadata[-1] if metadata else {}
+        scopes.append({
+            "agent_id": path[3].removeprefix("agent-"),
+            "run_id": path[2],
+            "parent_agent_id": str(identity.get("parentAgentId") or ""),
+            "description": str(identity.get("description") or ""),
+            "agent_type": str(identity.get("agentType") or ""),
+            "entries": entries,
+        })
+    return scopes
+
+
+def workflow_child_lifecycle_blocks(
+    main_entries: list[dict[str, Any]], raw_scopes: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Join WorkflowOutput.taskId/runId to the Agents in that native run directory."""
+    scopes = _workflow_agent_scopes(raw_scopes)
+    if not scopes:
+        return []
+    tasks_by_run: dict[str, str] = {}
+    for entries in [main_entries, *(scope["entries"] for scope in raw_scopes)]:
+        for raw in entries:
+            if claude_message_role(raw) != "user":
+                continue
+            receipt = raw.get("toolUseResult", raw.get("tool_use_result"))
+            if not isinstance(receipt, dict) or receipt.get("status") != "async_launched":
+                continue
+            run_id = str(receipt.get("runId") or "")
+            task_id = str(receipt.get("taskId") or "")
+            if run_id and task_id:
+                tasks_by_run[run_id] = task_id
+    agents_by_run: dict[str, set[str]] = {}
+    for scope in scopes:
+        agents_by_run.setdefault(scope["run_id"], set()).add(scope["agent_id"])
+    blocks: list[dict[str, Any]] = []
+    for scope in scopes:
+        run_id = scope["run_id"]
+        if run_id not in tasks_by_run:
+            raise ChildRunProjectionError(f"Claude Workflow transcript lacks its native tool receipt run_id={run_id!r}")
+        parent_id = scope["parent_agent_id"]
+        if parent_id not in agents_by_run[run_id]:
+            parent_id = tasks_by_run[run_id]
+        event, reason = _agent_transcript_lifecycle(scope["entries"])
+        data = {
+            "kind": "lifecycle",
+            "engineRef": scope["agent_id"],
+            "parentEngineRef": parent_id,
+            "event": event,
+            "engineEvent": "session_store.stop_reason",
+            "description": scope["description"],
+            "taskType": scope["agent_type"],
+            "operations": [],
+        }
+        if reason:
+            data["engineReason"] = reason
+        blocks.append({"type": "subagent", "id": f"subagent:lifecycle:session-store:{scope['agent_id']}",
+                       "data": canonical_child_run_data(data, engine_kind=CLAUDE_CODE_ENGINE_KIND)})
+    return blocks
+
+
+def workflow_agent_message_blocks(raw_scopes: list[dict[str, Any]], engine_ref: str) -> list[dict[str, Any]]:
+    """Read one Agent's complete native transcript, independently of tool aliases."""
+    blocks: list[dict[str, Any]] = []
+    for scope in _workflow_agent_scopes(raw_scopes):
+        if scope["agent_id"] != engine_ref:
+            continue
+        identities = ClaudeChildIdentities()
+        for raw in scope["entries"]:
+            blocks.extend(parse_tool_event_blocks(raw, identities=identities, child_engine_ref=engine_ref))
+    return [block for block in blocks if block.get("type") == "subagent" and block["data"].get("kind") == "message"]
 
 
 def _agent_scope(raw_scope: dict[str, Any]) -> dict[str, Any] | None:

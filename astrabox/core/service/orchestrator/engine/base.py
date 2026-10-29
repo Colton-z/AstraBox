@@ -216,6 +216,20 @@ def validate_engine_client_type(client_type: type[Any]) -> None:
 
 
 @runtime_checkable
+class EngineStoredChildRuns(Protocol):
+    """Read children recorded only in the native SessionStore, without journal writes.
+
+    The adapter resolves its own task, run and transcript identities from the
+    main transcript and sub-transcripts. It returns lifecycle facts for children
+    missing from the stream; streamed lifecycle remains authoritative.
+    """
+
+    def stored_child_run_facts(
+        self, *, main_entries: list[dict[str, Any]], raw_scopes: list[dict[str, Any]]
+    ) -> list[ChildResourceFact]: ...
+
+
+@runtime_checkable
 class EngineStoredChildTranscript(Protocol):
     """Optional authoritative child history read from the Session's SessionStore mirror.
 

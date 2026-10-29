@@ -121,6 +121,15 @@ class ClaudeCodeEngineAdapter(EngineAdapter):
             return bool(str(data.get("engineStatus") or "").strip())
         return True
 
+    def stored_child_run_facts(
+        self, *, main_entries: list[dict[str, Any]], raw_scopes: list[dict[str, Any]]
+    ) -> list[ChildResourceFact]:
+        """Discover Workflow Agents from their mirrored native run directories."""
+        return [
+            ChildResourceFact(session_scoped_engine_frame({"type": "data-subagent", "id": block["id"], "data": block["data"]}))
+            for block in claude_code_background.workflow_child_lifecycle_blocks(main_entries, raw_scopes)
+        ]
+
     def stored_child_transcript_facts(
         self,
         *,
@@ -132,12 +141,13 @@ class ClaudeCodeEngineAdapter(EngineAdapter):
         """One Agent's messages from its own transcript in the SessionStore mirror.
 
         Claude writes each Agent's conversation to a transcript of its own
-        (``subagents/agent-<id>.jsonl``); a background Agent's messages reach
+        (``subagents/agent-<id>.jsonl`` or a Workflow run directory); some messages reach
         the platform only there. Returns no facts when the mirror holds no
         transcript of this Agent. ``closed`` does not change the answer: the
         transcript is the Agent's whole conversation so far either way.
         """
-        blocks = claude_code_background.background_task_transcript_tree_blocks(
+        blocks = claude_code_background.workflow_agent_message_blocks(raw_scopes, engine_ref)
+        blocks += claude_code_background.background_task_transcript_tree_blocks(
             raw_scopes, root_transcript_ref=engine_ref, parent_engine_ref=engine_ref
         )
         return [
