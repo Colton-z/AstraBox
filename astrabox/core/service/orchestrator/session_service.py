@@ -106,6 +106,13 @@ class SessionService:
                     False,
                 )
             )
+            provider_supports_header_credentials = bool(
+                getattr(
+                    sandbox_provider,
+                    "supports_header_placeholder_credentials",
+                    False,
+                )
+            )
             assistant_uses_shared_workspace = session_kind == "assistant_chat"
             validated_vault_ids = await self._vault_service.validate_bound_vaults_for_session(
                 managed_vault_ids,
@@ -114,12 +121,19 @@ class SessionService:
                     provider_supports_egress_injection
                     and not assistant_uses_shared_workspace
                 ),
+                backend_supports_header_credentials=(
+                    provider_supports_header_credentials
+                    and not assistant_uses_shared_workspace
+                ),
                 egress_injection_unsupported_reason=(
                     "Assistant conversations reuse a long-running workspace and currently "
                     "support saved MCP credentials only; they cannot safely add a "
                     "conversation-specific environment variable to that workspace."
                     if assistant_uses_shared_workspace
-                    and provider_supports_egress_injection
+                    and (
+                        provider_supports_egress_injection
+                        or provider_supports_header_credentials
+                    )
                     else None
                 ),
             )

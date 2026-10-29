@@ -68,15 +68,13 @@ export default function DeploymentCreatePage() {
     setLoading(true);
     setLoadError('');
     try {
-      const [visibleAgents, assistantList, providers] = await Promise.all([
+      const [visibleAgents, assistantList] = await Promise.all([
         listAgents(),
         listAssistants(),
-        listChannelProviders(),
       ]);
       const agentList = visibleAgents.filter((agent) => agent.can_manage);
       setAgents(agentList);
       setAssistants(assistantList);
-      setChannelProviders(providers);
       const firstTarget = agentList[0]
         ? `agent:${agentList[0].agent_id}`
         : assistantList[0]
@@ -115,6 +113,17 @@ export default function DeploymentCreatePage() {
     draftAttentionPolicy === 'participated' || draftAttentionPolicy === 'proactive';
   const draftTarget = parseTarget(draft?.target);
   const onAssistant = draftTarget?.kind === 'assistant';
+  const providerAgentId = draftTarget?.kind === 'agent' ? draftTarget.id : undefined;
+  useEffect(() => {
+    let cancelled = false;
+    setChannelProviders([]);
+    void listChannelProviders(providerAgentId).then((providers) => {
+      if (!cancelled) setChannelProviders(providers);
+    }).catch((failure: Error) => {
+      if (!cancelled) setLoadError(failure.message);
+    });
+    return () => { cancelled = true; };
+  }, [providerAgentId]);
   const selectedProvider = channelProviders.find((provider) => provider.scene === draftScene);
   const sections = useMemo<EditSectionSpec[]>(() => {
     const fields: EditSectionSpec['fields'] = [

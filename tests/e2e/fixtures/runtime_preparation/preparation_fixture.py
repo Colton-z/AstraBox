@@ -2,10 +2,13 @@
 
 Test controls and receipts live under the server's state directory: the test
 writes which Sessions to refuse or to hold for a user action, which Agents'
-conversations wait on a user action at startup and how long turn preparation
-takes, and reads each turn preparation and which
+conversations wait on a user action at startup, which meet it only once their
+box is prepared, and how long turn preparation
+takes, and reads each turn preparation, each Session startup's box and which
 Agents and Assistants were synchronized, with whether the prepared Skills and
-packages were already in the box when they were.
+packages were already in the box when they were. An Agent named ``Declared …``
+starts only on resources synchronized for its version, as a deployment that
+registers an Agent's declared resources requires.
 """
 import asyncio
 import json
@@ -40,6 +43,8 @@ STATE = Path("/data")
 REFUSALS = STATE / "runtime-preparation-refusals.json"
 USER_ACTIONS = STATE / "runtime-preparation-user-actions.json"
 STARTUP_USER_ACTIONS = STATE / "runtime-preparation-startup-user-actions.json"
+LATE_STARTUP_USER_ACTIONS = STATE / "runtime-preparation-late-startup-user-actions.json"
+STARTUP_RECEIPTS = STATE / "runtime-preparation-startups.jsonl"
 TURN_DELAY = STATE / "runtime-preparation-turn-delay.json"
 TURN_RECEIPTS = STATE / "runtime-preparation-turns.jsonl"
 USER_ACTION_RECEIPTS = STATE / "runtime-preparation-user-action-calls.jsonl"
@@ -164,6 +169,15 @@ def _listed(path: Path, session_id: str) -> bool:
     return path.is_file() and session_id in json.loads(path.read_text())
 
 
+def _declared(subject, revision: str) -> bool:
+    receipts = SYNCHRONIZED.read_text().splitlines() if SYNCHRONIZED.is_file() else []
+    return any(
+        row.get("subject") == {"kind": subject.kind, "id": subject.id}
+        and row.get("revision") == revision and all(row.get("prepared_paths", {}).values())
+        for row in map(json.loads, receipts)
+    )
+
+
 class PreparationFixture(RuntimePreparationProvider):
     name = "native-startup-material-fixture"
 
@@ -222,6 +236,8 @@ class PreparationFixture(RuntimePreparationProvider):
         }).encode())
 
     async def prepare_session(self, *, context):
+        with STARTUP_RECEIPTS.open("a") as receipts:
+            receipts.write(json.dumps({"session_id": context.session_id, "sandbox_id": context.sandbox_id}) + "\n")
         if context.config.get("sandbox_backend") == "binding_fixture":
             from credential_binding_fixture import bind
 
@@ -235,8 +251,15 @@ class PreparationFixture(RuntimePreparationProvider):
             if _listed(SESSION_ENVIRONMENT_REFUSALS, context.subject.id):
                 environment["OPENAI_API_KEY"] = "SECRET_SENTINEL_MUST_NOT_APPEAR"
             return RuntimeMaterials(files=(self._material(context, "startup"),), environment=environment)
+        # The requirement appears after the prerequisite read reported none,
+        # as when the user's authorization lapses while the box starts.
+        if _listed(LATE_STARTUP_USER_ACTIONS, context.subject.id):
+            raise PreparationUserActionRequired(message="Authorize this Agent to continue", url=ACTION_URL)
         if _listed(STARTUP_USER_ACTIONS, context.subject.id):
             raise PreparationUserActionRequired(message="Authorize this Agent to continue", url=ACTION_URL)
+        if (str(context.config.get("name", "")).startswith("Declared ")
+                and not _declared(context.subject, context.revision)):
+            raise RuntimeError("the Agent's resources were not declared before its Session started")
         hold = STATE / f"runtime-preparation-ui-startup-{context.subject.id}"
         if hold.is_file():
             hold.write_text(context.session_id)

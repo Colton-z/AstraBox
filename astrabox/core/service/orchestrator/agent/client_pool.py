@@ -303,6 +303,7 @@ async def build_agent_client_pool_plan(
             slot_id=workload_id,
             vault_enabled=vault_enabled,
             vault_write=vault_plan,
+            backend=provider,
         )
         runtime_identity = (
             build_conversation_identity(

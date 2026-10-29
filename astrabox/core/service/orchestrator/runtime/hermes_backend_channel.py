@@ -1,32 +1,19 @@
-"""One WebSocket to a sandbox's resident Hermes backend, carrying JSON-RPC.
+"""One WebSocket to a sandbox's Hermes gateway, carrying JSON-RPC.
 
 The sibling of :class:`ProcessJsonLineChannel`, and deliberately much smaller.
 That one drives a PROCESS: it starts one of the box's long-lived processes,
 reads its stdout as a byte stream, and cuts newline-delimited JSON out of it.
-This one talks to a SERVICE the image already runs — `hermes serve`,
-published by `astrabox-hermes-forward` — where every text frame is one
-JSON-RPC line and there is nothing to demultiplex.
+This one talks to a SERVICE the image already runs — Hermes' gateway daemon,
+reached through the image's bridge (``hermes_gateway_bridge.py`` in
+``containers/sandbox-hermes``) — where every text frame is one JSON-RPC
+message of the gateway's canonical protocol and there is nothing to
+demultiplex. The bridge relays each frame unchanged.
 
-The wire above it is unchanged, which is the whole reason this exists.
-Hermes' own `tui_gateway/ws.py` reuses `tui_gateway.server.dispatch` verbatim
-and states the contract: "Identical to stdio: newline-delimited JSON-RPC in
-both directions ... No framing differences." So every method, every approval
-flow and every agent event the adapter already translates arrives here
-unchanged. See `docs/maintainers/hermes-transport.md`.
-
-What it does NOT carry, and the caller must know:
-
-* **No PTY.** Nothing here has a `pty_session_id` because the backend is a
-  supervised service and there is no terminal to allocate. This is a
-  simplification, not a fix for the terminal spinner in the reasoning stream:
-  that was once attributed to `isatty()` and the attribution was refuted here
-  — the label arrives over this transport too, and its real cause was the
-  adapter merging two vendor events (see `hermes_client.py`).
-* **No byte cursor.** The offset handed to ``on_record`` counts frames on
-  this attachment and starts again on the next one. Resuming is Hermes'
-  own: every event of a session carries the ``seq`` its replay ring stamped,
-  and ``session.events.since`` returns the events after one
-  (``engine/hermes_runtime_client.py``).
+The offset handed to ``on_record`` counts frames on this attachment and starts
+again on the next one; it is not a resumable cursor. Resuming is Hermes' own:
+every event of a session carries the ``seq`` its replay ring stamped, and
+``session.events.since`` returns the events after one
+(``engine/hermes_runtime_client.py``).
 """
 
 from __future__ import annotations
@@ -55,7 +42,8 @@ CONNECT_TIMEOUT_SECONDS = 30.0
 #: The largest frame read. One ``session.events.since`` reply carries a
 #: session's whole replay ring, which Hermes bounds at 4 MiB of event JSON
 #: (``_REPLAY_BUFFER_BYTES_MAX`` in ``tui_gateway/event_replay.py``); the rest
-#: is the reply's own envelope. A frame over the limit closes the socket every
+#: is the reply's own envelope. Hermes' own client and the image's bridge read
+#: with the same bound. A frame over the limit closes the socket every
 #: conversation of the profile shares.
 MAX_FRAME_BYTES = 8 * 1024 * 1024
 
@@ -65,10 +53,11 @@ MAX_FRAME_BYTES = 8 * 1024 * 1024
 RecordSink = Callable[[dict[str, Any], int], Awaitable[None]]
 FailureSink = Callable[[BaseException], Awaitable[None]]
 
-#: The statuses with which a proxy in front of the backend reports that it
-#: could not reach it: the forwarder's port not yet published behind the
-#: sandbox endpoint, or the backend restarting behind the forwarder. Any other
-#: status is an answer, and a status that refuses the upgrade stays a refusal.
+#: The statuses with which something in front of the gateway reports that it
+#: could not reach it: the bridge's port not yet published behind the sandbox
+#: endpoint, or the gateway not ready behind the bridge (which answers 503).
+#: Any other status is an answer, and a status that refuses the upgrade stays a
+#: refusal.
 _UPSTREAM_UNREACHABLE_STATUSES = frozenset({502, 503, 504})
 
 #: How much of a refusal's response body is carried into the error.
@@ -82,20 +71,19 @@ class BackendDetached(RuntimeError):
 class BackendNotListening(BackendDetached):
     """Nothing is accepting connections at the backend's address yet.
 
-    The one connect failure that time can cure: the backend is starting under
-    supervisord, or restarting for a changed profile, and the forwarder has not
-    published it. A caller with a startup budget may wait on this and on
+    The one connect failure that time can cure: the gateway is starting under
+    supervisord, or restarting for a changed profile, and the bridge cannot
+    reach it yet. A caller with a startup budget may wait on this and on
     nothing else.
     """
 
 
 class BackendRefusedUpgrade(RuntimeError):
-    """The backend, or the endpoint in front of it, answered and refused.
+    """The bridge, or the endpoint in front of it, answered and refused.
 
-    A rejected credential or a ``Host`` the backend was not bound to — Hermes
-    refuses both before accepting the WebSocket, which reaches the client as an
-    HTTP status on the upgrade. Waiting cannot change the answer, so it is
-    reported at once with the status and what the response said.
+    A rejected credential reaches the client as an HTTP status on the upgrade.
+    Waiting cannot change the answer, so it is reported at once with the status
+    and what the response said.
     """
 
     def __init__(self, *, label: str, host: str, status: int, body: bytes) -> None:
@@ -113,9 +101,8 @@ def _classify_connect_failure(
     """Name why an upgrade failed: not listening, refused, or neither.
 
     Not listening is a connection nobody accepted or that closed before any
-    HTTP reply (the forwarder accepts and then finds no backend), a connect
-    that timed out, or a proxy's unreachable-upstream status. A status the
-    server chose is a refusal. Anything else is returned as it came.
+    HTTP reply, a connect that timed out, or an unreachable-upstream status. A
+    status the server chose is a refusal. Anything else is returned as it came.
     """
 
     if isinstance(exc, InvalidStatus):
@@ -126,8 +113,8 @@ def _classify_connect_failure(
             )
         return BackendRefusedUpgrade(
             label=label,
-            # The authority the upgrade presented, never the query: the URL
-            # carries the backend's credential there.
+            # The authority the upgrade presented; the rest of the URL is the
+            # endpoint's route, which this error does not need to repeat.
             host=urlsplit(url).netloc,
             status=status,
             body=bytes(exc.response.body or b""),
@@ -138,7 +125,7 @@ def _classify_connect_failure(
 
 
 class HermesBackendChannel:
-    """A JSON-RPC WebSocket to one box's resident Hermes backend.
+    """A JSON-RPC WebSocket to one box's Hermes gateway.
 
     ``on_record`` receives every parsed frame; settling is the adapter's call,
     exactly as with the execd channel. ``on_failure`` is called once with the
@@ -159,7 +146,7 @@ class HermesBackendChannel:
         self.url = str(url)
         #: Named in every failure message so an operator can tell what died.
         self.label = str(label or "engine")
-        #: The backend's endpoint face may hand back routing or access headers
+        #: The sandbox's endpoint face may hand back routing or access headers
         #: — dropping them works against an open local Docker server and fails
         #: against a hardened Kubernetes ingress, which is the shape of bug
         #: that only appears on the deployment that matters.
@@ -192,14 +179,11 @@ class HermesBackendChannel:
 
         Returning proves the transport is up, not that Hermes can answer.
         Readiness is the engine's own signal — `gateway.ready`, which the
-        backend emits immediately on accept — and establishing it is the
-        adapter's call, the same division the execd channel keeps.
+        gateway sends a connection as soon as it accepts it — and establishing
+        it is the adapter's call, the same division the execd channel keeps.
 
         :attr:`url` is the sandbox endpoint itself, so the connection goes
         where the endpoint routes and presents the `Host` that route expects.
-        Hermes accepts only a `Host` naming its loopback bind — its
-        DNS-rebinding defence, GHSA-ppp5-vxwm-4cf7 — and the image's
-        `hermes_host_relay.py` supplies that on the box side of every route.
         """
 
         if self.is_connected:
@@ -314,7 +298,7 @@ class HermesBackendChannel:
         await self._on_failure(exc)
 
     async def detach(self) -> None:
-        """Settle pending requests and close this attachment; keep the backend running."""
+        """Settle pending requests and close this attachment; keep the gateway running."""
 
         task = self._reader_task
         self._reader_task = None

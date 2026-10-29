@@ -1686,9 +1686,12 @@ export async function replayPersonalScheduleRun(deploymentId: string, runId: str
   })) as Promise<DeploymentRun>;
 }
 
-export async function listChannelProviders(): Promise<ChannelProviderDescriptor[]> {
+export async function listChannelProviders(agentId?: string): Promise<ChannelProviderDescriptor[]> {
   return expectList<ChannelProviderDescriptor>(
-    await send((wire) => client.GET('/api/v1/channel-providers', { ...wire })),
+    await send((wire) => client.GET('/api/v1/channel-providers', {
+      ...wire,
+      params: { query: { agent_id: agentId } },
+    })),
     '/channel-providers',
   );
 }
@@ -2532,6 +2535,14 @@ export async function deleteSession(sessionId: string): Promise<{ deleted: boole
     ...wire,
     params: { path: { session_id: sessionId } },
   })) as Promise<{ deleted: boolean }>;
+}
+
+export async function renameSession(sessionId: string, title: string): Promise<{ session_id: string; title: string }> {
+  return send((wire) => client.PATCH('/api/v1/sessions/{session_id}', {
+    ...wire,
+    params: { path: { session_id: sessionId } },
+    body: { title },
+  })) as Promise<{ session_id: string; title: string }>;
 }
 
 export async function archiveSession(sessionId: string): Promise<{ archived: boolean }> {

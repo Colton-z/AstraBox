@@ -32,6 +32,7 @@ from astrabox.providers.open_sandbox.networking import (
 )
 from astrabox.providers.open_sandbox.credential_vault import (
     carry_workload_substitutions,
+    environment_credential_names,
 )
 from astrabox.providers.open_sandbox.sandbox import (
     OpenSandboxDataPlane,
@@ -426,13 +427,22 @@ async def _apply_open_sandbox_vault(
     window, from the credential names this same read returned plus the ones
     this write adds. The vault is its own authority, no caller needs to know
     which siblings exist, and there is no second store to fall behind it.
+
+    ``managed_credential_names`` are the ``credential_id`` of environment
+    credentials the platform delivered earlier. Each one this write does not
+    carry is deleted with its bindings, so an archived or deleted credential
+    stops being substituted in a live box.
     """
     credentials, bindings = vault_write
     desired_mcp_names = _mcp_credential_names(credentials)
-    managed_mcp_names = {
-        str(name or "").strip()
-        for name in managed_credential_names
-        if str(name or "").strip()
+    managed_environment = [
+        environment_credential_names(credential_id)
+        for credential_id in (str(item or "").strip() for item in managed_credential_names)
+        if credential_id
+    ]
+    managed_environment_credentials = {name for name, _bindings in managed_environment}
+    managed_environment_bindings = {
+        binding for _name, names in managed_environment for binding in names
     }
     desired_mcp_bindings = _mcp_binding_names(bindings)
     managed_mcp_bindings = {
@@ -487,9 +497,7 @@ async def _apply_open_sandbox_vault(
                 for name in related_existing
                 if any(name.startswith(prefix) for prefix in scope_prefixes)
             }
-            effective_managed_credentials = (
-                managed_mcp_names | same_scope_credentials
-            )
+            effective_managed_credentials = same_scope_credentials
             foreign_credentials = (
                 related_existing
                 - desired_mcp_names
@@ -558,14 +566,22 @@ async def _apply_open_sandbox_vault(
             credential_mutations = _vault_mutations(
                 credentials,
                 existing_credentials,
-                delete_names=effective_managed_credentials | owned_basic_names,
+                delete_names=(
+                    effective_managed_credentials
+                    | owned_basic_names
+                    | managed_environment_credentials
+                ),
             )
             binding_mutations = _vault_mutations(
                 carry_workload_substitutions(
                     bindings, [*existing_credentials, *credentials]
                 ),
                 existing_bindings,
-                delete_names=effective_managed_bindings | owned_basic_names,
+                delete_names=(
+                    effective_managed_bindings
+                    | owned_basic_names
+                    | managed_environment_bindings
+                ),
             )
             if credential_mutations is None and binding_mutations is None:
                 return

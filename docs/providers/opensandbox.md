@@ -246,6 +246,13 @@ to the SDK. AstraBox does not configure a deployment-wide egress token. See
 [Protect credentials used by Agents](../egress-credential-injection.md) for
 the supported request matches and verification flow.
 
+OpenSandbox does not offer
+[header delivery](../egress-credential-injection.md#header-delivery) for
+environment-variable credentials. Its credential substitution names whole
+request parts, and its header scope covers every request header, so it cannot
+confine a placeholder to one named header. Use substitution delivery with this
+backend.
+
 For HTTPS services that accept HTTP Basic, including private Git repositories,
 create an `http_basic` Credential in an AstraBox Vault and assign the Vault to
 the Agent. Supply the clean repository URL, username, and write-only password

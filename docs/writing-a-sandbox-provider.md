@@ -110,6 +110,7 @@ provider is installed rather than at the first conversation that needs it.
 | `supports_client_pool` | the client-pool operations, `owns_unclaimed_sandbox`, and `client_pool_readiness` |
 | `supports_correlated_create` | `find_sandbox_by_assignment` |
 | `supports_egress_credential_injection` | `apply_credential_vault` |
+| `supports_header_placeholder_credentials` | `apply_credential_vault`; replaces each header-delivery credential's placeholder only inside its named request header, for its listed hosts |
 | `supports_inventory_listing` | `list_sandboxes` and `describe_sandbox` |
 | `supports_process_sessions` | the handle's `processes` |
 
@@ -120,6 +121,22 @@ without `supports_create_network_policy`; sandbox sharing without
 `supports_pause`; prepared capacity without a ready client pool; and, without
 sandbox sharing, the Pi Agent program or an Agent's terminal panel without
 `supports_process_sessions`.
+
+`supports_header_placeholder_credentials` is independent of
+`supports_egress_credential_injection` and of `ASTRABOX_SANDBOX_CREDENTIAL_VAULT`.
+A provider that declares it receives `environment_variable` credentials whose
+`delivery` is `header` in `SandboxEgressCredentialPlan.environment`: in the
+create spec's `vault_write` for a sandbox created for them, and through
+`apply_credential_vault` for a sandbox that already exists — a prepared slot, a
+claim, a placement in a shared sandbox, a reattach, or a resume. A plan that
+carries environment items carries every one the workload currently holds. A
+reattach or resume also passes `managed_credential_names`: the `credential_id`
+of every environment credential delivered before, so stop delivering each one
+the plan no longer carries, also when the plan is otherwise empty. A plan
+without environment items and without those names leaves them as they are. The
+promise to keep is "Header delivery" in `astrabox/seams/egress_credentials.py`. Without the flag, creating
+such a credential is refused when no enabled backend declares it, and a Session
+bound to one is refused before a sandbox is allocated.
 
 `supports_correlated_create` decides what a platform restart in the middle of
 a create can recover. With it, AstraBox asks `find_sandbox_by_assignment` for

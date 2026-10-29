@@ -189,6 +189,10 @@ OpenSandbox 出站代理只向 Agent 程序提供不透明占位符，并且只�
 AstraBox 不配置部署级出站令牌。支持的请求匹配方式和验证流程见
 [保护 Agent 使用的凭证](../egress-credential-injection.md)。
 
+OpenSandbox 不为环境变量凭证提供[请求头投递](../egress-credential-injection.md#header-delivery)。
+它的凭证替换以整个请求部分为单位，请求头范围覆盖所有请求头，无法把占位符限定在一个指定的
+请求头中。在这个后端上请使用替换投递。
+
 对于支持 HTTP Basic 的 HTTPS 服务（包括私有 Git 仓库），在 AstraBox Vault 中创建
 `http_basic` Credential，并把 Vault 分配给 Agent。填写不含凭证的仓库 URL、用户名以及
 只写的密码或 token。provider 将它转换为 OpenSandbox 原生 `auth.type="basic"` 绑定，

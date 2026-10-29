@@ -11,7 +11,7 @@ an Agent program's native status or event vocabulary.
 
 Adapters available:
 - ``claude_code`` drives Claude Code through the Agent SDK runner link.
-- ``assistant`` drives Hermes through its TUI Gateway protocol.
+- ``assistant`` drives Hermes through its gateway's canonical protocol.
 - ``deepseek_harness`` drives DSH through its host API and event mux.
 - ``pi`` drives pi through its RPC mode over the sandbox's execd pipe.
 

@@ -7,6 +7,53 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- Update the server and the sandbox-hermes image together. The server refuses a Hermes image whose gateway does not advertise the canonical protocol, durable admission and the per-conversation tool environment.
+- Remove every Assistant sandbox when upgrading. A sandbox created before this release runs the previous Hermes backend, which the server no longer speaks, and is not replaced when its RuntimeProfile's image changes. Each Assistant conversation then starts on a new sandbox; its previous Hermes session is not carried over.
+- An Assistant owner's Hermes configuration (`engine_options.config`) can no longer set `platforms` or `gateway`: the gateway now runs in every Assistant workspace and is kept off every messaging platform, also when a platform's credential is among the RuntimeProfile's variables. Reach an Assistant from a messaging app through a trigger.
+- `ASTRABOX_HERMES_LOOPBACK_PORT` is removed; the in-box gateway chooses its own loopback port.
+
+- Sandbox providers use seam contract 11: `apply_credential_vault(managed_credential_names=...)` now receives environment credential IDs previously delivered to the workload. Providers must revoke those absent from the new environment plan, including an empty plan. A provider pinned to contract 10 is refused at startup.
+- The relational schema adds a nullable `vault_credentials.delivery` column, filled with `substitution` for existing environment-variable credentials. The built-in PostgreSQL provider applies the schema upgrade at startup; external persistence providers must supply the corresponding physical schema.
+- Agents bound to environment-variable credentials get a new runtime generation, because the generation now records each credential's delivery. Their unclaimed prepared capacity is retired and replaced on demand.
+- A conversation whose live sandbox started before this release and still uses environment-variable credentials is refused on reattach with `SANDBOX_CREDENTIAL_CONTEXT_UNAVAILABLE`: that sandbox's runtime identity does not record the placeholder context its process holds. The conversation continues only in a new sandbox.
+
+### Runtime and recovery
+
+- Keep a Hermes response's identity tied to its native admission across live execution, reader takeover and gateway reconciliation, independently of its input association.
+- Run the Assistant's Hermes as its gateway daemon (`hermes gateway run`) over the canonical `hermes-gateway-v1` protocol, published to the server by an in-box bridge. Each input is admitted into Hermes' durable ledger under its input id, so an input handed over again after a reader takeover returns its first admission instead of running twice.
+- A reply cut off by a Hermes gateway restart ends and is not run again: stopped, when the gateway shut down cleanly, or failed with an unknown outcome, when it died without settling the turn. Messages queued behind it run once the conversation reconnects. Queued messages also wait for the conversation's tool environment to be supplied again after a restart.
+- The gateway's own cron ticker runs an Assistant's scheduled jobs; the separate scheduler program is removed.
+- Hermes compresses a long conversation during a reply, at its own threshold; the server no longer asks it to compress a quiet conversation, which on the gateway would hold the next message behind the summary.
+
+- Synchronize an Agent's prepared resources when a conversation starts without claiming waiting inventory, including every start of an Agent without prepared capacity, so a runtime-preparation provider has read the Skills and packages placed in the box before `prepare_session` runs.
+- Answer messages that were waiting for a start stopped by a user action with that action, instead of starting another sandbox for them each time the runtime-preparation provider next reports its prerequisite met. A message sent afterwards starts the runtime again.
+- Record a Claude runner frame the platform has read whole as whole, and acknowledge that frame itself. A later replay that translated the same frame differently, as a Result does once compaction has dropped the frame that opened its response, could otherwise report the difference as new output the platform could not record; this also holds for sandboxes still running an earlier runner.
+- Compact the Claude runner's journal only at the start of a response. A compaction that kept the latest Result without the frame that opened its response let a reattached host read that Result as a standalone message, which the platform could not record; the conversation then stopped taking input. The fix is in the sandbox image's runner, so it reaches a running sandbox only when that sandbox is replaced.
+
+### Console
+
+- Rename a conversation from its row's **More actions** menu, which also holds **Archive**, or from its title above the conversation. `PATCH /api/v1/sessions/{session_id}` sets the title through the API; automatic title generation never replaces a title the owner set.
+
+### Console and diagnostics
+
+- Compare console JSON fields by value, ignoring object key order but not list order, so a saved block reads as saved when the server returns its keys in another order.
+- Refuse a console JSON block that defines an object key twice, naming the key's path and both lines, instead of silently keeping one definition. An edit that only reorders keys or changes formatting now says it changes nothing.
+
+### Added
+
+- `environment_variable` Vault credentials take an immutable `delivery`: `substitution`, the default and existing behaviour, or `header`, where the sandbox backend replaces the placeholder only inside one named request header for the listed domains and promises nothing else. Header delivery depends only on the new sandbox capability `supports_header_placeholder_credentials`, not on `ASTRABOX_SANDBOX_CREDENTIAL_VAULT`; a Session on a backend without it is refused before a sandbox is allocated. The API and console offer it only when an enabled backend declares it. OpenSandbox does not.
+
+### Fixed
+
+- Let an Assistant's native A2A client reach configured Agents through the sandbox edge and follow the Agent Card's reachable address. The capability keeps its workspace token and Agent access checks.
+- An Agent's creator and assigned administrators can change its channel execution strategy and select their own execution account. Other Agents remain inaccessible, and assigning another user's account still requires a platform administrator.
+- A conversation that retains a sandbox after an attachment failure shows its recovery error instead of appearing ready.
+- A runtime started from prepared capacity keeps the environment-variable placeholders its process started with when it is reattached and in its terminal, also when its model credential does not use the slot's gateway substitution.
+- Reattaching a runtime removes environment-variable credentials archived or deleted since its sandbox received them, also when no other credential remains to write. `SandboxProvider.apply_credential_vault` receives the ids of environment credentials delivered before in `managed_credential_names`, and stops delivering each one its plan no longer carries.
+- With `ASTRABOX_SANDBOX_CREDENTIAL_VAULT` turned off, a sandbox that received protected credentials while it was on is refused on reattach instead of keeping bindings nothing manages.
+
 ## [0.1.10] - 2026-10-20
 
 This release collects the fixes and developer-facing improvements made after 0.1.9.

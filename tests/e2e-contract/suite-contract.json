@@ -30,7 +30,7 @@
       }
     },
     "tests": {
-      "no_volume_core": 605,
+      "no_volume_core": 610,
       "persistent_files": 19
     }
   },
@@ -42,15 +42,16 @@
   ],
   "playwright": {
     "exclusive": {
-      "files": 194,
-      "parallel_files": 121,
-      "parallel_tests": 215,
+      "files": 196,
+      "parallel_files": 122,
+      "parallel_tests": 216,
       "serial_files": [
         "specs/a-prepared-seat-is-not-a-promise-the-box-can-still-keep.exclusive.spec.ts",
         "specs/a2a-stream-and-interaction.exclusive.spec.ts",
         "specs/admin-native-transcript-batch-export.exclusive.spec.ts",
         "specs/agent-manager-session-logs.exclusive.spec.ts",
         "specs/agent-manager-triggers.exclusive.spec.ts",
+        "specs/agent-managers-configure-only-their-channels.exclusive.spec.ts",
         "specs/agent-per-session-sandbox.exclusive.spec.ts",
         "specs/agent-workspace-resume.exclusive.spec.ts",
         "specs/an-artifact-an-agent-publishes-outlives-its-sandbox.exclusive.spec.ts",
@@ -65,7 +66,6 @@
         "specs/assistant-channel-cron-result-reaches-the-chat.exclusive.spec.ts",
         "specs/assistant-native-a2a-approval.exclusive.spec.ts",
         "specs/assistant-platform-conversation-discovery.exclusive.spec.ts",
-        "specs/assistant-protocol-fault-exit.exclusive.spec.ts",
         "specs/assistant-runtime-availability-status.exclusive.spec.ts",
         "specs/assistant-tool-card-live-and-cold.exclusive.spec.ts",
         "specs/assistant-tool-errors-live-and-cold.exclusive.spec.ts",
@@ -118,22 +118,24 @@
         "specs/sandbox-replacement-preserves-conversation-identity.exclusive.spec.ts",
         "specs/server-restart-reattaches-running-sandbox-turn.exclusive.spec.ts",
         "specs/subagent-replay-recovery.exclusive.spec.ts",
-        "specs/untouched-tab-catches-up-after-backend-restart.exclusive.spec.ts"
+        "specs/untouched-tab-catches-up-after-backend-restart.exclusive.spec.ts",
+        "specs/vault-environment-survives-reattach.exclusive.spec.ts"
       ],
-      "serial_tests": 114,
+      "serial_tests": 117,
       "serial_workers": 1,
-      "tests": 329,
+      "tests": 333,
       "workers": 5
     },
     "parallel": {
-      "files": 33,
-      "tests": 48,
+      "files": 36,
+      "tests": 51,
       "workers": 5
     }
   },
   "python": {
     "assistant": {
       "parallel_node_ids": [
+        "tests/e2e/assistant_redelivered_input_test.py::test_an_input_handed_over_again_after_its_reader_was_replaced_runs_once",
         "tests/e2e/test_assistant_mcp_change.py::test_an_mcp_server_added_to_a_running_assistant_is_reachable",
         "tests/e2e/test_assistant_mcp_change.py::test_a_conversation_whose_setup_fails_says_why",
         "tests/e2e/test_assistant_mcp_change.py::test_removing_an_mcp_host_keeps_active_work_and_revokes_it_on_idle_restart",
@@ -146,7 +148,7 @@
         "tests/e2e/test_interrupt.py::test_assistant_interrupt_stops_a_running_command_and_the_next_message_is_answered"
       ],
       "restart_node_ids": [],
-      "tests": 10,
+      "tests": 11,
       "workers": 1
     },
     "main": {
@@ -249,7 +251,7 @@
       "workers": 5
     },
     "matrix_tests": 254,
-    "tests": 80
+    "tests": 81
   },
   "suites": {
     "exclusive": {

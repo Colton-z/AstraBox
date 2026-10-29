@@ -602,7 +602,10 @@ export class AstraApi {
 
   /** The configured Assistant fixture; temporary RuntimeProfiles can name unavailable images. */
   async assistantEnvironmentName(): Promise<string> {
-    const expectedName = 'astrabox-e2e-assistant';
+    const expectedName = (process.env.ASTRABOX_E2E_ASSISTANT_ENVIRONMENT || '').trim();
+    if (!expectedName) {
+      throw new Error('ASTRABOX_E2E_ASSISTANT_ENVIRONMENT is required');
+    }
     const runtime_profiles = await this.data<Array<Record<string, unknown>>>(
       'GET',
       '/admin/runtime-profiles',

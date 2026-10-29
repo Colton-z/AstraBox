@@ -1,25 +1,26 @@
-"""The wire half of the Hermes adapter: one JSON-RPC attachment to ``hermes serve``.
+"""The wire half of the Hermes adapter: one connection to the box's Hermes gateway.
 
-Hermes' supported embedding surface for a custom host is its TUI gateway
-JSON-RPC (``tui_gateway/server.py`` at the pinned commit), which ``hermes
-serve`` publishes over a WebSocket (``tui_gateway/ws.py``). Three kinds of
-frame arrive on that socket:
+Hermes' gateway daemon (``hermes gateway run``) serves its canonical protocol,
+``hermes-gateway-v1``, as JSON-RPC over a WebSocket (``tui_gateway/ws.py`` and
+``gateway/session_controls.py`` at the pinned commit); the image's bridge
+publishes it to this host. Three kinds of frame arrive on that socket:
 
 * a reply to a request this host sent (an ``id`` with ``result`` or
   ``error`` and no ``method``);
 * an event (``method == "event"``), whose ``params`` carry ``type``,
-  ``session_id``, ``payload`` and, for a session's events, the per-session
-  ``seq`` its replay ring (``tui_gateway/event_replay.py``) stamped on it;
-* a request the backend asks the client (an ``id`` together with a
-  ``method``): an approval, a clarify question, a password prompt. The client
-  answers it with a response frame bearing the same id
-  (``tui_gateway/server_requests.py``).
+  ``session_id``, ``payload`` and, for a session's events, the ``seq`` and
+  ``replay_epoch`` of that session's replay ring and the execution stamp of
+  the turn that produced it (``admission_id``, ``execution_generation``,
+  ``authority_epoch``; ``gateway/session_events.py``);
+* a request the gateway asks the client (a ``srq-`` id together with a
+  ``method``): a password or secret prompt. The client answers it with a
+  response frame bearing the same id (``gateway/session_server_requests.py``).
 
-:class:`HermesTuiProcess` tells them apart and queues events and requests in
-wire order. One process serves every conversation of one (user, assistant)
-profile; :mod:`.hermes_gateway` owns that residency and routes each session's
-frames to its subscribers, and :mod:`.hermes_runtime_client` reads one
-session's frames as runtime events.
+:class:`HermesGatewayConnection` tells them apart and queues events and
+requests in wire order. One gateway serves every conversation of one (user,
+assistant) profile; :mod:`.hermes_gateway` owns this host's connection to it
+and routes each session's frames to its subscribers, and
+:mod:`.hermes_runtime_client` reads one session's frames as runtime events.
 """
 
 from __future__ import annotations
@@ -61,23 +62,36 @@ _HERMES_CHILD_RUN_UPDATE_EVENTS = frozenset(
 )
 
 
-class HermesTuiRpcError(RuntimeError):
-    """A JSON-RPC error returned by the pinned Hermes TUI Gateway."""
+class HermesGatewayRpcError(RuntimeError):
+    """A JSON-RPC error returned by the Hermes gateway.
 
-    def __init__(self, *, code: Any, message: str) -> None:
-        super().__init__(f"Hermes TUI RPC {code}: {message}")
+    The gateway answers a refused request with code ``4001`` and the refusal's
+    bounded reason (``admission_conflict``, ``stale_generation``,
+    ``invalid_params``…) as ``message`` and ``data.reason``, and an unknown
+    method with ``-32601`` (``_refusal_data`` and ``dispatch`` in
+    ``gateway/session_controls.py``). :attr:`reason` is that reason.
+    """
+
+    def __init__(self, *, code: Any, message: str, data: dict[str, Any] | None = None) -> None:
         self.code = code
         self.message = message
+        self.data = dict(data or {})
+        self.reason = str(self.data.get("reason") or message)
+        detail = "".join(
+            f" {key}={self.data[key]}" for key in ("field", "detail") if self.data.get(key)
+        )
+        super().__init__(f"Hermes gateway RPC {code}: {message}{detail}")
 
 
 @dataclass(frozen=True)
-class HermesTuiWireEvent:
-    """One session-scoped frame from the backend, in wire order.
+class HermesGatewayFrame:
+    """One session-scoped frame from the gateway, in wire order.
 
     ``event`` is an event's ``params`` (``type``, ``session_id``,
-    ``payload``, ``seq``), or, when ``is_request`` is true, a request the
-    backend asks the client: ``{"id", "method", "params"}``.
-    ``output_offset`` counts frames on the attachment that received it.
+    ``payload``, ``seq``, ``replay_epoch`` and the execution stamp), or, when
+    ``is_request`` is true, a request the gateway asks the client:
+    ``{"id", "method", "params"}``. ``output_offset`` counts frames on the
+    connection that received it.
     """
 
     event: dict[str, Any]
@@ -283,12 +297,12 @@ def _translate_hermes_child_run_event(
 
 
 
-class HermesTuiProcess:
-    """One attachment to a box's resident Hermes backend.
+class HermesGatewayConnection:
+    """One connection to a box's Hermes gateway.
 
     The socket is the platform's (:class:`HermesBackendChannel`); this class is
     Hermes' half of it — the JSON-RPC envelope, which frame answers which
-    request, which frame is the backend asking a question, the gateway's own
+    request, which frame is the gateway asking a question, the gateway's own
     readiness signal, and the queue of events and requests. The channel
     deliberately settles nothing on its own, because how a frame is read is
     Hermes' protocol and not every engine's.
@@ -307,16 +321,13 @@ class HermesTuiProcess:
         self._channel = HermesBackendChannel(
             url=url,
             headers=headers,
-            label="Hermes backend",
+            label="Hermes gateway",
             on_record=self._on_record,
             on_failure=self._on_failure,
         )
-        self._events: asyncio.Queue[HermesTuiWireEvent | BaseException] = asyncio.Queue()
+        self._events: asyncio.Queue[HermesGatewayFrame | BaseException] = asyncio.Queue()
         self._gateway_ready = asyncio.Event()
         self._fatal: BaseException | None = None
-        #: The ``replay_epoch`` of ``gateway.ready``: the backend process's
-        #: identity for its per-session event numbering.
-        self.replay_epoch: str | None = None
         #: The shape of a frame that was neither JSON-RPC nor an event, kept so
         #: a failure that follows it says what the endpoint sent.
         self._foreign_frame: str | None = None
@@ -332,7 +343,7 @@ class HermesTuiProcess:
 
     @property
     def fatal(self) -> BaseException | None:
-        """This process's terminal failure, in the engine seam's vocabulary."""
+        """This connection's terminal failure, in the engine seam's vocabulary."""
 
         return self._fatal
 
@@ -353,9 +364,9 @@ class HermesTuiProcess:
     async def connect(self, *, require_gateway_ready: bool) -> None:
         """Open the socket, and optionally wait for Hermes to announce itself.
 
-        A connected socket only proves the backend is listening.
-        ``gateway.ready`` is Hermes' own statement that it can answer, which a
-        fresh attachment needs and a reconnect to a live one does not.
+        A connected socket only proves the bridge accepted it.
+        ``gateway.ready`` is Hermes' own statement that the gateway can answer,
+        which a fresh attachment needs and a reconnect to a live one does not.
         """
 
         try:
@@ -382,7 +393,7 @@ class HermesTuiProcess:
         timeout: float = _RPC_TIMEOUT_SECONDS,
     ) -> dict[str, Any]:
         if not self.is_connected:
-            raise EngineStreamDetached("Hermes TUI Gateway is not connected")
+            raise EngineStreamDetached("Hermes gateway is not connected")
         request_id = uuid.uuid4().hex
         future = self._channel.register_request(request_id)
         try:
@@ -405,20 +416,21 @@ class HermesTuiProcess:
             self._channel.release_request(request_id)
         error = response.get("error")
         if isinstance(error, dict):
-            raise HermesTuiRpcError(
+            data = error.get("data")
+            raise HermesGatewayRpcError(
                 code=error.get("code"),
                 message=str(error.get("message") or "request failed"),
+                data=data if isinstance(data, dict) else None,
             )
         result = response.get("result")
         return dict(result) if isinstance(result, dict) else {}
 
     async def respond_error(self, request_id: str, *, code: int, message: str) -> None:
-        """Answer one of the backend's requests with a JSON-RPC error.
+        """Answer one of the gateway's requests with a JSON-RPC error.
 
-        Hermes resolves the waiting request with no answer at once, which is
-        what its integration guide asks of a host that does not implement a
-        request method: the agent fails fast instead of waiting out the
-        request's deadline.
+        Hermes resolves the waiting request with an empty answer at once
+        (``resolve`` in ``gateway/session_server_requests.py``), so the agent
+        fails fast instead of waiting out the request's deadline.
         """
 
         await self._channel.send(
@@ -429,7 +441,7 @@ class HermesTuiProcess:
             }
         )
 
-    async def next_event(self) -> HermesTuiWireEvent:
+    async def next_event(self) -> HermesGatewayFrame:
         item = await self._events.get()
         if isinstance(item, BaseException):
             raise item
@@ -442,7 +454,7 @@ class HermesTuiProcess:
         if isinstance(method, str) and method != "event" and isinstance(request_id, str):
             params = record.get("params")
             await self._events.put(
-                HermesTuiWireEvent(
+                HermesGatewayFrame(
                     event={
                         "id": request_id,
                         "method": method,
@@ -456,33 +468,29 @@ class HermesTuiProcess:
         if request_id is not None and ("result" in record or "error" in record):
             # A reply nobody is waiting for is dropped: Hermes answers every
             # request it was given, so an unmatched id belongs to a request
-            # this process already gave up on.
+            # this connection already gave up on.
             self._channel.complete_request(str(request_id), record)
             return
         if method != "event":
             if "jsonrpc" in record:
                 return
-            # Something in front of the backend can answer on its behalf, such
-            # as a proxy reporting that the backend refused it. Only the keys
+            # Something in front of the gateway can answer on its behalf, such
+            # as a proxy reporting that the gateway refused it. Only the keys
             # and a short code are kept: the rest can carry addresses.
             code = record.get("code")
             self._foreign_frame = f"keys={sorted(record)}" + (
                 f" code={code}" if isinstance(code, (str, int)) and len(str(code)) <= 64 else ""
             )
-            logger.warning("Hermes backend channel received a frame that is not JSON-RPC: %s",
+            logger.warning("Hermes gateway channel received a frame that is not JSON-RPC: %s",
                            self._foreign_frame)
             return
         params = record.get("params")
         if not isinstance(params, dict):
             return
         if str(params.get("type") or "") == "gateway.ready":
-            payload = params.get("payload")
-            epoch = payload.get("replay_epoch") if isinstance(payload, dict) else None
-            if isinstance(epoch, str) and epoch.strip():
-                self.replay_epoch = epoch.strip()
             self._gateway_ready.set()
         await self._events.put(
-            HermesTuiWireEvent(event=dict(params), output_offset=output_offset)
+            HermesGatewayFrame(event=dict(params), output_offset=output_offset)
         )
 
     async def _on_failure(self, exc: BaseException) -> None:
@@ -502,7 +510,7 @@ class HermesTuiProcess:
         await self._events.put(self._fatal)
 
     async def _fail(self, exc: BaseException) -> None:
-        """Make ``exc`` terminal for this process, through the channel."""
+        """Make ``exc`` terminal for this connection, through the channel."""
 
         await self._channel.fail(exc)
         if self._fatal is None:
@@ -512,7 +520,7 @@ class HermesTuiProcess:
 
 
 __all__ = [
-    "HermesTuiProcess",
-    "HermesTuiRpcError",
-    "HermesTuiWireEvent",
+    "HermesGatewayConnection",
+    "HermesGatewayFrame",
+    "HermesGatewayRpcError",
 ]

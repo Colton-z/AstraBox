@@ -27,8 +27,9 @@ AstraBox messaging triggers have three independent configuration dimensions:
 The credentials entered for a messaging platform authorize the app or bot
 connection. They do not authenticate a participant as an AstraBox user. The
 execution account follows **Run messages as**: an Agent trigger defaults to the
-Agent's creator when the adapter supports that mode, and a platform
-administrator can select another supported mode. An Assistant trigger always
+Agent's creator when the adapter supports that mode. The Agent's creator,
+assigned administrators and platform administrators can select another
+supported mode. An Assistant trigger always
 runs as its owner. Configure the bot's visibility and platform permissions for
 the intended audience, and list who may send messages under **Allowed senders**
 when only some accounts should reach it.
@@ -89,7 +90,8 @@ scheduled job's result or a finished background task, is delivered there too.
 
 **Run messages as** decides whose AstraBox account a trigger's messages run
 as. That account owns the conversations, supplies their connectors, and sees
-them in the console. Only platform administrators can change it:
+them in the console. The target Agent's creator, assigned administrators and
+platform administrators can change it:
 
 | Setting | Messages run as |
 | --- | --- |
@@ -99,6 +101,15 @@ them in the console. Only platform administrators can change it:
 
 Assistant triggers always use their owner's account and cannot select another
 execution mode.
+
+Agent managers may select their own execution account; assigning another account
+requires a platform administrator. Permission to change this policy does not
+grant a sender's account or connectors.
+Account linking remains administrator-controlled, provider restrictions still
+apply, and an installed execution-identity validator checks each saved choice.
+API clients read the selected Agent's editing capability from
+`GET /api/v1/channel-providers?agent_id=<id>`; an Agent the caller cannot manage
+returns 404.
 
 With each sender's linked account, every sender holds their own conversation
 with the Agent, even in a shared room, and the Agent's access settings apply

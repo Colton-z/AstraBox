@@ -74,6 +74,7 @@ async def test_http_basic_never_becomes_a_session_environment_variable() -> None
 
     plan, env = await resolve_session_environment_credentials(
         Manager(), session_id="session-1", vault_enabled=True, vault_write=None,
+        backend=SimpleNamespace(name="fake"),
     )
     assert plan is not None and plan.http_basic[0].credentials == (item,)
     assert plan.environment == ()
@@ -225,6 +226,7 @@ async def test_an_environment_variable_credential_is_refused_when_vault_is_off()
             session_id="session-1",
             vault_enabled=False,
             vault_write=None,
+            backend=SimpleNamespace(name="fake"),
         )
     assert caught.value.code == "SANDBOX_CREDENTIAL_VAULT_DISABLED"
     assert caught.value.status_code == 400

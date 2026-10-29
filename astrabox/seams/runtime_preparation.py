@@ -320,7 +320,8 @@ class RuntimePreparationProvider(ABC):
 
         Runs after the subject's Skills and packages are in the box and before
         any engine there starts: before an Agent's waiting inventory is
-        published, and before an Assistant's workspace starts Hermes.
+        published or a conversation started without it runs its engine, and
+        before an Assistant's workspace starts Hermes.
 
         Use operation.operation_id for durable idempotency/recovery. Exceptions,
         cancellation and host loss leave the operation unresolved; no later

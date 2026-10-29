@@ -1,6 +1,38 @@
+--- a/gateway/run_turn_runner.py
++++ b/gateway/run_turn_runner.py
+@@ -1153,11 +1153,15 @@
+         return final_response + "\n" + "\n".join(unique_tags)
+
+     def run_sync(self):
+-        from gateway.session_policy import bind_turn_workspace, policy_for_source, policy_scope
++        from gateway.session_policy import (
++            bind_turn_workspace, policy_for_source, policy_scope, session_tool_environment,
++        )
+         from gateway.session_api_turn import api_policy_scope
+         from gateway.session_authorities import active_authority
+         policy = policy_for_source(self._runner, self._ctx.source)
+-        with policy_scope(policy, authority=active_authority(self._runner)), api_policy_scope():
++        authority = active_authority(self._runner)
++        with (policy_scope(policy, authority=authority), api_policy_scope(),
++              session_tool_environment(authority, self._ctx.source, policy)):
+             bind_turn_workspace(policy, self._ctx.session_id)
+             result = self._run_sync_scoped()
+             from gateway.session_results import execution_result
+--- a/gateway/session_authority.py
++++ b/gateway/session_authority.py
+@@ -1017,6 +1017,9 @@
+             if first is not None and live.source.platform == Platform.LOCAL:
+                 from gateway.session_local_recovery import restore_local_session
+                 restore_local_session(self, ref.session_id)
++                # A session created with a tool environment waits, queued, until a viewer supplies it.
++                from gateway.session_policy import require_session_tool_environment
++                require_session_tool_environment(self, live.source)
+                 if first['request_id'].startswith('hosted:'):
+                     from gateway.session_hosted_transport import check_remote_hosted_admission
+                     if not await asyncio.to_thread(check_remote_hosted_admission, self, ref, first):
 --- a/gateway/session_context.py
 +++ b/gateway/session_context.py
-@@ -56,6 +56,30 @@
+@@ -56,6 +56,40 @@
  # or child-process export: a bound id alone cannot authorize detached delivery.
  _SESSION_HISTORY_DELIVERY = ContextVar("HERMES_SESSION_HISTORY_DELIVERY", default=_UNSET)
 
@@ -28,187 +60,144 @@
 +    """Current Session's tool context; callers cannot mutate the bound mapping."""
 +    return dict(_SESSION_TOOL_ENVIRONMENT.get() or {})
 +
++
++@contextmanager
++def tool_environment_scope(value: dict[str, str]) -> Iterator[None]:
++    """Bind one Session's tool context for the turn running in this task."""
++    token = _SESSION_TOOL_ENVIRONMENT.set(dict(value))
++    try:
++        yield
++    finally:
++        _SESSION_TOOL_ENVIRONMENT.reset(token)
++
  # Cron auto-delivery vars, set per-job in run_job() so concurrent jobs don't clobber.
  _CRON_AUTO_DELIVER_PLATFORM = ContextVar("HERMES_CRON_AUTO_DELIVER_PLATFORM", default=_UNSET)
  _CRON_AUTO_DELIVER_CHAT_ID = ContextVar("HERMES_CRON_AUTO_DELIVER_CHAT_ID", default=_UNSET)
-@@ -120,6 +144,7 @@
-     browser_control_transport_family: str = "", cwd: str = "", async_delivery: bool = True,
-     ui_session_id: str = "", cron_session: Any = _UNSET, parent_chat_id: str = "",
-     session_history_delivery: str | None = None,
-+    tool_environment: Any = _UNSET,
- ) -> list:
-     """Set all session context variables and return reset tokens.  Call
-     ``clear_session_vars(tokens)`` in a ``finally``; not nestable, clearing resets every var
-@@ -140,6 +165,8 @@
-     tokens = [var.set(value) for var, value in zip(_SESSION_VARS, values)]
-     tokens.append(_SESSION_ASYNC_DELIVERY.set(bool(async_delivery)))
-     tokens.append(_SESSION_HISTORY_DELIVERY.set(_UNSET if session_history_delivery is None else session_history_delivery))
-+    if tool_environment is not _UNSET:
-+        tokens.append(_SESSION_TOOL_ENVIRONMENT.set(dict(tool_environment)))
-     _runtime_cwd("set_session_cwd", cwd)
-     return tokens
+--- a/gateway/session_controls.py
++++ b/gateway/session_controls.py
+@@ -480,7 +480,8 @@
+                 await tracked_write(self.authority, partial(title_new_session, self.authority, ref, title))
+             if hidden:
+                 await tracked_write(self.authority, partial(self.authority.db.set_session_hidden, ref.session_id, True))
+-        return await self.resume(ref, {})
++        # The attach binds the session's tool environment before any of its turns can be claimed.
++        return await self.resume(ref, {key: params[key] for key in ('tool_environment',) if key in params})
 
-@@ -154,6 +181,7 @@
-         var.set("")
-     _SESSION_ASYNC_DELIVERY.set(_UNSET)
-     _SESSION_HISTORY_DELIVERY.set(_UNSET)
-+    _SESSION_TOOL_ENVIRONMENT.set(None)
-     _runtime_cwd("clear_session_cwd")
-
-
-@@ -167,6 +195,7 @@
-         var.set(_UNSET)
-     _SESSION_ASYNC_DELIVERY.set(_UNSET)
-     _SESSION_HISTORY_DELIVERY.set(_UNSET)
-+    _SESSION_TOOL_ENVIRONMENT.set(None)
-     _runtime_cwd("clear_session_cwd")
-
-
---- a/tui_gateway/contracts/sessions.py
-+++ b/tui_gateway/contracts/sessions.py
-@@ -116,6 +116,8 @@
-
-
- class SessionCreateParams(ProfileParams):
-+    tool_environment: dict[str, str] | None = None
-+
-     cols: int | None = None
-     source: str | None = None
-     cwd: str | None = None
-@@ -172,6 +174,8 @@
-     """``session_id`` is the STORED id (or an exact title); the reply's ``session_id`` is the runtime id."""
-
-     cols: int | None = None
-+    tool_environment: dict[str, str] | None = None
-+
-     source: str | None = None
-     lazy: bool = False
-     defer_history: bool = False
---- a/tui_gateway/methods_session.py
-+++ b/tui_gateway/methods_session.py
-@@ -75,9 +75,9 @@
-     return _session_profile_runtime_scope({"profile_home": str(profile_home) if profile_home else None})
-
-
--def _make_agent_in_context(sid: str, key: str, **kwargs):
-+def _make_agent_in_context(sid: str, key: str, *, tool_environment=None, **kwargs):
-     """``_make_agent`` with the session context bound for the build and cleared after."""
--    tokens = _set_session_context(key, cwd=kwargs.get("cwd_override"))
-+    tokens = _set_session_context(key, cwd=kwargs.get("cwd_override"), tool_environment=tool_environment)
-     try:
-         return _make_agent(sid, key, session_id=key, **kwargs)
-     finally:
-@@ -334,6 +334,12 @@
- def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> dict:
-     """``session.create``; ``copy_parent_history`` (``session.branch_stored``) reads the parent's
-     transcript server-side and omits it from the reply."""
-+    if params.get("tool_environment") is not None:
+     async def ping(self, ref, params):
+         if not self.actor.capabilities:
+@@ -601,6 +602,12 @@
+             self.authority.authorize(self.actor, ref, 'session:control')
+             from gateway.session_policy import rebind_launch_key
+             rebind_launch_key(self.authority, ref, params['api_key'])
++        if 'tool_environment' in params:
++            # The session's tool environment for its next turns; never durable (an owner restart drops it).
++            self.authority.authorize(self.actor, ref, 'session:control')
++            from gateway.session_policy import bind_session_tool_environment
++            bind_session_tool_environment(self.authority, ref.session_id, params['tool_environment'],
++                                          running=self.authority._handle(ref).execution_state == 'running')
+         # Read-only mount (#85303): an ended row stays ended until the first admitted turn
+         # reopens it (``reopen_local_session`` in the drain), so opening a finished chat
+         # never re-lights DB-derived liveness with no new activity.
+@@ -613,6 +620,9 @@
+             await refresh_resumed_policy(self.authority, ref, attached=ref.session_id in self.subscriptions)
+         snapshot = await self.authority.attach(self.actor, ref)
+         self.subscriptions[ref.session_id] = snapshot.subscription_id
++        if 'tool_environment' in params:
++            # Admissions a restart left queued waited for this mapping (require_session_tool_environment).
++            self.authority._schedule(ref)
+         self._spawn_notice(ref)
+         # Only local routes have a frozen local launch policy to project; with it, main's banner and
+         # status-bar inventory (tools, skills, MCP, version, branch) for that policy.
+--- a/gateway/session_policy.py
++++ b/gateway/session_policy.py
+@@ -16,7 +16,8 @@
+                            'provider', 'base_url', 'reasoning', 'max_turns', 'ignore_rules', 'api_key', 'editor',
+                            'yolo', 'safe_mode', 'ignore_user_config',
+                            'skills', 'checkpoints', 'accept_hooks', 'pass_session_id', 'follow_profile_config',
+-                           'service_tier', 'cwd_explicit', 'run_budget', 'verbose', 'row_cwd', 'client_env'})
++                           'service_tier', 'cwd_explicit', 'run_budget', 'verbose', 'row_cwd', 'client_env',
++                           'tool_environment'})
+ # Sections a ``follow_profile_config`` session re-reads from the owning profile's CURRENT config each
+ # turn (main's Bot Chat row), credentials included: a frozen key never crosses a profile route change.
+ FOLLOW_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers', 'fallback_model', 'model_aliases',
+@@ -468,9 +469,18 @@
+         except ValueError as exc:
+             _refuse('client_env', str(exc))
+         rules = json.dumps(rules, sort_keys=True)
++    if 'tool_environment' in params:
 +        from gateway.session_context import validate_tool_environment
 +        try:
-+            params["tool_environment"] = validate_tool_environment(params["tool_environment"])
-+        except ValueError:
-+            return _err(rid, -32602, "invalid Session tool environment")
-     # ``profile`` (app-global remote mode): stored so the build and every turn re-bind HERMES_HOME.
-     profile_home = _profile_home(profile := (params.get("profile") or "").strip() or None)
-     # Reject an incoherent model×provider pair BEFORE any state exists: minting it only defers the
-@@ -371,6 +377,7 @@
-     now = time.time()
-     with _sessions_lock:
-         _sessions[sid] = {
-+            "tool_environment": dict(params.get("tool_environment") or {}),
-             "agent": None, "agent_error": None, "agent_ready": threading.Event(), "attached_images": [],
-             "close_on_disconnect": _flag(params, "close_on_disconnect"),
-             "active_session_lease": None,  # claimed lazily on the first turn (_ensure_active_session_slot)
-@@ -575,4 +582,5 @@
-             self.target, cols=self.cols, cwd=cwd, history=history, lease=None, source=source,
-             close_on_disconnect=_flag(self.params, "close_on_disconnect"),
-             profile_home=self.profile_home, explicit_cwd=bool(self.profile_resume_cwd), **extra)
-+        record["tool_environment"] = dict(self.params.get("tool_environment") or {})
-         if follows_profile:
-@@ -634,6 +642,8 @@
-         _release_db(ctx.db)
-     with _session_resume_lock:
-         if (refusal := _reattach_refusal(ctx.rid, live_sid, live)) is not None:
-+            return refusal
-+        if (refusal := _replace_tool_environment(ctx, live)) is not None:
-             return refusal
-         live["last_active"] = time.time()
-         if (transport := current_transport()) is not None:
-@@ -747,9 +757,20 @@
-         return _resume_reuse_live_locked(ctx, sid, session)
++            validate_tool_environment(params['tool_environment'])
++        except ValueError as exc:
++            _refuse('tool_environment', str(exc))
+     # Values stay out of the request: ``launch_request`` is echoed to every viewer of the session.
+-    request = {k: v for k, v in params.items() if k not in {'request_id', 'api_key', 'client_env'}}
++    request = {k: v for k, v in params.items() if k not in {'request_id', 'api_key', 'client_env', 'tool_environment'}}
+     request.setdefault('source', 'cli')
++    if 'tool_environment' in params:
++        # Only that the session runs with one: no turn of it is claimed without it (require_session_tool_environment).
++        request['tool_environment'] = True
+     from gateway.session_local_mcp import private_editor_request
+     private_editor_request(request, private_secrets)
+     _extract_config_secrets(config, private_secrets)
+@@ -1050,6 +1060,54 @@
+         _TURN_PROFILE.reset(profile_token)
 
 
-+def _replace_tool_environment(ctx: _Resume, session: dict) -> dict | None:
-+    if ctx.params.get("tool_environment") is not None:
-+        environment = dict(ctx.params["tool_environment"])
-+        if session.get("running") and environment != session.get("tool_environment", {}):
-+            return _err(ctx.rid, 4009, "cannot replace tool environment during an active turn")
-+        session["tool_environment"] = environment
-+    return None
++def bind_session_tool_environment(authority, session_id, value, *, running):
++    """Hold *value* as *session_id*'s tool environment for its next turns (``session.create`` and
++    ``session.resume``). Like a launch key it lives in this authority's memory only: an owner restart
++    drops it and the next resume supplies it again. A running turn keeps the mapping it started with,
++    so a different one is refused while *running*."""
++    from gateway.session_context import validate_tool_environment
++    try:
++        value = validate_tool_environment(value)
++    except ValueError as exc:
++        _refuse('tool_environment', str(exc))
++    held = authority.__dict__.setdefault('_session_tool_environments', {})
++    if running and held.get(session_id, value) != value:
++        raise RuntimeStoreError('session_busy')
++    held[session_id] = value
 +
 +
- def _resume_reuse_live_locked(ctx: _Resume, sid: str, session: dict) -> dict:
-     """Reuse with _session_resume_lock already held (including the eager double-check)."""
-     if (refusal := _reattach_refusal(ctx.rid, sid, session)) is not None:
-+        return refusal
-+    if (refusal := _replace_tool_environment(ctx, session)) is not None:
-         return refusal
-     _cancel_ws_orphan_reap(sid)  # unconditionally: the fast path must never race the reap Timer
-     payload = _live_session_payload(sid, session, cols=ctx.cols, touch=True, omit_messages=ctx.omit_messages,
-@@ -863,6 +884,7 @@
-             stored_runtime_overrides = _stored_session_runtime_overrides(ctx.found)
-             agent = _make_agent_in_context(
-                 sid, ctx.target, session_db=ctx.db, platform_override=source,
-+                tool_environment=dict(ctx.params.get("tool_environment") or {}),
-                 cwd_override=ctx.profile_resume_cwd or None,
-                 context_cwd_is_launch_artifact=(source in _LAUNCH_CWD_NOT_A_WORKSPACE and not ctx.profile_resume_cwd),
-                 auth_user_id=_transport_auth_user_id(current_transport()), **stored_runtime_overrides)
-@@ -886,6 +908,7 @@
-                     _transfer_db_to_agent(agent, ctx.db)
-                 ctx.owns_db = False
-             if (session := _sessions.get(sid)) is not None:
-+                session["tool_environment"] = dict(ctx.params.get("tool_environment") or {})
-                 if stored_runtime_overrides.get("model_override") is not None:
-                     session["model_override"] = stored_runtime_overrides["model_override"]
-                 model_config = _parse_model_config(ctx.found.get("model_config"), quiet=True)
-@@ -916,6 +939,12 @@
- def _(rid, params: dict) -> dict:
-     if not (target := params.get("session_id", "")):
-         return _err(rid, 4006, "session_id required")
-+    if params.get("tool_environment") is not None:
-+        from gateway.session_context import validate_tool_environment
-+        try:
-+            params["tool_environment"] = validate_tool_environment(params["tool_environment"])
-+        except ValueError:
-+            return _err(rid, -32602, "invalid Session tool environment")
-     ctx = _Resume(rid, params, target)
-     # Profile scope: a DEDICATED handle we own until the agent takes it; else the shared launch db.
-     ctx.db, ctx.owns_db = _profile_session_db(ctx.profile_home)
---- a/tui_gateway/server.py
-+++ b/tui_gateway/server.py
-@@ -1270,7 +1270,7 @@
-         return next((s for s in list(_sessions.values()) if s.get("session_key") == session_key), None)
-
-
--def _set_session_context(session_key: str, cwd: str | None = None, *, ui_session_id: str = "") -> list:
-+def _set_session_context(session_key: str, cwd: str | None = None, *, ui_session_id: str = "", tool_environment=None) -> list:
-     with contextlib.suppress(Exception):
-         from gateway.session_context import set_session_vars
-         sess = _session_for_key(session_key) if session_key else None
-@@ -1297,7 +1297,9 @@
-             profile=profile,
-             browser_control_principal=browser_control_principal,
-             browser_control_transport_family=browser_control_transport_family, cwd=resolved,
--            ui_session_id=ui_session_id, cron_session="")
-+            ui_session_id=ui_session_id, cron_session="",
-+            tool_environment=(tool_environment if tool_environment is not None else
-+                              dict((sess or {}).get("tool_environment") or {})))
-     return []
-
++def _held_tool_environment(authority, source, policy):
++    """``(required, mapping)``: whether the session's creation carried a tool environment, and the
++    mapping this authority holds for it (``None`` until a viewer supplies one after a restart)."""
++    if policy is None or json.loads(policy.request_json).get('tool_environment') is not True:
++        return False, None
++    held = getattr(authority, '_session_tool_environments', None) or {}
++    return True, held.get(source.chat_id)
++
++
++def require_session_tool_environment(authority, source):
++    """Claim preflight: a session created with a tool environment runs no turn without it. After an
++    owner restart its admissions stay queued (the FIFO pauses) until a viewer's ``session.resume``
++    supplies the mapping again and wakes the drain."""
++    required, value = _held_tool_environment(authority, source, policy_for_source(authority.runner, source))
++    if required and value is None:
++        raise RuntimeStoreError('tool_environment_unavailable')
++
++
++@contextmanager
++def session_tool_environment(authority, source, policy):
++    """Bind the tool environment a session was created with for one of its turns."""
++    required, value = _held_tool_environment(authority, source, policy)
++    if not required:
++        yield
++        return
++    if value is None:
++        raise RuntimeStoreError('tool_environment_unavailable')
++    from gateway.session_context import tool_environment_scope
++    with tool_environment_scope(value):
++        yield
++
++
+ def bind_turn_workspace(policy, task_id):
+     """Make the session's frozen workspace its terminal cwd override for this turn's tools (#140665).
 
 --- a/tools/environments/local.py
 +++ b/tools/environments/local.py
-@@ -277,6 +277,8 @@
+@@ -297,6 +297,8 @@
      """Guards shared by every spawn surface: profile-home propagation, session-context
      bridging, Hermes-owned PYTHONPATH + venv-marker strip, MSYS defaults, delegate_task
      Kanban scrub. Returns the (possibly new) dict."""
@@ -217,3 +206,24 @@
      _apply_profile_home(env)
      _inject_session_context_env(env)
      _strip_hermes_owned_pythonpath_and_runtime_markers(env)
+--- a/tui_gateway/contracts/canonical_sessions.py
++++ b/tui_gateway/contracts/canonical_sessions.py
+@@ -53,6 +53,9 @@
+     # A shell-launched client's allowlisted environment (HERMES_* behaviour values, toolchain PATH/venv),
+     # applied to this session only; never echoed in ``launch_request``.
+     client_env: dict[str, str] | None = None
++    # A host's per-Session tool environment: held in owner memory only, bound to this session's turns,
++    # and re-supplied by ``session.resume`` after an owner restart.
++    tool_environment: dict[str, str] | None = None
+
+
+ class CanonicalResumeParams(ProfileParams):
+@@ -66,6 +69,8 @@
+     editor: dict[str, JsonValue] | None = None
+     # Re-supplies a launch-only key a restart revoked; never durable, must match the launch's.
+     api_key: str | None = None
++    # Replaces the session's tool environment for its next turns; never durable.
++    tool_environment: dict[str, str] | None = None
+     defer_history: bool = False
+     omit_messages: bool = False
+     cols: int | None = None

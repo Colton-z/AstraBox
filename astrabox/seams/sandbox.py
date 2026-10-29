@@ -441,7 +441,10 @@ class SandboxCreateSpec:
     when the workload enters the box. ``vault_write`` is AstraBox's
     provider-neutral protected-credential plan, never a provider SDK object and
     never part of ``env``. It is excluded from repr because it contains secret
-    values. Supplying it implies protected injection is enabled. It does not
+    values. Supplying it implies protected injection is enabled, except for
+    environment items whose ``delivery`` is ``header``: those ask only for
+    :attr:`SandboxProvider.supports_header_placeholder_credentials` and arrive
+    whether or not ``ASTRABOX_SANDBOX_CREDENTIAL_VAULT`` is on. It does not
     change the RuntimeProfile's ``network_policy`` document or depend on a network
     mode, but a provider must admit each exact binding destination in its
     effective containment policy; otherwise the platform-managed credential
@@ -1114,6 +1117,27 @@ class SandboxProvider(ABC):
     #: :mod:`astrabox.seams.egress_credentials` (placeholder minting, host
     #: gating, fail-closed refusal) — see docs/egress-credential-injection.md.
     supports_egress_credential_injection: bool = False
+    #: The backend delivers ``environment_variable`` credentials whose
+    #: ``delivery`` is ``header``: the sandbox holds only the placeholder, and
+    #: the backend replaces it inside the credential's ``header_name`` on
+    #: requests to its declared hosts, promising nothing else ("Header
+    #: delivery" in :mod:`astrabox.seams.egress_credentials`). Independent of
+    #: :attr:`supports_egress_credential_injection` and of
+    #: ``ASTRABOX_SANDBOX_CREDENTIAL_VAULT``.
+    #:
+    #: Such items arrive in ``SandboxEgressCredentialPlan.environment``: in the
+    #: create spec's ``vault_write`` for a box created for them, and through
+    #: :meth:`apply_credential_vault` for a box that already exists — a prepared
+    #: slot, a claim, a placement in a shared box, a reattach or a resume.
+    #: A plan that carries environment items carries every one the workload
+    #: currently holds, so a rotation arrives as the recomposed set. A reattach
+    #: or resume also names, in ``managed_credential_names``, every environment
+    #: credential delivered before, so one archived or deleted since is revoked
+    #: even when nothing else is written. A plan without environment items and
+    #: without such names (a per-turn MCP refresh, a model credential re-point)
+    #: leaves them as they are. Default False: a Session bound to a header
+    #: credential on this backend fails before sandbox allocation.
+    supports_header_placeholder_credentials: bool = False
     #: Each live sandbox binding is exclusively owned by one session/profile and
     #: one canonical principal (and has its own network namespace), so fixed
     #: in-box ports never collide and principal-scoped mutable state cannot cross
@@ -1235,10 +1259,19 @@ class SandboxProvider(ABC):
 
         A cold create can carry the vault in :class:`SandboxCreateSpec`. An
         adopted or resumed sandbox already exists, so a backend that advertises
-        :attr:`supports_egress_credential_injection` must also provide this
+        :attr:`supports_egress_credential_injection` or
+        :attr:`supports_header_placeholder_credentials` must also provide this
         explicit refresh path. The default is a loud refusal; treating the
         placeholder as usable without its sidecar value would defer the failure
         to an unrelated model request.
+
+        ``managed_credential_names`` are the ``credential_id`` of environment
+        credentials the platform delivered to this sandbox's workload before.
+        Each one absent from ``vault_write.environment`` must stop being
+        delivered, also when ``vault_write`` is otherwise empty, which is how an
+        archived or deleted credential is revoked from a live sandbox.
+        ``managed_binding_names`` apply the same rule to MCP bindings, by their
+        plan ``name``.
         """
         _ = (
             sandbox,
@@ -2333,6 +2366,7 @@ SANDBOX_CAPABILITY_RULES: tuple[SandboxCapabilityRule, ...] = (
     ),
     SandboxCapabilityRule("supports_correlated_create", ("find_sandbox_by_assignment",)),
     SandboxCapabilityRule("supports_egress_credential_injection", ("apply_credential_vault",)),
+    SandboxCapabilityRule("supports_header_placeholder_credentials", ("apply_credential_vault",)),
     SandboxCapabilityRule("supports_create_network_policy", ("admit_runtime_egress",)),
     SandboxCapabilityRule("supports_inventory_listing", ("list_sandboxes", "describe_sandbox")),
     # The process face lives on the handle, so the provider has no method to
@@ -2642,6 +2676,21 @@ def any_enabled_backend_supports_egress_credential_injection() -> bool:
     )
 
 
+def any_enabled_backend_supports_header_placeholder_credentials() -> bool:
+    """True iff an enabled sandbox backend declares
+    ``supports_header_placeholder_credentials``.
+
+    The configure-time gate for ``environment_variable`` credentials with
+    header delivery, and for offering that mode in the console. Like
+    :func:`any_enabled_backend_supports_egress_credential_injection`, an
+    installed backend that is not enabled does not count.
+    """
+    return any(
+        bool(getattr(provider, "supports_header_placeholder_credentials", False))
+        for _name, provider in enabled_sandbox_providers()
+    )
+
+
 def sandbox_if_registered(backend: str | None) -> SandboxProvider | None:
     """The provider registered under ``backend``, or ``None`` (non-raising lookup
     for callers that must not fail closed on an unregistered name — e.g. the
@@ -2779,6 +2828,7 @@ __all__ = [
     "enabled_sandbox_providers",
     "enabled_sandbox_permission_levels",
     "any_enabled_backend_supports_egress_credential_injection",
+    "any_enabled_backend_supports_header_placeholder_credentials",
     "shutdown_sandbox_providers_for_current_loop",
     "sandbox_for_name",
     "sandbox_for_sandbox",

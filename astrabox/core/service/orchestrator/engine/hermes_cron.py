@@ -1,12 +1,12 @@
 """Report a conversation's own Hermes cron runs back into that conversation.
 
-Hermes runs a scheduled job in its gateway process, in a session of its own,
+Hermes runs a scheduled job in its gateway daemon, in a session of its own,
 and delivers the result only to a messaging platform the gateway connects to
-(``cron/scheduler_delivery.py`` at the pinned commit). An Assistant
-conversation reaches Hermes through ``hermes serve`` instead, so Hermes keeps
-the result in ``$HERMES_HOME/cron/output/<job_id>/`` and nothing reaches the
-conversation that asked for the job. This module closes that gap without
-platform credentials in the box:
+(``cron/scheduler_delivery.py`` at the pinned commit). An Assistant's gateway
+connects none, so Hermes keeps the result in
+``$HERMES_HOME/cron/output/<job_id>/`` and nothing reaches the conversation
+that asked for the job. This module closes that gap without platform
+credentials in the box:
 
 1. When the conversation's own stream shows ``cronjob_manage`` creating a job,
    the job is recorded as that conversation's
@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -49,7 +50,11 @@ CRON_RESULT_MAX_CHARS = 20_000
 
 
 def created_job_id(event: dict[str, Any]) -> str | None:
-    """The job id a ``tool.complete`` reports for a successful job creation."""
+    """The job id a ``tool.complete`` reports for a successful job creation.
+
+    The gateway sends the tool's result as its JSON text
+    (``_tool_complete_payload`` in ``gateway/run_turn_progress.py``).
+    """
 
     if str(event.get("type") or "") != "tool.complete":
         return None
@@ -61,6 +66,11 @@ def created_job_id(event: dict[str, Any]) -> str | None:
     if action not in {"create", "add"}:
         return None
     result = payload.get("result")
+    if isinstance(result, str):
+        try:
+            result = json.loads(result)
+        except ValueError:
+            return None
     if not isinstance(result, dict) or result.get("success") is False:
         return None
     job_id = str(result.get("job_id") or "").strip()

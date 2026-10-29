@@ -5055,6 +5055,28 @@
         "title": "ApiEnvelope[SessionRecord]",
         "type": "object"
       },
+      "ApiEnvelope_SessionTitle_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/SessionTitle"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[SessionTitle]",
+        "type": "object"
+      },
       "ApiEnvelope_SessionUserActionView_": {
         "properties": {
           "code": {
@@ -8391,6 +8413,17 @@
               }
             ]
           },
+          "delivery": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery"
+          },
           "expires_at": {
             "anyOf": [
               {
@@ -8553,6 +8586,10 @@
             "title": "Environment Credentials",
             "type": "string"
           },
+          "header_credentials": {
+            "title": "Header Credentials",
+            "type": "string"
+          },
           "mcp_credentials": {
             "title": "Mcp Credentials",
             "type": "string"
@@ -8566,7 +8603,8 @@
           "deployment_mode",
           "model_credentials",
           "mcp_credentials",
-          "environment_credentials"
+          "environment_credentials",
+          "header_credentials"
         ],
         "title": "CredentialDelivery",
         "type": "object"
@@ -11600,6 +11638,41 @@
           "session_id"
         ],
         "title": "SessionRecord",
+        "type": "object"
+      },
+      "SessionTitle": {
+        "additionalProperties": false,
+        "description": "The title the owner gave a conversation, as stored.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "title"
+        ],
+        "title": "SessionTitle",
+        "type": "object"
+      },
+      "SessionUpdate": {
+        "additionalProperties": false,
+        "description": "The Session fields its owner may change: the title.",
+        "properties": {
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "title": "SessionUpdate",
         "type": "object"
       },
       "SessionUserActionView": {
@@ -19969,6 +20042,18 @@
     "/api/v1/channel-providers": {
       "get": {
         "operationId": "list_channel_providers_for_owner_api_v1_channel_providers_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "agent_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Agent Id",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -19977,6 +20062,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "List Channel Providers For Owner"
@@ -21411,6 +21506,53 @@
           }
         },
         "summary": "Get Session"
+      },
+      "patch": {
+        "operationId": "update_session_api_v1_sessions__session_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_SessionTitle_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Session"
       }
     },
     "/api/v1/sessions/{session_id}/archive": {

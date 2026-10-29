@@ -10,7 +10,7 @@ tell is that the ``Host`` header still carries the attacker's domain.
 This pure-ASGI middleware (mirrors :class:`~astrabox.web.identity_middleware.WebIdentityMiddleware`
 — NOT ``BaseHTTPMiddleware``) rejects any HTTP/WS request whose ``Host`` is not on
 a small allowlist (``ASTRABOX_ALLOWED_HOSTS``; default ``localhost`` / ``127.0.0.1``
-/ ``[::1]``). Two surfaces are EXEMPT, mirroring the exempt-path pattern in
+/ ``[::1]``). Machine capability surfaces are exempt, mirroring the path pattern in
 :mod:`astrabox.web.identity_middleware`:
 
 * ``/api/v1/platform-mcp/*`` — the per-session sandbox containers call the server on
@@ -18,6 +18,8 @@ a small allowlist (``ASTRABOX_ALLOWED_HOSTS``; default ``localhost`` / ``127.0.0
   machine-to-machine, and DNS rebinding is a *browser* attack, so gating it would
   only break the sandbox's access to platform capabilities.
 * ``/healthz`` — the liveness probe answers any ``Host`` by design.
+* ``/api/v1/sbxcap/*`` and ``/api/v1/assistant-a2a/*`` — native transcript
+  custody and Assistant peer calls authenticate their own sandbox capabilities.
 
 Default posture is unchanged for a local user: the browser reaches the console as
 ``http://127.0.0.1:<port>`` / ``http://localhost:<port>``, both on the allowlist.
@@ -64,6 +66,9 @@ _EXEMPT_PREFIXES: tuple[str, ...] = (
     # forged token wouldn't already defeat, and blocks the flush on any
     # box-reachable address.
     "/api/v1/sbxcap/",
+    # Native Assistant peers use the same private sandbox-facing server address.
+    # The route verifies the binding's bearer capability and target Agent access.
+    "/api/v1/assistant-a2a/",
 )
 
 

@@ -48,6 +48,7 @@ the websocket wiring arrives with the host-side EngineClient counterpart.
 from __future__ import annotations
 
 import asyncio
+import bisect
 import contextlib
 import dataclasses
 import hashlib
@@ -79,6 +80,11 @@ logger = logging.getLogger("astrabox.sandbox_runner")
 #: this file ships standalone into the image; the wire test pins the two
 #: copies equal.
 RUNNER_PROTOCOL = "astrabox.runner-wire.v1"
+
+#: The largest message either end of the wire accepts; the host keeps its own
+#: copy (runner_link.py), which says why the bound is twice the Messages API's
+#: request limit.
+RUNNER_MESSAGE_MAX_BYTES = 64 * 1024 * 1024
 
 #: This runner process's identity. Journal sequences restart in a new process,
 #: so a host cursor names the boot it was read from and is refused by another.
@@ -514,7 +520,9 @@ class EnvelopeSender:
     Result checkpoint proves that the platform store covers the preceding
     interval. The size is a compaction trigger, never ``deque(maxlen=...)``:
     arbitrary suffix retention can start on a content-block delta whose start
-    was discarded.
+    was discarded. For the same reason a compaction drops whole responses: the
+    host reads each frame within the response it belongs to, so the retained
+    journal starts at a frame that opened one.
     """
 
     _JOURNAL_COMPACTION_THRESHOLD = 2048
@@ -534,6 +542,9 @@ class EnvelopeSender:
         self._previous_result_store_sequence = HistoryStoreSequence(0)
         self._events_requiring_persistence: set[int] = set()
         self._persisted_event_sequences: set[int] = set()
+        #: Retained frames that opened a response, in order: the only places a
+        #: compaction may cut.
+        self._response_starts: list[int] = []
 
     @property
     def last_seq(self) -> int:
@@ -740,6 +751,11 @@ class EnvelopeSender:
                     self._link_ready = False
             return seq
 
+    def note_response_start(self, sequence: int) -> None:
+        """Record that frame ``sequence`` opened a response."""
+
+        bisect.insort(self._response_starts, sequence)
+
     async def acknowledge_event_persistence(self, sequence: int) -> None:
         """Record the host's commit receipt for one durable engine event."""
 
@@ -788,7 +804,15 @@ class EnvelopeSender:
             return self._compact_result_prefix_locked()
 
     def _compact_result_prefix_locked(self) -> int:
-        """Drop the safe prefix before the latest Result; caller holds the lock."""
+        """Drop the safe prefix before the latest Result's response; caller holds the lock.
+
+        The host translates a Result, like any frame, as part of the response
+        it ends: what it reports and how it counts those reports depend on the
+        frame that opened the response. The cut is therefore the start of a
+        response, never a frame inside one. It also stays at or before the
+        first durable event the host has not committed, which a replay must
+        still deliver.
+        """
 
         checkpoint = self._history_checkpoint
         assert checkpoint is not None
@@ -799,7 +823,12 @@ class EnvelopeSender:
             if sequence < result_sequence
             and sequence not in self._persisted_event_sequences
         ]
-        compact_before = min(unpersisted) if unpersisted else result_sequence
+        limit = min(unpersisted) if unpersisted else result_sequence
+        index = bisect.bisect_right(self._response_starts, limit)
+        if index == 0:
+            return 0
+        compact_before = self._response_starts[index - 1]
+        del self._response_starts[: index - 1]
         removed_sequences: list[int] = []
         while self._journal and int(self._journal[0]["seq"]) < compact_before:
             removed_sequences.append(int(self._journal.popleft()["seq"]))
@@ -1786,6 +1815,7 @@ class RunnerSession:
         )
         if self._run_start_seq is None:
             self._run_start_seq = consumed_seq
+            self.sender.note_response_start(consumed_seq)
         if command_id in self._interrupts_awaiting_prompt_boundary:
             # interrupt() only acknowledges the CLI control request. It does not
             # retract a prompt already queued on stdin, so the prompt hook is the
@@ -1956,6 +1986,7 @@ class RunnerSession:
         )
         if boundary:
             self._run_start_seq = sequence
+            self.sender.note_response_start(sequence)
 
     async def _report_status(self) -> None:
         """Send ``busy`` while an input or a background task runs, else ``idle``, on change."""
@@ -2319,6 +2350,7 @@ class RunnerSession:
             )
             if (engine_boundary or platform_input_id is not None) and self._run_start_seq is None:
                 self._run_start_seq = sent_seq
+                self.sender.note_response_start(sent_seq)
             if engine_boundary:
                 self._busy = True
                 response_id = str(getattr(message, "uuid", None) or "").strip()
@@ -2480,6 +2512,7 @@ class RunnerWsServer:
         self._server = await websocket_serve(
             self._handle, self._host, self._port,
             process_request=self._process_request,
+            max_size=RUNNER_MESSAGE_MAX_BYTES,
         )
         if self._port == 0:  # tests bind ephemeral ports
             self._port = self._server.sockets[0].getsockname()[1]

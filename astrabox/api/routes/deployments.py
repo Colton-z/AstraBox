@@ -246,9 +246,9 @@ def register_deployment_routes(app: Any) -> None:
     # The provider catalog is not administrator data: an Assistant owner needs
     # it to bind their own channel.
     @app.get("/api/v1/channel-providers")
-    async def list_channel_providers_for_owner(request: Request):
+    async def list_channel_providers_for_owner(request: Request, agent_id: str = ""):
         user = await get_current_user_context(request)
-        result = await _service.list_channel_providers(user)
+        result = await _service.list_channel_providers(user, agent_id=agent_id)
         return success_response(result)
 
     @app.post(

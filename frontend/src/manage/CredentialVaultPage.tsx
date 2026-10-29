@@ -51,6 +51,7 @@ import {
 import type {
   AgentConfig,
   CredentialDeliveryOverview,
+  EnvironmentCredentialDelivery,
   VaultBindingHolder,
   VaultCredentialSummary,
   VaultSummary,
@@ -68,7 +69,11 @@ import {
   formatDateTime,
   useRecordCrumb,
 } from './console';
-import { credentialDeliveryLabel, credentialTypeLabel } from './credentialPresentation';
+import {
+  credentialDeliveryLabel,
+  credentialTypeLabel,
+  environmentDeliveryLabel,
+} from './credentialPresentation';
 
 type CredentialType =
   | 'static_bearer'
@@ -126,6 +131,8 @@ export default function CredentialVaultPage() {
 
   const [credentialOpen, setCredentialOpen] = useState(false);
   const [credentialType, setCredentialType] = useState<CredentialType>('static_bearer');
+  const [credentialDelivery, setCredentialDelivery] =
+    useState<EnvironmentCredentialDelivery>('substitution');
   const [credentialName, setCredentialName] = useState('');
   const [credentialTargetValue, setCredentialTargetValue] = useState('');
   const [credentialHeaderName, setCredentialHeaderName] = useState('');
@@ -179,6 +186,24 @@ export default function CredentialVaultPage() {
     }
   };
 
+  // Header delivery is offered only where an enabled sandbox backend performs
+  // it; the server refuses it everywhere else. Where substitution is the mode
+  // this deployment cannot deliver, the form opens on the one it can.
+  const headerDeliveryAvailable = delivery?.header_credentials === 'header_placeholder';
+  const headerDelivery =
+    credentialType === 'environment_variable' &&
+    headerDeliveryAvailable &&
+    credentialDelivery === 'header';
+
+  const openCredentialForm = () => {
+    setCredentialDelivery(
+      headerDeliveryAvailable && delivery?.environment_credentials === 'unavailable'
+        ? 'header'
+        : 'substitution',
+    );
+    setCredentialOpen(true);
+  };
+
   const saveCredential = () =>
     vault &&
     void run(async () => {
@@ -193,13 +218,29 @@ export default function CredentialVaultPage() {
       } else if (credentialType === 'environment_variable') {
         const hosts = allowedHosts.split(',').map((host) => host.trim()).filter(Boolean);
         if (hosts.length === 0) throw new Error(t('manage:credentials.host_required'));
-        auth = {
-          type: credentialType,
-          secret_name: target,
-          secret_value: secret,
-          networking: { type: 'limited', allowed_hosts: hosts },
-          injection_location: { header: true, body: true },
-        };
+        if (headerDelivery) {
+          const headerName = credentialHeaderName.trim();
+          if (!headerName) throw new Error(t('manage:credentials.delivery_header_required'));
+          // No header/body choice and no request limits: header delivery has
+          // none, and the server refuses a payload that names them.
+          auth = {
+            type: credentialType,
+            secret_name: target,
+            secret_value: secret,
+            delivery: 'header',
+            header_name: headerName,
+            networking: { type: 'limited', allowed_hosts: hosts },
+          };
+        } else {
+          auth = {
+            type: credentialType,
+            secret_name: target,
+            secret_value: secret,
+            delivery: 'substitution',
+            networking: { type: 'limited', allowed_hosts: hosts },
+            injection_location: { header: true, body: true },
+          };
+        }
       } else if (credentialType === 'mcp_oauth') {
         auth = {
           type: credentialType,
@@ -277,6 +318,14 @@ export default function CredentialVaultPage() {
       { value: 'mcp_static_header' as const, label: t('manage:credentials.type_header') },
       { value: 'environment_variable' as const, label: t('manage:credentials.type_environment') },
       { value: 'http_basic' as const, label: t('manage:credentials.type_http_basic') },
+    ],
+    [t],
+  );
+
+  const credentialDeliveryOptions = useMemo(
+    () => [
+      { value: 'substitution' as const, label: t('manage:credentials.delivery_mode_substitution') },
+      { value: 'header' as const, label: t('manage:credentials.delivery_mode_header') },
     ],
     [t],
   );
@@ -394,6 +443,12 @@ export default function CredentialVaultPage() {
             label={t('manage:credentials.environment_delivery')}
             value={credentialDeliveryLabel(delivery, 'environment_credentials', t)}
           />
+          {headerDeliveryAvailable && (
+            <ConsoleFact
+              label={t('manage:credentials.header_delivery')}
+              value={credentialDeliveryLabel(delivery, 'header_credentials', t)}
+            />
+          )}
           {vault.archived_at && (
             <ConsoleFact
               label={t('manage:credentials.archived')}
@@ -410,7 +465,7 @@ export default function CredentialVaultPage() {
         intro={t('manage:credentials.secret_write_only')}
         actions={
           !vault.archived_at && (
-            <Button data-testid="credential-add" size="sm" disabled={busy} onClick={() => setCredentialOpen(true)}>
+            <Button data-testid="credential-add" size="sm" disabled={busy} onClick={openCredentialForm}>
               <Plus className="size-4" />
               {t('manage:credentials.add_credential')}
             </Button>
@@ -432,6 +487,9 @@ export default function CredentialVaultPage() {
                   <div className="t-copy-sm truncate text-muted-foreground">
                     {credentialTypeLabel(credential.auth.type, t)} ·{' '}
                     <span className="font-mono">{credentialTarget(credential)}</span>
+                    {credential.auth.type === 'environment_variable' && (
+                      <> · {environmentDeliveryLabel(credential.auth, t)}</>
+                    )}
                   </div>
                   {/* An expiry is the one fact about a credential that changes
                       with nobody touching it: a conversation that reaches for
@@ -599,6 +657,34 @@ export default function CredentialVaultPage() {
               </SelectContent>
             </Select>
           </Label>
+          {credentialType === 'environment_variable' && headerDeliveryAvailable && (
+            <>
+              <Label className="block space-y-1.5 text-sm font-normal">
+                <span>{t('manage:credentials.delivery_mode')}</span>
+                <Select
+                  items={credentialDeliveryOptions}
+                  value={credentialDelivery}
+                  // A cleared select names no delivery; the previous one stands.
+                  onValueChange={(value) => { if (value !== null) setCredentialDelivery(value); }}
+                >
+                  <SelectTrigger data-testid="credential-delivery" className="w-full"><SelectValue /></SelectTrigger>
+                  {/* Anchored like the type select above. */}
+                  <SelectContent align="start" alignItemWithTrigger={false}>
+                    {credentialDeliveryOptions.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Label>
+              {headerDelivery && (
+                <p className="text-sm text-muted-foreground">
+                  {t('manage:credentials.delivery_header_help')}
+                </p>
+              )}
+            </>
+          )}
           <Label className="block space-y-1.5 text-sm font-normal">
             <span>{t('manage:credentials.credential_name')}</span>
             <Input value={credentialName} onChange={(event) => setCredentialName(event.target.value)} />
@@ -634,14 +720,14 @@ export default function CredentialVaultPage() {
               </Label>
             </>
           )}
-          {credentialType === 'mcp_static_header' && (
+          {(credentialType === 'mcp_static_header' || headerDelivery) && (
             <Label className="block space-y-1.5 text-sm font-normal">
               <span>{t('manage:credentials.header_name')}</span>
               <Input
                 data-testid="credential-header-name"
                 value={credentialHeaderName}
                 onChange={(event) => setCredentialHeaderName(event.target.value)}
-                placeholder="apikey"
+                placeholder={headerDelivery ? 'Authorization' : 'apikey'}
               />
             </Label>
           )}
@@ -658,8 +744,13 @@ export default function CredentialVaultPage() {
           </Label>
           {credentialType === 'environment_variable' && (
             <Label className="block space-y-1.5 text-sm font-normal">
-              <span>{t('manage:credentials.allowed_hosts')}</span>
-              <Input data-testid="credential-allowed-hosts" value={allowedHosts} onChange={(event) => setAllowedHosts(event.target.value)} placeholder="api.example.com, uploads.example.com" />
+              <span>{t(headerDelivery ? 'manage:credentials.allowed_domains' : 'manage:credentials.allowed_hosts')}</span>
+              <Input
+                data-testid="credential-allowed-hosts"
+                value={allowedHosts}
+                onChange={(event) => setAllowedHosts(event.target.value)}
+                placeholder={headerDelivery ? 'api.example.com, *.example.com' : 'api.example.com, uploads.example.com'}
+              />
             </Label>
           )}
           {credentialType === 'mcp_oauth' && (

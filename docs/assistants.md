@@ -203,8 +203,10 @@ conversation depends on when Hermes reads the setting:
 
 After a restart, the Assistant's other conversations continue with their
 history on their next message. If Hermes restarts for any other reason while
-a reply is in progress, that reply ends with an error saying the backend lost
-it, and the conversation accepts the next message.
+a reply is in progress, that reply ends and Hermes does not run that message
+again: a clean shutdown stops it and says so, and a gateway that died without
+settling it ends it with an error saying its outcome is unknown. Messages
+already sent behind it are answered in order once the conversation reconnects.
 
 A conversation that cannot be prepared ends and shows why, for example when
 the Assistant names an MCP server but its RuntimeProfile does not allow MCP
@@ -249,7 +251,9 @@ a messaging channel such as Telegram or Slack, a schedule, or a webhook.
 Open **Management console → Deployments**, select **New trigger**, and pick
 the Assistant under **Agent or Assistant**. Only the Assistant's owner can
 create or change its triggers, and every conversation they start runs as the
-owner.
+owner. A trigger is the only way a messaging app reaches the Assistant: a bot
+token among the RuntimeProfile's variables reaches the agent's tools, but
+Hermes' own gateway is kept off every messaging platform.
 
 A channel bot accepts direct messages from anyone who finds it, so a channel
 trigger on an Assistant must list the owner's own account under **Allowed
@@ -310,7 +314,7 @@ access in the RuntimeProfile. A connection belongs to the account that made it;
 each Assistant and Agent uses only the connectors turned on for it. When an
 agent needs an app the person has not connected, it can show them a card to
 connect it in the conversation. Turning a connector on or off restarts the
-Assistant's Hermes backend once no reply is running, as for any MCP change.
+Assistant's Hermes gateway once no reply is running, as for any MCP change.
 
 **Disconnect** removes the token from the hub. It does not withdraw the access
 at the vendor; to do that, remove the app in the vendor's account settings as
@@ -360,13 +364,10 @@ than its test users can connect.
 ## Long conversations
 
 When a conversation grows long, Hermes summarizes its older part so it fits the
-model's context window. AstraBox asks Hermes to do this while the conversation
-is quiet, shortly after a reply, once the context is 40% full, so the summary
-is ready before a reply would need it. A message sent while the summary is
-being made is answered at once, on the full conversation, and the summary is
-made again at the next quiet moment. Hermes decides the model's context window
-itself, from what the model endpoint reports or, when it reports nothing, from
-the model's name.
+model's context window. It does so during a reply, once the context passes its
+own threshold, and that reply waits for the summary. Hermes decides the model's
+context window itself, from what the model endpoint reports or, when it reports
+nothing, from the model's name.
 
 ## Pause and resume the workspace
 
@@ -448,11 +449,12 @@ request conventions.
 
 ## Runtime protocol compatibility
 
-Hermes images advertise their executor completion classification through the
-native `gateway.capabilities` build probe. A core requiring that classification
-refuses an image that does not advertise it before opening a native conversation
-or submitting a prompt. Deploy the core and its corresponding sandbox image
-together; an application version alone does not identify an overlay image's protocol.
+AstraBox drives Hermes' gateway over its canonical protocol, `hermes-gateway-v1`.
+Before opening a native conversation, the core reads the gateway's
+`runtime.describe` and refuses an image that does not advertise durable
+admission, event replay and the per-conversation tool environment on
+`session.create`. Deploy the core and its corresponding sandbox image together;
+an application version alone does not identify an overlay image's protocol.
 
 An unreadable execution event stops that Session's reader with
 `runtime_protocol_incompatible`. The page shows recovery required and the
@@ -462,13 +464,15 @@ remain intact. The platform does not mark a live box unavailable, guess a tool's
 outcome, skip the event, or replay an admitted task.
 
 Correct the runtime protocol before explicitly recovering the Session. If the
-same native epoch retains the event ring, recovery reads from the stored cursor.
-Replacing the native process or box does not retain that ring; this mechanism
-alone does not recover previously unread completed tool events from SessionDB.
+same gateway instance still holds the conversation's event ring, recovery reads
+from the stored cursor. Restarting the gateway or replacing the box does not
+retain that ring; this mechanism alone does not recover previously unread
+completed tool events from SessionDB.
 
 A conversation blocked by a runtime protocol fault can still be ended or
-archived. These operations close its recorded native conversation on the existing
-workspace; they do not require execution protocol compatibility or release the
+archived. These operations end its recorded native conversation on the existing
+workspace: its queued messages are withdrawn, a running reply is stopped, and
+the conversation leaves Hermes' list of live sessions. They do not release the
 shared sandbox. A native cleanup failure returns an error and leaves the
 conversation open for a retry. Ordinary working conversations remain protected
 from end or archive.

@@ -421,6 +421,9 @@ for _code, _status, _category, _retryable, _owner in (
     # Optional engine protocols are requested by the caller. An engine that
     # does not declare one is healthy; the requested operation is unavailable.
     ("ENGINE_CAPABILITY_UNAVAILABLE", 409, "request", False, "client"),
+    # An input whose delivery frame exceeds the runner link's message limit;
+    # sending it again fails the same way.
+    ("RUNTIME_INPUT_TOO_LARGE", 413, "request", False, "client"),
     # A malformed manifest is an adapter integration defect, not a turn or
     # sandbox failure, and retrying the same deployed code cannot repair it.
     ("ENGINE_CAPABILITY_CONTRACT_VIOLATION", 502, "runtime.engine", False, "platform"),

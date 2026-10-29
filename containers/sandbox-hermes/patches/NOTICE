@@ -2,17 +2,15 @@ Hermes Agent 0.22.4, commit 4d04303818b61bf3aa09278af48356315515965b
 Patches originally derived from Hermes Agent 0.21.5, commit f97608f178d1ffeca59860195ab7da295f7c8e5f
 https://github.com/NousResearch/hermes-agent
 
-AstraBox patch: typed per-Session tool environment carried by the native
-Session ContextVars and existing child-process environment builder.
-The supplier agent loop, SessionDB, queues and lifecycle remain native.
+AstraBox patch: typed per-Session tool environment on the canonical gateway's
+session.create and session.resume, held in the session owner's memory, bound
+to that session's turns through a native ContextVar, and applied by the
+existing child-process environment builder. The supplier agent loop,
+SessionDB, admission ledger and lifecycle remain native.
 
 AstraBox patch: distinguish configured A2A peer keys from discovery URLs and
 propagate Agent Card errors before dispatch. Direct URLs do not inherit a
 configured peer's credentials.
-
-AstraBox patch: carry Hermes' existing tool failure classification in its typed
-TUI completion event. The platform maps that native flag to the public tool
-error state without reinterpreting business result fields.
 
 MIT License
 

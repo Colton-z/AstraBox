@@ -9,12 +9,14 @@ import type { TFunction } from 'i18next';
 import useSWR from 'swr';
 import useSWRInfinite from 'swr/infinite';
 import { keepsLastRead } from './hooks/useKeepCurrent';
-import { Archive, Bell, Bot, Check, Hammer, LoaderCircle } from 'lucide-react';
+import { Archive, Bell, Bot, Check, Hammer, LoaderCircle, MoreHorizontal, Pencil } from 'lucide-react';
+import { toast } from 'sonner';
 
 import {
   archiveSession,
   getCurrentUser,
   listSessionsPage,
+  renameSession,
 } from './api';
 import type {
   SessionListPage,
@@ -31,6 +33,12 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
   SidebarGroup,
   SidebarGroupContent,
   SidebarGroupLabel,
@@ -45,6 +53,7 @@ import { AgentHome } from './components/AgentHome';
 import { AgentPage } from './components/AgentPage';
 import { StatusPill, toneForSession } from './components/AstraConsole';
 import { SessionPage } from './session/SessionPage';
+import { SessionTitleInput } from './session/components/SessionTitleInput';
 import { AssistantRail } from './assistant/AssistantRail';
 import { AssistantMainRoute } from './assistant/AssistantMainRoute';
 import { UserMenu } from './components/UserMenu';
@@ -132,6 +141,10 @@ export default function App() {
 
   const routeLoading = false;
   const [archivePhases, setArchivePhases] = useState<Record<string, ArchivePhase>>({});
+  const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
+  // Choosing Rename closes the row's menu, which would hand focus back to its
+  // trigger and take it from the title field that replaces the row.
+  const renameChosen = useRef(false);
   const [actionError, setActionError] = useState('');
   const sessions = useMemo(
     () => sessionPages.flatMap((page) => page.sessions),
@@ -187,9 +200,28 @@ export default function App() {
     navigate(`/sessions/${sessionId}`);
   };
 
-  const archive = async (session: SessionRecord, event: React.MouseEvent<HTMLButtonElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
+  const stopRenaming = () => {
+    renameChosen.current = false;
+    setRenamingSessionId(null);
+  };
+
+  // The row shows the new title at once; the list's next read is the server's
+  // answer, so a refused title goes back to the stored one.
+  const rename = async (sessionId: string, title: string) => {
+    stopRenaming();
+    await mutateSessions((currentPages) => currentPages?.map((page) => ({
+      ...page,
+      sessions: page.sessions.map((item) => (item.session_id === sessionId ? { ...item, title } : item)),
+    })), { revalidate: false });
+    try {
+      await renameSession(sessionId, title);
+    } catch (err) {
+      toast.error(t('shell:session_rename_failed'), { description: (err as Error).message });
+    }
+    void mutateSessions();
+  };
+
+  const archive = async (session: SessionRecord) => {
     const sessionId = session.session_id;
     if (archivePhases[sessionId]) return;
     setArchivePhases((current) => ({ ...current, [sessionId]: 'pending' }));
@@ -278,16 +310,13 @@ export default function App() {
                   const isActive = location.pathname === `/sessions/${s.session_id}`;
                   const unread = !isActive && isUnread(s);
                   const archivePhase = archivePhases[s.session_id];
-                  const ArchiveStateIcon = archivePhase === 'pending'
-                    ? LoaderCircle
-                    : archivePhase === 'success'
-                      ? Check
-                      : Archive;
-                  const archiveLabel = archivePhase === 'pending'
+                  const ArchiveStateIcon = archivePhase === 'pending' ? LoaderCircle : Check;
+                  const actionLabel = archivePhase === 'pending'
                     ? t('shell:session_archiving')
                     : archivePhase === 'success'
                       ? t('shell:session_archived')
-                      : t('shell:session_archive');
+                      : t('shell:session_more_actions');
+                  const renaming = renamingSessionId === s.session_id;
                   return (
                     <SidebarMenuItem
                       key={s.session_id}
@@ -299,8 +328,21 @@ export default function App() {
                         archivePhase === 'success' && 'max-h-0 -translate-x-1 opacity-0',
                       )}
                     >
-                      {/* Selected reads the same here as in every other rail —
-                          RAIL_ROW_ACTIVE owns that, and owns why. */}
+                      {/* The field takes the link's place: inside a link, every
+                          click on the text being edited would open the
+                          conversation. */}
+                      {renaming ? (
+                        <div className="flex items-center gap-2 p-1.5">
+                          <Icon className="size-4 shrink-0 text-sidebar-foreground/55" />
+                          <SessionTitleInput
+                            title={sessionDisplayName(s)}
+                            onSubmit={(title) => { void rename(s.session_id, title); }}
+                            onCancel={stopRenaming}
+                          />
+                        </div>
+                      ) : (
+                      /* Selected reads the same here as in every other rail —
+                         RAIL_ROW_ACTIVE owns that, and owns why. */
                       <SidebarMenuButton
                         render={<Link to={`/sessions/${s.session_id}`} />}
                         isActive={isActive}
@@ -369,34 +411,45 @@ export default function App() {
                           </TruncatingRow>
                         </span>
                       </SidebarMenuButton>
-                      <Tooltip>
-                        <SidebarMenuAction
-                          render={<span />}
-                          showOnHover
-                          className={cn(
-                            'right-1.5 top-1/2 size-6 -translate-y-1/2 rounded-md bg-transparent text-sidebar-foreground/45 opacity-0 shadow-none transition-[opacity,transform,background-color,color] duration-150 ease-out hover:bg-sidebar-accent hover:text-sidebar-accent-foreground hover:shadow-none disabled:pointer-events-none disabled:opacity-100 peer-data-[size=default]/menu-button:top-1/2 peer-data-[size=lg]/menu-button:top-1/2 peer-data-[size=sm]/menu-button:top-1/2',
-                            archivePhase === 'pending' && 'opacity-100 text-muted-foreground',
-                            archivePhase === 'success' && 'bg-transparent text-sidebar-accent-foreground opacity-100',
-                          )}
+                      )}
+                      {/* Kept mounted while the field is open, so the menu that
+                          closed to open it still has the trigger it belongs to. */}
+                      <DropdownMenu>
+                        <DropdownMenuTrigger
+                          disabled={Boolean(archivePhase)}
+                          render={
+                            <SidebarMenuAction
+                              showOnHover
+                              aria-label={actionLabel}
+                              className={cn(
+                                'right-1.5 top-1/2 size-6 -translate-y-1/2 rounded-md bg-transparent text-sidebar-foreground/45 opacity-0 shadow-none transition-[opacity,transform,background-color,color] duration-150 ease-out hover:bg-sidebar-accent hover:text-sidebar-accent-foreground hover:shadow-none disabled:pointer-events-none disabled:opacity-100 peer-data-[size=default]/menu-button:top-1/2 peer-data-[size=lg]/menu-button:top-1/2 peer-data-[size=sm]/menu-button:top-1/2',
+                                archivePhase === 'pending' && 'opacity-100 text-muted-foreground',
+                                archivePhase === 'success' && 'bg-transparent text-sidebar-accent-foreground opacity-100',
+                                renaming && 'hidden',
+                              )}
+                            />
+                          }
                         >
-                          <TooltipTrigger
-                            render={
-                              <button
-                                type="button"
-                                className="flex size-full items-center justify-center rounded-[inherit]"
-                                aria-label={archiveLabel}
-                                aria-disabled={Boolean(archivePhase)}
-                                onClick={(event) => { void archive(s, event); }}
-                              />
-                            }
+                          {archivePhase
+                            ? <ArchiveStateIcon className={cn('size-3.5', archivePhase === 'pending' && 'animate-spin')} />
+                            : <MoreHorizontal className="size-3.5" />}
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" finalFocus={() => !renameChosen.current}>
+                          <DropdownMenuItem
+                            onClick={() => {
+                              renameChosen.current = true;
+                              setRenamingSessionId(s.session_id);
+                            }}
                           >
-                            <ArchiveStateIcon className={cn('size-3.5', archivePhase === 'pending' && 'animate-spin')} />
-                          </TooltipTrigger>
-                        </SidebarMenuAction>
-                        <TooltipContent side="top" align="center" sideOffset={6}>
-                          {archiveLabel}
-                        </TooltipContent>
-                      </Tooltip>
+                            <Pencil />
+                            {t('shell:session_rename')}
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => { void archive(s); }}>
+                            <Archive />
+                            {t('shell:session_archive')}
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     </SidebarMenuItem>
                   );
                 })}

@@ -143,7 +143,9 @@ request.
 For a service that uses a custom request header, use `mcp_static_header`. To
 make another service credential available as an environment variable, use
 `environment_variable`; see [Protect credentials used by Agents](egress-credential-injection.md)
-for its host and request restrictions.
+for its host and request restrictions, and for
+[header delivery](egress-credential-injection.md#header-delivery), which
+replaces the placeholder only in one named request header.
 
 #### Private Git repositories for Plugins and Skills {#private-git-repositories}
 
@@ -238,13 +240,14 @@ credentials.
 | `auth.mcp_server_url` | string | Yes for MCP credentials | Remote MCP server URL |
 | `auth.token` | string | Yes for `static_bearer` | Bearer token value; write-only |
 | `auth.access_token` | string | Yes when importing `mcp_oauth` | OAuth access token; write-only |
-| `auth.header_name` | string | Yes for `mcp_static_header` | Custom request-header name |
+| `auth.header_name` | string | Yes for `mcp_static_header`, and for `environment_variable` with `delivery: "header"` | Custom request-header name |
 | `auth.value` | string | Yes for `mcp_static_header` | Custom request-header value; write-only |
 | `auth.url` | string | Yes for `http_basic` | Clean HTTPS destination URL with a non-root path |
 | `auth.username` | string | Yes for `http_basic` | HTTP Basic username; no colon or control characters |
 | `auth.password` | string | Yes for `http_basic` | Password or access token; write-only |
 | `auth.secret_name` | string | Yes for `environment_variable` | Environment variable name |
 | `auth.secret_value` | string | Yes for `environment_variable` | Secret value; write-only |
+| `auth.delivery` | string | No | `environment_variable` only: `substitution` (default) or `header`; see [header delivery](egress-credential-injection.md#header-delivery) |
 | `auth.expires_at` | string | No | OAuth access-token expiration time in RFC 3339 format |
 | `auth.refresh` | object | No | OAuth refresh configuration |
 
@@ -282,9 +285,9 @@ Credential.
 
 **Q: Can I update a Credential's token?** A: Yes. A `PATCH` request rotates the
 supplied write-only secret fields. The credential type, MCP server URL, custom
-header name, HTTP Basic destination URL and username, environment variable name,
-OAuth token endpoint, and OAuth client ID are immutable; archive the Credential
-and create a new one to change them.
+header name, HTTP Basic destination URL and username, environment variable name
+and delivery, OAuth token endpoint, and OAuth client ID are immutable; archive
+the Credential and create a new one to change them.
 
 **Q: How many Vaults can a Session reference?** A: There's no hard limit, but group by service for clarity.
 

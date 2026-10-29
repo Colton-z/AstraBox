@@ -5,9 +5,10 @@
 # This is the container the sandbox backend spawns for an assistant (per-user)
 # workspace, the counterpart to the per-session claude-code image. It bakes the
 # public MIT-licensed Hermes agent (`hermes-agent`) into an image-owned
-# virtualenv. AstraBox starts the official TUI JSON-RPC entry point for each
-# conversation through OpenSandbox execd; no Hermes application port is opened.
-# Per-user HERMES_HOME/profile/session state is supplied at runtime, not baked in.
+# virtualenv and supervises Hermes' gateway daemon (`hermes gateway run`), which
+# serves every conversation of the workspace; the platform reaches it through
+# the in-box bridge below. Per-user HERMES_HOME/profile/session state is
+# supplied at runtime, not baked in.
 #
 # Build (repo-root context):
 #   docker build -t astrabox/sandbox-hermes:latest -f containers/sandbox-hermes/Dockerfile .
@@ -15,7 +16,7 @@
 # Base image: the same PUBLIC AIO Sandbox base as the Claude Code image. Its
 # entrypoint creates the workload account and keeps the base lifecycle alive.
 # OpenSandbox's native execd and Filesystem APIs provide commands and file
-# transport. Conversation-scoped Hermes processes start later through execd PTY.
+# transport.
 ARG SANDBOX_BASE_IMAGE=ghcr.io/agent-infra/sandbox:1.11.0
 
 # Official release source retains the supplier's bundled assets beside its Python
@@ -43,7 +44,6 @@ ARG HERMES_MEMORY_PROVIDER_PIP=
 USER root
 
 ENV HERMES_VENV=${HERMES_VENV} \
-    ASTRABOX_HERMES_AUTOSTART=false \
     BOOTSTRAP_CMD="bash -c '/usr/local/bin/astrabox-hermes-bootstrap'"
 
 # Keep the vendor source and virtualenv outside the mutable profile home.
@@ -74,16 +74,16 @@ RUN --mount=type=bind,from=hermes-source,source=/hermes-source.tar.gz,target=/tm
     unset HERMES_RUNTIME_DIR; \
     command -v hermes; \
     hermes --version; \
-    hermes serve --help; \
+    hermes gateway run --help; \
     hermes backup --help; \
     hermes import --help; \
-    "${HERMES_VENV}/bin/python" -c 'import tui_gateway.entry'
+    "${HERMES_VENV}/bin/python" -c 'import gateway.session_controls'
 
 # Native PM metadata is non-secret and must be readable by sandbox accounts.
 RUN chmod 0644 /opt/hermes/source/tools/facts.json && \
     rm -f "${HERMES_VENV}/.lock" /opt/hermes/source/pm-runtime/.lock
 
-# The editable supplier install keeps this typed extension in the image without
+# The editable supplier install keeps these typed extensions in the image without
 # rebuilding its dependencies or changing its native SessionStore and loop.
 COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/patches/ /opt/astrabox/hermes-patches/
 RUN git -C /opt/hermes/source apply --check /opt/astrabox/hermes-patches/session-tool-environment.patch \
@@ -92,8 +92,6 @@ RUN git -C /opt/hermes/source apply --check /opt/astrabox/hermes-patches/a2a-pee
     && git -C /opt/hermes/source apply /opt/astrabox/hermes-patches/a2a-peer-errors.patch
 RUN git -C /opt/hermes/source apply --check /opt/astrabox/hermes-patches/a2a-discovery-scope.patch \
     && git -C /opt/hermes/source apply /opt/astrabox/hermes-patches/a2a-discovery-scope.patch
-RUN git -C /opt/hermes/source apply --check /opt/astrabox/hermes-patches/tool-completion-status.patch \
-    && git -C /opt/hermes/source apply /opt/astrabox/hermes-patches/tool-completion-status.patch
 
 # astrabox-hermes-config-merge installs plugin dependencies with Hermes' own
 # installer, and the profile setup writes the owner's configuration to its
@@ -137,38 +135,27 @@ RUN set -eux; \
     chmod +x /usr/local/bin/astrabox-patch-aio-python-server; \
     bash /usr/local/bin/astrabox-patch-aio-python-server /home/conversations
 
-# Hermes' headless backend, as a service of this image.
-#
-# `hermes serve` fronts the same `tui_gateway.server.dispatch` the TUI speaks
-# over stdio — the wire is identical, so nothing about the host's event
-# translation depends on which one it dials. What the image owning it buys is
-# in `docs/maintainers/hermes-transport.md`: no PTY (so Hermes does not
-# decorate its reasoning stream for a terminal it thinks it has), and an engine
-# that comes back with a resumed box instead of with the next user's first
-# message.
-# hermes_host_relay.py publishes the loopback-bound backend on the sandbox's
-# outward port; astrabox-hermes-serve explains why the backend does not bind
-# outward itself, and the relay why a byte-for-byte TCP proxy is not enough.
+# Hermes' gateway daemon, as a service of this image, kept off every messaging
+# platform, with its state mirror and the bridge that publishes its loopback,
+# ticket-gated WebSocket on the sandbox's outward port (astrabox-hermes-serve,
+# hermes_gateway_platforms.py, hermes_gateway_bridge.py).
 COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/astrabox-hermes-serve /usr/local/bin/astrabox-hermes-serve
-COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/astrabox-hermes-forward /usr/local/bin/astrabox-hermes-forward
 # Hermes seeds these defaults into each writable profile and keeps user edits
 # through its native bundled-skill manifest, including across image updates.
 COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/skills/ /opt/hermes/source/skills/astrabox-platform/
-COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/hermes_native_store.py containers/sandbox-hermes/hermes_profile_state.py containers/sandbox-hermes/hermes_state_transport.py containers/sandbox-hermes/hermes_state_bootstrap.py containers/sandbox-hermes/hermes_state_mirror.py containers/sandbox-hermes/hermes_host_relay.py containers/sandbox-hermes/hermes_scheduler.py /opt/astrabox/hermes/
+COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/hermes_native_store.py containers/sandbox-hermes/hermes_profile_state.py containers/sandbox-hermes/hermes_state_transport.py containers/sandbox-hermes/hermes_state_bootstrap.py containers/sandbox-hermes/hermes_state_mirror.py containers/sandbox-hermes/hermes_gateway_bridge.py containers/sandbox-hermes/hermes_gateway_platforms.py containers/sandbox-hermes/hermes_gateway_prepare.py /opt/astrabox/hermes/
 COPY --chmod=u=rwX,go=rX astrabox/core/service/orchestrator/runtime/astrabox-transcript-mirror /usr/local/bin/astrabox-transcript-mirror
 COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/supervisord.hermes.conf /opt/gem/supervisord/supervisord.hermes.conf
 RUN set -eux; \
     chmod 0555 /usr/local/bin/astrabox-hermes-serve; \
-    chmod 0555 /usr/local/bin/astrabox-hermes-forward; \
     chmod 0555 /usr/local/bin/astrabox-transcript-mirror; \
     bash -n /usr/local/bin/astrabox-hermes-serve; \
-    bash -n /usr/local/bin/astrabox-hermes-forward; \
     "${HERMES_VENV}/bin/python" -c 'import ast, pathlib; [ast.parse(p.read_text()) for p in pathlib.Path("/opt/astrabox/hermes").glob("*.py")]'; \
     "${HERMES_VENV}/bin/python" -c 'import ast, pathlib; ast.parse(pathlib.Path("/usr/local/bin/astrabox-transcript-mirror").read_text())'; \
-    PYTHONPATH=/opt/astrabox/hermes "${HERMES_VENV}/bin/python" -c 'import hermes_native_store, hermes_profile_state, hermes_state_transport, hermes_state_bootstrap, hermes_state_mirror, hermes_host_relay, hermes_scheduler'; \
+    PYTHONPATH=/opt/astrabox/hermes "${HERMES_VENV}/bin/python" -c 'import hermes_native_store, hermes_profile_state, hermes_state_transport, hermes_state_bootstrap, hermes_state_mirror, hermes_gateway_bridge, hermes_gateway_platforms, hermes_gateway_prepare'; \
     supervisord --version
 
-# Bootstrap only the base sandbox services; the backend above is supervised.
+# Bootstrap only the base sandbox services; the gateway above is supervised.
 RUN set -eux; \
     { \
       printf '%s\n' '#!/usr/bin/env bash'; \

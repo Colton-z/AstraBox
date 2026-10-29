@@ -12,7 +12,9 @@ journal through one :class:`RunnerLink` and reports it as runtime events:
 * An input is admitted when Claude takes it: it is then in Claude's own
   transcript, which a replacement runtime resumes.
 * A cursor is the runner process's ``boot_id`` and a position ``(seq, index)``:
-  the ``index``-th event translated from journal frame ``seq``. Translation
+  the ``index``-th event translated from journal frame ``seq``, or the whole
+  frame once its last event is read. A frame read whole is passed over on a
+  later replay however that replay translates it. Translation
   rebuilds the open response from the retained frames and restores native child
   identities from the SessionStore mirror. Child Agents can outlive a Result
   and its compacted journal prefix; their identity does not expire with it.
@@ -72,6 +74,7 @@ from astrabox.core.service.orchestrator.engine.runtime import (
     RuntimeDiagnostic,
     RuntimeEvent,
     RuntimeInput,
+    RuntimeProtocolError,
     RuntimeState,
     RuntimeStatus,
     StatusChanged,
@@ -564,11 +567,15 @@ class ClaudeRuntimeClient:
                 if not self._children_restored:
                     await self._restore_children()
                 seq = int(frame["seq"])
-                for index, event in enumerate(self._translation.translate(frame)):
+                events = self._translation.translate(frame)
+                for index, event in enumerate(events):
                     if (seq, index) <= through:
                         continue
-                    cursor = RuntimeCursor(self._boot_id, {"seq": seq, "index": index})
+                    position = _WHOLE_FRAME if index == len(events) - 1 else index
+                    cursor = RuntimeCursor(self._boot_id, {"seq": seq, "index": position})
                     yield dataclasses.replace(event, cursor=cursor)
+            if (fault := self._link.protocol_fault) is not None:
+                raise RuntimeProtocolError(fault)
         finally:
             self._reading = False
 
@@ -682,10 +689,12 @@ class ClaudeRuntimeClient:
         await self._link.interrupt(target)
 
     async def committed(self, cursor: RuntimeCursor) -> None:
-        # Only frames read whole: the platform may hold just some of the
-        # events of the frame the cursor points into.
+        # Only frames read whole: a cursor inside a frame leaves the platform
+        # holding just some of that frame's events.
         if cursor.generation == self._boot_id:
-            await self._link.acknowledge_persisted(int(cursor.position.get("seq", 0)) - 1)
+            seq = int(cursor.position.get("seq", 0))
+            whole = int(cursor.position.get("index", _WHOLE_FRAME)) == _WHOLE_FRAME
+            await self._link.acknowledge_persisted(seq if whole else seq - 1)
 
     async def capabilities(self) -> EngineCapabilityManifest:
         return EngineCapabilityManifest(

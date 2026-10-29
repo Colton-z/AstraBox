@@ -128,6 +128,10 @@ class VaultCredential(Base):
     allowed_methods: Mapped[list[str] | None] = mapped_column(StringList())
     allowed_paths: Mapped[list[str] | None] = mapped_column(StringList())
     allow_insecure_http: Mapped[bool | None]
+    #: How an ``environment_variable`` credential reaches the egress boundary:
+    #: ``substitution`` or ``header`` (``astrabox/seams/egress_credentials.py``).
+    #: ``NULL`` for every other credential type.
+    delivery: Mapped[str | None] = mapped_column(payload_text())
     archived_at: Mapped[datetime | None]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())

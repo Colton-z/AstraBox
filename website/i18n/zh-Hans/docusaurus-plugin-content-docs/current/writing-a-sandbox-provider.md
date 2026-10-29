@@ -80,6 +80,7 @@ provider 类上的能力标志说明后端支持什么。注册时，声明为 t
 | `supports_client_pool` | 客户端池的各项操作、`owns_unclaimed_sandbox` 和 `client_pool_readiness` |
 | `supports_correlated_create` | `find_sandbox_by_assignment` |
 | `supports_egress_credential_injection` | `apply_credential_vault` |
+| `supports_header_placeholder_credentials` | `apply_credential_vault`；只在每个请求头投递凭证指定的请求头中、为它所列的主机替换占位符 |
 | `supports_inventory_listing` | `list_sandboxes` 和 `describe_sandbox` |
 | `supports_process_sessions` | 句柄的 `processes` |
 
@@ -87,6 +88,18 @@ provider 类上的能力标志说明后端支持什么。注册时，声明为 t
 `supports_create_network_policy` 时的任何 RuntimeProfile；没有 `supports_isolated_sessions`
 时的沙箱共享；没有 `supports_pause` 时的 `Pause` 空闲行为；客户端池未就绪时的预热容量；
 以及不共享沙箱时，没有 `supports_process_sessions` 的 Pi Agent 程序或 Agent 终端面板。
+
+`supports_header_placeholder_credentials` 独立于 `supports_egress_credential_injection`，
+也独立于 `ASTRABOX_SANDBOX_CREDENTIAL_VAULT`。声明它的 provider 会在
+`SandboxEgressCredentialPlan.environment` 中收到 `delivery` 为 `header` 的
+`environment_variable` 凭证：为它们新建沙箱时随创建规格的 `vault_write` 收到；沙箱已经存在时
+（预备 slot、领取、放入共享沙箱、重连或恢复）通过 `apply_credential_vault` 收到。携带环境变量
+项的计划总是包含该工作负载当前持有的全部环境变量项。重连或恢复时还会传入
+`managed_credential_names`：此前投递过的每个环境变量凭证的 `credential_id`；计划不再携带的那些
+要停止投递，计划其余部分为空时也是如此。既不含环境变量项、也不带这些名字的计划不改变它们。
+需要遵守的承诺见 `astrabox/seams/egress_credentials.py` 中的 "Header delivery"。没有任何已启用的
+后端声明这项能力时，创建这种凭证会被拒绝；绑定了这种凭证的 Session 在所选后端不支持时，会在
+分配沙箱前被拒绝。
 
 `supports_correlated_create` 决定建箱途中平台重启后能恢复什么。声明了它，AstraBox 会用
 `find_sandbox_by_assignment` 找回被中断的那次启动可能建出的沙箱并继续使用。没有声明，

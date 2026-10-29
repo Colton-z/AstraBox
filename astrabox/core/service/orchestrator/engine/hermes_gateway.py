@@ -1,37 +1,29 @@
-"""One resident Hermes TUI Gateway process per (sandbox, Assistant profile).
+"""This host's connection to the Hermes gateway of one (sandbox, Assistant profile).
 
-The pinned ``hermes-agent`` gateway is a native multi-session runtime:
-``session.create`` allocates ids into a process-wide registry, every RPC and
-event is ``session_id``-scoped, and each turn runs on its own per-session
-thread. That is the same class of vendor seam as Codex ``thread/start`` and
-Copilot ``session.create`` in the prepared-runtime audit
-(``docs/maintainers/claude-runtime-preparation.md``), so Hermes' prepared unit
-is legitimately multi-use: one gateway process per (user, assistant) profile,
-activated per conversation through ``session.create`` / ``session.resume``.
-The engine-specific decision record is
-``docs/maintainers/hermes-runtime-preparation.md``.
+The box runs Hermes' gateway daemon (``hermes gateway run``) as a service of
+its image: one session owner for every conversation of the profile, with each
+conversation one gateway session (``session.create`` / ``session.resume``),
+every RPC and event scoped by ``session_id``, and turns admitted into the
+session's durable FIFO. The image's bridge publishes the daemon's canonical
+``hermes-gateway-v1`` WebSocket to this host
+(``containers/sandbox-hermes/hermes_gateway_bridge.py``).
 
-This module owns host-side residency for that process:
+This module owns host-side residency for that connection:
 
-* :class:`HermesGatewayHandle` holds exactly one WebSocket attachment
-  (:class:`~.hermes_client.HermesTuiProcess`) and one pump task that fans the
-  backend's events and requests out to per-``tui_session_id``
+* :class:`HermesGatewayHandle` holds exactly one connection
+  (:class:`~.hermes_client.HermesGatewayConnection`) and one pump task that
+  fans the gateway's events and requests out to per-``session_id``
   subscriptions, so every conversation client is a session-scoped consumer
-  and every RPC write is serialized through the one attachment. Each
-  attachment tells the backend it answers server→client requests
-  (``client.capabilities``), which is what lets an approval or a clarify
-  question reach the conversation at all.
+  and every RPC write is serialized through the one connection. Each
+  connection reads ``runtime.describe`` before it is used, which names the
+  gateway instance and proves the box serves the protocol this adapter speaks.
 * :func:`resolve_gateway_handle` obtains the handle: within one host process
-  an asyncio lock admits exactly one attacher per (sandbox, profile), so the
+  an asyncio lock admits exactly one connector per (sandbox, profile), so the
   pump and its subscriptions are built once.
 
-There is nothing to elect across hosts. The backend is `hermes serve`, a
-service of the image supervised inside the box, so no host owns it and every
-host simply connects — where a PTY-era resolution had to arbitrate which host
-had spawned the one true gateway, publish that under a compare-and-set, probe
-a recorded PTY to tell dead from live, and destroy the loser's spawn. All of
-that is deleted; see docs/maintainers/hermes-transport.md for why the
-transport moved and what it cost.
+There is nothing to elect across hosts. The gateway is supervised inside the
+box, so no host owns it and every host simply connects; each host's
+connection is a separate viewer of the sessions it resumes.
 """
 
 from __future__ import annotations
@@ -39,29 +31,29 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from typing import Any, Awaitable, Callable, Protocol
-
-import httpx
+from typing import Any, Awaitable, Callable
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator.engine.base import EngineStreamDetached
 from astrabox.core.service.orchestrator.engine.hermes_client import (
-    HermesTuiProcess,
-    HermesTuiRpcError,
-    HermesTuiWireEvent,
+    HermesGatewayConnection,
+    HermesGatewayFrame,
+    HermesGatewayRpcError,
     _RPC_TIMEOUT_SECONDS,
 )
+from astrabox.core.service.orchestrator.engine.runtime import RuntimeProtocolError
+
 logger = get_logger(__name__)
 
-#: How long an attach may spend waiting for a backend that is still starting.
+#: How long an attach may spend waiting for a gateway that is still starting.
 #: It covers the box-side chain a first materialization releases — profile
-#: written, Hermes composing its profile, forwarder waiting for an answer —
-#: and no more: past it, a backend that is not listening is a broken box.
+#: written, Hermes composing its profile, bridge waiting for the gateway — and
+#: no more: past it, a gateway that is not reachable is a broken box.
 _ATTACH_BUDGET_SECONDS = 120.0
 _ATTACH_RETRY_SECONDS = 1.0
 
-#: How often, and for how long, a restart of the backend waits for the work
+#: How often, and for how long, a restart of the gateway waits for the work
 #: already running in it. The budget matches the image's own profile wait
 #: (`ASTRABOX_HERMES_PROFILE_WAIT_SECONDS`): a turn is allowed to run long,
 #: and a conversation start that has waited half an hour is reported rather
@@ -69,32 +61,38 @@ _ATTACH_RETRY_SECONDS = 1.0
 _IDLE_POLL_SECONDS = 2.0
 _IDLE_BUDGET_SECONDS = 1800.0
 
-#: `session.active_list`'s word for a live session with nothing running. Every
-#: other status — ``working`` (a turn), ``waiting`` (a turn parked on an
-#: approval or question), ``starting`` (an agent being built for a new
-#: conversation) — is work a restart would end, and so is a status this
-#: adapter does not know.
+#: `session.active_list`'s word for a live session with nothing running or
+#: queued (``gateway/session_active_list.py``). Every other status —
+#: ``working`` (a turn), ``waiting`` (a turn parked on an approval or
+#: question), ``starting`` (an admitted input not yet claimed) — is work a
+#: restart would end, and so is a status this adapter does not know.
 _IDLE_SESSION_STATUS = "idle"
 
-#: Builds one attachment to the resident backend. The default is the real
-#: :class:`HermesTuiProcess`; tests substitute a fake wire.
-GatewayProcessFactory = Callable[..., HermesTuiProcess]
+#: What ``runtime.describe`` must advertise for this adapter to drive the
+#: gateway (``describe`` in ``gateway/session_controls.py``): durable admission
+#: keyed by the caller's input id, per-session event replay, and the image's
+#: per-Session tool environment on ``session.create``
+#: (``containers/sandbox-hermes/patches/session-tool-environment.patch``).
+REQUIRED_CAPABILITIES = frozenset({"durable-admission-v1", "event-replay-v1"})
+REQUIRED_CREATE_PARAMETERS = frozenset({"request_id", "source", "tool_environment"})
+
+#: Builds one connection to the gateway. The default is the real
+#: :class:`HermesGatewayConnection`; tests substitute a fake wire.
+GatewayConnectionFactory = Callable[..., HermesGatewayConnection]
 
 
 class HermesGatewaySubscription:
     """One conversation's ordered view of the shared gateway stream.
 
-    Offsets count frames on the handle's one attachment, so they increase
+    Offsets count frames on the handle's one connection, so they increase
     strictly for as long as it lives. The subscription drops any frame at or
     below the last offset it delivered, so a subscriber that asks to start
     after an offset is not handed what a sibling subscription already saw.
     """
 
-    def __init__(self, *, tui_session_id: str, after_offset: int = 0) -> None:
-        self.tui_session_id = str(tui_session_id)
-        self._queue: asyncio.Queue[HermesTuiWireEvent | BaseException] = (
-            asyncio.Queue()
-        )
+    def __init__(self, *, session_id: str, after_offset: int = 0) -> None:
+        self.session_id = str(session_id)
+        self._queue: asyncio.Queue[HermesGatewayFrame | BaseException] = asyncio.Queue()
         self._last_offset = int(after_offset)
 
     @property
@@ -103,14 +101,14 @@ class HermesGatewaySubscription:
 
         return self._last_offset
 
-    def _offer(self, item: HermesTuiWireEvent | BaseException) -> None:
-        if isinstance(item, HermesTuiWireEvent):
+    def _offer(self, item: HermesGatewayFrame | BaseException) -> None:
+        if isinstance(item, HermesGatewayFrame):
             if item.output_offset <= self._last_offset:
                 return
             self._last_offset = item.output_offset
         self._queue.put_nowait(item)
 
-    async def next_event(self) -> HermesTuiWireEvent:
+    async def next_event(self) -> HermesGatewayFrame:
         item = await self._queue.get()
         if isinstance(item, BaseException):
             # A terminal failure stays terminal: re-queue it so a later read
@@ -120,16 +118,34 @@ class HermesGatewaySubscription:
         return item
 
 
+def _check_describe(describe: dict[str, Any]) -> None:
+    """Refuse a gateway that does not advertise what this adapter relies on."""
+
+    capabilities = describe.get("capabilities")
+    create = describe.get("session_create")
+    parameters = create.get("parameters") if isinstance(create, dict) else None
+    missing = sorted(REQUIRED_CAPABILITIES - set(capabilities if isinstance(capabilities, list) else ()))
+    missing += sorted(
+        f"session.create {name}"
+        for name in REQUIRED_CREATE_PARAMETERS - set(parameters if isinstance(parameters, list) else ())
+    )
+    if missing or not str(describe.get("instance_id") or "").strip():
+        raise RuntimeProtocolError(
+            "The box's Hermes gateway does not advertise "
+            + (", ".join(missing) if missing else "its instance id")
+            + ". Deploy the sandbox image matching this core before starting or recovering conversations."
+        )
+
+
 class HermesGatewayHandle:
-    """Ownership of one resident gateway process for one (sandbox, profile).
+    """Ownership of this host's one connection to the gateway of one (sandbox, profile).
 
     All conversation clients of the profile share this handle: RPC writes are
     serialized by the underlying channel's send lock, and wire events reach
     each client through its own :class:`HermesGatewaySubscription`. The handle
     never decides what an event means — routing is by the vendor's own
-    ``session_id`` field, and events without one (process-level notices such
-    as ``gateway.stderr``) are broadcast to every subscription so each
-    adapter loop can classify them exactly as it would on a private process.
+    ``session_id`` field, and events without one (process-level notices) are
+    broadcast to every subscription so each client can classify them.
     """
 
     def __init__(
@@ -140,21 +156,21 @@ class HermesGatewayHandle:
         sandbox_id: str,
         profile_key: str,
         spawn_fingerprint: str = "",
-        process_factory: GatewayProcessFactory | None = None,
+        connection_factory: GatewayConnectionFactory | None = None,
     ) -> None:
         self._url = str(url)
         self._headers = dict(headers or {})
         self.sandbox_id = str(sandbox_id)
         self.profile_key = str(profile_key)
         self._spawn_fingerprint = str(spawn_fingerprint or "")
-        self._process_factory: GatewayProcessFactory = (
-            process_factory if process_factory is not None else HermesTuiProcess
+        self._connection_factory: GatewayConnectionFactory = (
+            connection_factory if connection_factory is not None else HermesGatewayConnection
         )
-        self._process: HermesTuiProcess | None = None
+        self._connection: HermesGatewayConnection | None = None
+        self._describe: dict[str, Any] = {}
         self._pump_task: asyncio.Task[None] | None = None
         self._subscriptions: dict[str, list[HermesGatewaySubscription]] = {}
         self._lock = asyncio.Lock()
-        self._ever_answered = False
 
     # ── identity and liveness ────────────────────────────────────────────
     @property
@@ -162,74 +178,38 @@ class HermesGatewayHandle:
         return self._spawn_fingerprint
 
     @property
-    def replay_epoch(self) -> str | None:
-        """The backend process's ``replay_epoch`` from its ``gateway.ready``.
+    def instance_id(self) -> str:
+        """The gateway instance this connection reached (``runtime.describe``).
 
-        Hermes numbers each session's events in process memory and names that
-        numbering with this epoch, so a sequence number means nothing without
-        it.
+        A restarted gateway is a new instance; a session's event numbering
+        belongs to the instance that numbered it.
         """
 
-        process = self._process
-        return process.replay_epoch if process is not None else None
+        return str(self._describe.get("instance_id") or "")
 
     @property
     def is_live(self) -> bool:
-        process = self._process
-        return (
-            process is not None
-            and process.is_connected
-            and process.fatal is None
-        )
+        connection = self._connection
+        return connection is not None and connection.is_connected and connection.fatal is None
 
-    @property
-    def ever_answered(self) -> bool:
-        """Whether the backend behind this attachment answered one RPC.
+    # ── connection lifecycle ─────────────────────────────────────────────
+    async def start(self) -> None:
+        """Connect this handle to the box's gateway.
 
-        An RPC *error* reply counts: it proves the vendor's request loop is
-        alive, which is the distinction worth keeping — an attachment that
-        connected and never got an answer is a wedged backend, not a healthy
-        one this host merely lost.
-        """
-
-        return self._ever_answered
-
-    # ── attachment lifecycle ─────────────────────────────────────────────
-    async def start(self, *, require_gateway_ready: bool) -> None:
-        """Attach this handle to the box's resident backend.
-
-        There is nothing to spawn: `hermes serve` is a service of the image,
-        supervised there, and this only opens a socket to it. A connected
-        socket proves the backend is listening; ``gateway.ready`` is Hermes'
-        own statement that it can answer, which a fresh attachment waits for.
-
-        Once attached, the handle sends ``client.capabilities`` with
-        ``server_requests: true``. Hermes treats a WebSocket client that never
-        did as one that cannot answer its requests: it withdraws every
-        approval and answers every clarify question with nothing, without
-        sending the frame (``tui_gateway/server_requests.py`` at the pinned
-        commit). The capability belongs to one connection, so every
-        attachment sends it before any session is opened on it, and a backend
-        that refuses it fails the attachment rather than leaving every
-        approval silently withdrawn.
+        There is nothing to spawn: the gateway is a service of the image,
+        supervised there, and this only opens a socket to it through the
+        bridge. ``gateway.ready`` is Hermes' own statement that the connection
+        can be used, and ``runtime.describe`` names the gateway instance and
+        proves the protocol before any session is opened on the connection.
 
         On first workspace materialization, writing the profile env file
-        releases `astrabox-hermes-serve` to start Hermes.
-        `astrabox-hermes-forward` publishes the port after the backend answers.
-        An immediate attachment was observed to return ``Connection refused``
-        during that startup interval, so an attempt that nothing accepted
-        retries within ``_ATTACH_BUDGET_SECONDS`` and propagates the error when
-        it expires. Every other failure propagates at once: a backend that
-        answered and refused the upgrade — a credential or ``Host`` it does not
-        accept — says the same thing on every retry, and waiting out the budget
-        only hides the status that names the cause.
-
-        On resume with a persistent profile, startup does not wait for the host
-        to write that file; the backend starts with the box.
-
-        There is no byte cursor to attach at, so recovery resumes live rather
-        than replaying the suffix a departed host missed. The gap is stated at
-        its caller in `hermes_client` and in docs/maintainers/hermes-transport.md.
+        releases `astrabox-hermes-serve` to start Hermes, and the bridge
+        publishes its port once the gateway is ready. An attempt that nothing
+        accepted retries within ``_ATTACH_BUDGET_SECONDS`` and propagates the
+        error when it expires. Every other failure propagates at once: a bridge
+        that answered and refused the upgrade says the same thing on every
+        retry, and waiting out the budget only hides the status that names the
+        cause.
         """
 
         async with self._lock:
@@ -239,17 +219,14 @@ class HermesGatewayHandle:
             attempt = 0
             while True:
                 attempt += 1
-                process = self._process_factory(url=self._url, headers=self._headers)
+                connection = self._connection_factory(url=self._url, headers=self._headers)
                 try:
-                    await process.connect(require_gateway_ready=require_gateway_ready)
+                    await connection.connect(require_gateway_ready=True)
                 except Exception as exc:
-                    if (
-                        not process.backend_not_listening
-                        or time.monotonic() >= deadline
-                    ):
+                    if not connection.backend_not_listening or time.monotonic() >= deadline:
                         raise
                     logger.info(
-                        "resident Hermes backend not listening yet; retrying: "
+                        "Hermes gateway not reachable yet; retrying: "
                         "sandbox=%s profile=%s attempt=%d err=%s",
                         self.sandbox_id,
                         self.profile_key,
@@ -259,23 +236,32 @@ class HermesGatewayHandle:
                     await asyncio.sleep(_ATTACH_RETRY_SECONDS)
                     continue
                 try:
-                    await process.request(
-                        "client.capabilities", {"server_requests": True}
-                    )
+                    try:
+                        describe = await connection.request("runtime.describe", {})
+                    except HermesGatewayRpcError as exc:
+                        if exc.code != -32601:
+                            raise
+                        raise RuntimeProtocolError(
+                            "The box's Hermes does not serve the canonical gateway protocol "
+                            "(runtime.describe). Deploy the sandbox image matching this core."
+                        ) from exc
+                    _check_describe(describe)
                 except BaseException:
                     with contextlib.suppress(BaseException):
-                        await process.detach()
+                        await connection.detach()
                     raise
-                self._install_process(process)
+                self._describe = describe
+                self._install(connection)
                 return
 
     async def shutdown(self) -> None:
-        """Release this attachment. The backend keeps running.
+        """Release this connection. The gateway keeps running.
 
-        Detaching is all this handle can do. The backend is supervised by the
+        Detaching is all this handle can do. The gateway is supervised by the
         image, so neither destroying it nor keeping it alive is a decision
         available here — a profile whose configuration changed is restarted by
-        supervisord, not from this side of the connection.
+        supervisord, not from this side of the connection. The gateway drops
+        this connection's session subscriptions when the socket closes.
 
         Subscribers are handed a terminal detach: their sessions cannot be
         carried by this handle any more.
@@ -283,13 +269,13 @@ class HermesGatewayHandle:
 
         async with self._lock:
             await self._stop_pump()
-            process, self._process = self._process, None
-            if process is not None:
+            connection, self._connection = self._connection, None
+            if connection is not None:
                 with contextlib.suppress(BaseException):
-                    await process.detach()
+                    await connection.detach()
             self._broadcast(
                 EngineStreamDetached(
-                    "Hermes gateway attachment was shut down for profile "
+                    "Hermes gateway connection was shut down for profile "
                     f"{self.profile_key}"
                 )
             )
@@ -302,57 +288,49 @@ class HermesGatewayHandle:
         *,
         timeout: float = _RPC_TIMEOUT_SECONDS,
     ) -> dict[str, Any]:
-        process = self._attached()
-        try:
-            result = await process.request(method, params, timeout=timeout)
-        except HermesTuiRpcError:
-            self._ever_answered = True
-            raise
-        self._ever_answered = True
-        return result
+        return await self._connected().request(method, params, timeout=timeout)
 
     async def respond_error(self, request_id: str, *, code: int, message: str) -> None:
-        """Answer one of the backend's requests with a JSON-RPC error."""
+        """Answer one of the gateway's requests with a JSON-RPC error."""
 
-        await self._attached().respond_error(request_id, code=code, message=message)
+        await self._connected().respond_error(request_id, code=code, message=message)
 
-    def _attached(self) -> HermesTuiProcess:
-        process = self._process
-        if process is None or not process.is_connected:
+    def _connected(self) -> HermesGatewayConnection:
+        connection = self._connection
+        if connection is None or not connection.is_connected:
             raise EngineStreamDetached(
-                f"Hermes gateway for profile {self.profile_key} is not attached"
+                f"Hermes gateway for profile {self.profile_key} is not connected"
             )
-        return process
+        return connection
 
-    def subscribe(
-        self, tui_session_id: str, *, after_offset: int = 0
-    ) -> HermesGatewaySubscription:
-        subscription = HermesGatewaySubscription(
-            tui_session_id=tui_session_id, after_offset=after_offset
-        )
-        self._subscriptions.setdefault(subscription.tui_session_id, []).append(
-            subscription
-        )
-        process = self._process
-        if process is not None and process.fatal is not None:
+    def subscribe(self, session_id: str, *, after_offset: int = 0) -> HermesGatewaySubscription:
+        subscription = HermesGatewaySubscription(session_id=session_id, after_offset=after_offset)
+        self._subscriptions.setdefault(subscription.session_id, []).append(subscription)
+        connection = self._connection
+        if connection is not None and connection.fatal is not None:
             # A subscriber arriving after the failure must still learn it.
-            subscription._offer(process.fatal)
+            subscription._offer(connection.fatal)
         return subscription
 
     def unsubscribe(self, subscription: HermesGatewaySubscription) -> None:
-        entries = self._subscriptions.get(subscription.tui_session_id)
+        entries = self._subscriptions.get(subscription.session_id)
         if not entries:
             return
         with contextlib.suppress(ValueError):
             entries.remove(subscription)
         if not entries:
-            self._subscriptions.pop(subscription.tui_session_id, None)
+            self._subscriptions.pop(subscription.session_id, None)
+
+    def subscribed(self, session_id: str) -> bool:
+        """Whether a client of this connection still follows ``session_id``."""
+
+        return bool(self._subscriptions.get(str(session_id)))
 
     # ── internals ────────────────────────────────────────────────────────
-    def _install_process(self, process: HermesTuiProcess) -> None:
-        self._process = process
+    def _install(self, connection: HermesGatewayConnection) -> None:
+        self._connection = connection
         self._pump_task = asyncio.create_task(
-            self._pump(process),
+            self._pump(connection),
             name=f"hermes-gateway-pump:{self.sandbox_id}:{self.profile_key}",
         )
 
@@ -364,24 +342,22 @@ class HermesGatewayHandle:
         with contextlib.suppress(BaseException):
             await task
 
-    async def _pump(self, process: HermesTuiProcess) -> None:
+    async def _pump(self, connection: HermesGatewayConnection) -> None:
         try:
             while True:
-                self._route(await process.next_event())
+                self._route(await connection.next_event())
         except asyncio.CancelledError:
             raise
         except BaseException as exc:
-            if self._process is process:
-                # A failure of a superseded attachment (replay swap already
-                # detached it) is a consequence, not news for subscribers.
+            if self._connection is connection:
+                # A failure of a superseded connection (already detached) is a
+                # consequence, not news for subscribers.
                 self._broadcast(exc)
 
-    def _route(self, wire: HermesTuiWireEvent) -> None:
+    def _route(self, wire: HermesGatewayFrame) -> None:
         scoped_session_id = wire.session_id
         if scoped_session_id:
-            for subscription in tuple(
-                self._subscriptions.get(scoped_session_id, ())
-            ):
+            for subscription in tuple(self._subscriptions.get(scoped_session_id, ())):
                 subscription._offer(wire)
             return
         for entries in tuple(self._subscriptions.values()):
@@ -400,15 +376,15 @@ async def wait_until_backend_idle(
     budget_seconds: float | None = None,
     poll_seconds: float | None = None,
 ) -> None:
-    """Return once nothing is running in the box's Hermes backend.
+    """Return once nothing is running or queued in the box's Hermes gateway.
 
-    Asked of the backend itself, because it is the one that knows: every live
+    Asked of the gateway itself, because it is the one that knows: every live
     session on it, from any host, reports its status through
     ``session.active_list``, and background delegations that outlive their
-    turn are listed by ``delegation.status``. Quiet means every session idle
-    and no delegation active.
+    turn are listed by ``delegation.status`` (the whole daemon's, which is what
+    a restart ends). Quiet means every session idle and no delegation active.
 
-    The caller is about to restart the backend, which ends everything in it,
+    The caller is about to restart the gateway, which ends everything in it,
     so this waits for the work to finish rather than for a deadline to pass
     over it; past the budget it fails, naming what is still running, and the
     restart does not happen.
@@ -425,8 +401,7 @@ async def wait_until_backend_idle(
             sorted(
                 f"{row.get('id')}:{row.get('status')}"
                 for row in live.get("sessions") or []
-                if isinstance(row, dict)
-                and row.get("status") != _IDLE_SESSION_STATUS
+                if isinstance(row, dict) and row.get("status") != _IDLE_SESSION_STATUS
             )
         ) + tuple(
             f"delegation:{item.get('subagent_id')}"
@@ -438,7 +413,7 @@ async def wait_until_backend_idle(
         if busy != reported:
             reported = busy
             logger.info(
-                "Hermes backend restart waits for running work: sandbox=%s "
+                "Hermes gateway restart waits for running work: sandbox=%s "
                 "profile=%s running=%s",
                 handle.sandbox_id,
                 handle.profile_key,
@@ -448,7 +423,7 @@ async def wait_until_backend_idle(
             raise APIError(
                 code="HERMES_GATEWAY_START_FAILED",
                 message=(
-                    "the Assistant's Hermes backend must restart to apply a "
+                    "the Assistant's Hermes gateway must restart to apply a "
                     "changed configuration, and work is still running in it "
                     f"after {budget:.0f}s: {', '.join(busy)}"
                 ),
@@ -458,23 +433,10 @@ async def wait_until_backend_idle(
 
 
 # One handle per (sandbox_id, profile_key) in this host process. The dict is
-# module state on purpose: the resident gateway outlives every conversation
+# module state on purpose: the gateway connection outlives every conversation
 # runtime, so no SessionRuntime can own it.
 _HANDLES: dict[tuple[str, str], HermesGatewayHandle] = {}
 _RESOLVE_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
-
-
-def gateway_handle_for_profile(*, sandbox_id: str, profile_key: str) -> HermesGatewayHandle | None:
-    """The live attachment to this exact box and profile, if this host holds it."""
-    handle = _HANDLES.get((sandbox_id, profile_key))
-    return handle if handle is not None and handle.is_live else None
-
-
-def reset_gateway_registry() -> None:
-    """Forget every handle without touching sandboxes. Test isolation only."""
-
-    _HANDLES.clear()
-    _RESOLVE_LOCKS.clear()
 
 
 async def resolve_gateway_handle(
@@ -484,30 +446,32 @@ async def resolve_gateway_handle(
     sandbox_id: str,
     profile_key: str,
     spawn_fingerprint: str | None,
-    process_factory: GatewayProcessFactory | None = None,
+    connection_factory: GatewayConnectionFactory | None = None,
     wait_until_answering: Callable[[], Awaitable[None]] | None = None,
 ) -> HermesGatewayHandle:
-    """Return this host's attachment to the box's resident Hermes backend.
+    """Return this host's connection to the box's Hermes gateway.
 
-    Resolving it elects nothing. The backend is a service of the image,
+    Resolving it elects nothing. The gateway is a service of the image,
     supervised there and owned by no host, so there is no ownership to
-    arbitrate — no durable record of a winner, no compare-and-set to keep two
-    hosts from both spawning one, no probe to tell a dead record from a live
-    process, and no destroy for a loser. Every host simply connects.
+    arbitrate; every host simply connects.
 
     What this does hold is the per-host handle registry, because the pump and
     its subscriptions are per-host state, and the configuration fence:
-    ``spawn_fingerprint`` is the identity of the profile the backend is
-    serving, and an attachment established under different content must not
-    keep gaining sessions under the new one. Restarting the backend so it
+    ``spawn_fingerprint`` is the identity of the profile the gateway is
+    serving, and a connection established under different content must not
+    keep gaining sessions under the new one. Restarting the gateway so it
     re-reads a changed profile happens where the change is written
     (`_prepare_hermes_profile`), because Hermes reads that surface once at
     start and no amount of reconnecting corrects a process already running
     under the old one. Detaching is only how this host stops using it.
 
-    ``wait_until_answering`` runs before a new attachment is opened: the box
-    reports when its backend answers, because how a connection to a port that
+    ``wait_until_answering`` runs before a new connection is opened: the box
+    reports when its gateway answers, because how a connection to a port that
     is not yet serving fails is the sandbox provider's, not a readiness signal.
+
+    A gateway that does not speak this adapter's protocol raises
+    :class:`RuntimeProtocolError` unchanged; every other failure to connect is
+    ``HERMES_GATEWAY_START_FAILED``.
     """
 
     target_sandbox = str(sandbox_id or "").strip()
@@ -519,22 +483,18 @@ async def resolve_gateway_handle(
             status_code=500,
         )
     key = (target_sandbox, target_profile)
-    factory: GatewayProcessFactory = (
-        process_factory if process_factory is not None else HermesTuiProcess
-    )
     lock = _RESOLVE_LOCKS.setdefault(key, asyncio.Lock())
     async with lock:
         handle = _HANDLES.pop(key, None)
         if handle is not None:
             if handle.is_live and (
-                spawn_fingerprint is None
-                or handle.spawn_fingerprint == spawn_fingerprint
+                spawn_fingerprint is None or handle.spawn_fingerprint == spawn_fingerprint
             ):
                 _HANDLES[key] = handle
                 return handle
             if handle.is_live:
                 logger.info(
-                    "detaching Hermes backend attachment for changed profile "
+                    "detaching Hermes gateway connection for changed profile "
                     "config: sandbox=%s profile=%s",
                     target_sandbox,
                     target_profile,
@@ -547,29 +507,32 @@ async def resolve_gateway_handle(
             sandbox_id=target_sandbox,
             profile_key=target_profile,
             spawn_fingerprint=spawn_fingerprint or "",
-            process_factory=factory,
+            connection_factory=connection_factory,
         )
         if wait_until_answering is not None:
-            # Its own failure names the cause; it is not an attachment failure.
+            # Its own failure names the cause; it is not a connection failure.
             await wait_until_answering()
         try:
-            await fresh.start(require_gateway_ready=True)
+            await fresh.start()
+        except RuntimeProtocolError:
+            raise
         except BaseException as exc:
             with contextlib.suppress(BaseException):
                 await fresh.shutdown()
             raise APIError(
                 code="HERMES_GATEWAY_START_FAILED",
                 message=(
-                    "failed to attach the resident Hermes backend for profile "
+                    "failed to connect to the Hermes gateway for profile "
                     f"{target_profile} in sandbox {target_sandbox}: {exc}"
                 ),
                 status_code=502,
             ) from exc
         _HANDLES[key] = fresh
         logger.info(
-            "attached resident Hermes backend: sandbox=%s profile=%s",
+            "connected to the Hermes gateway: sandbox=%s profile=%s instance=%s",
             target_sandbox,
             target_profile,
+            fresh.instance_id,
         )
         return fresh
 
@@ -577,8 +540,6 @@ async def resolve_gateway_handle(
 __all__ = [
     "HermesGatewayHandle",
     "HermesGatewaySubscription",
-    "gateway_handle_for_profile",
-    "reset_gateway_registry",
     "resolve_gateway_handle",
     "wait_until_backend_idle",
 ]

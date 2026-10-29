@@ -2100,7 +2100,10 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "and gives the Agent process placeholders. Enabled by default; the selected "
         "sandbox backend must implement protected credential delivery independently "
         "of RuntimeProfile networking. A false value passes the model credential to "
-        "the Agent process and refuses managed outbound credentials.",
+        "the Agent process and refuses managed outbound credentials, except "
+        "environment credentials with header delivery, which need only a sandbox "
+        "backend that declares it. A sandbox that received protected credentials "
+        "while it was true is not reattached once it is false.",
         "astrabox.providers.open_sandbox.credential_vault",
     ),
     (
@@ -2481,7 +2484,7 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "config.yaml wins over the profile's key by key.",
         "astrabox/core/service/orchestrator/runtime/hermes-profile-setup (image: astrabox-hermes-profile-setup)",
     ),
-    # ---- Hermes profile setup and TUI process (sandbox-side) ----------------
+    # ---- Hermes profile setup and gateway (sandbox-side) ---------------------
     (
         "ASTRABOX_HERMES_MODEL_API_KEY",
         "injected",
@@ -2498,27 +2501,27 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "injected",
         "",
         "Absolute path of the profile workspace. The setup script creates it and "
-        "the per-conversation TUI launcher uses it as Hermes' working directory.",
+        "the image's gateway launcher uses it as Hermes' working directory.",
         "astrabox.core.service.orchestrator.engine.hermes::"
-        "_HERMES_PROFILE_SETUP_SCRIPT / hermes.tui_gateway_client",
+        "_HERMES_PROFILE_SETUP_SCRIPT / containers/sandbox-hermes/astrabox-hermes-serve",
     ),
     (
         "ASTRABOX_HERMES_PROFILE_LINUX_USER",
         "injected",
         "",
-        "Per-profile Linux account that owns the profile and runs the Hermes TUI "
-        "process. Set from the provisioned runtime identity.",
+        "Per-profile Linux account that owns the profile and runs Hermes' gateway, "
+        "its state mirror and its bridge. Set from the provisioned runtime identity.",
         "astrabox.core.service.orchestrator.engine.hermes::"
-        "_HERMES_PROFILE_SETUP_SCRIPT / hermes.tui_gateway_client",
+        "_HERMES_PROFILE_SETUP_SCRIPT / containers/sandbox-hermes/astrabox-hermes-serve",
     ),
     (
         "ASTRABOX_HERMES_PROFILE_HOME",
         "injected",
         "",
         "Per-profile home directory prepared for the workload account before the "
-        "conversation's Hermes TUI process starts.",
+        "image's Hermes gateway starts.",
         "astrabox.core.service.orchestrator.engine.hermes::"
-        "_HERMES_PROFILE_SETUP_SCRIPT / hermes.tui_gateway_client",
+        "_HERMES_PROFILE_SETUP_SCRIPT / containers/sandbox-hermes/astrabox-hermes-serve",
     ),
     # ---- Image-owned shared-workspace storage helper -----------------------
     (
@@ -2549,32 +2552,25 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "astrabox.core.service.orchestrator.runtime/"
         "astrabox-assistant-workspace-storage",
     ),
-    # ---- Image-owned Hermes backend ----------------------------------------
-    (
-        "ASTRABOX_HERMES_LOOPBACK_PORT",
-        "internal",
-        "9119",
-        "In-box loopback port used by the Hermes backend and its forwarder. "
-        "Read inside the sandbox image, not from the platform process environment.",
-        "containers/sandbox-hermes/astrabox-hermes-serve / astrabox-hermes-forward",
-    ),
+    # ---- Image-owned Hermes gateway -----------------------------------------
     (
         "ASTRABOX_HERMES_LISTEN_PORT",
         "internal",
         "9118",
-        "In-box listening port of the Hermes forwarder. Must match the endpoint "
-        "port declared by the Hermes adapter; changing this image variable alone "
-        "does not change the platform's endpoint declaration.",
-        "containers/sandbox-hermes/astrabox-hermes-forward",
+        "In-box listening port of the Hermes bridge, which publishes the gateway "
+        "to the platform host. Must match the endpoint port declared by the Hermes "
+        "adapter; changing this image variable alone does not change the "
+        "platform's endpoint declaration.",
+        "containers/sandbox-hermes/astrabox-hermes-serve",
     ),
     (
         "HERMES_VENV",
         "internal",
         "/opt/hermes/.venv",
         "Virtual environment holding Hermes in the sandbox-hermes image, set by "
-        "the image's Dockerfile. The in-box launcher runs Hermes from it and the "
-        "forwarder runs its Host-rewriting relay with its Python.",
-        "containers/sandbox-hermes/astrabox-hermes-forward / astrabox-hermes-serve",
+        "the image's Dockerfile. The in-box launcher runs Hermes' gateway, the "
+        "state mirror and the bridge with its Python.",
+        "containers/sandbox-hermes/astrabox-hermes-serve",
     ),
     (
         "ASTRABOX_HERMES_PROFILE_WAIT_SECONDS",
@@ -2588,20 +2584,20 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ASTRABOX_HERMES_UPSTREAM_WAIT_SECONDS",
         "internal",
         "1800",
-        "Maximum seconds the in-box Hermes forwarder waits for an HTTP response "
-        "from the backend before publishing its listener or failing startup.",
-        "containers/sandbox-hermes/astrabox-hermes-forward",
+        "Maximum seconds the in-box Hermes bridge waits for the gateway's first "
+        "readiness before publishing its listener or failing startup.",
+        "containers/sandbox-hermes/astrabox-hermes-serve",
     ),
     (
         "HERMES_DASHBOARD_SESSION_TOKEN",
         "injected",
         "",
-        "Credential the in-box Hermes backend checks a WebSocket upgrade "
-        "against, written into the Assistant profile's env file and read by "
-        "the image-owned service that starts `hermes serve`. Vendor-named: it "
-        "is the variable Hermes' own desktop shell injects for the same "
-        "purpose. Absent, the backend mints a random one per start and no "
-        "caller can present it.",
+        "Credential the in-box Hermes bridge checks the host's WebSocket upgrade "
+        "against (the X-AstraBox-Hermes-Token header), written into the "
+        "Assistant profile's env file. The launcher removes it from the "
+        "gateway's own environment: Hermes' dashboard reads this vendor name as "
+        "its session token, and the agent's tools inherit the gateway's "
+        "environment. The bridge refuses to start without it.",
         "astrabox.core.service.orchestrator.engine.hermes",
     ),
     # ---- Image-owned conversation bootstrap --------------------------------
@@ -2937,6 +2933,33 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "astrabox.common.utils.user_context",
     ),
     # ---- E2E-only fault injection (test tier) --------------------------------
+    (
+        "ASTRABOX_E2E_ASSISTANT_ENVIRONMENT",
+        "test",
+        "",
+        "Required Assistant RuntimeProfile selected by the live E2E deployment. "
+        "The browser fixture refuses an absent, disabled or non-Assistant profile.",
+        "tests/e2e-ui/fixtures/astraApi.ts",
+    ),
+    (
+        "ASTRABOX_E2E_ASSISTANT_SCENE_FILE",
+        "test",
+        "",
+        "JSON fixture identifying an existing Assistant and its two owner-scoped "
+        "conversations for the Session environment replacement E2E. Only metadata "
+        "is prepared outside the case; native execution and replacement run inside it.",
+        "tests/e2e/assistant_session_environment_test.py",
+    ),
+    (
+        "ASTRABOX_E2E_CANDIDATE_COMPOSE_FILE",
+        "test",
+        "",
+        "Task-owned candidate identity and Compose argv JSON used by the Vault "
+        "configuration-transition E2E. The case verifies its server and project "
+        "before changing the candidate; the original demo project is refused. "
+        "The caller restores candidate configuration after collecting the case result.",
+        "tests/e2e-ui/specs/vault-environment-survives-reattach.exclusive.spec.ts",
+    ),
     (
         "ASTRABOX_E2E_FAULTS",
         "test",

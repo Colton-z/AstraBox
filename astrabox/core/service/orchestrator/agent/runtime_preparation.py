@@ -64,6 +64,7 @@ async def prepare_pool_runtime(sandbox: Any, *, template: Any, manager: Any) -> 
     )
     vault_plan, runtime_env = await resolve_prepared_environment_credentials(
         template, slot_id=slot_id, vault_enabled=vault_enabled, vault_write=vault_plan,
+        backend=provider,
     )
     identity = build_conversation_identity(session_id=slot_id, agent_id=template.agent_id, template=template)
     identity = await _bootstrap_slot_identity(sandbox, template, slot_id, identity=identity)

@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sqlite3
 import stat
 import sys
 import tempfile
@@ -17,6 +18,9 @@ PROFILE_MARKER = Path("/run/astrabox-hermes/profile-ready.json")
 TARGET_NAME = "astrabox-runtime-state.json"
 RECEIPT_NAME = "astrabox-runtime-state-restored.json"
 INITIAL_RECOVERY_NAME = "astrabox-initial-state-recovery.json"
+#: The gateway's private creation receipts in ``state_meta``
+#: (``POLICY_PREFIX`` in ``hermes_state_local.py`` at the pinned commit).
+LOCAL_RECEIPT_KEYS = "gateway.local_policy.v1:*"
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -92,6 +96,39 @@ def publish(env_path: Path, sandbox_id: str) -> None:
         **identity, "profile_env_sha256": hashlib.sha256(env_path.read_bytes()).hexdigest(),
     }, mode=0o644)
     print(f"HERMES_PROFILE_INITIALIZED fresh={int(previous is None)}", flush=True)
+
+
+def verify_native_identity(home: Path) -> None:
+    """Refuse a restored SessionDB whose conversations another home or account owns.
+
+    Hermes' gateway derives a conversation's id from the owning profile's
+    absolute HERMES_HOME, the principal that created it and the creation
+    request, and it keys each admission by that principal; a client of the
+    gateway's own account is ``uid:<uid>`` (``local_identity`` in
+    ``gateway/session_local_recovery.py``, the control socket's peer subject in
+    ``gateway/control_socket.py``). Each creation receipt records both. Under
+    another home or uid no recorded conversation would resume, and an input
+    sent again would be admitted as a new one, so the restore stops here.
+    """
+    database = home / "state.db"
+    if not database.exists():
+        return
+    with sqlite3.connect(database.as_uri() + "?mode=ro", uri=True) as connection:
+        rows = connection.execute(
+            "SELECT key, value FROM state_meta WHERE key GLOB ?", (LOCAL_RECEIPT_KEYS,)
+        ).fetchall()
+    principal = f"uid:{os.geteuid()}"
+    for key, value in rows:
+        receipt = json.loads(value)
+        owner = receipt.get("principal_id")
+        if receipt.get("profile_id") != str(home) or (
+            isinstance(owner, str) and owner.startswith("uid:") and owner != principal
+        ):
+            raise RuntimeError(
+                f"Restored Hermes conversation {key.removeprefix(LOCAL_RECEIPT_KEYS.rstrip('*'))} belongs to "
+                f"HERMES_HOME {receipt.get('profile_id')!r} as {owner!r}; this profile is "
+                f"{str(home)!r} as {principal!r}"
+            )
 
 
 def recover_initial_state(
@@ -211,6 +248,7 @@ def restore_once(env_path: Path) -> None:
             with os.fdopen(descriptor, "wb") as stream:
                 stream.write(loaded["payload"])
             restore(source, home)
+    verify_native_identity(home)
     # No saved profile means none was published yet; whatever the home holds
     # (a persistent workspace's files, or nothing) stays and is published next.
     if profile["snapshot_id"] is not None:

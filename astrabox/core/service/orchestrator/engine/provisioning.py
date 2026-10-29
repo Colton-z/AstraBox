@@ -83,6 +83,7 @@ from astrabox.core.service.orchestrator.runtime.packages import (
 from astrabox.providers.sandbox_image import sandbox_boot_env
 from astrabox.config.settings import get_settings
 from astrabox.seams.egress_credentials import (
+    DELIVERY_HEADER,
     EGRESS_HELD_PLACEHOLDER,
     ModelEgressCredential,
     ModelEgressCredentialSubstitution,
@@ -447,15 +448,129 @@ def resolve_model_credential_delivery(
     return EGRESS_HELD_PLACEHOLDER, network_policy, vault_write
 
 
+#: Runtime-identity key: the context the environment placeholders in this
+#: workload's process were minted under. Every later composition for the same
+#: live sandbox mints with it, so the backend binds the placeholders the
+#: process holds.
+ENVIRONMENT_PLACEHOLDER_CONTEXT = "environment_placeholder_context"
+#: Runtime-identity key: the ``credential_id`` of each environment credential
+#: delivered to this workload's sandbox. A later composition names them to the
+#: backend, which stops delivering each one that composition leaves out.
+ENVIRONMENT_CREDENTIAL_IDS = "environment_credential_ids"
+#: Runtime-identity key: whether the platform credential vault installed
+#: bindings in this workload's sandbox. With ``ASTRABOX_SANDBOX_CREDENTIAL_VAULT``
+#: off nothing manages them, so such a sandbox is not reattached.
+CREDENTIAL_VAULT_BINDINGS = "credential_vault_bindings"
+
+
+def holds_credential_vault_bindings(plan: SandboxEgressCredentialPlan | None) -> bool:
+    """Whether ``plan`` installs anything only the platform credential vault delivers."""
+
+    if plan is None:
+        return False
+    return bool(plan.model or plan.mcp) or _requires_platform_vault(
+        list(plan.environment), list(plan.http_basic)
+    )
+
+
+def credential_delivery_record(
+    plan: SandboxEgressCredentialPlan | None,
+    *,
+    placeholder_context: str | None,
+    vault_bindings: bool = False,
+) -> dict[str, Any]:
+    """The runtime-identity facts a later composition for this sandbox needs.
+
+    ``vault_bindings`` carries bindings an earlier delivery installed; they stay
+    in the sandbox whatever ``plan`` holds. A ``placeholder_context`` of
+    ``None`` leaves the recorded one, or its absence, as it is.
+    """
+
+    record: dict[str, Any] = {
+        ENVIRONMENT_CREDENTIAL_IDS: sorted(
+            str(item.credential_id) for item in (plan.environment if plan is not None else ())
+        ),
+        CREDENTIAL_VAULT_BINDINGS: vault_bindings or holds_credential_vault_bindings(plan),
+    }
+    if placeholder_context is not None:
+        record[ENVIRONMENT_PLACEHOLDER_CONTEXT] = placeholder_context
+    return record
+
+
+def require_live_credential_delivery(
+    *, runtime_identity: dict[str, Any] | None, sandbox_id: str, vault_enabled: bool,
+) -> None:
+    """Refuse workload access to bindings the deployment no longer manages."""
+    if vault_enabled or not (runtime_identity or {}).get(CREDENTIAL_VAULT_BINDINGS):
+        return
+    raise APIError(
+        code="SANDBOX_CREDENTIAL_VAULT_DISABLED",
+        message=(
+            f"sandbox {sandbox_id!r} holds credential bindings the platform "
+            "credential vault installed, and ASTRABOX_SANDBOX_CREDENTIAL_VAULT "
+            "is now off, so nothing would manage or revoke them; the sandbox is "
+            "not reattached. Turn the setting back on, or move the "
+            "conversation to a new sandbox."
+        ),
+        status_code=400,
+    )
+
+
+def _require_header_delivery(environment: list[Any], *, backend: Any) -> None:
+    """Refuse header-delivery credentials ``backend`` cannot deliver, before allocation."""
+
+    if bool(getattr(backend, "supports_header_placeholder_credentials", False)):
+        return
+    for item in environment:
+        if item.delivery == DELIVERY_HEADER:
+            raise APIError(
+                code="VAULT_ENV_CREDENTIAL_UNSUPPORTED",
+                message=(
+                    f"environment credential {item.secret_name!r} is delivered in "
+                    f"its {item.header_name!r} request header, which sandbox backend "
+                    f"{getattr(backend, 'name', '')!r} does not support "
+                    "(SandboxProvider.supports_header_placeholder_credentials). Use a "
+                    "backend that declares header delivery, or remove that "
+                    "credential from the runtime binding."
+                ),
+                status_code=400,
+            )
+
+
+def _requires_platform_vault(environment: list[Any], http_basic: list[Any]) -> bool:
+    """Whether any resolved outbound credential needs ``ASTRABOX_SANDBOX_CREDENTIAL_VAULT``.
+
+    Header delivery is the backend's own mechanism. An HTTP Basic selection
+    that names no credential carries nothing to deliver.
+    """
+
+    return any(item.delivery != DELIVERY_HEADER for item in environment) or any(
+        group.credentials for group in http_basic
+    )
+
+
 async def resolve_session_environment_credentials(
     manager: Any,
     *,
     session_id: str,
     vault_enabled: bool,
     vault_write: SandboxEgressCredentialPlan | None,
+    backend: Any,
     placeholder_context: str | None = None,
 ) -> tuple[SandboxEgressCredentialPlan | None, dict[str, str]]:
-    """Compose Session outbound credentials and return only safe environment values."""
+    """Compose Session outbound credentials and return only safe environment values.
+
+    A header-delivery credential needs only ``backend``'s
+    ``supports_header_placeholder_credentials``, so it joins the plan whether
+    or not the platform vault is on. Every other outbound credential needs the
+    vault. With the vault off there is no protected binding to revoke, so an
+    HTTP Basic selection that names no credential stays out of the plan.
+
+    ``placeholder_context`` is the context the workload's process holds its
+    environment placeholders under (:data:`ENVIRONMENT_PLACEHOLDER_CONTEXT`).
+    Composing environment credentials without one is refused: placeholders
+    minted under another context would match nothing the process sends.
+    """
 
     credentials = await manager.resolve_session_egress_credentials(
         session_id,
@@ -467,25 +582,42 @@ async def resolve_session_environment_credentials(
     )
     if not credentials:
         return vault_write, {}
-    if not vault_enabled:
-        raise APIError(
-            code="SANDBOX_CREDENTIAL_VAULT_DISABLED",
-            message=(
-                "The managed Agent or Assistant uses an outbound credential, "
-                "which requires protected delivery. Set "
-                "ASTRABOX_SANDBOX_CREDENTIAL_VAULT=1, or remove that credential "
-                "from the runtime binding."
-            ),
-            status_code=400,
-        )
     from astrabox.seams.egress_credentials import HTTPBasicEgressCredentialSet
 
     environment = [item for item in credentials if not isinstance(item, HTTPBasicEgressCredentialSet)]
+    http_basic = [item for item in credentials if isinstance(item, HTTPBasicEgressCredentialSet)]
+    _require_header_delivery(environment, backend=backend)
+    if not vault_enabled:
+        if _requires_platform_vault(environment, http_basic):
+            raise APIError(
+                code="SANDBOX_CREDENTIAL_VAULT_DISABLED",
+                message=(
+                    "The managed Agent or Assistant uses an outbound credential, "
+                    "which requires protected delivery. Set "
+                    "ASTRABOX_SANDBOX_CREDENTIAL_VAULT=1, or remove that credential "
+                    "from the runtime binding."
+                ),
+                status_code=400,
+            )
+        http_basic = []
+    if environment and not str(placeholder_context or "").strip():
+        raise APIError(
+            code="SANDBOX_CREDENTIAL_CONTEXT_UNAVAILABLE",
+            message=(
+                f"Session {session_id!r} uses environment credentials, but its "
+                "runtime records no environment placeholder context, so the "
+                "placeholders its process holds cannot be reproduced; the "
+                "conversation needs a new sandbox."
+            ),
+            status_code=409,
+        )
+    if not environment and not http_basic:
+        return vault_write, {}
     combined = merge_credential_plans(
         vault_write,
         SandboxEgressCredentialPlan(
             environment=tuple(environment),
-            http_basic=tuple(item for item in credentials if isinstance(item, HTTPBasicEgressCredentialSet)),
+            http_basic=tuple(http_basic),
         ),
     )
     return combined, {str(item.secret_name): str(item.placeholder) for item in environment}
@@ -503,6 +635,8 @@ def environment_credential_contract(
             "credential_id": str(item.credential_id),
             "secret_name": str(item.secret_name),
             "placeholder": str(item.placeholder),
+            "delivery": str(item.delivery),
+            "header_name": str(item.header_name),
             "networking": dict(item.networking),
             "injection_location": dict(item.injection_location),
             "allow_insecure_http": bool(item.allow_insecure_http),
@@ -535,13 +669,18 @@ async def resolve_prepared_environment_credentials(
     slot_id: str,
     vault_enabled: bool,
     vault_write: SandboxEgressCredentialPlan | None,
+    backend: Any,
 ) -> tuple[SandboxEgressCredentialPlan | None, dict[str, str]]:
-    """Compose Agent-bound outbound credentials before a Session exists."""
+    """Compose Agent-bound outbound credentials before a Session exists.
+
+    Header-delivery credentials join the plan whenever ``backend`` declares
+    them, the platform vault on or off, so the claim finds the contract it
+    composes itself. With the vault off, any other outbound credential refuses
+    the prepared runtime, except under Session-bound preparation, which leaves
+    those credentials to the claim.
+    """
 
     from astrabox.seams.runtime_preparation import runtime_preparation_plan
-
-    if not vault_enabled and runtime_preparation_plan(template).session_bound:
-        return vault_write, {}
 
     vault_ids = [
         str(item).strip()
@@ -550,15 +689,6 @@ async def resolve_prepared_environment_credentials(
     ]
     if not vault_ids:
         return vault_write, {}
-    if not vault_enabled:
-        raise APIError(
-            code="AGENT_PREWARM_UNSUPPORTED",
-            message=(
-                "prepared runtimes with outbound credentials require "
-                "protected credential delivery"
-            ),
-            status_code=409,
-        )
     from astrabox.core.service.orchestrator.vault_service import VaultService
     from astrabox.seams.egress_credentials import HTTPBasicEgressCredentialSet, workload_placeholder_context
 
@@ -567,11 +697,30 @@ async def resolve_prepared_environment_credentials(
         placeholder_context=workload_placeholder_context(slot_id),
     )
     environment = [item for item in credentials if not isinstance(item, HTTPBasicEgressCredentialSet)]
+    http_basic = [item for item in credentials if isinstance(item, HTTPBasicEgressCredentialSet)]
+    _require_header_delivery(environment, backend=backend)
+    if not vault_enabled:
+        if (
+            _requires_platform_vault(environment, http_basic)
+            and not runtime_preparation_plan(template).session_bound
+        ):
+            raise APIError(
+                code="AGENT_PREWARM_UNSUPPORTED",
+                message=(
+                    "prepared runtimes with outbound credentials require "
+                    "protected credential delivery"
+                ),
+                status_code=409,
+            )
+        environment = [item for item in environment if item.delivery == DELIVERY_HEADER]
+        http_basic = []
+    if not environment and not http_basic:
+        return vault_write, {}
     combined = merge_credential_plans(
         vault_write,
         SandboxEgressCredentialPlan(
             environment=tuple(environment),
-            http_basic=tuple(item for item in credentials if isinstance(item, HTTPBasicEgressCredentialSet)),
+            http_basic=tuple(http_basic),
         ),
     )
     return combined, {str(item.secret_name): str(item.placeholder) for item in environment}
@@ -1732,6 +1881,7 @@ async def claim_prepared_engine_sandbox(
             session_id=session_id,
             vault_enabled=vault_enabled,
             vault_write=None,
+            backend=backend_adapter,
             placeholder_context=workload_placeholder_context(slot_id),
         )
     )
@@ -1887,6 +2037,17 @@ async def claim_prepared_engine_sandbox(
         claimed=claimed,
         session_id=session_id,
         user_id=user_id,
+    )
+    # The process keeps the placeholders the slot was prepared with, whether or
+    # not its model credential rides the slot's gateway substitution, so every
+    # later composition for this box mints under the slot's context.
+    identity.update(
+        credential_delivery_record(
+            environment_plan,
+            placeholder_context=workload_placeholder_context(slot_id),
+            vault_bindings=bool(claimed.get("gateway_substitution"))
+            or holds_credential_vault_bindings(supplemental),
+        )
     )
 
     cwd = (
@@ -2269,17 +2430,26 @@ async def provision_engine_sandbox(
         ),
         workload_id=session_id,
     )
+    environment_placeholder_context = (
+        workload_placeholder_context(conversation_pool_claim.workload_id)
+        if conversation_pool_claim is not None
+        else await manager.session_placeholder_context(session_id)
+    )
     vault_write, runtime_env = await resolve_session_environment_credentials(
         manager,
         session_id=session_id,
         vault_enabled=vault_enabled,
         vault_write=vault_write,
-        placeholder_context=(
-            workload_placeholder_context(conversation_pool_claim.workload_id)
-            if conversation_pool_claim is not None
-            else None
-        ),
+        backend=backend_adapter,
+        placeholder_context=environment_placeholder_context,
     )
+    if runtime_identity is not None:
+        # What a box created or placed below receives. A claim records its own.
+        runtime_identity.update(
+            credential_delivery_record(
+                vault_write, placeholder_context=environment_placeholder_context
+            )
+        )
 
     # An engine that keeps its transcript to itself is mirrored by the platform,
     # not by its adapter: the adapter declares where the logs are, and every

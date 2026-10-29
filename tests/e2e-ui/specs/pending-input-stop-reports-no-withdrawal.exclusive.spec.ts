@@ -107,7 +107,8 @@ test('a pending input refuses stop explicitly and can take its whole conversatio
   await row.hover();
   const archived = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname === apiPath(`/sessions/${sid}/archive`));
-  await row.getByRole('button', { name: 'Archive', exact: true }).click();
+  await row.getByRole('button', { name: 'More actions', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Archive', exact: true }).click();
   expect((await archived).status()).toBe(200);
   expect(postgresRows<{ archived_at: string | null }>(
     `SELECT archived_at FROM sessions WHERE session_id=${sqlLiteral(sid)}`,

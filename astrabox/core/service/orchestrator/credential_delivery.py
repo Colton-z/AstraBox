@@ -11,6 +11,7 @@ import os
 from typing import Any
 
 from astrabox.common.utils.settings import load_astrabox_settings
+from astrabox.seams.sandbox import any_enabled_backend_supports_header_placeholder_credentials
 
 
 def _enabled(value: str | None) -> bool:
@@ -53,6 +54,13 @@ def credential_delivery_overview(*, settings: Any | None = None) -> dict[str, st
         # sandbox is allocated rather than putting its real value in the box.
         "environment_credentials": (
             "egress_placeholder" if protected_model_delivery else "unavailable"
+        ),
+        # Header delivery is a backend capability of its own and does not
+        # depend on protected delivery being switched on.
+        "header_credentials": (
+            "header_placeholder"
+            if any_enabled_backend_supports_header_placeholder_credentials()
+            else "unavailable"
         ),
     }
 

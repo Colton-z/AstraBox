@@ -388,14 +388,15 @@ class DeploymentService:
             )
         return participants
 
-    @staticmethod
-    def _validate_execution_identity(
+    async def _validate_execution_identity(
+        self,
         mode: Any,
         user_id: Any,
         *,
         provider: Any,
         scene: str,
         on_assistant: bool,
+        agent_id: str,
         actor: UserContext | None,
         previous: tuple[str, str] = (EXECUTION_OWNER, ""),
     ) -> tuple[str, str]:
@@ -405,9 +406,9 @@ class DeploymentService:
         account in ``execution_user_id``, and ``linked`` as each
         participant's linked account. The mode must be one the provider
         declares, so a binding of a provider whose work belongs to a person
-        cannot run as the owner. Only an administrator may choose anything
-        but the owner or change the choice, and an Assistant's conversations
-        always run as its owner.
+        cannot run as the owner. The target Agent's managers may change the
+        choice and select their own account. Assigning someone else's account
+        requires a platform administrator; an Assistant always runs as its owner.
         """
         if mode is not None and not isinstance(mode, str):
             raise APIError(
@@ -457,12 +458,20 @@ class DeploymentService:
                 message="execution_user_id applies only to execution_mode 'account'",
                 status_code=400,
             )
-        if (chosen, user) != previous and not is_platform_admin(getattr(actor, "roles", [])):
-            raise APIError(
-                code="FORBIDDEN",
-                message="only an administrator may change who a channel's messages run as",
-                status_code=403,
-            )
+        if (chosen, user) != previous:
+            if actor is None:
+                raise APIError(
+                    code="FORBIDDEN",
+                    message="changing a channel execution identity requires an authenticated Agent manager",
+                    status_code=403,
+                )
+            await self.assert_can_manage_agent(actor, agent_id)
+            if chosen == EXECUTION_ACCOUNT and user != actor.user_id and not is_platform_admin(actor.roles):
+                raise APIError(
+                    code="FORBIDDEN",
+                    message="assigning another execution account requires a platform administrator",
+                    status_code=403,
+                )
         return chosen, user
 
     async def list_manageable(self, user: UserContext) -> list[dict[str, Any]]:
@@ -662,9 +671,9 @@ class DeploymentService:
             response_instruction, policy=resolved_policy,
         )
         if channel_provider is not None:
-            mode, execution_user = self._validate_execution_identity(
+            mode, execution_user = await self._validate_execution_identity(
                 execution_mode, execution_user_id, provider=channel_provider, scene=scene,
-                on_assistant=on_assistant, actor=actor,
+                on_assistant=on_assistant, agent_id=agent_id, actor=actor,
             )
         elif execution_mode is not None or execution_user_id is not None:
             raise APIError(
@@ -888,14 +897,14 @@ class DeploymentService:
                     status_code=400,
                 )
             mode_value = updates.get("execution_mode", previous_mode)
-            mode, user = self._validate_execution_identity(
+            mode, user = await self._validate_execution_identity(
                 mode_value,
                 updates.get(
                     "execution_user_id",
                     previous_user if mode_value == EXECUTION_ACCOUNT else "",
                 ),
                 provider=provider, scene=existing_scene,
-                on_assistant=bool(assistant_id), actor=actor,
+                on_assistant=bool(assistant_id), agent_id=agent_id, actor=actor,
                 previous=(previous_mode, previous_user),
             )
             updates["execution_mode"] = mode

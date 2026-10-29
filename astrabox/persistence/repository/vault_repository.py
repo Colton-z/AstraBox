@@ -119,7 +119,7 @@ def _vault_view(row: Mapping[str, Any]) -> dict[str, Any]:
 def _auth(row: Mapping[str, Any]) -> dict[str, Any]:
     """The credential's ``auth`` document: its type and each non-secret field it has."""
     auth: dict[str, Any] = {"type": row["auth_type"]}
-    for field in ("mcp_server_url", "header_name", "url", "username", "secret_name"):
+    for field in ("mcp_server_url", "header_name", "url", "username", "secret_name", "delivery"):
         if row[field] is not None:
             auth[field] = row[field]
     if row["expires_at"] is not None:
@@ -175,6 +175,7 @@ def _auth_columns(auth: Mapping[str, Any]) -> dict[str, Any]:
         "allowed_methods": allowed_requests.get("methods"),
         "allowed_paths": allowed_requests.get("paths"),
         "allow_insecure_http": auth.get("allow_insecure_http"),
+        "delivery": auth.get("delivery"),
     }
 
 

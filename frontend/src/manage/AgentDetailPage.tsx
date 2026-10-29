@@ -363,8 +363,8 @@ export default function AgentDetailPage() {
   };
 
   const editDraft = (next: AgentConfig) => {
-    // A control can report a value it did not change (a JSON field does on
-    // blur); only a change is the edit that retires the refusal.
+    // A control can report a value it did not change; only a change is the
+    // edit that retires the refusal.
     if (JSON.stringify(next) !== JSON.stringify(draft)) setRefusal(null);
     setDraft(next);
   };

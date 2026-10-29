@@ -34,6 +34,7 @@ from opensandbox.models.sandboxes import (
 
 from astrabox.common.utils.errors import APIError
 from astrabox.seams.egress_credentials import (
+    DELIVERY_SUBSTITUTION,
     EGRESS_HELD_PLACEHOLDER,
     EgressCredential,
     SandboxEgressCredentialPlan,
@@ -647,6 +648,16 @@ def _host_and_scheme(
     return host, scheme
 
 
+def environment_credential_names(credential_id: str) -> tuple[str, tuple[str, ...]]:
+    """``(credential name, binding names)`` this vault keeps one environment credential under.
+
+    :func:`build_env_credential_vault_write` writes one binding per scheme: the
+    credential's own name for https, with ``-http`` appended for cleartext.
+    """
+    name = f"{_ENV_CREDENTIAL_PREFIX}{credential_id}"
+    return name, (name, f"{name}-http")
+
+
 def build_env_credential_vault_write(
     credentials: Iterable[EgressCredential],
 ) -> tuple[list[Credential], list[CredentialBinding]]:
@@ -665,13 +676,29 @@ def build_env_credential_vault_write(
     gateway credential is the other shape and stays on :func:`build_vault_write`.
 
     Refuses, rather than narrows, anything upstream cannot express — see
-    :func:`_host_and_scheme`, and ``networking.unrestricted`` below.
+    :func:`_host_and_scheme`, and ``networking.unrestricted`` below. That
+    includes header delivery: a ``CredentialSubstitution`` names request
+    surfaces (``path``, ``query``, ``header``, ``body``), and its ``header``
+    surface is every header, never one named header. This provider therefore
+    does not declare ``supports_header_placeholder_credentials`` and refuses
+    such an item should one arrive.
     """
     out_credentials: list[Credential] = []
     out_bindings: list[CredentialBinding] = []
 
     for cred in credentials:
-        name = f"astrabox-vault-{cred.credential_id}"
+        if cred.delivery != DELIVERY_SUBSTITUTION:
+            raise APIError(
+                code="SANDBOX_CONFIG_INVALID",
+                message=(
+                    f"credential {cred.credential_id!r} uses delivery "
+                    f"{cred.delivery!r}, which this backend's egress vault cannot "
+                    "express: its header substitution covers every request "
+                    "header, not one named header"
+                ),
+                status_code=400,
+            )
+        name, _bindings = environment_credential_names(cred.credential_id)
         kind = str(cred.networking.get("type") or "").strip()
         if kind == "unrestricted":
             raise APIError(
@@ -882,6 +909,7 @@ def open_sandbox_vault_write(
 
 __all__ = [
     "build_env_credential_vault_write",
+    "environment_credential_names",
     "build_mcp_header_vault_write",
     "build_vault_write",
     "gateway_host",

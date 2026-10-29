@@ -126,7 +126,8 @@ Credential 包含有效的 refresh 配置时，AstraBox 会在运行准备或重
 
 使用自定义请求头认证的服务选择 `mcp_static_header`。需要把其他服务凭证作为环境变量
 提供时选择 `environment_variable`；主机和请求范围限制见
-[保护 Agent 使用的凭证](egress-credential-injection.md)。
+[保护 Agent 使用的凭证](egress-credential-injection.md)，只在一个指定请求头中替换占位符的
+方式见[请求头投递](egress-credential-injection.md#header-delivery)。
 
 #### 私有 Plugin 和 Skill 的 Git 仓库 {#private-git-repositories}
 
@@ -211,13 +212,14 @@ curl -X PUT \
 | `auth.mcp_server_url` | string | MCP 凭证必填 | 远程 MCP 服务器地址 |
 | `auth.token` | string | `static_bearer` 必填 | Bearer Token 值，只写 |
 | `auth.access_token` | string | 导入 `mcp_oauth` 时必填 | OAuth access token，只写 |
-| `auth.header_name` | string | `mcp_static_header` 必填 | 自定义请求头名称 |
+| `auth.header_name` | string | `mcp_static_header` 必填；`delivery` 为 `"header"` 的 `environment_variable` 必填 | 自定义请求头名称 |
 | `auth.value` | string | `mcp_static_header` 必填 | 自定义请求头值，只写 |
 | `auth.url` | string | `http_basic` 必填 | 不含凭证、路径非根路径的 HTTPS 目标 URL |
 | `auth.username` | string | `http_basic` 必填 | HTTP Basic 用户名；不含冒号或控制字符 |
 | `auth.password` | string | `http_basic` 必填 | 密码或 Token，只写 |
 | `auth.secret_name` | string | `environment_variable` 必填 | 环境变量名 |
 | `auth.secret_value` | string | `environment_variable` 必填 | 密钥值，只写 |
+| `auth.delivery` | string | 否 | 仅用于 `environment_variable`：`substitution`（默认）或 `header`；见[请求头投递](egress-credential-injection.md#header-delivery) |
 | `auth.expires_at` | string | 否 | OAuth access token 过期时间，RFC 3339 格式 |
 | `auth.refresh` | object | 否 | OAuth refresh 配置 |
 
@@ -247,7 +249,7 @@ refresh 配置或刷新已经失效时，请轮换 Credential。
 
 **Q: 能否更新已有 Credential 的 Token？** A: 可以。`PATCH` 请求会轮换本次提交的
 只写密钥字段。凭证类型、MCP 服务器 URL、自定义请求头名称、HTTP Basic 目标 URL 和
-用户名、环境变量名、OAuth token endpoint 和 OAuth client ID 不可修改；需要改变这些
+用户名、环境变量名及其投递方式、OAuth token endpoint 和 OAuth client ID 不可修改；需要改变这些
 字段时，请停用原 Credential 并创建新的 Credential。
 
 **Q: 一个 Session 可以关联多少个 Vault？** A: 没有硬性限制，但建议按服务分组管理，保持清晰。

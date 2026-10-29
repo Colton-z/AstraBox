@@ -44,7 +44,10 @@ async function controlBrowser(api: AstraApi, page: Page, sessionId: string, labe
   await expect(frame.locator('html')).toHaveClass(/noVNC_connected/);
   await expect(canvas).toBeVisible();
   await expect.poll(() => canvas.evaluate((node: HTMLCanvasElement) => node.width)).toBeGreaterThan(100);
-  await canvas.click();
+  // Focus the desktop on the empty tab strip. The page centre is the New Tab
+  // page, whose shortcut tiles render late and open the Web Store when clicked.
+  const strip = await canvas.boundingBox();
+  await canvas.click({ position: { x: strip!.width / 2, y: 4 } });
   await page.keyboard.press('Control+l', { delay: 100 });
   await page.keyboard.type(`file://${filename}`, { delay: 25 });
   await page.keyboard.press('Enter', { delay: 100 });

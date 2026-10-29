@@ -248,54 +248,6 @@ async def test_duplicate_delete_is_the_same_not_found_boundary() -> None:
     assert deployment_repo.delete_for_deployment.await_count == 2
 
 
-@pytest.mark.parametrize("patch", [
-    {"execution_user_id": "bob"},
-    {"execution_mode": "owner"},
-    {"execution_mode": "linked"},
-])
-async def test_agent_owner_cannot_change_an_administrator_delegated_execution_account(patch) -> None:
-    service, repo = _service({
-        "deployment_id": "dep", "agent_id": "agent", "scene": "channel:generic_json",
-        "execution_user_id": "alice",
-    })
-    with pytest.raises(APIError) as error:
-        await service.update(
-            "dep", agent_id="agent", patch=patch, actor=UserContext(user_id="owner"),
-        )
-    assert error.value.status_code == 403
-    assert repo.webhook["execution_user_id"] == "alice"
-    repo.update_for_deployment.assert_not_awaited()
-
-
-@pytest.mark.parametrize("roles", [[], ["admin"]])
-async def test_platform_passes_execution_account_authority_to_the_deployment_service(roles) -> None:
-    service, repo = _service({
-        "deployment_id": "dep", "agent_id": "agent", "scene": "channel:generic_json",
-        "execution_user_id": "alice",
-    })
-    service._agent_repo.get_agent.return_value = {"created_by": "owner"}
-    platform = object.__new__(AgentPlatformService)
-    platform._deployment_service = service
-    platform._channel_source_host = AsyncMock()
-    user = UserContext(user_id="owner", roles=roles)
-    if roles:
-        result = await platform.update_agent_deployment(
-            user, "agent", "dep", {"execution_user_id": "bob"},
-        )
-        assert result["execution_user_id"] == "bob"
-        assert repo.webhook["execution_user_id"] == "bob"
-        platform._channel_source_host.reconcile.assert_awaited_once()
-    else:
-        with pytest.raises(APIError) as error:
-            await platform.update_agent_deployment(
-                user, "agent", "dep", {"execution_user_id": "bob"},
-            )
-        assert error.value.status_code == 403
-        assert repo.webhook["execution_user_id"] == "alice"
-        repo.update_for_deployment.assert_not_awaited()
-        platform._channel_source_host.reconcile.assert_not_awaited()
-
-
 @pytest.mark.parametrize("value", [None, 7, "alice\nbob"])
 async def test_invalid_execution_accounts_are_not_coerced_into_delegation(value) -> None:
     service, repo = _service({

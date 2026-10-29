@@ -380,7 +380,7 @@ def _embedded_scripts() -> dict[str, str]:
         "sandbox-hermes/astrabox-hermes-serve": (hermes / "astrabox-hermes-serve").read_text(
             encoding="utf-8"
         ),
-        "sandbox-hermes/astrabox-hermes-forward": (hermes / "astrabox-hermes-forward").read_text(
+        "sandbox-hermes/hermes_gateway_bridge.py": (hermes / "hermes_gateway_bridge.py").read_text(
             encoding="utf-8"
         ),
     }

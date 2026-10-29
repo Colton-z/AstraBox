@@ -121,7 +121,7 @@ def _wake(e2e_client: httpx.Client, assistant_id: str, *, deadline: float) -> st
         )
         if last.get("state") == "READY" and last.get("current_sandbox_id"):
             return str(last["current_sandbox_id"])
-        time.sleep(3.0)
+        time.sleep(0.5)
     pytest.fail(f"assistant {assistant_id} workspace did not become READY: {last}")
 
 
