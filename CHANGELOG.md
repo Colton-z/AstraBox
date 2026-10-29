@@ -47,6 +47,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 
+- Keep Claude tool heartbeats, background-task telemetry and compaction boundaries out of chat cards, including when reading existing history. Raw diagnostic evidence remains available to operators.
+
 - Let an Assistant's native A2A client reach configured Agents through the sandbox edge and follow the Agent Card's reachable address. The capability keeps its workspace token and Agent access checks.
 - An Agent's creator and assigned administrators can change its channel execution strategy and select their own execution account. Other Agents remain inaccessible, and assigning another user's account still requires a platform administrator.
 - A conversation that retains a sandbox after an attachment failure shows its recovery error instead of appearing ready.

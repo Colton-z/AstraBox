@@ -219,12 +219,7 @@ class _Translation:
                 consumed["transient"] = not additional_input
                 events.append(ResponseOutput(None, self.response_id, consumed))
             elif isinstance(emission, PrivateDiagnostic):
-                if message.get("__sdk_type") in {"SystemMessage", "NativeSDKMessage"} and emission.subtype not in {
-                    "init", "status", "hook_started", "hook_progress", "hook_response",
-                }:
-                    events += self._native_output(emission.as_frame(), message, frame)
-                else:
-                    events.append(RuntimeDiagnostic(None, f"{emission.event_type}.{emission.subtype}", emission.raw))
+                events.append(RuntimeDiagnostic(None, f"{emission.event_type}.{emission.subtype}", emission.raw))
             elif isinstance(emission, TurnTerminal):
                 events += self._result(message, translated)
             else:

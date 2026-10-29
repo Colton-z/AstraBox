@@ -13,6 +13,7 @@ from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from typing import Any
 
+from astrabox.core.service.orchestrator.engine.frame_translator import is_claude_diagnostic_part
 from astrabox.core.service.orchestrator.engine.interaction_contract import public_interaction_view
 
 
@@ -44,6 +45,8 @@ def fold_message(message_id: str, chunks: Iterable[Mapping[str, Any]]) -> dict[s
         return part
 
     for chunk in chunks:
+        if is_claude_diagnostic_part(chunk):
+            continue
         kind = str(chunk.get("type") or "")
         if kind in ("start", "finish", "message-metadata"):
             if isinstance(chunk.get("messageMetadata"), dict):
@@ -284,6 +287,8 @@ def public_part(part: Mapping[str, Any], *, shared: bool) -> dict[str, Any] | No
     handles on a sub-agent: a child run is addressed by its public id through
     the child-runs API.
     """
+    if is_claude_diagnostic_part(part):
+        return None
     public = {key: value for key, value in part.items() if not str(key).startswith("__")}
     if public.get("type") == "data-subagent" and isinstance(public.get("data"), Mapping):
         public["data"] = {
