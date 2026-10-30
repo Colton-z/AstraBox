@@ -21,6 +21,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Runtime and recovery
 
+- Recover a fully committed Claude Result retained behind an old compacted cursor without replacing the original reply or repeating its pending input.
+  Claude 旧游标所指的 Result 已完整落库时，重连可沿用原回复继续处理待执行输入，不重复执行。
+
 - Build Hermes from unmodified upstream source. Conversations of the same Assistant share its configured runtime environment; no per-conversation environment injection or platform environment plugin is used.
   Hermes 镜像使用未经修改的上游源码；同一 Assistant 的会话共享已配置的运行环境，不再逐会话注入环境变量，也不使用平台环境插件。
 

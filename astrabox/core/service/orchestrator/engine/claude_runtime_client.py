@@ -552,16 +552,31 @@ class ClaudeRuntimeClient:
             if after is not None
             else (0, _WHOLE_FRAME)
         )
+        first_retained: int | None = None
         try:
             async for frame in self._link.frames():
                 if frame.get("op") == "gap":
                     first = frame.get("first_retained_sequence")
                     if not isinstance(first, int) or first > through[0] + 1:
                         raise RuntimeCursorExpired(f"the runner no longer retains frames after {through[0]}")
+                    first_retained = first
                     continue
                 if not self._children_restored:
                     await self._restore_children()
                 seq = int(frame["seq"])
+                if (
+                    seq == first_retained == through[0] and through[1] < _WHOLE_FRAME
+                    and self._translation.response_id is None
+                    and isinstance(frame.get("message"), dict)
+                    and frame["message"].get("__sdk_type") == "ResultMessage"
+                ):
+                    response_id = await self._recorded_result(frame, after)
+                    yield RuntimeDiagnostic(
+                        RuntimeCursor(self._boot_id, {"seq": seq, "index": _WHOLE_FRAME}),
+                        "claude_code.compacted_result_committed",
+                        {"seq": seq, "response_id": response_id},
+                    )
+                    continue
                 events = self._translation.translate(frame)
                 for index, event in enumerate(events):
                     if (seq, index) <= through:
@@ -573,6 +588,49 @@ class ClaudeRuntimeClient:
                 raise RuntimeProtocolError(fault)
         finally:
             self._reading = False
+
+    async def _recorded_result(self, frame: dict[str, Any], after: RuntimeCursor | None) -> str:
+        """Prove a contextless retained Result was already committed in full.
+
+        Its cursor, terminal output and ended response are one durable reader
+        checkpoint. A cursor that counted the final event must not reinterpret
+        that Result as a standalone reply after its opening frames were removed.
+        An incomplete or different checkpoint cannot establish that proof.
+        """
+        from astrabox.persistence.repository.session_runtime_repository import SessionRuntimeRepository
+
+        repo = SessionRuntimeRepository()
+        output_seq, stored_cursor = await repo.resume_point(self._session_id)
+        activity = await repo.activity(self._session_id)
+        response = activity["last_response"]
+        failure = (
+            f"Claude compacted Result at {frame['seq']} has no matching committed terminal checkpoint; "
+            "cannot apply its event index without the original response context"
+        )
+        if (
+            after is None or stored_cursor != after.as_json() or activity["open_responses"]
+            or response is None or frame.get("unadmitted_result_input_ids")
+        ):
+            raise RuntimeProtocolError(failure)
+        response_id = str(response["response_id"])
+        tail, _ = await repo.response_output_tail(self._session_id, response_id, limit=3)
+        probe = _Translation()
+        probe.response_id = response_id
+        probe.stream.emitted_text = True
+        terminal = list(translate_claude_sdk_message(
+            frame["message"], envelope_seq=int(frame["seq"]), cursor=probe.stream,
+        ))[-1]
+        expected = probe._result(frame["message"], terminal)
+        parts = [event.frame for event in expected if isinstance(event, ResponseOutput)]
+        ended = expected[-1]
+        assert isinstance(ended, ResponseEnded)
+        if (
+            len(tail) < len(parts) or int(tail[-1]["seq"]) != output_seq
+            or [row["part"] for row in tail[-len(parts):]] != parts
+            or any(response[name] != getattr(ended, name) for name in ("outcome", "native_reason", "usage", "error"))
+        ):
+            raise RuntimeProtocolError(failure)
+        return response_id
 
     async def _restore_children(self) -> None:
         """Read after the ordered replay gap, whose removed prefix is already stored."""
