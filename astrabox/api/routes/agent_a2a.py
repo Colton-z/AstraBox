@@ -40,7 +40,7 @@ from astrabox.deploy.public_path import public_url
 
 A2A_RPC_PATH = "/api/v1/agents/{agent_id}/a2a"
 A2A_CARD_PATH = "/api/v1/agents/{agent_id}/.well-known/agent-card.json"
-ASSISTANT_A2A_RPC_PATH = "/api/v1/assistant-a2a/{binding_id}/agents/{agent_id}/a2a"
+ASSISTANT_A2A_RPC_PATH = "/api/v1/assistant-a2a/{binding_id}/agents/{agent_id}"
 ASSISTANT_A2A_CARD_PATH = (
     "/api/v1/assistant-a2a/{binding_id}/agents/{agent_id}/.well-known/agent-card.json"
 )

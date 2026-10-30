@@ -130,6 +130,11 @@ class RuntimeFile:
 
 @dataclass(frozen=True)
 class RuntimeMaterials:
+    """Session files, plus supported Agent startup environment overrides.
+
+    Assistant conversations share their RuntimeProfile environment.
+    """
+
     files: tuple[RuntimeFile, ...] = field(default=(), repr=False)
     environment: Mapping[str, str] = field(default_factory=dict, repr=False)
 

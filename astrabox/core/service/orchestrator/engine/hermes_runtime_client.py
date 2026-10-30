@@ -966,7 +966,6 @@ class HermesRuntimeClient:
         gateway: HermesGatewayPort,
         platform_session_id: str,
         resume_session_key: str | None,
-        session_env: dict[str, str] | None = None,
         read_cron_run_output: Callable[[str], Awaitable[CronRunOutput | None]] | None = None,
         cron_store: HermesCronJobRepository | None = None,
     ) -> HermesRuntimeClient:
@@ -975,24 +974,21 @@ class HermesRuntimeClient:
         A new conversation is created under a request id derived from its
         platform Session, so a create repeated after its reply was lost
         returns the same session. Both create and resume attach this host's
-        connection to the session, which a submit and an answer require, and
-        hand the gateway the Session's tool environment, which the gateway
-        holds in memory only and binds to the session's turns.
+        connection to the session, which a submit and an answer require.
+        Conversations share the Assistant profile's native environment.
         """
 
         if not gateway.is_live:
             raise EngineStreamDetached("Hermes gateway is not connected for this profile")
-        environment = {"tool_environment": dict(session_env or {})}
         key = str(resume_session_key or "").strip()
         subscription = gateway.subscribe(key) if key else None
         try:
             if key:
-                snapshot = await gateway.request("session.resume", {"session_id": key, **environment})
+                snapshot = await gateway.request("session.resume", {"session_id": key})
             else:
                 snapshot = await gateway.request("session.create", {
                     "request_id": SESSION_REQUEST_PREFIX + platform_session_id,
                     "source": SESSION_SOURCE,
-                    **environment,
                 })
             _snapshot(snapshot)
         except BaseException:
@@ -1106,6 +1102,16 @@ class HermesRuntimeClient:
         self._inbox.put_nowait(("receipt", (item.input_id, receipt, settled)))
 
     async def events(self, *, after: RuntimeCursor | None) -> AsyncIterator[RuntimeEvent]:
+        # A snapshot read and the event subscription share one connection.
+        # Either can observe its loss; both end this stream so the reader
+        # reattaches from its last committed cursor.
+        try:
+            async for event in self._events(after=after):
+                yield event
+        except EngineStreamDetached as exc:
+            logger.info("Hermes session %s stream ended: %s", self._sid, exc)
+
+    async def _events(self, *, after: RuntimeCursor | None) -> AsyncIterator[RuntimeEvent]:
         if self._reading:
             raise RuntimeError("a Hermes runtime client serves one event stream")
         skip: int | None = None

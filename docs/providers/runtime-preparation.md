@@ -263,26 +263,21 @@ inherit the updated native environment. Already-running child processes and
 startup-only consumers are not retroactively changed; user-bound MCP servers
 retain the native reconnect barrier during activation.
 
-`"session"` delivers
-`EngineStartupContext.session_env` through a native Session context, without
-changing a shared process environment. The Hermes image carries a pinned,
-MIT-licensed extension to its gateway's typed `session.create` and
-`session.resume` contracts for this mapping; the gateway holds it in memory,
-binds it to that conversation's turns, and its native context propagation
-delivers the values to tool subprocesses. Each conversation receives its own
-mapping again on reattachment or box replacement. After a gateway restart, the
-conversation's queued messages wait until its next attachment supplies the
-mapping again. Assistant workspace preparation receives none. An image without
-this extension is refused before a conversation opens, because its gateway does
-not advertise the parameter.
-
+`"session"` delivers `EngineStartupContext.session_env` through an Agent
+runtime's native Session context, without changing a shared process environment.
 Adapters returning `None` refuse the environment. Platform-owned environment
-names cannot be overwritten, and Hermes also refuses native identity and
-credential names. An initialized process without a native environment activation
-mechanism refuses new process-scoped environment. Platform preparation refusals block activation with
-`RUNTIME_PREPARATION_FAILED`; callback exception text is not exposed. Native
-Session environment validation blocks Hermes attachment with `AGENT_RUNTIME_ERROR`
-and a message that contains no supplied environment values.
+names cannot be overwritten. An initialized process without a native environment
+activation mechanism refuses new process-scoped environment. Preparation refusals
+block activation with `RUNTIME_PREPARATION_FAILED`; callback exception text is not
+exposed.
+
+Assistant conversations share the Assistant workspace's runtime identity and
+RuntimeProfile environment. Configure that environment on the RuntimeProfile;
+`prepare_session` does not rebind it for each conversation. A nonempty environment
+mapping returned for an Assistant is refused before activation. Session metadata
+belongs in the native conversation context, request parameters or returned files.
+The Hermes gateway uses its official `session.create` and `session.resume`
+contracts without source patches or a platform environment plugin.
 
 The Claude Agent SDK probes the CLI with `claude -v` before it starts it, without
 the options environment. An image wrapper that gates the CLI on Session material

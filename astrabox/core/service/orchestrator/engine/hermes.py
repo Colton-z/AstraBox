@@ -366,9 +366,6 @@ class HermesEngineAdapter(EngineAdapter):
         _ = template, model_access, deployment_settings
         return EngineStartupMaterialRequest(secret_names=(), runtime_state_store=True)
 
-    def startup_environment_scope(self) -> Literal["process", "session"] | None:
-        return "session"
-
     async def activate_runtime(
         self,
         context: EngineStartupContext,
@@ -431,7 +428,6 @@ class HermesEngineAdapter(EngineAdapter):
                 resume_session_key=context.resume_session_key,
                 profile_ref=profile_ref,
                 spawn_fingerprint=spawn_fingerprint,
-                session_env=context.session_env,
             )
             if not context.resume_session_key:
                 await self._save_runtime_state(sandbox.commands, runtime_identity)
@@ -493,7 +489,6 @@ class HermesEngineAdapter(EngineAdapter):
         resume_session_key: str | None = None,
         profile_ref: dict[str, str] | None = None,
         spawn_fingerprint: str | None = None,
-        session_env: dict[str, str] | None = None,
     ) -> HermesRuntimeClient:
         """Resolve the profile's gateway connection and open one session on it.
 
@@ -513,7 +508,6 @@ class HermesEngineAdapter(EngineAdapter):
             gateway=gateway,
             platform_session_id=session_id,
             resume_session_key=resume_session_key,
-            session_env=session_env,
             read_cron_run_output=_cron_run_output_reader(sandbox, identity),
         )
 

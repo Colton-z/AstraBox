@@ -70,11 +70,9 @@ _IDLE_SESSION_STATUS = "idle"
 
 #: What ``runtime.describe`` must advertise for this adapter to drive the
 #: gateway (``describe`` in ``gateway/session_controls.py``): durable admission
-#: keyed by the caller's input id, per-session event replay, and the image's
-#: per-Session tool environment on ``session.create``
-#: (``containers/sandbox-hermes/patches/session-tool-environment.patch``).
+#: keyed by the caller's input id and per-session event replay.
 REQUIRED_CAPABILITIES = frozenset({"durable-admission-v1", "event-replay-v1"})
-REQUIRED_CREATE_PARAMETERS = frozenset({"request_id", "source", "tool_environment"})
+REQUIRED_CREATE_PARAMETERS = frozenset({"request_id", "source"})
 
 #: Builds one connection to the gateway. The default is the real
 #: :class:`HermesGatewayConnection`; tests substitute a fake wire.

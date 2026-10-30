@@ -495,6 +495,8 @@ async def prepare_session_runtime_context(context: EngineStartupContext) -> Engi
             if runtime_preparation_plan(config).session_bound and not materials.files and not environment:
                 raise ValueError("Session-bound preparation returned no materials")
             if environment:
+                if subject.kind == "assistant":
+                    raise ValueError("Assistant environment belongs to its RuntimeProfile, not a conversation")
                 adapter = get_engine_adapter(str(config.get("engine_kind") or ""))
                 scope = adapter.startup_environment_scope()
                 if scope not in {"process", "session"}:

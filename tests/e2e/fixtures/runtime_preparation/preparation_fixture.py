@@ -51,7 +51,6 @@ USER_ACTION_RECEIPTS = STATE / "runtime-preparation-user-action-calls.jsonl"
 USER_ACTION_READ_RECEIPTS = STATE / "runtime-preparation-user-action-reads.jsonl"
 USER_ACTION_READ_FAILURES = STATE / "runtime-preparation-user-action-read-failures.json"
 SYNCHRONIZED = STATE / "runtime-preparation-synchronized.jsonl"
-SESSION_ENVIRONMENT_REFUSALS = STATE / "runtime-preparation-session-env-refusals.json"
 ACTION_URL = "https://example.com/authorize"
 
 _GUARD_METADATA = MetaData()
@@ -191,7 +190,6 @@ class PreparationFixture(RuntimePreparationProvider):
             return await plan(config)
         return RuntimePreparationPlan(session_bound=(
             str(config.get("name", "")).startswith("Material ")
-            or str(config.get("runtime_profile_name", "")).startswith("session-env-")
         ))
 
     async def synchronize(self, *, context):
@@ -242,15 +240,6 @@ class PreparationFixture(RuntimePreparationProvider):
             from credential_binding_fixture import bind
 
             return await bind(context)
-        if context.subject.kind == "assistant" and str(context.config.get("runtime_profile_name", "")).startswith("session-env-"):
-            environment = {
-                "RUNTIME_IDENTITY_SESSION_ID": context.session_id,
-                "ASTRABOX_SESSION_URL": f"https://console.example.test/session/{context.session_id}?from=context&view=full",
-                "ASTRABOX_CFUSE_AGENT_TOKEN_FILE": context.file_path("agent-token.json"),
-            }
-            if _listed(SESSION_ENVIRONMENT_REFUSALS, context.subject.id):
-                environment["OPENAI_API_KEY"] = "SECRET_SENTINEL_MUST_NOT_APPEAR"
-            return RuntimeMaterials(files=(self._material(context, "startup"),), environment=environment)
         # The requirement appears after the prerequisite read reported none,
         # as when the user's authorization lapses while the box starts.
         if _listed(LATE_STARTUP_USER_ACTIONS, context.subject.id):

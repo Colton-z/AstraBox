@@ -9,7 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Upgrade notes
 
-- Update the server and the sandbox-hermes image together. The server refuses a Hermes image whose gateway does not advertise the canonical protocol, durable admission and the per-conversation tool environment.
+- Update the server and the sandbox-hermes image together. The server refuses a Hermes image whose gateway does not advertise the canonical protocol and durable admission.
 - Remove every Assistant sandbox when upgrading. A sandbox created before this release runs the previous Hermes backend, which the server no longer speaks, and is not replaced when its RuntimeProfile's image changes. Each Assistant conversation then starts on a new sandbox; its previous Hermes session is not carried over.
 - An Assistant owner's Hermes configuration (`engine_options.config`) can no longer set `platforms` or `gateway`: the gateway now runs in every Assistant workspace and is kept off every messaging platform, also when a platform's credential is among the RuntimeProfile's variables. Reach an Assistant from a messaging app through a trigger.
 - `ASTRABOX_HERMES_LOOPBACK_PORT` is removed; the in-box gateway chooses its own loopback port.
@@ -21,9 +21,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Runtime and recovery
 
+- Build Hermes from unmodified upstream source. Conversations of the same Assistant share its configured runtime environment; no per-conversation environment injection or platform environment plugin is used.
+  Hermes 镜像使用未经修改的上游源码；同一 Assistant 的会话共享已配置的运行环境，不再逐会话注入环境变量，也不使用平台环境插件。
+
 - Keep a Hermes response's identity tied to its native admission across live execution, reader takeover and gateway reconciliation, independently of its input association.
 - Run the Assistant's Hermes as its gateway daemon (`hermes gateway run`) over the canonical `hermes-gateway-v1` protocol, published to the server by an in-box bridge. Each input is admitted into Hermes' durable ledger under its input id, so an input handed over again after a reader takeover returns its first admission instead of running twice.
-- A reply cut off by a Hermes gateway restart ends and is not run again: stopped, when the gateway shut down cleanly, or failed with an unknown outcome, when it died without settling the turn. Messages queued behind it run once the conversation reconnects. Queued messages also wait for the conversation's tool environment to be supplied again after a restart.
+- A reply cut off by a Hermes gateway restart ends and is not run again: stopped, when the gateway shut down cleanly, or failed with an unknown outcome, when it died without settling the turn. Messages queued behind it run once the conversation reconnects.
 - The gateway's own cron ticker runs an Assistant's scheduled jobs; the separate scheduler program is removed.
 - Hermes compresses a long conversation during a reply, at its own threshold; the server no longer asks it to compress a quiet conversation, which on the gateway would hold the next message behind the summary.
 

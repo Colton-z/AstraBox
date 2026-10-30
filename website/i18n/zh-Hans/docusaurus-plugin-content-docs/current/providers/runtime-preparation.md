@@ -115,14 +115,15 @@ Claude 使用原生 `apply_flag_settings` 的 `env` 覆盖，并通过 `get_sett
 镜像必须声明支持这两个控制请求，旧镜像会明确拒绝。之后启动的 hook 和工具继承新值；
 已经运行的子进程及仅在启动时读取值的功能不会被追溯更新。依赖启动材料的插件或包装
 程序仍须声明 `session_bound=True`；用户绑定的 MCP 保留激活时的原生重连屏障。
-`"session"` 通过原生会话上下文交付 `EngineStartupContext.session_env`，不改变共享进程
-环境。Hermes 镜像包含固定上游提交、保留 MIT 许可的扩展，在原生 `session.create` 和
-`session.resume` 中绑定映射，再由原生上下文传到工具子进程。重连和换箱时重新交付；
-没有会话的 Assistant 工作区准备不接收这些值。缺少扩展的旧镜像会明确拒绝 RPC 参数。
-返回 `None` 的适配器拒绝 Session 环境变量。由平台负责的环境变量名不能被覆盖；
-Hermes 也拒绝原生身份和凭据变量。没有原生环境更新能力的已初始化进程拒绝新的进程作用域环境。
-平台准备阶段的拒绝会以 `RUNTIME_PREPARATION_FAILED` 阻止激活，回调异常文本不会公开。
-原生会话环境校验以 `AGENT_RUNTIME_ERROR` 阻止 Hermes 连接，消息不包含传入的环境变量值。
+`"session"` 通过 Agent 运行时的原生会话上下文交付
+`EngineStartupContext.session_env`，不改变共享进程环境。返回 `None` 的适配器拒绝环境变量。
+由平台负责的环境变量名不能被覆盖。没有原生环境更新能力的已初始化进程拒绝新的进程
+作用域环境。准备阶段的拒绝以 `RUNTIME_PREPARATION_FAILED` 阻止激活，回调异常文本不会公开。
+
+同一个 Assistant 的对话共享其工作区的运行身份和 RuntimeProfile 环境。环境变量配置在
+RuntimeProfile 上，`prepare_session` 不为每个对话重新绑定它；对 Assistant 返回非空环境
+映射会在激活之前被明确拒绝。会话元数据通过原生会话上下文、请求参数或返回的文件交付。
+Hermes 网关使用官方的 `session.create` 和 `session.resume` 契约，不附加源码补丁或平台环境插件。
 
 Claude Agent SDK 在启动 CLI 之前会先用 `claude -v` 探测它，此时不带选项中的环境变量。
 如果镜像中的包装程序要求有 Session 材料才放行 CLI，应原样透传 `-v` 和 `--version`。
