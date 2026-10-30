@@ -284,17 +284,19 @@ export function MessageBubble({
   isStreaming,
   sessionId,
   includedInResponse,
+  responseSegment,
 }: {
   message: SDKUIMessage;
   pendingToolCallId?: string;
   isStreaming?: boolean;
   sessionId?: string;
   includedInResponse?: string;
+  responseSegment?: 'preceding' | 'last';
 }) {
   const { t } = useTranslation();
   // A response that has not ended is still the runtime's: running, or paused
   // at an interaction.
-  const isActiveTurn = isOpenResponse(message);
+  const isActiveTurn = responseSegment !== 'preceding' && isOpenResponse(message);
   const visibleParts = filterSupersededSingletonInteractionParts(message.parts, pendingToolCallId);
   const partOwnerId = message.id;
 
@@ -356,6 +358,7 @@ export function MessageBubble({
     (group, index) => index > lastToolGroup || group.parts.some(isAlertPart),
   );
   const canCollapseTurn = message.role === 'assistant'
+    && !responseSegment
     && !serverFolded
     && !visibleParts.some((part) => part.type === 'data-input-consumed')
     && !isStreaming
@@ -488,7 +491,7 @@ export function MessageBubble({
           one that only wrote text, has no header to carry the line, and
           without it the reader cannot tell the stop took.
         */}
-        {stoppedByUser
+        {stoppedByUser && responseSegment !== 'preceding'
           && (canCollapseTurn ? collapseReady : (serverFolded || settled))
           && (
           <div role="status" className="text-sm text-muted-foreground">
@@ -496,13 +499,13 @@ export function MessageBubble({
           </div>
         )}
         {/* A failed response carries the runtime's report of why. */}
-        {outcome === 'failed' && settled && <ResponseFailureCard error={response?.error?.message} />}
+        {outcome === 'failed' && settled && responseSegment !== 'preceding' && <ResponseFailureCard error={response?.error?.message} />}
         {/*
           Imported history the source never recorded an ending for. It is
           neither a success nor a failure, so it gets neither a result nor a
           failure card: only this line, so a short reply is not read as whole.
         */}
-        {response?.history_import?.completion === 'unknown' && (
+        {response?.history_import?.completion === 'unknown' && responseSegment !== 'preceding' && (
           <div data-testid="history-no-recorded-ending" className="text-sm text-muted-foreground">
             {t('chat:message.imported_without_ending')}
           </div>

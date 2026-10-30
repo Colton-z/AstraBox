@@ -5,7 +5,7 @@ import { ArrowDownIcon } from 'lucide-react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import { Button } from '@/components/ui/button';
 import { MessageBubble } from './MessageParts';
-import { inputMetadata, responseMetadata } from '../sessionMessages';
+import { conversationTimeline } from '../conversationTimeline';
 import {
   ProcessDetailsCache,
   ProcessOpenCache,
@@ -63,21 +63,24 @@ export function VirtualizedMessageList({
   const processOpenCache = useRef(new Map<string, boolean>());
   const [totalHeight, setTotalHeight] = useState(0);
 
-  const additionalInputs = useMemo(() => new Map(messages.flatMap((message) => {
-    if (message.role !== 'assistant') return [];
-    const metadata = responseMetadata(message);
-    const inputs = metadata.input_ids ?? [];
-    return inputs.slice(metadata.origin === 'engine' ? 0 : 1).map((id) => [id, message.id] as const);
-  })), [messages]);
+  const items = useMemo(() => conversationTimeline(messages), [messages]);
+  const pageAnchor = useRef({ sourceIndex: firstItemIndex, index: firstItemIndex, key: items[0]?.key });
+  if (pageAnchor.current.sourceIndex !== firstItemIndex) {
+    const retained = items.findIndex((item) => item.key === pageAnchor.current.key);
+    if (retained < 0) throw new Error('Conversation pagination lost its first displayed item');
+    pageAnchor.current.index -= retained;
+    pageAnchor.current.sourceIndex = firstItemIndex;
+  }
+  pageAnchor.current.key = items[0]?.key;
+  const displayFirstItemIndex = pageAnchor.current.index;
   const itemContext = useMemo(() => ({
     pendingToolCallId,
     writingMessageId,
-    additionalInputs,
-  }), [pendingToolCallId, writingMessageId, additionalInputs]);
+  }), [pendingToolCallId, writingMessageId]);
 
   loadOlderStateRef.current = { hasMore, loadingMore, onLoadOlder };
 
-  const lastItemIndex = firstItemIndex + Math.max(0, messages.length - 1);
+  const lastItemIndex = displayFirstItemIndex + Math.max(0, items.length - 1);
 
   const requestOlder = useCallback(() => {
     const state = loadOlderStateRef.current;
@@ -230,8 +233,8 @@ export function VirtualizedMessageList({
         data-testid="session-conversation"
         role="log"
         className="h-full"
-        data={messages}
-        firstItemIndex={firstItemIndex}
+        data={items}
+        firstItemIndex={displayFirstItemIndex}
         initialTopMostItemIndex={{ index: 'LAST', align: 'end' }}
         alignToBottom
         skipAnimationFrameInResizeObserver
@@ -244,19 +247,22 @@ export function VirtualizedMessageList({
         scrollerRef={bindScroller}
         // Ids are stable from the moment a message is shown: a user message
         // is its client_message_id, a response its response id.
-        computeItemKey={(index) => messages[index - firstItemIndex]?.id ?? index}
-        itemContent={(index, message, context) => (
+        computeItemKey={(_index, item) => item.key}
+        itemContent={(index, item, context) => (
           <div
             className="mx-auto w-full max-w-reading px-4 py-2"
             data-message-virtual-index={index}
-            data-message-id={message.id}
+            data-message-id={item.message.id}
+            data-response-segment={item.responseSegment}
           >
             <MessageBubble
-              message={message}
+              message={item.message}
               sessionId={sessionId}
               pendingToolCallId={context.pendingToolCallId}
-              isStreaming={message.role === 'assistant' && message.id === context.writingMessageId}
-              includedInResponse={context.additionalInputs.get(inputMetadata(message).input_id ?? '')}
+              isStreaming={item.message.role === 'assistant' && item.message.id === context.writingMessageId
+                && item.responseSegment !== 'preceding'}
+              includedInResponse={item.acceptedBy}
+              responseSegment={item.responseSegment}
             />
           </div>
         )}

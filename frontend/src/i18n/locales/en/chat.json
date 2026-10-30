@@ -96,7 +96,7 @@
     "thought_process": "Reasoning",
     "pasted_image": "Pasted image",
     "additional_input": "Additional input received",
-    "included_in_response": "Added to the response above"
+    "included_in_response": "Received by the runtime here"
   },
   "process": {
     "title": "Process",

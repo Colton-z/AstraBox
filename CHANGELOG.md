@@ -53,6 +53,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 
+- Place full user messages between the preceding and following output at the runtime's consumption boundaries, preserving one logical reply and the same order after reload and history pagination.
+  按运行时接收位置，把完整用户消息穿插在前后输出之间；保留同一条逻辑回复，刷新和历史分页后顺序一致，不在末尾重复展示。
+
 - Keep Claude tool heartbeats, background-task telemetry and compaction boundaries out of chat cards, including when reading existing history. Raw diagnostic evidence remains available to operators.
 
 - Let an Assistant's native A2A client reach configured Agents through the sandbox edge and follow the Agent Card's reachable address. The capability keeps its workspace token and Agent access checks.
