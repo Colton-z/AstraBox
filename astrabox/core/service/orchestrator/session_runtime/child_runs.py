@@ -44,6 +44,7 @@ from astrabox.core.service.orchestrator.engine.frame_scope import pop_engine_fra
 from astrabox.core.service.orchestrator.engine.registry import get_engine_adapter
 from astrabox.core.service.orchestrator.message_blocks import merge_projected_message_blocks
 from astrabox.persistence.repository.session_read_repository import SessionReadRepository
+from astrabox.persistence.repository.transcript_child_run_repository import TranscriptChildRunRepository
 from astrabox.persistence.repository.transcript_entry_repository import TranscriptEntryRepository
 
 logger = get_logger(__name__)
@@ -301,9 +302,12 @@ async def _child_run_entries(reads: SessionReadRepository, session_id: str) -> l
         adapter = get_engine_adapter(engine_kind)
         if not isinstance(adapter, EngineStoredChildRuns):
             continue
+        scopes = await TranscriptChildRunRepository().scopes(
+            session_id, engine_kind=engine_kind, projector=adapter.project_child_run_entries,
+        )
         facts = adapter.stored_child_run_facts(
-            main_entries=await TranscriptEntryRepository().load_subpath_entries_by_platform_session(session_id, subpath=None),
-            raw_scopes=await reads.child_transcript_scopes(session_id),
+            main_entries=[entry for scope in scopes if not scope["subpath"] for entry in scope["entries"]],
+            raw_scopes=[scope for scope in scopes if scope["subpath"]],
         )
         for fact in facts:
             frame = fact.as_frame()

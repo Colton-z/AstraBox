@@ -46,7 +46,7 @@ from astrabox.persistence.sql.schema import (
     boolean_checks,
     string_list_check,
 )
-from astrabox.persistence.sql.types import KeyText, StringList, binary_payload, payload_text
+from astrabox.persistence.sql.types import KeyText, StringList, binary_payload, payload_json, payload_text
 
 _SESSION_FK = "sessions.session_id"
 _RUNNING_TERMINAL = column("status") == "running"
@@ -490,6 +490,25 @@ class TranscriptEntry(Base):
     append_id: Mapped[str] = mapped_column(KeyText(128))
     batch_index: Mapped[int]
     entry_json: Mapped[str] = mapped_column(payload_text())
+
+
+class TranscriptChildRunIndex(Base):
+    """Engine-owned child relationship metadata through one native scope position.
+
+    Raw transcript entries remain authoritative. Listing children advances this
+    derived projection in bounded pages instead of decoding their full history
+    on every request.
+    """
+
+    __tablename__ = "transcript_child_run_indexes"
+    __table_args__ = (MYSQL_TABLE_OPTIONS,)
+
+    scope_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("transcript_scopes.scope_id", ondelete="CASCADE"), primary_key=True,
+    )
+    engine_kind: Mapped[str] = mapped_column(KeyText(64), primary_key=True)
+    through_seq: Mapped[int] = mapped_column(BigInteger)
+    entries: Mapped[list[dict[str, Any]]] = mapped_column(payload_json())
 
 
 class RuntimeStateHead(Base):

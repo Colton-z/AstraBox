@@ -219,10 +219,15 @@ def validate_engine_client_type(client_type: type[Any]) -> None:
 class EngineStoredChildRuns(Protocol):
     """Read children recorded only in the native SessionStore, without journal writes.
 
-    The adapter resolves its own task, run and transcript identities from the
-    main transcript and sub-transcripts. It returns lifecycle facts for children
-    missing from the stream; streamed lifecycle remains authoritative.
+    The adapter incrementally retains the native metadata needed to resolve its
+    task, run and transcript identities. The platform stores that projection by
+    native scope and sequence. ``stored_child_run_facts`` receives those compact
+    entries, not message bodies. Streamed lifecycle remains authoritative.
     """
+
+    def project_child_run_entries(
+        self, projected: list[dict[str, Any]], entries: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]: ...
 
     def stored_child_run_facts(
         self, *, main_entries: list[dict[str, Any]], raw_scopes: list[dict[str, Any]]

@@ -9,6 +9,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Upgrade notes
 
+- The relational schema adds `transcript_child_run_indexes` for incremental native child relationships. The built-in PostgreSQL provider applies the schema upgrade at startup; external persistence providers must supply the corresponding physical table.
+  关系数据库新增 `transcript_child_run_indexes`，用于增量索引原生子会话关系。内置 PostgreSQL 在启动时升级；外部持久化提供方需提供对应的物理表。
+
 - Update the server and the sandbox-hermes image together. The server refuses a Hermes image whose gateway does not advertise the canonical protocol and durable admission.
 - Remove every Assistant sandbox when upgrading. A sandbox created before this release runs the previous Hermes backend, which the server no longer speaks, and is not replaced when its RuntimeProfile's image changes. Each Assistant conversation then starts on a new sandbox; its previous Hermes session is not carried over.
 - An Assistant owner's Hermes configuration (`engine_options.config`) can no longer set `platforms` or `gateway`: the gateway now runs in every Assistant workspace and is kept off every messaging platform, also when a platform's credential is among the RuntimeProfile's variables. Reach an Assistant from a messaging app through a trigger.
@@ -52,6 +55,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - `environment_variable` Vault credentials take an immutable `delivery`: `substitution`, the default and existing behaviour, or `header`, where the sandbox backend replaces the placeholder only inside one named request header for the listed domains and promises nothing else. Header delivery depends only on the new sandbox capability `supports_header_placeholder_credentials`, not on `ASTRABOX_SANDBOX_CREDENTIAL_VAULT`; a Session on a backend without it is refused before a sandbox is allocated. The API and console offer it only when an enabled backend declares it. OpenSandbox does not.
 
 ### Fixed
+
+- Read an existing Agent/Environment runtime ledger without entering a creation transaction, avoiding repeated duplicate inserts during reconciliation.
+  已有 Agent／Environment 运行记录采用只读查询，避免协调过程中反复进入创建事务和重复插入。
+
+- List native child runs through incrementally indexed relationships instead of repeatedly decoding complete transcripts. Expanded child conversations retain their complete native history.
+  子会话列表改为读取增量关系索引，避免反复解码完整记录；展开子会话时仍读取完整原生历史。
 
 - Place full user messages between the preceding and following output at the runtime's consumption boundaries, preserving one logical reply and the same order after reload and history pagination.
   按运行时接收位置，把完整用户消息穿插在前后输出之间；保留同一条逻辑回复，刷新和历史分页后顺序一致，不在末尾重复展示。

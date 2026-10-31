@@ -80,6 +80,36 @@ _LIFECYCLE_MESSAGE_SDK_TYPES = frozenset(
 _AGENT_TRANSCRIPT_PREFIX = "subagents/agent-"
 
 
+def project_child_run_entries(
+    projected: list[dict[str, Any]], entries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Retain native child relationships without retaining conversation bodies.
+
+    All metadata and Workflow receipts keep their original order. Only the last
+    non-null assistant stop reason affects the stored child's lifecycle.
+    """
+    retained = [entry for entry in projected if entry.get("type") != "assistant"]
+    last_stop = next((entry for entry in reversed(projected) if entry.get("type") == "assistant"), None)
+    for raw in entries:
+        if raw.get("type") == "agent_metadata":
+            retained.append({key: raw[key] for key in (
+                "type", "toolUseId", "parentAgentId", "spawnDepth", "description", "agentType",
+            ) if key in raw})
+        if claude_message_role(raw) == "user":
+            receipt = raw.get("toolUseResult", raw.get("tool_use_result"))
+            if isinstance(receipt, dict) and receipt.get("status") == "async_launched":
+                retained.append({
+                    **{key: raw[key] for key in ("type", "__sdk_type") if key in raw},
+                    "toolUseResult": {key: receipt[key] for key in ("status", "runId", "taskId") if key in receipt},
+                })
+        message = raw.get("message")
+        if raw.get("type") == "assistant" and isinstance(message, dict) and message.get("stop_reason") is not None:
+            last_stop = {"type": "assistant", "message": {"stop_reason": message["stop_reason"]}}
+    if last_stop is not None:
+        retained.append(last_stop)
+    return retained
+
+
 def _workflow_agent_scopes(raw_scopes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Read native Workflow run directories without treating a task as an Agent."""
     scopes: list[dict[str, Any]] = []

@@ -121,6 +121,12 @@ class ClaudeCodeEngineAdapter(EngineAdapter):
             return bool(str(data.get("engineStatus") or "").strip())
         return True
 
+    def project_child_run_entries(
+        self, projected: list[dict[str, Any]], entries: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Keep Workflow receipts, Agent metadata and the latest native stop reason."""
+        return claude_code_background.project_child_run_entries(projected, entries)
+
     def stored_child_run_facts(
         self, *, main_entries: list[dict[str, Any]], raw_scopes: list[dict[str, Any]]
     ) -> list[ChildResourceFact]:
