@@ -71,6 +71,9 @@ class ClaudeCodeEngineAdapter(EngineAdapter):
     def supports_initialized_environment(self) -> bool:
         return True
 
+    def supports_session_mcp_activation(self) -> bool:
+        return True
+
     def canonical_child_message_content(
         self, content: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:

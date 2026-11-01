@@ -63,7 +63,7 @@ from astrabox.seams.sandbox import (
 from astrabox.seams.runtime_preparation import (
     PreparedPackage, PreparationSubject, PreparationCommitGuard,
     ResourcePreparationOperation, ResourcePreparationContext,
-    RuntimePreparationProvider, RuntimePreparationPlan, RuntimeMaterials, RuntimeFile,
+    RuntimePreparationProvider, RuntimePreparationPlan, RuntimeMaterials, RuntimeFile, SessionMCPServer,
     SessionPreparationContext, TurnPreparationContext, PreparationUserActionRequired,
     SessionUserActionContext, SessionUserActionCommand, SessionUserActionState,
     TURN_PREPARATION_FAILED, register_runtime_preparation_provider,
@@ -82,6 +82,7 @@ __all__ = [
     "ResourcePreparationContext",
     "RuntimePreparationProvider",
     "RuntimePreparationPlan",
+    "SessionMCPServer",
     "RuntimeMaterials",
     "RuntimeFile",
     "SessionPreparationContext",
