@@ -2942,15 +2942,6 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "tests/e2e-ui/fixtures/astraApi.ts",
     ),
     (
-        "ASTRABOX_E2E_ASSISTANT_SCENE_FILE",
-        "test",
-        "",
-        "JSON fixture identifying an existing Assistant and its two owner-scoped "
-        "conversations for the Session environment replacement E2E. Only metadata "
-        "is prepared outside the case; native execution and replacement run inside it.",
-        "tests/e2e/assistant_session_environment_test.py",
-    ),
-    (
         "ASTRABOX_E2E_CANDIDATE_COMPOSE_FILE",
         "test",
         "",

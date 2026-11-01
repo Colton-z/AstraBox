@@ -35,12 +35,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-          cache: pip
-      - run: python -m venv .venv
-      - run: .venv/bin/python -m pip install -e .
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc

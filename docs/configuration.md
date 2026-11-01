@@ -356,7 +356,6 @@ Fault-injection switches reserved for the automated end-to-end test suite.
 | Variable | Default | Description |
 | --- | --- | --- |
 | `ASTRABOX_E2E_ASSISTANT_ENVIRONMENT` | *(none)* | Required Assistant RuntimeProfile selected by the live E2E deployment. The browser fixture refuses an absent, disabled or non-Assistant profile. |
-| `ASTRABOX_E2E_ASSISTANT_SCENE_FILE` | *(none)* | JSON fixture identifying an existing Assistant and its two owner-scoped conversations for the Session environment replacement E2E. Only metadata is prepared outside the case; native execution and replacement run inside it. |
 | `ASTRABOX_E2E_CANDIDATE_COMPOSE_FILE` | *(none)* | Task-owned candidate identity and Compose argv JSON used by the Vault configuration-transition E2E. The case verifies its server and project before changing the candidate; the original demo project is refused. The caller restores candidate configuration after collecting the case result. |
 | `ASTRABOX_E2E_FAULTS` | `false` | Arms E2E fault-injection support (reader part hold, transcript-append-5xx, sandbox-egress). This setting is reserved for the automated test deployment. |
 | `ASTRABOX_E2E_FAULT_FILE` | `/tmp/astrabox-e2e-faults.json` | Shared E2E fault-file base path; the backend also scans <base>.d/*.json. Only read when ASTRABOX_E2E_FAULTS is armed. |
