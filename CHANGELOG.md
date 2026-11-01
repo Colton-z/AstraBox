@@ -73,6 +73,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - A runtime started from prepared capacity keeps the environment-variable placeholders its process started with when it is reattached and in its terminal, also when its model credential does not use the slot's gateway substitution.
 - Reattaching a runtime removes environment-variable credentials archived or deleted since its sandbox received them, also when no other credential remains to write. `SandboxProvider.apply_credential_vault` receives the ids of environment credentials delivered before in `managed_credential_names`, and stops delivering each one its plan no longer carries.
 - With `ASTRABOX_SANDBOX_CREDENTIAL_VAULT` turned off, a sandbox that received protected credentials while it was on is refused on reattach instead of keeping bindings nothing manages.
+### Runtime and recovery
+
+- Synchronize an Agent's prepared resources when a conversation starts without claiming waiting inventory, including every start of an Agent without prepared capacity, so a runtime-preparation provider has read the Skills and packages placed in the box before `prepare_session` runs.
 
 ## [0.1.10] - 2026-10-20
 
