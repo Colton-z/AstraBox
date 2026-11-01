@@ -86,6 +86,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ### Console and diagnostics
 
 - Refuse a console JSON block that defines an object key twice, naming the key's path and both lines, instead of silently keeping one definition. An edit that only reorders keys or changes formatting now says it changes nothing.
+### Runtime and recovery
+
+- Record a Claude runner frame the platform has read whole as whole, and acknowledge that frame itself. A later replay that translated the same frame differently, as a Result does once compaction has dropped the frame that opened its response, could otherwise report the difference as new output the platform could not record; this also holds for sandboxes still running an earlier runner.
 
 ## [0.1.10] - 2026-10-20
 
