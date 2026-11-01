@@ -55,11 +55,12 @@ def agent_tools() -> list[dict[str, Any]]:
             "answer": {"type": "object", "description": "The answer required by the public interaction contract: decision with a declared option ID, or answers for a form. Do not rename supplier decisions."},
             "message_id": _string("A unique stable ID for this answer. Reuse it only when retrying the identical answer to the same Task."),
         }, ["agent_id", "task_id", "interaction_id", "answer", "message_id"]),
-        ("list_schedules", "List this Assistant's personal Agent schedules.", {}, []),
-        ("create_schedule", "Create an Agent schedule for this Assistant's owner. Each invocation has its own durable Run and Session. Use the owner's chosen timezone.", {
-            "agent_id": agent, "name": _string("A short user-facing name."),
+        ("list_schedules", "List the owner's schedules created from this Assistant: the ones it runs itself and the ones an Agent runs.", {}, []),
+        ("create_schedule", "Create a schedule the owner asked for: a routine at a time or frequency they named, such as a briefing every weekday at 8. Without agent_id this Assistant runs it, and each run's reply arrives in its main conversation; with agent_id that Agent runs it in a conversation of its own. Each invocation has its own durable Run. Use the owner's chosen timezone. The owner sees and manages every schedule in Personal schedules. For watching something and speaking up only when it matters, use your own cronjob_manage instead.", {
+            "agent_id": _string("The platform Agent id from its discovered A2A Agent Card; omit it for this Assistant to run the schedule itself."),
+            "name": _string("A short user-facing name."),
             "prompt": _string("The complete instruction for each invocation."), "schedule": schedule,
-        }, ["agent_id", "name", "prompt", "schedule"]),
+        }, ["name", "prompt", "schedule"]),
         ("update_schedule", "Update, pause or resume a personal schedule.", {"deployment_id": deployment,
             "patch": {"type": "object", "properties": {"enabled": {"type": "boolean"},
                 "name": _string("User-facing name."), "prompt_prefix": _string("Complete invocation instruction."),
@@ -125,7 +126,7 @@ async def call_agent_tool(
         return {"schedules": await deployments.list_personal_schedules(user, source_assistant_id=assistant_id)}
     if name == "create_schedule":
         return await deployments.create_personal_schedule(
-            user, agent_id=args["agent_id"], source_assistant_id=assistant_id,
+            user, agent_id=args.get("agent_id"), source_assistant_id=assistant_id,
             name=args["name"], prompt_prefix=args["prompt"], schedule=args["schedule"],
         )
     if name == "update_schedule":

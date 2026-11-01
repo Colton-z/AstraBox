@@ -67,6 +67,9 @@ class AgentView:
     #: owner's, so "every morning at 8" means their morning. ``None`` leaves
     #: the program's own default.
     timezone: str | None = None
+    #: Whether an Assistant's Agent program runs the jobs it scheduled for
+    #: itself. Agents have no such switch and keep the default.
+    proactive: bool = True
     #: Remote MCP server definitions as a flat name→server-def map.
     mcp_servers: dict[str, Any] | None = None
     #: Session trigger provenance, set only during runtime resolution.

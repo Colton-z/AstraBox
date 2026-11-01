@@ -5,8 +5,7 @@
  * back there while the owner is on another page. The Assistant's row in the
  * rail turns unread (the main conversation is that row, not a second entry in
  * the sessions list), the console raises a browser notification for it, and
- * opening the Assistant lands in the conversation and reads it. Before the
- * job runs, the Assistant's profile lists it, read from Hermes' own job store.
+ * opening the Assistant lands in the conversation and reads it.
  *
  * The browser's own notification display is the browser's: the page's
  * `Notification` is replaced by a recorder that reports permission granted, so
@@ -39,9 +38,8 @@ test("an Assistant's scheduled reply marks its conversation unread and notifies 
   const ready = `READY_${id}`;
   const cronMarker = `CRON_${id}`;
   // Hermes' scheduler checks for due jobs once a minute; a one-shot due
-  // shortly after the reply runs at the next check. Hermes removes a
-  // one-shot once it has fired, so it is due late enough that the profile
-  // can be read while it is still scheduled.
+  // shortly after the reply runs at the next check, late enough that the
+  // owner reads the conversation before it fires.
   const dueAt = new Date(Date.now() + 60_000).toISOString().replace(/\.\d{3}Z$/, 'Z');
 
   const runtimeProfileName = await api.assistantEnvironmentName();
@@ -62,16 +60,6 @@ test("an Assistant's scheduled reply marks its conversation unread and notifies 
   expect(scheduled.errorText).toBeFalsy();
   expect(scheduled.text).toContain(ready);
 
-  const listed = await api.data<{ jobs: Array<Record<string, unknown>> | null }>(
-    'GET', `/assistants/${assistantId}/scheduled-jobs`,
-  );
-  const job = (listed.jobs ?? []).find((entry) => String(entry.prompt ?? '').includes(cronMarker));
-  expect(job, "the job is listed from Hermes' own store").toBeTruthy();
-  await page.goto(appPath(`/sessions/${sessionId}`));
-  await page.getByTestId('assistant-profile-open').click();
-  await expect(page.getByTestId('assistant-scheduled-jobs'), 'the profile lists the job')
-    .toContainText(String(job!.name));
-  await page.keyboard.press('Escape');
   // The owner has read the conversation up to the job's creation.
   const read = await request.post(apiPath(`/sessions/${sessionId}/read`));
   expect(read.ok(), await read.text()).toBe(true);

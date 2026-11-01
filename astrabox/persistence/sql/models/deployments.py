@@ -27,9 +27,9 @@ class Deployment(Base):
 
     A Deployment names exactly one target, ``agent_id`` or ``assistant_id``,
     and deleting that target deletes it. A personal schedule (``scope =
-    'personal'``) is an Agent schedule an account created from one of its
-    Assistants: it runs as that account and is deleted with that Assistant
-    (``source_assistant_id``). Deleting a Deployment deletes every channel
+    'personal'``) is a schedule an account created from one of its
+    Assistants, run by an Agent or by that Assistant itself: it runs as that
+    account and is deleted with that Assistant (``source_assistant_id``). Deleting a Deployment deletes every channel
     record of the binding (:mod:`astrabox.persistence.sql.models.channels`).
 
     ``updated_at`` changes on every configuration write and nowhere else, so
@@ -43,9 +43,10 @@ class Deployment(Base):
             "(agent_id IS NULL) <> (assistant_id IS NULL)", name="one_target"
         ),
         CheckConstraint(
-            "scope IS NULL OR (scope = 'personal' AND agent_id IS NOT NULL "
+            "scope IS NULL OR (scope = 'personal' "
             "AND owner_user_id IS NOT NULL AND owner_org_id IS NOT NULL "
-            "AND source_assistant_id IS NOT NULL)",
+            "AND source_assistant_id IS NOT NULL "
+            "AND (agent_id IS NOT NULL OR assistant_id = source_assistant_id))",
             name="personal_owner",
         ),
         CheckConstraint(
