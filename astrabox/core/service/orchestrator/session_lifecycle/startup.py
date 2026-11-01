@@ -457,7 +457,10 @@ class SessionStartup:
             known = read_undestroyed(current)
             if leaked not in known:
                 updates[UNDESTROYED_SANDBOX_IDS] = sorted({*known, leaked})
-        if replacing and not user_action:
+        if stays_open:
+            # The messages waiting for this start get no second attempt, even
+            # when the provider next reports its prerequisite met: a start
+            # refused again would take and release another box for them.
             updates["runtime_start_failed_at"] = utcnow_iso()
         await ownership.update(updates, notify="reader")
         latest = await self._sessions.get_session(ownership.session_id)

@@ -559,10 +559,10 @@ test("Hermes automatically uses the protected gateway credential for a real mode
     )).toBe(1);
 
     // Exercise shared-workspace conversation cleanup inside the asserted flow;
-    // focused tests separately pin Hermes session.close and OpenSandbox PTY deletion.
+    // focused tests separately pin the Hermes session end and OpenSandbox PTY deletion.
     const deleted = await responseData<{ status: string; killed: boolean }>(
       await request.delete(`/api/v1/sessions/${sessionId}`),
-      "delete the Hermes conversation and terminate its resident Gateway process",
+      "delete the Hermes conversation and end its gateway session",
     );
     expect(deleted.status).toBe("conversation-deleted");
     expect(deleted.killed).toBe(false);

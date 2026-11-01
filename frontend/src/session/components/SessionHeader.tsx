@@ -1,12 +1,15 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { SidebarTrigger } from '@/components/ui/sidebar';
 import { Ellipsis } from '@/components/shell';
 import { RunId, StatusPill, type PillTone } from '../../components/AstraConsole';
 import { localizeDisplayText } from '../../utils/format';
+import { renameSession } from '../../api';
 import type { SessionRecord } from '../../types';
 import { ShareDialog } from './ShareDialog';
+import { SessionTitleInput } from './SessionTitleInput';
 import { AssistantProfile } from '../../assistant/AssistantProfile';
 
 // Top page-chrome header: run id / model badge / title / status pill, the
@@ -48,10 +51,29 @@ export function SessionHeader({
   handleRecover: () => void;
 }) {
   const { t } = useTranslation();
+  const [renaming, setRenaming] = useState(false);
+  // A title just saved shows until a read of the session carries it; the
+  // rename's session notice is what asks for that read.
+  const [savedTitle, setSavedTitle] = useState<string | null>(null);
+  useEffect(() => {
+    setSavedTitle(null);
+  }, [session.title]);
+  const title = savedTitle ?? session.title;
+  const displayTitle = title || t('chat:page.session_title_fallback', { id: session.session_id.slice(0, 8) });
+  const rename = async (next: string) => {
+    setRenaming(false);
+    setSavedTitle(next);
+    try {
+      await renameSession(session.session_id, next);
+    } catch (err) {
+      setSavedTitle(null);
+      toast.error(t('shell:session_rename_failed'), { description: (err as Error).message });
+    }
+  };
   // This view renders no top bar, so the document title is set from the one
   // name it does show; without it every conversation shares one browser tab
   // label and one history entry.
-  const pageName = session.title || session.session_id.slice(0, 8);
+  const pageName = title || session.session_id.slice(0, 8);
   useEffect(() => {
     document.title = pageName ? `${pageName} · AstraBox` : 'AstraBox';
   }, [pageName]);
@@ -74,7 +96,25 @@ export function SessionHeader({
             )}
           </div>
           <div className="flex items-center gap-2 min-w-0">
-            <h1 className="t-h2-tight truncate text-15 tracking-[-0.01em]">{session.title || t('chat:page.session_title_fallback', { id: session.session_id.slice(0, 8) })}</h1>
+            {renaming ? (
+              <SessionTitleInput
+                title={displayTitle}
+                onSubmit={(next) => { void rename(next); }}
+                onCancel={() => setRenaming(false)}
+                className="w-80 max-w-full text-15 md:text-15"
+              />
+            ) : (
+              <h1 className="t-h2-tight min-w-0 text-15 tracking-[-0.01em]">
+                <button
+                  type="button"
+                  title={t('shell:session_rename')}
+                  className="-mx-1 block max-w-full truncate rounded-md px-1 text-left transition-colors hover:bg-muted"
+                  onClick={() => setRenaming(true)}
+                >
+                  {displayTitle}
+                </button>
+              </h1>
+            )}
             <StatusPill tone={headerTone} state={headerRunState}>{headerStatusLabel}</StatusPill>
           </div>
           {showRuntimeUnavailableBanner && <p className="mt-1 text-11 text-citrine-fg">{t('chat:status.runtime_disconnected')}</p>}

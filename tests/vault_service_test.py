@@ -329,6 +329,7 @@ async def test_archive_purges_payload_but_keeps_metadata() -> None:
             [vault_id],
             backend_name="open_sandbox",
             backend_supports_egress_injection=False,
+            backend_supports_header_credentials=False,
         )
 
 
@@ -493,12 +494,14 @@ async def test_env_credentials_require_egress_capable_backend_at_attach() -> Non
             [vault_id],
             backend_name="open_sandbox",
             backend_supports_egress_injection=False,
+            backend_supports_header_credentials=False,
         )
     assert unsupported.value.code == "VAULT_ENV_CREDENTIAL_UNSUPPORTED"
     cleaned = await service.validate_bound_vaults_for_session(
         [vault_id, "", f"  {vault_id}  "],
         backend_name="hypothetical-cloud",
         backend_supports_egress_injection=True,
+        backend_supports_header_credentials=False,
     )
     assert cleaned == [vault_id]
 
@@ -511,6 +514,7 @@ async def test_env_credentials_require_egress_capable_backend_at_attach() -> Non
                 [vault_id],
                 backend_name="hypothetical-cloud",
                 backend_supports_egress_injection=True,
+                backend_supports_header_credentials=False,
             )
     assert disabled.value.code == "VAULT_ENV_CREDENTIAL_UNSUPPORTED"
     assert "ASTRABOX_SANDBOX_CREDENTIAL_VAULT=1" in disabled.value.message
@@ -520,6 +524,7 @@ async def test_env_credentials_require_egress_capable_backend_at_attach() -> Non
             [vault_id],
             backend_name="open_sandbox",
             backend_supports_egress_injection=False,
+            backend_supports_header_credentials=False,
             egress_injection_unsupported_reason=(
                 "Assistant conversations support saved MCP credentials only."
             ),

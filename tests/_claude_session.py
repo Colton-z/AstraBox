@@ -99,6 +99,7 @@ class _JournalLink:
 
     def __init__(self, frames: Sequence[dict[str, Any]]) -> None:
         self._frames = list(frames)
+        self.protocol_fault: str | None = None
 
     @property
     def is_live(self) -> bool:

@@ -6,6 +6,8 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
 
+from astrabox.api.documentation import request_body
+from astrabox.api.routes.request_schemas import MCP_REQUEST, MCP_RESPONSE
 from astrabox.api.routes.response_envelope import ApiEnvelope
 from astrabox.common.utils.api_response import error_response, success_response
 from astrabox.common.utils.errors import APIError
@@ -13,6 +15,7 @@ from astrabox.common.utils.user_context import get_current_user_context
 from astrabox.core.service.orchestrator.runtime.mcp_servers import CONNECTOR_PLATFORM_SERVER
 from astrabox.core.service.orchestrator.service_registry import get_platform_service
 from astrabox.core.service.orchestrator.transcript_capability import verify_platform_mcp_capability
+
 
 class ExposedPortUrl(BaseModel):
     """A freshly minted browser-reachable URL for one sandbox port.
@@ -41,7 +44,35 @@ def register_platform_mcp_routes(app: Any) -> None:
 
     _service = get_platform_service()
 
-    @app.post("/api/v1/platform-mcp/{deployment_id}/{server_name}/{capability}/mcp")
+    @app.post(
+        "/api/v1/platform-mcp/{deployment_id}/{server_name}/{capability}/mcp",
+        openapi_extra={
+            **request_body(MCP_REQUEST),
+            "parameters": [
+                {
+                    "name": "Mcp-Session-Id",
+                    "in": "header",
+                    "schema": {"type": "string"},
+                    "description": "Session identifier returned by the native MCP server.",
+                },
+                {
+                    "name": "MCP-Protocol-Version",
+                    "in": "header",
+                    "schema": {"type": "string"},
+                    "description": "Negotiated native MCP protocol version.",
+                },
+            ],
+        },
+        response_class=JSONResponse,
+        responses={
+            200: {
+                "description": "Native MCP JSON-RPC response.",
+                "content": {"application/json": {"schema": MCP_RESPONSE}},
+            },
+            202: {"description": "Accepted native notification, with no response body."},
+            204: {"description": "Native MCP server returned no content."},
+        },
+    )
     async def platform_mcp_streamable_http(
         deployment_id: str,
         server_name: str,

@@ -129,6 +129,8 @@ class CredentialAuthSummary(BaseModel):
     mcp_server_url: str | None = None
     header_name: str | None = None
     secret_name: str | None = None
+    #: ``environment_variable`` only: ``substitution`` or ``header``.
+    delivery: str | None = None
     url: str | None = None
     username: str | None = None
     expires_at: str | None = None
@@ -176,6 +178,9 @@ class CredentialDelivery(BaseModel):
     model_credentials: str
     mcp_credentials: str
     environment_credentials: str
+    #: ``header_placeholder`` when an enabled backend offers header delivery
+    #: for ``environment_variable`` credentials, otherwise ``unavailable``.
+    header_credentials: str
 
 
 class VaultCatalog(BaseModel):

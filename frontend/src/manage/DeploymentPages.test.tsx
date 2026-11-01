@@ -582,10 +582,11 @@ describe('channel response policy', () => {
       fireEvent.change(screen.getByLabelText(/Agent or Assistant/), {
         target: { value: 'assistant:assistant-1' },
       });
-      fireEvent.change(screen.getByLabelText(/Allowed senders/), {
+      fireEvent.change(await screen.findByLabelText(/Allowed senders/), {
         target: { value: 'sender-1' },
       });
     }
+    await screen.findByRole('combobox', { name: 'Response policy' });
   }
 
   function selectPolicy(policy: NonNullable<AgentDeployment['attention_policy']>) {

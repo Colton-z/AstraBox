@@ -28,8 +28,10 @@ shared workspace.
 Every user has a **primary Assistant** without setting one up. The first time a
 user opens the console, AstraBox creates it from the deployment's
 [Assistant defaults](#defaults), with the browser's [timezone](#timezone), and
-lists it at the top of the left rail. Creating it writes only the record: the
-workspace is prepared when its first conversation starts. A user whose
+lists it at the top of the left rail. Creation also attempts to prepare its
+workspace so the first conversation can attach to it. If that preparation
+fails, the saved Assistant remains and its first conversation attempts
+preparation again. A user whose
 Assistants predate this has their earliest one marked primary instead.
 
 The primary Assistant needs an **RuntimeProfile**: the saved runtime setup that
@@ -58,6 +60,11 @@ Assistant.
 The signed-in user becomes the owner. The RuntimeProfile also determines the Agent
 program, and the console keeps both fixed after creation. The name, description,
 icon, timezone, system prompt, and default permission mode remain editable.
+
+Saving a changed definition attempts to refresh a ready workspace in place.
+If that refresh fails, the next conversation prepares the current revision.
+An existing ready conversation checks the revision before using the profile.
+Creating or editing a record alone is not proof that its workspace is ready.
 
 ## Assistant defaults {#defaults}
 
@@ -203,8 +210,10 @@ conversation depends on when Hermes reads the setting:
 
 After a restart, the Assistant's other conversations continue with their
 history on their next message. If Hermes restarts for any other reason while
-a reply is in progress, that reply ends with an error saying the backend lost
-it, and the conversation accepts the next message.
+a reply is in progress, that reply ends and Hermes does not run that message
+again: a clean shutdown stops it and says so, and a gateway that died without
+settling it ends it with an error saying its outcome is unknown. Messages
+already sent behind it are answered in order once the conversation reconnects.
 
 A conversation that cannot be prepared ends and shows why, for example when
 the Assistant names an MCP server but its RuntimeProfile does not allow MCP
@@ -214,8 +223,8 @@ servers. Fix the cause, then start a new conversation.
 
 Select the Assistant in the rail. It opens the Assistant's **main
 conversation**, the same one every time, starting it when the Assistant has
-none; AstraBox prepares or restores the workspace when needed. Scheduled jobs
-created there report back there, and the Assistant's row in the rail is
+none; AstraBox prepares or restores the workspace when needed. Its routines
+and watches report there, and the Assistant's row in the rail is
 marked unread when a reply arrives while the owner is elsewhere. The main
 conversation is that row, so it is not listed again under Sessions.
 
@@ -223,10 +232,7 @@ Before the first message, the conversation lists what the Assistant can use:
 the apps connected for it, its Skills and tools, its own and inherited, and the
 apps the owner could connect. **Assistant** in the conversation header opens
 its profile: name, timezone, the owner's instructions, connected apps switched
-on or off for it, its scheduled jobs, what it inherits, and deletion. The
-scheduled jobs are read from the Agent program's own job store while the
-workspace runs (`GET /api/v1/assistants/{assistant_id}/scheduled-jobs`);
-while it does not, the profile says so, and the jobs run once it is back.
+on or off for it, what it inherits, and deletion. See [Routines and watches](#routines-and-watches).
 
 Ending the main conversation is how an owner starts afresh: the next time the
 Assistant is opened, a new main conversation starts. The API can still start
@@ -242,14 +248,18 @@ workspace storage.
 Messages, approvals, questions, files, and share links use the common Session
 interface described in [Sessions](sessions.md).
 
-## Reach it from messaging apps and on a schedule {#triggers}
+## Reach it from messaging apps {#triggers}
 
 An Assistant can have its own triggers, the same Deployments an Agent has:
-a messaging channel such as Telegram or Slack, a schedule, or a webhook.
+a messaging channel such as Telegram or Slack, or a webhook. Its schedules are
+its owner's personal schedules instead; see
+[Routines and watches](#routines-and-watches).
 Open **Management console → Deployments**, select **New trigger**, and pick
 the Assistant under **Agent or Assistant**. Only the Assistant's owner can
 create or change its triggers, and every conversation they start runs as the
-owner.
+owner. A trigger is the only way a messaging app reaches the Assistant: a bot
+token among the RuntimeProfile's variables reaches the agent's tools, but
+Hermes' own gateway is kept off every messaging platform.
 
 A channel bot accepts direct messages from anyone who finds it, so a channel
 trigger on an Assistant must list the owner's own account under **Allowed
@@ -262,29 +272,45 @@ are ignored and never reach the Assistant or its later context.
 Each channel conversation is one Assistant conversation in the shared
 workspace. Replies go back to the chat, and so does anything the Assistant
 produces on its own afterwards in that conversation: a scheduled job's
-result, a finished background task, or a reply Hermes starts itself. A
-schedule starts a new Assistant conversation at each due time; see
-[Schedules](schedules.md).
+result, a finished background task, or a reply Hermes starts itself.
 
-## Scheduled jobs it creates itself
+## Routines and watches {#routines-and-watches}
 
-Ask the Assistant to do something on a schedule, such as "every weekday at 8,
-summarize my unread email", and Hermes creates a scheduled job in its own
-scheduler. The job runs in the Assistant's workspace even when no
-conversation is open, and AstraBox reports each run back into the
+An Assistant does two kinds of work without being asked each time, and the
+owner manages them in different places.
+
+**Routines** are work at a time the owner names, such as "every weekday at 8,
+summarize my unread email". The Assistant creates one with its
+`create_schedule` tool, as a personal schedule run by the platform's scheduler
+as its owner. Each run is a message in the Assistant's main conversation,
+marked as sent by a schedule, and the reply arrives there; if the owner is
+mid-conversation, the run waits its turn. The owner lists, edits, disables,
+runs and deletes routines in the account menu under **Personal schedules**,
+beside the schedules the Assistant hands to an Agent
+([Personal schedules](a2a.md#personal-agent-schedules)). A routine does not
+wait for the workspace to be up: the platform's scheduler fires it, and the
+main conversation prepares the workspace as it does for any message.
+
+**Watches** are the Assistant keeping an eye on something and speaking up only
+when it matters, such as "tell me when an email from my manager mentions a
+deadline". Hermes runs these as jobs in its own scheduler, inside the
+Assistant's workspace, and AstraBox reports each run back into the
 conversation that created the job: a channel chat receives it right away, and
 a console conversation shows it unread in the list, with a browser
-notification when notifications are on. A run that answers `[SILENT]`, which a
-monitor does when nothing meets its bar, is kept but not delivered. The job is
-kept in the platform database with the rest of Hermes' profile state, so it
-survives replacing the workspace's sandbox.
+notification when notifications are on. A run that answers `[SILENT]`, which
+a watch does when nothing meets its bar, is kept but not delivered. The jobs
+are kept in the platform database with the rest of Hermes' profile state, so
+they survive replacing the workspace's sandbox.
+
+Ask the Assistant to change or remove a watch through Hermes' native job tools.
 
 Every Assistant also has AstraBox's `astrabox-proactive` Skill, shipped in the
-Hermes image. It teaches the Assistant to offer such jobs when it notices
-recurring work (a morning briefing, an important-mail monitor, meeting prep, a
-weekly review), to create one only after the user agrees, to write each job so
-it runs on its own with the user's connected apps, and to keep monitors quiet
-until something is worth reporting.
+Hermes image. It teaches the Assistant to offer routines and watches when it
+notices recurring work (a morning briefing, an important-mail watch, meeting
+prep, a weekly review), to tell the two apart by whether the owner named a
+time, to create one only after the owner agrees, to write each one so it runs
+on its own with the owner's connected apps, and to keep watches quiet until
+something is worth reporting.
 
 ## Connect work apps {#connectors}
 
@@ -310,7 +336,7 @@ access in the RuntimeProfile. A connection belongs to the account that made it;
 each Assistant and Agent uses only the connectors turned on for it. When an
 agent needs an app the person has not connected, it can show them a card to
 connect it in the conversation. Turning a connector on or off restarts the
-Assistant's Hermes backend once no reply is running, as for any MCP change.
+Assistant's Hermes gateway once no reply is running, as for any MCP change.
 
 **Disconnect** removes the token from the hub. It does not withdraw the access
 at the vendor; to do that, remove the app in the vendor's account settings as
@@ -360,13 +386,10 @@ than its test users can connect.
 ## Long conversations
 
 When a conversation grows long, Hermes summarizes its older part so it fits the
-model's context window. AstraBox asks Hermes to do this while the conversation
-is quiet, shortly after a reply, once the context is 40% full, so the summary
-is ready before a reply would need it. A message sent while the summary is
-being made is answered at once, on the full conversation, and the summary is
-made again at the next quiet moment. Hermes decides the model's context window
-itself, from what the model endpoint reports or, when it reports nothing, from
-the model's name.
+model's context window. It does so during a reply, once the context passes its
+own threshold, and that reply waits for the summary. Hermes decides the model's
+context window itself, from what the model endpoint reports or, when it reports
+nothing, from the model's name.
 
 ## Pause and resume the workspace
 
@@ -448,11 +471,12 @@ request conventions.
 
 ## Runtime protocol compatibility
 
-Hermes images advertise their executor completion classification through the
-native `gateway.capabilities` build probe. A core requiring that classification
-refuses an image that does not advertise it before opening a native conversation
-or submitting a prompt. Deploy the core and its corresponding sandbox image
-together; an application version alone does not identify an overlay image's protocol.
+AstraBox drives Hermes' gateway over its canonical protocol, `hermes-gateway-v1`.
+Before opening a native conversation, the core reads the gateway's
+`runtime.describe` and refuses an image that does not advertise durable
+admission, event replay and the per-conversation tool environment on
+`session.create`. Deploy the core and its corresponding sandbox image together;
+an application version alone does not identify an overlay image's protocol.
 
 An unreadable execution event stops that Session's reader with
 `runtime_protocol_incompatible`. The page shows recovery required and the
@@ -462,13 +486,15 @@ remain intact. The platform does not mark a live box unavailable, guess a tool's
 outcome, skip the event, or replay an admitted task.
 
 Correct the runtime protocol before explicitly recovering the Session. If the
-same native epoch retains the event ring, recovery reads from the stored cursor.
-Replacing the native process or box does not retain that ring; this mechanism
-alone does not recover previously unread completed tool events from SessionDB.
+same gateway instance still holds the conversation's event ring, recovery reads
+from the stored cursor. Restarting the gateway or replacing the box does not
+retain that ring; this mechanism alone does not recover previously unread
+completed tool events from SessionDB.
 
 A conversation blocked by a runtime protocol fault can still be ended or
-archived. These operations close its recorded native conversation on the existing
-workspace; they do not require execution protocol compatibility or release the
+archived. These operations end its recorded native conversation on the existing
+workspace: its queued messages are withdrawn, a running reply is stopped, and
+the conversation leaves Hermes' list of live sessions. They do not release the
 shared sandbox. A native cleanup failure returns an error and leaves the
 conversation open for a retry. Ordinary working conversations remain protected
 from end or archive.

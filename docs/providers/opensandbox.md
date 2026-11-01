@@ -133,7 +133,7 @@ workspace layout. The deployment selects CPU and memory limits and scheduling
 requests through `ASTRABOX_SANDBOX_*` for conversation-owned boxes,
 `ASTRABOX_SHARED_SANDBOX_*` for Agent-shared boxes, and
 `ASTRABOX_ASSISTANT_SANDBOX_*` for Assistant workspace boxes. See the defaults in
-[Configuration](../configuration.md). Each kind uses its one recipe for cold,
+[Configuration](https://github.com/Colton-z/AstraBox/blob/main/docs/configuration.md). Each kind uses its one recipe for cold,
 prepared, and replacement creation; these are not RuntimeProfile fields. The
 provider-fitted limits and requests are part of an Agent's prepared generation,
 so a resource change retires unclaimed capacity without resizing Session-owned
@@ -245,6 +245,13 @@ then OpenSandbox provisions it and returns per-sandbox endpoint authentication
 to the SDK. AstraBox does not configure a deployment-wide egress token. See
 [Protect credentials used by Agents](../egress-credential-injection.md) for
 the supported request matches and verification flow.
+
+OpenSandbox does not offer
+[header delivery](../egress-credential-injection.md#header-delivery) for
+environment-variable credentials. Its credential substitution names whole
+request parts, and its header scope covers every request header, so it cannot
+confine a placeholder to one named header. Use substitution delivery with this
+backend.
 
 For HTTPS services that accept HTTP Basic, including private Git repositories,
 create an `http_basic` Credential in an AstraBox Vault and assign the Vault to

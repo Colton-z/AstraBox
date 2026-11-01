@@ -82,6 +82,16 @@ class EnginePlatform(Protocol):
         """
         ...
 
+    async def session_placeholder_context(self, session_id: str) -> str:
+        """The placeholder context of a box this Session's own startup creates.
+
+        Stable for the Session's current sandbox generation and replaced with
+        it, so the box's process and every later composition for that box name
+        the same placeholders. Raises ``SANDBOX_CREDENTIAL_CONTEXT_UNAVAILABLE``
+        when the Session has no generation.
+        """
+        ...
+
     async def resolve_session_mcp_credentials(
         self,
         session_id: str,

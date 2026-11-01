@@ -19,11 +19,19 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import Body
-from fastapi import Request
+from fastapi import Body, Request
 from pydantic import BaseModel, ConfigDict
 
+from astrabox.api.documentation import object_schema, query_parameter, request_body
+from astrabox.api.routes.admin import (
+    AdminErrorsPage,
+    AdminProcessHealth,
+    _errors_payload,
+    _global_sessions_payload,
+    _process_health_payload,
+)
 from astrabox.api.routes.response_envelope import ApiEnvelope
+from astrabox.api.routes.sessions import SessionRecord
 from astrabox.common.utils.admin_api_auth import (
     bootstrap_admin_api_registry,
     require_admin_api_bearer,
@@ -32,13 +40,6 @@ from astrabox.common.utils.api_response import success_response
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.service.orchestrator.service_registry import get_assistant_service
-from astrabox.api.routes.admin import (
-    AdminErrorsPage,
-    AdminProcessHealth,
-    _errors_payload,
-    _process_health_payload,
-    _global_sessions_payload,
-)
 
 _registered_on: int | None = None
 
@@ -76,6 +77,14 @@ def register_admin_api_routes(app) -> None:
         # is paged and owner-scoped and is a different route.
         response_model=ApiEnvelope[list[dict[str, Any]]],
         response_model_exclude_unset=True,
+        openapi_extra={
+            "parameters": [
+                query_parameter(
+                    "limit", "integer", "Maximum unscoped session records, capped at 500.", default=200
+                )
+            ]
+        },
+        responses={200: {"model": ApiEnvelope[list[SessionRecord]]}},
     )
     async def admin_api_list_sessions(request: Request):
         await require_admin_api_bearer(request)
@@ -86,6 +95,11 @@ def register_admin_api_routes(app) -> None:
         "/api/v1/admin-api/errors",
         response_model=ApiEnvelope[AdminErrorsPage],
         response_model_exclude_unset=True,
+        openapi_extra={
+            "parameters": [
+                query_parameter("limit", "integer", "Maximum errors, capped at 500.", default=200)
+            ]
+        },
     )
     async def admin_api_list_errors(request: Request):
         await require_admin_api_bearer(request)
@@ -105,6 +119,17 @@ def register_admin_api_routes(app) -> None:
         "/api/v1/admin-api/assistants/{assistant_id}/workspace/wake",
         response_model=ApiEnvelope[AdminApiWorkspaceResult],
         response_model_exclude_unset=True,
+        openapi_extra=request_body(
+            object_schema(
+                {
+                    "user_id": {
+                        "type": "string",
+                        "description": "Owner whose Assistant workspace the administrator operates.",
+                    }
+                },
+                required=("user_id",),
+            )
+        ),
     )
     async def admin_api_wake_assistant_workspace(
         assistant_id: str,
@@ -127,6 +152,17 @@ def register_admin_api_routes(app) -> None:
         "/api/v1/admin-api/assistants/{assistant_id}/workspace/hibernate",
         response_model=ApiEnvelope[AdminApiWorkspaceResult],
         response_model_exclude_unset=True,
+        openapi_extra=request_body(
+            object_schema(
+                {
+                    "user_id": {
+                        "type": "string",
+                        "description": "Owner whose Assistant workspace the administrator operates.",
+                    }
+                },
+                required=("user_id",),
+            )
+        ),
     )
     async def admin_api_hibernate_assistant_workspace(
         assistant_id: str,

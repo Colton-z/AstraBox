@@ -41,7 +41,7 @@ from __future__ import annotations
 #: class; the entry-point loaders compare it against this value at registration
 #: and fail loud on mismatch, so an incompatible plugin is rejected at bootstrap
 #: instead of failing mid-turn with an AttributeError.
-SEAMS_API_VERSION = 10
+SEAMS_API_VERSION = 11
 
 from astrabox.seams.extensions import ExtensionProvider
 from astrabox.seams.skills import SkillContentProvider, SkillSource, ResolvedSkillSource
@@ -63,7 +63,7 @@ from astrabox.seams.sandbox import (
 from astrabox.seams.runtime_preparation import (
     PreparedPackage, PreparationSubject, PreparationCommitGuard,
     ResourcePreparationOperation, ResourcePreparationContext,
-    RuntimePreparationProvider, RuntimePreparationPlan, RuntimeMaterials, RuntimeFile,
+    RuntimePreparationProvider, RuntimePreparationPlan, RuntimeMaterials, RuntimeFile, SessionMCPServer,
     SessionPreparationContext, TurnPreparationContext, PreparationUserActionRequired,
     SessionUserActionContext, SessionUserActionCommand, SessionUserActionState,
     TURN_PREPARATION_FAILED, register_runtime_preparation_provider,
@@ -82,6 +82,7 @@ __all__ = [
     "ResourcePreparationContext",
     "RuntimePreparationProvider",
     "RuntimePreparationPlan",
+    "SessionMCPServer",
     "RuntimeMaterials",
     "RuntimeFile",
     "SessionPreparationContext",

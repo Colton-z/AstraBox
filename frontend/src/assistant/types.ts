@@ -20,7 +20,6 @@ export type AssistantConversationResult = Schemas['StartedAssistantConversation'
 export type AssistantWorkspaceResult = Schemas['AssistantWorkspace'];
 export type AssistantExtensionCatalog = Schemas['AssistantExtensionCatalog'];
 export type AssistantDefaults = Schemas['AssistantDefaults'];
-export type AssistantScheduledJobs = Schemas['AssistantScheduledJobs'];
 export type AssistantDefaultsFields = Schemas['AssistantDefaultsFields'];
 export type AssistantDefaultsExtensionCatalog = Schemas['AssistantDefaultsExtensionCatalog'];
 

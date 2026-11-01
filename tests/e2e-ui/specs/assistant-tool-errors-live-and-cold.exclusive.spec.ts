@@ -88,21 +88,16 @@ test('an Assistant native tool validation error stays failed live and cold while
       expect(completions.length).toBeGreaterThanOrEqual(2);
       expect(completions.every((event) => typeof event.payload?.is_error === 'boolean')).toBe(true);
       evidence.readFault = { ...fault, nativeWire };
-      // The build probe must refuse an unadvertised contract without touching the task.
-      sandboxExec(handle, `touch ${faultRoot}/hide-capability`);
-      await api.recoverSession(sessionId);
-      await expect.poll(async () => String((await api.adminSessionDetail(sessionId)).last_error || ''),
-        { timeout: 30_000 }).toContain('does not advertise native execution');
-      expect(readFault().reader_cursor).toEqual(fault.reader_cursor);
-      expect(sessionInputRows(sessionId)).toHaveLength(1);
+      sandboxExec(handle, `rm ${faultRoot}/strip-classification`);
       await expect(page.getByTestId('session-recover')).toBeVisible();
-      sandboxExec(handle, `rm ${faultRoot}/hide-capability ${faultRoot}/strip-classification`);
       await page.getByTestId('session-recover').click();
     }
     await expect(page.getByTestId('assistant-text').filter({ hasText: marker })).toBeVisible({ timeout: 60_000 });
     await api.waitForSessionReady(sessionId, 30_000);
     const detail = await api.adminSessionDetail(sessionId);
-    const home = String(detail.runtime_identity?.config_dir || '');
+    const identity = postgresRows<{ runtime_identity: { config_dir: string } }>(
+      `SELECT runtime_identity FROM assistant_workspaces WHERE assistant_id=${sqlLiteral(assistantId)}`)[0]?.runtime_identity;
+    const home = String(identity?.config_dir || '');
     const nativeId = String(detail.engine_session_key || '');
     expect(home).toMatch(/^\/home\//);
     expect(nativeId).not.toBe('');

@@ -12,6 +12,14 @@ Hermes 固定使用 0.22.4 版本，提交
 `a2a_orchestrate`。AstraBox 执行由它管理的 Agent 时，不会启动 Hermes 的入站消息网关：
 该网关有自己的另一套执行生命周期。
 
+对于交给 AstraBox 管理的 Agent 的长任务，加载内置的 `astrabox-agent-task` Skill。
+它通过现有 A2A API 设置 `returnImmediately=true` 提交任务，保留任务引用，并使用 Hermes
+后台终端进程订阅该任务，接收原生完成通知。Assistant 通过 `get_agent_task` 读取结果，
+并在原对话中汇报。观察连接中断不会使任务失败，也不会重新提交任务。
+需要在当前回复结束后继续汇报时，必须启用后台通知；否则 Assistant 需要使用原生进程工具等待。
+运行环境丢失后可以凭已保存的任务引用重新查询，但观察进程本身不会跨沙箱丢失保留。
+同步的原生 `a2a_call` 仍受所配置的对端超时限制。
+
 ## 调用 AstraBox 管理的 Agent
 
 使用 Hermes 原生工具时，先调用 `a2a_list`，将完整的 peer key 原样传给
@@ -85,18 +93,19 @@ Task 时，会保留回复的文本及其消息 part，与 Session 历史中显�
 传输由 SDK 处理，AstraBox 则根据 Agent 运行时报告的回复确定任务的语义。
 Hermes 原生的 A2A 对话文件和审计文件包含在 profile 状态归档中，位于用户工作区之外。
 
-## 个人 Agent 计划 {#personal-agent-schedules}
+## 个人计划 {#personal-agent-schedules}
 
 Assistant 内置的计划工具管理 `/api/v1/me/schedules`。它们复用平台的调度器、
-Deployment 和运行记录（Run）。来源 Assistant 记录计划是在哪里创建的；工作由目标 Agent
-执行。
+Deployment 和运行记录（Run）。来源 Assistant 记录计划是在哪里创建的。带 `agent_id`
+的计划由该 Agent 在自己的对话里执行；不带的由来源 Assistant 自己执行，每次运行是它
+主对话里的一条消息（[例行任务与盯梢](assistants.md#routines-and-watches)）。
 
 个人计划始终以经过认证的创建者身份执行。创建、启用或触发计划时都会检查对目标的访问
-权限。撤销访问权限后，新的工作会被阻止，而所有者仍可以查看、停用或删除该计划。其他用户
+权限：创建者对 Agent 的使用权限，或对 Assistant 的归属。撤销访问权限后，新的工作会被阻止，而所有者仍可以查看、停用或删除该计划。其他用户
 （包括目标 Agent 的所有者）无法通过该 Agent 的 Deployment 管理功能管理这个个人计划。
 A2A 通信不会另建一套调度器。
 
 打开账户设置菜单，选择**个人计划**即可查看这些计划。在对话框中选择一个计划，可以编辑
 它的名称、提示词、cron 和时区，启用或停用它，立即运行，重放之前的一次运行，或删除它。
-每条带有 Session 的运行记录都链接到对应的对话。要创建计划，告诉 Assistant 由哪个
-Agent 执行工作，以及何时运行。
+每条带有 Session 的运行记录都链接到对应的对话。要创建计划，告诉 Assistant 做什么、
+什么时候做，以及是否交给某个 Agent。

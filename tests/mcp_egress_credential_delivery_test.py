@@ -260,7 +260,6 @@ async def test_archive_refresh_removes_the_sidecar_copy_of_the_secret() -> None:
         handle,
         vault_write=archived,
         session_id="session-1",
-        managed_credential_names=(active[0][0].name,),
         managed_binding_names=(active[1][0].name,),
     )
 

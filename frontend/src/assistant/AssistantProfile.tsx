@@ -34,8 +34,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { listAssistantConnectors, listConnectors, setAssistantConnector } from '../api';
 import { useExtensionProvider } from '@/hooks/useExtensionProvider';
 
-import { deleteAssistant, getAssistant, listAssistantScheduledJobs, updateAssistant } from './api';
-import { formatDateTime } from '@/manage/assistantConfig';
+import { deleteAssistant, getAssistant, updateAssistant } from './api';
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -80,7 +79,6 @@ export function AssistantProfile({ assistantId }: { assistantId: string }) {
   const assistant = useSWR(open ? ['assistant', assistantId] : null, () => getAssistant(assistantId));
   const connectors = useSWR(open ? 'connectors' : null, listConnectors);
   const enabled = useSWR(open ? ['assistant-connectors', assistantId] : null, () => listAssistantConnectors(assistantId));
-  const schedule = useSWR(open ? ['assistant-scheduled-jobs', assistantId] : null, () => listAssistantScheduledJobs(assistantId));
   const extensionProvider = useExtensionProvider(open);
   const [name, setName] = useState('');
   const [timezone, setTimezone] = useState('');
@@ -227,44 +225,6 @@ export function AssistantProfile({ assistantId }: { assistantId: string }) {
             <Link to="/connections" className="text-13 text-primary underline-offset-4 hover:underline">
               {t('chat:assistant_welcome.open_connections')}
             </Link>
-          </Section>
-
-          <Section title={t('chat:assistant_profile.activity')}>
-            {schedule.error ? (
-              <ErrorNote>{(schedule.error as Error).message}</ErrorNote>
-            ) : schedule.data?.jobs == null ? (
-              <p className="text-13 text-muted-foreground">
-                {schedule.data === undefined
-                  ? t('common:loading')
-                  : schedule.data.reason === 'workspace_not_running'
-                    ? t('chat:assistant_profile.activity_not_running')
-                    : t('chat:assistant_profile.activity_unsupported')}
-              </p>
-            ) : schedule.data.jobs.length === 0 ? (
-              <p className="text-13 text-muted-foreground">{t('chat:assistant_profile.activity_empty')}</p>
-            ) : (
-              <ul className="flex flex-col gap-2" data-testid="assistant-scheduled-jobs">
-                {schedule.data.jobs.map((job) => {
-                  const next = String(job.next_run_at ?? '');
-                  const last = String(job.last_run_at ?? '');
-                  return (
-                    <li key={String(job.id ?? job.name)} className="flex flex-col gap-0.5 rounded-md border px-3 py-2">
-                      <span className="flex items-center justify-between gap-2">
-                        <span className="truncate text-13 font-medium">{String(job.name ?? job.id ?? '')}</span>
-                        <Badge variant="secondary" className="font-normal">{String(job.state ?? '')}</Badge>
-                      </span>
-                      <span className="text-xs text-muted-foreground">
-                        {[
-                          String(job.schedule_display ?? ''),
-                          next ? t('chat:assistant_profile.activity_next', { time: formatDateTime(next) }) : '',
-                          last ? t('chat:assistant_profile.activity_last', { time: formatDateTime(last), status: String(job.last_status ?? '') }) : '',
-                        ].filter(Boolean).join(' · ')}
-                      </span>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
           </Section>
 
           <Section title={t('chat:assistant_profile.from_organization')}>

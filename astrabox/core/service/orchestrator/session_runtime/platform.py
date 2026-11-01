@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from astrabox.common.logger.logger_factory import get_logger
+from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.time_utils import parse_iso
 from astrabox.core.model import SessionState
 from astrabox.core.service.orchestrator.engine.runtime import (
@@ -118,16 +119,24 @@ class PlatformRuntimeConnector:
             )
 
     async def replace(self, session_id: str) -> None:
-        """Start a replacement runtime for the waiting inputs, unless one already failed for them.
+        """Start a replacement runtime for the waiting inputs, unless a start already failed for them.
 
-        Inputs accepted before the last failed replacement get no second
-        attempt (:class:`RuntimeStartFailed`); a newer input starts another.
+        Inputs accepted before the last failed start get no second attempt:
+        the user-action refusal when that start waits on the user, otherwise
+        :class:`RuntimeStartFailed`. A newer input starts another.
         """
         session = await self._sessions.get_session(session_id) or {}
         failed_at = session.get("runtime_start_failed_at")
         if failed_at:
             waiting = await self._facts.undelivered_inputs(session_id)
             if waiting and all(parse_iso(str(row["created_at"])) <= parse_iso(str(failed_at)) for row in waiting):
+                action = validated_user_action(session.get("startup_user_action"))
+                if action is not None:
+                    raise APIError(
+                        code=TURN_PREPARATION_USER_ACTION_REQUIRED, status_code=409,
+                        message=action["message"],
+                        evidence={"reason": "user_action_required", "user_action": action, "session_id": session_id},
+                    )
                 raise RuntimeStartFailed(session_id)
         await self._replace(session_id)
 

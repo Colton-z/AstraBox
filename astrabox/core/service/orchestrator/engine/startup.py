@@ -31,6 +31,10 @@ from astrabox.core.service.orchestrator.engine.base import (
     RuntimeStateSaveRequired,
 )
 from astrabox.core.service.orchestrator.engine.provisioning import (
+    CREDENTIAL_VAULT_BINDINGS,
+    ENVIRONMENT_CREDENTIAL_IDS,
+    ENVIRONMENT_PLACEHOLDER_CONTEXT,
+    credential_delivery_record,
     engine_service_credential,
     ProvisionedEngineSandbox,
     connect_engine_sandbox,
@@ -51,7 +55,7 @@ from astrabox.core.service.orchestrator.runtime.mcp_servers import (
     sandbox_mcp_egress_hosts,
 )
 from astrabox.core.service.orchestrator.runtime.preparation import prepare_session_runtime_context
-from astrabox.seams.egress_credentials import workload_placeholder_context
+from astrabox.seams.egress_credentials import SandboxEgressCredentialPlan
 from astrabox.secrets import SecretProvider
 
 
@@ -598,6 +602,11 @@ async def attach_platform_runtime(
     vault_enabled = bool(
         getattr(load_astrabox_settings(), "sandbox_credential_vault_enabled", False)
     )
+    from astrabox.core.service.orchestrator.engine.provisioning import require_live_credential_delivery
+
+    require_live_credential_delivery(
+        runtime_identity=identity, sandbox_id=target_sandbox, vault_enabled=vault_enabled,
+    )
     mcp_vault_write = await resolve_mcp_credential_plan(
         platform,
         session_id=session_id,
@@ -605,6 +614,12 @@ async def attach_platform_runtime(
         vault_enabled=vault_enabled,
     )
     credential_slot_id = str(identity.get("credential_slot_id") or "").strip()
+    environment_placeholder_context = (
+        str(identity.get(ENVIRONMENT_PLACEHOLDER_CONTEXT) or "").strip() or None
+    )
+    delivered_environment = sorted(
+        str(item) for item in identity.get(ENVIRONMENT_CREDENTIAL_IDS) or ()
+    )
     from astrabox.seams.runtime_preparation import runtime_preparation_plan
 
     if identity.get("model_credential_id") and runtime_preparation_plan(template).model_credential_delivery != "provider":
@@ -627,11 +642,12 @@ async def attach_platform_runtime(
         session_id=session_id,
         vault_enabled=vault_enabled,
         vault_write=vault_write,
-        placeholder_context=(
-            workload_placeholder_context(credential_slot_id)
-            if credential_slot_id
-            else None
-        ),
+        backend=backend_adapter,
+        placeholder_context=environment_placeholder_context,
+    )
+    composed_environment = sorted(
+        str(item.credential_id)
+        for item in (vault_write.environment if vault_write is not None else ())
     )
 
     sandbox = await connect_engine_sandbox(
@@ -649,14 +665,21 @@ async def attach_platform_runtime(
             network_policy=network_policy,
             vault_write=vault_write,
         )
-        if vault_write is not None and not vault_write.is_empty:
+        withdrawn = set(delivered_environment) - set(composed_environment)
+        if (vault_write is not None and not vault_write.is_empty) or withdrawn:
             # Snapshot resume boots a fresh sidecar with no in-memory Vault.
             # This path has resolved the complete Session credential plan, so
             # it can recreate that Vault before activating the engine. Partial
-            # per-turn MCP refreshes must remain patch-only.
+            # per-turn MCP refreshes must remain patch-only. An environment
+            # credential delivered earlier and archived or deleted since is
+            # named so the backend stops delivering it, even when nothing else
+            # is written.
             await backend_adapter.apply_credential_vault(
                 sandbox,
-                vault_write=vault_write,
+                vault_write=(
+                    vault_write if vault_write is not None else SandboxEgressCredentialPlan()
+                ),
+                managed_credential_names=tuple(delivered_environment),
                 create_if_missing=True,
             )
         if credential_slot_id:
@@ -680,6 +703,13 @@ async def attach_platform_runtime(
                 session_id=session_id,
                 user_id=user_id,
             )
+        identity.update(
+            credential_delivery_record(
+                vault_write,
+                placeholder_context=environment_placeholder_context,
+                vault_bindings=bool(identity.get(CREDENTIAL_VAULT_BINDINGS)),
+            )
+        )
 
         shared = (
             workspace_plan.subject_kind == "deployment_conversation"

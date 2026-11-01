@@ -1,4 +1,5 @@
 import i18n from '@/i18n';
+import type { paths } from '../api/schema';
 
 import type { ListPageQuery } from '@/types';
 
@@ -10,7 +11,6 @@ import type {
   AssistantExtensionCatalog,
   AssistantListPage,
   AssistantRecord,
-  AssistantScheduledJobs,
   AssistantWorkspaceResult,
 } from './types';
 import { apiClient, listPageQuery, sendApi, startConversationRequest } from '../api';
@@ -63,7 +63,9 @@ export async function getAssistant(assistantId: string): Promise<AssistantRecord
   );
 }
 
-export function createAssistant(config: Record<string, unknown>): Promise<AssistantRecord> {
+type AssistantCreateRequest = paths['/api/v1/assistants']['post']['requestBody']['content']['application/json'];
+
+export function createAssistant(config: AssistantCreateRequest): Promise<AssistantRecord> {
   return sendApi((wire) => apiClient.POST('/api/v1/assistants', {
     ...wire,
     body: config,
@@ -143,14 +145,6 @@ export async function ensurePrimaryAssistant(
       got: data === null ? 'null' : typeof data,
     }),
   );
-}
-
-/** What the Assistant scheduled for itself, read live from its running workspace. */
-export async function listAssistantScheduledJobs(assistantId: string): Promise<AssistantScheduledJobs> {
-  return await sendApi((wire) => apiClient.GET('/api/v1/assistants/{assistant_id}/scheduled-jobs', {
-    ...wire,
-    params: { path: { assistant_id: assistantId } },
-  })) as AssistantScheduledJobs;
 }
 
 /** The conversation opening this Assistant lands in, started when it has none. */

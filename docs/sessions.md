@@ -226,7 +226,7 @@ then upload one-off files directly to the Session workspace after its runtime
 is ready. See [Access GitHub](working-with-repos.md), [Authenticate with
 Vaults](credentials.md), and [Attach and download files](files.md).
 
-## Send Messages
+## Send Messages {#send-a-message}
 
 When an administrator has configured a transcription model, the console's
 microphone button records speech and appends its transcript to the editable
@@ -341,6 +341,13 @@ curl --silent --show-error \
   "$SERVICE_URL/api/v1/sessions?page=1&limit=10" \
   --header "Authorization: Bearer $ACCESS_TOKEN"
 
+# Rename the Session
+curl --silent --show-error --request PATCH \
+  "$SERVICE_URL/api/v1/sessions/$SESSION_ID" \
+  --header "Authorization: Bearer $ACCESS_TOKEN" \
+  --header 'Content-Type: application/json' \
+  --data '{"title":"Release checklist"}'
+
 # Update the Agent program's permission mode for this Session
 curl --silent --show-error --request POST \
   "$SERVICE_URL/api/v1/sessions/$SESSION_ID/permission-mode" \
@@ -374,11 +381,21 @@ Example paginated response:
 ```
 
 Paged list responses use `has_more` and `next_cursor`. Without `page=1`, the
-same list route returns the console's unpaged array. Permission mode is the only
-Session configuration this route family updates; the selected Agent program
-defines its accepted values. AstraBox stores the mode on the Session and
-applies it to the running Agent program; a Session without a running program
-receives it when its runtime starts.
+same list route returns the console's unpaged array.
+
+The title and the permission mode are the Session settings this route family
+updates. Only the Session's owner can rename it. A title is one line of at
+most 200 characters: runs of whitespace, line breaks included, are stored as
+one space, and an empty title is refused with `HTTP 400 INVALID_REQUEST`.
+Renaming does not move the Session in the list. When automatic titles are
+enabled, AstraBox titles a Session from one of its first responses; a title
+its owner set is never replaced, including one set while that title is being
+generated. In the console, rename a conversation from **More actions** on its
+row in the list, or by selecting its title above the conversation.
+
+The selected Agent program defines the accepted permission modes. AstraBox
+stores the mode on the Session and applies it to the running Agent program; a
+Session without a running program receives it when its runtime starts.
 
 ### Conversation history and folded work
 

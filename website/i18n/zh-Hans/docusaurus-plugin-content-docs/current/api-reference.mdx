@@ -1,0 +1,33 @@
+---
+title: API reference
+description: 当前 AstraBox 版本的完整 HTTP API 参考，由实际接口生成。
+toc_max_heading_level: 2
+---
+
+import ApiReference from '@site/src/components/ApiReference';
+
+下方目录包含全部内置 HTTP 操作。展开接口可查看路径、查询和请求头参数、请求体、成功响应、错误和鉴权要求。下载文件和目录使用同一份生成的 OpenAPI 快照，控制台客户端也由它生成。
+
+这是当前版本的参考。具体部署的 `/openapi.json` 和 `/docs` 描述该实例已安装的路由，并可对实例发送经过鉴权的请求。OIDC 登录路由需要 `ASTRABOX_WEB_IDENTITY=oidc`，Agent 路由需要启用 Agent 功能。已安装的提供方决定渠道配置、程序选项和可用工具。
+
+## 鉴权与原生协议契约
+
+普通受保护路由使用部署的浏览器身份或访问令牌。`x-required-api-scope` 扩展说明 API 令牌所需的作用域；管理接口还要求管理员角色。使用本地身份的部署直接确立本地管理员身份，无需凭证。配置了 `ASTRABOX_ADMIN_API_TOKEN` 时，`admin-api` 系列还会检查该令牌。
+
+JWT 身份部署使用经过校验的 bearer 凭证；可信请求头部署使用鉴权网关配置的用户、组请求头，以及已配置的网关共享凭证。部署自身的 OpenAPI 会列出实际请求头名称。身份模式见[团队登录](team-login.md)。
+
+能力接口自行校验凭证：share 和 artifact-share 使用链接令牌，`sbxcap` 使用沙箱能力令牌，沙箱回调使用签名回调路径，平台 MCP 使用 URL 中的 HMAC。Assistant A2A 要求绑定工作区与目标 Agent 的 bearer 令牌。Deployment 触发器使用所配置场景的 HMAC 或提供方原生鉴权。
+
+REST JSON 成功响应使用 `code`、`message` 和 `data`。错误在声明的位置使用平台信封，以 HTTP 状态为准。下载返回字节；对话与终端流、Artifact 实时更新、采样以及流式 A2A 调用返回 SSE。MCP 和 A2A 使用原生协议消息与错误。
+
+A2A 1.0 类型来自[官方 protobuf 派生 schema](https://a2a-protocol.org/v1.0.0/spec/a2a.json)，以[协议规范](https://a2a-protocol.org/v1.0.0/specification/)为准；不支持推送通知和租户路由。MCP 在 `initialize` 时协商版本，通过 `tools/list` 发现工具的输入与结果。程序拥有的 part、交互、能力、配置和 SessionStore 条目保留原生字段。提供方目录响应描述支持的配置字段；这些位置的开放对象表示扩展契约。
+
+提供方回调代理转发原生路径、查询、请求头、字节与状态，目录包含这些集成入口。第三方管理界面资源及其内部 API 代理、`/docs`、`/redoc` 和控制台静态文件不属于 AstraBox 产品 API；这些服务的接口以对应厂商文档为准。
+
+工作流与示例见[鉴权](api-authentication.md)、[分页](api-pagination.md)、[错误](api-errors.md)、[事件流](events-stream.md)、[A2A](a2a.md)、[Agent MCP](agent-mcp.md)和 [Artifacts](artifacts.md)。
+
+## HTTP 操作
+
+按路径或标签筛选，展开操作查看完整 schema。
+
+<ApiReference chinese />

@@ -9,18 +9,18 @@ reuses the existing ``/api/v1/sessions/{id}/...`` session endpoints
 
 from __future__ import annotations
 
-from astrabox.seams.skills import SkillDescriptor
-
 from typing import Any
 
 from fastapi import Body, Header, Request
 from pydantic import BaseModel, ConfigDict
 
+from astrabox.api.documentation import query_parameter, request_body
+from astrabox.api.routes._shared import list_page_limit
 from astrabox.api.routes.conversation_models import (
     StartConversationRequest,
     conversation_idempotency_key,
 )
-from astrabox.api.routes._shared import list_page_limit
+from astrabox.api.routes.request_schemas import ASSISTANT_CREATE, ASSISTANT_UPDATE
 from astrabox.api.routes.response_envelope import ApiEnvelope
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.api_response import success_response
@@ -30,6 +30,7 @@ from astrabox.core.service.orchestrator.service_registry import (
     get_assistant_service,
     get_platform_service,
 )
+from astrabox.seams.skills import SkillDescriptor
 
 logger = get_logger(__name__)
 
@@ -71,24 +72,6 @@ class InheritedExtensions(BaseModel):
     catalog_mcp_servers: int
     packages: list[dict[str, Any]]
     credential_vaults: int
-
-
-class AssistantScheduledJobs(BaseModel):
-    """What an Assistant scheduled for itself, read from its program's own store.
-
-    Each job carries the program's own field names (Hermes: ``id``, ``name``,
-    ``prompt``, ``schedule_display``, ``state``, ``next_run_at``,
-    ``last_run_at``, ``last_status``, ...). ``jobs`` is null when there is no
-    live list to read, and ``reason`` says why: ``workspace_not_running`` or
-    ``engine_keeps_no_schedule``.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    assistant_id: str
-    workspace_state: str
-    jobs: list[dict[str, Any]] | None
-    reason: str | None
 
 
 class EnsurePrimaryAssistantRequest(BaseModel):
@@ -275,6 +258,7 @@ def register_assistant_routes(app: Any) -> None:
         "/api/v1/assistants",
         response_model=ApiEnvelope[Assistant],
         response_model_exclude_unset=True,
+        openapi_extra=request_body(ASSISTANT_CREATE),
     )
     async def create_assistant(request: Request, payload: dict[str, Any] = Body(...)):
         user = await get_current_user_context(request)
@@ -314,6 +298,20 @@ def register_assistant_routes(app: Any) -> None:
         # answer is every Assistant the caller owns.
         response_model=ApiEnvelope[AssistantListPage] | ApiEnvelope[list[Assistant]],
         response_model_exclude_unset=True,
+        openapi_extra={
+            "parameters": [
+                query_parameter(
+                    "page",
+                    "integer",
+                    "Set to 1 for a cursor page; omitted returns all owned Assistants.",
+                    enum=[1],
+                ),
+                query_parameter("limit", "integer", "Page size, clamped to 1..100.", default=50),
+                query_parameter("cursor", "string", "Opaque next_cursor from the previous page."),
+                query_parameter("q", "string", "Assistant search."),
+                query_parameter("status", "string", "Workspace-state filter.", default="all"),
+            ]
+        },
     )
     async def list_assistants(request: Request):
         user = await get_current_user_context(request)
@@ -344,6 +342,7 @@ def register_assistant_routes(app: Any) -> None:
         "/api/v1/assistants/{assistant_id}",
         response_model=ApiEnvelope[Assistant],
         response_model_exclude_unset=True,
+        openapi_extra=request_body(ASSISTANT_UPDATE),
     )
     async def update_assistant(
         assistant_id: str,
@@ -403,15 +402,6 @@ def register_assistant_routes(app: Any) -> None:
         user = await get_current_user_context(request)
         result = await _service.destroy_workspace(user, assistant_id)
         return success_response(result)
-
-    @app.get(
-        "/api/v1/assistants/{assistant_id}/scheduled-jobs",
-        response_model=ApiEnvelope[AssistantScheduledJobs],
-        response_model_exclude_unset=True,
-    )
-    async def list_assistant_scheduled_jobs(assistant_id: str, request: Request):
-        user = await get_current_user_context(request)
-        return success_response(await _service.list_scheduled_jobs(user, assistant_id))
 
     @app.post(
         "/api/v1/assistants/{assistant_id}/main-conversation",

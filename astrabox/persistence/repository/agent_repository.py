@@ -1086,6 +1086,13 @@ class AgentRepository:
 
     async def ensure_runtime(self, agent_id: str) -> None:
         """Create this target's empty ledger for a live, globally authored Agent."""
+        if await fetch_value(
+            select(_RUNTIMES.c.agent_id).where(
+                _runtime_owner(_RUNTIMES, agent_id, self.environment_name),
+            )
+        ) is not None:
+            return
+
         async def create(conn: AsyncConnection) -> None:
             await insert_if_absent(
                 conn, _RUNTIMES,

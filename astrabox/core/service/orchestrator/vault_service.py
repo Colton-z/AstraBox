@@ -15,11 +15,16 @@ Mirrors the Claude Managed Agents vault semantics on the self-hosted runtime:
     (same key), for services that authenticate with headers such as
     ``apikey`` instead of ``Authorization``.
   - ``environment_variable`` — a secret keyed by immutable ``secret_name``,
-    scoped by ``networking.allowed_hosts`` and ``injection_location``
-    (header/body). Requires a sandbox backend with egress credential
-    substitution (``SandboxProvider.supports_egress_credential_injection``);
-    the built-in local backend does not support it yet — session create fails
-    loud instead of silently shipping the secret into the sandbox.
+    delivered the way its immutable ``delivery`` names. ``substitution`` (the
+    default) is scoped by ``networking.allowed_hosts`` and
+    ``injection_location`` (header/body) and requires a sandbox backend with
+    egress credential substitution
+    (``SandboxProvider.supports_egress_credential_injection``). ``header``
+    replaces the placeholder only inside ``header_name`` on requests to the
+    declared hosts and requires
+    ``SandboxProvider.supports_header_placeholder_credentials``. A Session
+    whose backend cannot deliver it fails before sandbox allocation instead of
+    shipping the secret into the sandbox.
 * **Structural secrecy**: sensitive values never live in metadata rows and are
   never returned by any API (write-only). MCP credentials are written to the
   sandbox egress sidecar, which attaches the resolved request headers only to
@@ -67,6 +72,8 @@ from astrabox.common.utils.time_utils import parse_iso, utcnow
 from astrabox.common.utils.user_context import UserContext, default_org_id
 from astrabox.providers.secret_store import EncryptedCollectionSecretStore
 from astrabox.seams.egress_credentials import (
+    DELIVERY_HEADER,
+    DELIVERY_SUBSTITUTION,
     EgressCredential,
     HTTPBasicEgressCredential,
     HTTPBasicEgressCredentialSet,
@@ -130,6 +137,13 @@ _FORBIDDEN_STATIC_HEADERS = frozenset(
 )
 _MAX_REQUEST_MATCH_VALUES = 50
 
+#: ``environment_variable`` delivery modes; ``egress_credentials`` states each contract.
+_ENV_DELIVERIES = (DELIVERY_SUBSTITUTION, DELIVERY_HEADER)
+#: Substitution rules that header delivery does not honour. Each is refused
+#: when present, so a request limit an administrator wrote cannot be dropped.
+_SUBSTITUTION_ONLY_FIELDS = ("injection_location", "allowed_requests", "allow_insecure_http")
+_HOST_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
 #: Secret-store field slots per credential type (everything sensitive).
 _SECRET_FIELDS = {
     AUTH_TYPE_MCP_OAUTH: ("access_token", "refresh_token", "client_secret"),
@@ -146,6 +160,22 @@ def _invalid(message: str) -> APIError:
 
 def _not_found(kind: str, ident: str) -> APIError:
     return APIError(code=f"{kind.upper()}_NOT_FOUND", message=f"{kind} '{ident}' not found", status_code=404)
+
+
+def _is_domain_name(host: str) -> bool:
+    """A lowercase hostname of two or more labels, optionally behind a leftmost ``*.``.
+
+    An all-numeric last label is refused, which is what keeps an IPv4 address
+    out; an IPv6 address, a port, a scheme or a path fails the label grammar.
+    """
+    name = host[2:] if host.startswith("*.") else host
+    labels = name.split(".")
+    return (
+        len(labels) >= 2
+        and len(name) <= 253
+        and not labels[-1].isdigit()
+        and all(_HOST_LABEL.fullmatch(label) for label in labels)
+    )
 
 
 def normalize_mcp_server_url(url: str) -> str:
@@ -389,15 +419,35 @@ class VaultService:
         if auth_type not in _ALL_AUTH_TYPES:
             raise _invalid(f"auth.type must be one of {list(_ALL_AUTH_TYPES)}")
         if auth_type in _EGRESS_AUTH_TYPES:
-            # Capability-gate the API surface: this credential type only works
-            # on a backend with egress credential substitution. With none
-            # enabled, creating it could never lead to a working session —
-            # fail at create with the reason, not later at session attach.
+            # Capability-gate the API surface by how the credential is
+            # delivered: header delivery needs a backend that declares it, and
+            # everything else needs egress credential substitution. With no
+            # such backend enabled, creating it could never lead to a working
+            # session — fail at create with the reason, not later at attach.
             from astrabox.seams.sandbox import (
                 any_enabled_backend_supports_egress_credential_injection,
+                any_enabled_backend_supports_header_placeholder_credentials,
             )
 
-            if not any_enabled_backend_supports_egress_credential_injection():
+            if (
+                auth_type == AUTH_TYPE_ENVIRONMENT_VARIABLE
+                and self._env_delivery(auth) == DELIVERY_HEADER
+            ):
+                if not any_enabled_backend_supports_header_placeholder_credentials():
+                    raise APIError(
+                        code="VAULT_ENV_CREDENTIAL_UNSUPPORTED",
+                        message=(
+                            "environment_variable credentials with delivery=header "
+                            "need a sandbox backend that replaces the placeholder "
+                            "inside one named request header "
+                            "(SandboxProvider.supports_header_placeholder_credentials), "
+                            "and no enabled backend supports it in this deployment. "
+                            "Use delivery=substitution with an egress-capable sandbox "
+                            "backend, or enable a backend that declares header delivery."
+                        ),
+                        status_code=400,
+                    )
+            elif not any_enabled_backend_supports_egress_credential_injection():
                 raise APIError(
                     code="VAULT_ENV_CREDENTIAL_UNSUPPORTED",
                     message=(
@@ -496,6 +546,15 @@ class VaultService:
                         f"auth.{immutable} is immutable after create — archive the "
                         "credential and create a new one to change it"
                     )
+            if (
+                auth_type == AUTH_TYPE_ENVIRONMENT_VARIABLE
+                and auth.get("delivery") is not None
+                and self._env_delivery(auth) != self._env_delivery(meta_auth)
+            ):
+                raise _invalid(
+                    "auth.delivery is immutable after create — create a new "
+                    "credential to deliver the secret another way"
+                )
             # Rotate secret payloads (write-only fields).
             new_meta, secret_values = self._split_auth_payload(
                 auth_type, {**meta_auth, **auth, "type": auth_type}, partial=True
@@ -621,14 +680,22 @@ class VaultService:
         *,
         backend_name: str,
         backend_supports_egress_injection: bool,
+        backend_supports_header_credentials: bool,
         egress_injection_unsupported_reason: str | None = None,
     ) -> list[str]:
         """Validate current managed bindings when a Session is created.
 
         Authorization was checked when an administrator saved the binding. This
         runtime check does not consult the conversation user's identity; it only
-        verifies that each Vault still exists, remains active, and can be safely
-        delivered by the selected sandbox backend.
+        verifies that each Vault still exists, remains active, and that the
+        selected sandbox backend can deliver every active outbound credential
+        the way it is configured. A header-delivery ``environment_variable``
+        credential needs ``backend_supports_header_credentials`` alone; every
+        other outbound credential needs ``ASTRABOX_SANDBOX_CREDENTIAL_VAULT``
+        and ``backend_supports_egress_injection``. A non-empty
+        ``egress_injection_unsupported_reason`` replaces the message of either
+        backend refusal, for a Session that cannot carry outbound credentials
+        whatever its backend supports.
         """
         from astrabox.common.utils.settings import load_astrabox_settings
 
@@ -641,42 +708,86 @@ class VaultService:
         )
         cleaned = self._distinct_ids(vault_ids)
         vaults = {vault["vault_id"]: vault for vault in await self._repo.get_vaults(cleaned)}
-        outbound = await self._first_outbound_credentials(cleaned)
+        outbound: dict[str, list[dict[str, Any]]] = {}
+        for item in await self._repo.list_credentials(
+            cleaned, active_only=True, auth_types=_EGRESS_AUTH_TYPES
+        ):
+            outbound.setdefault(str(item["vault_id"]), []).append(item)
         for vault_id in cleaned:
             vault = vaults.get(vault_id)
             if vault is None or vault["archived_at"]:
                 raise _invalid(
                     f"managed credential vault '{vault_id}' is missing or archived"
                 )
-            credential = outbound.get(vault_id)
-            if credential is None:
-                continue
-            if not vault_enabled:
-                raise APIError(
-                    code="VAULT_ENV_CREDENTIAL_UNSUPPORTED",
-                    message=(
-                        f"managed credential vault '{vault_id}' contains an "
-                        "outbound credential, which requires protected "
-                        "delivery. Set ASTRABOX_SANDBOX_CREDENTIAL_VAULT=1 or "
-                        "remove that credential from the managed binding."
-                    ),
-                    status_code=400,
+            for credential in outbound.get(vault_id, []):
+                self._require_session_delivery(
+                    vault_id,
+                    credential,
+                    backend_name=backend_name,
+                    vault_enabled=vault_enabled,
+                    backend_supports_egress_injection=backend_supports_egress_injection,
+                    backend_supports_header_credentials=backend_supports_header_credentials,
+                    unsupported_reason=egress_injection_unsupported_reason,
                 )
-            if not backend_supports_egress_injection:
+        return cleaned
+
+    def _require_session_delivery(
+        self,
+        vault_id: str,
+        credential: dict[str, Any],
+        *,
+        backend_name: str,
+        vault_enabled: bool,
+        backend_supports_egress_injection: bool,
+        backend_supports_header_credentials: bool,
+        unsupported_reason: str | None,
+    ) -> None:
+        """Refuse one outbound credential the Session's backend cannot deliver."""
+        auth = dict(credential.get("auth") or {})
+        if (
+            auth.get("type") == AUTH_TYPE_ENVIRONMENT_VARIABLE
+            and self._env_delivery(auth) == DELIVERY_HEADER
+        ):
+            if not backend_supports_header_credentials:
                 raise APIError(
                     code="VAULT_ENV_CREDENTIAL_UNSUPPORTED",
                     message=(
-                        egress_injection_unsupported_reason
+                        unsupported_reason
                         or (
-                            f"managed credential vault '{vault_id}' contains "
-                            f"outbound credential of type '{credential['auth']['type']}', but "
-                            f"sandbox backend '{backend_name}' cannot keep its real "
-                            "value outside the sandbox."
+                            f"managed credential vault '{vault_id}' contains a "
+                            "header-delivery environment_variable credential, but "
+                            f"sandbox backend '{backend_name}' cannot replace a "
+                            "placeholder inside a named request header."
                         )
                     ),
                     status_code=400,
                 )
-        return cleaned
+            return
+        if not vault_enabled:
+            raise APIError(
+                code="VAULT_ENV_CREDENTIAL_UNSUPPORTED",
+                message=(
+                    f"managed credential vault '{vault_id}' contains an "
+                    "outbound credential, which requires protected "
+                    "delivery. Set ASTRABOX_SANDBOX_CREDENTIAL_VAULT=1 or "
+                    "remove that credential from the managed binding."
+                ),
+                status_code=400,
+            )
+        if not backend_supports_egress_injection:
+            raise APIError(
+                code="VAULT_ENV_CREDENTIAL_UNSUPPORTED",
+                message=(
+                    unsupported_reason
+                    or (
+                        f"managed credential vault '{vault_id}' contains "
+                        f"outbound credential of type '{auth.get('type')}', but "
+                        f"sandbox backend '{backend_name}' cannot keep its real "
+                        "value outside the sandbox."
+                    )
+                ),
+                status_code=400,
+            )
 
     @staticmethod
     def _distinct_ids(vault_ids: Sequence[Any]) -> list[str]:
@@ -758,6 +869,9 @@ class VaultService:
         transcript or stale box matches nothing in the replacement box. Calls
         without a context preserve the fresh-per-call behavior.
 
+        Each credential carries its ``delivery`` — a record saved without one
+        is ``substitution`` — and, for header delivery, its ``header_name``.
+
         Two secrets claiming one ``secret_name`` raise instead of one silently
         winning: the box has a single environment, and a credential that lost a
         race it could not see would authenticate as the wrong identity.
@@ -808,6 +922,8 @@ class VaultService:
                     injection_location=dict(auth.get("injection_location") or {}),
                     allow_insecure_http=bool(auth.get("allow_insecure_http", False)),
                     allowed_requests=dict(auth.get("allowed_requests") or {}),
+                    delivery=self._env_delivery(auth),
+                    header_name=str(auth.get("header_name") or ""),
                 )
             )
         return resolved
@@ -1205,9 +1321,37 @@ class VaultService:
                 '(use {"type": "limited", "allowed_hosts": [...]} — recommended — '
                 'or {"type": "unrestricted"})'
             )
+        delivery = self._env_delivery(auth)
+        if delivery == DELIVERY_HEADER:
+            refused = [name for name in _SUBSTITUTION_ONLY_FIELDS if name in auth]
+            if refused:
+                raise _invalid(
+                    ", ".join(f"auth.{name}" for name in refused)
+                    + " cannot be set with delivery=header: header delivery "
+                    "replaces the placeholder only inside auth.header_name and "
+                    "has no body, method, path or cleartext rule"
+                )
+            header_name = str(auth.get("header_name") or "").strip()
+            if not _HTTP_HEADER_NAME.fullmatch(header_name):
+                raise _invalid(
+                    "auth.header_name must be a valid HTTP request header name "
+                    "for delivery=header"
+                )
+            meta = {
+                "type": auth_type,
+                "secret_name": secret_name,
+                "delivery": delivery,
+                "header_name": header_name,
+                "networking": self._validate_header_networking(networking),
+            }
+            _take_secret("secret_value", required=True)
+            return meta, secrets
+        if str(auth.get("header_name") or "").strip():
+            raise _invalid("auth.header_name applies only to delivery=header")
         meta = {
             "type": auth_type,
             "secret_name": secret_name,
+            "delivery": delivery,
             "networking": self._validate_networking(networking),
             "injection_location": self._validate_injection_location(
                 auth.get("injection_location") or {"header": True, "body": True}
@@ -1245,6 +1389,50 @@ class VaultService:
                 raise _invalid("auth.networking.allowed_hosts must be a non-empty list of hosts")
             return {"type": "limited", "allowed_hosts": [str(h).strip().lower() for h in hosts]}
         raise _invalid('auth.networking.type must be "limited" or "unrestricted"')
+
+    @staticmethod
+    def _env_delivery(auth: Mapping[str, Any]) -> str:
+        """The ``delivery`` an ``environment_variable`` document names; absent is substitution."""
+        raw = auth.get("delivery")
+        if raw is None:
+            return DELIVERY_SUBSTITUTION
+        delivery = str(raw).strip()
+        if delivery not in _ENV_DELIVERIES:
+            raise _invalid(f"auth.delivery must be one of {list(_ENV_DELIVERIES)}")
+        return delivery
+
+    @staticmethod
+    def _validate_header_networking(networking: Any) -> dict[str, Any]:
+        """``limited`` networking whose every entry is a domain name, for header delivery.
+
+        A header-delivery backend matches hosts by name only. A port, scheme or
+        IP address in an entry would read as a restriction that nothing applies,
+        so each is refused rather than stripped.
+        """
+        if (
+            not isinstance(networking, dict)
+            or str(networking.get("type") or "").strip() != "limited"
+        ):
+            raise _invalid(
+                'auth.networking must be {"type": "limited", "allowed_hosts": [...]} '
+                "for delivery=header"
+            )
+        hosts = networking.get("allowed_hosts")
+        if not isinstance(hosts, list) or not hosts:
+            raise _invalid("auth.networking.allowed_hosts must be a non-empty list of hosts")
+        cleaned: list[str] = []
+        for raw in hosts:
+            host = str(raw or "").strip().lower()
+            if not _is_domain_name(host):
+                raise _invalid(
+                    f"auth.networking.allowed_hosts entry {raw!r} is not a domain "
+                    "name: delivery=header accepts a fully qualified hostname, "
+                    "optionally with a leftmost *. wildcard, and no scheme, port, "
+                    "path or IP address"
+                )
+            if host not in cleaned:
+                cleaned.append(host)
+        return {"type": "limited", "allowed_hosts": cleaned}
 
     @staticmethod
     def _validate_injection_location(location: Any) -> dict[str, bool]:
@@ -1390,6 +1578,7 @@ class VaultService:
             "mcp_server_url",
             "header_name",
             "secret_name",
+            "delivery",
             "url",
             "username",
             "expires_at",

@@ -5,7 +5,7 @@ import { openSessions, createRunViaComposer, tid } from "./helpers";
  * Session archive behavior.
  *
  * The real console exposes NO per-session Delete control in the UI. The user-facing
- * "remove a session" affordance is the sidebar row's "Archive" button, which calls
+ * "remove a session" affordance is the sidebar row's "Archive" menu item, which calls
  * POST /api/v1/sessions/{id}/archive. The DELETE /api/v1/sessions/{id} endpoint is
  * covered by a separate API-level test.
  *
@@ -28,8 +28,10 @@ test("archive: a session can be archived from the sidebar", async ({ page }) => 
   );
   await expect(row).toBeVisible({ timeout: 30_000 });
 
-  // Click the row's "Archive" action and wait for the actual POST (through the Vite
-  // /api proxy) to resolve OK.
+  // Choose "Archive" from the row's "More actions" menu and wait for the actual
+  // POST (through the Vite /api proxy) to resolve OK.
+  await row.hover();
+  await row.getByRole("button", { name: "More actions" }).click();
   const [archiveResp] = await Promise.all([
     page.waitForResponse(
       (r) =>
@@ -37,7 +39,7 @@ test("archive: a session can be archived from the sidebar", async ({ page }) => 
         new RegExp(`/api/v1/sessions/${sessionId}/archive(?:\\?|$)`).test(r.url()),
       { timeout: 30_000 },
     ),
-    row.getByRole("button", { name: "Archive" }).click(),
+    page.getByRole("menuitem", { name: "Archive" }).click(),
   ]);
   expect(
     archiveResp.status(),

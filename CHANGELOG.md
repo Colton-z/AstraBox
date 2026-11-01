@@ -7,6 +7,68 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-11-01
+
+## English
+
+### Added
+
+- Rename conversations from the conversation title or its row menu. Automatic title generation keeps the owner's chosen title.
+- Create personal schedules for an Assistant. Scheduled work runs in its main conversation, and scheduled messages are labeled in chat.
+- Connect user-bound MCP services when the Session identity is available, including when claiming a prewarmed native process. Unsupported runtime configurations report an actionable configuration error.
+- Browse the complete HTTP API reference on the documentation site, including native A2A and optional OIDC endpoints, with request and response schemas generated from registered routes.
+- Credential Vault providers can deliver a credential through a named request header for allowed domains. The API and console expose this only for sandbox providers that declare the capability.
+- Agent creators and assigned administrators can manage their channels and use their own execution account. Assigning someone else's account still requires platform administrator authorization.
+
+### Fixed and improved
+
+- Run Hermes through its native gateway with durable input admission, using unmodified supplier source. Conversations of the same Assistant share its runtime environment.
+- Keep user messages at native input-consumption boundaries during a running reply, after reload and across history pages.
+- Recover Claude replies already committed behind old compacted cursors; retain whole runner frames and responses during journal acknowledgement and compaction.
+- Keep Claude diagnostics out of chat and show complete Workflow child conversations, including tools and native parent relationships.
+- Synchronize Agent resources on cold starts and retain startup user actions without repeatedly replacing the sandbox.
+- Reject duplicate keys in console JSON editors and ignore object-key ordering when detecting unsaved changes.
+- Improve sandbox browser stability and handle large runner-link messages.
+- Read existing Agent runtime ledgers without creation transactions. List child runs through incremental native metadata indexes rather than repeatedly decoding complete transcripts.
+- Update the eight dependency groups for AI SDK, React, Vite, FastAPI, Tenacity, Ruff, Zod and eventsource-parser.
+
+### Upgrading
+
+- Update the server and sandbox runtime images together. Recreate Assistant sandboxes when moving from the previous Hermes backend to the native gateway; old Hermes sessions are not carried across that protocol change. Stored platform history remains available.
+- PostgreSQL applies the schema changes on startup. External persistence providers need the Vault credential delivery column, native child relationship index, and Assistant schedule schema shipped with this release.
+- Sandbox providers use seam contract 11. They must revoke credentials removed from the environment's managed credential set. Header delivery requires the declared provider capability; OpenSandbox does not advertise it.
+- Live sandboxes created before the environment credential identity changes may require replacement before they can reattach.
+
+## 中文
+
+### 新增
+
+- 可从对话标题或列表菜单重命名会话，自动标题不会覆盖用户设置的名称。
+- 支持为 Assistant 创建个人定时任务，任务在助手主对话中运行，定时发出的消息带有来源标记。
+- 在 Session 身份就绪后连接用户绑定的 MCP 服务，支持认领预热的原生进程；不支持的运行时配置会给出明确的配置错误。
+- 文档站提供完整 HTTP API 参考，覆盖原生 A2A 和可选 OIDC 接口；请求与响应结构从实际注册的路由生成。
+- Credential Vault 提供方可将凭证投递到允许域名的指定请求头；只有声明支持该能力的沙箱提供方才会在 API 和控制台开放此选项。
+- Agent 创建者和已分配管理员可以管理其消息渠道，并使用自己的执行账号；指定其他人的账号仍需平台管理员授权。
+
+### 修复与改进
+
+- Hermes 改用原生网关和持久输入接收机制，供应商源码保持原样；同一 Assistant 的会话共享运行环境。
+- 按原生运行时接收输入的位置展示用户消息，生成中、刷新后及历史分页的顺序保持一致。
+- 恢复旧压缩游标之后已落库的 Claude 回复；runner 确认和日志压缩保留完整帧与整轮回复。
+- Claude 诊断事件不再混入聊天；Workflow 子会话展示完整消息、工具记录和原生父子关系。
+- Agent 冷启动时同步资源；需要用户操作的启动保留原有提示，不再反复更换沙箱。
+- 控制台 JSON 编辑器拒绝重复键；判断未保存改动时忽略对象键顺序。
+- 改进沙箱内浏览器稳定性，支持较大的 runner-link 消息。
+- 已有 Agent 运行记录采用只读查询；子会话列表读取增量关系索引，避免反复解码完整历史。
+- 更新 AI SDK、React、Vite、FastAPI、Tenacity、Ruff、Zod 和 eventsource-parser 八组依赖。
+
+### 升级说明
+
+- 服务端与沙箱运行镜像一起升级。从旧 Hermes 后端切换到原生网关时，需重新创建 Assistant 沙箱；旧 Hermes 会话不跨该协议切换恢复，平台已保存的历史仍可查看。
+- PostgreSQL 在启动时自动升级结构；外部持久化提供方需补齐本版本的 Vault 凭证投递列、原生子会话关系索引和 Assistant 定时任务结构。
+- 沙箱提供方使用接口契约 11，必须撤销已从环境托管集合移除的凭证。请求头投递需要提供方明确声明支持；OpenSandbox 不声明该能力。
+- 环境凭证身份结构变更前创建的运行中沙箱，可能需要更换后才能重新连接。
+
 ## [0.1.10] - 2026-10-20
 
 This release collects the fixes and developer-facing improvements made after 0.1.9.

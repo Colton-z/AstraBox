@@ -17,7 +17,8 @@ import {
   subagentDisplayStatus,
   type SubagentEntry,
 } from '../hooks/useSubagentRegistry';
-import { shortSubagentId } from './AgentsListPanel';
+import { AgentRow, shortSubagentId } from './AgentsListPanel';
+import { useSubagentNavigation } from './subagentNavigation';
 import { keepsLastRead } from '@/hooks/useKeepCurrent';
 
 interface SubagentTranscriptDrawerProps {
@@ -38,6 +39,8 @@ export function SubagentTranscriptDrawer({
   onStopChildRun,
 }: SubagentTranscriptDrawerProps) {
   const { t } = useTranslation();
+  const { agents, openSubagent } = useSubagentNavigation();
+  const children = agents.filter((agent) => agent.parentChildRunId === childRunId);
   const open = Boolean(childRunId);
   const [transcript, setTranscript] = useState<ChildRunTranscriptMessage[]>([]);
   const [transcriptError, setTranscriptError] = useState<string | null>(null);
@@ -166,6 +169,11 @@ export function SubagentTranscriptDrawer({
                 </Badge>
               )}
             </div>
+            {entry?.taskType && (
+              <p className="mt-0.5 text-xs text-muted-foreground" data-testid="subagent-task-type">
+                {entry.taskType}
+              </p>
+            )}
             {entry?.summary && (
               <p className="mt-0.5 truncate text-xs text-muted-foreground" title={entry.summary}>
                 {entry.summary}
@@ -221,6 +229,15 @@ export function SubagentTranscriptDrawer({
           {stopError && (
             <ErrorNote>{t('chat:subagent.stop_failed')}: {stopError}</ErrorNote>
           )}
+          {children.length > 0 && (
+            <nav aria-label={t('chat:subagent.children')} data-testid="subagent-child-navigation"
+              className="flex min-w-0 flex-col gap-2">
+              <p className="text-xs text-muted-foreground">{t('chat:subagent.children')}</p>
+              {children.map((child) => (
+                <AgentRow key={child.childRunId} entry={child} selected={false} onSelect={openSubagent} />
+              ))}
+            </nav>
+          )}
           {transcriptError ? (
             <ErrorNote>
               <div>{t('chat:subagent.transcript_failed')}: {transcriptError}</div>
@@ -233,7 +250,7 @@ export function SubagentTranscriptDrawer({
                 {t('chat:subagent.retry')}
               </Button>
             </ErrorNote>
-          ) : messages.length === 0 ? (
+          ) : messages.length === 0 && children.length === 0 ? (
             <p className="text-center text-xs text-muted-foreground">
               {entry?.active
                 ? t('chat:subagent.waiting_output')

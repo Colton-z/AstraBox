@@ -19,7 +19,7 @@ you need:
 | Method | When the platform calls it |
 | --- | --- |
 | `plan` | Asynchronously when resolving a configuration that admits work; reads persisted subject policy |
-| `synchronize`, `recover` | Once per prepared Agent box, before it becomes waiting inventory; for an Assistant, whenever its workspace prepares a revision |
+| `synchronize`, `recover` | Once per prepared Agent box, before it becomes waiting inventory, and on each Agent conversation start that claims none; for an Assistant, whenever its workspace prepares a revision |
 | `prepare_session` | Before engine activation: cold start, claim, reattachment, sandbox replacement |
 | `prepare_turn` | Before each input is handed to the engine |
 | `read_user_actions`, `perform_user_action` | When the Session's owner reads or acts on its prerequisites |
@@ -36,8 +36,8 @@ persisted policy. Its detached resolved configuration contains no requesting
 Session. It must not perform writes or depend on process-local caches. The
 platform resolves it under a 30-second deadline into one runtime view; generation,
 inventory preparation and claim use that view's declaration. Read-only history
-and management projections do not call it. The extension interface version is
-`8`; `plan` is an asynchronous method.
+and management projections do not call it. `plan` is asynchronous. Provider distributions can pin the exported
+`SEAMS_API_VERSION`.
 `session_bound=True` means the engine cannot be initialized through
 `EngineAdapter.prepare_runtime` before a real Session's materials exist.
 
@@ -76,6 +76,65 @@ This controls initialization performed by the engine adapter. Required system
 services and wrappers must already be baked into the selected image. The provider
 cannot retrofit a wrapper into a box or defer an image's own entrypoint.
 
+## Defer MCP connections until the Session owner is bound
+
+Declare identity-dependent MCP connections separately from whole-engine startup:
+
+```python
+from astrabox.seams.runtime_preparation import RuntimePreparationPlan, SessionMCPServer
+
+async def plan(self, *, config):
+    return RuntimePreparationPlan(
+        session_mcp_servers=(
+            SessionMCPServer(name="personal-service"),
+            SessionMCPServer(name="account-tools", plugin="company-tools"),
+        ),
+    )
+```
+
+The server key must exist in the resolved configuration. For a Plugin, give its
+manifest name and its server key. The Claude adapter resolves the supplier's
+`plugin:<plugin-name>:<server-name>` identity against the installed Plugin;
+providers must not construct scoped aliases. This declaration is non-secret,
+participates in runtime generation, and defaults to no deferred connections.
+An engine without native Session MCP activation refuses a non-empty declaration.
+
+Claude initializes the same process with only these connections disabled in its
+private, per-project native configuration. It checks the native disabled state
+before publishing prepared inventory (`engine_initialized=true`). Ordinary MCPs
+keep their existing startup behavior. This uses Claude's `disabledMcpServers`
+configuration and `mcp_toggle`/`mcp_reconnect` controls, not a security denylist.
+Plugin loading and native command/environment resolution remain Claude's job.
+See the vendor's [MCP configuration and scoped Plugin names](https://code.claude.com/docs/en/mcp).
+
+On claim, the platform validates the persisted Session owner, checks provider
+prerequisites, delivers `prepare_session` files and environment, enables or
+reconnects the declared servers, and requires native `connected` results before
+input. Host reconnection verifies existing connections without restarting them.
+Explicit recovery refreshes only the declared personal connections. Preparation failures are visible;
+they never release input with a missing required MCP. A provider must refuse or
+raise `PreparationUserActionRequired` when authorization is absent. It must not
+silently return another person's materials or initiate consent itself.
+
+For an already claimed, idle Session, call the existing public
+`POST /api/v1/sessions/{session_id}/recover` after configuring the declaration and
+completing any required authorization. Recovery re-runs the same bound-material
+barrier for the declared servers. It detaches the host connection, retaining the
+live Claude process and native conversation; it does not re-send prior inputs
+or repeat business writes. A failed MCP connection leaves input blocked until
+explicit recovery succeeds. Recovery while Claude is working is refused.
+The running runner image must advertise these native controls; a host update
+cannot add controls to a process in an older image. A missing declaration does
+not cause recovery to reconnect every MCP, and a confirmed lost box still uses
+the platform's normal native SessionStore recovery.
+
+Material files and environment are for consumers that read them when connected.
+They do not rewrite values a Plugin or server already resolved at process
+startup. Such integrations must use the supplier's supported refresh mechanism,
+or declare whole-engine `session_bound=True` when their startup configuration
+cannot be deferred. Environment delivery and model credential protection remain
+independent of the MCP declaration.
+
 ## Synchronize prepared resources
 
 `async synchronize(*, context: ResourcePreparationContext) -> None` runs after
@@ -83,8 +142,10 @@ the actual Plugin and Skills caches exist in a box and before any engine runs
 from them. `context.operation.subject` says what the resources belong to:
 
 - **An Agent** (`kind="agent"`): once for each prepared box, before it becomes
-  waiting inventory. An Agent without prepared capacity is never synchronized;
-  claim, cold start, reattachment and input refresh do not call it.
+  waiting inventory, and on each conversation start that does not claim
+  inventory, after that start places the caches and before the conversation's
+  engine runs. Every start of an Agent without prepared capacity is such a
+  start. Claim, reattachment and input refresh do not call it.
 - **An Assistant** (`kind="assistant"`): whenever its workspace prepares a
   revision of the Assistant — when the workspace is materialized, and when a
   conversation or the platform prepares an edited Assistant on the running box —
@@ -116,8 +177,8 @@ generations before and after synchronization and before publishing inventory;
 for an Assistant it checks that the revision is still current. A superseded
 result is refused with `AGENT_RUNTIME_GENERATION_CONFLICT` or
 `ASSISTANT_REVISION_CONFLICT`. While another synchronization of the same subject
-runs, an Agent's preparation fails with `RESOURCE_SYNC_BUSY` and retries; an
-Assistant's waits for it.
+runs, an Agent's inventory preparation fails with `RESOURCE_SYNC_BUSY` and
+retries; an Agent conversation's start and an Assistant's preparation wait for it.
 
 An exception, timeout, cancellation or host loss leaves an unresolved operation
 (`RESOURCE_SYNC_FAILED`, then `RESOURCE_SYNC_UNRESOLVED`).
@@ -226,8 +287,9 @@ lease expiry alone is not that proof. If you cannot establish that proof, return
 runs before engine activation on cold start, claim, reattachment and sandbox
 replacement. Its `principal_id` comes from the persisted Session owner. The context
 includes the Session ID, its `subject` and `revision`, resolved configuration,
-runtime generation, sandbox ID and workload identity. For an Assistant
-conversation it runs after the Assistant's resources are synchronized. No Session
+runtime generation, sandbox ID and workload identity. It runs after the subject's
+resources are synchronized: an Agent's by its inventory or by the conversation's
+own start, an Assistant's by its workspace. No Session
 is supplied while an Agent's inventory or an Assistant's workspace is prepared
 without a conversation.
 
@@ -260,22 +322,21 @@ inherit the updated native environment. Already-running child processes and
 startup-only consumers are not retroactively changed; user-bound MCP servers
 retain the native reconnect barrier during activation.
 
-`"session"` delivers
-`EngineStartupContext.session_env` through a native Session context, without
-changing a shared process environment. The Hermes image carries a pinned,
-MIT-licensed extension to its typed `session.create` and `session.resume`
-contracts for this mapping; its native context propagation delivers the values
-to tool subprocesses. Each conversation receives its own mapping again on
-reattachment or box replacement. Assistant workspace preparation receives none.
-An image without this extension rejects the RPC parameter explicitly.
-
+`"session"` delivers `EngineStartupContext.session_env` through an Agent
+runtime's native Session context, without changing a shared process environment.
 Adapters returning `None` refuse the environment. Platform-owned environment
-names cannot be overwritten, and Hermes also refuses native identity and
-credential names. An initialized process without a native environment activation
-mechanism refuses new process-scoped environment. Platform preparation refusals block activation with
-`RUNTIME_PREPARATION_FAILED`; callback exception text is not exposed. Native
-Session environment validation blocks Hermes attachment with `AGENT_RUNTIME_ERROR`
-and a message that contains no supplied environment values.
+names cannot be overwritten. An initialized process without a native environment
+activation mechanism refuses new process-scoped environment. Preparation refusals
+block activation with `RUNTIME_PREPARATION_FAILED`; callback exception text is not
+exposed.
+
+Assistant conversations share the Assistant workspace's runtime identity and
+RuntimeProfile environment. Configure that environment on the RuntimeProfile;
+`prepare_session` does not rebind it for each conversation. A nonempty environment
+mapping returned for an Assistant is refused before activation. Session metadata
+belongs in the native conversation context, request parameters or returned files.
+The Hermes gateway uses its official `session.create` and `session.resume`
+contracts without source patches or a platform environment plugin.
 
 The Claude Agent SDK probes the CLI with `claude -v` before it starts it, without
 the options environment. An image wrapper that gates the CLI on Session material

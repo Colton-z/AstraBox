@@ -42,7 +42,7 @@ onPassOnly(async ({ request }) => {
 test('Hermes native A2A delegates two context-linked turns and returns the target result', async ({ request }, info) => {
   const startedAt = Date.now();
   const remaining = () => {
-    const budget = 155_000 - (Date.now() - startedAt);
+    const budget = info.timeout - (Date.now() - startedAt);
     expect(budget, 'the two native exchanges must fit the fixed test budget').toBeGreaterThan(0);
     return budget;
   };
@@ -67,10 +67,11 @@ test('Hermes native A2A delegates two context-linked turns and returns the targe
     `Use your native a2a tools to delegate to configured AstraBox Agent ${agentId}.`,
     'Make exactly two sequential a2a_call calls. Do not write the file yourself or use terminal/curl as an A2A client.',
     `First call: ask that Agent to write exactly ${marker} (no newline) to ${filename} in its own workspace,`,
-    'then reply with the written content and the platform conversation link.',
+    'then reply only with the written content.',
     `Second call: use the context_id returned by the first call. Tell that same Agent to append exactly ${suffix}`,
-    '(no newline) to the file it just created, then report the complete file content and its platform conversation link.',
-    'Return that final Agent result, its conversation link, and the A2A context id to me.',
+    '(no newline) to the file it just created, then reply only with the complete file content.',
+    'The platform conversation link is in the A2A response metadata; the peer does not need to find it.',
+    'Return only the final Agent result, that platform conversation link, and the A2A context id to me.',
   ].join('\n'), remaining());
   await info.attach("assistant-native-a2a-reply", {
     body: JSON.stringify(reply), contentType: "application/json",

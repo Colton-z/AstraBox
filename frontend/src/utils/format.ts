@@ -76,6 +76,7 @@ type RuntimeAwareSession = {
   state?: string | null;
   sandbox_id?: SessionRecord['sandbox_id'];
   runtime_unavailable?: SessionRecord['runtime_unavailable'];
+  recovery_reason?: SessionRecord['recovery_reason'];
 };
 
 export function isAgentChatSession(session: RuntimeAwareSession | null | undefined): boolean {
@@ -102,17 +103,14 @@ export function isSandboxLiveForSession(session: RuntimeAwareSession | null | un
   return !!String(session?.sandbox_id ?? '').trim();
 }
 
-// Per-session model: an agent_chat conversation whose sandbox is gone (TTL / lease
-// expiry, out-of-band terminate, or the agent simply hibernated) stays wakeable — the
-// next user message transparently borrows a fresh sandbox. For the user that is a
-// non-event, so the alarming "runtime disconnected / sandbox expired" surfaces should
-// read "ready" instead. The only real, non-recoverable faults are session-terminal
-// (TERMINATED/DELETED) — those must still surface their state.
+// A cleared binding can borrow fresh compute on the next input. A failed attach
+// to a retained box has no such recovery proof; keep its state and error visible.
 export function isTransparentlyRecoverableAgentSession(
   session: RuntimeAwareSession | null | undefined,
 ): boolean {
   if (!isAgentChatSession(session)) return false;
   if (!session?.runtime_unavailable) return false;
+  if (String(session.sandbox_id ?? '').trim() || String(session.recovery_reason ?? '').trim()) return false;
   const state = String(session?.state ?? '').trim().toUpperCase();
   // Only a wakeable conversation re-borrows transparently. TERMINATED/DELETED are
   // terminal; CREATING is actively provisioning and shows its own progress instead.

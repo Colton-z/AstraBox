@@ -9,6 +9,8 @@ Session 生命周期、事件流、文件、Deployment 和凭证等功能。REST
 <Note>每个 AstraBox 实例都会在 `/docs` 提供交互式 API 文档；`/openapi.json` 中的
 OpenAPI 文档描述当前部署版本的准确 API 接口。</Note>
 
+完整接口、参数、请求体和响应见 [API reference](api-reference.mdx)，页面同时提供 OpenAPI JSON 下载。
+
 ## Gateway URL
 
 | 环境 | URL |
@@ -22,7 +24,7 @@ OpenAPI 文档描述当前部署版本的准确 API 接口。</Note>
 
 ## 版本
 
-API 当前为 `v1` 版本。接口使用 `/api/v1` 前缀，无需传递额外的版本头。健康检查、就绪
+API 当前为 `v1` 版本。REST 接口使用 `/api/v1` 前缀，无需额外的版本头。A2A 调用要求 `A2A-Version: 1.0`，MCP 在初始化时协商版本。健康检查、就绪
 检查、指标和自动生成的 API 文档使用顶层路径。
 
 ## 可用 API 列表

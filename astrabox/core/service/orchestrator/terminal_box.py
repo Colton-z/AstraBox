@@ -47,7 +47,6 @@ from astrabox.core.service.orchestrator.runtime_binding import (
     is_assistant_user_conversation,
     reconcile_session_runtime_binding,
 )
-from astrabox.seams.egress_credentials import workload_placeholder_context
 from astrabox.seams.sandbox import sandbox_for_name
 
 logger = get_logger(__name__)
@@ -189,6 +188,14 @@ class TerminalBox:
         sandbox_id = str(session.get("sandbox_id") or "").strip() or None
         session_kind = require_session_kind(session.get("session_kind"))
         runtime_identity = normalize_runtime_identity(session.get("runtime_identity"))
+        if sandbox_id:
+            from astrabox.common.utils.settings import load_astrabox_settings
+            from astrabox.core.service.orchestrator.engine.provisioning import require_live_credential_delivery
+
+            require_live_credential_delivery(
+                runtime_identity=runtime_identity, sandbox_id=sandbox_id,
+                vault_enabled=bool(load_astrabox_settings().sandbox_credential_vault_enabled),
+            )
         if session_kind == "agent_chat" and runtime_identity is None:
             raise APIError(
                 code="CONVERSATION_IDENTITY_REQUIRED",
@@ -241,8 +248,7 @@ class TerminalBox:
         """
         credential_env = await self._credential_env(
             target.session_id,
-            credential_slot_id=str((target.runtime_identity or {}).get("credential_slot_id") or "").strip()
-            or None,
+            runtime_identity=target.runtime_identity,
         )
         if target.isolated_session_id:
             async for event in self._run_isolated(target, command, cwd=cwd, credential_env=credential_env):
@@ -257,25 +263,41 @@ class TerminalBox:
         self,
         session_id: str,
         *,
-        credential_slot_id: str | None = None,
+        runtime_identity: dict[str, Any] | None,
     ) -> dict[str, str]:
-        """Opaque Vault placeholders safe to expose to this Session's process."""
+        """Opaque Vault placeholders safe to expose to this Session's process.
 
-        slot_id = str(credential_slot_id or "").strip()
+        They are minted under the context the Session's runtime recorded, so a
+        terminal command and the engine send the placeholders the backend
+        binds. A Session with environment credentials whose runtime records no
+        context is refused rather than given placeholders that match nothing.
+        """
+        from astrabox.core.service.orchestrator.engine.provisioning import (
+            ENVIRONMENT_PLACEHOLDER_CONTEXT,
+        )
+
+        context = str((runtime_identity or {}).get(ENVIRONMENT_PLACEHOLDER_CONTEXT) or "").strip()
         credentials = await self._runtime_manager.resolve_session_egress_credentials(
             session_id,
-            **(
-                {"placeholder_context": workload_placeholder_context(slot_id)}
-                if slot_id
-                else {}
-            ),
+            **({"placeholder_context": context} if context else {}),
         )
-        return {
+        environment = {
             str(credential.secret_name): str(credential.placeholder)
             for credential in credentials
             if str(getattr(credential, "secret_name", "") or "").strip()
             and str(getattr(credential, "placeholder", "") or "").strip()
         }
+        if environment and not context:
+            raise APIError(
+                code="SANDBOX_CREDENTIAL_CONTEXT_UNAVAILABLE",
+                message=(
+                    f"Session {session_id!r} uses environment credentials, but its "
+                    "runtime records no environment placeholder context; the "
+                    "conversation needs a new sandbox."
+                ),
+                status_code=409,
+            )
+        return environment
 
     async def _run_shell(
         self,

@@ -123,6 +123,41 @@ ASTRABOX_JWT_AUDIENCE=astrabox
 
 AstraBox 会验证签名、过期时间以及配置的 Issuer 和 Audience，再映射用户与用户组 Claim。除了通过 Issuer 发现签名密钥，也可以直接配置 JWKS 地址。这种方式不会提供浏览器重定向；客户端或网关必须为每个请求添加 Token。
 
+## 退出登录 {#sign-out}
+
+账户菜单发送一次携带浏览器凭证的同源 `POST /api/v1/auth/logout`，不自动重试。
+身份部署返回以下一种结果：
+
+| 结果 | 含义 | 控制台行为 |
+|---|---|---|
+| `204 No Content` | 部署已结束当前浏览器会话 | 不使用缓存读取 `GET /api/v1/auth/session`；只有 `authenticated: false` 才导航到控制台根路径 |
+| `200 application/json`，带 `redirect_url` | 浏览器必须访问身份提供方才能完成退出 | 顶层浏览器导航到该 HTTP(S) URL；提供方负责退出和返回控制台 |
+
+内置 OIDC 路由返回 204，并在部署的公开路径删除 AstraBox 会话 Cookie。
+它结束控制台会话，不结束身份提供方自己的浏览器会话。
+
+外部身份部署通过 `astrabox.api.routers` 或
+`astrabox.api.extensions.register_extension_router` 注册 session、login 和 logout
+路由；身份解析仍使用 `astrabox.web.identity`。需要浏览器导航的提供方返回不带响应封装的 JSON，例如：
+
+```json
+{"redirect_url":"https://identity.example.com/logout?return_to=https%3A%2F%2Fconsole.example.com%2Fastrabox%2F"}
+```
+
+适配器按配置的提供方来源与受支持参数构造 URL，包含允许的控制台返回地址。
+`astrabox.deploy.public_path.public_url(request, "/")` 组合控制台根路径和公开路径前缀。
+返回地址遵守提供方注册或允许列表规则。控制台不补加提供方参数、不读取其凭证，也不自行
+改变报告的认证状态。
+
+用 200 JSON 返回导航指令，不要对 POST 返回 HTTP 重定向：fetch 跟随重定向不会导航浏览器。
+提供方退出可能需要其浏览器会话，参阅
+[OpenID Connect RP-Initiated Logout 1.0](https://openid.net/specs/openid-connect-rpinitiated-1_0.html#RPLogout)。
+部署负责的清理在响应前完成；导航指令不表示提供方已经退出。返回后，控制台再次读取真实会话状态。
+
+HTTP 错误、传输失败、无效导航指令，或 204 后探测未确认退出，都会保留当前页面并显示错误，
+不会清除已保存的登录目的地，也不会强制回到首页。外部部署必须实现真实退出；
+若返回 204 但探测仍为已认证状态，会被拒绝。
+
 ## 登录后的鉴权
 
 成功登录不会自动让用户成为管理员。用户组映射提供管理员角色；每项操作还会分别检查资源所有权和 Agent 鉴权。向团队开放前，请同时使用普通用户和管理员账号测试。

@@ -252,6 +252,18 @@ def _is_this_targets_box(descriptor: Any, ownership: dict[str, str]) -> bool:
     return all(metadata.get(key) == value for key, value in ownership.items())
 
 
+def _session_placeholder_context(session_id: str, session: dict[str, Any] | None) -> str:
+    """The placeholder context of the box a Session's own startup creates."""
+    sandbox_generation = str((session or {}).get("sandbox_generation") or "").strip()
+    if not sandbox_generation:
+        raise APIError(
+            code="SANDBOX_CREDENTIAL_CONTEXT_UNAVAILABLE",
+            message="the session is missing its private sandbox generation",
+            status_code=409,
+        )
+    return f"{session_id}:{sandbox_generation}"
+
+
 class RemoteAgentRuntimeManager:
     _TERMINATE_OP_TIMEOUT_SECONDS = 10.0
 
@@ -3521,18 +3533,23 @@ class RemoteAgentRuntimeManager:
         vault_ids = (session or {}).get("vault_ids")
         if not isinstance(vault_ids, list) or not vault_ids:
             return []
-        sandbox_generation = str((session or {}).get("sandbox_generation") or "").strip()
-        if not sandbox_generation:
-            raise APIError(
-                code="SANDBOX_CREDENTIAL_CONTEXT_UNAVAILABLE",
-                message="the session is missing its private sandbox generation",
-                status_code=409,
-            )
+        session_context = _session_placeholder_context(target, session)
         context = str(placeholder_context or "").strip()
         return await VaultService().resolve_egress_credentials(
             [str(v) for v in vault_ids if str(v or "").strip()],
-            placeholder_context=context or f"{target}:{sandbox_generation}",
+            placeholder_context=context or session_context,
         )
+
+    async def session_placeholder_context(self, session_id: str) -> str:
+        """The placeholder context of a box the Session's own startup creates (EnginePlatform tier 1).
+
+        It is derived from the Session's private sandbox generation: every
+        composition for that live box reproduces the placeholders its process
+        holds, and recovery that creates the next box mints a new generation
+        and with it new placeholders.
+        """
+        target = str(session_id or "").strip()
+        return _session_placeholder_context(target, await SessionRepository().get_session(target))
 
     async def resolve_session_mcp_credentials(
         self,

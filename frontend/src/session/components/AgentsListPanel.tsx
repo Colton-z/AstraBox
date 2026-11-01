@@ -85,7 +85,7 @@ function UsageChip({ entry }: { entry: SubagentEntry }) {
   );
 }
 
-function AgentRow({
+export function AgentRow({
   entry,
   selected,
   onSelect,

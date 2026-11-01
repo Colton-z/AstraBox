@@ -117,13 +117,10 @@ export default function DeploymentDetailPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [deployments, providers] = await Promise.all([
-        listDeployments(),
-        listChannelProviders(),
-      ]);
-      setChannelProviders(providers);
+      const deployments = await listDeployments();
       const found = deployments.find((binding) => binding.deployment_id === deploymentId);
       if (found) {
+        setChannelProviders(await listChannelProviders(found.agent_id || undefined));
         if (found.scene === 'schedule') {
           try {
             setRuns(await listDeploymentRuns(found, found.deployment_id));

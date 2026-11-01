@@ -24,7 +24,9 @@ from fastapi import Body
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
+from astrabox.api.documentation import object_schema, request_body
 from astrabox.api.routes.response_envelope import ApiEnvelope
+from astrabox.api.routes.transcript import CAPABILITY_PATH_PREFIX
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.api_response import error_response, success_response
 from astrabox.core.service.orchestrator.service_registry import (
@@ -33,7 +35,6 @@ from astrabox.core.service.orchestrator.service_registry import (
 from astrabox.core.service.orchestrator.transcript_capability import (
     verify_sandbox_box_capability_token,
 )
-from astrabox.api.routes.transcript import CAPABILITY_PATH_PREFIX
 
 logger = get_logger(__name__)
 
@@ -92,6 +93,18 @@ def register_sandbox_callback_routes(app: Any) -> None:
         "/api/v1/sandbox-callback/{subject_type}/{subject_id}/{generation}/{token}",
         response_model=ApiEnvelope[SandboxCallbackResult],
         response_model_exclude_unset=True,
+        openapi_extra=request_body(
+            object_schema(
+                {
+                    "status": {"type": "string", "description": "Sandbox provider lifecycle status."},
+                    "expireTime": {
+                        "type": ["string", "number", "null"],
+                        "description": "Provider expiry observation, parsed as a timestamp.",
+                    },
+                },
+                required=("status",),
+            )
+        ),
     )
     async def sandbox_lifecycle_callback(
         subject_type: str,
@@ -113,6 +126,12 @@ def register_sandbox_callback_routes(app: Any) -> None:
         CAPABILITY_PATH_PREFIX + "/{cap_token}/api/v1/sandbox/{sandbox_id}/terminating",
         response_model=ApiEnvelope[SandboxTerminatingResult],
         response_model_exclude_unset=True,
+        openapi_extra=request_body(
+            object_schema(
+                {},
+                description="Payload fields are not used: sandbox identity and capability are in the URL. The platform resolves affected owners itself.",
+            )
+        ),
     )
     async def sandbox_terminating_notice(
         cap_token: str,

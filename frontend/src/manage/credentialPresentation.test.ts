@@ -15,6 +15,7 @@ describe('credential presentation', () => {
       model_credentials: 'egress_placeholder' as const,
       mcp_credentials: 'egress_injection' as const,
       environment_credentials: 'unavailable' as const,
+      header_credentials: 'unavailable' as const,
     };
 
     expect(credentialDeliveryLabel(delivery, 'model_credentials', i18n.t))

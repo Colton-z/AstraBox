@@ -1497,6 +1497,7 @@ async def _compose_gateway_vault(
         slot_id=slot_id,
         vault_enabled=vault_enabled,
         vault_write=vault_write,
+        backend=backend_provider,
     )
     preparation = runtime_preparation_plan(template)
     if vault_write is None and (preparation.session_bound or preparation.model_credential_delivery == "provider"):

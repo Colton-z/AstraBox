@@ -3,10 +3,11 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from fastapi import Body, File, Form, Request, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 from starlette.types import Receive, Scope, Send
 
+from astrabox.api.documentation import BINARY_RESPONSE
 from astrabox.api.routes.http_common import resolve_request_trace_context
 from astrabox.api.routes.response_envelope import ApiEnvelope
 from astrabox.common.logger.logger_factory import get_logger
@@ -298,10 +299,12 @@ def register_session_file_routes(app: Any) -> None:
         )
         return success_response(result)
 
-    # No response model: the answer is the file's bytes under an attachment
-    # header, not the JSON envelope, so there is no schema for a client to
-    # generate from.
-    @app.get("/api/v1/sessions/{session_id}/files/download")
+    # Binary metadata documents the attachment without applying JSON validation.
+    @app.get(
+        "/api/v1/sessions/{session_id}/files/download",
+        response_class=Response,
+        responses=BINARY_RESPONSE,
+    )
     async def download_session_file(
         session_id: str,
         request: Request,

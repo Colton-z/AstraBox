@@ -18,10 +18,13 @@ from typing import Any
 import pytest
 from claude_agent_sdk import AssistantMessage, TextBlock
 
+from astrabox.core.service.orchestrator.engine import runner_link as runner_link_module
 from astrabox.core.service.orchestrator.engine.runner_link import (
+    DeliveryCommand,
     RunnerLink as _RunnerLink,
     RunnerLinkError,
 )
+from astrabox.core.service.orchestrator.engine.runtime import RuntimeInputRefused
 from astrabox.core.service.orchestrator.sandbox_runner import (
     HostLink,
     RunnerSession,
@@ -306,6 +309,50 @@ async def test_attach_without_a_session_id_cannot_take_the_live_link(
             timeout=2.0,
         )
         assert event["session_id"] == "sess-1"
+
+
+async def test_the_link_refuses_what_it_cannot_carry_without_a_reconnect_loop(
+    wire,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both directions honour the link's message limit, and neither loops.
+
+    A message within the limit arrives whole. An input over it is refused
+    before it is sent, and the link keeps serving. A runner message over it
+    ends the frame stream with a protocol fault: the runner replays the same
+    message after the same cursor, so a reader must not reattach for it. The
+    host's limit is lowered here so the test sends kilobytes, not megabytes.
+    """
+
+    server, sdk, uri = wire
+    limit = 64 * 1024
+    monkeypatch.setattr(runner_link_module, "RUNNER_MESSAGE_MAX_BYTES", limit)
+    async with RunnerLink(uri) as host:
+        await host.configure("sess-1")
+        assert server.session is not None
+
+        sdk.emit(_assistant_message("a" * (limit // 2)))
+        within = await asyncio.wait_for(
+            _next_message_type(host.frames(), "AssistantMessage"), timeout=2.0
+        )
+        assert within["message"]["content"][0]["text"] == "a" * (limit // 2)
+
+        with pytest.raises(RuntimeInputRefused) as refused:
+            await host.deliver(DeliveryCommand(
+                command_id=str(uuid.uuid4()),
+                session_id="sess-1",
+                sequence=1,
+                sdk_input={"type": "user", "message": {"role": "user", "content": "b" * limit}},
+            ))
+        assert refused.value.code == "RUNTIME_INPUT_TOO_LARGE"
+        assert host.is_live and host.protocol_fault is None
+
+        sdk.emit(_assistant_message("c" * (limit * 2)))
+        after = await asyncio.wait_for(_frames_handed_over(host), timeout=5.0)
+        assert [frame for frame in after if frame.get("message_type") == "AssistantMessage"] == []
+        assert host.protocol_fault is not None
+        assert f"{limit}-byte limit" in host.protocol_fault
+        assert host.is_live is False
 
 
 @pytest.mark.parametrize(

@@ -216,6 +216,25 @@ def validate_engine_client_type(client_type: type[Any]) -> None:
 
 
 @runtime_checkable
+class EngineStoredChildRuns(Protocol):
+    """Read children recorded only in the native SessionStore, without journal writes.
+
+    The adapter incrementally retains the native metadata needed to resolve its
+    task, run and transcript identities. The platform stores that projection by
+    native scope and sequence. ``stored_child_run_facts`` receives those compact
+    entries, not message bodies. Streamed lifecycle remains authoritative.
+    """
+
+    def project_child_run_entries(
+        self, projected: list[dict[str, Any]], entries: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]: ...
+
+    def stored_child_run_facts(
+        self, *, main_entries: list[dict[str, Any]], raw_scopes: list[dict[str, Any]]
+    ) -> list[ChildResourceFact]: ...
+
+
+@runtime_checkable
 class EngineStoredChildTranscript(Protocol):
     """Optional authoritative child history read from the Session's SessionStore mirror.
 
@@ -367,6 +386,10 @@ class EngineAdapter(ABC):
 
     def supports_initialized_environment(self) -> bool:
         """Whether native activation can acknowledge environment after initialization."""
+        return False
+
+    def supports_session_mcp_activation(self) -> bool:
+        """Whether native MCP startup can wait for bound Session materials."""
         return False
 
     def startup_material_request(
@@ -534,18 +557,6 @@ class EngineAdapter(ABC):
         raise NotImplementedError(
             f"engine_kind={self.engine_kind!r} cannot quiesce and save runtime state"
         )
-
-    async def list_scheduled_jobs(
-        self, sandbox: Any, *, runtime_identity: dict[str, Any]
-    ) -> list[dict[str, Any]] | None:
-        """The jobs the program scheduled for itself, read from its own store in a running box.
-
-        ``None`` means the program keeps no schedule of its own. One that does
-        answers its records in its own vocabulary, which the platform carries
-        to the owner unchanged.
-        """
-
-        return None
 
     def process_disposal(self) -> Any | None:
         """Optional vendor process finalizer for a recorded native conversation."""

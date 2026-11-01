@@ -96,7 +96,8 @@
     "thought_process": "Reasoning",
     "pasted_image": "Pasted image",
     "additional_input": "Additional input received",
-    "included_in_response": "Added to the response above"
+    "included_in_response": "Received by the runtime here",
+    "scheduled": "Sent by a schedule"
   },
   "process": {
     "title": "Process",
@@ -178,6 +179,7 @@
     "close_aria": "Close subagent activity",
     "waiting_output": "Waiting for subagent output…",
     "no_transcript": "This subagent has no activity to show yet.",
+    "children": "Child tasks — open one to read its activity",
     "load_failed": "Could not load subagent activity",
     "transcript_failed": "Could not load this subagent transcript",
     "retry": "Retry"
@@ -277,13 +279,7 @@
     "nothing_own": "None yet.",
     "advanced": "Edit in the console",
     "delete_title": "Delete Assistant",
-    "delete_confirm": "Delete {{name}}? Its workspace is removed and it can no longer be opened.",
-    "activity": "Scheduled jobs",
-    "activity_not_running": "Its workspace is not running; scheduled jobs show here while it is.",
-    "activity_unsupported": "This Assistant's program keeps no schedule of its own.",
-    "activity_empty": "Nothing scheduled. Ask it in the conversation to do something on a schedule.",
-    "activity_next": "next {{time}}",
-    "activity_last": "last {{time}} {{status}}"
+    "delete_confirm": "Delete {{name}}? Its workspace is removed and it can no longer be opened."
   },
   "user_action": {
     "open": "Open required action",

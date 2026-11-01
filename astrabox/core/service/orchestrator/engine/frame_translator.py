@@ -62,7 +62,7 @@ control diagnostics remain private.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from copy import deepcopy
 from typing import Any
 
@@ -615,6 +615,17 @@ def _claude_raw_frame(subtype: str, message: dict[str, Any]) -> dict[str, Any]:
             "raw": dict(message),
         },
     }
+
+
+def is_claude_diagnostic_part(part: Mapping[str, Any]) -> bool:
+    """Recognize stored Claude telemetry without hiding native presentation messages."""
+    data = part.get("data")
+    return (
+        part.get("type") == "data-raw-event"
+        and isinstance(data, Mapping)
+        and data.get("event_type") == "claude_code.sdk"
+        and data.get("subtype") in {"tool_progress", "background_tasks_changed", "compact_boundary"}
+    )
 
 
 def _claude_message_id(message: dict[str, Any]) -> str:

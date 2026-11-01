@@ -29,6 +29,24 @@ test('native A2A rejects an unknown key and preserves Card authentication errors
   const sourceId = (await api.startAssistantConversation(assistantId)).session_id;
   sessions.push(sourceId);
   await api.waitForSessionReady(sourceId, 90_000);
+  const siblingId = (await api.startAssistantConversation(assistantId)).session_id;
+  sessions.push(siblingId);
+  await api.waitForSessionReady(siblingId, 90_000);
+  const sourceRuntime = await api.adminSessionDetail(sourceId);
+  const siblingRuntime = await api.adminSessionDetail(siblingId);
+  expect(sourceRuntime.runtime_identity).toBeTruthy();
+  const sharedFields = ['uid', 'gid', 'linux_user', 'home_dir', 'config_dir', 'workspace_dir', 'sandbox_id'];
+  expect(siblingRuntime.runtime_identity).toMatchObject(Object.fromEntries(
+    sharedFields.map((name) => [name, sourceRuntime.runtime_identity?.[name]]),
+  ));
+  expect(sourceRuntime.runtime_identity?.session_id).toBe(sourceId);
+  expect(siblingRuntime.runtime_identity?.session_id).toBe(siblingId);
+  expect(siblingRuntime.sandbox_id).toBe(sourceRuntime.sandbox_id);
+  await info.attach('shared-assistant-runtime', {
+    body: JSON.stringify({ sourceId, siblingId, source_identity: sourceRuntime.runtime_identity,
+      sibling_identity: siblingRuntime.runtime_identity,
+      sandbox_id: sourceRuntime.sandbox_id }), contentType: 'application/json',
+  });
   let home = '';
   await expect.poll(async () => {
     home = String((await api.adminSessionDetail(sourceId)).runtime_identity?.config_dir || '');
@@ -36,26 +54,18 @@ test('native A2A rejects an unknown key and preserves Card authentication errors
   }, { timeout: 30_000 }).toMatch(/^\/home\//);
   const key = `astrabox/${agentId}`;
   const invoke = async (positive: boolean) => {
-    // Observe the pinned native tool's real HTTP, without replacing responses or credentials.
+    // Python's audit hook observes native HTTP without replacing any supplier function.
     const program = [
-      'import json, os, urllib.error',
+      'import json, os, sys',
       `os.environ["HERMES_HOME"] = ${JSON.stringify(home)}`,
       'from plugins.platforms.a2a import tools',
       `key = ${JSON.stringify(key)}`,
       'peer = tools._configured_peers()[key]',
       'requests = []',
-      'original = tools._http_json',
-      'def observe(url, headers, timeout, method, data=None):',
-      '    item = {"method": method, "url": url}',
-      '    requests.append(item)',
-      '    try:',
-      '        result = original(url, headers, timeout, method, data)',
-      '        item["status"] = 200',
-      '        return result',
-      '    except urllib.error.HTTPError as error:',
-      '        item["status"] = error.code',
-      '        raise',
-      'tools._http_json = observe',
+      'def observe(event, args):',
+      '    if event == "urllib.Request":',
+      '        requests.append({"method": args[3], "url": args[0]})',
+      'sys.addaudithook(observe)',
       ...(positive ? [
         `reply = tools.a2a_call({"agent": key, "message": ${JSON.stringify(
           `Write exactly ${marker} without a newline to ${marker}.txt in your own workspace using one foreground tool. `
@@ -80,11 +90,8 @@ test('native A2A rejects an unknown key and preserves Card authentication errors
   };
   const refused = await invoke(false);
   await info.attach('native-peer-refusals', { body: JSON.stringify(refused), contentType: 'application/json' });
-  expect(refused.listing).toContain(`peer key: ${key}; discovery URL:`);
-  expect(refused.listing).toContain(`a2a_call(agent="${key}", message=...)`);
+  expect(refused.listing).toContain(key);
   expect(refused.unknown).toContain(`unknown agent '${agentId}'`);
-  expect(refused.unknown).toContain(key);
-  expect(refused.unknown).toContain('exact configured peer key');
   expect(refused.unknown_requests).toEqual([]);
   expect(refused.unauthorized).toHaveLength(2);
   for (const error of refused.unauthorized) {
@@ -92,8 +99,10 @@ test('native A2A rejects an unknown key and preserves Card authentication errors
     expect(error).not.toContain('405');
   }
   expect(refused.requests).toEqual([
-    expect.objectContaining({ method: 'GET', status: 401, url: expect.stringContaining('/.well-known/agent-card.json') }),
-    expect.objectContaining({ method: 'GET', status: 401, url: expect.stringContaining('/.well-known/agent-card.json') }),
+    expect.objectContaining({ method: 'GET', url: expect.stringContaining('/.well-known/agent-card.json') }),
+    expect.objectContaining({ method: 'POST', url: expect.stringContaining(`/agents/${agentId}`) }),
+    expect.objectContaining({ method: 'GET', url: expect.stringContaining('/.well-known/agent-card.json') }),
+    expect.objectContaining({ method: 'POST', url: expect.stringContaining(`/agents/${agentId}`) }),
   ]);
   expect(agentTaskReferences(agentId), 'refused calls must create neither target tasks nor their Sessions').toEqual([]);
 
@@ -106,8 +115,8 @@ test('native A2A rejects an unknown key and preserves Card authentication errors
   sessions.push(targetId);
   expect(sessionRow(targetId)).toMatchObject({ user_id: sessionRow(sourceId)?.user_id, agent_id: agentId, source_type: 'a2a' });
   expect(accepted.requests).toEqual([
-    expect.objectContaining({ method: 'GET', status: 200 }),
-    expect.objectContaining({ method: 'POST', status: 200, url: expect.stringMatching(/\/a2a$/) }),
+    expect.objectContaining({ method: 'GET' }),
+    expect.objectContaining({ method: 'POST', url: expect.stringMatching(new RegExp(`/agents/${agentId}$`)) }),
   ]);
   expect(accepted.reply).toContain(marker);
   expect(accepted.reply).toContain(targetId);

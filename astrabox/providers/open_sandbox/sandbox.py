@@ -815,6 +815,9 @@ class OpenSandboxSandboxProvider(SandboxProvider):
     # binding wider than its owner asked for still works and still passes a
     # smoke test.
     supports_egress_credential_injection = True
+    # `supports_header_placeholder_credentials` keeps its False default: a
+    # `CredentialSubstitution`'s `header` surface is every request header, so
+    # this backend cannot confine a placeholder to one named header.
     # One create = one box with its own network namespace and fixed in-box
     # ports; a sandbox is never reassigned across profiles.
     sandbox_is_profile_exclusive = True

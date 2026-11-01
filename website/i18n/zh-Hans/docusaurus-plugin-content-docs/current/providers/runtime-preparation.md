@@ -47,6 +47,39 @@ provider 名称和声明会计入运行时代次（runtime generation）；它�
 这只控制引擎适配器执行的初始化。所需的系统服务和包装程序（wrapper）必须已经构建进所选
 镜像。provider 不能事后向沙箱加装包装程序，也不能推迟镜像自身的入口程序（entrypoint）。
 
+## 在绑定 Session 用户后激活 MCP
+
+在 `RuntimePreparationPlan.session_mcp_servers` 中声明需要最终用户身份的连接：
+
+```python
+from astrabox.seams.runtime_preparation import RuntimePreparationPlan, SessionMCPServer
+
+async def plan(self, *, config):
+    return RuntimePreparationPlan(session_mcp_servers=(
+        SessionMCPServer(name="personal-service"),
+        SessionMCPServer(name="account-tools", plugin="company-tools"),
+    ))
+```
+
+`name` 是配置中的服务键；`plugin` 是 Plugin manifest 的名称。Claude 适配器核对已安装的
+Plugin 并解析供应商规定的服务别名，provider 不需要拼接 `plugin:*`。声明不包含凭据，
+参与 runtime generation；默认空列表保持普通 MCP 的行为。不支持此能力的引擎会明确拒绝声明。
+
+Claude 用私有原生项目配置中的 `disabledMcpServers` 暂停这些连接，并在发布预热库存前
+核对原生禁用状态。引擎仍已初始化，receipt 为 `engine_initialized=true`。领取时先核对
+持久化 Session 用户和授权前置条件，再交付该用户的文件与环境，通过原生启用／重连操作
+连接指定 MCP，核对 `connected` 后才放行输入。普通 MCP 不会因此一律重连。主机重连只核对已有连接；显式恢复会刷新已声明的个人连接。provider 必须在缺少授权时明确拒绝或抛出 `PreparationUserActionRequired`。
+
+已有空闲会话完成授权并配置声明后，可调用公开的
+`POST /api/v1/sessions/{session_id}/recover`。它重新执行同一材料与连接屏障，保留仍存活的
+Claude 进程和历史，不重发先前输入或重复业务写入。连接失败会阻止输入，直到显式恢复成功。
+工作中的会话拒绝此操作。运行中的 runner 镜像必须已支持相应原生控制；只更新主机端代码
+不能为旧镜像内的进程添加能力。沙箱确实丢失时仍走正常的原生 SessionStore 恢复路径。
+
+文件与环境只影响在连接时读取它们的消费者，不能改写供应商在进程启动时已经展开的配置。
+这类集成应使用供应商支持的刷新机制；无法延迟的启动配置仍需声明整个引擎
+`session_bound=True`。MCP 声明、环境交付与模型凭据保护相互独立。
+
 ## 同步已准备的资源
 
 `async synchronize(*, context: ResourcePreparationContext) -> None` 在沙箱中实际生成
@@ -76,8 +109,8 @@ Plugin 和 Skills 缓存之后、任何引擎使用它们运行之前执行。`c
 读取实际准备好的文件，并合并部署的声明。外部身份以 subject 为键，在不同修订版本和
 沙箱之间保持不变。没有变化的外部写入由 provider 自行跳过。不要把受信任的配置写入日志。
 
-subject 所在行上的比较并设置（compare-and-set）使外部更新在各副本和各沙箱之间
-串行进行：即 Agent 的行，或 Assistant 工作区的行。对 Agent，宿主在同步前后以及发布
+平台已保存操作上的比较并设置（compare-and-set）使宿主发起的 `synchronize` 调用
+在各副本和各沙箱之间串行进行。对 Agent，宿主在同步前后以及发布
 库存之前检查版本、刷新修订号、池生命周期和各项代次；对 Assistant，宿主检查该修订版本
 是否仍是当前版本。已被取代的结果会以 `AGENT_RUNTIME_GENERATION_CONFLICT` 或
 `ASSISTANT_REVISION_CONFLICT` 拒绝。同一 subject 的另一次同步正在运行时，Agent 的准备
@@ -90,6 +123,70 @@ subject 所在行上的比较并设置（compare-and-set）使外部更新在各
 写入之后，才返回 `True`。恢复必须幂等，且不得阻断（fence）较新的操作。默认实现返回 `False`。
 成功的 `synchronize` 不得留下尚未完成的外部写入。仅凭租约过期或远端没有返回结果，
 不能证明已经没有写入在进行。
+
+### 提供方状态与事务边界
+
+上下文是宿主提供的可信快照，不是持续持有的数据库事务或 subject 锁。所有者、修订和操作
+标识本次准备，不保证 provider 运行期间这些值仍是当前值。Assistant 修订包含继承的默认
+配置与 Environment 配置，不只是自身字段。宿主会拒绝过时结果，但不能撤销已经提交的
+provider 写入或已经生效的远程请求。
+
+外部绑定与操作日志保存在 provider 自己的存储中。以 `(subject.kind, subject.id)` 为绑定键，
+使修订或替换沙箱后仍保留相同外部身份；用 `operation_id` 标识调用的持久工作与恢复记录。
+provider 自己的注册端点也应协调这些记录，用唯一性与条件更新防止竞争注册和过时写入。
+宿主操作协调不会串行化该端点独立发起的写入。
+
+provider 可以通过公开的 `PreparationCommitGuard`，在提交自己的绑定与日志时，同时校验
+subject 的权威状态。宿主发起的 `synchronize` 提供 `context.commit_guard`，绑定真实操作
+和准备代次。必须在 provider 表写入的**同一连接、同一事务**中校验；写入前后分别读取
+平台状态不提供相同保证。不要用平台负责的定义字段存放 provider 私有状态。
+
+Assistant 首次同步发生在工作区发布 `READY` 之前。guard 在持有相应数据库锁时校验
+所属 materializer Session、启动所有者、沙箱代次和记录的分配。已就绪工作区的同步校验
+已发布沙箱。两条路径都保留操作、所有者、修订和截止时间检查。
+
+注册等独立 provider 状态写入，从 `astrabox.runtime_preparation` 导入
+`issue_preparation_commit_guard`。在 AstraBox 身份中间件内调用，或由已绑定经身份解析器
+验证身份的嵌入应用调用；绝不能绑定请求 JSON 给出的用户 ID。工厂要求明确绑定身份，
+以及 Agent 管理权限或 Assistant 所有权；机器身份还需 `astrabox:write` 或 `astrabox:admin`。
+没有绑定上下文时，默认本地身份查询不足以授权。签发读取权威所有者与修订，返回后不持锁，
+不创建准备操作，并拒绝正在同步的 subject。写入事务内再次校验权限和当前没有操作的条件。
+
+```python
+from astrabox.persistence.provider import get_persistence
+from astrabox.runtime_preparation import issue_preparation_commit_guard
+from astrabox.seams import PreparationSubject
+
+# Inside an authenticated provider handler; no remote call in this block.
+guard = await issue_preparation_commit_guard(
+    subject=PreparationSubject(kind="agent", id=agent_id),
+)
+async with get_persistence().get_engine().begin() as connection:
+    await guard.validate(connection)
+    # provider_write is a SQLAlchemy statement for the provider's own table.
+    # Its constraints and operation journal remain the provider's responsibility.
+    await connection.execute(provider_write)
+```
+
+使用所选持久化引擎的实际 `AsyncConnection`，以及 `READ COMMITTED` 隔离的活动根事务。
+其他引擎、自动提交与保存点会被拒绝。在锁定 provider 自有行之前校验；每事务只操作一个
+subject，拒绝必须向上传播以回滚，事务保持短暂。定义、Environment、默认配置和操作锁
+持续到提交或回滚。Agent 必须仍为 `ACTIVE`；Assistant 已删除、所有者/修订过时，或
+回调操作过时/过期时，返回 `PREPARATION_SUBJECT_CONFLICT`。
+
+Assistant 按实际继承配置校验修订，包括默认配置的首次插入。Agent 的 `revision` 是自身
+定义的 `version`，仅修改其 Environment 不会增加该修订。Agent 回调还校验记录的准备代次，
+但不重新计算有效 Environment 修订。Environment 锁阻止已校验事务中的并发编辑，不证明
+从签发 guard 或捕获回调配置以来 Environment 一直未变。停用的 Environment 仍允许校验；
+能否启动由启动路径负责。Environment 编辑会改变 Assistant 有效修订，即使所有者相同，
+此前签发的 guard 也已过时。独立 guard 要求当前没有活动操作，即使同步是在签发后开始。
+一次校验成功，不保证之后的其他事务。
+
+远程调用放在数据库事务之外。发起远程写入前记录持久意图，并使用远端支持的幂等与隔离
+机制。独立 provider 数据库不能共享 AstraBox 本地事务，guard 对其没有保证。
+两种方式都不能使远程效果与数据库提交原子化，也不保证远程恰好执行一次。
+不确定结果保持未决，直到 `recover` 能证明原调用及延迟请求再也不能写入；
+日志或租约过期本身不是证据。无法证明时返回 `False`，不能放行新的不确定写入。
 
 ## 交付 Session 材料
 
@@ -115,14 +212,15 @@ Claude 使用原生 `apply_flag_settings` 的 `env` 覆盖，并通过 `get_sett
 镜像必须声明支持这两个控制请求，旧镜像会明确拒绝。之后启动的 hook 和工具继承新值；
 已经运行的子进程及仅在启动时读取值的功能不会被追溯更新。依赖启动材料的插件或包装
 程序仍须声明 `session_bound=True`；用户绑定的 MCP 保留激活时的原生重连屏障。
-`"session"` 通过原生会话上下文交付 `EngineStartupContext.session_env`，不改变共享进程
-环境。Hermes 镜像包含固定上游提交、保留 MIT 许可的扩展，在原生 `session.create` 和
-`session.resume` 中绑定映射，再由原生上下文传到工具子进程。重连和换箱时重新交付；
-没有会话的 Assistant 工作区准备不接收这些值。缺少扩展的旧镜像会明确拒绝 RPC 参数。
-返回 `None` 的适配器拒绝 Session 环境变量。由平台负责的环境变量名不能被覆盖；
-Hermes 也拒绝原生身份和凭据变量。没有原生环境更新能力的已初始化进程拒绝新的进程作用域环境。
-平台准备阶段的拒绝会以 `RUNTIME_PREPARATION_FAILED` 阻止激活，回调异常文本不会公开。
-原生会话环境校验以 `AGENT_RUNTIME_ERROR` 阻止 Hermes 连接，消息不包含传入的环境变量值。
+`"session"` 通过 Agent 运行时的原生会话上下文交付
+`EngineStartupContext.session_env`，不改变共享进程环境。返回 `None` 的适配器拒绝环境变量。
+由平台负责的环境变量名不能被覆盖。没有原生环境更新能力的已初始化进程拒绝新的进程
+作用域环境。准备阶段的拒绝以 `RUNTIME_PREPARATION_FAILED` 阻止激活，回调异常文本不会公开。
+
+同一个 Assistant 的对话共享其工作区的运行身份和 RuntimeProfile 环境。环境变量配置在
+RuntimeProfile 上，`prepare_session` 不为每个对话重新绑定它；对 Assistant 返回非空环境
+映射会在激活之前被明确拒绝。会话元数据通过原生会话上下文、请求参数或返回的文件交付。
+Hermes 网关使用官方的 `session.create` 和 `session.resume` 契约，不附加源码补丁或平台环境插件。
 
 Claude Agent SDK 在启动 CLI 之前会先用 `claude -v` 探测它，此时不带选项中的环境变量。
 如果镜像中的包装程序要求有 Session 材料才放行 CLI，应原样透传 `-v` 和 `--version`。
@@ -173,6 +271,18 @@ Session 与其运行时之间连接的那个进程，因此同一个 Session 的
 provider 出错时，请求以 `SESSION_USER_ACTION_FAILED` 失败，而不会视为就绪；前置条件
 未知或待处理时，控制台会阻止发送。状态读取只供参考：对所有调用方（包括不使用控制台的
 调用方），最终都以 `prepare_turn` 为准。
+
+HTTP 视图还携带平台负责的 `applicable`。对已结束 Session，或 Agent 为 `DELETING` /
+`DELETED` 的 Session，GET 不调用 provider，返回
+`{"applicable": false, "ready": false, "user_action": null, "actions": []}`。
+POST 在读取或执行 provider 操作前，以 `409 SESSION_READ_ONLY` 拒绝；所有者与 API scope
+检查仍生效。控制台知道对话只读时，不显示或查询前置条件；之前可执行状态发出的迟到响应
+不能恢复操作。可执行对话返回 `applicable: true`，保留 provider 的就绪和失败语义。
+
+启动或恢复改变 Session 绑定、页面重新获得焦点或可见、浏览器重新联网时，控制台重新读取
+前置条件。返回页面的读取使用共享节流和进行中请求去重，没有前置条件轮询定时器。
+过时操作被 `409 INVALID_REQUEST` 拒绝后触发状态读取，不重放操作。
+这些读取不会发起授权同意或注册。
 
 ```python
 from astrabox.seams import SessionUserActionCommand, SessionUserActionState

@@ -421,6 +421,9 @@ for _code, _status, _category, _retryable, _owner in (
     # Optional engine protocols are requested by the caller. An engine that
     # does not declare one is healthy; the requested operation is unavailable.
     ("ENGINE_CAPABILITY_UNAVAILABLE", 409, "request", False, "client"),
+    # An input whose delivery frame exceeds the runner link's message limit;
+    # sending it again fails the same way.
+    ("RUNTIME_INPUT_TOO_LARGE", 413, "request", False, "client"),
     # A malformed manifest is an adapter integration defect, not a turn or
     # sandbox failure, and retrying the same deployed code cannot repair it.
     ("ENGINE_CAPABILITY_CONTRACT_VIOLATION", 502, "runtime.engine", False, "platform"),
@@ -469,9 +472,6 @@ for _code, _status, _category, _retryable, _owner in (
     # exact-id convergence fence is a transient state conflict worth retrying.
     ("ASSISTANT_WORKSPACE_NOT_FOUND", 500, "state", False, "platform"),
     ("ASSISTANT_WORKSPACE_CONVERGENCE_FAILED", 503, "state", True, "platform"),
-    # The running workspace did not answer its program's job store; asking
-    # again after the box settles can succeed.
-    ("ASSISTANT_SCHEDULED_JOBS_UNAVAILABLE", 503, "state", True, "platform"),
     # Hibernation is a storage transaction followed by a fenced sandbox
     # release. Malformed transition input is a platform invariant.
     ("ASSISTANT_WORKSPACE_HIBERNATE_CONFLICT", 409, "state", True, "platform"),
@@ -699,6 +699,7 @@ for _code, _status, _category, _retryable, _owner in (
     # `credential_target_url`, which choose the credential the egress sidecar
     # attaches; only a catalog assignment writes them.
     ("AGENT_MCP_FIELD_RESERVED", 403, "configuration.agent", False, "template"),
+    ("MCP_ACTIVATION_UNSUPPORTED", 400, "configuration.agent", False, "template"),
     # A repository names a deploy-key secret the administrator did not list in
     # ASTRABOX_DEPLOY_KEY_SECRET_NAMES. The author picks a listed key, or an
     # administrator lists this one.

@@ -14,6 +14,7 @@ Agent 使用不透明占位符或不含凭证的请求；兼容沙箱的出站�
 | 远程 MCP 服务凭证 | 为对应的远程 MCP 服务加入 Bearer Token、OAuth Token 或 API Key 请求头 | Agent 和 Assistant Session |
 | HTTP Basic 凭证 | 为不含凭证的 HTTPS URL（包括私有 Git 仓库请求）添加认证，无需沙箱内 Token 或占位符 | Agent Session |
 | 其他 API 的凭证 | Agent 程序收到不透明的环境变量值，出站代理在匹配的 HTTP 请求中替换它 | 支持受保护环境变量凭证的 Agent 程序 |
+| 其他 API 的凭证，[请求头投递](#header-delivery) | Agent 程序收到不透明的环境变量值，沙箱后端只在一个指定的请求头中、为所列域名替换它 | 使用支持请求头投递的沙箱后端的 Agent Session |
 
 Assistant 可以使用远程 MCP 服务的已保存凭证，但不能分配包含外部 API 环境变量凭证的 Credential Vault（凭证库），因为长期运行的工作区无法安全接收针对单次对话生成的占位符。
 Assistant 也不支持 HTTP Basic Vault 分配。不受支持的分配会被拒绝。
@@ -39,7 +40,9 @@ Agent 使用基于占位符的受保护凭证时：
 
 凭证 API 永远不会返回真实值，控制台也不会显示。轮换 MCP 凭证后，AstraBox 会在把下一条
 消息交给 Agent 程序之前刷新受保护凭证，Agent 使用原有占位符。出站环境变量和 HTTP Basic
-凭证在运行准备或重连时解析，运行期间不会在每条消息前重新解析。
+凭证在运行准备或重连时解析，运行期间不会在每条消息前重新解析。重连时，沙箱收到之后又被停用
+或删除的这类凭证也会从沙箱中移除。重连后的运行时保留其进程启动时的占位符，从预备容量启动的
+进程也是如此。
 
 HTTP Basic 则直接注入请求头。请在 Vault 中配置不含凭证的目标 URL、用户名和只写的密码或
 Token；沙箱内的请求不含凭证占位符。AstraBox 会在下载 Skill 和 Plugin 的 Git 仓库前安装
@@ -82,8 +85,10 @@ Agent 程序收到的是不含密钥的占位符。沙箱创建后，AstraBox �
 
 需要明确通过沙箱环境变量传递凭证时，设置 `ASTRABOX_SANDBOX_CREDENTIAL_VAULT=false`。
 这种模式下，所选 Agent 程序通过进程环境变量收到模型或网关凭证。已保存的远程 MCP 服务
-凭证、HTTP Basic 凭证和外部 API 环境变量凭证在这种模式下不可用，因为它们的值不能进入
-工作负载。
+凭证、HTTP Basic 凭证和替换投递的环境变量凭证在这种模式下不可用，因为它们的值不能进入
+工作负载。使用[请求头投递](#header-delivery)的环境变量凭证在支持它的沙箱后端上仍然可用。
+设置开启期间收到过受保护凭证的沙箱，在设置关闭后不会被重新接入，因为已无机制管理或撤销这些
+凭证；它所在的对话需要换用新的沙箱。
 
 管理台会显示当前生效的传递模式，返回的凭证元数据不含保存值。
 
@@ -190,6 +195,49 @@ provider-neutral MCP 凭证计划会保留配置的 URL 和 transport。OpenSand
 传递的端点是不含查询参数的 Streamable HTTP 端点，并使用 HTTPS 443 或 HTTP 80。它的
 adapter 会拒绝带凭证 SSE，因为 OpenSandbox 无法预先绑定该 transport 动态返回的 POST URL；
 能保持这项范围的其他 provider 可以支持。免凭证 SSE 可以使用。
+
+## 在一个请求头中投递凭证 {#header-delivery}
+
+有些沙箱后端不在出站代理中替换占位符，而是在一个指定的请求头中替换它。创建
+`environment_variable` 凭证时设置 `delivery: "header"`，就会使用这种方式：
+
+```http
+POST /api/v1/admin/vaults/{vault_id}/credentials
+Content-Type: application/json
+
+{
+  "display_name": "Issue tracker API key",
+  "auth": {
+    "type": "environment_variable",
+    "secret_name": "TRACKER_API_KEY",
+    "secret_value": "tk_…",
+    "delivery": "header",
+    "header_name": "X-Api-Key",
+    "networking": {
+      "type": "limited",
+      "allowed_hosts": ["api.tracker.example", "*.tracker.example"]
+    }
+  }
+}
+```
+
+Agent 程序在 `TRACKER_API_KEY` 中收到不透明的占位符。它在发往所列域名的请求中把这个
+占位符放进 `X-Api-Key` 请求头时，沙箱后端会把它替换成保存的值。除此之外不作任何承诺：
+
+- 不替换请求体、路径或查询参数。
+- 不检查请求方法、路径、端口或协议。
+- 不匹配的请求会原样发出，其中仍是占位符。与替换投递不同，请求头投递不会拒绝这样的请求。
+
+`header_name` 是 HTTP 请求头字段名。`networking` 必须是 `limited`，每一项都是完整域名，
+可以以 `*.` 开头；端口、协议、路径、IP 地址和单段主机名会被拒绝。`injection_location`、
+`allowed_requests` 和 `allow_insecure_http` 不适用，出现时会被拒绝。`delivery` 在创建凭证时
+确定；要换用另一种方式投递密钥，请新建凭证。
+
+请求头投递只取决于沙箱后端：支持它的后端自己完成替换，所以
+`ASTRABOX_SANDBOX_CREDENTIAL_VAULT` 不会启用或停用它。只有已启用的后端支持请求头投递时，
+才能创建这种凭证，否则会以 `VAULT_ENV_CREDENTIAL_UNSUPPORTED` 拒绝；控制台也只在这种
+情况下显示**投递方式**选项。所选沙箱后端不支持时，Session 会在分配沙箱前被拒绝。仓库维护的
+OpenSandbox 后端不支持请求头投递。两种投递方式的环境变量凭证都不能分配给 Assistant。
 
 ## 使用 OpenSandbox 预备容量
 

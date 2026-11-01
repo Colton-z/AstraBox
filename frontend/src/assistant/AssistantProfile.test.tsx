@@ -6,7 +6,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import i18n from '@/i18n';
 import { getExtensionProvider, listAssistantConnectors, listConnectors } from '@/api';
-import { getAssistant, listAssistantScheduledJobs } from './api';
+import { getAssistant } from './api';
 import type { AssistantRecord } from './types';
 import { AssistantProfile } from './AssistantProfile';
 
@@ -18,7 +18,6 @@ vi.mock('@/api', () => ({
 }));
 vi.mock('./api', () => ({
   getAssistant: vi.fn(),
-  listAssistantScheduledJobs: vi.fn(),
   updateAssistant: vi.fn(),
   deleteAssistant: vi.fn(),
 }));
@@ -50,9 +49,6 @@ const assistant: AssistantRecord = {
 beforeAll(async () => { await i18n.changeLanguage('en'); });
 beforeEach(() => {
   vi.mocked(getAssistant).mockReset().mockResolvedValue(assistant);
-  vi.mocked(listAssistantScheduledJobs).mockReset().mockResolvedValue({
-    assistant_id: 'as-1', workspace_state: 'NOT_MATERIALIZED', jobs: null, reason: 'workspace_not_running',
-  });
   vi.mocked(listConnectors).mockReset().mockResolvedValue([]);
   vi.mocked(listAssistantConnectors).mockReset().mockResolvedValue([]);
 });

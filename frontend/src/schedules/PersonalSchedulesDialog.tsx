@@ -39,7 +39,10 @@ function fields(plan: PersonalSchedule): Draft {
     cron: plan.schedule.cron, timezone: plan.schedule.timezone };
 }
 
-/** Low-frequency personal plans live in the account settings menu. */
+/**
+ * Everything that runs on a schedule as the signed-in user, in the account
+ * settings menu: what their Assistant runs itself and what it hands to an Agent.
+ */
 export function PersonalSchedulesDialog({ open, onOpenChange }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -51,8 +54,10 @@ export function PersonalSchedulesDialog({ open, onOpenChange }: {
   const assistants = useSWR(open ? 'personal-schedule-assistants' : null, listAssistants);
   useEffect(() => { if (!open) setSelectedId(''); }, [open]);
   const selected = plans.data?.find((plan) => plan.deployment_id === selectedId);
-  const targetName = (plan: PersonalSchedule) =>
-    agents.data?.find((agent) => agent.agent_id === plan.agent_id)?.name || plan.agent_id;
+  const targetName = (plan: PersonalSchedule) => (plan.assistant_id
+    ? assistants.data?.find((assistant) => assistant.assistant_id === plan.assistant_id)?.display_name
+      || plan.assistant_id
+    : agents.data?.find((agent) => agent.agent_id === plan.agent_id)?.name || plan.agent_id || '');
   const sourceName = selected && (assistants.data?.find(
     (assistant) => assistant.assistant_id === selected.source_assistant_id,
   )?.display_name || selected.source_assistant_id);

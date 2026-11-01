@@ -9,8 +9,12 @@ Hermes is pinned to 0.22.4, commit
 `4d04303818b61bf3aa09278af48356315515965b`. Its
 [A2A plugin](https://github.com/NousResearch/hermes-agent/blob/4d04303818b61bf3aa09278af48356315515965b/website/docs/user-guide/messaging/a2a.md)
 provides `a2a_discover`, `a2a_call`, `a2a_list`, `a2a_history` and
-`a2a_orchestrate`. AstraBox does not start Hermes' inbound messaging gateway
-to execute managed Agents: that gateway owns a different execution lifecycle.
+`a2a_orchestrate`. The Assistant's Hermes gateway serves only the Assistant's own
+conversations: it is kept off every one of its messaging platforms, including
+its inbound A2A platform, even when a platform's credential is among the
+RuntimeProfile's variables, and its managed configuration refuses the
+`platforms` and `gateway` keys. A managed Agent executes in an AstraBox Session,
+not in that gateway.
 
 For long managed-Agent tasks, load the built-in `astrabox-agent-task` skill.
 It submits through the existing A2A API with `returnImmediately=true`, retains
@@ -146,21 +150,25 @@ responses the Agent's runtime reports.
 Hermes' native A2A conversation files and audit file are included in the profile
 state archive, outside the user's workspace.
 
-## Personal Agent schedules
+## Personal schedules {#personal-agent-schedules}
 
 The Assistant's built-in schedule tools manage `/api/v1/me/schedules`. These
 reuse the platform scheduler, Deployment and Run records. The source Assistant
-records where the plan was created; the target Agent performs the work.
+records where the plan was created. A plan with an `agent_id` is performed by
+that Agent in a conversation of its own; a plan without one is performed by the
+source Assistant itself, each run a message in its main conversation
+([Routines and watches](assistants.md#routines-and-watches)).
 
 A personal schedule always executes as its authenticated creator. Creating,
-enabling or firing a plan checks target access. Revoking access blocks new work
-while the owner can still inspect, disable or remove the plan. Another user,
-including the target Agent's owner, cannot manage that personal plan through
-the Agent's deployment administration. A2A communication does not create a
-second scheduler.
+enabling or firing a plan checks target access: the creator's access to the
+Agent, or ownership of the Assistant. Revoking access blocks new work while the
+owner can still inspect, disable or remove the plan. Another user, including
+the target Agent's owner, cannot manage that personal plan through the Agent's
+deployment administration. A2A communication does not create a second
+scheduler.
 
 Open the account settings menu and choose **Personal schedules** to inspect
 these plans. Select a plan in the dialog to edit its name, prompt, cron and
 timezone, enable or disable it, run it now, replay a previous Run, or delete it.
 Each Run with a Session links to its conversation. Create a plan by asking the
-Assistant which Agent should perform the work and when it should run.
+Assistant what should be done and when, and whether an Agent should do it.

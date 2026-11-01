@@ -83,6 +83,8 @@ def environment_credentials_generation_contract(
         {
             "credential_id": str(item.credential_id),
             "secret_name": str(item.secret_name),
+            "delivery": str(item.delivery),
+            "header_name": str(item.header_name),
             "networking": _jsonable(item.networking),
             "injection_location": _jsonable(item.injection_location),
             "allow_insecure_http": bool(item.allow_insecure_http),

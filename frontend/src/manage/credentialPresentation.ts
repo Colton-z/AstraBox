@@ -28,3 +28,14 @@ export function credentialTypeLabel(
 ): string {
   return t(`manage:credentials.${CREDENTIAL_TYPE_KEYS[type]}`);
 }
+
+/** Where an `environment_variable` credential's placeholder is replaced, for its row. */
+export function environmentDeliveryLabel(
+  auth: VaultCredentialSummary['auth'],
+  t: TFunction,
+): string {
+  if (auth.delivery === 'header') {
+    return t('manage:credentials.delivery_summary_header', { header: auth.header_name || '—' });
+  }
+  return t('manage:credentials.delivery_summary_substitution');
+}

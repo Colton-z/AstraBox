@@ -29,6 +29,13 @@ AGENT_IMAGE_COMPONENT = "sandbox-claude-code"
 # AIO reads these vendor switches at boot. Interactive Chrome and VNC belong
 # only to conversation-owned boxes; shared boxes have no isolated desktop.
 # Downloads stay outside the task workspace until a user saves a task output.
+#
+# Chrome runs without its own sandbox. That sandbox needs either its setuid
+# helper, which the box's no_new_privileges disables, or an unprivileged user
+# namespace, which hosts restricting them refuse (Ubuntu's default since
+# 23.10). With neither, Chrome aborts at start and AIO restarts it every few
+# seconds. The box is the browser's isolation boundary, as it is for every
+# other process an Agent runs in it.
 SANDBOX_SELF_DESCRIPTION = {
     "IS_SANDBOX": "1",
     "DISABLE_BROWSER": "true",
@@ -38,6 +45,7 @@ SANDBOX_SELF_DESCRIPTION = {
     "DISABLE_VNC": "true",
     "DISABLE_NODEJS_REPL": "true",
     "BROWSER_DOWNLOAD_DIR": "/tmp/astrabox-browser-downloads",
+    "BROWSER_NO_SANDBOX": "--no-sandbox",
 }
 
 

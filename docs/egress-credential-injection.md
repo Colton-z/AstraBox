@@ -17,6 +17,7 @@ and prompt do not receive the saved value.
 | Remote MCP credential | Added as the configured bearer token, OAuth token, or API-key header for that remote MCP service | Agent and Assistant Sessions |
 | HTTP Basic credential | Added to a clean HTTPS URL, including private Git repository requests, without a sandbox-side token or placeholder | Agent Sessions |
 | Credential for another API | Exposed to the Agent program as an opaque environment-variable value and substituted in matching HTTP requests | Agent programs that support protected environment credentials |
+| Credential for another API, [header delivery](#header-delivery) | Exposed as an opaque environment-variable value that the sandbox backend replaces only in one named request header, for the listed domains | Agent Sessions on a sandbox backend that offers header delivery |
 
 An Assistant can use saved credentials for remote MCP services. It cannot be
 assigned a Credential Vault that contains an external-API environment variable,
@@ -59,7 +60,10 @@ console. Rotated MCP credentials are refreshed before AstraBox hands the Agent
 program its next message; the Agent uses its placeholder. Outbound
 environment-variable and HTTP Basic credentials are resolved when AstraBox
 prepares or reconnects the runtime, not before every message in an already
-running runtime.
+running runtime. A reconnect also removes from the sandbox any of these
+credentials archived or deleted since the sandbox received it. A reconnected
+runtime keeps the placeholders its process started with, including one that
+started in prepared capacity.
 
 HTTP Basic uses direct header injection instead. Configure the clean target
 URL, username, and write-only password or token in the Vault; the sandbox
@@ -133,8 +137,13 @@ model API methods and paths.
 Set `ASTRABOX_SANDBOX_CREDENTIAL_VAULT=false` for explicit sandbox-environment
 delivery. In that mode, the selected Agent program receives its model or gateway
 credential through its process environment.
-Saved remote MCP, HTTP Basic, and external API environment credentials are
+Saved remote MCP, HTTP Basic, and substitution environment credentials are
 unavailable in that mode because their values must not enter the workload.
+Environment credentials with [header delivery](#header-delivery) stay available
+on a sandbox backend that offers it. A sandbox that received protected
+credentials while the setting was on is not reattached after it is turned off,
+because nothing would manage or revoke those credentials; its conversation needs
+a new sandbox.
 
 The management console shows the active delivery mode and returns credential
 metadata without saved values.
@@ -261,6 +270,59 @@ OpenSandbox currently requires a query-free Streamable HTTP endpoint on HTTPS
 SSE because OpenSandbox cannot pre-bind the dynamic POST URL returned by that
 transport; providers that can preserve that scope may support it.
 Credential-free SSE remains available.
+
+## Deliver a credential in one request header {#header-delivery}
+
+Some sandbox backends replace a placeholder inside one named request header
+instead of substituting it at an outbound proxy. An `environment_variable`
+credential uses that mechanism when it is created with `delivery: "header"`:
+
+```http
+POST /api/v1/admin/vaults/{vault_id}/credentials
+Content-Type: application/json
+
+{
+  "display_name": "Issue tracker API key",
+  "auth": {
+    "type": "environment_variable",
+    "secret_name": "TRACKER_API_KEY",
+    "secret_value": "tk_…",
+    "delivery": "header",
+    "header_name": "X-Api-Key",
+    "networking": {
+      "type": "limited",
+      "allowed_hosts": ["api.tracker.example", "*.tracker.example"]
+    }
+  }
+}
+```
+
+The Agent program receives an opaque placeholder in `TRACKER_API_KEY`. When it
+sends that placeholder in the `X-Api-Key` header of a request to a listed
+domain, the sandbox backend replaces it with the saved value. Nothing else is
+promised:
+
+- The request body, path, and query are never substituted.
+- The request method, path, port, and scheme are not checked.
+- A request that does not match is sent unchanged, with the placeholder in it.
+  Unlike substitution, header delivery does not refuse such a request.
+
+`header_name` is an HTTP header field name. `networking` must be `limited`, and
+each entry is a fully qualified domain name, optionally starting with `*.`;
+ports, schemes, paths, IP addresses, and single-label names are rejected.
+`injection_location`, `allowed_requests`, and `allow_insecure_http` do not
+apply and are rejected when present. `delivery` is fixed when the credential is
+created; create another credential to deliver a secret the other way.
+
+Header delivery depends only on the sandbox backend: a backend that offers it
+performs the replacement itself, so `ASTRABOX_SANDBOX_CREDENTIAL_VAULT` does not
+enable or disable it. Creating such a credential is rejected with
+`VAULT_ENV_CREDENTIAL_UNSUPPORTED` unless an enabled backend offers header
+delivery, and the console shows the **Delivery** choice only in that case. A
+Session whose sandbox backend does not offer it is rejected before a sandbox is
+allocated. The maintained OpenSandbox backend does not offer header delivery.
+Assistants cannot be assigned environment-variable credentials with either
+delivery.
 
 ## Use OpenSandbox prepared capacity
 

@@ -48,6 +48,34 @@ from the vault entries, exports each ``secret_name=placeholder`` into the
 sandbox env, and calls :meth:`EgressCredentialMap.apply` on every outbound
 request. What remains backend-specific is only transport plumbing: how the
 proxy sits on the egress path (see ``docs/egress-credential-injection.md``).
+
+Header delivery
+---------------
+
+Everything above is the contract of :data:`DELIVERY_SUBSTITUTION`, the
+default :attr:`EgressCredential.delivery`. A credential whose ``delivery`` is
+:data:`DELIVERY_HEADER` makes a narrower promise, and only a backend that
+declares ``SandboxProvider.supports_header_placeholder_credentials`` receives
+one:
+
+* **Placeholder** — minted and exported exactly as above; the sandbox sees
+  only the placeholder under ``secret_name``.
+* **One header, declared hosts** — the backend replaces the placeholder with
+  the secret value inside the request header named ``header_name`` (an RFC
+  7230 token), on requests whose host matches ``networking.allowed_hosts``.
+  That networking is always ``limited``, and each entry is a fully qualified
+  hostname, optionally with a leftmost ``*.`` wildcard, never a scheme, port,
+  IP address or single-label name.
+* **Nothing else** — the body, path and query are never substituted; method,
+  path, port and scheme are not filtered; and a request that does not match is
+  forwarded unchanged with the placeholder still in it. Header delivery is NOT
+  fail-closed. ``injection_location``, ``allowed_requests`` and
+  ``allow_insecure_http`` stay empty because none of them applies.
+
+Header delivery is the backend's own mechanism, not the protected delivery
+that ``ASTRABOX_SANDBOX_CREDENTIAL_VAULT`` switches, so it depends only on the
+backend capability. :class:`EgressCredentialMap` implements the substitution
+contract, so a backend gives it substitution credentials only.
 """
 
 from __future__ import annotations
@@ -61,6 +89,8 @@ from urllib.parse import urlparse
 
 __all__ = [
     "PLACEHOLDER_PREFIX",
+    "DELIVERY_SUBSTITUTION",
+    "DELIVERY_HEADER",
     "EgressCredential",
     "ModelEgressCredential",
     "ModelEgressCredentialSubstitution",
@@ -84,6 +114,13 @@ __all__ = [
 ]
 
 PLACEHOLDER_PREFIX = "ASTRABOX-VAULT-CRED::"
+
+#: :attr:`EgressCredential.delivery` of the substitution contract: header and
+#: body substitution under host, TLS, method and path gating, fail-closed.
+DELIVERY_SUBSTITUTION = "substitution"
+#: :attr:`EgressCredential.delivery` of header delivery: the placeholder is
+#: replaced inside one named request header for the declared hosts only.
+DELIVERY_HEADER = "header"
 
 #: Public inert value an engine receives instead of a model credential. This is
 #: an AstraBox contract, not a provider token: any credential-injection backend
@@ -258,6 +295,12 @@ class EgressCredential:
     #: HTTP methods and ``paths`` contains absolute glob patterns such as
     #: ``/repos/acme/private/*``.
     allowed_requests: Mapping[str, object] = field(default_factory=dict)
+    #: :data:`DELIVERY_SUBSTITUTION` or :data:`DELIVERY_HEADER`; the module
+    #: contract states what each promises.
+    delivery: str = DELIVERY_SUBSTITUTION
+    #: The one request header a :data:`DELIVERY_HEADER` placeholder is
+    #: replaced in. Empty for substitution.
+    header_name: str = ""
 
     def allows_host(self, host: str, port: int | None) -> bool:
         kind = str(self.networking.get("type") or "").strip()

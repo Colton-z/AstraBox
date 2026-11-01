@@ -258,7 +258,9 @@ def _build_claude_options(
     )
 
 
-def _disable_plugin_mcp_autostart(options: Any, server_ids: list[str]) -> Any:
+def _disable_plugin_mcp_autostart(
+    options: Any, server_ids: list[str], session_mcp: list[dict[str, Any]],
+) -> Any:
     """Keep Plugin capabilities while refusing its implicit MCP connections.
 
     Claude Code starts a Plugin's MCP servers automatically. AstraBox
@@ -268,8 +270,9 @@ def _disable_plugin_mcp_autostart(options: Any, server_ids: list[str]) -> Any:
     not rewrite the Plugin checkout or invent another MCP vocabulary.
     """
 
+    deferred = {f"plugin:{ref['plugin']}:{ref['name']}" for ref in session_mcp if ref.get("plugin")}
     identities = sorted(
-        {str(server_id).strip() for server_id in server_ids if str(server_id).strip()}
+        {str(server_id).strip() for server_id in server_ids if str(server_id).strip()} - deferred
     )
     if not identities:
         return options
@@ -349,6 +352,7 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
             model_runtime_creds=model_runtime_creds,
             runtime_env={**dict(context.runtime_env or {}), **dict(context.session_env or {})},
         )
+        session_mcp = _session_mcp_references(template)
         runner_uri = str(context.runner_uri or "").strip()
         if not runner_uri:
             raise APIError(
@@ -373,12 +377,13 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
                     )
                     or []
                 ),
+                session_mcp,
             )
             engine_client, how = await _attach_runner_engine_client(
                 runner_uri,
                 activation_token=activation_token,
                 session_id=context.session_id,
-                sdk_options=_runner_configure_options(runner_options),
+                sdk_options=_session_mcp_options(runner_options, template),
                 transcript_store=context.transcript_store,
                 sandbox_death_notice=context.sandbox_death_notice,
             )
@@ -389,8 +394,14 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
                 context.sandbox_id,
                 bool(context.resume_session_key),
             )
-            if how == "attached" and context.session_env:
-                await engine_client.bind_environment(context.session_env)
+            if how == "attached":
+                if session_mcp:
+                    await engine_client.activate_mcp(
+                        session_mcp, environment=context.session_env,
+                        reconnect=context.attach_mode == "full",
+                    )
+                elif context.session_env:
+                    await engine_client.bind_environment(context.session_env)
         elif is_prepared:
             engine_client = await _activate_runner_engine_client(
                 runner_uri,
@@ -417,6 +428,7 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
                     )
                     or []
                 ),
+                session_mcp,
             )
             # A start that claimed nothing is this seat's setup: the runner
             # admits the prepare inside configure only against this file.
@@ -430,7 +442,7 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
                 runner_uri,
                 activation_token=activation_token,
                 session_id=context.session_id,
-                sdk_options=_runner_configure_options(runner_options),
+                sdk_options=_session_mcp_options(runner_options, template),
                 transcript_store=context.transcript_store,
                 sandbox_death_notice=context.sandbox_death_notice,
             )
@@ -576,23 +588,18 @@ def _runner_configure_options(options: Any) -> dict[str, Any]:
     return out
 
 
-def _activation_mcp_server_names(template: Any) -> list[str]:
-    """Remote MCP declarations whose handshake needs the claiming user's identity.
+def _session_mcp_references(template: Any) -> list[dict[str, Any]]:
+    from astrabox.seams.runtime_preparation import runtime_preparation_plan
 
-    These are the servers activation must reconnect and prove ``connected``
-    before input is released. The platform's MCP assignment vocabulary has no
-    per-user-identity marker — every declared server is anonymous or carries a
-    shared secret the gateway injects — so nothing defers to activation and
-    every server connects at prepare, leaving the slot in exactly the steady
-    state an ordinary session start produces. When
-    user-bound connections enter the assignment vocabulary they belong here;
-    requiring every remote server instead was measured to impose a stronger
-    guarantee than ordinary sessions have and to fail on gateway-managed
-    servers whose credential injection is independent of the Session.
-    """
+    return [dataclasses.asdict(reference) for reference in runtime_preparation_plan(template).session_mcp_servers]
 
-    _ = template
-    return []
+
+def _session_mcp_options(options: Any, template: Any) -> dict[str, Any]:
+    wire = _runner_configure_options(options)
+    references = _session_mcp_references(template)
+    if references:
+        wire["session_mcp_servers"] = references
+    return wire
 
 
 async def prepare_runtime(context: EnginePreparationContext) -> dict[str, Any]:
@@ -649,7 +656,7 @@ async def prepare_runtime(context: EnginePreparationContext) -> dict[str, Any]:
         runtime_env=context.runtime_env,
     )
 
-    wire_options = _runner_configure_options(options)
+    wire_options = _session_mcp_options(options, template)
     spawn_fingerprint = hashlib.sha256(
         json.dumps(
             wire_options,
@@ -682,7 +689,7 @@ async def prepare_runtime(context: EnginePreparationContext) -> dict[str, Any]:
     return {
         "engine_kind": "claude_code",
         "spawn_fingerprint": spawn_fingerprint,
-        "activation_mcp_servers": _activation_mcp_server_names(template),
+        "session_mcp_servers": _session_mcp_references(template),
     }
 
 

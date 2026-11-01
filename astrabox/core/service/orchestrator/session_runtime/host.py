@@ -71,7 +71,7 @@ class RuntimeNotReady(Exception):
 
 
 class RuntimeStartFailed(Exception):
-    """A replacement for the waiting inputs already failed to start; they get no second attempt."""
+    """A start for the waiting inputs already failed; they get no second attempt."""
 
 
 @dataclass(frozen=True, slots=True)

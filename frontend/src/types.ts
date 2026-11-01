@@ -151,6 +151,13 @@ export interface AgentConfig extends AgentDraft {
   updated_at?: string;
 }
 
+/**
+ * How an `environment_variable` credential's placeholder is replaced:
+ * `substitution` in the headers and body of matching requests, or `header`
+ * inside one named request header for the listed domains.
+ */
+export type EnvironmentCredentialDelivery = 'substitution' | 'header';
+
 /** Non-secret metadata for one saved credential. */
 export interface VaultCredentialSummary {
   credential_id: string;
@@ -163,6 +170,8 @@ export interface VaultCredentialSummary {
     mcp_server_url?: string;
     header_name?: string;
     secret_name?: string;
+    /** Present on every `environment_variable` credential. */
+    delivery?: EnvironmentCredentialDelivery;
     expires_at?: string | null;
     networking?: {
       type?: 'limited' | 'unrestricted';
@@ -189,6 +198,8 @@ export interface CredentialDeliveryOverview {
   model_credentials: 'egress_placeholder' | 'sandbox_environment';
   mcp_credentials: 'egress_injection' | 'unavailable';
   environment_credentials: 'egress_placeholder' | 'unavailable';
+  /** Whether an enabled sandbox backend offers header delivery. */
+  header_credentials: 'header_placeholder' | 'unavailable';
 }
 
 export interface VaultCatalog {
@@ -322,10 +333,10 @@ export interface DeploymentRun {
   created_at?: string | null;
 }
 
+/** A schedule run as its owner: by an Agent (`agent_id`) or by the source Assistant itself (`assistant_id`). */
 export interface PersonalSchedule extends AgentDeployment {
   scope: 'personal';
   scene: 'schedule';
-  agent_id: string;
   source_assistant_id: string;
   owner_user_id: string;
   owner_org_id: string;

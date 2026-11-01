@@ -31,6 +31,8 @@ logger = get_logger(__name__)
 
 #: ``sessions.title_source`` of a title the title service wrote.
 TITLE_SOURCE_GENERATED = "generated"
+#: ``sessions.title_source`` of a title the owner set; no generation replaces it.
+TITLE_SOURCE_USER = "user"
 #: ``sessions.title_generation_status``: the one generation claim's state.
 TITLE_GENERATION_STATUS_GENERATING = "generating"
 TITLE_GENERATION_STATUS_COMPLETED = "completed"
@@ -802,6 +804,7 @@ class SessionTitleService:
                 return {"status": "error", "error": str(exc)}
 
         current_title = session.get("title")
+        current_source = session.get("title_source")
         claimed = await self._sessions_repo.compare_and_update_session(
             session_id,
             expected={
@@ -883,7 +886,10 @@ class SessionTitleService:
         applied = await self._sessions_repo.compare_and_update_session(
             session_id,
             expected={
+                # The source as well as the text: an owner who renames the
+                # conversation to the text it already had still chose it.
                 "title": current_title,
+                "title_source": current_source,
                 "title_generation_status": TITLE_GENERATION_STATUS_GENERATING,
                 "title_generation_response_id": response_id,
             },
@@ -964,7 +970,7 @@ class SessionTitleService:
     @staticmethod
     def _session_allows_generated_title(session: dict[str, Any]) -> bool:
         """Whether the title is still the session's default: empty, or the Agent's name."""
-        if str(session.get("title_source") or "").strip() == TITLE_SOURCE_GENERATED:
+        if str(session.get("title_source") or "").strip() in {TITLE_SOURCE_GENERATED, TITLE_SOURCE_USER}:
             return False
         title = str(session.get("title") or "").strip()
         if not title:

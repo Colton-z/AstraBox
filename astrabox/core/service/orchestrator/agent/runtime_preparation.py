@@ -64,6 +64,7 @@ async def prepare_pool_runtime(sandbox: Any, *, template: Any, manager: Any) -> 
     )
     vault_plan, runtime_env = await resolve_prepared_environment_credentials(
         template, slot_id=slot_id, vault_enabled=vault_enabled, vault_write=vault_plan,
+        backend=provider,
     )
     identity = build_conversation_identity(session_id=slot_id, agent_id=template.agent_id, template=template)
     identity = await _bootstrap_slot_identity(sandbox, template, slot_id, identity=identity)
@@ -118,8 +119,13 @@ async def prepare_engine_runtime(
     """Carry the vendor's preparation evidence unchanged into activation."""
 
     engine_kind = str(context.template.engine_kind)
-    initialize = not runtime_preparation_plan(context.template).session_bound
-    receipt = await get_engine_adapter(engine_kind).prepare_runtime(context) if initialize else {}
+    plan = runtime_preparation_plan(context.template)
+    adapter = get_engine_adapter(engine_kind)
+    if plan.session_mcp_servers and not adapter.supports_session_mcp_activation():
+        raise APIError(code="MCP_ACTIVATION_UNSUPPORTED", status_code=400,
+                       message=f"Engine {engine_kind!r} cannot defer Session MCP connections")
+    initialize = not plan.session_bound
+    receipt = await adapter.prepare_runtime(context) if initialize else {}
     return {
         **dict(receipt),
         "slot_id": context.slot_id,

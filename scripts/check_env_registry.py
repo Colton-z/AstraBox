@@ -64,7 +64,7 @@ IMAGE_PROGRAMS_ROOT = REPO_ROOT / "scripts" / "runtime"
 
 sys.path.insert(0, str(REPO_ROOT))
 
-from astrabox.config.env_registry import concrete_names  # noqa: E402
+from astrabox.config.env_registry import ENV_REGISTRY, concrete_names  # noqa: E402
 
 #: Wrapper functions that compose an env-var name from a literal argument, so a
 #: plain search for ``os.getenv`` never sees their call sites. Keyed by
@@ -380,7 +380,7 @@ def _embedded_scripts() -> dict[str, str]:
         "sandbox-hermes/astrabox-hermes-serve": (hermes / "astrabox-hermes-serve").read_text(
             encoding="utf-8"
         ),
-        "sandbox-hermes/astrabox-hermes-forward": (hermes / "astrabox-hermes-forward").read_text(
+        "sandbox-hermes/hermes_gateway_bridge.py": (hermes / "hermes_gateway_bridge.py").read_text(
             encoding="utf-8"
         ),
     }
@@ -404,6 +404,22 @@ def _script_env_names(script: str) -> set[str]:
 def _bundled_litellm_reads() -> frozenset[str]:
     config = (REPO_ROOT / "containers/litellm/config.yaml").read_text(encoding="utf-8")
     return frozenset(re.findall(r"\bos\.environ/([A-Z][A-Z0-9_]*)\b", config))
+
+
+def _registered_fixture_reads() -> frozenset[str]:
+    """Registered test settings actually read by their declared fixture."""
+    names: set[str] = set()
+    for row in ENV_REGISTRY:
+        if row.tier != "test" or not row.read_site.startswith("tests/"):
+            continue
+        path = REPO_ROOT / row.read_site
+        if path.is_file():
+            source = path.read_text(encoding="utf-8")
+            if row.name in _script_env_names(source) or re.search(
+                r"\bprocess\.env\." + re.escape(row.name) + r"\b", source,
+            ):
+                names.add(row.name)
+    return frozenset(names)
 
 
 class _ComposeLoader(yaml.SafeLoader):
@@ -527,6 +543,7 @@ def evaluate() -> list[tuple[str, list[str]]]:
         | set().union(*script_names.values())
         | litellm
         | _EXTERNAL_RUNTIME_ENV_READS
+        | _registered_fixture_reads()
     )
     report(
         "registered and read nowhere. Remove the row, or fix its name if the read moved",
