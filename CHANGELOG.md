@@ -90,6 +90,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - Record a Claude runner frame the platform has read whole as whole, and acknowledge that frame itself. A later replay that translated the same frame differently, as a Result does once compaction has dropped the frame that opened its response, could otherwise report the difference as new output the platform could not record; this also holds for sandboxes still running an earlier runner.
 
+### Runtime and recovery
+
+- Compact the Claude runner's journal only at the start of a response. A compaction that kept the latest Result without the frame that opened its response let a reattached host read that Result as a standalone message, which the platform could not record; the conversation then stopped taking input. The fix is in the sandbox image's runner, so it reaches a running sandbox only when that sandbox is replaced.
+
 ## [0.1.10] - 2026-10-20
 
 This release collects the fixes and developer-facing improvements made after 0.1.9.
