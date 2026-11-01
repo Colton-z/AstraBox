@@ -688,7 +688,11 @@ class HermesEngineAdapter(EngineAdapter):
             if re.fullmatch(r"HERMES_STATE_SAVE_COMPLETE snapshot_id=\S+", line)
         ]
         if result.exit_code != 0 or len(markers) != 1:
-            raise RuntimeError("native state save did not confirm its snapshot")
+            raise RuntimeError(
+                "native state save did not confirm its snapshot: "
+                f"exit_code={result.exit_code}, stdout={result.stdout[-1000:]!r}, "
+                f"stderr={result.stderr[-2000:]!r}"
+            )
 
 
 # The shared assistant workspace root baked into the Hermes runtime image (WORKDIR).
