@@ -586,6 +586,7 @@ describe('channel response policy', () => {
         target: { value: 'sender-1' },
       });
     }
+    await screen.findByRole('combobox', { name: 'Response policy' });
   }
 
   function selectPolicy(policy: NonNullable<AgentDeployment['attention_policy']>) {

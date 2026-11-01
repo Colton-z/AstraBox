@@ -186,13 +186,15 @@ class _Translation:
         if greeting is not None:
             return self._greeting(*greeting)
         if message.get("__sdk_type") == "ResultMessage" and (
-            self.response_id is None or frame.get("unadmitted_result_input_ids")
+            (self.response_id is None and self.interrupted_response_id is None)
+            or frame.get("unadmitted_result_input_ids")
         ):
             return self._standalone_result(message, frame)
         if (
             message.get("__sdk_type") == "AssistantMessage"
             and message.get("parent_tool_use_id") is None
             and self.response_id is None and frame.get("engine_boundary") is not True
+            and self.interrupted_response_id is None
         ):
             return self._native_output({"type": "data-raw-event", "data": {
                 "event_type": "claude_code.sdk", "subtype": "assistant", "raw": dict(message),
