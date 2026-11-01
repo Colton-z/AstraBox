@@ -261,4 +261,11 @@ def create_agent_a2a_routes(backend: AgentA2ABackend) -> list[Route]:
     for route in (assistant_rpc, assistant_card):
         route.app = _assistant_capability_app(route.app)
     routes.extend([assistant_rpc, assistant_card])
+    from astrabox.api.native_documentation import a2a_operation
+
+    for route in routes:
+        route.include_in_schema = False
+        route.openapi_extra = a2a_operation(  # type: ignore[attr-defined]
+            card="GET" in (route.methods or ()), assistant=route in (assistant_rpc, assistant_card)
+        )
     return routes

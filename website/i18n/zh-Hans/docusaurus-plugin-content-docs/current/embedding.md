@@ -183,6 +183,9 @@ finally:
 Deployment、应用扩展、就绪与排空、管理台或任何 HTTP 能力时，请使用 `create_app()`。
 直接调用服务时仍要传入明确的用户身份，正常鉴权不会因为共用进程而消失。
 
+定制控制台需要处理浏览器认证响应时，可安装[控制台 HTTP 传输](console-transport.md)。
+Python 身份与 Middleware 扩展不会自动注册浏览器恢复行为。
+
 ## 扩展应用
 
 已经安装的 Python 包可以通过 entry point 增加能力：
@@ -207,6 +210,41 @@ Deployment、应用扩展、就绪与排空、管理台或任何 HTTP 能力时�
 [消息平台](writing-a-channel-provider.md)、
 [调度器](writing-a-scheduler-provider.md)和
 [沙箱 provider](writing-a-sandbox-provider.md)。
+
+### 校验保存的执行账户
+
+部署可以在保存渠道绑定前查询自己的用户目录，无需替换整个服务。在
+`astrabox.service_factories` 注册工厂，构建默认 `deployment_service`，再安装一个异步校验器：
+
+```python
+from astrabox.common.utils.errors import APIError
+from astrabox.seams import DeploymentExecutionContext
+from mydeployment.directory import user_exists
+
+
+async def validate_identity(context: DeploymentExecutionContext) -> None:
+    if context.execution_mode == "account":
+        if not await user_exists(context.execution_user_id):
+            raise APIError(code="INVALID_REQUEST", message="unknown execution account", status_code=400)
+
+
+def deployment_service(build_default):
+    service = build_default()
+    service.set_execution_identity_validator(validate_identity)
+    return service
+
+
+def factories():
+    return {"deployment_service": deployment_service}
+```
+
+将包的 `astrabox.service_factories` 入口指向 `factories`。
+`DeploymentExecutionContext` 包含创建/更新操作、绑定 ID、Agent 或 Assistant ID、scene、
+规范化执行模式与用户 ID，以及已认证的 `UserContext`。直接调用服务时也必须传入 `actor`。
+回调在每次渠道创建或更新时运行，位于核心校验之后、绑定或凭证持久化之前。
+抛出 `APIError` 会用该结构化错误拒绝写入；其他异常使请求失败。
+默认不安装校验器，每个服务只接受一个。校验器不能修改平台状态，不在消息接收或投递时运行；
+已接收消息保留确定的执行身份。
 
 ## 进程与安全要求
 

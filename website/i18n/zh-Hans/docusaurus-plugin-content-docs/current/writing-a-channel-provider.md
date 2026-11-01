@@ -249,6 +249,10 @@ Agent 停下来提问或请求审批时，到此为止的回复会连同问题�
 
 如需显示按钮，请设置 `supports_interaction_actions = True`，并让 `deliver_outbound()` 接受 `interaction` 参数。它是一个 `ChannelInteraction`：为每个带有 `action` 的选项渲染一个按钮，点击时上报一个 `action` 为该字符串的 `ChannelInbound`。AstraBox 会把 action 解析到对应的问题；适配器不解析答案，也不跟踪问题状态。
 
+运行时撤回或使已展示问题过期时，AstraBox 关闭持久渠道交互，但不记录回答。
+即使没有新的入站消息，运行时更新与常规恢复也会完成关闭。失败回复仍通过同一输出日志
+成为失败的渠道回复；关闭问题不会抑制失败，也不会把它变成成功回答。
+
 AstraBox 保留每个订阅在 Session 输出日志中的位置，并在重启后从该日志重新读取未完成的
 回复。持久化 outbox 负责重试，适配器负责展示和目标平台 API 的幂等行为。
 

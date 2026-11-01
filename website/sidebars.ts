@@ -71,6 +71,7 @@ const sidebars: SidebarsConfig = {
       label: 'API conventions',
       items: [
         'api',
+        'api-reference',
         'api-authentication',
         'api-pagination',
         'api-errors',
@@ -101,6 +102,9 @@ const sidebars: SidebarsConfig = {
         'writing-a-channel-provider',
         'writing-a-scheduler-provider',
         'writing-a-sandbox-provider',
+        'providers/relational-persistence',
+        'relational-types',
+        'console-transport',
         'providers/skill-content',
         'providers/runtime-preparation',
         'providers/channel-response',

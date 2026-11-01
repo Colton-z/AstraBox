@@ -20,6 +20,7 @@ from typing import Any
 from fastapi import Request, Response
 from pydantic import BaseModel, ConfigDict
 
+from astrabox.api.documentation import json_response, object_schema
 from astrabox.api.routes.response_envelope import ApiEnvelope
 from astrabox.common.utils.api_response import success_response
 from astrabox.common.utils.errors import APIError
@@ -111,7 +112,26 @@ def register_connector_routes(app: Any) -> None:
         user = await get_current_user_context(request)
         return success_response(await service.start(user, connector_id))
 
-    @app.get(f"{HUB_PUBLIC_PATH}/oauth/callback", include_in_schema=False)
+    @app.get(
+        f"{HUB_PUBLIC_PATH}/oauth/callback",
+        include_in_schema=False,
+        openapi_extra={
+            "tags": ["Connectors"],
+            "summary": "Receive connector OAuth callback",
+            "description": "Query parameters and response belong to the connector hub OAuth flow; forwarded verbatim. The hub returns the browser to the console.",
+            "parameters": [
+                {"name": name, "in": "query", "required": False, "schema": {"type": "string"}}
+                for name in ("code", "state", "error", "error_description")
+            ],
+            "responses": {
+                "default": {
+                    "description": "Connector hub response; may redirect with Location.",
+                    "headers": {"Location": {"schema": {"type": "string"}}},
+                    "content": {"*/*": {"schema": {"type": "string"}}},
+                }
+            },
+        },
+    )
     async def connector_hub_callback(request: Request):
         # The hub's public address is this path on the console's origin, so
         # the vendor's redirect lands here; only this one hub path is exposed.
@@ -141,7 +161,15 @@ def register_connector_routes(app: Any) -> None:
         changed = await assistants.adopt(user, [connector_id])
         return success_response({"connector_id": connector_id, "assistant_ids": changed})
 
-    @app.delete("/api/v1/connectors/{connector_id}/connection")
+    @app.delete(
+        "/api/v1/connectors/{connector_id}/connection",
+        responses=json_response(
+            object_schema(
+                {"connector_id": {"type": "string"}, "removed": {"type": "boolean"}},
+                required=("connector_id", "removed"),
+            )
+        ),
+    )
     async def disconnect_connector(connector_id: str, request: Request):
         user = await get_current_user_context(request)
         removed = await service.disconnect(user, connector_id)
@@ -232,7 +260,15 @@ def register_connector_routes(app: Any) -> None:
         await get_current_user_context(request)
         return success_response(await service.publish(connector_id))
 
-    @app.delete("/api/v1/admin/connectors/{connector_id}")
+    @app.delete(
+        "/api/v1/admin/connectors/{connector_id}",
+        responses=json_response(
+            object_schema(
+                {"connector_id": {"type": "string"}, "configured": {"const": False}},
+                required=("connector_id", "configured"),
+            )
+        ),
+    )
     async def admin_remove_connector(connector_id: str, request: Request):
         await get_current_user_context(request)
         await service.remove(connector_id)

@@ -43,7 +43,16 @@ def build_app() -> Any:
     """Construct the real app, its inputs pinned; the lifespan never runs."""
     with tempfile.TemporaryDirectory(prefix="openapi-snapshot-") as workdir:
         os.environ["ASTRABOX_ENV_FILE"] = str(Path(workdir) / "unused.env")
-        os.environ["ASTRABOX_WEB_IDENTITY"] = "local"
+        # OIDC registers the complete built-in surface, including its optional login flow.
+        # These construction-only values never contact an identity provider.
+        os.environ["ASTRABOX_WEB_IDENTITY"] = "oidc"
+        os.environ["ASTRABOX_OIDC_ISSUER"] = "https://identity.example.invalid"
+        os.environ["ASTRABOX_OIDC_CLIENT_ID"] = "openapi-reference"
+        os.environ["ASTRABOX_AUTH_SESSION_SECRET"] = "openapi-reference-not-a-deployment-secret"
+        for name in ("ASTRABOX_OIDC_CLIENT_SECRET", "ASTRABOX_OIDC_CLIENT_SECRET_FILE",
+                     "ASTRABOX_OIDC_API_CLIENT_ID", "ASTRABOX_OIDC_API_CLIENT_SECRET",
+                     "ASTRABOX_OIDC_API_CLIENT_SECRET_FILE", "ASTRABOX_OIDC_REDIRECT_URL"):
+            os.environ.pop(name, None)
         os.environ["ASTRABOX_ALLOWED_HOSTS"] = "localhost,127.0.0.1,[::1],testserver"
         os.environ["ASTRABOX_AGENT_ENABLED"] = "true"
         os.environ["ASTRABOX_FRONTEND_DIST"] = str(Path(workdir) / "no-frontend-dist")

@@ -19,6 +19,8 @@ from fastapi import Body, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 
+from astrabox.api.documentation import request_body
+from astrabox.api.routes.request_schemas import MCP_TOKEN
 from astrabox.api.routes.response_envelope import ApiEnvelope
 from astrabox.common.utils.api_response import success_response
 from astrabox.common.utils.user_context import get_current_user_context
@@ -87,6 +89,7 @@ def register_mcp_token_routes(app: Any, *, service: Any | None = None) -> None:
         status_code=201,
         response_model=ApiEnvelope[IssuedMCPClientToken],
         response_model_exclude_unset=True,
+        openapi_extra=request_body(MCP_TOKEN, required=False),
     )
     async def issue_mcp_token(
         request: Request,

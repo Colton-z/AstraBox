@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
 from contextlib import aclosing
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, FastAPI, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.background import BackgroundTask
 
+from astrabox.api.documentation import json_response, object_schema
 from astrabox.api.routes.response_envelope import ApiEnvelope
 from astrabox.common.utils.api_response import error_response, success_response
 from astrabox.common.utils.errors import APIError
@@ -58,6 +59,31 @@ class ArtifactRecord(BaseModel):
     share: ArtifactShare
     created_at: str
     updated_at: str
+
+
+class ArtifactVersionRecord(BaseModel):
+    """One stored version; content is returned only by a detail read."""
+
+    model_config = ConfigDict(extra="allow")
+    artifact_id: str
+    version: int
+    sha256: str
+    byte_size: int
+    kind: str
+    title: str
+    language: str | None
+    manifest: dict[str, Any]
+    author_user_id: str | None
+    author_kind: str
+    created_at: str
+    content: str | None = None
+
+
+class ArtifactDetail(ArtifactRecord):
+    version: ArtifactVersionRecord
+    content: str
+    astrabox_artifact: dict[str, Any]
+    url: str
 
 
 class ArtifactPage(BaseModel):
@@ -285,6 +311,7 @@ def register_artifact_routes(app: FastAPI) -> None:
         "/api/v1/artifacts/{artifact_id}",
         response_model=ApiEnvelope[dict[str, Any]],
         response_model_exclude_unset=True,
+        responses={200: {"model": ApiEnvelope[ArtifactDetail]}},
     )
     async def get_artifact(artifact_id: str, request: Request):
         return success_response(
@@ -323,6 +350,7 @@ def register_artifact_routes(app: FastAPI) -> None:
         "/api/v1/artifacts/{artifact_id}/versions",
         response_model=ApiEnvelope[list[dict[str, Any]]],
         response_model_exclude_unset=True,
+        responses={200: {"model": ApiEnvelope[list[ArtifactVersionRecord]]}},
     )
     async def list_artifact_versions(artifact_id: str, request: Request):
         return success_response(
@@ -335,6 +363,7 @@ def register_artifact_routes(app: FastAPI) -> None:
         "/api/v1/artifacts/{artifact_id}/versions/{version}",
         response_model=ApiEnvelope[dict[str, Any]],
         response_model_exclude_unset=True,
+        responses={200: {"model": ApiEnvelope[ArtifactDetail]}},
     )
     async def get_artifact_version(artifact_id: str, version: int, request: Request):
         service = get_platform_service().artifacts
@@ -411,7 +440,15 @@ def register_artifact_routes(app: FastAPI) -> None:
         @router.get(
             "/runtime/live",
             response_class=StreamingResponse,
-            responses={200: {"content": {"text/event-stream": {}}}},
+            responses={
+                **{200: {"content": {"text/event-stream": {}}}},
+                **{
+                    200: {
+                        "description": "Server-sent events. See the Artifact runtime guide for event payloads and lifecycle.",
+                        "content": {"text/event-stream": {"schema": {"type": "string"}}},
+                    }
+                },
+            },
         )
         async def artifact_live(
             after_seq: int = Query(default=0, ge=0), viewer: ArtifactViewer = Depends(dependency)
@@ -459,6 +496,15 @@ def register_artifact_routes(app: FastAPI) -> None:
             "/runtime/data/{path:path}",
             response_model=ApiEnvelope[dict[str, Any]],
             response_model_exclude_unset=True,
+            responses=json_response(
+                object_schema(
+                    {
+                        "path": {"type": "string"},
+                        "exists": {"type": "boolean"},
+                        "data": {"description": "Stored JSON document, or null when absent."},
+                    }
+                )
+            ),
         )
         async def artifact_data_get(path: str, viewer: ArtifactViewer = Depends(dependency)):
             try:
@@ -472,6 +518,16 @@ def register_artifact_routes(app: FastAPI) -> None:
             "/runtime/data/{path:path}",
             response_model=ApiEnvelope[dict[str, Any]],
             response_model_exclude_unset=True,
+            responses=json_response(
+                object_schema(
+                    {
+                        "writes": {
+                            "type": "array",
+                            "items": object_schema({"path": {"type": "string"}, "op": {"type": "string"}}),
+                        }
+                    }
+                )
+            ),
         )
         async def artifact_data_set(
             path: str, body: ArtifactDataRequest, viewer: ArtifactViewer = Depends(dependency)
@@ -489,6 +545,16 @@ def register_artifact_routes(app: FastAPI) -> None:
             "/runtime/data/{path:path}",
             response_model=ApiEnvelope[dict[str, Any]],
             response_model_exclude_unset=True,
+            responses=json_response(
+                object_schema(
+                    {
+                        "writes": {
+                            "type": "array",
+                            "items": object_schema({"path": {"type": "string"}, "op": {"type": "string"}}),
+                        }
+                    }
+                )
+            ),
         )
         async def artifact_data_update(
             path: str, body: ArtifactDataRequest, viewer: ArtifactViewer = Depends(dependency)
@@ -506,6 +572,16 @@ def register_artifact_routes(app: FastAPI) -> None:
             "/runtime/data/{path:path}",
             response_model=ApiEnvelope[dict[str, Any]],
             response_model_exclude_unset=True,
+            responses=json_response(
+                object_schema(
+                    {
+                        "writes": {
+                            "type": "array",
+                            "items": object_schema({"path": {"type": "string"}, "op": {"type": "string"}}),
+                        }
+                    }
+                )
+            ),
         )
         async def artifact_data_delete(path: str, viewer: ArtifactViewer = Depends(dependency)):
             try:
@@ -521,6 +597,22 @@ def register_artifact_routes(app: FastAPI) -> None:
             "/runtime/data-query",
             response_model=ApiEnvelope[dict[str, Any]],
             response_model_exclude_unset=True,
+            responses=json_response(
+                object_schema(
+                    {
+                        "items": {
+                            "type": "array",
+                            "items": object_schema(
+                                {
+                                    "id": {"type": "string"},
+                                    "path": {"type": "string"},
+                                    "data": {"type": "object", "additionalProperties": True},
+                                }
+                            ),
+                        }
+                    }
+                )
+            ),
         )
         async def artifact_data_query(
             body: ArtifactQueryRequest, viewer: ArtifactViewer = Depends(dependency)
@@ -536,6 +628,7 @@ def register_artifact_routes(app: FastAPI) -> None:
             "/runtime/data-add",
             response_model=ApiEnvelope[dict[str, Any]],
             response_model_exclude_unset=True,
+            responses=json_response(object_schema({"id": {"type": "string"}, "path": {"type": "string"}})),
         )
         async def artifact_data_add(
             body: ArtifactAddRequest, viewer: ArtifactViewer = Depends(dependency)
@@ -552,7 +645,15 @@ def register_artifact_routes(app: FastAPI) -> None:
         @router.post(
             "/runtime/sample",
             response_class=StreamingResponse,
-            responses={200: {"content": {"text/event-stream": {}}}},
+            responses={
+                **{200: {"content": {"text/event-stream": {}}}},
+                **{
+                    200: {
+                        "description": "Server-sent events. See the Artifact runtime guide for event payloads and lifecycle.",
+                        "content": {"text/event-stream": {"schema": {"type": "string"}}},
+                    }
+                },
+            },
         )
         async def artifact_sample(
             body: ArtifactSampleRequest, request: Request, viewer: ArtifactViewer = Depends(dependency)
@@ -576,6 +677,7 @@ def register_artifact_routes(app: FastAPI) -> None:
             "/runtime/room/{room}/emit",
             response_model=ApiEnvelope[dict[str, Any]],
             response_model_exclude_unset=True,
+            responses=json_response(object_schema({"seq": {"type": "integer"}})),
         )
         async def artifact_room_emit(
             room: str, body: ArtifactRoomRequest, viewer: ArtifactViewer = Depends(dependency)
@@ -593,6 +695,7 @@ def register_artifact_routes(app: FastAPI) -> None:
             "/runtime/room/{room}/presence",
             response_model=ApiEnvelope[dict[str, Any]],
             response_model_exclude_unset=True,
+            responses=json_response(object_schema({"seq": {"type": "integer"}})),
         )
         async def artifact_room_presence(
             room: str, body: ArtifactPresenceRequest, viewer: ArtifactViewer = Depends(dependency)
@@ -610,6 +713,18 @@ def register_artifact_routes(app: FastAPI) -> None:
             "/runtime/viewers",
             response_model=ApiEnvelope[dict[str, Any]],
             response_model_exclude_unset=True,
+            responses=json_response(
+                object_schema(
+                    {
+                        "profiles": {
+                            "type": "array",
+                            "items": object_schema(
+                                {"id": {"type": "string"}, "display_name": {"type": "string"}}
+                            ),
+                        }
+                    }
+                )
+            ),
         )
         async def artifact_viewers(ids: str = "", viewer: ArtifactViewer = Depends(dependency)):
             try:

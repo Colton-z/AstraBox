@@ -226,7 +226,7 @@ then upload one-off files directly to the Session workspace after its runtime
 is ready. See [Access GitHub](working-with-repos.md), [Authenticate with
 Vaults](credentials.md), and [Attach and download files](files.md).
 
-## Send Messages
+## Send Messages {#send-a-message}
 
 When an administrator has configured a transcription model, the console's
 microphone button records speech and appends its transcript to the editable

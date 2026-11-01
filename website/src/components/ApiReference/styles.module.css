@@ -1,0 +1,29 @@
+.reference {
+  margin-top: 1.5rem;
+}
+
+.reference :global(.swagger-ui) {
+  color: var(--ifm-font-color-base);
+}
+
+.reference :global(.swagger-ui .wrapper) {
+  padding: 0;
+}
+
+.reference :global(.swagger-ui .info),
+.reference :global(.swagger-ui .scheme-container) {
+  display: none;
+}
+
+.reference :global(.swagger-ui .opblock-summary-path) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+[data-theme='dark'] .reference :global(.swagger-ui) {
+  color-scheme: light;
+  background: #fff;
+  border-radius: 8px;
+  padding: 1rem;
+}

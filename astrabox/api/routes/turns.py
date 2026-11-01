@@ -21,23 +21,25 @@ from fastapi import APIRouter, Body, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
-from astrabox.common.logger.logger_factory import get_logger
-from astrabox.common.utils.api_response import success_response
-from astrabox.common.utils.errors import APIError
+from astrabox.api.documentation import query_parameter, request_body
+from astrabox.api.routes._shared import (
+    _resolve_user,
+    _svc,
+)
+from astrabox.api.routes.request_schemas import ANSWER_INTERACTION, SEND_INPUT, TERMINAL_COMMAND
+from astrabox.api.routes.response_envelope import ApiEnvelope
 from astrabox.api.sse import (
     format_sse_done,
     format_sse_event,
     format_sse_keepalive,
 )
-from astrabox.api.routes._shared import (
-    _resolve_user,
-    _svc,
-)
+from astrabox.common.logger.logger_factory import get_logger
+from astrabox.common.utils.api_response import success_response
+from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator.engine.input_content import (
     read_turn_input_content,
     turn_input_is_empty,
 )
-from astrabox.api.routes.response_envelope import ApiEnvelope
 
 logger = get_logger(__name__)
 
@@ -122,6 +124,7 @@ class ConversationEndResult(BaseModel):
 @router.post(
     "/api/v1/sessions/{session_id}/inputs",
     response_model=ApiEnvelope[InputReceipt],
+    openapi_extra=request_body(SEND_INPUT),
 )
 async def send_input(session_id: str, request: Request, payload: dict[str, Any] = Body(...)):
     """Accept a message for the conversation."""
@@ -147,6 +150,7 @@ async def send_input(session_id: str, request: Request, payload: dict[str, Any] 
 @router.post(
     "/api/v1/sessions/{session_id}/interactions/{interaction_id}/answer",
     response_model=ApiEnvelope[InteractionAnswerReceipt],
+    openapi_extra=request_body(ANSWER_INTERACTION),
 )
 async def answer_interaction(
     session_id: str, interaction_id: str, request: Request, payload: dict[str, Any] = Body(...)
@@ -169,7 +173,27 @@ async def interrupt_session(session_id: str, request: Request):
     return success_response(result)
 
 
-@router.get("/api/v1/sessions/{session_id}/stream")
+@router.get(
+    "/api/v1/sessions/{session_id}/stream",
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "description": "AI SDK UI message chunks as SSE; resume with data-resume-cursor. One response per connection. See /docs/events-stream on the documentation site.",
+            "content": {"text/event-stream": {"schema": {"type": "string"}}},
+        }
+    },
+    openapi_extra={
+        "parameters": [
+            query_parameter(
+                "after_seq",
+                "integer",
+                "Output cursor to resume after; negative or malformed values return INVALID_REQUEST.",
+                default=0,
+                minimum=0,
+            )
+        ]
+    },
+)
 async def follow_stream(session_id: str, request: Request):
     """The session's output after ``after_seq``, then live, through the end of one response.
 
@@ -252,7 +276,17 @@ _TERMINAL_STREAM_HEADERS = {
 }
 
 
-@router.post("/api/v1/sessions/{session_id}/terminal/stream")
+@router.post(
+    "/api/v1/sessions/{session_id}/terminal/stream",
+    openapi_extra=request_body(TERMINAL_COMMAND),
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "description": "Terminal ack, stdout, stderr, cwd and exit events, followed by stream closure.",
+            "content": {"text/event-stream": {"schema": {"type": "string"}}},
+        }
+    },
+)
 async def terminal_stream(
     session_id: str,
     request: Request,
@@ -278,7 +312,29 @@ async def terminal_stream(
     )
 
 
-@router.get("/api/v1/sessions/{session_id}/terminal/stream")
+@router.get(
+    "/api/v1/sessions/{session_id}/terminal/stream",
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "description": "Recorded terminal events after after_seq, then live.",
+            "content": {"text/event-stream": {"schema": {"type": "string"}}},
+        },
+        204: {"description": "No command is running and no command_id was supplied."},
+    },
+    openapi_extra={
+        "parameters": [
+            query_parameter(
+                "command_id",
+                "string",
+                "Recorded terminal command; omitted follows the running command.",
+            ),
+            query_parameter(
+                "after_seq", "integer", "Replay events after this terminal sequence.", default=-1
+            ),
+        ]
+    },
+)
 async def follow_terminal_stream(session_id: str, request: Request):
     """Follow a terminal command again: its recorded events after ``after_seq``, then live.
 

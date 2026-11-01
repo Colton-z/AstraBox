@@ -62,11 +62,11 @@ linked release declarations for defaults and nullability.
 | main-Session link | After Session002 exists, set `assistants.main_session_id` to it; verify that its owner and Assistant ID agree |
 
 The exact release models are
-[Environment](https://github.com/Colton-z/AstraBox/blob/v0.1.9/astrabox/persistence/sql/models/environments.py),
-[Agent](https://github.com/Colton-z/AstraBox/blob/v0.1.9/astrabox/persistence/sql/models/agents.py),
-[Assistant](https://github.com/Colton-z/AstraBox/blob/v0.1.9/astrabox/persistence/sql/models/assistants.py),
-[Session and native state](https://github.com/Colton-z/AstraBox/blob/v0.1.9/astrabox/persistence/sql/models/sessions.py),
-and [Vault/Secret](https://github.com/Colton-z/AstraBox/blob/v0.1.9/astrabox/persistence/sql/models/vaults.py).
+[Environment](https://github.com/Colton-z/AstraBox/blob/v0.1.10/astrabox/persistence/sql/models/environments.py),
+[Agent](https://github.com/Colton-z/AstraBox/blob/v0.1.10/astrabox/persistence/sql/models/agents.py),
+[Assistant](https://github.com/Colton-z/AstraBox/blob/v0.1.10/astrabox/persistence/sql/models/assistants.py),
+[Session and native state](https://github.com/Colton-z/AstraBox/blob/v0.1.10/astrabox/persistence/sql/models/sessions.py),
+and [Vault/Secret](https://github.com/Colton-z/AstraBox/blob/v0.1.10/astrabox/persistence/sql/models/vaults.py).
 Their constraints do not check every semantic link: validate Session kind,
 engine compatibility, same-Session response/input links and owner-only
 Assistant access as well. Internal identity columns need correct allocator

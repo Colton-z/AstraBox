@@ -256,6 +256,11 @@ data-resume-cursor
 声明的 option ID，工具审批使用 `approve` 或 `reject`。完整示例见
 [权限模式](permission-modes.md)。
 
+每个 `data-interaction` part 使用 `interaction_id` 作为 part 的 `id`。
+运行时关闭交互时，具有相同 ID 的新 part 更新记录状态；已回答表单还包含选定答案。
+像 AI SDK 一样替换现有 data part，不要追加第二张卡片。交互结算与关闭事实一同记录，
+沿相同输出游标传播，冷历史快照之后也一样。
+
 ## `finish` 完整结构
 
 终止的 `finish` part 给出 AI SDK 的结束原因：
