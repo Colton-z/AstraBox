@@ -79,6 +79,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ### Runtime and recovery
 
 - Answer messages that were waiting for a start stopped by a user action with that action, instead of starting another sandbox for them each time the runtime-preparation provider next reports its prerequisite met. A message sent afterwards starts the runtime again.
+### Console and diagnostics
+
+- Compare console JSON fields by value, ignoring object key order but not list order, so a saved block reads as saved when the server returns its keys in another order.
 
 ## [0.1.10] - 2026-10-20
 
