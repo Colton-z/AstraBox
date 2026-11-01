@@ -76,6 +76,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ### Runtime and recovery
 
 - Synchronize an Agent's prepared resources when a conversation starts without claiming waiting inventory, including every start of an Agent without prepared capacity, so a runtime-preparation provider has read the Skills and packages placed in the box before `prepare_session` runs.
+### Runtime and recovery
+
+- Answer messages that were waiting for a start stopped by a user action with that action, instead of starting another sandbox for them each time the runtime-preparation provider next reports its prerequisite met. A message sent afterwards starts the runtime again.
 
 ## [0.1.10] - 2026-10-20
 
