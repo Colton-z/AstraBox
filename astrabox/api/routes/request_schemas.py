@@ -187,17 +187,17 @@ ASSISTANT_FIELDS = {
 ASSISTANT_CREATE = object_schema(
     {
         **ASSISTANT_FIELDS,
-        "environment_name": TEXT,
+        "runtime_profile_name": TEXT,
         "engine_kind": {
             **TEXT,
-            "description": "If supplied, must match the Environment's Assistant-capable program.",
+            "description": "If supplied, must match the RuntimeProfile's Assistant-capable program.",
         },
     },
-    required=("display_name", "environment_name"),
+    required=("display_name", "runtime_profile_name"),
 )
 ASSISTANT_UPDATE = object_schema(
     ASSISTANT_FIELDS,
-    description="Partial update. Environment and program are fixed after workspace materialization; unsupported update keys are ignored by the existing service.",
+    description="Partial update. RuntimeProfile and program are fixed after workspace materialization; unsupported update keys are ignored by the existing service.",
 )
 TRANSCRIPT_KEY = object_schema(
     {"project_key": TEXT, "session_id": TEXT, "subpath": TEXT},

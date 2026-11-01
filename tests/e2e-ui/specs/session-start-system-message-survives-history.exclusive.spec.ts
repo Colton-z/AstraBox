@@ -192,7 +192,6 @@ test('SessionStart systemMessage appears once before a turn and after history re
   // the later revisions' columns go too, as they did not exist then.
   expect(postgresTextRows(postgres, database, databaseUser, `
     BEGIN;
-    ALTER TABLE assistants DROP COLUMN proactive;
     ALTER TABLE session_inputs DROP COLUMN conversation_order;
     ALTER TABLE session_responses DROP COLUMN conversation_order;
     UPDATE alembic_version SET version_num = '0010' WHERE version_num = '0012';

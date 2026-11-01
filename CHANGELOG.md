@@ -7,92 +7,67 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
-### Upgrade notes
+## [0.1.13] - 2026-11-01
 
-- The relational schema adds `transcript_child_run_indexes` for incremental native child relationships. The built-in PostgreSQL provider applies the schema upgrade at startup; external persistence providers must supply the corresponding physical table.
-  关系数据库新增 `transcript_child_run_indexes`，用于增量索引原生子会话关系。内置 PostgreSQL 在启动时升级；外部持久化提供方需提供对应的物理表。
-
-- Update the server and the sandbox-hermes image together. The server refuses a Hermes image whose gateway does not advertise the canonical protocol and durable admission.
-- Remove every Assistant sandbox when upgrading. A sandbox created before this release runs the previous Hermes backend, which the server no longer speaks, and is not replaced when its RuntimeProfile's image changes. Each Assistant conversation then starts on a new sandbox; its previous Hermes session is not carried over.
-- An Assistant owner's Hermes configuration (`engine_options.config`) can no longer set `platforms` or `gateway`: the gateway now runs in every Assistant workspace and is kept off every messaging platform, also when a platform's credential is among the RuntimeProfile's variables. Reach an Assistant from a messaging app through a trigger.
-- `ASTRABOX_HERMES_LOOPBACK_PORT` is removed; the in-box gateway chooses its own loopback port.
-
-- Sandbox providers use seam contract 11: `apply_credential_vault(managed_credential_names=...)` now receives environment credential IDs previously delivered to the workload. Providers must revoke those absent from the new environment plan, including an empty plan. A provider pinned to contract 10 is refused at startup.
-- The relational schema adds a nullable `vault_credentials.delivery` column, filled with `substitution` for existing environment-variable credentials. The built-in PostgreSQL provider applies the schema upgrade at startup; external persistence providers must supply the corresponding physical schema.
-- Agents bound to environment-variable credentials get a new runtime generation, because the generation now records each credential's delivery. Their unclaimed prepared capacity is retired and replaced on demand.
-- A conversation whose live sandbox started before this release and still uses environment-variable credentials is refused on reattach with `SANDBOX_CREDENTIAL_CONTEXT_UNAVAILABLE`: that sandbox's runtime identity does not record the placeholder context its process holds. The conversation continues only in a new sandbox.
-
-### Runtime and recovery
-
-- Recover a fully committed Claude Result retained behind an old compacted cursor without replacing the original reply or repeating its pending input.
-  Claude 旧游标所指的 Result 已完整落库时，重连可沿用原回复继续处理待执行输入，不重复执行。
-
-- Build Hermes from unmodified upstream source. Conversations of the same Assistant share its configured runtime environment; no per-conversation environment injection or platform environment plugin is used.
-  Hermes 镜像使用未经修改的上游源码；同一 Assistant 的会话共享已配置的运行环境，不再逐会话注入环境变量，也不使用平台环境插件。
-
-- Keep a Hermes response's identity tied to its native admission across live execution, reader takeover and gateway reconciliation, independently of its input association.
-- Run the Assistant's Hermes as its gateway daemon (`hermes gateway run`) over the canonical `hermes-gateway-v1` protocol, published to the server by an in-box bridge. Each input is admitted into Hermes' durable ledger under its input id, so an input handed over again after a reader takeover returns its first admission instead of running twice.
-- A reply cut off by a Hermes gateway restart ends and is not run again: stopped, when the gateway shut down cleanly, or failed with an unknown outcome, when it died without settling the turn. Messages queued behind it run once the conversation reconnects.
-- The gateway's own cron ticker runs an Assistant's scheduled jobs; the separate scheduler program is removed.
-- Hermes compresses a long conversation during a reply, at its own threshold; the server no longer asks it to compress a quiet conversation, which on the gateway would hold the next message behind the summary.
-
-- Synchronize an Agent's prepared resources when a conversation starts without claiming waiting inventory, including every start of an Agent without prepared capacity, so a runtime-preparation provider has read the Skills and packages placed in the box before `prepare_session` runs.
-- Answer messages that were waiting for a start stopped by a user action with that action, instead of starting another sandbox for them each time the runtime-preparation provider next reports its prerequisite met. A message sent afterwards starts the runtime again.
-- Record a Claude runner frame the platform has read whole as whole, and acknowledge that frame itself. A later replay that translated the same frame differently, as a Result does once compaction has dropped the frame that opened its response, could otherwise report the difference as new output the platform could not record; this also holds for sandboxes still running an earlier runner.
-- Compact the Claude runner's journal only at the start of a response. A compaction that kept the latest Result without the frame that opened its response let a reattached host read that Result as a standalone message, which the platform could not record; the conversation then stopped taking input. The fix is in the sandbox image's runner, so it reaches a running sandbox only when that sandbox is replaced.
-
-### Console
-
-- Rename a conversation from its row's **More actions** menu, which also holds **Archive**, or from its title above the conversation. `PATCH /api/v1/sessions/{session_id}` sets the title through the API; automatic title generation never replaces a title the owner set.
-
-### Console and diagnostics
-
-- Compare console JSON fields by value, ignoring object key order but not list order, so a saved block reads as saved when the server returns its keys in another order.
-- Refuse a console JSON block that defines an object key twice, naming the key's path and both lines, instead of silently keeping one definition. An edit that only reorders keys or changes formatting now says it changes nothing.
+## English
 
 ### Added
 
-- `environment_variable` Vault credentials take an immutable `delivery`: `substitution`, the default and existing behaviour, or `header`, where the sandbox backend replaces the placeholder only inside one named request header for the listed domains and promises nothing else. Header delivery depends only on the new sandbox capability `supports_header_placeholder_credentials`, not on `ASTRABOX_SANDBOX_CREDENTIAL_VAULT`; a Session on a backend without it is refused before a sandbox is allocated. The API and console offer it only when an enabled backend declares it. OpenSandbox does not.
+- Rename conversations from the conversation title or its row menu. Automatic title generation keeps the owner's chosen title.
+- Create personal schedules for an Assistant. Scheduled work runs in its main conversation, and scheduled messages are labeled in chat.
+- Connect user-bound MCP services when the Session identity is available, including when claiming a prewarmed native process. Unsupported runtime configurations report an actionable configuration error.
+- Browse the complete HTTP API reference on the documentation site, including native A2A and optional OIDC endpoints, with request and response schemas generated from registered routes.
+- Credential Vault providers can deliver a credential through a named request header for allowed domains. The API and console expose this only for sandbox providers that declare the capability.
+- Agent creators and assigned administrators can manage their channels and use their own execution account. Assigning someone else's account still requires platform administrator authorization.
 
-### Fixed
+### Fixed and improved
 
-- Read an existing Agent/Environment runtime ledger without entering a creation transaction, avoiding repeated duplicate inserts during reconciliation.
-  已有 Agent／Environment 运行记录采用只读查询，避免协调过程中反复进入创建事务和重复插入。
+- Run Hermes through its native gateway with durable input admission, using unmodified supplier source. Conversations of the same Assistant share its runtime environment.
+- Keep user messages at native input-consumption boundaries during a running reply, after reload and across history pages.
+- Recover Claude replies already committed behind old compacted cursors; retain whole runner frames and responses during journal acknowledgement and compaction.
+- Keep Claude diagnostics out of chat and show complete Workflow child conversations, including tools and native parent relationships.
+- Synchronize Agent resources on cold starts and retain startup user actions without repeatedly replacing the sandbox.
+- Reject duplicate keys in console JSON editors and ignore object-key ordering when detecting unsaved changes.
+- Improve sandbox browser stability and handle large runner-link messages.
+- Read existing Agent runtime ledgers without creation transactions. List child runs through incremental native metadata indexes rather than repeatedly decoding complete transcripts.
+- Update the eight dependency groups for AI SDK, React, Vite, FastAPI, Tenacity, Ruff, Zod and eventsource-parser.
 
-- List native child runs through incrementally indexed relationships instead of repeatedly decoding complete transcripts. Expanded child conversations retain their complete native history.
-  子会话列表改为读取增量关系索引，避免反复解码完整记录；展开子会话时仍读取完整原生历史。
+### Upgrading
 
-- Place full user messages between the preceding and following output at the runtime's consumption boundaries, preserving one logical reply and the same order after reload and history pagination.
-  按运行时接收位置，把完整用户消息穿插在前后输出之间；保留同一条逻辑回复，刷新和历史分页后顺序一致，不在末尾重复展示。
+- Update the server and sandbox runtime images together. Recreate Assistant sandboxes when moving from the previous Hermes backend to the native gateway; old Hermes sessions are not carried across that protocol change. Stored platform history remains available.
+- PostgreSQL applies the schema changes on startup. External persistence providers need the Vault credential delivery column, native child relationship index, and Assistant schedule schema shipped with this release.
+- Sandbox providers use seam contract 11. They must revoke credentials removed from the environment's managed credential set. Header delivery requires the declared provider capability; OpenSandbox does not advertise it.
+- Live sandboxes created before the environment credential identity changes may require replacement before they can reattach.
 
-- Keep Claude tool heartbeats, background-task telemetry and compaction boundaries out of chat cards, including when reading existing history. Raw diagnostic evidence remains available to operators.
+## 中文
 
-- Let an Assistant's native A2A client reach configured Agents through the sandbox edge and follow the Agent Card's reachable address. The capability keeps its workspace token and Agent access checks.
-- An Agent's creator and assigned administrators can change its channel execution strategy and select their own execution account. Other Agents remain inaccessible, and assigning another user's account still requires a platform administrator.
-- A conversation that retains a sandbox after an attachment failure shows its recovery error instead of appearing ready.
-- A runtime started from prepared capacity keeps the environment-variable placeholders its process started with when it is reattached and in its terminal, also when its model credential does not use the slot's gateway substitution.
-- Reattaching a runtime removes environment-variable credentials archived or deleted since its sandbox received them, also when no other credential remains to write. `SandboxProvider.apply_credential_vault` receives the ids of environment credentials delivered before in `managed_credential_names`, and stops delivering each one its plan no longer carries.
-- With `ASTRABOX_SANDBOX_CREDENTIAL_VAULT` turned off, a sandbox that received protected credentials while it was on is refused on reattach instead of keeping bindings nothing manages.
-### Runtime and recovery
+### 新增
 
-- Synchronize an Agent's prepared resources when a conversation starts without claiming waiting inventory, including every start of an Agent without prepared capacity, so a runtime-preparation provider has read the Skills and packages placed in the box before `prepare_session` runs.
-### Runtime and recovery
+- 可从对话标题或列表菜单重命名会话，自动标题不会覆盖用户设置的名称。
+- 支持为 Assistant 创建个人定时任务，任务在助手主对话中运行，定时发出的消息带有来源标记。
+- 在 Session 身份就绪后连接用户绑定的 MCP 服务，支持认领预热的原生进程；不支持的运行时配置会给出明确的配置错误。
+- 文档站提供完整 HTTP API 参考，覆盖原生 A2A 和可选 OIDC 接口；请求与响应结构从实际注册的路由生成。
+- Credential Vault 提供方可将凭证投递到允许域名的指定请求头；只有声明支持该能力的沙箱提供方才会在 API 和控制台开放此选项。
+- Agent 创建者和已分配管理员可以管理其消息渠道，并使用自己的执行账号；指定其他人的账号仍需平台管理员授权。
 
-- Answer messages that were waiting for a start stopped by a user action with that action, instead of starting another sandbox for them each time the runtime-preparation provider next reports its prerequisite met. A message sent afterwards starts the runtime again.
-### Console and diagnostics
+### 修复与改进
 
-- Compare console JSON fields by value, ignoring object key order but not list order, so a saved block reads as saved when the server returns its keys in another order.
+- Hermes 改用原生网关和持久输入接收机制，供应商源码保持原样；同一 Assistant 的会话共享运行环境。
+- 按原生运行时接收输入的位置展示用户消息，生成中、刷新后及历史分页的顺序保持一致。
+- 恢复旧压缩游标之后已落库的 Claude 回复；runner 确认和日志压缩保留完整帧与整轮回复。
+- Claude 诊断事件不再混入聊天；Workflow 子会话展示完整消息、工具记录和原生父子关系。
+- Agent 冷启动时同步资源；需要用户操作的启动保留原有提示，不再反复更换沙箱。
+- 控制台 JSON 编辑器拒绝重复键；判断未保存改动时忽略对象键顺序。
+- 改进沙箱内浏览器稳定性，支持较大的 runner-link 消息。
+- 已有 Agent 运行记录采用只读查询；子会话列表读取增量关系索引，避免反复解码完整历史。
+- 更新 AI SDK、React、Vite、FastAPI、Tenacity、Ruff、Zod 和 eventsource-parser 八组依赖。
 
-### Console and diagnostics
+### 升级说明
 
-- Refuse a console JSON block that defines an object key twice, naming the key's path and both lines, instead of silently keeping one definition. An edit that only reorders keys or changes formatting now says it changes nothing.
-### Runtime and recovery
-
-- Record a Claude runner frame the platform has read whole as whole, and acknowledge that frame itself. A later replay that translated the same frame differently, as a Result does once compaction has dropped the frame that opened its response, could otherwise report the difference as new output the platform could not record; this also holds for sandboxes still running an earlier runner.
-
-### Runtime and recovery
-
-- Compact the Claude runner's journal only at the start of a response. A compaction that kept the latest Result without the frame that opened its response let a reattached host read that Result as a standalone message, which the platform could not record; the conversation then stopped taking input. The fix is in the sandbox image's runner, so it reaches a running sandbox only when that sandbox is replaced.
+- 服务端与沙箱运行镜像一起升级。从旧 Hermes 后端切换到原生网关时，需重新创建 Assistant 沙箱；旧 Hermes 会话不跨该协议切换恢复，平台已保存的历史仍可查看。
+- PostgreSQL 在启动时自动升级结构；外部持久化提供方需补齐本版本的 Vault 凭证投递列、原生子会话关系索引和 Assistant 定时任务结构。
+- 沙箱提供方使用接口契约 11，必须撤销已从环境托管集合移除的凭证。请求头投递需要提供方明确声明支持；OpenSandbox 不声明该能力。
+- 环境凭证身份结构变更前创建的运行中沙箱，可能需要更换后才能重新连接。
 
 ## [0.1.10] - 2026-10-20
 

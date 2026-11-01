@@ -279,9 +279,7 @@
     "nothing_own": "暂无。",
     "advanced": "在控制台中编辑",
     "delete_title": "删除助手",
-    "delete_confirm": "删除 {{name}}?它的工作区会被移除,之后无法再打开。",
-    "proactive": "主动提醒",
-    "proactive_hint": "它会替你盯着你让它关注的事，有情况再来找你。关闭后，它给自己安排的检查都不会运行。你指定了时间的例行任务在“个人计划”里管理。"
+    "delete_confirm": "删除 {{name}}?它的工作区会被移除,之后无法再打开。"
   },
   "user_action": {
     "open": "前往完成操作",

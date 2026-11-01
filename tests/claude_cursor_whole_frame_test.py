@@ -51,6 +51,7 @@ class _Link:
     def __init__(self, frames: list[dict[str, Any]]) -> None:
         self._frames = frames
         self.acknowledged: list[int] = []
+        self.protocol_fault: str | None = None
 
     @property
     def is_live(self) -> bool:

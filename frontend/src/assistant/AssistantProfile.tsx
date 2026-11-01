@@ -111,17 +111,6 @@ export function AssistantProfile({ assistantId }: { assistantId: string }) {
     }
   };
 
-  // Applied to the running workspace as its profile is prepared again; the
-  // record says what the owner chose.
-  const setProactive = async (proactive: boolean) => {
-    setError('');
-    try {
-      await assistant.mutate(await updateAssistant(assistantId, { proactive }), { revalidate: false });
-    } catch (cause) {
-      setError((cause as Error).message);
-    }
-  };
-
   const toggle = async (connectorId: string, on: boolean) => {
     setError('');
     try {
@@ -236,19 +225,6 @@ export function AssistantProfile({ assistantId }: { assistantId: string }) {
             <Link to="/connections" className="text-13 text-primary underline-offset-4 hover:underline">
               {t('chat:assistant_welcome.open_connections')}
             </Link>
-          </Section>
-
-          <Section title={t('chat:assistant_profile.proactive')}>
-            <div className="flex items-start justify-between gap-3">
-              <p className="text-13 text-muted-foreground">{t('chat:assistant_profile.proactive_hint')}</p>
-              <Switch
-                data-testid="assistant-proactive"
-                checked={record?.proactive !== false}
-                disabled={record === undefined}
-                aria-label={t('chat:assistant_profile.proactive')}
-                onCheckedChange={(checked) => { void setProactive(checked); }}
-              />
-            </div>
           </Section>
 
           <Section title={t('chat:assistant_profile.from_organization')}>

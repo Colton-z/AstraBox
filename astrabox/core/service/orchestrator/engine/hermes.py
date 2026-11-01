@@ -159,11 +159,6 @@ _HERMES_PLUGINS_ENV = "ASTRABOX_HERMES_PLUGINS"
 # and removes it when that is absent.
 _HERMES_MANAGED_DIR = "/etc/astrabox/hermes"
 _HERMES_MANAGED_CONFIG_ENV = "ASTRABOX_HERMES_MANAGED_CONFIG"
-# Whether the in-box scheduler runs the jobs the Assistant scheduled for
-# itself: ``true`` or ``false``, the owner's proactivity switch. Read only when
-# the scheduler starts (``astrabox-hermes-serve --scheduler``), so it is part of
-# the process configuration and a change restarts the scheduler.
-_HERMES_PROACTIVE_ENV = "ASTRABOX_HERMES_PROACTIVE"
 # What the merge prints last when it finished: it wrote config.yaml, or had
 # nothing to write.
 _HERMES_CONFIG_MERGE_MARKERS = ("ASTRABOX_HERMES_CONFIG_READY", "ASTRABOX_HERMES_CONFIG_NOOP")
@@ -859,7 +854,6 @@ async def _prepare_hermes_profile(
             defaults_blob, ensure_ascii=False, sort_keys=True
         ),
         _HERMES_MODEL_API_KEY_ENV: normalized_model_api_key,
-        _HERMES_PROACTIVE_ENV: "true" if getattr(template, "proactive", True) else "false",
         "HERMES_HOME": normalized["config_dir"],
         **dict(runtime_env or {}),
     }

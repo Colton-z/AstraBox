@@ -48,6 +48,7 @@ class _Replay:
 
     def __init__(self, frames: list[dict[str, Any]]) -> None:
         self._frames = frames
+        self.protocol_fault: str | None = None
 
     @property
     def is_live(self) -> bool:

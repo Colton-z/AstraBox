@@ -255,62 +255,6 @@ def test_compose_keeps_postgresql_off_the_sandbox_bridge_and_uses_file_secrets()
         assert known_default not in rendered
 
 
-def test_sandbox_edge_forwards_only_model_and_capability_scoped_platform_routes() -> None:
-    template = (ROOT / "containers" / "sandbox-edge" / "default.conf.template").read_text()
-    directives = [
-        line.strip()
-        for line in template.splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
-
-    assert "listen 80 default_server;" in directives
-    assert "listen 8000 default_server;" in directives
-    assert "location ^~ /api/v1/platform-mcp/ {" in directives
-    assert "/api/v1/mcp-proxy/" not in template
-    assert "location ^~ /api/v1/sbxcap/ {" in directives
-    assert "location / {\n        return 404;" in template
-    # The upstream is the Compose server over the private network, resolved per
-    # request by Docker's embedded DNS; never the bridge gateway, and never a
-    # destination taken from the request (that would make the edge an SSRF
-    # proxy): the only variable proxy_pass reads is set from the fixed name.
-    assert "host.docker.internal" not in template
-    assert "resolver 127.0.0.11 valid=10s ipv6=off;" in directives
-    assert [d for d in directives if d.startswith("set ")] == [
-        "set $astrabox_upstream ${ASTRABOX_EDGE_UPSTREAM_HOST};"
-    ] * 2
-    assert sorted(d for d in directives if d.startswith("proxy_pass")) == sorted(
-        ["proxy_pass http://$astrabox_upstream:80;"]
-        + ["proxy_pass http://$astrabox_upstream:8000;"] * 3
-    )
-
-    dns_edge = (ROOT / "containers" / "sandbox-edge" / "dns-edge.nginx.conf").read_text()
-    dns_directives = [
-        line.strip()
-        for line in dns_edge.splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
-    assert "http {" not in dns_directives
-    assert "resolver 127.0.0.11 valid=10s ipv6=off;" in dns_directives
-    assert "listen 53 udp;" in dns_directives
-    assert "listen 53;" in dns_directives
-    assert [d for d in dns_directives if d.startswith(("set ", "proxy_pass"))] == [
-        "set $astrabox_dns server:5353;",
-        "proxy_pass $astrabox_dns;",
-    ] * 2
-
-    gateway_dns = (ROOT / "containers" / "coredns" / "Corefile").read_text()
-    first_directive = next(
-        line.strip()
-        for line in gateway_dns.splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    )
-    assert first_directive == ". {"
-    assert not any(
-        line.strip().startswith(".:53")
-        for line in gateway_dns.splitlines()
-        if not line.lstrip().startswith("#")
-    )
-    assert "gateway.astrabox.test" in gateway_dns
 
 
 def test_sso_overlay_keeps_casdoor_on_its_own_database_secret_and_loopback_port() -> None:

@@ -280,7 +280,7 @@ def form_schema(fields: list[dict[str, Any]], *, update: bool = False) -> dict[s
     scalar_types = {
         "string": "string",
         "text": "string",
-        "env_ref": "string",
+        "runtime_profile_ref": "string",
         "enum": "string",
         "boolean": "boolean",
         "integer": "integer",

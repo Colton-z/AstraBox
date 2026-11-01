@@ -113,9 +113,6 @@ class Assistant(BaseModel):
     system: str | None = None
     #: The owner's IANA timezone, which the Agent program keeps time in.
     timezone: str | None = None
-    #: Whether the jobs the Agent program scheduled for itself run. Switching
-    #: it off stops the program's scheduler without removing its jobs.
-    proactive: bool | None = None
     model_config_override: dict[str, Any] | None = None
     mcp_servers: dict[str, Any] | None = None
     #: MCP servers selected from extension catalogs, as stored:

@@ -848,7 +848,6 @@ class AssistantService:
                 "permission_mode_default",
                 "system",
                 "timezone",
-                "proactive",
                 "model_config_override",
                 "mcp_servers",
                 "packages",
@@ -856,8 +855,6 @@ class AssistantService:
                 "engine_options",
             }
         }
-        if "proactive" in sanitized_updates and not isinstance(sanitized_updates["proactive"], bool):
-            raise APIError(code="ASSISTANT_INVALID", message="proactive must be a boolean", status_code=400)
         if "system" in sanitized_updates:
             sanitized_updates["system"] = _normalize_system(sanitized_updates["system"])
         if "timezone" in sanitized_updates:

@@ -41,8 +41,6 @@ export interface AssistantRecord {
   permission_mode_default: string;
   system?: string | null;
   timezone?: string | null;
-  /** Whether the jobs it scheduled for itself run; switched off, none does. */
-  proactive?: boolean | null;
   mcp_servers?: Record<string, unknown> | null;
   skills?: SkillDescriptor[] | null;
   packages?: Record<string, unknown>[] | null;

@@ -42,9 +42,9 @@
   ],
   "playwright": {
     "exclusive": {
-      "files": 197,
-      "parallel_files": 122,
-      "parallel_tests": 216,
+      "files": 199,
+      "parallel_files": 124,
+      "parallel_tests": 218,
       "serial_files": [
         "specs/a-prepared-seat-is-not-a-promise-the-box-can-still-keep.exclusive.spec.ts",
         "specs/a2a-stream-and-interaction.exclusive.spec.ts",
@@ -59,7 +59,6 @@
         "specs/an-assistant-runs-its-owners-routine-in-its-main-conversation.exclusive.spec.ts",
         "specs/an-assistant-used-today-keeps-its-box-overnight.exclusive.spec.ts",
         "specs/an-assistant-uses-the-hermes-extensions-its-owner-configures.exclusive.spec.ts",
-        "specs/an-assistants-proactive-switch-decides-whether-its-watches-run.exclusive.spec.ts",
         "specs/an-assistants-scheduled-reply-marks-its-conversation-unread.exclusive.spec.ts",
         "specs/an-expired-oauth-credential-is-reported-before-a-conversation-dies-on-it.exclusive.spec.ts",
         "specs/an-exposed-port-outlives-the-idle-window.exclusive.spec.ts",
@@ -123,9 +122,9 @@
         "specs/untouched-tab-catches-up-after-backend-restart.exclusive.spec.ts",
         "specs/vault-environment-survives-reattach.exclusive.spec.ts"
       ],
-      "serial_tests": 117,
+      "serial_tests": 118,
       "serial_workers": 1,
-      "tests": 333,
+      "tests": 336,
       "workers": 5
     },
     "parallel": {

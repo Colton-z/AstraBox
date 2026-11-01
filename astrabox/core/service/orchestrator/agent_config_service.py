@@ -83,7 +83,6 @@ _ASSISTANT_RUNTIME_FIELDS = (
     "display_name",
     "system",
     "timezone",
-    "proactive",
     "model_config_override",
     "mcp_servers",
     "skills",
@@ -339,7 +338,6 @@ class AgentConfigService:
             model_config=self._synthesize_model_config(model, env),
             system=joined_instructions(layers, assistant.get("system")),
             timezone=str(assistant.get("timezone") or "").strip() or None,
-            proactive=assistant.get("proactive") is not False,
             mcp_servers=mcp_servers,
             skills=normalize_skills(
                 [

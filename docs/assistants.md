@@ -232,8 +232,7 @@ Before the first message, the conversation lists what the Assistant can use:
 the apps connected for it, its Skills and tools, its own and inherited, and the
 apps the owner could connect. **Assistant** in the conversation header opens
 its profile: name, timezone, the owner's instructions, connected apps switched
-on or off for it, the **Proactive** switch for its watches, what it inherits,
-and deletion. See [Routines and watches](#routines-and-watches).
+on or off for it, what it inherits, and deletion. See [Routines and watches](#routines-and-watches).
 
 Ending the main conversation is how an owner starts afresh: the next time the
 Assistant is opened, a new main conversation starts. The API can still start
@@ -303,16 +302,7 @@ a watch does when nothing meets its bar, is kept but not delivered. The jobs
 are kept in the platform database with the rest of Hermes' profile state, so
 they survive replacing the workspace's sandbox.
 
-Watches are not listed one by one. The **Proactive** switch in the
-Assistant's profile governs them all: switched off, the workspace's scheduler
-stops and none runs; the jobs stay, and the owner can still ask the Assistant
-to change or remove one. Switched on again, the jobs follow Hermes' own
-catch-up rule: a recurring job's occurrence missed while the switch was off
-runs once when the scheduler starts, unless the profile sets Hermes'
-`cron.catch_up_missed` to `false`, and a one-time job more than two minutes
-overdue is retired without running. Changing the switch prepares a running workspace's profile again,
-which restarts Hermes there once no reply is running; a workspace that is not
-running starts with the new setting.
+Ask the Assistant to change or remove a watch through Hermes' native job tools.
 
 Every Assistant also has AstraBox's `astrabox-proactive` Skill, shipped in the
 Hermes image. It teaches the Assistant to offer routines and watches when it
