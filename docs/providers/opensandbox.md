@@ -133,7 +133,7 @@ workspace layout. The deployment selects CPU and memory limits and scheduling
 requests through `ASTRABOX_SANDBOX_*` for conversation-owned boxes,
 `ASTRABOX_SHARED_SANDBOX_*` for Agent-shared boxes, and
 `ASTRABOX_ASSISTANT_SANDBOX_*` for Assistant workspace boxes. See the defaults in
-[Configuration](../configuration.md). Each kind uses its one recipe for cold,
+[Configuration](https://github.com/Colton-z/AstraBox/blob/main/docs/configuration.md). Each kind uses its one recipe for cold,
 prepared, and replacement creation; these are not RuntimeProfile fields. The
 provider-fitted limits and requests are part of an Agent's prepared generation,
 so a resource change retires unclaimed capacity without resizing Session-owned

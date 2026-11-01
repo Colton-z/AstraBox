@@ -500,7 +500,7 @@ def credential_delivery_record(
 def require_live_credential_delivery(
     *, runtime_identity: dict[str, Any] | None, sandbox_id: str, vault_enabled: bool,
 ) -> None:
-    """Refuse workload access to bindings the deployment no longer manages."""
+    """Refuse workload access to bindings outside the deployment's managed set."""
     if vault_enabled or not (runtime_identity or {}).get(CREDENTIAL_VAULT_BINDINGS):
         return
     raise APIError(

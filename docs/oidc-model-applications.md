@@ -227,7 +227,7 @@ pre-authentication behavior.
 
 ## Desktop integration and updates
 
-[`examples/oidc-dsh`](../examples/oidc-dsh/README.md) pins the original reported
+[`examples/oidc-dsh`](https://github.com/Colton-z/AstraBox/blob/main/examples/oidc-dsh/README.md) pins the original reported
 DSH SDK release and demonstrates public-client PKCE plus a running-process
 credential reload barrier. Keep refresh tokens in the OS credential store in
 the desktop main process. Gate model submissions while replacing credentials;
