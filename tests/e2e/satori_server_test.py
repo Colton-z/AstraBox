@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import threading
 import time
 import uuid
@@ -114,12 +115,14 @@ def test_delegated_satori_chat_uses_owned_native_sessions_and_replays_across_rep
 
     try:
         before = psql("SELECT count(*) FROM sessions")[0]
+        compute_before = subprocess.check_output(["docker", "ps", "-a", "--filter", "name=^sandbox-", "--format", "{{.ID}}"], timeout=10).splitlines()
         assert not call(0, "internal/astrabox.preparation.get", {})["ready"]
         assert call(1, "internal/astrabox.preparation.get", {})["ready"]  # Existing personal grant.
         call(0, "channel.create", {"guild_id": agent, "data": {"type": 0}}, expect=409)
         assert psql("SELECT count(*) FROM sessions")[0] == before, "Preflight created a Session"
         assert call(0, "internal/astrabox.preparation.perform", {"action_id": "authorize"})["ready"]
         assert psql("SELECT count(*) FROM sessions")[0] == before
+        assert subprocess.check_output(["docker", "ps", "-a", "--filter", "name=^sandbox-", "--format", "{{.ID}}"], timeout=10).splitlines() == compute_before
         spoofed = call(0, "channel.list", {"guild_id": agent}, extra={"X-Forwarded-User": principals[1]})
         assert spoofed["data"] == []
         call(0, "channel.list", {"guild_id": agent, "user_id": principals[1]}, expect=400)
@@ -171,6 +174,7 @@ def test_delegated_satori_chat_uses_owned_native_sessions_and_replays_across_rep
             for other in set(markers)-{markers[index]}:
                 assert other not in json.dumps(history)
             native = transcript_entries(sessions[index])
+            assert sum(markers[index] in json.dumps(entry["entry"]) for entry in native if entry["entry"].get("type") == "user") == 1, "Duplicate native delivery"
             native_texts = [block["text"] for entry in native if entry["entry"].get("type") == "assistant"
                             for block in (entry["entry"].get("message") or {}).get("content", []) if block.get("type") == "text"]
             assert any(markers[index] in text for text in native_texts), native
