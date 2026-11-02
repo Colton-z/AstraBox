@@ -51,9 +51,11 @@ class PersonalGrants(RuntimePreparationProvider):
 
     async def read_user_actions(self, *, context):
         ready = await grant(context.principal_id, context.subject.id)
-        return SessionUserActionState(ready=ready,
-            user_action=None if ready else {"message": "Authorize this Agent", "url": "https://fixture.invalid/consent"},
-            actions=(SessionUserActionCommand(id="revoke" if ready else "authorize", label="Revoke" if ready else "Authorize"),))
+        if ready:
+            return SessionUserActionState(ready=True)
+        return SessionUserActionState(ready=False,
+            user_action={"message": "Authorize this Agent", "url": "https://fixture.invalid/consent"},
+            actions=(SessionUserActionCommand(id="authorize", label="Authorize"),))
 
     async def perform_user_action(self, *, context, action_id):
         async def write(conn):
@@ -91,6 +93,14 @@ def register_routes(app):
     @app.get("/api/v1/admin/satori-fixture")
     async def state():
         return success_response({"grants": await fetch_all(select(GRANTS)), "turns": await fetch_all(select(RECEIPTS))})
+
+    @app.post("/api/v1/admin/satori-fixture/revoke/{principal}/{agent}")
+    async def revoke(principal: str, agent: str):
+        async def write(conn):
+            await conn.execute(update(GRANTS).where(GRANTS.c.principal_id == principal,
+                GRANTS.c.agent_id == agent).values(granted=False))
+        await transaction(write)
+        return success_response({"revoked": True})
 
     @app.post("/api/v1/admin/satori-fixture/refuse/{principal}/{agent}")
     async def refuse(principal: str, agent: str):

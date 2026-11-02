@@ -201,7 +201,8 @@ def test_delegated_satori_chat_uses_owned_native_sessions_and_replays_across_rep
                          for part in event["_data"]["parts"]), "native long command")
         call(0, "internal/astrabox.response.stop", {"channel_id": sessions[1]})
         wait(lambda: (detail(1).get("last_response") or {}).get("outcome") == "cancelled", "cancelled outcome")
-        assert call(0, "internal/astrabox.preparation.perform", {"action_id": "revoke"})["ready"] is False
+        data(e2e_client.post(f"/api/v1/admin/satori-fixture/revoke/{principals[0]}/{agent}"))
+        assert call(0, "internal/astrabox.preparation.get", {})["ready"] is False
         count = psql(f"SELECT count(*) FROM session_inputs WHERE session_id={sql_literal(sessions[0])}")
         call(0, "message.create", {"channel_id": sessions[0], "content": "Must not execute"}, key=uuid.uuid4().hex, expect=409)
         assert psql(f"SELECT count(*) FROM session_inputs WHERE session_id={sql_literal(sessions[0])}") == count
