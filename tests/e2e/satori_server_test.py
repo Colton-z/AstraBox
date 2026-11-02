@@ -139,6 +139,7 @@ def test_delegated_satori_chat_uses_owned_native_sessions_and_replays_across_rep
                 assert view["state"] != "TERMINATED", view
                 return view if view["state"] == "READY" and view.get("engine_capabilities") else None
             wait(ready, "Channel startup")
+            print(f"Satori: owned Channel {index + 1}/4 ready", flush=True)
         assert len(set(sessions)) == 4
         call(0, "channel.get", {"channel_id": sessions[2]}, expect=404)
         call(1, "message.list", {"channel_id": sessions[0]}, expect=404)
@@ -155,6 +156,7 @@ def test_delegated_satori_chat_uses_owned_native_sessions_and_replays_across_rep
             first_responses = list(pool.map(first, range(4)))
         wait(lambda: all(any(event.get("type") == "message-updated" and event.get("message", {}).get("id") == rid
                             for event in feeds[index//2].events) for index, rid in enumerate(first_responses)), "first live messages")
+        print("Satori: first four native replies observed live", flush=True)
         cut = max(event["sn"] for event in feeds[0].events)
         first_events = list(feeds[0].events)
         feeds[0].close()
@@ -173,6 +175,7 @@ def test_delegated_satori_chat_uses_owned_native_sessions_and_replays_across_rep
         feeds[0] = Feed(bases[1], agent, tokens[0], sn=cut)
         wait(lambda: all(any(event.get("type") == "message-updated" and event.get("message", {}).get("id") == rid
                             for event in feeds[index//2].events) for index, rid in enumerate(second_responses)), "cross-replica replay")
+        print("Satori: second replies replayed across replicas", flush=True)
         for actor, feed in enumerate(feeds):
             assert all(event["channel"]["id"] in sessions[actor*2:actor*2+2] for event in feed.events)
             assert [event["sn"] for event in feed.events] == sorted(set(event["sn"] for event in feed.events))
@@ -208,6 +211,7 @@ def test_delegated_satori_chat_uses_owned_native_sessions_and_replays_across_rep
         native_calls = [block for entry in transcript_entries(sessions[0]) if entry["entry"].get("type") == "assistant"
                         for block in (entry["entry"].get("message") or {}).get("content", []) if block.get("type") == "tool_use"]
         assert any(filename in json.dumps(block.get("input")) and any(part.get("toolCallId") == block["id"] and part.get("state") == "output-available" for part in tools) for block in native_calls)
+        print("Satori: native approval, file side effect and tool card agree", flush=True)
         # Stop an actual long native command; acceptance must not report completion.
         data(owner.post(f"/api/v1/sessions/{sessions[1]}/permission-mode", json={"permission_mode": permission_mode("unattended")}))
         send(1, "Run Bash with the exact command sleep 60. Do not use any other tool and do not reply before the command finishes.")
