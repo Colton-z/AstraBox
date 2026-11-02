@@ -872,6 +872,8 @@ def create_app() -> FastAPI:
 
     app.include_router(sessions_router)
     app.include_router(session_user_actions_router)
+    from astrabox.api.routes.satori import router as satori_router
+    app.include_router(satori_router)
     app.include_router(turns_router)
     app.include_router(speech_input_router)
     app.include_router(admin_router)

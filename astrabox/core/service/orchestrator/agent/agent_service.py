@@ -778,6 +778,18 @@ class AgentService:
             )
         return self._sanitize(agent)
 
+    async def require_conversation_access(self, user: UserContext, agent_id: str) -> dict[str, Any]:
+        """Check the ordinary conversation gate without allocating a Session or sandbox."""
+        agent = await self._must_access(agent_id)
+        harness = await self._agent_config.resolve_agent_harness(
+            agent_id, viewer_user_id=user.user_id, viewer_roles=user.roles,
+        )
+        if harness is None:
+            raise APIError(code="TEMPLATE_NOT_ALLOWED", message="agent not found", status_code=403)
+        if agent.get("enabled") is False:
+            raise APIError(code="AGENT_DISABLED", message="agent is disabled", status_code=409)
+        return agent
+
     async def start_conversation(
         self,
         user: UserContext,
@@ -792,12 +804,7 @@ class AgentService:
         ``create_session``, whose startup plans the Agent conversation's
         runtime subject.
         """
-        agent = await self._must_access(agent_id)
-        harness = await self._agent_config.resolve_agent_harness(
-            agent_id, viewer_user_id=user.user_id, viewer_roles=user.roles
-        )
-        if harness is None:
-            raise APIError(code="TEMPLATE_NOT_ALLOWED", message="agent not found", status_code=403)
+        agent = await self.require_conversation_access(user, agent_id)
         return await self._create_conversation(user, agent_id, agent, idempotency_key=idempotency_key, source_type=source_type)
 
     async def start_integration_conversation(
