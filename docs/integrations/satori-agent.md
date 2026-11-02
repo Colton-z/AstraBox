@@ -106,8 +106,8 @@ successful assistant message. There is no separate agent execution loop here.
 Connect WebSocket `/v1/events`; send `{op: 3, body: {token, sn?}}`. The token is
 resolved through the same host identity seam as HTTP. READY (`op: 4`) contains
 this Agent's Login. Send PING (`op: 1`) at least every ten seconds; PONG is `op: 2`.
-Failure to identify or keep the connection alive closes it. Identity and Agent
-access are rechecked while the connection is open.
+Failure to identify or keep the connection alive closes it. Identity, Environment entry and Agent access are checked on connection.
+HTTP operations resolve current identity and permissions on every request.
 
 EVENT (`op: 0`) carries a Satori event with a per-principal/Agent `sn`:
 
@@ -143,7 +143,9 @@ by standard text alone.
 The endpoint is hosted by the existing AstraBox server; no additional Satori
 service is required. Publish its HTTP and WebSocket paths through the same
 reverse proxy and install the deployment's identity/preparation providers on
-each replica. Replicas must use the same Environment database and ordinary
+each replica. If `ASTRABOX_AUTH_EXEMPT_PREFIXES` is explicitly overridden, include
+`/api/satori/`: this facade authenticates its own HTTP and IDENTIFY requests.
+Replicas must use the same Environment database and ordinary
 coordination configuration. Keep the backend's credentials server-side. The
 external browser can continue to contact only its business backend.
 

@@ -16,6 +16,7 @@ from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import (
     API_READ_SCOPE, API_WRITE_SCOPE, UserContext, reset_current_user_context, set_current_user_context,
 )
+from astrabox.core.service.environment_access import require_environment_access
 from astrabox.core.service.orchestrator.satori_service import SatoriService
 from astrabox.vendor.satori_connection import WebsocketConnection
 
@@ -33,6 +34,7 @@ async def _identity(connection: Request | WebSocket, *, token: str | None = None
     scope = API_WRITE_SCOPE if write else API_READ_SCOPE
     if user.api_scopes is not None and scope not in user.api_scopes:
         raise APIError(code="FORBIDDEN", message="Required API scope is missing", status_code=403)
+    await require_environment_access(user, operation="Satori " + ("write" if write else "read"))
     return user
 
 
@@ -101,12 +103,6 @@ async def satori_events(agent_id: str, websocket: WebSocket) -> None:
         async def send_events() -> None:
             nonlocal rows, after
             while connection.alive:
-                current = await _identity(websocket, token=identify.token)
-                if current.user_id != user.user_id or current.org_id != user.org_id:
-                    raise APIError(code="UNAUTHORIZED", message="Connection identity changed", status_code=401)
-                service.user = current
-                set_current_user_context(current)
-                await service.login()
                 for row in rows:
                     await connection.send({"op": Opcode.EVENT, "body": await service.event(row, login)})
                     after = row["sn"]

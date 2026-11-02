@@ -83,7 +83,8 @@ Session 操作走同一 provider，此时携带 Session id。创建会话与接�
 
 WebSocket 连接 `/v1/events`，发送 `{op: 3, body: {token, sn?}}`。token 仍经部署方
 身份 provider 验证。READY 的 op 为 4，包含目标 Agent 的 Login。至少每十秒发一次
-PING（op 1），服务端回 PONG（op 2）。身份、Agent 权限在连接存续期间持续复核。
+PING（op 1），服务端回 PONG（op 2）。建立连接时检查身份、Environment 进入权限与 Agent 权限；每个 HTTP 请求重新解析
+当前身份和权限。
 
 EVENT（op 0）的 body 带当前执行人／Agent 专属的递增 `sn`：
 
@@ -108,7 +109,9 @@ chunks 中的原生消息顺序，不能按用户提交时间排序。
 ## 部署及示例
 
 现有 AstraBox 服务承载 HTTP／WebSocket 路径。反向代理转发两者，每个副本安装
-相同身份和准备 provider，使用同一 Environment 数据库和正常的协调配置。凭据只
+相同身份和准备 provider，使用同一 Environment 数据库和正常的协调配置。若显式
+覆盖 `ASTRABOX_AUTH_EXEMPT_PREFIXES`，须包含 `/api/satori/`；入口自行验证 HTTP
+和 IDENTIFY 凭据。凭据只
 保留在业务后端；外部浏览器仍可只访问业务系统。
 
 `examples/satori-agent/client.py` 可执行授权状态查询、创建会话、幂等提交与事件接收；
