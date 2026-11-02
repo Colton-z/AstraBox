@@ -164,6 +164,7 @@ def test_delegated_satori_chat_uses_owned_native_sessions_and_replays_across_rep
         current_agent = data(e2e_client.get(f"/api/v1/agents/{agent}"))
         data(e2e_client.put(f"/api/v1/agents/{agent}", json={
             "name": "Satori external chat revised", "model": current_agent["model"],
+            "runtime_profile_name": current_agent["runtime_profile_name"],
             "version": current_agent["version"],
         }))
         assert all(call(actor, "internal/astrabox.preparation.get", {})["ready"] for actor in range(2))
