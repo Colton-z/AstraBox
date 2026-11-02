@@ -159,7 +159,11 @@ def test_delegated_satori_chat_uses_owned_native_sessions_and_replays_across_rep
         first_events = list(feeds[0].events)
         feeds[0].close()
         # An ordinary Agent revision must retain the principal/subject grant.
-        data(e2e_client.put(f"/api/v1/agents/{agent}", json={"name": "Satori external chat revised"}))
+        current_agent = data(e2e_client.get(f"/api/v1/agents/{agent}"))
+        data(e2e_client.put(f"/api/v1/agents/{agent}", json={
+            "name": "Satori external chat revised", "model": current_agent["model"],
+            "version": current_agent["version"],
+        }))
         assert all(call(actor, "internal/astrabox.preparation.get", {})["ready"] for actor in range(2))
         def second(index):
             send(index, "Reply with only the private marker I asked you to remember in this conversation. Do not use tools.")
