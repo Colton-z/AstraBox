@@ -115,14 +115,16 @@ def test_delegated_satori_chat_uses_owned_native_sessions_and_replays_across_rep
 
     try:
         before = psql("SELECT count(*) FROM sessions")[0]
-        compute_before = subprocess.check_output(["docker", "ps", "-a", "--filter", "name=^sandbox-", "--format", "{{.ID}}"], timeout=10).splitlines()
+        installation = psql("SELECT installation_id FROM installation")[0]
+        compute_query = ["docker", "ps", "-a", "--filter", "label=astrabox.installation=" + installation, "--format", "{{.ID}}"]
+        compute_before = subprocess.check_output(compute_query, timeout=10).splitlines()
         assert not call(0, "internal/astrabox.preparation.get", {})["ready"]
         assert call(1, "internal/astrabox.preparation.get", {})["ready"]  # Existing personal grant.
         call(0, "channel.create", {"guild_id": agent, "data": {"type": 0}}, expect=409)
         assert psql("SELECT count(*) FROM sessions")[0] == before, "Preflight created a Session"
         assert call(0, "internal/astrabox.preparation.perform", {"action_id": "authorize"})["ready"]
         assert psql("SELECT count(*) FROM sessions")[0] == before
-        assert subprocess.check_output(["docker", "ps", "-a", "--filter", "name=^sandbox-", "--format", "{{.ID}}"], timeout=10).splitlines() == compute_before
+        assert subprocess.check_output(compute_query, timeout=10).splitlines() == compute_before
         spoofed = call(0, "channel.list", {"guild_id": agent}, extra={"X-Forwarded-User": principals[1]})
         assert spoofed["data"] == []
         call(0, "channel.list", {"guild_id": agent, "user_id": principals[1]}, expect=400)
@@ -132,6 +134,11 @@ def test_delegated_satori_chat_uses_owned_native_sessions_and_replays_across_rep
             channel = call(index//2, "channel.create", body, key=key)
             assert call(index//2, "channel.create", body, key=key)["id"] == channel["id"]
             sessions.append(channel["id"])
+            def ready():
+                view = call(index//2, "internal/astrabox.conversation.get", {"channel_id": channel["id"]})
+                assert view["state"] != "TERMINATED", view
+                return view if view["state"] == "READY" and view.get("engine_capabilities") else None
+            wait(ready, "Channel startup")
         assert len(set(sessions)) == 4
         call(0, "channel.get", {"channel_id": sessions[2]}, expect=404)
         call(1, "message.list", {"channel_id": sessions[0]}, expect=404)
