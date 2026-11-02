@@ -111,8 +111,11 @@ chunks 中的原生消息顺序，不能按用户提交时间排序。
 现有 AstraBox 服务承载 HTTP／WebSocket 路径。反向代理转发两者，每个副本安装
 相同身份和准备 provider，使用同一 Environment 数据库和正常的协调配置。若显式
 覆盖 `ASTRABOX_AUTH_EXEMPT_PREFIXES`，须包含 `/api/satori/`；入口自行验证 HTTP
-和 IDENTIFY 凭据。凭据只
-保留在业务后端；外部浏览器仍可只访问业务系统。
+和 IDENTIFY 凭据。共享 Docker 沙箱服务的副本还须使用相同的
+`ASTRABOX_MCP_PROXY_BASE_URL`、`ASTRABOX_SANDBOX_EGRESS_DNS_UPSTREAM`、
+`ASTRABOX_SANDBOX_EGRESS_DENY_CIDRS`，分别约束回调、DNS 和网络策略。独立 Web
+副本应取得与托管启动器派生结果一致的值；网络指纹不同会正确拒绝使用这些沙箱。
+凭据只保留在业务后端；外部浏览器仍可只访问业务系统。
 
 `examples/satori-agent/client.py` 可执行授权状态查询、创建会话、幂等提交与事件接收；
 未授权或待交互时明确显示状态。运行方法见示例目录。

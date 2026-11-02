@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import uuid
+from html import escape
 from pathlib import Path
 
 import httpx
@@ -36,7 +37,7 @@ async def main() -> None:
             await ws.send(json.dumps({"op": 3, "body": {"token": token}}))
             ready = json.loads(await ws.recv())
             assert ready["op"] == 4, ready
-            await call("message.create", {"channel_id": channel["id"], "content": args.message}, key=uuid.uuid4().hex)
+            await call("message.create", {"channel_id": channel["id"], "content": escape(args.message)}, key=uuid.uuid4().hex)
             async def heartbeat():
                 while True:
                     await asyncio.sleep(8)

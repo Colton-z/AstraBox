@@ -146,7 +146,13 @@ reverse proxy and install the deployment's identity/preparation providers on
 each replica. If `ASTRABOX_AUTH_EXEMPT_PREFIXES` is explicitly overridden, include
 `/api/satori/`: this facade authenticates its own HTTP and IDENTIFY requests.
 Replicas must use the same Environment database and ordinary
-coordination configuration. Keep the backend's credentials server-side. The
+coordination configuration. Replicas sharing a Docker sandbox service must also
+use identical `ASTRABOX_MCP_PROXY_BASE_URL`,
+`ASTRABOX_SANDBOX_EGRESS_DNS_UPSTREAM` and
+`ASTRABOX_SANDBOX_EGRESS_DENY_CIDRS`. These values bind sandbox callbacks, DNS and
+network policy to the existing edges. A standalone web replica must receive the
+same effective values that the managed launcher derives; a different network
+fingerprint correctly refuses those sandboxes. Keep the backend's credentials server-side. The
 external browser can continue to contact only its business backend.
 
 Run `examples/satori-agent/client.py` after setting the URL, Agent id and a token
