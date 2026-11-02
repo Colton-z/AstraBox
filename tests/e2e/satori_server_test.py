@@ -207,7 +207,8 @@ def test_delegated_satori_chat_uses_owned_native_sessions_and_replays_across_rep
         call(0, "internal/astrabox.interaction.answer", {"channel_id": sessions[0],
              "interaction_id": interaction["interaction_id"], "answer": {"decision": decision("approve")}})
         completed(0, second_responses[0])
-        assert wait_for_file(owner, sessions[0], filename).strip() == "SATORI_APPROVED"
+        contents = wait_for_file(owner, sessions[0], filename)
+        assert contents is not None and contents.strip() == b"SATORI_APPROVED", contents
         tools = [part for item in full_history(0)["messages"] for part in item["parts"] if part["type"].startswith("tool-")]
         native_calls = [block for entry in transcript_entries(sessions[0]) if entry["entry"].get("type") == "assistant"
                         for block in (entry["entry"].get("message") or {}).get("content", []) if block.get("type") == "tool_use"]
@@ -232,7 +233,8 @@ def test_delegated_satori_chat_uses_owned_native_sessions_and_replays_across_rep
                          if event.get("_type") == "astrabox.output" for part in event["_data"]["parts"]), "failed input event")
         failed = next(item for item in full_history(2)["messages"] if item["id"] == refused["id"])
         assert failed["metadata"]["state"] == "failed", failed
-        turns = data(e2e_client.get("/api/v1/admin/satori-fixture"))["turns"]
+        turns = [row for row in data(e2e_client.get("/api/v1/admin/satori-fixture"))["turns"]
+                 if row["session_id"] in sessions]
         assert all(row["principal_id"] == principals[sessions.index(row["session_id"])//2] and row["granted"] for row in turns)
         assert set(row["session_id"] for row in turns) == set(sessions)
         wait(lambda: any(event.get("_type") == "astrabox.state" and (event["_data"].get("response") or {}).get("outcome") == "cancelled" for event in feeds[0].events), "cancelled event")
