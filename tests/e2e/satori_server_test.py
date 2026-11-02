@@ -209,7 +209,8 @@ def test_delegated_satori_chat_uses_owned_native_sessions_and_replays_across_rep
         completed(0, second_responses[0])
         contents = wait_for_file(owner, sessions[0], filename)
         assert contents is not None and contents.strip() == b"SATORI_APPROVED", contents
-        tools = [part for item in full_history(0)["messages"] for part in item["parts"] if part["type"].startswith("tool-")]
+        tools = [part for item in full_history(0)["messages"] for part in item["parts"]
+                 if part["type"] == "dynamic-tool" or part["type"].startswith("tool-")]
         native_calls = [block for entry in transcript_entries(sessions[0]) if entry["entry"].get("type") == "assistant"
                         for block in (entry["entry"].get("message") or {}).get("content", []) if block.get("type") == "tool_use"]
         assert any(filename in json.dumps(block.get("input")) and any(part.get("toolCallId") == block["id"] and part.get("state") == "output-available" for part in tools) for block in native_calls)
