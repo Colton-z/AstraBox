@@ -107,8 +107,8 @@ otel = [
 # what development, CI, and images run.
 sandbox-server = ["opensandbox-server==0.2.3"]
 dev = [
-  "pytest==9.1.1",
-  "pytest-asyncio==1.4.0",
+  "pytest==9.2.0",
+  "pytest-asyncio==1.4.1",
   "pytest-timeout==2.4.0",
   # Unit tests execute the live-runner contract in a fake environment. The
   # runner proves its worker scheduler by importing pytest-xdist, so a fresh
@@ -123,16 +123,16 @@ dev = [
   # both CI (installs `.[dev]`, runs `python -m ruff`/`python -m mypy`) and local
   # `make test`. The lint/type gate is calibrated to these versions, so a float
   # could silently change lint/type output between a laptop and CI. Bump both here.
-  "ruff==0.17.2",
-  "mypy==2.4.0",
+  "ruff==0.17.3",
+  "mypy==2.4.1",
 ]
 # Live end-to-end smoke (tests/e2e/): drives a real turn against a real Docker
 # daemon + the operator LLM key. httpx is already a core dep; pytest is pulled in
 # so `pip install -e .[e2e]` is a self-sufficient e2e install. These tests are
 # marked `e2e` and DESELECTED by default (see [tool.pytest.ini_options]).
 e2e = [
-  "pytest==9.1.1",
-  "pytest-asyncio==1.4.0",
+  "pytest==9.2.0",
+  "pytest-asyncio==1.4.1",
   # A live turn drives a real model; a hung turn must never wedge the suite, so
   # the e2e tests run under a per-test timeout (--timeout, thread/signal method).
   "pytest-timeout==2.4.0",
