@@ -5,22 +5,32 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from typing import Any
+from collections.abc import Sequence
+from typing import Any, cast
 
 from sqlalchemy import event, insert, select, update
 
 from astrabox.core.service.orchestrator.engine import claude_code  # noqa: F401 - register the native adapter
 from astrabox.core.service.orchestrator.engine.child_runs import canonical_child_run_data, public_child_run_id
 from astrabox.core.service.orchestrator.session_runtime.child_runs import child_run_messages, list_child_runs
+from astrabox.core.service.orchestrator.session_runtime.history_blocks import load_history_page, load_response
+from astrabox.core.service.orchestrator.session_runtime.response_folds import ResponseFolds
+from astrabox.core.service.orchestrator.session_runtime.service import SessionRuntimeService
 from astrabox.persistence.repository.agent_repository import AgentRepository
 from astrabox.persistence.repository.runtime_profile_repository import RuntimeProfileRepository
 from astrabox.persistence.repository.session_read_repository import SessionReadRepository
 from astrabox.persistence.repository.session_repository import SessionRepository
+from astrabox.persistence.repository.session_runtime_repository import SessionRuntimeRepository
 from astrabox.persistence.repository.transcript_entry_repository import TranscriptEntryRepository
 from astrabox.persistence.sql import fetch_all
 from astrabox.persistence.sql.engine import get_engine
 from astrabox.persistence.sql.models.agents import AgentRuntime
-from astrabox.persistence.sql.models.sessions import SessionOutput, TranscriptChildRunIndex
+from astrabox.persistence.sql.models.sessions import (
+    SessionInteraction,
+    SessionOutput,
+    SessionResponse,
+    TranscriptChildRunIndex,
+)
 
 
 async def verify_existing_runtime_ensure_is_read_only() -> None:
@@ -180,3 +190,148 @@ async def verify_child_listing_indexes_native_relationships() -> None:
                       "children": len(cold), "cold_bounded_pages": cold_queries, "warm_native_reads": 0,
                       "incremental_pages": incremental_queries, "max_loop_gap_seconds": max(gaps),
                       "complete_native_child_histories": 2, "projected_entries": 5}))
+
+
+class _CountedFacts(SessionRuntimeRepository):
+    """The real repository, counting the output parts it returns."""
+
+    parts_read = 0
+
+    async def output_for_responses(
+        self, session_id: str, response_ids: Sequence[str], *, through_seq: int | None = None
+    ) -> list[dict[str, Any]]:
+        rows = await super().output_for_responses(session_id, response_ids, through_seq=through_seq)
+        self.parts_read += len(rows)
+        return rows
+
+
+def _texts(message: dict[str, Any]) -> list[str]:
+    return [part["text"] for part in message["parts"] if part["type"] == "text"]
+
+
+def _interaction(message: dict[str, Any]) -> dict[str, Any]:
+    return next(part["data"] for part in message["parts"] if part["type"] == "data-interaction")
+
+
+async def verify_unchanged_history_folds_once() -> None:
+    """A long reply's parts are read and folded once; each read lays the current facts over that fold."""
+    engine = get_engine()
+    sid = "history-fold-contract"
+    await SessionRepository().create_session({
+        "session_id": sid, "user_id": "owner", "session_kind": "agent_chat", "state": "READY",
+    })
+    deltas = 33_000
+    parts: list[dict[str, Any]] = [
+        {"type": "start-step"},
+        {"type": "text-start", "id": "answer"},
+        *({"type": "text-delta", "id": "answer", "delta": "x"} for _ in range(deltas)),
+        {"type": "text-end", "id": "answer"},
+        {"type": "data-interaction", "id": "ask", "data": {"interaction_id": "ask", "kind": "question"}},
+        {"type": "finish-step"},
+    ]
+    async with engine.begin() as conn:
+        await conn.execute(insert(SessionResponse).values(
+            session_id=sid, response_id="reply", origin="engine", status="ended", outcome="completed",
+        ))
+        await conn.execute(insert(SessionInteraction).values(
+            session_id=sid, interaction_id="ask", response_id="reply", contract={"kind": "question"}, status="open",
+        ))
+        rows = [{"session_id": sid, "seq": n, "response_id": "reply", "part": part} for n, part in enumerate(parts, 1)]
+        for start in range(0, len(rows), 2000):
+            await conn.execute(insert(SessionOutput), rows[start:start + 2000])
+    stored = len(parts)
+    facts = _CountedFacts()
+    reads = SessionReadRepository()
+    folds = ResponseFolds(facts=facts, reads=reads)
+
+    def runtime_over(with_folds: ResponseFolds) -> SessionRuntimeService:
+        return SessionRuntimeService(
+            sessions=SessionRepository(), repo=facts, feed=cast(Any, None), host=cast(Any, None), folds=with_folds,
+        )
+
+    runtime = runtime_over(folds)
+    part_reads: list[str] = []
+    gaps: list[float] = []
+    running = True
+
+    def trace(*args: Any) -> None:
+        sql = " ".join(str(args[2]).split())
+        # A statement returning the log's parts; history's display-position
+        # index also names ``part``, but reads only markers and input ids.
+        if sql.startswith("SELECT session_output.seq, session_output.response_id, session_output.part FROM"):
+            part_reads.append(sql)
+
+    async def heartbeat() -> None:
+        previous = time.monotonic()
+        while running:
+            await asyncio.sleep(0.005)
+            now = time.monotonic()
+            gaps.append(now - previous)
+            previous = now
+
+    event.listen(engine.sync_engine, "before_cursor_execute", trace)
+    try:
+        started = time.monotonic()
+        concurrent = await asyncio.gather(*(runtime.history_for(sid) for _ in range(3)))
+        cold_seconds = time.monotonic() - started
+        assert len(part_reads) == 1 and facts.parts_read == stored, (len(part_reads), facts.parts_read)
+        cold = concurrent[0]
+        assert all(page == cold for page in concurrent)
+        [message] = cold["messages"]
+        assert _texts(message) == ["x" * deltas] and _interaction(message)["status"] == "open"
+        assert cold["output_seq"] == stored
+
+        ticker = asyncio.create_task(heartbeat())
+        started = time.monotonic()
+        for _ in range(20):
+            assert await runtime.history_for(sid) == cold
+        warm_seconds = (time.monotonic() - started) / 20
+        running = False
+        await ticker
+        blocks = await load_history_page(facts, reads, folds, sid, cursor=None, limit=100)
+        assert "x" * deltas in json.dumps(blocks.messages)
+        assert len(part_reads) == 1 and facts.parts_read == stored, "unchanged history read its parts again"
+
+        async with engine.begin() as conn:
+            await conn.execute(update(SessionInteraction).where(SessionInteraction.session_id == sid).values(
+                status="answered", answer={"text": "yes"},
+            ))
+            await conn.execute(update(SessionResponse).where(SessionResponse.session_id == sid).values(
+                native_reason="end_turn",
+            ))
+        [answered] = (await runtime.history_for(sid))["messages"]
+        assert _interaction(answered)["status"] == "answered" and _interaction(answered)["answer"] == {"text": "yes"}
+        assert answered["metadata"]["native_reason"] == "end_turn"
+        assert len(part_reads) == 1, "an answer or a response's facts made history read its parts again"
+
+        # Output recorded after the response ended (an interrupted reply's drain).
+        late = [
+            {"type": "text-start", "id": "late"},
+            {"type": "text-delta", "id": "late", "delta": "late output"},
+            {"type": "text-end", "id": "late"},
+        ]
+        async with engine.begin() as conn:
+            await conn.execute(insert(SessionOutput), [
+                {"session_id": sid, "seq": stored + n, "response_id": "reply", "part": part}
+                for n, part in enumerate(late, 1)
+            ])
+        advanced = await runtime.history_for(sid)
+        [message] = advanced["messages"]
+        assert _texts(message) == ["x" * deltas, "late output"] and advanced["output_seq"] == stored + len(late)
+        assert len(part_reads) == 2
+        assert await runtime.history_for(sid) == advanced and len(part_reads) == 2
+
+        pinned = await load_response(facts, reads, folds, sid, "reply", through_seq=stored)
+        assert pinned is not None and _texts(pinned.message) == ["x" * deltas]
+        other_process = await runtime_over(ResponseFolds(facts=facts, reads=reads)).history_for(sid)
+        assert other_process == advanced
+    finally:
+        running = False
+        event.remove(engine.sync_engine, "before_cursor_execute", trace)
+    assert gaps and max(gaps) < 0.2, f"an unchanged history read stalled the event loop: {max(gaps):.3f}s"
+    print(json.dumps({
+        "stored_parts": stored, "cold_concurrent_reads": 3, "cold_part_queries": 1, "cold_parts_read": stored,
+        "cold_seconds": round(cold_seconds, 3), "warm_reads": 22, "warm_part_queries": 0,
+        "warm_seconds_each": round(warm_seconds, 4), "max_warm_loop_gap_seconds": round(max(gaps), 4),
+        "late_output_part_queries": 1, "parts_read_total": facts.parts_read,
+    }))

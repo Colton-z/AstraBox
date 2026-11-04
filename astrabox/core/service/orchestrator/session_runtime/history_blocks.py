@@ -30,6 +30,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 
+from astrabox.core.service.orchestrator.session_runtime.response_folds import ResponseFolds
 from astrabox.core.service.orchestrator.session_runtime.ui_message import history_messages
 from astrabox.persistence.repository.session_read_repository import SessionReadRepository
 from astrabox.persistence.repository.session_runtime_repository import SessionRuntimeRepository
@@ -272,6 +273,7 @@ class HistoryPage:
 async def load_history_page(
     facts: SessionRuntimeRepository,
     reads: SessionReadRepository,
+    folds: ResponseFolds,
     session_id: str,
     *,
     cursor: str | None,
@@ -292,7 +294,7 @@ async def load_history_page(
             raise HistoryCursorError("a history page needs a page cursor, not a header's")
     page = await facts.history_page(session_id, before=before, limit=limit, through_seq=through_seq)
     response_ids = [str(row["response_id"]) for row in page["responses"]]
-    outputs = await facts.output_for_responses(session_id, response_ids, through_seq=through_seq)
+    folded = await folds.messages(session_id, page["responses"], through_seq=through_seq)
     interactions = await facts.response_interactions(session_id, response_ids)
     last_seqs = await reads.last_output_seqs(session_id, response_ids)
     ended = {
@@ -303,7 +305,7 @@ async def load_history_page(
     checkpoint = encode_cursor(through_seq)
     messages: list[dict[str, Any]] = []
     labelled: dict[str, dict[str, Any]] = {}
-    for message in history_messages(page, outputs, interactions):
+    for message in history_messages(page, folded, interactions):
         response_id = str(message["metadata"].get("response_id") or "")
         if message["role"] == "assistant" and response_id in ended:
             fold = fold_parts(
@@ -344,6 +346,7 @@ class LoadedResponse:
 async def load_response(
     facts: SessionRuntimeRepository,
     reads: SessionReadRepository,
+    folds: ResponseFolds,
     session_id: str,
     response_id: str,
     *,
@@ -353,11 +356,11 @@ async def load_response(
     row = await facts.get_response(session_id, response_id)
     if row is None:
         return None
-    outputs = await facts.output_for_responses(session_id, [response_id], through_seq=through_seq)
+    folded = await folds.messages(session_id, [row], through_seq=through_seq)
     interactions = await facts.response_interactions(session_id, [response_id])
     last_seq = (await reads.last_output_seqs(session_id, [response_id])).get(response_id, 0)
     single = {"entries": [{"kind": "response", "seq": int(row["seq"])}], "inputs": [], "responses": [row]}
-    message = history_messages(single, outputs, interactions)[0]
+    message = history_messages(single, folded, interactions)[0]
     fold = None
     if row["status"] == "ended" and (through_seq is None or last_seq <= through_seq):
         fold = fold_parts(
@@ -373,6 +376,7 @@ async def load_response(
 async def load_block_parts(
     facts: SessionRuntimeRepository,
     reads: SessionReadRepository,
+    folds: ResponseFolds,
     session_id: str,
     block_id: str,
     *,
@@ -385,7 +389,7 @@ async def load_block_parts(
     response_id, separator, _index = str(block_id).rpartition(":p")
     if not separator or not response_id:
         return None
-    loaded = await load_response(facts, reads, session_id, response_id, through_seq=through_seq)
+    loaded = await load_response(facts, reads, folds, session_id, response_id, through_seq=through_seq)
     if loaded is None or loaded.fold is None:
         return None
     parts = loaded.fold.details.get(block_id)

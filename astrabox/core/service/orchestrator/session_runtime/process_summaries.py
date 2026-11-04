@@ -31,6 +31,7 @@ from astrabox.core.service.orchestrator.session_runtime.history_blocks import (
     LoadedResponse,
     load_response,
 )
+from astrabox.core.service.orchestrator.session_runtime.response_folds import ResponseFolds
 from astrabox.persistence.repository.process_summary_repository import ProcessSummaryRepository
 from astrabox.persistence.repository.session_read_repository import SessionReadRepository
 from astrabox.persistence.repository.session_runtime_repository import (
@@ -57,6 +58,7 @@ class ProcessSummaries:
         *,
         facts: SessionRuntimeRepository,
         reads: SessionReadRepository,
+        folds: ResponseFolds,
         repo: ProcessSummaryRepository,
         model: LabelModel,
         enabled: bool,
@@ -64,6 +66,7 @@ class ProcessSummaries:
     ) -> None:
         self._facts = facts
         self._reads = reads
+        self._folds = folds
         self._repo = repo
         self._model = model
         self._enabled = enabled
@@ -82,7 +85,9 @@ class ProcessSummaries:
 
     async def _offer(self, session_id: str, response_id: str) -> None:
         try:
-            loaded = await load_response(self._facts, self._reads, session_id, response_id, through_seq=None)
+            loaded = await load_response(
+                self._facts, self._reads, self._folds, session_id, response_id, through_seq=None
+            )
             if loaded is None or loaded.fold is None or loaded.fold.summary_text is None:
                 return
             await self._write(session_id, response_id, loaded, loaded.fold, retry_failed=False)
@@ -103,7 +108,9 @@ class ProcessSummaries:
             return self._presented(existing)
         if not self._enabled:
             return {"status": "disabled", "summary": None, "error": None, "response_completed": None}
-        loaded = await load_response(self._facts, self._reads, session_id, response_id, through_seq=None)
+        loaded = await load_response(
+            self._facts, self._reads, self._folds, session_id, response_id, through_seq=None
+        )
         if loaded is None:
             raise APIError(code="NOT_FOUND", message="response not found", status_code=404)
         if loaded.fold is None or loaded.fold.summary_text is None:

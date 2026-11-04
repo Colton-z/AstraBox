@@ -55,13 +55,21 @@ def _row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 class SessionReadRepository:
-    async def last_output_seqs(self, session_id: str, response_ids: Sequence[str]) -> dict[str, int]:
-        """The ``seq`` of each response's last stored part; a response with none is absent."""
+    async def last_output_seqs(
+        self, session_id: str, response_ids: Sequence[str], *, through_seq: int | None = None
+    ) -> dict[str, int]:
+        """The ``seq`` of each response's last stored part, through ``through_seq`` when given; a response with none is absent."""
         if not response_ids:
             return {}
+        conditions: list[ColumnElement[bool]] = [
+            _OUTPUT.c.session_id == session_id,
+            _OUTPUT.c.response_id.in_(list(response_ids)),
+        ]
+        if through_seq is not None:
+            conditions.append(_OUTPUT.c.seq <= through_seq)
         rows = await fetch_all(
             select(_OUTPUT.c.response_id, func.max(_OUTPUT.c.seq).label("last"))
-            .where(_OUTPUT.c.session_id == session_id, _OUTPUT.c.response_id.in_(list(response_ids)))
+            .where(*conditions)
             .group_by(_OUTPUT.c.response_id)
         )
         return {str(row["response_id"]): int(row["last"]) for row in rows}
