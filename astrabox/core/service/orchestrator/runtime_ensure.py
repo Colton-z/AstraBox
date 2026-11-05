@@ -47,7 +47,7 @@ _RUNTIME_ENSURE_ATTACH_FAILED = "ATTACH_FAILED"
 class _RuntimeEnsureResult:
     """What one ensure attempt produced: a runtime, or why there is none."""
 
-    __slots__ = ("status", "runtime", "error_text", "session", "sandbox_gone")
+    __slots__ = ("status", "runtime", "error_text", "session", "sandbox_gone", "delivery_changed")
 
     def __init__(
         self,
@@ -57,6 +57,7 @@ class _RuntimeEnsureResult:
         error_text: str | None = None,
         session: dict[str, Any] | None = None,
         sandbox_gone: bool = False,
+        delivery_changed: bool = False,
     ) -> None:
         self.status = status
         self.runtime = runtime
@@ -65,6 +66,10 @@ class _RuntimeEnsureResult:
         # The bound box is gone, so the reader host replaces it instead of
         # reconnecting to the same dead instance.
         self.sandbox_gone = sandbox_gone
+        # The box is alive, but its runtime holds the model credential of the
+        # delivery owner the configuration does not declare; the reader host
+        # replaces it, since no reattachment can serve the declared owner.
+        self.delivery_changed = delivery_changed
 
 
 def _is_sandbox_gone_error(exc: BaseException) -> bool:
@@ -93,6 +98,10 @@ def _is_sandbox_gone_error(exc: BaseException) -> bool:
     if cause is not None and cause is not exc:
         return _is_sandbox_gone_error(cause)
     return False
+
+
+def _is_delivery_changed_error(exc: BaseException) -> bool:
+    return isinstance(exc, APIError) and exc.code == "RUNTIME_MODEL_DELIVERY_CHANGED"
 
 
 class RuntimeEnsure:
@@ -282,7 +291,8 @@ class RuntimeEnsure:
                 exc,
             )
             gone = _is_sandbox_gone_error(exc)
-            if not gone and sandbox_id:
+            delivery_changed = _is_delivery_changed_error(exc)
+            if not gone and not delivery_changed and sandbox_id:
                 # A transport timeout cannot distinguish an unreachable sandbox
                 # from a dead one with a stale Ready record. Probe the data plane
                 # before classifying it as dead; uncertainty preserves the binding.
@@ -337,6 +347,7 @@ class RuntimeEnsure:
                 error_text=error_text,
                 session=session,
                 sandbox_gone=gone,
+                delivery_changed=delivery_changed,
             )
         with contextlib.suppress(Exception):
             await self._sessions_repo.update_session(session_id, write_back)
@@ -718,6 +729,7 @@ class RuntimeEnsure:
                     error_text=error_text,
                     session=session,
                     sandbox_gone=gone,
+                    delivery_changed=_is_delivery_changed_error(full_exc),
                 )
 
 

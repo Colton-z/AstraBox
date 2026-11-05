@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## English
+
+### Fixed and improved
+
+- A conversation whose runtime was started under one model credential delivery owner, and whose configuration now declares the other, continues in a replacement runtime when the server next connects to it. Previously one direction of the change was misreported as a missing workload identity, both left the conversation's messages waiting indefinitely, and the reader retried the same refusal. The replacement resumes the native conversation, keeps the waiting messages, and records a response the old runtime was producing as failed (`MODEL_DELIVERY_CHANGED`).
+
+## 中文
+
+### 修复与改进
+
+- 运行时按一种模型凭据交付方启动、而配置现在声明另一种交付方的会话，在服务端下次连接时改由替换运行时继续。此前其中一个方向被误报为缺少 workload 身份，两个方向都会让会话中的消息无限等待，reader 反复重试同一拒绝。替换运行时恢复原生会话、保留等待中的消息，并把旧运行时正在生成的回复记为失败（`MODEL_DELIVERY_CHANGED`）。
+
 ## [0.1.13] - 2026-11-01
 
 ## English

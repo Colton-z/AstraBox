@@ -65,8 +65,14 @@ returning. `context.model_credential_placeholder` names the actual value already
 fixed in an initialized process. It remains stable on reattachment; a prepared
 claim retains its inventory identity. Use the supported backend or external
 gateway API to update that binding, rather than changing the child's environment.
-Reattachment refuses a change of delivery owner for an existing native process;
-replace its compute to change that frozen contract.
+An initialized process keeps the delivery owner it started under. When the
+declaration for an Agent conversation's current configuration names the other owner,
+reattaching to that process is refused with `RUNTIME_MODEL_DELIVERY_CHANGED`
+and the platform replaces its compute: a response the old process was producing
+is recorded as failed (`MODEL_DELIVERY_CHANGED`), and waiting inputs start a
+replacement under the current declaration, which resumes the native
+conversation from its SessionStore. The integration does not replace compute
+itself.
 If the backend needs its credential proxy prepared at box creation, the sandbox
 integration requests `SandboxCreateSpec.credential_proxy_enabled` independently
 of the platform Vault. This delegation covers only model delivery: MCP and
