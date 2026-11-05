@@ -168,12 +168,15 @@ def reader_hooks(
     runtime_manager: Any,
     realign_live_sandbox_owners: Callable[[str], Awaitable[object]],
     committed: Callable[[str, FactBatch], Awaitable[None]],
+    deliver_attachments: Callable[[dict[str, Any], RuntimeInput], Awaitable[None]],
 ) -> Callable[[str, ConnectedRuntime], ReaderHooks]:
     def build(session_id: str, connected: ConnectedRuntime) -> ReaderHooks:
         async def prepare(item: RuntimeInput) -> None:
             session = await sessions.get_session(session_id)
             if session is None:
                 raise InputPreparationRefused({"code": "SESSION_NOT_FOUND", "message": "session not found"})
+            require_declared_content(session, item)
+            await deliver_attachments(session, item)
             await prepare_input(session, connected, item)
             if connected.refresh is not None:
                 await connected.refresh()
@@ -221,6 +224,25 @@ def reader_hooks(
         return ReaderHooks(prepare=prepare, committed=on_commit, status=status, permission_mode=permission_mode)
 
     return build
+
+
+def require_declared_content(session: dict[str, Any], item: RuntimeInput) -> None:
+    """Refuse content blocks the runtime's engine did not declare it reads.
+
+    Acceptance checks the same declaration when the Session already has one;
+    this check holds for an input accepted before its runtime started. An
+    adapter that does not read a block type would otherwise drop it unseen.
+    """
+    if not item.content_blocks:
+        return
+    manifest = session.get("engine_capabilities")
+    declared = manifest.get("input_content_types") if isinstance(manifest, dict) else None
+    unsupported = sorted({str(block.get("type")) for block in item.content_blocks} - set(declared or ()))
+    if unsupported:
+        raise InputPreparationRefused({
+            "code": "ENGINE_CAPABILITY_UNAVAILABLE",
+            "message": f"engine {session.get('engine_kind')!r} does not accept turn content types {unsupported!r}",
+        })
 
 
 async def prepare_input(session: dict[str, Any], connected: ConnectedRuntime, item: RuntimeInput) -> None:

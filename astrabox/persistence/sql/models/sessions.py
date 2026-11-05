@@ -276,6 +276,39 @@ class SessionInput(Base):
     conversation_order: Mapped[int | None] = mapped_column(BigInteger)
 
 
+class InputAttachment(Base):
+    """A file a message carries: staged by the caller, then owned by the input that sent it.
+
+    A staged row has no ``session_id``; it belongs to ``owner_user_id`` within
+    ``scope`` (the endpoint that took it) until ``expires_at``. Accepting an
+    input binds it to that input in the same transaction, after which it lives
+    as long as the Session. The reader writes it into the workspace before the
+    engine reads the input; image bytes also ride in the input's content blocks.
+    """
+
+    __tablename__ = "input_attachments"
+    __table_args__ = (
+        Index(None, "session_id", "input_id", "ordinal"),
+        Index(None, "expires_at"),
+        MYSQL_TABLE_OPTIONS,
+    )
+
+    attachment_id: Mapped[str] = mapped_column(KeyText(64), primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(KeyText(512))
+    scope: Mapped[str] = mapped_column(KeyText(256))
+    session_id: Mapped[str | None] = mapped_column(ForeignKey(_SESSION_FK, ondelete="CASCADE"))
+    input_id: Mapped[str | None] = mapped_column(KeyText(128))
+    ordinal: Mapped[int | None]
+    #: ``image`` when the message sent it as an image, else ``file``; set with the input.
+    kind: Mapped[str | None] = mapped_column(KeyText(16))
+    name: Mapped[str] = mapped_column(payload_text())
+    media_type: Mapped[str] = mapped_column(KeyText(255))
+    size: Mapped[int] = mapped_column(BigInteger)
+    data: Mapped[bytes] = mapped_column(binary_payload())
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    expires_at: Mapped[datetime | None]
+
+
 class SessionControl(Base):
     """A person's request to steer the running runtime: interrupt it, or stop one of its sub-agents.
 

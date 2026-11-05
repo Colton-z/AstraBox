@@ -23,7 +23,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from sqlalchemy import (
@@ -43,6 +43,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from astrabox.common.utils.errors import APIError
 from astrabox.config.settings import get_settings, validate_environment_name
 from astrabox.core.model import SessionState
 from astrabox.core.service.orchestrator.engine.interaction_contract import public_interaction_view
@@ -63,6 +64,7 @@ from astrabox.persistence.sql.statements import (
 from astrabox.seams.persistence_coordination import SessionNotice
 from astrabox.persistence.sql.models.agents import Agent
 from astrabox.persistence.sql.models.sessions import (
+    InputAttachment,
     Session,
     SessionControl,
     SessionInput,
@@ -79,6 +81,7 @@ _INPUTS = SessionInput.__table__
 _RESPONSES = SessionResponse.__table__
 _RESPONSE_INPUTS = SessionResponseInput.__table__
 _INTERACTIONS = SessionInteraction.__table__
+_ATTACHMENTS = InputAttachment.__table__
 #: An Assistant workspace's own Sessions, which prepare its box and take no
 #: messages. They have nothing for a reader: one would only attach to the
 #: workspace's box behind the workspace's lifecycle, as when a pause is
@@ -246,6 +249,8 @@ class SessionRuntimeRepository:
         owner_user_id: str | None,
         author_user_id: str | None,
         source: str | None,
+        attachments: Sequence[tuple[str, str]] = (),
+        attachment_owner: str | None = None,
     ) -> tuple[dict[str, Any], bool] | None:
         """Accept one input and enqueue its notice in the same transaction.
 
@@ -253,6 +258,11 @@ class SessionRuntimeRepository:
         input and whether this call created it (``False`` when the same
         ``client_message_id`` was accepted before), or ``None`` when no live,
         owned session can take input.
+
+        A created input takes its ``attachments``, ``(attachment_id, kind)``
+        of files ``attachment_owner`` staged, in the same transaction; if one has expired or another input
+        took it, nothing is accepted. A repeated ``client_message_id`` takes
+        none: the first acceptance took its own.
         """
         async def accept(conn: AsyncConnection) -> dict[str, Any] | None:
             eligible = select(_SESSIONS.c.session_id).where(
@@ -266,6 +276,17 @@ class SessionRuntimeRepository:
                 index_columns=["session_id", "client_message_id"], where=eligible,
             ):
                 return None
+            now = datetime.now(timezone.utc)
+            for ordinal, (attachment_id, kind) in enumerate(attachments):
+                bound = await conn.execute(update(_ATTACHMENTS).where(
+                    _ATTACHMENTS.c.attachment_id == attachment_id, _ATTACHMENTS.c.session_id.is_(None),
+                    _ATTACHMENTS.c.owner_user_id == attachment_owner, _ATTACHMENTS.c.expires_at > now,
+                ).values(session_id=session_id, input_id=input_id, ordinal=ordinal, kind=kind, expires_at=None))
+                if bound.rowcount != 1:
+                    raise APIError(
+                        code="INPUT_ATTACHMENT_UNAVAILABLE", status_code=409,
+                        message="An attachment expired or was already sent; upload it again",
+                    )
             await conn.execute(
                 update(_SESSIONS).where(_SESSIONS.c.session_id == session_id)
                 .values(updated_at=func.now())

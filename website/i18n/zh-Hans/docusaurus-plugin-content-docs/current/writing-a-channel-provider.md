@@ -97,6 +97,10 @@ AstraBox 会记录每条消息所属的对话。对回复的回复、对 Agent �
 
 `ChannelDescriptor.execution_modes` 列出该适配器的触发配置可以使用的执行方式，默认是 `("owner", "account", "linked")`。工作属于具体某个人的适配器（例如分配给处理人的工单）声明 `("linked",)`，这样它的任何触发配置都不能以 Agent 创建者或某个固定账号执行。参与者以哪个账号执行不由适配器决定，而由部署配置的账号解析器决定。内置的 `links` 解析器读取管理员在每个触发配置上维护的关联。基于目录服务的解析器在 `astrabox.providers.channel_accounts` 入口点组注册，并通过 `ASTRABOX_CHANNEL_ACCOUNT_RESOLVER` 选择。
 
+### 图片与文件
+
+在 `ChannelInbound.attachments` 中列出消息携带的文件，每个一条 `ChannelAttachment(src, kind, title)`：平台作为图片发送的文件 `kind="image"`，其他为 `"file"`；并在 `content` 中标出每个文件所在位置。`src` 是适配器自己对该文件的引用。AstraBox 随消息保存它，在把消息发给会话时调用 `fetch_attachment(binding=..., attachment=..., max_bytes=...)`；返回 `FetchedAttachment(data, name, media_type)`，或抛出异常表示拒绝。被拒绝的文件会以笼统的原因告知 Agent。不要在未确认属于平台自身的情况下抓取消息给出的地址：内置 Satori 适配器只读取自己的 `internal:` 链接和登记过的代理前缀。不报告附件的适配器无需实现 `fetch_attachment`。
+
 ## 消息源连接模式
 
 如果消息产品通过消息队列、长连接或官方 SDK 投递消息，而不是 HTTP 回调，请使用消息源连接。

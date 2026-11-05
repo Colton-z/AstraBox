@@ -8,7 +8,7 @@ import json
 from typing import Any
 
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from satori.model import Identify, Opcode
 
 from astrabox.common.logger.logger_factory import get_logger
@@ -17,7 +17,10 @@ from astrabox.common.utils.user_context import (
     API_READ_SCOPE, API_WRITE_SCOPE, UserContext, reset_current_user_context, set_current_user_context,
 )
 from astrabox.core.service.environment_access import require_environment_access
+from astrabox.api.routes.session_files import FileDownloadResponse
 from astrabox.core.service.orchestrator.satori_service import SatoriService
+from astrabox.core.service.orchestrator.session_file_service import FileDownload
+from astrabox.core.service.orchestrator.session_runtime.attachments import MAX_ATTACHMENTS
 from astrabox.vendor.satori_connection import WebsocketConnection
 
 router = APIRouter(prefix="/api/satori/agents/{agent_id}/v1")
@@ -39,7 +42,7 @@ async def _identity(connection: Request | WebSocket, *, token: str | None = None
 
 
 def _writes(action: str) -> bool:
-    return action in {"channel.create", "message.create", "internal/astrabox.preparation.perform",
+    return action in {"channel.create", "message.create", "upload.create", "internal/astrabox.preparation.perform",
                       "internal/astrabox.interaction.answer", "internal/astrabox.response.stop"}
 
 
@@ -49,6 +52,8 @@ async def satori_action(agent_id: str, action: str, request: Request) -> JSONRes
         user = await _identity(request, write=_writes(action))
         if request.headers.get("satori-platform") != "astrabox" or request.headers.get("satori-user-id") != agent_id:
             raise APIError(code="INVALID_REQUEST", message="Select this endpoint's astrabox Agent Login", status_code=400)
+        if action == "upload.create":
+            return JSONResponse(await _upload(request, user, agent_id))
         try:
             body = await request.json()
         except (ValueError, UnicodeDecodeError):
@@ -69,6 +74,44 @@ async def satori_action(agent_id: str, action: str, request: Request) -> JSONRes
         finally:
             reset_current_user_context(binding)
         return JSONResponse(result)
+    except APIError as exc:
+        return JSONResponse({"code": exc.code, "message": exc.user_message, "data": exc.data}, status_code=exc.status_code)
+
+
+async def _upload(request: Request, user: UserContext, agent_id: str) -> dict[str, str]:
+    """Stage the multipart ``upload.create`` body's files; each part is one file."""
+    try:
+        form = await request.form(max_files=MAX_ATTACHMENTS, max_fields=MAX_ATTACHMENTS)
+    except Exception:
+        raise APIError(code="INVALID_REQUEST", message="upload.create expects multipart/form-data", status_code=400) from None
+    binding = set_current_user_context(user)
+    try:
+        return await SatoriService(user, agent_id).upload(list(form.multi_items()))
+    finally:
+        reset_current_user_context(binding)
+        await form.close()
+
+
+@router.get("/proxy/{url:path}", include_in_schema=False)
+async def satori_proxy(agent_id: str, url: str, request: Request) -> Response:
+    """Serve one of this Login's ``internal:`` resources to a caller allowed to read it."""
+    try:
+        user = await _identity(request)
+        # The link's own percent-encoding is kept: it is decoded once, where its path is read.
+        raw = request.scope.get("raw_path", b"").decode("latin-1")
+        target = raw[raw.index("/proxy/") + len("/proxy/"):] if "/proxy/" in raw else url
+        if target[:11].lower() == "internal%3a":
+            target = "internal:" + target[11:]
+        binding = set_current_user_context(user)
+        try:
+            body, media_type = await SatoriService(user, agent_id).proxy(target)
+        finally:
+            reset_current_user_context(binding)
+        if isinstance(body, FileDownload):
+            response = FileDownloadResponse(body, request)
+            response.headers["content-type"] = media_type
+            return response
+        return Response(content=body, media_type=media_type)
     except APIError as exc:
         return JSONResponse({"code": exc.code, "message": exc.user_message, "data": exc.data}, status_code=exc.status_code)
 

@@ -248,3 +248,135 @@ def test_delegated_satori_chat_uses_owned_native_sessions_and_replays_across_rep
     finally:
         for feed in feeds:
             feed.close()
+
+
+def _solid_png(rgb: tuple[int, int, int], size: int = 16) -> bytes:
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+
+    rows = b"".join(b"\x00" + bytes(rgb) * size for _ in range(size))
+    header = struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+
+
+def test_satori_attachments_reach_the_engine_and_read_back_across_replicas(
+    e2e_client: httpx.Client, live_test_deadline: float,
+) -> None:
+    """Uploaded files reach the native engine with a message and read back from either replica.
+
+    The image reaches the supplier as an image block and the CSV as a workspace
+    file; the reply's own file is a resource too. Neither another user nor
+    another endpoint's caller can read or send them.
+    """
+    import base64
+    import re
+
+    plan = json.loads(Path(os.environ["ASTRABOX_E2E_SATORI_PLAN"]).read_text())
+    agent, bases, tokens = (plan[key] for key in ("agent_id", "bases", "tokens"))
+    other, owner = 0, 1  # The fixture grants principal 1 already; 0 only uploads and reads.
+    image, table = _solid_png((255, 0, 0)), b"item,amount\nalpha,2\nbeta,4\n"
+
+    def headers(actor, key=None):
+        values = {"Authorization": "Bearer " + tokens[actor], "Satori-Platform": "astrabox", "Satori-User-ID": agent}
+        return values | ({"Idempotency-Key": key} if key else {})
+
+    def remaining():
+        return max(1, min(20, live_test_deadline - time.monotonic()))
+
+    def call(actor, action, body, *, key=None, replica=0, expect=200):
+        response = httpx.post(f"{bases[replica]}/api/satori/agents/{agent}/v1/{action}",
+                              headers=headers(actor, key), json=body, timeout=remaining())
+        assert response.status_code == expect, (action, response.status_code, response.text[:500])
+        return response.json()
+
+    def upload(actor, files, *, replica):
+        response = httpx.post(f"{bases[replica]}/api/satori/agents/{agent}/v1/upload.create",
+                              headers=headers(actor), files=files, timeout=remaining())
+        assert response.status_code == 200, response.text[:500]
+        return response.json()
+
+    def proxy(actor, link, *, replica, expect=200):
+        response = httpx.get(f"{bases[replica]}/api/satori/agents/{agent}/v1/proxy/{link}",
+                             headers={"Authorization": "Bearer " + tokens[actor]}, timeout=remaining())
+        assert response.status_code == expect, (link, response.status_code, response.text[:300])
+        return response
+
+    def links(content, tag):
+        return re.findall(rf'<{tag} src="([^"]+)"(?: title="([^"]*)")?/>', content)
+
+    sid = call(owner, "channel.create", {"guild_id": agent, "data": {"type": 0}}, key=uuid.uuid4().hex)["id"]
+    staged = upload(owner, [("picture", ("red.png", image, "image/png")),
+                            ("table", ("data.csv", table, "text/csv"))], replica=1)
+    assert set(staged) == {"picture", "table"} and all(
+        link.startswith(f"internal:astrabox/{agent}/_tmp/") for link in staged.values()), staged
+    assert proxy(owner, staged["picture"], replica=0).content == image
+    proxy(other, staged["picture"], replica=0, expect=404)
+    foreign = upload(other, [("note", ("note.txt", b"not yours", "text/plain"))], replica=0)["note"]
+    refused = [
+        (f'Read <file src="{foreign}"/>', 409, "INPUT_ATTACHMENT_UNAVAILABLE"),
+        (f'Look <img src="{staged["table"]}"/>', 400, "INPUT_ATTACHMENT_UNSUPPORTED"),
+        ('Look <img src="https://example.com/red.png"/>', 400, "INPUT_ATTACHMENT_UNSUPPORTED"),
+    ]
+    for content, status, code in refused:
+        result = call(owner, "message.create", {"channel_id": sid, "content": content},
+                      key=uuid.uuid4().hex, expect=status)
+        assert result["code"] == code, result
+    assert not psql_rows(f"SELECT input_id FROM session_inputs WHERE session_id={sql_literal(sid)}")
+
+    key = uuid.uuid4().hex
+    content = ("The image is a solid color and the CSV lists amounts. Use your Write tool to create result.txt "
+               "containing only the total of the amount column, then reply with the color's name and that total."
+               f'<img src="{staged["picture"]}"/><file src="{staged["table"]}" title="data.csv"/>')
+    sent = call(owner, "message.create", {"channel_id": sid, "content": content}, key=key, replica=1)
+    assert call(owner, "message.create", {"channel_id": sid, "content": content}, key=key)[0]["id"] == sent[0]["id"]
+    inputs = psql_rows(f"SELECT input_id FROM session_inputs WHERE session_id={sql_literal(sid)}")
+    assert len(inputs) == 1, inputs
+    input_id = inputs[0]["input_id"]
+    stored = psql_rows("SELECT kind, name, size FROM input_attachments "
+                       f"WHERE session_id={sql_literal(sid)} AND input_id={sql_literal(input_id)} ORDER BY ordinal")
+    assert [(row["kind"], row["name"], row["size"]) for row in stored] == [
+        ("image", "red.png", len(image)), ("file", "data.csv", len(table))], stored
+
+    def ended():
+        view = call(owner, "internal/astrabox.conversation.get", {"channel_id": sid})
+        assert view["state"] != "TERMINATED", view
+        response = view.get("last_response") or {}
+        return response if response.get("status") == "ended" and not view.get("held_inputs") else None
+
+    while not (response := ended()):
+        assert time.monotonic() < live_test_deadline, "the reply did not end"
+        time.sleep(0.5)
+    assert response["outcome"] == "completed", response
+
+    history = call(owner, "message.list", {"channel_id": sid}, replica=1)["data"]
+    person = next(item for item in history if item["id"] == sent[0]["id"])
+    reply = next(item for item in reversed(history) if item["user"]["id"] == agent)
+    sent_images, sent_files = links(person["content"], "img"), links(person["content"], "file")
+    prefix = f"internal:astrabox/{agent}/{sid}/attachments/"
+    assert len(sent_images) == 1 and sent_images[0][0].startswith(prefix), person
+    assert len(sent_files) == 1 and sent_files[0] == (sent_files[0][0], "data.csv") and sent_files[0][0].startswith(prefix)
+    assert proxy(owner, sent_images[0][0], replica=0).content == image
+    assert proxy(owner, sent_files[0][0], replica=1).content == table
+    proxy(other, sent_files[0][0], replica=0, expect=404)
+    assert "red" in reply["content"].lower() and "6" in reply["content"], reply
+    written = [link for link, title in links(reply["content"], "file") if title == "result.txt"]
+    assert written and written[0].startswith(f"internal:astrabox/{agent}/{sid}/files/"), reply
+    assert proxy(owner, written[0], replica=0).content.strip() == b"6"
+
+    listing = call(owner, "internal/astrabox.files.list", {"channel_id": sid, "path": f"uploads/{input_id}"})
+    delivered = {entry["name"]: entry["url"] for entry in listing["entries"] if entry["kind"] == "file"}
+    assert set(delivered) == {"red.png", "data.csv"}, listing
+    assert proxy(owner, delivered["red.png"], replica=1).content == image
+    assert proxy(owner, delivered["data.csv"], replica=0).content == table
+
+    # The supplier itself received the image as an image block, not a path in text.
+    encoded = base64.b64encode(image).decode()
+    native = [row["entry"] for row in transcript_entries(sid) if row["entry"].get("type") == "user"]
+    assert any(isinstance(entry.get("message", {}).get("content"), list) and any(
+        block.get("type") == "image" and block.get("source", {}).get("data") == encoded
+        for block in entry["message"]["content"]) for entry in native), "no native image block"
+    print(json.dumps({"phase": "satori-attachments-accepted", "session_id": sid, "input_id": input_id,
+                      "response_id": response["response_id"]}), flush=True)

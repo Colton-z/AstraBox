@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import json
+import mimetypes
 import uuid
 from html import escape
 from pathlib import Path
@@ -16,6 +17,8 @@ async def main() -> None:
     parser.add_argument("--url", required=True)
     parser.add_argument("--agent", required=True)
     parser.add_argument("--token-file", type=Path, required=True)
+    parser.add_argument("--image", type=Path, action="append", default=[], help="send as an image (repeatable)")
+    parser.add_argument("--file", type=Path, action="append", default=[], help="send as a file (repeatable)")
     parser.add_argument("message")
     args = parser.parse_args()
     token = args.token_file.read_text().strip()
@@ -37,7 +40,21 @@ async def main() -> None:
             await ws.send(json.dumps({"op": 3, "body": {"token": token}}))
             ready = json.loads(await ws.recv())
             assert ready["op"] == 4, ready
-            await call("message.create", {"channel_id": channel["id"], "content": escape(args.message)}, key=uuid.uuid4().hex)
+            content = escape(args.message)
+            sent = [("img", path) for path in args.image] + [("file", path) for path in args.file]
+            if sent:
+                # One upload for every file; each part name maps to its resource link.
+                parts = [(f"part{index}", (path.name, path.read_bytes(),
+                                            mimetypes.guess_type(path.name)[0] or "application/octet-stream"))
+                         for index, (_tag, path) in enumerate(sent)]
+                response = await client.post(base + "/upload.create", files=parts)
+                response.raise_for_status()
+                links = response.json()
+                content += "".join(
+                    f'<{tag} src="{escape(links[f"part{index}"])}" title="{escape(path.name)}"/>'
+                    for index, (tag, path) in enumerate(sent)
+                )
+            await call("message.create", {"channel_id": channel["id"], "content": content}, key=uuid.uuid4().hex)
             async def heartbeat():
                 while True:
                     await asyncio.sleep(8)
@@ -52,10 +69,26 @@ async def main() -> None:
                     if event["body"].get("_type") == "astrabox.state":
                         response = event["body"]["_data"].get("response") or {}
                         if response.get("status") in {"ended", "waiting"}:
-                            return
+                            break
             finally:
                 beat.cancel()
                 await asyncio.gather(beat, return_exceptions=True)
+        # Read the conversation back, and download every file it names.
+        history = await call("message.list", {"channel_id": channel["id"]})
+        for item in history["data"]:
+            for link in _resource_links(item["content"]):
+                download = await client.get(base + "/proxy/" + link)
+                download.raise_for_status()
+                print(json.dumps({"message": item["id"], "link": link, "bytes": len(download.content),
+                                  "type": download.headers.get("content-type")}))
+
+
+def _resource_links(content: str) -> list[str]:
+    from satori.element import File, Image
+    from satori.model import MessageObject
+
+    return [element.src for element in MessageObject(id="", content=content).message
+            if isinstance(element, (Image, File))]
 
 
 if __name__ == "__main__":

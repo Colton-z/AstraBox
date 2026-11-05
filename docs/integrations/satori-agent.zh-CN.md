@@ -31,7 +31,7 @@ provider 返回 API scopes 时，读取要求 `astrabox:read`，写入要求 `as
 
 ## 标准 HTTP API
 
-均使用 POST 和 JSON 对象；不支持的 API 返回 404。
+均使用 POST 和 JSON 对象，`upload.create` 例外，使用 `multipart/form-data`；不支持的 API 返回 404。
 
 | `/v1/` 后的路径 | 参数 | 结果 |
 | --- | --- | --- |
@@ -40,13 +40,14 @@ provider 返回 API scopes 时，读取要求 `astrabox:read`，写入要求 `as
 | `channel.list` | `{guild_id: agent_id, next?: string}` | 自己的 Channel，最多 100 个及下一页令牌 |
 | `channel.get` | `{channel_id}` | 自己的 Channel |
 | `message.create` | `{channel_id, content}` | 含已接受 Input 的数组 |
+| `upload.create` | multipart：每个文件一个 part | `{part 名: 资源链接}` |
 | `message.get` | `{channel_id, message_id}` | 消息文本投影 |
 | `message.list` | `{channel_id, next?, direction?: "before", order?: "asc" 或 "desc", limit?: number}` | 原生顺序历史页及 `prev`／`next` |
 
 历史从最新一页开始向前翻页，默认页内按原生顺序升序，默认 50 条，上限 100 条。
-目前只支持 `before` 方向，其余方向明确拒绝。文本按 Satori 格式转义；输入目前仅
-支持文本元素，拒绝其他元素，不会悄悄丢掉附件。完整的推理、工具、文件及交互通过
-下面的原生扩展读取；标准 Message 的 content 是文本视图。
+目前只支持 `before` 方向，其余方向明确拒绝。文本按 Satori 格式转义。标准 Message
+的 content 是消息文本，后面跟着它携带或写出的每个文件对应的 `<img>`／`<file>` 元素
+（见[附件](#附件)）。完整的推理、工具及交互通过下面的原生扩展读取。
 
 重试创建会话或发送同一业务消息时，传稳定的 `Idempotency-Key`，长度 1–128。
 分别复用核心会话创建键和 Session 内的 Input 去重键；重复消息键返回原 Input，
@@ -65,6 +66,7 @@ provider 返回 API scopes 时，读取要求 `astrabox:read`，写入要求 `as
 | `astrabox.conversation.get` | `{channel_id}` | Session、当前／最近响应、待执行输入及交互 |
 | `astrabox.interaction.answer` | `{channel_id, interaction_id, answer}` | 核心交互回答回执 |
 | `astrabox.response.stop` | `{channel_id}` | 核心停止请求回执 |
+| `astrabox.files.list` | `{channel_id, path?}` | Channel 工作区目录，每个文件带资源 `url` |
 
 先查询准备状态，再创建 Channel。查询不发起同意、不签发凭据、不创建 Session 或
 沙箱。前端展示 provider 返回的用户操作入口，仅执行当前提供的 action。平台不替
@@ -78,6 +80,41 @@ Session 操作走同一 provider，此时携带 Session id。创建会话与接�
 回答和停止均复用核心接口，回执不是执行完成。响应 `status` 原样使用 `running`、
 `waiting`、`ended`，`outcome` 原样使用 `completed`、`failed`、`cancelled`。
 输入被拒绝仍是失败的 Input，不包装成成功的助手回复。这里没有新增 Agent 执行循环。
+
+## 附件
+
+1. **上传**：`POST /v1/upload.create`，请求头同上，`multipart/form-data`。每个
+   part 是一个文件，带唯一的 `name`、`filename` 和 `Content-Type`。响应把每个 part
+   名映射为链接 `internal:astrabox/{agent_id}/_tmp/{id}`。链接归上传人在这个端点
+   使用，15 分钟内有效，被消息发送后失效。上传不需要 Channel，也不需要沙箱在运行。
+2. **发送**：把链接和文字一起写进 `message.create` 的 content：
+   `对比一下 <img src="..."/><file src="..." title="report.csv"/>`。`<img>` 把文件
+   作为图片交给模型，必须是 PNG、JPEG、GIF 或 WebP；`<file>` 可以是任意文件。每个
+   文件还会在引擎读这条消息前写进 Channel 工作区的 `uploads/{input_id}/{文件名}`，
+   消息里会告诉引擎这些路径。一条消息最多 10 个文件，每个不超过 25 MiB；一次上传
+   最多 10 个 part。
+3. **回读**：历史和 `message-updated` 的 content 用
+   `internal:astrabox/{agent_id}/{channel_id}/attachments/{id}` 列出用户发送的文件，
+   内部历史还在 `metadata.attachments` 中给出。这些链接在 Session 存续期间都能读到
+   保存的文件。助手回复列出它的工具报告改动过的工作区文件，链接为
+   `internal:astrabox/{agent_id}/{channel_id}/files/{路径}`；agent 用其他方式（脚本、
+   Bash 命令）生成的文件用 `astrabox.files.list` 查找。工作区链接在 Channel 工作区
+   存在期间可读。
+4. **下载**：`GET /v1/proxy/{链接}`，带调用人的 `Authorization`，返回文件字节和
+   媒体类型。`_tmp` 链接只有上传人能读，其余链接只有 Channel 所有者能读。本服务只
+   代理自己的 `internal:` 链接，不公布 `proxy_urls`。
+
+| 错误码 | 状态 | 含义 |
+| --- | --- | --- |
+| `INPUT_ATTACHMENT_UNSUPPORTED` | 400 | 文本、`img`、`file` 以外的元素；不是 `upload.create` 返回的链接；`img` 不是受支持的图片 |
+| `INPUT_ATTACHMENT_TOO_LARGE` | 413 | 文件超过 25 MiB |
+| `INPUT_ATTACHMENT_UNAVAILABLE` | 409 | 上传已过期、已被另一条消息发送，或由其他调用人、其他端点上传；重新上传 |
+| `ENGINE_CAPABILITY_UNAVAILABLE` | 409 | 该 Agent 的引擎不接受图片输入；改用 `<file>` 发送 |
+
+消息被接受时 Session 运行时尚未启动的，`ENGINE_CAPABILITY_UNAVAILABLE` 会记录为
+该输入的失败原因。文件未能写进工作区时，输入记录为 `INPUT_ATTACHMENT_DELIVERY_FAILED`，
+引擎没有读到这条消息。用同一 `Idempotency-Key` 重试 `message.create` 返回原输入，
+不会再次发送文件。
 
 ## 事件与重连
 
@@ -121,5 +158,5 @@ chunks 中的原生消息顺序，不能按用户提交时间排序。
 未授权或待交互时明确显示状态。运行方法见示例目录。
 
 使用 Satori Python core 1.3.11，以及 server 1.3.11 中未经修改、MIT 授权的
-WebsocketConnection；来源和许可在 `astrabox/vendor/`。不提供社交／群组管理、上传、
+WebsocketConnection；来源和许可在 `astrabox/vendor/`。不提供社交／群组管理、
 webhook、授权页面或内部员工系统适配，不改变原有渠道客户端和供应商 Agent Runtime。

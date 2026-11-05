@@ -161,6 +161,12 @@ def input_message(row: Mapping[str, Any]) -> dict[str, Any]:
     }
     if row.get("failure"):
         metadata["failure"] = deepcopy(row["failure"])
+    if row.get("attachments"):
+        # The files the message carried; the words name where the engine found them.
+        metadata["attachments"] = [
+            {key: item[key] for key in ("attachment_id", "kind", "name", "media_type", "size")}
+            for item in row["attachments"]
+        ]
     if row.get("import_record"):
         metadata["history_import"] = _provenance(row["import_record"])
     return {"id": str(row.get("client_message_id") or row.get("input_id")), "role": "user", "parts": parts, "metadata": metadata}

@@ -4,6 +4,7 @@ from astrabox.core.service.orchestrator.sandbox_viewer import mint_viewer_url
 
 import contextlib
 import dataclasses
+import io
 import posixpath
 from pathlib import PurePosixPath
 from typing import IO, Any
@@ -343,6 +344,57 @@ class SessionFileService:
                 "entries": uploaded,
                 "uploaded_count": len(uploaded),
             }
+
+    async def write_input_attachments(
+        self,
+        session: dict[str, Any],
+        *,
+        directory: str,
+        files: Sequence[tuple[str, bytes]],
+    ) -> list[str]:
+        """Write an input's files into ``directory`` of its Session's workspace; their paths.
+
+        The reader calls this before the engine reads the input, as the
+        Session's own runtime, so no person's access is checked here. Writing
+        the same files again replaces them with the same bytes.
+        """
+        owner = UserContext(user_id=str(session.get("user_id") or ""))
+        async with self._resolve_session_context(
+            owner, str(session["session_id"]), prefetched_session=session,
+        ) as (session, sandbox, root_path):
+            filesystem = self._resolve_filesystem(sandbox, session.get("runtime_identity"))
+            ownership = self._filesystem_ownership(session)
+            parent = self._resolve_client_path(root_path, posixpath.dirname(directory))
+            target_dir = self._resolve_client_path(root_path, directory)
+            for path in (parent, target_dir):
+                await self._assert_path_resolves_within_root(
+                    filesystem, root_path=root_path, target_path=path,
+                    expect_directory=True, allow_missing_leaf=True,
+                )
+                await self._filesystem_call(
+                    "directory creation",
+                    filesystem.make_directories([SandboxDirectorySpec(
+                        path=path, mode=_FILESYSTEM_DIRECTORY_MODE,
+                        owner=ownership.get("owner"), group=ownership.get("group"),
+                    )]),
+                    path=path,
+                )
+            written: list[str] = []
+            for name, data in files:
+                destination = self._join_and_validate(target_dir, name, root_path=root_path)
+                await self._assert_path_resolves_within_root(
+                    filesystem, root_path=root_path, target_path=destination, allow_missing_leaf=True,
+                )
+                await self._filesystem_call(
+                    "file upload",
+                    filesystem.write_bytes(
+                        destination, io.BytesIO(data), mode=_FILESYSTEM_FILE_MODE,
+                        owner=ownership.get("owner"), group=ownership.get("group"),
+                    ),
+                    path=destination,
+                )
+                written.append(destination)
+            return written
 
     async def create_directory(
         self,
