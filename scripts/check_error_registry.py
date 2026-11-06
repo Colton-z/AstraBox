@@ -46,7 +46,7 @@ POSITIONAL_CODE_ARG = {
 # Codes that reach an envelope without appearing as a literal at a construction
 # site. The in-box sidecar sends the first two; runtime-binding resolution
 # forwards the third through ``APIError(code=resolution.reason_code)``; the
-# session reader records the last two on refused inputs. Declared
+# session reader records the last four on refused inputs. Declared
 # because the static collector cannot distinguish them from an unused row.
 NON_LITERAL_CODES = frozenset(
     {
@@ -54,6 +54,7 @@ NON_LITERAL_CODES = frozenset(
         # Recorded as an input's failure (``data-input-failed``) by the session
         # reader rather than raised.
         "TURN_PREPARATION_FAILED",
+        "INPUT_ATTACHMENT_DELIVERY_FAILED",
         "CONVERSATION_ENDED",
         "RUNTIME_START_FAILED",
     }

@@ -222,7 +222,7 @@ CONTEXT_WINDOW_MESSAGES = 50
 
 #: The admitted input's columns, by the payload keys services read and write.
 _PAYLOAD_FIELDS = (
-    "content", "reply_text", "action", "conversation_key", "conversation",
+    "content", "reply_text", "attachments", "action", "conversation_key", "conversation",
     "reply_context", "reference", "participant", "provider_ignore_reason",
     "creator_user_id", "execution_user_id", "execution_mode", "retain_context",
     "message_timestamp", "binding_revision", "prompt_prefix", "selection",
@@ -1250,7 +1250,7 @@ class ChannelRepository:
         window = (
             select(
                 c.item_id, c.dedup_key, c.message_timestamp, c.participant,
-                c.reply_text, c.recall_event_id, c.recall_timestamp,
+                c.reply_text, c.recall_event_id, c.recall_timestamp, c.attachments,
             )
             .where(
                 *_context_candidates(
@@ -1278,6 +1278,9 @@ class ChannelRepository:
                 # quoted as context.
                 "content": row["reply_text"],
             }
+            carried = row["attachments"]
+            if carried and row["recall_event_id"] is None:
+                entry["attachments"] = carried
             if row["recall_event_id"] is not None:
                 entry["recall"] = {
                     "event_id": row["recall_event_id"], "timestamp": row["recall_timestamp"],

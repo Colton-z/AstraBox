@@ -331,6 +331,7 @@ class AgentPlatformService:
                 runtime_manager=self._runtime_manager,
                 realign_live_sandbox_owners=self._sandbox_lifecycle_service.realign_live_sandbox_owners,
                 committed=committed_facts(self.session_fact_consumers),
+                deliver_attachments=self._deliver_attachments,
             ),
             committed=committed_facts(self.session_fact_consumers),
         )
@@ -393,6 +394,15 @@ class AgentPlatformService:
                 ),
                 spawn=self._spawn_background_task,
             ),
+        )
+
+    async def _deliver_attachments(self, session: dict[str, Any], item: Any) -> None:
+        from astrabox.core.service.orchestrator.session_runtime.attachments import deliver_attachments
+        from astrabox.persistence.repository.input_attachment_repository import InputAttachmentRepository
+
+        await deliver_attachments(
+            session, item.input_id, repository=InputAttachmentRepository(),
+            write=self._session_file_service.write_input_attachments,
         )
 
     async def _replace_runtime(self, session_id: str) -> None:

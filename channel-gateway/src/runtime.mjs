@@ -214,6 +214,35 @@ export class BindingRuntime {
     if (this.nextCursor <= cursor) this.nextCursor = cursor + 1
   }
 
+  // One file a message carried, read the way a Satori server's proxy route
+  // reads it: an internal: link through the adapter that issued it, any other
+  // link only under a prefix the adapter registered as its own.
+  async resource(url, maxBytes) {
+    const ctx = this.ctx
+    if (!ctx) throw new GatewayUnavailableError('channel binding is not connected')
+    if (typeof url !== 'string' || !url) throw new Error('resource url is required')
+    const served = url.startsWith('internal:')
+      || [...ctx.satori.proxyUrls].some((prefix) => url.startsWith(prefix))
+    if (!served) {
+      const error = new Error('this channel does not serve that resource')
+      error.statusCode = 403
+      throw error
+    }
+    let file
+    try {
+      file = await ctx.http.file(url, { timeout: 60_000 })
+    } catch (error) {
+      throw redactedError(error, this.credentials)
+    }
+    const data = Buffer.from(file.data)
+    if (data.byteLength > maxBytes) {
+      const error = new Error(`the resource is ${data.byteLength} bytes, above ${maxBytes}`)
+      error.statusCode = 413
+      throw error
+    }
+    return { data, filename: file.filename || null, type: file.type || file.mime || null }
+  }
+
   async deliver({
     platform,
     self_id: selfId,

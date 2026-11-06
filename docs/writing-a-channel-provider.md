@@ -160,6 +160,20 @@ resolver reads the links administrators keep on each trigger. A resolver
 backed by a directory registers at the `astrabox.providers.channel_accounts`
 entry-point group and is selected with `ASTRABOX_CHANNEL_ACCOUNT_RESOLVER`.
 
+### Images and files
+
+List the files a message carries in `ChannelInbound.attachments`, one
+`ChannelAttachment(src, kind, title)` each, with `kind="image"` for a file the
+platform sent as an image and `"file"` otherwise, and mark where each one was
+in `content`. `src` is the adapter's own reference to the file. AstraBox stores
+it with the message and calls `fetch_attachment(binding=..., attachment=...,
+max_bytes=...)` when it sends the message to its conversation; return
+`FetchedAttachment(data, name, media_type)`, or raise to refuse. A refused
+file is named to the Agent with a generic reason. Do not fetch an address a
+message supplied without checking that it is the platform's own: the built-in
+Satori adapters read only their `internal:` links and their registered proxy
+prefixes. An adapter that reports no attachments needs no `fetch_attachment`.
+
 ## Source connection mode
 
 Use a source connection when the messaging product delivers messages through a

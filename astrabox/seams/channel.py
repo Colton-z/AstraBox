@@ -203,6 +203,37 @@ SIGNAL_AUTHORIZATION = "authorization"
 CHANNEL_SIGNALS = (SIGNAL_MESSAGE, SIGNAL_OBSERVATION, SIGNAL_AUTHORIZATION)
 
 
+@dataclass(frozen=True)
+class ChannelAttachment:
+    """A file a platform message carried, as the provider can fetch it later.
+
+    ``src`` is the provider's own reference to the file: core stores it with
+    the message and hands it back to :meth:`ChannelProvider.fetch_attachment`
+    when the message is sent to its conversation. ``kind`` is ``image`` when
+    the platform sent the file as an image, else ``file``.
+    """
+
+    src: str
+    kind: str = "file"
+    title: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.src or self.kind not in ("image", "file"):
+            raise ValueError("a channel attachment needs a src and an image or file kind")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"src": self.src, "kind": self.kind, "title": self.title}
+
+
+@dataclass(frozen=True)
+class FetchedAttachment:
+    """A channel attachment's bytes, with the name and type its platform gave them."""
+
+    data: bytes
+    name: str | None = None
+    media_type: str | None = None
+
+
 @dataclass
 class ChannelInbound:
     """What a verified inbound callback resolves to.
@@ -288,6 +319,10 @@ class ChannelInbound:
     #: order. The first record of a message's content is kept: a later signal
     #: for the same ``dedup_key`` can admit it, but cannot replace it.
     signal: str = SIGNAL_MESSAGE
+    #: Files the message carried. ``content`` marks where each one was; core
+    #: fetches them (:meth:`ChannelProvider.fetch_attachment`) when it sends
+    #: the message to its conversation.
+    attachments: tuple[ChannelAttachment, ...] = ()
 
     def __post_init__(self) -> None:
         if self.signal not in CHANNEL_SIGNALS:
@@ -646,6 +681,18 @@ class ChannelProvider(ABC):
         raise NotImplementedError(
             f"channel provider {self.name!r} does not stream deliveries"
         )
+
+    async def fetch_attachment(
+        self, *, binding: Mapping[str, Any], attachment: ChannelAttachment, max_bytes: int,
+    ) -> FetchedAttachment:
+        """The bytes of a file an inbound message carried, at most ``max_bytes``.
+
+        Raise to refuse; core then tells the agent which file it could not
+        fetch and why, and sends the rest of the message. Default: a provider
+        that reports attachments must implement this.
+        """
+        _ = (binding, max_bytes)
+        raise NotImplementedError(f"channel provider {self.name!r} cannot fetch {attachment.src!r}")
 
     def open_source(self, *, binding: Mapping[str, Any]) -> Any:
         """Open one binding's long-lived inbound source.

@@ -96,6 +96,22 @@ const server = createServer(async (request, response) => {
       return json(response, 200, { message_ids: ids })
     }
 
+    const resourceBinding = bindingPath(url.pathname, 'resources')
+    if (request.method === 'GET' && resourceBinding) {
+      const maxBytes = Number(url.searchParams.get('max_bytes'))
+      if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+        return json(response, 400, { error: 'max_bytes must be a positive integer' })
+      }
+      const file = await manager.require(resourceBinding).resource(url.searchParams.get('url'), maxBytes)
+      const headers = {
+        'content-type': file.type || 'application/octet-stream',
+        'content-length': String(file.data.byteLength),
+      }
+      if (file.filename) headers['x-astrabox-filename'] = encodeURIComponent(file.filename)
+      response.writeHead(200, headers)
+      return response.end(file.data)
+    }
+
     const callbackBinding = bindingPath(url.pathname, 'callback')
     if (request.method === 'POST' && callbackBinding) {
       const body = await readJson(request)
