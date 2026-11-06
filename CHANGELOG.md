@@ -22,12 +22,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - A conversation whose runtime was started under one model credential delivery owner, and whose configuration now declares the other, continues in a replacement runtime when the server next connects to it. Previously one direction of the change was misreported as a missing workload identity, both left the conversation's messages waiting indefinitely, and the reader retried the same refusal. The replacement resumes the native conversation, keeps the waiting messages, and records a response the old runtime was producing as failed (`MODEL_DELIVERY_CHANGED`).
 - An Assistant conversation whose sandbox serves another program on the Hermes bridge port, such as a server from an older sandbox image, now reads recovery required with the HTTP status it received and the action to take. Previously every reattachment waited the full 300-second startup budget, recorded the failure only in the server log, and the conversation's messages stayed queued with nothing on the page to say why. The messages keep their ids and are delivered once after the image is updated and the conversation recovered.
 - Satori event connections no longer queue on a database lock. Each connection used to capture its feed in its own write transaction every 250 ms, locking the feed row with an upsert even when nothing had changed, so several connections of one employee and Agent each held a database connection while waiting for the others. That starved console and conversation requests of connections. A process now captures each feed once for all its connections, a capture with nothing new takes no lock and writes nothing, and new events commit in a short write guarded by the feed counter, so replicas still number each event once.
+- An Assistant sandbox no longer fails its native state save when Hermes deletes a profile file while it is being saved, such as the WAL SQLite removes after a checkpoint. The save treated the vanished file as an I/O failure, so a new Assistant box could fail its first save and be replaced. A file deleted after it was listed is now recorded as absent and left out of the profile archive.
 - Name a conversation's Agent beside its title: in the conversation list, and in the conversation header, where it links back to the Agent's page. A generated title says what was asked, not which Agent answers, so conversations of different Agents could not be told apart. List rows no longer mark the ready state, so the name has the row's width; ended conversations show a labelled dot. A deleted Agent's conversations keep its name and read terminated in the list, as they already did in their header.
 - Update AI SDK, the MCP SDK, hastscript, Starlette, hatchling, pytest, pytest-asyncio, Ruff, mypy and qs.
 
 ### Upgrading
 
-- Update the server image. The sandbox runtime images are unchanged from 0.1.13.
+- Update the server image and the Assistant (Hermes) sandbox image together. The other sandbox runtime images are unchanged from 0.1.13.
 - PostgreSQL applies the schema changes on startup. External persistence providers need the Satori event position, staged input attachment and channel message attachment schema shipped with this release.
 - Runtime preparation providers can receive a `SessionUserActionContext` whose `session_id` is `None`: a Satori caller is authorized before any conversation exists. Key personal delegation by principal and subject.
 - Channel providers that report attachments on inbound messages implement `ChannelProvider.fetch_attachment`. Providers that report none need no change.
@@ -46,12 +47,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - 运行时按一种模型凭据交付方启动、而配置现在声明另一种交付方的会话，在服务端下次连接时改由替换运行时继续。此前其中一个方向被误报为缺少 workload 身份，两个方向都会让会话中的消息无限等待，reader 反复重试同一拒绝。替换运行时恢复原生会话、保留等待中的消息，并把旧运行时正在生成的回复记为失败（`MODEL_DELIVERY_CHANGED`）。
 - Assistant 会话的沙箱若在 Hermes bridge 端口上运行着其他程序（例如旧版沙箱镜像中的服务），现在会显示为需要恢复，并说明收到的 HTTP 状态码和应采取的操作。此前每次重新挂接都要等满 300 秒启动时限，失败只记在服务端日志中，会话里的消息一直排队，页面上看不到原因。更新镜像并恢复会话后，这些消息按原 ID 只投递一次。
 - Satori 事件连接不再排队等待数据库锁。此前每条连接每 250 毫秒各自在写事务中捕获一次 feed，即使没有变化也会用 upsert 锁住 feed 行，同一员工和 Agent 的多条连接各占一个数据库连接互相等待，挤占了管理台和会话接口的连接。现在每个进程对每个 feed 只为所有连接捕获一次；没有新内容的捕获不加锁、不写入；新事件在以 feed 序号为条件的短写入中提交，多个副本仍只为每个事件编号一次。
+- Hermes 在保存过程中删除 profile 文件（例如 SQLite 在 checkpoint 后移除的 WAL 文件）时，Assistant 沙箱的原生状态保存不再失败。此前保存会把消失的文件当作 I/O 错误，新的 Assistant 沙箱可能在首次保存时失败并被替换。现在列出后被删除的文件记为不存在，不写入 profile 归档。
 - 会话标题旁显示该会话所属的 Agent：会话列表每一行都会显示，会话页头部也会显示，并可点击回到该 Agent 的页面。自动生成的标题只说明问了什么，不说明由哪个 Agent 回答，此前不同 Agent 的会话无法区分。列表行不再标注“就绪”，把宽度留给 Agent 名；已结束的会话改用带说明的圆点标记。Agent 删除后，其会话保留它的名字，并在列表中显示为已终止，与会话页头部一致。
 - 更新 AI SDK、MCP SDK、hastscript、Starlette、hatchling、pytest、pytest-asyncio、Ruff、mypy 和 qs。
 
 ### 升级说明
 
-- 升级服务端镜像；沙箱运行镜像与 0.1.13 相同。
+- 服务端镜像与 Assistant（Hermes）沙箱镜像一起升级；其他沙箱运行镜像与 0.1.13 相同。
 - PostgreSQL 在启动时自动升级结构；外部持久化提供方需补齐本版本的 Satori 事件位置、待发送附件与渠道消息附件结构。
 - 运行时准备提供方可能收到 `session_id` 为 `None` 的 `SessionUserActionContext`：Satori 调用方在会话存在之前就要完成授权。个人委托应按主体与授权对象区分。
 - 在入站消息中报告附件的渠道提供方需实现 `ChannelProvider.fetch_attachment`；不报告附件的提供方无需改动。
