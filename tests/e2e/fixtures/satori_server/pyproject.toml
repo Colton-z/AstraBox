@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "astrabox-satori-server-fixture"
+version = "0.0.1"
+
+[project.entry-points."astrabox.web.identity"]
+satori_fixture = "satori_fixture:DelegatedIdentity"
+
+[project.entry-points."astrabox.providers.runtime_preparation"]
+satori_fixture = "satori_fixture:PersonalGrants"
+
+[project.entry-points."astrabox.api.routers"]
+satori_fixture = "satori_fixture:register_routes"
+
+[tool.setuptools]
+py-modules = ["satori_fixture"]

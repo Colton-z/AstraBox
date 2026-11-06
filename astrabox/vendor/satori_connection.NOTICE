@@ -1,0 +1,5 @@
+WebsocketConnection, unmodified from satori-python-server 1.3.11.
+Source: https://github.com/RF-Tar-Railt/satori-python
+Published wheel SHA256: b9d9b60525e0641f3a227ef10632d4901bcf4b23227d9200abe08593921e841c
+License: MIT, see satori_connection.LICENSE.
+Only connection heartbeat/send/close is reused. AstraBox owns its identity-scoped durable feed.
