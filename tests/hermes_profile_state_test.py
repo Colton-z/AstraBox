@@ -3,10 +3,10 @@
 The image's state mirror lists the profile's files and then reads them, while
 Hermes keeps running. SQLite deletes a store's WAL when its last connection
 checkpoints it, and Hermes deletes files of its own, so a listed file can be
-gone when it is read. That used to fail the whole native state save: a new
-Assistant box failed its first save and the platform replaced it. A deletion
-is a change of state, so the fingerprint must record the file as absent, and
-the archive must restore without it.
+gone when it is read. Treated as an I/O failure, it fails the whole native
+state save, and a new Assistant box whose first save fails is replaced. A
+deletion is a change of state, so the fingerprint records the file as absent,
+and the archive restores without it.
 
 ``hermes_cli`` is the Hermes package inside the image; its SQLite backup
 helpers are replaced with plain copies, which is all this race involves.

@@ -8,6 +8,9 @@ and retrying it unseen. The conversation then reads recovery required with the
 reason, and the message that was waiting stays with the platform, undelivered,
 under its own id. With the bridge back, recovering the conversation delivers
 that message once and it is answered.
+
+The message is sent while the reader's attach waits for the stopped bridge,
+so it also shows that accepting a message does not wait for an attach.
 """
 
 from __future__ import annotations
@@ -45,6 +48,8 @@ _BRIDGE_PORT = 9118
 _HEALTH = f"http://127.0.0.1:{_BRIDGE_PORT}/healthz"
 #: Well inside the 300 s the probe allows a bridge that has not started.
 _RECORDED_WITHIN_S = 60.0
+#: A message is accepted while the reader still waits for the bridge.
+_ACCEPTED_WITHIN_S = 10.0
 
 
 def _in_box(box: str, script: str) -> str:
@@ -109,8 +114,11 @@ def test_a_foreign_program_on_the_bridge_port_is_reported_and_the_waiting_messag
         # with the platform.
         _in_box(box, "supervisorctl stop astrabox-hermes-bridge")
         assert _health(box) == "000"
+        sent = time.monotonic()
         waiting = str(send_input(e2e_client, sid, f"Reply with exactly {marker}_WAITING and nothing else. "
                                                    "Do not use any tool.")["input_id"])
+        # Accepting a message must not wait for the reader's attach.
+        assert time.monotonic() - sent < _ACCEPTED_WITHIN_S
 
         # Another program takes the port and answers 404.
         _in_box(box, f"nohup python3 -c {shlex.quote(stand_in)} >/dev/null 2>&1 & "
