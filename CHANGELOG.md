@@ -7,21 +7,51 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.14] - 2026-11-06
+
 ## English
+
+### Added
+
+- Serve an Agent to an external chat application over Satori v1 HTTP and WebSocket at `/api/satori/agents/{agent_id}/v1`. Each channel is a conversation owned by the caller that the deployment's identity resolver verified, and a reconnecting client resumes its events from the shared database on any replica. See the Satori Agent integration guide.
+- Send images and files to an Agent, from Satori callers through standard `upload.create` and resource elements, and from channel messages through the bundled Satori adapters such as Discord. Images reach the engine as image input; files are written to the conversation workspace under `uploads/`. History lists each message's attachments, and the Satori endpoint serves the Agent's files for download. A message carries up to 10 files of at most 25 MiB each.
 
 ### Fixed and improved
 
 - Reading unchanged conversation history no longer reads, decodes and folds every stored part of each reply again. A server process keeps each reply's folded message until that reply stores another part; status, outcome and interaction answers are still read on every request. This covers message history, history blocks and shared conversations.
 - A conversation whose runtime was started under one model credential delivery owner, and whose configuration now declares the other, continues in a replacement runtime when the server next connects to it. Previously one direction of the change was misreported as a missing workload identity, both left the conversation's messages waiting indefinitely, and the reader retried the same refusal. The replacement resumes the native conversation, keeps the waiting messages, and records a response the old runtime was producing as failed (`MODEL_DELIVERY_CHANGED`).
-- Name a conversation's Agent beside its title: in the conversation list, and in the conversation header, where it links back to the Agent's page. A generated title says what was asked, not which Agent answers, so conversations of different Agents could not be told apart. A deleted Agent's conversations keep its name.
+- Name a conversation's Agent beside its title: in the conversation list, and in the conversation header, where it links back to the Agent's page. A generated title says what was asked, not which Agent answers, so conversations of different Agents could not be told apart. List rows no longer mark the ready state, so the name has the row's width; ended conversations show a labelled dot. A deleted Agent's conversations keep its name and read terminated in the list, as they already did in their header.
+- Update AI SDK, the MCP SDK, hastscript, Starlette, hatchling, pytest, pytest-asyncio, Ruff, mypy and qs.
+
+### Upgrading
+
+- Update the server image. The sandbox runtime images are unchanged from 0.1.13.
+- PostgreSQL applies the schema changes on startup. External persistence providers need the Satori event position, staged input attachment and channel message attachment schema shipped with this release.
+- Runtime preparation providers can receive a `SessionUserActionContext` whose `session_id` is `None`: a Satori caller is authorized before any conversation exists. Key personal delegation by principal and subject.
+- Channel providers that report attachments on inbound messages implement `ChannelProvider.fetch_attachment`. Providers that report none need no change.
+- The Satori endpoint relies on a `WebIdentityResolver` that verifies the delegated execution identity. The bundled single-user resolver must not expose it to untrusted callers.
 
 ## 中文
+
+### 新增
+
+- 通过 Satori v1 HTTP 与 WebSocket 将 Agent 提供给外部聊天应用，地址为 `/api/satori/agents/{agent_id}/v1`。每个频道是一段归属于调用方的会话，调用方身份由部署的身份解析器校验；客户端重连后可在任一副本上从共享数据库续读事件。详见 Satori Agent 接入指南。
+- 支持向 Agent 发送图片和文件：Satori 调用方使用标准 `upload.create` 与资源元素，渠道消息经内置 Satori 适配器（如 Discord）传入。图片作为图像输入交给引擎，文件写入会话工作区的 `uploads/` 目录；历史记录列出每条消息的附件，Satori 接口提供 Agent 生成文件的下载。每条消息最多 10 个文件，每个不超过 25 MiB。
 
 ### 修复与改进
 
 - 读取未变化的会话历史时，不再每次重新读取、解码并折叠每条回复的全部已存片段。服务进程保留每条回复折叠后的消息，直到该回复写入新片段；状态、结果与交互回答仍在每次请求时读取。消息历史、历史区块和分享会话均适用。
 - 运行时按一种模型凭据交付方启动、而配置现在声明另一种交付方的会话，在服务端下次连接时改由替换运行时继续。此前其中一个方向被误报为缺少 workload 身份，两个方向都会让会话中的消息无限等待，reader 反复重试同一拒绝。替换运行时恢复原生会话、保留等待中的消息，并把旧运行时正在生成的回复记为失败（`MODEL_DELIVERY_CHANGED`）。
-- 会话标题旁显示该会话所属的 Agent：会话列表每一行都会显示，会话页头部也会显示，并可点击回到该 Agent 的页面。自动生成的标题只说明问了什么，不说明由哪个 Agent 回答，此前不同 Agent 的会话无法区分。Agent 删除后，其会话仍保留它的名字。
+- 会话标题旁显示该会话所属的 Agent：会话列表每一行都会显示，会话页头部也会显示，并可点击回到该 Agent 的页面。自动生成的标题只说明问了什么，不说明由哪个 Agent 回答，此前不同 Agent 的会话无法区分。列表行不再标注“就绪”，把宽度留给 Agent 名；已结束的会话改用带说明的圆点标记。Agent 删除后，其会话保留它的名字，并在列表中显示为已终止，与会话页头部一致。
+- 更新 AI SDK、MCP SDK、hastscript、Starlette、hatchling、pytest、pytest-asyncio、Ruff、mypy 和 qs。
+
+### 升级说明
+
+- 升级服务端镜像；沙箱运行镜像与 0.1.13 相同。
+- PostgreSQL 在启动时自动升级结构；外部持久化提供方需补齐本版本的 Satori 事件位置、待发送附件与渠道消息附件结构。
+- 运行时准备提供方可能收到 `session_id` 为 `None` 的 `SessionUserActionContext`：Satori 调用方在会话存在之前就要完成授权。个人委托应按主体与授权对象区分。
+- 在入站消息中报告附件的渠道提供方需实现 `ChannelProvider.fetch_attachment`；不报告附件的提供方无需改动。
+- Satori 接口依赖能校验委托执行身份的 `WebIdentityResolver`；内置的单用户解析器不得把它暴露给不受信任的调用方。
 
 ## [0.1.13] - 2026-11-01
 
