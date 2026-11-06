@@ -19783,6 +19783,189 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/satori/agents/{agent_id}/v1/proxy/{url}": {
+      "get": {
+        "description": "Satori v1 for one fixed Agent; see the Satori Agent integration guide. Responses are Satori objects without the console API envelope. The deployment's identity provider verifies the delegated execution identity; reads need `astrabox:read` and writes `astrabox:write` where the provider supplies API scopes. `url` is an `internal:` link this endpoint issued.",
+        "externalDocs": {
+          "url": "https://satori.chat/en-US/protocol/api.html"
+        },
+        "operationId": "satori_proxy__api_satori_agents__agent_id__v1_proxy__url__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "url",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The resource bytes with their media type."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {},
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Refused or failed; the transport status is authoritative."
+          }
+        },
+        "summary": "Read a Satori resource",
+        "tags": [
+          "Satori"
+        ]
+      }
+    },
+    "/api/satori/agents/{agent_id}/v1/{action}": {
+      "post": {
+        "description": "Satori v1 for one fixed Agent; see the Satori Agent integration guide. Responses are Satori objects without the console API envelope. The deployment's identity provider verifies the delegated execution identity; reads need `astrabox:read` and writes `astrabox:write` where the provider supplies API scopes. `action` is a Satori method such as `message.create`, `channel.list` or `upload.create`, or `internal/astrabox.*` for an AstraBox extension. `upload.create` takes multipart/form-data, one file per part; every other action takes a JSON object.",
+        "externalDocs": {
+          "url": "https://satori.chat/en-US/protocol/api.html"
+        },
+        "operationId": "satori_action__api_satori_agents__agent_id__v1__action__post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Satori-Platform",
+            "required": true,
+            "schema": {
+              "enum": [
+                "astrabox"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "The endpoint's Agent id; it selects the Agent Login, not an employee.",
+            "in": "header",
+            "name": "Satori-User-ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "1..128 characters; a retried write with the same key is applied once.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "maxLength": 128,
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "action",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "additionalProperties": {
+                  "format": "binary",
+                  "type": "string"
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "The Satori result object of the action."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "data": {},
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Refused or failed; the transport status is authoritative."
+          }
+        },
+        "summary": "Call a Satori action",
+        "tags": [
+          "Satori"
+        ]
+      }
+    },
     "/api/v1/admin-api/assistants/{assistant_id}/workspace/hibernate": {
       "post": {
         "operationId": "admin_api_hibernate_assistant_workspace_api_v1_admin_api_assistants__assistant_id__workspace_hibernate_post",

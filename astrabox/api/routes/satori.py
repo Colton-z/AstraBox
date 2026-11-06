@@ -17,6 +17,7 @@ from astrabox.common.utils.user_context import (
     API_READ_SCOPE, API_WRITE_SCOPE, UserContext, reset_current_user_context, set_current_user_context,
 )
 from astrabox.core.service.environment_access import require_environment_access
+from astrabox.api.native_documentation import satori_operation
 from astrabox.api.routes.session_files import FileDownloadResponse
 from astrabox.core.service.orchestrator import satori_feed
 from astrabox.core.service.orchestrator.satori_service import SatoriService
@@ -47,7 +48,7 @@ def _writes(action: str) -> bool:
                       "internal/astrabox.interaction.answer", "internal/astrabox.response.stop"}
 
 
-@router.post("/{action:path}", include_in_schema=False)
+@router.post("/{action:path}", include_in_schema=False, openapi_extra=satori_operation(proxy=False))
 async def satori_action(agent_id: str, action: str, request: Request) -> JSONResponse:
     try:
         user = await _identity(request, write=_writes(action))
@@ -93,7 +94,7 @@ async def _upload(request: Request, user: UserContext, agent_id: str) -> dict[st
         await form.close()
 
 
-@router.get("/proxy/{url:path}", include_in_schema=False)
+@router.get("/proxy/{url:path}", include_in_schema=False, openapi_extra=satori_operation(proxy=True))
 async def satori_proxy(agent_id: str, url: str, request: Request) -> Response:
     """Serve one of this Login's ``internal:`` resources to a caller allowed to read it."""
     try:

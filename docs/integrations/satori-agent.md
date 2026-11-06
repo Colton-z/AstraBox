@@ -50,7 +50,7 @@ takes `multipart/form-data`. Unsupported APIs return 404.
 | `channel.get` | `{channel_id}` | Owned Channel |
 | `message.create` | `{channel_id, content}` | Array containing the accepted input Message |
 | `upload.create` | multipart: one file part per file | `{part name: resource link}` |
-| `message.get` | `{channel_id, message_id}` | Message text projection |
+| `message.get` | `{channel_id, message_id}` | The Message with its text |
 | `message.list` | `{channel_id, next?, direction?: "before", order?: "asc" or "desc", limit?: number}` | Native-ordered history page and `prev`/`next` |
 
 `message.list` starts at the newest page, returns ascending native conversation
@@ -150,7 +150,7 @@ the engine did not read that message. Retrying `message.create` with the same
 ## Events and reconnect
 
 Connect WebSocket `/v1/events`; send `{op: 3, body: {token, sn?}}`. The token is
-resolved through the same host identity seam as HTTP. READY (`op: 4`) contains
+resolved through the same `WebIdentityResolver` as HTTP. READY (`op: 4`) contains
 this Agent's Login. Send PING (`op: 1`) at least every ten seconds; PONG is `op: 2`.
 Failure to identify or keep the connection alive closes it. Identity, Environment entry and Agent access are checked on connection.
 HTTP operations resolve current identity and permissions on every request.
