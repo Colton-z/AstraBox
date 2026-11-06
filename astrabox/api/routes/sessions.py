@@ -118,6 +118,8 @@ class SessionRecord(BaseModel):
     agent_id: str | None = None
     #: The referenced Agent's lifecycle, independent of the Session's runtime.
     agent_state: str | None = None
+    #: The referenced Agent's name, so a conversation can say which Agent it is with.
+    agent_name: str | None = None
     assistant_id: str | None = None
     deployment_name: str | None = None
     session_kind: str | None = None

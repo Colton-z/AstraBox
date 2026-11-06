@@ -5699,6 +5699,8 @@ export interface components {
         AdminSessionDetail: {
             /** Agent Id */
             agent_id?: string | null;
+            /** Agent Name */
+            agent_name?: string | null;
             /** Agent State */
             agent_state?: string | null;
             /** Assistant Id */
@@ -11634,6 +11636,8 @@ export interface components {
         SessionRecord: {
             /** Agent Id */
             agent_id?: string | null;
+            /** Agent Name */
+            agent_name?: string | null;
             /** Agent State */
             agent_state?: string | null;
             /** Assistant Id */
