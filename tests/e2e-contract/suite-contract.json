@@ -136,6 +136,7 @@
   "python": {
     "assistant": {
       "parallel_node_ids": [
+        "tests/e2e/assistant_foreign_backend_test.py::test_a_foreign_program_on_the_bridge_port_is_reported_and_the_waiting_message_runs_after_recovery",
         "tests/e2e/assistant_redelivered_input_test.py::test_an_input_handed_over_again_after_its_reader_was_replaced_runs_once",
         "tests/e2e/test_assistant_mcp_change.py::test_an_mcp_server_added_to_a_running_assistant_is_reachable",
         "tests/e2e/test_assistant_mcp_change.py::test_a_conversation_whose_setup_fails_says_why",
@@ -149,7 +150,7 @@
         "tests/e2e/test_interrupt.py::test_assistant_interrupt_stops_a_running_command_and_the_next_message_is_answered"
       ],
       "restart_node_ids": [],
-      "tests": 11,
+      "tests": 12,
       "workers": 1
     },
     "main": {

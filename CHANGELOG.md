@@ -20,6 +20,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - Reading unchanged conversation history no longer reads, decodes and folds every stored part of each reply again. A server process keeps each reply's folded message until that reply stores another part; status, outcome and interaction answers are still read on every request. This covers message history, history blocks and shared conversations.
 - A conversation whose runtime was started under one model credential delivery owner, and whose configuration now declares the other, continues in a replacement runtime when the server next connects to it. Previously one direction of the change was misreported as a missing workload identity, both left the conversation's messages waiting indefinitely, and the reader retried the same refusal. The replacement resumes the native conversation, keeps the waiting messages, and records a response the old runtime was producing as failed (`MODEL_DELIVERY_CHANGED`).
+- An Assistant conversation whose sandbox serves another program on the Hermes bridge port, such as a server from an older sandbox image, now reads recovery required with the HTTP status it received and the action to take. Previously every reattachment waited the full 300-second startup budget, recorded the failure only in the server log, and the conversation's messages stayed queued with nothing on the page to say why. The messages keep their ids and are delivered once after the image is updated and the conversation recovered.
 - Name a conversation's Agent beside its title: in the conversation list, and in the conversation header, where it links back to the Agent's page. A generated title says what was asked, not which Agent answers, so conversations of different Agents could not be told apart. List rows no longer mark the ready state, so the name has the row's width; ended conversations show a labelled dot. A deleted Agent's conversations keep its name and read terminated in the list, as they already did in their header.
 - Update AI SDK, the MCP SDK, hastscript, Starlette, hatchling, pytest, pytest-asyncio, Ruff, mypy and qs.
 
@@ -42,6 +43,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - 读取未变化的会话历史时，不再每次重新读取、解码并折叠每条回复的全部已存片段。服务进程保留每条回复折叠后的消息，直到该回复写入新片段；状态、结果与交互回答仍在每次请求时读取。消息历史、历史区块和分享会话均适用。
 - 运行时按一种模型凭据交付方启动、而配置现在声明另一种交付方的会话，在服务端下次连接时改由替换运行时继续。此前其中一个方向被误报为缺少 workload 身份，两个方向都会让会话中的消息无限等待，reader 反复重试同一拒绝。替换运行时恢复原生会话、保留等待中的消息，并把旧运行时正在生成的回复记为失败（`MODEL_DELIVERY_CHANGED`）。
+- Assistant 会话的沙箱若在 Hermes bridge 端口上运行着其他程序（例如旧版沙箱镜像中的服务），现在会显示为需要恢复，并说明收到的 HTTP 状态码和应采取的操作。此前每次重新挂接都要等满 300 秒启动时限，失败只记在服务端日志中，会话里的消息一直排队，页面上看不到原因。更新镜像并恢复会话后，这些消息按原 ID 只投递一次。
 - 会话标题旁显示该会话所属的 Agent：会话列表每一行都会显示，会话页头部也会显示，并可点击回到该 Agent 的页面。自动生成的标题只说明问了什么，不说明由哪个 Agent 回答，此前不同 Agent 的会话无法区分。列表行不再标注“就绪”，把宽度留给 Agent 名；已结束的会话改用带说明的圆点标记。Agent 删除后，其会话保留它的名字，并在列表中显示为已终止，与会话页头部一致。
 - 更新 AI SDK、MCP SDK、hastscript、Starlette、hatchling、pytest、pytest-asyncio、Ruff、mypy 和 qs。
 
