@@ -622,10 +622,18 @@ async def attach_platform_runtime(
     )
     from astrabox.seams.runtime_preparation import runtime_preparation_plan
 
-    if identity.get("model_credential_id") and runtime_preparation_plan(template).model_credential_delivery != "provider":
+    # A runtime initialized under provider delivery records
+    # ``model_credential_id`` in the identity persisted for it, and only such
+    # a runtime does. The process keeps the model credential it was started
+    # with, so attaching under the other owner would bind a credential it
+    # does not use. An identity planned here records nothing about that.
+    initialized_by_provider = bool((runtime_identity or {}).get("model_credential_id"))
+    if runtime_identity and initialized_by_provider != (
+        runtime_preparation_plan(template).model_credential_delivery == "provider"
+    ):
         raise APIError(
-            code="RUNTIME_PREPARATION_FAILED", status_code=409,
-            message="Model delivery ownership no longer matches this initialized runtime",
+            code="RUNTIME_MODEL_DELIVERY_CHANGED", status_code=409,
+            message="The runtime was initialized under the model delivery owner its configuration does not declare",
         )
     credential, network_policy, vault_write = resolve_model_credential_delivery(
         template=template,

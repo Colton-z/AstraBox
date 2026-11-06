@@ -85,7 +85,7 @@ class PlatformRuntimeConnector:
                 raise RuntimeNotReady(session_id)
             if not session.get("sandbox_id"):
                 if session.get("runtime_unavailable"):
-                    raise RuntimeGone(session_id)
+                    raise RuntimeGone(session_id, reason="sandbox_lost")
                 raise RuntimeNotReady(session_id)
             if session.get("sandbox_parked_at"):
                 # A parked box wakes for an input and for nothing else.
@@ -99,7 +99,9 @@ class PlatformRuntimeConnector:
             runtime = result.runtime
             if runtime is None:
                 if result.sandbox_gone:
-                    raise RuntimeGone(session_id)
+                    raise RuntimeGone(session_id, reason="sandbox_lost")
+                if result.delivery_changed:
+                    raise RuntimeGone(session_id, reason="model_delivery_changed")
                 raise RuntimeError(result.error_text or f"session {session_id} runtime could not be attached")
             client = runtime.engine_client
             if not isinstance(client, RuntimeClient):

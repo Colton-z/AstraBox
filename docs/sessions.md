@@ -215,6 +215,11 @@ snapshot or lock an Agent version:
   place.
 - If AstraBox later recreates the runtime, the same Session can use the current saved
   Agent and RuntimeProfile configuration.
+- A running runtime cannot take a different model credential delivery owner.
+  When the deployment's runtime preparation integration declares one for an
+  Agent conversation's current configuration, AstraBox replaces that
+  conversation's runtime instead of reattaching to it the next time it
+  connects, and the conversation continues in the replacement.
 - The Agent `version` field detects concurrent updates. It is not a selectable
   configuration version for a Session.
 

@@ -36,6 +36,7 @@ POLICIES = Table(
     Column("refuse_binding", Boolean, nullable=False),
     Column("startup_environment", Boolean, nullable=False),
     Column("console_base_url", Text, nullable=False, server_default=""),
+    Column("model_credential_delivery", Text, nullable=False, server_default="provider"),
 )
 RECEIPTS = Table(
     "runtime_preparation_binding_receipts", METADATA,
@@ -64,7 +65,9 @@ async def policy(environment):
 
 async def plan(config):
     row = await policy(config["runtime_profile_name"])
-    return RuntimePreparationPlan(session_bound=row["session_bound"], model_credential_delivery="provider")
+    return RuntimePreparationPlan(
+        session_bound=row["session_bound"], model_credential_delivery=row["model_credential_delivery"],
+    )
 
 
 async def prerequisites(context):
@@ -88,27 +91,12 @@ async def bind(context):
         raise PreparationUserActionRequired(message="Authorize this identity before binding the model")
     if row["refuse_binding"]:
         raise RuntimeError("fixture refused binding")
-    assert context.model_credential_placeholder
-    access = RuntimeConfigResolver(load_astrabox_settings()).resolve_model_access(context.config["model_config"])
-    key = await model_endpoint_for_name(access.endpoint_provider).ensure_session_credential(
-        context=ModelRequestContext(conversation_id=context.session_id, user_id=context.principal_id),
-    )
-    assert key
-    request = get_engine_adapter(context.config["engine_kind"]).sandbox_request(
-        template=SimpleNamespace(**context.config), model_access=access,
-    )
-    credential = replace(request.credential, access=replace(access, credential=key))
-    protected = model_credential_plan(credential, substitutions=(ModelEgressCredentialSubstitution(
-        name="binding-fixture", secret_value=key, placeholder=context.model_credential_placeholder,
-    ),))
-    await sandbox_for_name(context.config["sandbox_backend"]).apply_credential_vault(context.sandbox, vault_write=protected)
     async with get_persistence().get_engine().begin() as connection:
         await connection.execute(RECEIPTS.delete().where(RECEIPTS.c.session_id == context.session_id))
-        await connection.execute(RECEIPTS.insert().values(
-            session_id=context.session_id, principal_id=context.principal_id,
-            sandbox_id=context.sandbox_id, placeholder=context.model_credential_placeholder,
-            key_digest=hashlib.sha256(key.encode()).hexdigest(), engine_initialized=context.engine_initialized,
-        ))
+    if row["model_credential_delivery"] == "provider":
+        await _bind_model(context)
+    else:
+        assert context.model_credential_placeholder is None
     environment = {}
     if row["startup_environment"]:
         assert row["console_base_url"].startswith(("http://", "https://"))
@@ -127,6 +115,29 @@ async def bind(context):
         **environment,
         **({} if context.engine_initialized else {"ASTRABOX_CFUSE_AGENT_TOKEN_FILE": context.file_path(material.name)}),
     })
+
+
+async def _bind_model(context):
+    assert context.model_credential_placeholder
+    access = RuntimeConfigResolver(load_astrabox_settings()).resolve_model_access(context.config["model_config"])
+    key = await model_endpoint_for_name(access.endpoint_provider).ensure_session_credential(
+        context=ModelRequestContext(conversation_id=context.session_id, user_id=context.principal_id),
+    )
+    assert key
+    request = get_engine_adapter(context.config["engine_kind"]).sandbox_request(
+        template=SimpleNamespace(**context.config), model_access=access,
+    )
+    credential = replace(request.credential, access=replace(access, credential=key))
+    protected = model_credential_plan(credential, substitutions=(ModelEgressCredentialSubstitution(
+        name="binding-fixture", secret_value=key, placeholder=context.model_credential_placeholder,
+    ),))
+    await sandbox_for_name(context.config["sandbox_backend"]).apply_credential_vault(context.sandbox, vault_write=protected)
+    async with get_persistence().get_engine().begin() as connection:
+        await connection.execute(RECEIPTS.insert().values(
+            session_id=context.session_id, principal_id=context.principal_id,
+            sandbox_id=context.sandbox_id, placeholder=context.model_credential_placeholder,
+            key_digest=hashlib.sha256(key.encode()).hexdigest(), engine_initialized=context.engine_initialized,
+        ))
 
 
 def register_routes(app: FastAPI):
