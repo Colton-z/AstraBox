@@ -175,9 +175,14 @@ future cursor is refused. Clients should ignore an already processed `sn` if a
 network failure occurred before they saved it. Deleting a Session removes its
 replay entries, so event numbers can have gaps.
 
-Replay uses the shared database on every replica. A locked feed counter, output
-positions and event references commit together; there is no per-process replay
-cache or execution queue. References read the existing immutable output log.
+Replay uses the shared database on every replica. Each process captures a feed
+once for all of its connections to that principal and Agent, about four times a
+second while any is open, and a connection reads only the events it has not
+sent. A capture reads without locks and writes nothing when nothing changed. It
+commits new event numbers, output positions and event references together,
+conditional on the feed counter it read, so captures on different replicas
+never number an event twice. There is no per-process replay cache or execution
+queue. References read the existing immutable output log.
 Retention follows the Session's persisted records, and does not require a
 persistent workspace volume. `sn` orders delivery across Channels; within one
 conversation, use core native message order from full history and position

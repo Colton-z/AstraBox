@@ -18,6 +18,7 @@ from astrabox.common.utils.user_context import (
 )
 from astrabox.core.service.environment_access import require_environment_access
 from astrabox.api.routes.session_files import FileDownloadResponse
+from astrabox.core.service.orchestrator import satori_feed
 from astrabox.core.service.orchestrator.satori_service import SatoriService
 from astrabox.core.service.orchestrator.session_file_service import FileDownload
 from astrabox.core.service.orchestrator.session_runtime.attachments import MAX_ATTACHMENTS
@@ -139,24 +140,31 @@ async def satori_events(agent_id: str, websocket: WebSocket) -> None:
         binding = set_current_user_context(user)
         service = SatoriService(user, agent_id)
         login = await service.login()
-        high, rows = await service.repo.poll(user.user_id, agent_id, after=identify.sn)
-        after = high if identify.sn is None else identify.sn
-        await connection.send({"op": Opcode.READY, "body": {"logins": [login.dump()], "proxy_urls": []}})
+        async with satori_feed.watch(service.repo, user.user_id, agent_id) as feed:
+            known = await service.repo.capture(user.user_id, agent_id)
+            if identify.sn is not None and identify.sn > known:
+                raise APIError(code="INVALID_REQUEST", message="Satori sn is outside this identity's feed",
+                               status_code=400)
+            after = known if identify.sn is None else identify.sn
+            await connection.send({"op": Opcode.READY, "body": {"logins": [login.dump()], "proxy_urls": []}})
 
-        async def send_events() -> None:
-            nonlocal rows, after
-            while connection.alive:
-                for row in rows:
-                    await connection.send({"op": Opcode.EVENT, "body": await service.event(row, login)})
-                    after = row["sn"]
-                if len(rows) < 100:
-                    await asyncio.sleep(0.25)
-                _high, rows = await service.repo.poll(user.user_id, agent_id, after=after)
+            async def send_events() -> None:
+                nonlocal after, known
+                while connection.alive:
+                    rows = await service.repo.events(user.user_id, agent_id, after=after)
+                    for row in rows:
+                        await connection.send({"op": Opcode.EVENT, "body": await service.event(row, login)})
+                        after = row["sn"]
+                    if len(rows) < 100:
+                        # Every event through `known` was committed before that
+                        # read, so none past `after` remains for this identity.
+                        after = max(after, known)
+                        known = await feed.beyond(after)
 
-        tasks = [asyncio.create_task(connection.heartbeat()), asyncio.create_task(send_events())]
-        done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for task in done:
-            task.result()
+            tasks = [asyncio.create_task(connection.heartbeat()), asyncio.create_task(send_events())]
+            done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
     except APIError as exc:
         with contextlib.suppress(RuntimeError, WebSocketDisconnect):
             await websocket.close(code=1008, reason=exc.user_message[:120])
