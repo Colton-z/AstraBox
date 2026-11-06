@@ -20,6 +20,7 @@ import astrabox.core.service.orchestrator.engine.claude_code  # noqa: F401 - reg
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.service.orchestrator.session_runtime.feed import SessionFeed
 from astrabox.core.service.orchestrator.session_runtime.process_summaries import ProcessSummaries
+from astrabox.core.service.orchestrator.session_runtime.response_folds import ResponseFolds
 from astrabox.core.service.orchestrator.session_runtime.service import SessionRuntimeService
 from astrabox.core.service.orchestrator.session_runtime.views import SessionReads
 from astrabox.persistence.repository.process_summary_repository import ProcessSummaryRepository
@@ -38,16 +39,19 @@ _MODEL = "claude-sonnet-4-5"
 def _reads() -> SessionReads:
     facts = SessionRuntimeRepository()
     reads = SessionReadRepository()
+    folds = ResponseFolds(facts=facts, reads=reads)
     return SessionReads(
         sessions=SessionRepository(),
         facts=facts,
         reads=reads,
+        folds=folds,
         runtime=SessionRuntimeService(
-            sessions=SessionRepository(), repo=facts, feed=SessionFeed(), host=cast(Any, None)
+            sessions=SessionRepository(), repo=facts, feed=SessionFeed(), host=cast(Any, None), folds=folds
         ),
         summaries=ProcessSummaries(
             facts=facts,
             reads=reads,
+            folds=folds,
             repo=ProcessSummaryRepository(),
             model=cast(Any, None),
             enabled=False,

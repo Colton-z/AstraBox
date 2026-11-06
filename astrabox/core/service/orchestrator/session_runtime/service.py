@@ -27,6 +27,7 @@ from astrabox.core.service.orchestrator.runtime.environment_ownership import req
 from astrabox.core.service.orchestrator.session_runtime.feed import SessionFeed
 from astrabox.core.service.orchestrator.session_runtime.follow import follow_output
 from astrabox.core.service.orchestrator.session_runtime.host import ReaderHost
+from astrabox.core.service.orchestrator.session_runtime.response_folds import ResponseFolds
 from astrabox.core.service.orchestrator.session_runtime.ui_message import history_messages
 from astrabox.persistence.repository.session_repository import SessionRepository
 from astrabox.persistence.provider import get_persistence
@@ -103,11 +104,13 @@ class SessionRuntimeService:
         repo: SessionRuntimeRepository,
         feed: SessionFeed,
         host: ReaderHost,
+        folds: ResponseFolds,
     ) -> None:
         self._sessions = sessions
         self._repo = repo
         self._feed = feed
         self._host = host
+        self._folds = folds
 
     # -- requests ----------------------------------------------------------
 
@@ -366,10 +369,10 @@ class SessionRuntimeService:
             through_seq=output_seq,
         )
         response_ids = [str(r["response_id"]) for r in page["responses"]]
-        outputs = await self._repo.output_for_responses(session_id, response_ids, through_seq=output_seq)
+        folded = await self._folds.messages(session_id, page["responses"], through_seq=output_seq)
         interactions = await self._repo.response_interactions(session_id, response_ids)
         return {
-            "messages": history_messages(page, outputs, interactions),
+            "messages": history_messages(page, folded, interactions),
             "has_more": page["has_more"],
             "before": _encode_before(page["before"]),
             "output_seq": output_seq,

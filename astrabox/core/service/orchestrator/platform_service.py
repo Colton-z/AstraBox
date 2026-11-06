@@ -296,10 +296,15 @@ class AgentPlatformService:
             committed_facts,
             reader_hooks,
         )
+        from astrabox.core.service.orchestrator.session_runtime.response_folds import ResponseFolds
         from astrabox.core.service.orchestrator.session_runtime.service import SessionRuntimeService
+        from astrabox.persistence.repository.session_read_repository import SessionReadRepository
         from astrabox.persistence.repository.session_runtime_repository import SessionRuntimeRepository
 
         self._session_facts = SessionRuntimeRepository()
+        self._session_read_facts = SessionReadRepository()
+        #: One per process: every history read of a response shares its fold.
+        self._response_folds = ResponseFolds(facts=self._session_facts, reads=self._session_read_facts)
         self._session_feed = SessionFeed()
         #: Acted on after each committed batch of runtime facts (titles, summaries, channels).
         self.session_fact_consumers: list[FactConsumer] = []
@@ -334,6 +339,7 @@ class AgentPlatformService:
             repo=self._session_facts,
             feed=self._session_feed,
             host=self._reader_host,
+            folds=self._response_folds,
         )
         self._session_runtime_started = False
 
@@ -343,13 +349,13 @@ class AgentPlatformService:
         from astrabox.core.service.orchestrator.session_runtime.views import SessionReads
         from astrabox.core.service.orchestrator.session_title_service import ConversationTitleModel
         from astrabox.persistence.repository.process_summary_repository import ProcessSummaryRepository
-        from astrabox.persistence.repository.session_read_repository import SessionReadRepository
         from astrabox.persistence.repository.session_share_repository import SessionShareRepository
 
-        reads = SessionReadRepository()
+        reads = self._session_read_facts
         self.process_summaries = ProcessSummaries(
             facts=self._session_facts,
             reads=reads,
+            folds=self._response_folds,
             repo=ProcessSummaryRepository(),
             model=ConversationTitleModel(),
             enabled=load_astrabox_settings().title_model_enabled,
@@ -359,6 +365,7 @@ class AgentPlatformService:
             sessions=self._sessions_repo,
             facts=self._session_facts,
             reads=reads,
+            folds=self._response_folds,
             runtime=self.session_runtime,
             summaries=self.process_summaries,
         )

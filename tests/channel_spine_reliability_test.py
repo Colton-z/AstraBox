@@ -23,6 +23,7 @@ from astrabox.core.service.orchestrator.channel_ingress_service import (
 )
 from astrabox.core.service.orchestrator.deployment_service import DeploymentService
 from astrabox.core.service.orchestrator.session_runtime.feed import SessionFeed
+from astrabox.core.service.orchestrator.session_runtime.response_folds import ResponseFolds
 from astrabox.core.service.orchestrator.session_runtime.service import SessionRuntimeService
 from sqlalchemy import select
 
@@ -35,6 +36,7 @@ from astrabox.persistence.repository.channel_repository import (
     ChannelRepository,
 )
 from astrabox.persistence.repository.deployment_repository import DeploymentRepository
+from astrabox.persistence.repository.session_read_repository import SessionReadRepository
 from astrabox.persistence.repository.session_repository import SessionRepository
 from astrabox.persistence.repository.session_runtime_repository import SessionRuntimeRepository
 from astrabox.persistence.sql import fetch_all, fetch_one
@@ -493,6 +495,7 @@ def _spine(
     facts = SessionRuntimeRepository()
     session_runtime = SessionRuntimeService(
         sessions=sessions, repo=facts, feed=SessionFeed(), host=_ReaderHost(),  # type: ignore[arg-type]
+        folds=ResponseFolds(facts=facts, reads=SessionReadRepository()),
     )
     spawned = _PendingTasks()
     ingress = ChannelIngressService(

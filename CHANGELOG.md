@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## English
+
+### Fixed and improved
+
+- Reading unchanged conversation history no longer reads, decodes and folds every stored part of each reply again. A server process keeps each reply's folded message until that reply stores another part; status, outcome and interaction answers are still read on every request. This covers message history, history blocks and shared conversations.
+
+## 中文
+
+### 修复与改进
+
+- 读取未变化的会话历史时，不再每次重新读取、解码并折叠每条回复的全部已存片段。服务进程保留每条回复折叠后的消息，直到该回复写入新片段；状态、结果与交互回答仍在每次请求时读取。消息历史、历史区块和分享会话均适用。
+
 ## [0.1.13] - 2026-11-01
 
 ## English

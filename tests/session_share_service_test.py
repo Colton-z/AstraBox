@@ -16,6 +16,7 @@ from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.service.orchestrator.session_runtime.feed import SessionFeed
 from astrabox.core.service.orchestrator.session_runtime.process_summaries import ProcessSummaries
+from astrabox.core.service.orchestrator.session_runtime.response_folds import ResponseFolds
 from astrabox.core.service.orchestrator.session_runtime.service import SessionRuntimeService
 from astrabox.core.service.orchestrator.session_runtime.views import SessionReads
 from astrabox.core.service.orchestrator.session_share_service import SessionShareService
@@ -36,16 +37,19 @@ _OWNER = UserContext(user_id="u1")
 def _service() -> SessionShareService:
     facts = SessionRuntimeRepository()
     reads = SessionReadRepository()
+    folds = ResponseFolds(facts=facts, reads=reads)
     session_reads = SessionReads(
         sessions=SessionRepository(),
         facts=facts,
         reads=reads,
+        folds=folds,
         runtime=SessionRuntimeService(
-            sessions=SessionRepository(), repo=facts, feed=SessionFeed(), host=cast(Any, None)
+            sessions=SessionRepository(), repo=facts, feed=SessionFeed(), host=cast(Any, None), folds=folds
         ),
         summaries=ProcessSummaries(
             facts=facts,
             reads=reads,
+            folds=folds,
             repo=ProcessSummaryRepository(),
             model=cast(Any, None),
             enabled=False,
