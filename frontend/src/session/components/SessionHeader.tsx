@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Link } from 'react-router-dom';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { SidebarTrigger } from '@/components/ui/sidebar';
@@ -88,6 +89,24 @@ export function SessionHeader({
         <div className="h-4 w-px shrink-0 bg-border" />
         <div className="min-w-0">
           <div className="mb-1 flex items-center gap-2.5">
+            {/* The level above this conversation, and the way back to it: a
+                generated title says what was asked, not which Agent answers. A
+                deleted Agent has no page to go back to, so it is named only. */}
+            {session.agent_id && session.agent_name && (
+              session.agent_state === 'DELETING' || session.agent_state === 'DELETED' ? (
+                <span data-testid="session-agent" className="max-w-48 truncate text-12 text-muted-foreground">
+                  {session.agent_name}
+                </span>
+              ) : (
+                <Link
+                  data-testid="session-agent"
+                  to={`/agents/${encodeURIComponent(session.agent_id)}`}
+                  className="max-w-48 truncate rounded-sm text-12 text-muted-foreground transition-colors hover:text-foreground hover:underline"
+                >
+                  {session.agent_name}
+                </Link>
+              )
+            )}
             <RunId id={session.session_id} live={headerIsLive} />
             {session.model_name && (
               <span className="t-mono rounded-md border border-border px-1.5 py-0.5 text-10 text-muted-foreground">

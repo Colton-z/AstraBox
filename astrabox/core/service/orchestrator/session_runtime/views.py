@@ -62,6 +62,7 @@ _SUMMARY_FIELDS = (
     "engine_kind",
     "agent_id",
     "agent_state",
+    "agent_name",
     "assistant_id",
     "deployment_name",
     "source_type",

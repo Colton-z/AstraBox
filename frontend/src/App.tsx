@@ -81,12 +81,32 @@ function sessionDisplayName(s: SessionRecord): string {
   return s.title || i18n.t('chat:page.session_title_fallback', { id: s.session_id.slice(0, 8) });
 }
 
+// A conversation of a deleted Agent takes no further message, so its row reads
+// terminated, as its header does (session/sessionRunStatus.ts).
+function sessionAgentIsGone(s: SessionRecord): boolean {
+  return s.agent_state === 'DELETING' || s.agent_state === 'DELETED';
+}
+
 function sessionStatusLabel(s: SessionRecord, t: TFunction): string {
+  if (sessionAgentIsGone(s)) return t('chat:status.terminated');
   // Keep the conversation list consistent with the detail header: a per-session
   // agent_chat whose sandbox is gone but re-borrows on the next message reads ready,
   // not hibernating / recovery required (see isTransparentlyRecoverableAgentSession).
   if (isTransparentlyRecoverableAgentSession(s)) return t('shell:status_ready');
   return sessionOperationalStatusLabel(s);
+}
+
+// An ended conversation asks nothing of its owner, and the name of the Agent it
+// ran is what its row is still read for, so it is marked by a dot whose label
+// is its accessible name and tooltip, not by a word that takes the name's width.
+function sessionHasEnded(s: SessionRecord): boolean {
+  return sessionAgentIsGone(s) || s.state === 'TERMINATED' || s.state === 'DELETED';
+}
+
+// Ready is what nearly every row is; only a row that departs from it is marked
+// (docs/frontend-design.md §2), so the line's width goes to the Agent's name.
+function sessionIsPlainlyReady(s: SessionRecord): boolean {
+  return isTransparentlyRecoverableAgentSession(s) || s.state === 'READY';
 }
 
 function formatShortTime(iso: string | null | undefined, t: TFunction): string {
@@ -384,30 +404,55 @@ export default function App() {
                             </span>
                           </span>
                           {/*
-                            The status is the only part of this line without a
-                            bound — the id is always 8 characters and the
-                            relative time is short — so it is the one that
-                            gives way.
+                            A generated title says what was asked, not which
+                            Agent answered, so this line names the Agent. A
+                            status that asks for attention comes first and
+                            matters more while it lasts, so the name gives way
+                            before it does; the time keeps its width. A conversation of
+                            no Agent shows its id instead, in mono because it is
+                            what a reader pastes into a log query.
                           */}
-                          {/* The id is mono because it is what a reader
-                              pastes into a log query. The time beside it is
-                              not: mono on a relative time is the "this is
-                              data" reading docs/frontend-design.md §6 rules
-                              out, and tabular-nums is what lines digits up. */}
-                          {/* On the selected row the id and time sit on the
+                          {/* The time is not mono: mono on a relative time is
+                              the "this is data" reading docs/frontend-design.md
+                              §6 rules out, and tabular-nums is what lines
+                              digits up. */}
+                          {/* On the selected row the name and time sit on the
                               astra tint, where the muted grey measures 4.46:1;
                               they take the row's astra text step, as every
                               label on that tint does (styles.css, --astra-fg). */}
                           <TruncatingRow
                             className="gap-1.5"
                             trail={
-                              <span className="flex items-center gap-1.5 text-muted-foreground in-data-active:text-astra-fg">
-                                <span className="t-mono text-10">{s.session_id.slice(0, 8)}</span>
-                                <span className="text-10 tabular-nums">{formatShortTime(s.updated_at || s.created_at, t)}</span>
+                              <span className="text-10 tabular-nums text-muted-foreground in-data-active:text-astra-fg">
+                                {formatShortTime(s.updated_at || s.created_at, t)}
                               </span>
                             }
                           >
-                            <StatusPill tone={toneForSession(s)} state={s.state} truncate>{sessionStatusLabel(s, t)}</StatusPill>
+                            <span className="flex min-w-0 items-center gap-1.5">
+                              {sessionHasEnded(s) ? (
+                                <span
+                                  className="size-1.5 shrink-0 rounded-full bg-muted-foreground"
+                                  role="img"
+                                  aria-label={sessionStatusLabel(s, t)}
+                                  title={sessionStatusLabel(s, t)}
+                                />
+                              ) : !sessionIsPlainlyReady(s) && (
+                                // Not shrunk alongside the name: a proportional share of
+                                // the shortfall, however small, ellipsises a short label.
+                                <StatusPill tone={toneForSession(s)} state={s.state} truncate className="max-w-full shrink-0">
+                                  {sessionStatusLabel(s, t)}
+                                </StatusPill>
+                              )}
+                              {s.agent_name ? (
+                                <span data-testid="session-row-agent" className="min-w-0 truncate text-10 text-muted-foreground in-data-active:text-astra-fg">
+                                  {s.agent_name}
+                                </span>
+                              ) : (
+                                <span className="t-mono min-w-0 truncate text-10 text-muted-foreground in-data-active:text-astra-fg">
+                                  {s.session_id.slice(0, 8)}
+                                </span>
+                              )}
+                            </span>
                           </TruncatingRow>
                         </span>
                       </SidebarMenuButton>

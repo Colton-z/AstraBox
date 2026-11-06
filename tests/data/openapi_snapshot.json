@@ -3407,6 +3407,17 @@
             ],
             "title": "Agent Id"
           },
+          "agent_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Name"
+          },
           "agent_state": {
             "anyOf": [
               {
@@ -18365,6 +18376,17 @@
               }
             ],
             "title": "Agent Id"
+          },
+          "agent_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Name"
           },
           "agent_state": {
             "anyOf": [

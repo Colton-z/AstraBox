@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## English
+
+### Fixed and improved
+
+- Name a conversation's Agent beside its title: in the conversation list, and in the conversation header, where it links back to the Agent's page. A generated title says what was asked, not which Agent answers, so conversations of different Agents could not be told apart. A deleted Agent's conversations keep its name.
+
+## 中文
+
+### 修复与改进
+
+- 会话标题旁显示该会话所属的 Agent：会话列表每一行都会显示，会话页头部也会显示，并可点击回到该 Agent 的页面。自动生成的标题只说明问了什么，不说明由哪个 Agent 回答，此前不同 Agent 的会话无法区分。Agent 删除后，其会话仍保留它的名字。
+
 ## [0.1.13] - 2026-11-01
 
 ## English
