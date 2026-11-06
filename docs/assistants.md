@@ -478,6 +478,16 @@ admission, event replay and the per-conversation tool environment on
 `session.create`. Deploy the core and its corresponding sandbox image together;
 an application version alone does not identify an overlay image's protocol.
 
+Each attachment first waits for the image's gateway bridge to answer its
+readiness path, `/healthz` on port 9118. The bridge answers it 200 when the
+gateway is ready and 503 while it is not, and the core waits through 503 and a
+refused connection for up to 300 seconds. Any other answer means another
+program serves that port, such as a server from an older sandbox image. The
+reader stops at once with `runtime_protocol_incompatible`, without waiting the
+remaining time. The error names the status it received, and the conversation's
+waiting messages stay queued under their ids. Update the sandbox image, then
+recover the conversation; the messages are delivered once.
+
 An unreadable execution event stops that Session's reader with
 `runtime_protocol_incompatible`. The page shows recovery required and the
 specific protocol error, and refuses new input. Reader sweeps do not retry it.

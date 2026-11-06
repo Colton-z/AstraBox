@@ -39,6 +39,8 @@ logger = get_logger(__name__)
 #: capability surfaces that carry their OWN auth and must never be broken by
 #: front-door identity. Each line states why it is self-authorizing:
 _DEFAULT_EXEMPT_PREFIXES: tuple[str, ...] = (
+    # Satori resolves the same identity seam itself: WS credentials arrive in IDENTIFY.
+    "/api/satori/",
     # Public share links: the capability is the signed link itself (no login).
     "/api/v1/share/",
     "/api/v1/artifact-share/",

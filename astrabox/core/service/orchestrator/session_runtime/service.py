@@ -10,7 +10,7 @@ from __future__ import annotations
 import base64
 import json
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 from astrabox.common.utils.errors import APIError
@@ -26,8 +26,11 @@ from astrabox.core.service.orchestrator.runtime.preparation import require_sessi
 from astrabox.core.service.orchestrator.runtime.environment_ownership import require_environment_ownership
 from astrabox.core.service.orchestrator.session_runtime.feed import SessionFeed
 from astrabox.core.service.orchestrator.session_runtime.follow import follow_output
+from astrabox.core.service.orchestrator.session_runtime.attachments import MAX_ATTACHMENTS, SentAttachment, turn_input
 from astrabox.core.service.orchestrator.session_runtime.host import ReaderHost
+from astrabox.core.service.orchestrator.session_runtime.response_folds import ResponseFolds
 from astrabox.core.service.orchestrator.session_runtime.ui_message import history_messages
+from astrabox.persistence.repository.input_attachment_repository import InputAttachmentRepository
 from astrabox.persistence.repository.session_repository import SessionRepository
 from astrabox.persistence.provider import get_persistence
 from astrabox.persistence.repository.session_runtime_repository import SessionRuntimeRepository
@@ -103,11 +106,14 @@ class SessionRuntimeService:
         repo: SessionRuntimeRepository,
         feed: SessionFeed,
         host: ReaderHost,
+        folds: ResponseFolds,
     ) -> None:
         self._sessions = sessions
         self._repo = repo
         self._feed = feed
         self._host = host
+        self._folds = folds
+        self._attachments = InputAttachmentRepository()
 
     # -- requests ----------------------------------------------------------
 
@@ -123,8 +129,14 @@ class SessionRuntimeService:
         *,
         content_blocks: list[dict[str, Any]] | None = None,
         client_message_id: str | None = None,
+        attachments: Sequence[SentAttachment] = (),
+        attachment_scope: str | None = None,
     ) -> dict[str, Any]:
-        """Check a known startup prerequisite before accepting the owner's message."""
+        """Check a known startup prerequisite before accepting the owner's message.
+
+        ``attachments`` are files the owner staged within ``attachment_scope``,
+        in the order the message carries them.
+        """
         session = await self._sessions.get_owned_session(session_id, str(user.user_id))
         if session is None:
             raise await self._not_accepting(session_id, str(user.user_id))
@@ -144,6 +156,8 @@ class SessionRuntimeService:
             author_user_id=str(user.user_id),
             source="console",
             actor=user,
+            attachments=attachments,
+            attachment_scope=attachment_scope,
         )
 
     async def send_as(
@@ -155,8 +169,13 @@ class SessionRuntimeService:
         source: str,
         client_message_id: str | None = None,
         content_blocks: list[dict[str, Any]] | None = None,
+        attachments: Sequence[SentAttachment] = (),
+        attachment_scope: str | None = None,
     ) -> dict[str, Any]:
-        """Accept a message a channel, schedule or agent call delivers; the caller authorized it."""
+        """Accept a message a channel, schedule or agent call delivers; the caller authorized it.
+
+        ``attachments`` are files ``author_user_id`` staged within ``attachment_scope``.
+        """
         return await self._accept(
             session_id,
             content,
@@ -166,6 +185,8 @@ class SessionRuntimeService:
             author_user_id=author_user_id,
             source=source,
             actor=None,
+            attachments=attachments,
+            attachment_scope=attachment_scope,
         )
 
     async def _accept(
@@ -179,6 +200,8 @@ class SessionRuntimeService:
         author_user_id: str | None,
         source: str,
         actor: UserContext | None,
+        attachments: Sequence[SentAttachment] = (),
+        attachment_scope: str | None = None,
     ) -> dict[str, Any]:
         session = (
             await self._sessions.get_owned_session(session_id, owner_user_id)
@@ -201,8 +224,36 @@ class SessionRuntimeService:
                 session_id=session_id,
             )
         )
-        if content_blocks:
-            manifest = session.get("engine_capabilities")
+        input_id = str(uuid.uuid4())
+        attachment_owner = owner_user_id or author_user_id
+        if attachments and client_message_id and await self._repo.input_for_client_message(
+            session_id, client_message_id,
+        ) is not None:
+            # A retry of an accepted message: its first acceptance took its files.
+            attachments = ()
+        if attachments:
+            if len(attachments) > MAX_ATTACHMENTS or len({item.attachment_id for item in attachments}) != len(attachments):
+                raise APIError(
+                    code="INVALID_REQUEST", status_code=400,
+                    message=f"a message carries up to {MAX_ATTACHMENTS} distinct attachments",
+                )
+            ids = [item.attachment_id for item in attachments]
+            staged = await self._attachments.staged(
+                ids, owner_user_id=str(attachment_owner or ""), scope=attachment_scope,
+            )
+            if len(staged) != len(attachments):
+                raise APIError(
+                    code="INPUT_ATTACHMENT_UNAVAILABLE", status_code=409,
+                    message="An attachment expired or was already sent; upload it again",
+                )
+            content, content_blocks = turn_input(
+                content, content_blocks, [(staged[item.attachment_id], item.kind) for item in attachments],
+                input_id=input_id,
+            )
+        manifest = session.get("engine_capabilities")
+        # A Session whose runtime has not started yet has no declaration; the
+        # reader checks the input against the runtime's before delivering it.
+        if content_blocks and manifest is not None:
             declared_types = manifest.get("input_content_types") if isinstance(manifest, dict) else None
             if not isinstance(declared_types, list) or any(
                 not isinstance(kind, str) or not kind.strip() for kind in declared_types
@@ -222,7 +273,6 @@ class SessionRuntimeService:
                     ),
                     status_code=409,
                 )
-        input_id = str(uuid.uuid4())
         async with get_persistence().coordination.runtime_lock(session_id):
             accepted = await self._repo.accept_input(
                 session_id=session_id,
@@ -233,6 +283,8 @@ class SessionRuntimeService:
                 owner_user_id=owner_user_id,
                 author_user_id=author_user_id,
                 source=source,
+                attachments=[(item.attachment_id, item.kind) for item in attachments],
+                attachment_owner=attachment_owner,
             )
         if accepted is None:
             raise await self._not_accepting(session_id, owner_user_id)
@@ -366,10 +418,16 @@ class SessionRuntimeService:
             through_seq=output_seq,
         )
         response_ids = [str(r["response_id"]) for r in page["responses"]]
-        outputs = await self._repo.output_for_responses(session_id, response_ids, through_seq=output_seq)
+        folded = await self._folds.messages(session_id, page["responses"], through_seq=output_seq)
         interactions = await self._repo.response_interactions(session_id, response_ids)
+        carried = await self._attachments.described_for_inputs(
+            session_id, [str(row["input_id"]) for row in page["inputs"]],
+        )
+        for row in page["inputs"]:
+            if row["input_id"] in carried:
+                row["attachments"] = carried[row["input_id"]]
         return {
-            "messages": history_messages(page, outputs, interactions),
+            "messages": history_messages(page, folded, interactions),
             "has_more": page["has_more"],
             "before": _encode_before(page["before"]),
             "output_seq": output_seq,

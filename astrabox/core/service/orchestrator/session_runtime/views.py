@@ -35,6 +35,7 @@ from astrabox.core.service.orchestrator.session_runtime.history_blocks import (
     load_history_page,
 )
 from astrabox.core.service.orchestrator.session_runtime.process_summaries import ProcessSummaries
+from astrabox.core.service.orchestrator.session_runtime.response_folds import ResponseFolds
 from astrabox.core.service.orchestrator.session_runtime.service import (
     SessionRuntimeService,
     interaction_view,
@@ -62,6 +63,7 @@ _SUMMARY_FIELDS = (
     "engine_kind",
     "agent_id",
     "agent_state",
+    "agent_name",
     "assistant_id",
     "deployment_name",
     "source_type",
@@ -129,12 +131,14 @@ class SessionReads:
         sessions: SessionRepository,
         facts: SessionRuntimeRepository,
         reads: SessionReadRepository,
+        folds: ResponseFolds,
         runtime: SessionRuntimeService,
         summaries: ProcessSummaries,
     ) -> None:
         self._sessions = sessions
         self._facts = facts
         self._reads = reads
+        self._folds = folds
         self._runtime = runtime
         self._summaries = summaries
 
@@ -212,7 +216,9 @@ class SessionReads:
         self, session_id: str, *, before: str | None, limit: int, shared: bool
     ) -> dict[str, Any]:
         try:
-            page = await load_history_page(self._facts, self._reads, session_id, cursor=before, limit=limit)
+            page = await load_history_page(
+                self._facts, self._reads, self._folds, session_id, cursor=before, limit=limit
+            )
         except HistoryCursorError as exc:
             raise APIError(code="INVALID_REQUEST", message=str(exc), status_code=400) from exc
         labels = await self._summaries.labels(session_id, list(page.labelled))
@@ -234,7 +240,7 @@ class SessionReads:
     ) -> dict[str, Any]:
         """The parts one folded header stands for, as one message."""
         try:
-            found = await load_block_parts(self._facts, self._reads, session_id, block_id, cursor=cursor)
+            found = await load_block_parts(self._facts, self._reads, self._folds, session_id, block_id, cursor=cursor)
         except HistoryCursorError as exc:
             raise APIError(code="INVALID_REQUEST", message=str(exc), status_code=400) from exc
         if found is None:

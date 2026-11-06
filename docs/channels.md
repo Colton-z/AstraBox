@@ -164,6 +164,22 @@ The Agent or Assistant bound to a messaging trigger cannot be changed after
 creation. To route the platform connection elsewhere, create a new trigger.
 :::
 
+### Images and files
+
+Images and files a participant sends with a message reach the Agent with that
+message, and so do those of earlier messages the reply quotes as context. Each
+file is written into the conversation's workspace at
+`uploads/{input id}/{file name}`, and the message names those paths. An image is
+also given to the model as an image when the Agent's engine accepts image input
+and the file is PNG, JPEG, GIF or WebP; otherwise the Agent receives it as a file
+only. A message carries up to 10 files of up to 25 MiB each.
+
+AstraBox reads a file through the adapter that delivered the message, under the
+Satori proxy rule: an adapter's own `internal:` links, or links under a prefix
+the adapter registered (for Discord, its CDN). A file it cannot read, or one
+over the limit, is not dropped silently: the message tells the Agent which file
+it could not fetch and why. Audio and video stay links in the message text.
+
 ### Questions and approvals
 
 When the Agent asks a question or needs approval before it continues, the

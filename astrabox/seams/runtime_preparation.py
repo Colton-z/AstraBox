@@ -298,8 +298,12 @@ def validated_user_action(value: object) -> dict[str, str | None] | None:
 
 @dataclass(frozen=True)
 class SessionUserActionContext:
-    """Identity and subject binding resolved by the host, never by request JSON."""
-    session_id: str
+    """Host-resolved execution identity and subject, never taken from request JSON.
+
+    ``session_id`` is None for a subject's pre-conversation authorization;
+    providers key personal delegation by principal and subject, not by Session.
+    """
+    session_id: str | None
     principal_id: str
     subject: PreparationSubject
 

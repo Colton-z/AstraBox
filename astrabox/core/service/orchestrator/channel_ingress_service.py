@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import mimetypes
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -69,7 +70,12 @@ from astrabox.core.service.orchestrator.conversation_targets import (
 from astrabox.core.service.orchestrator.engine.interaction_contract import (
     public_interaction_view,
 )
+from astrabox.core.service.orchestrator.session_runtime.attachments import (
+    FILE, IMAGE, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, STAGED_TTL, SentAttachment, attachment_name,
+    image_media_type, require_attachment_size,
+)
 from astrabox.core.service.orchestrator.session_runtime.service import SessionRuntimeService
+from astrabox.persistence.repository.input_attachment_repository import InputAttachmentRepository
 from astrabox.persistence.repository.channel_repository import (
     CLAIM_OUTCOME_AUTHORIZED,
     CLAIM_OUTCOME_CLAIMED,
@@ -96,6 +102,7 @@ from astrabox.persistence.repository.session_runtime_repository import (
     SessionRuntimeRepository,
 )
 from astrabox.seams.channel import (
+    ChannelAttachment,
     EVENT_FAILED,
     EVENT_PROGRESS,
     EVENT_SETTLED,
@@ -436,6 +443,9 @@ class ChannelIngressService:
             # What the participant typed, before any binding prompt prefix: a
             # reply to a question and retained context are read from this.
             "reply_text": inbound.content,
+            # Fetched when the message is sent, so a refused or ignored one
+            # fetches nothing.
+            "attachments": [attachment.to_dict() for attachment in inbound.attachments],
             "action": inbound.action,
             "conversation_key": inbound.conversation_key,
             "reply_context": dict(inbound.reply_context or {}) or None,
@@ -1260,12 +1270,24 @@ class ChannelIngressService:
                         raise RuntimeError("retained channel input has no frozen content")
                     item["frozen_input"] = frozen
                     content = frozen["content"]
+                sources = [
+                    *(source for entry in ((item.get("frozen_input") or {}).get("context") or ())
+                      for source in (entry.get("attachments") or ())),
+                    *(payload.get("attachments") or ()),
+                ]
+                attachments, unavailable = await self._carried_attachments(item, sources, owner=user.user_id)
+                if unavailable:
+                    content += "\n\nThese attachments of the message could not be fetched:\n" + "\n".join(
+                        f"- {line}" for line in unavailable
+                    )
                 await self._session_runtime.send_as(
                     session_id,
                     content,
                     author_user_id=user.user_id,
                     source="channel",
                     client_message_id=item_id,
+                    attachments=attachments,
+                    attachment_scope=_attachment_scope(item),
                 )
             if not await self._channel_repo.settle_inbound(
                 item_id=item_id,
@@ -2289,6 +2311,49 @@ class ChannelIngressService:
             with contextlib.suppress(Exception):
                 await handle.close()
 
+    async def _carried_attachments(
+        self, item: dict[str, Any], sources: list[dict[str, Any]], *, owner: str,
+    ) -> tuple[list[SentAttachment], list[str]]:
+        """Fetch and stage the files a message (and the context it quotes) carried.
+
+        Returns what the input sends, and one line per file that could not be
+        fetched, which the input tells the agent instead of dropping it.
+        """
+        if not sources:
+            return [], []
+        provider = get_channel(str(item["channel_name"]))
+        binding = await self._delivery_binding(item)
+        repository = InputAttachmentRepository()
+        sent: list[SentAttachment] = []
+        unavailable: list[str] = []
+        for index, source in enumerate(sources[-MAX_ATTACHMENTS:], start=1):
+            attachment = ChannelAttachment(**source)
+            label = attachment.title or f"{attachment.kind} {index}"
+            try:
+                fetched = await provider.fetch_attachment(
+                    binding=binding, attachment=attachment, max_bytes=MAX_ATTACHMENT_BYTES,
+                )
+                require_attachment_size(label, len(fetched.data))
+            except Exception as exc:  # noqa: BLE001 - the agent is told, the message still goes
+                logger.warning("channel attachment fetch failed item=%s src=%s: %s", item.get("item_id"),
+                               attachment.src, exc)
+                unavailable.append(f"{label}: {_fetch_failure(exc)}")
+                continue
+            # An image the engine cannot take as one (HEIC, SVG…) still reaches the workspace.
+            kind = IMAGE if attachment.kind == IMAGE and image_media_type(fetched.data) else FILE
+            name = attachment_name(fetched.name or attachment.title, fallback=f"{attachment.kind}-{index}")
+            row = await repository.stage(
+                owner_user_id=owner, scope=_attachment_scope(item), name=name,
+                media_type=fetched.media_type or mimetypes.guess_type(name)[0] or "application/octet-stream",
+                data=fetched.data, ttl=STAGED_TTL,
+            )
+            sent.append(SentAttachment(str(row["attachment_id"]), kind))
+        if len(sources) > MAX_ATTACHMENTS:
+            unavailable.append(
+                f"{len(sources) - MAX_ATTACHMENTS} earlier files: a message carries up to {MAX_ATTACHMENTS}"
+            )
+        return sent, unavailable
+
     async def _delivery_binding(self, entry: dict[str, Any]) -> dict[str, Any]:
         """Reload provider credentials without persisting them in the outbox."""
         deployment_id = str(entry.get("deployment_id") or "").strip()
@@ -2412,3 +2477,19 @@ class ChannelIngressService:
         if entries:
             logger.info("channel outbox sweep processed %d due entries", len(entries))
         return len(entries)
+
+
+def _attachment_scope(item: dict[str, Any]) -> str:
+    return f"channel:{item.get('deployment_id')}"
+
+
+def _fetch_failure(exc: BaseException) -> str:
+    """Why a file was not fetched, in words that carry no provider detail."""
+    status = getattr(exc, "status_code", None)
+    if status == 403:
+        return "the channel does not serve it"
+    if status == 413 or getattr(exc, "code", None) == "INPUT_ATTACHMENT_TOO_LARGE":
+        return f"it is larger than {MAX_ATTACHMENT_BYTES} bytes"
+    if isinstance(exc, NotImplementedError):
+        return "this channel cannot fetch files"
+    return "it could not be fetched"

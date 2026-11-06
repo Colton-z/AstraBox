@@ -127,7 +127,9 @@ period, including starts that never acquired a sandbox allocation. A provider
 must support both modes with the same ownership boundary. The built-in provider
 uses PostgreSQL transaction advisory locks and their native nonblocking form.
 The startup lock has a separate key from `runtime_lock`: accepting an input
-must remain possible while its Session starts.
+must remain possible while its Session starts. For the same reason a reader
+holds `runtime_lock` only to decide on and publish an attach, not while the
+attach waits for its box or engine.
 
 Schema/type mappings, constraints, isolation and database time must support the
 shared recipes. The built-in DBOS scheduler separately requires PostgreSQL;

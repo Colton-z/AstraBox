@@ -54,6 +54,23 @@ PREPARATION_TIMEOUT_S = 30.0
 FactConsumer = Callable[[str, FactBatch], Awaitable[None]]
 
 
+def _ended(session: dict[str, Any]) -> bool:
+    return bool(session.get("archived_at")) or session.get("state") in (
+        SessionState.TERMINATED.value, SessionState.DELETED.value,
+    )
+
+
+def _attach_is_current(session: dict[str, Any], sandbox_id: str) -> bool:
+    """Whether an attach made outside the runtime lock still describes the conversation."""
+    return (
+        not _ended(session)
+        and session.get("state") == SessionState.READY.value
+        and session.get("recovery_reason") != RUNTIME_PROTOCOL_INCOMPATIBLE
+        and not session.get("sandbox_parked_at")
+        and (not sandbox_id or str(session.get("sandbox_id") or "") == sandbox_id)
+    )
+
+
 class PlatformRuntimeConnector:
     def __init__(
         self,
@@ -71,52 +88,74 @@ class PlatformRuntimeConnector:
         self._replace = replace
 
     async def connect(self, session_id: str) -> ConnectedRuntime:
-        async with get_persistence().coordination.runtime_lock(session_id):
-            session = await self._sessions.get_session(session_id)
-            if (
-                session is None
-                or session.get("archived_at")
-                or session.get("state") in (SessionState.TERMINATED.value, SessionState.DELETED.value)
-            ):
-                raise RuntimeEnded(session_id)
-            if session.get("state") != SessionState.READY.value:
+        """Attach the session's runtime for its reader.
+
+        Accepting an input takes the runtime lock, and an attach can wait
+        minutes for a box or its engine, so the lock is held only to decide
+        and to wake a parked box, and again to publish the attach. In between
+        the conversation may be archived, ended or parked, or its box replaced;
+        an attach that does not match the conversation by then is evicted, and
+        the reader does not receive it.
+        """
+        coordination = get_persistence().coordination
+        async with coordination.runtime_lock(session_id):
+            session = await self._attachable(session_id)
+        result = await self._ensure.ensure_runtime(session)
+        runtime = result.runtime
+        if runtime is None:
+            if result.sandbox_gone:
+                raise RuntimeGone(session_id, reason="sandbox_lost")
+            if result.delivery_changed:
+                raise RuntimeGone(session_id, reason="model_delivery_changed")
+            raise RuntimeError(result.error_text or f"session {session_id} runtime could not be attached")
+        client = runtime.engine_client
+        if not isinstance(client, RuntimeClient):
+            raise TypeError(f"the {runtime.engine_kind} adapter does not serve the runtime contract")
+        async with coordination.runtime_lock(session_id) as check_lock:
+            current = await self._sessions.get_session(session_id)
+            attached = str(runtime.sandbox_id or "")
+            if current is None or not _attach_is_current(current, attached):
+                await self._runtime_manager.evict_runtime_if_current(session_id, runtime)
+                if current is None or _ended(current):
+                    raise RuntimeEnded(session_id)
                 raise RuntimeNotReady(session_id)
-            if session.get("recovery_reason") == RUNTIME_PROTOCOL_INCOMPATIBLE:
-                raise RuntimeNotReady(session_id)
-            if not session.get("sandbox_id"):
-                if session.get("runtime_unavailable"):
-                    raise RuntimeGone(session_id)
-                raise RuntimeNotReady(session_id)
-            if session.get("sandbox_parked_at"):
-                # A parked box wakes for an input and for nothing else.
-                if not await self._facts.undelivered_inputs(session_id):
-                    raise RuntimeNotReady(session_id)
-                await self._runtime_manager.wake_parked_session(session)
-                session = await self._sessions.get_session(session_id)
-                if session is None:
-                    raise RuntimeNotReady(session_id)
-            result = await self._ensure.ensure_runtime(session)
-            runtime = result.runtime
-            if runtime is None:
-                if result.sandbox_gone:
-                    raise RuntimeGone(session_id)
-                raise RuntimeError(result.error_text or f"session {session_id} runtime could not be attached")
-            client = runtime.engine_client
-            if not isinstance(client, RuntimeClient):
-                raise TypeError(f"the {runtime.engine_kind} adapter does not serve the runtime contract")
             initialization = await runtime_initialization_metadata(session_id, runtime)
+            await check_lock()
             await self._sessions.update_session(
                 session_id, {"runtime_versions": initialization["runtime_versions"]},
                 touch_updated_at=False,
             )
-            return ConnectedRuntime(
-                client=client,
-                sandbox_id=str(runtime.sandbox_id or session.get("sandbox_id") or ""),
-                sandbox_handle=runtime.sandbox,
-                runtime_identity=dict(runtime.runtime_identity or {}),
-                engine_kind=str(runtime.engine_kind),
-                refresh=runtime.prepare_engine_input,
-            )
+        return ConnectedRuntime(
+            client=client,
+            sandbox_id=attached or str(current.get("sandbox_id") or ""),
+            sandbox_handle=runtime.sandbox,
+            runtime_identity=dict(runtime.runtime_identity or {}),
+            engine_kind=str(runtime.engine_kind),
+            refresh=runtime.prepare_engine_input,
+        )
+
+    async def _attachable(self, session_id: str) -> dict[str, Any]:
+        """The session as its runtime may be attached now, after waking a parked box for an input."""
+        session = await self._sessions.get_session(session_id)
+        if session is None or _ended(session):
+            raise RuntimeEnded(session_id)
+        if session.get("state") != SessionState.READY.value:
+            raise RuntimeNotReady(session_id)
+        if session.get("recovery_reason") == RUNTIME_PROTOCOL_INCOMPATIBLE:
+            raise RuntimeNotReady(session_id)
+        if not session.get("sandbox_id"):
+            if session.get("runtime_unavailable"):
+                raise RuntimeGone(session_id, reason="sandbox_lost")
+            raise RuntimeNotReady(session_id)
+        if session.get("sandbox_parked_at"):
+            # A parked box wakes for an input and for nothing else.
+            if not await self._facts.undelivered_inputs(session_id):
+                raise RuntimeNotReady(session_id)
+            await self._runtime_manager.wake_parked_session(session)
+            session = await self._sessions.get_session(session_id)
+            if session is None:
+                raise RuntimeNotReady(session_id)
+        return session
 
     async def replace(self, session_id: str) -> None:
         """Start a replacement runtime for the waiting inputs, unless a start already failed for them.
@@ -168,12 +207,15 @@ def reader_hooks(
     runtime_manager: Any,
     realign_live_sandbox_owners: Callable[[str], Awaitable[object]],
     committed: Callable[[str, FactBatch], Awaitable[None]],
+    deliver_attachments: Callable[[dict[str, Any], RuntimeInput], Awaitable[None]],
 ) -> Callable[[str, ConnectedRuntime], ReaderHooks]:
     def build(session_id: str, connected: ConnectedRuntime) -> ReaderHooks:
         async def prepare(item: RuntimeInput) -> None:
             session = await sessions.get_session(session_id)
             if session is None:
                 raise InputPreparationRefused({"code": "SESSION_NOT_FOUND", "message": "session not found"})
+            require_declared_content(session, item)
+            await deliver_attachments(session, item)
             await prepare_input(session, connected, item)
             if connected.refresh is not None:
                 await connected.refresh()
@@ -221,6 +263,25 @@ def reader_hooks(
         return ReaderHooks(prepare=prepare, committed=on_commit, status=status, permission_mode=permission_mode)
 
     return build
+
+
+def require_declared_content(session: dict[str, Any], item: RuntimeInput) -> None:
+    """Refuse content blocks the runtime's engine did not declare it reads.
+
+    Acceptance checks the same declaration when the Session already has one;
+    this check holds for an input accepted before its runtime started. An
+    adapter that does not read a block type would otherwise drop it unseen.
+    """
+    if not item.content_blocks:
+        return
+    manifest = session.get("engine_capabilities")
+    declared = manifest.get("input_content_types") if isinstance(manifest, dict) else None
+    unsupported = sorted({str(block.get("type")) for block in item.content_blocks} - set(declared or ()))
+    if unsupported:
+        raise InputPreparationRefused({
+            "code": "ENGINE_CAPABILITY_UNAVAILABLE",
+            "message": f"engine {session.get('engine_kind')!r} does not accept turn content types {unsupported!r}",
+        })
 
 
 async def prepare_input(session: dict[str, Any], connected: ConnectedRuntime, item: RuntimeInput) -> None:

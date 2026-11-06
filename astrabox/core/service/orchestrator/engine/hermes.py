@@ -1101,6 +1101,9 @@ HERMES_BRIDGE_HEALTH_PATH = "/healthz"
 #: plugin dependencies before the gateway serves requests. Keep that native
 #: preparation inside one bounded wait; a healthy cold install can exceed 120s.
 _BACKEND_ANSWER_BUDGET_SECONDS = 300
+#: The probe's exit status when the port answers its readiness path with a
+#: status the bridge never sends.
+_FOREIGN_BACKEND_EXIT = 3
 
 
 async def _wait_until_backend_answers(commands: SandboxCommands) -> None:
@@ -1111,17 +1114,34 @@ async def _wait_until_backend_answers(commands: SandboxCommands) -> None:
     whether the gateway is starting. The bridge's readiness path does: it
     answers 200 only while the gateway is ready, which also covers a gateway
     restarted behind a bridge that stayed up.
+
+    The bridge answers that path 200 or 503 and nothing else, so any other
+    status means the port is served by something that is not this adapter's
+    bridge, such as an image from before it. Waiting cannot change which
+    program serves the port, so that answer is a protocol mismatch at once.
+    A refused connection is still a bridge that has not started.
     """
     probe = (
         f"deadline=$((SECONDS + {_BACKEND_ANSWER_BUDGET_SECONDS})); "
-        "until code=$(curl -sS -o /dev/null -m 3 -w '%{http_code}' "
-        f"http://127.0.0.1:{HERMES_BACKEND_PORT}{HERMES_BRIDGE_HEALTH_PATH} 2>/dev/null) "
-        '&& [ "$code" = 200 ]; do '
+        "while :; do "
+        "code=$(curl -sS -o /dev/null -m 3 -w '%{http_code}' "
+        f"http://127.0.0.1:{HERMES_BACKEND_PORT}{HERMES_BRIDGE_HEALTH_PATH} 2>/dev/null); "
+        'case "$code" in 200) exit 0;; 503|000|"") ;; '
+        f'*) echo "$code"; exit {_FOREIGN_BACKEND_EXIT};; esac; '
         'if [ "$SECONDS" -ge "$deadline" ]; then exit 124; fi; sleep 0.2; done'
     )
     result = await commands.run(
         "bash -c " + shlex.quote(probe), timeout=_BACKEND_ANSWER_BUDGET_SECONDS + 30,
     )
+    if result.exit_code == _FOREIGN_BACKEND_EXIT:
+        lines = (result.stdout or "").strip().splitlines()
+        status = lines[-1] if lines else "an unknown status"
+        raise RuntimeProtocolError(
+            f"Port {HERMES_BACKEND_PORT} in the Assistant's sandbox answered HTTP {status} at "
+            f"{HERMES_BRIDGE_HEALTH_PATH}, where this server's Hermes bridge answers only 200 or 503. "
+            "The sandbox runs an image that does not match this server. Update the Assistant's "
+            "sandbox image, then recover the conversation; its waiting messages are kept."
+        )
     if result.exit_code != 0:
         raise APIError(
             code="HERMES_BACKEND_NOT_READY",

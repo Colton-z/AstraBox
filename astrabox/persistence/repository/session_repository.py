@@ -3,7 +3,7 @@
 Rows are handed to callers as dicts keyed by column name, with times as
 ISO-8601 strings and derived keys: ``workspace_ref`` (the subject the session
 runs as), ``vault_ids`` (its vault bindings in priority order), and ``agent_state``
-(the referenced Agent's lifecycle).
+and ``agent_name`` (the referenced Agent's lifecycle and name).
 Writes name columns; a key that is not a column raises ``KeyError``, so a write
 to a field that does not exist fails where it is made.
 """
@@ -155,7 +155,13 @@ def _selected() -> Select[Any]:
     agent_state = (
         select(Agent.state).where(Agent.agent_id == _SESSIONS.c.agent_id).scalar_subquery()
     )
-    return select(_SESSIONS, _VAULT_IDS.label("vault_ids"), agent_state.label("agent_state"))
+    agent_name = (
+        select(Agent.name).where(Agent.agent_id == _SESSIONS.c.agent_id).scalar_subquery()
+    )
+    return select(
+        _SESSIONS, _VAULT_IDS.label("vault_ids"), agent_state.label("agent_state"),
+        agent_name.label("agent_name"),
+    )
 
 
 async def _one(where: ColumnElement[bool]) -> dict[str, Any] | None:

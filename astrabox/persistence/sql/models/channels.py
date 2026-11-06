@@ -124,6 +124,8 @@ class ChannelInbound(Base):
 
     content: Mapped[str] = mapped_column(payload_text(), server_default=TextDefault(""))
     reply_text: Mapped[str | None] = mapped_column(payload_text())
+    #: The provider's references to the files the message carried, fetched when it is sent.
+    attachments: Mapped[list[Any] | None] = mapped_column(payload_json())
     action: Mapped[str | None] = mapped_column(payload_text())
     conversation_key: Mapped[str | None] = mapped_column(payload_text())
     #: The conversation the message continues, decided before it was recorded.

@@ -606,6 +606,21 @@ for _code, _status, _category, _retryable, _owner in (
     # The caller must resolve the conflict before issuing another guarded write.
     ("PREPARATION_SUBJECT_CONFLICT", 409, "state", False, "platform"),
     ("RUNTIME_PREPARATION_FAILED", 502, "runtime", False, "platform"),
+    # The runtime was initialized under one model delivery owner and its
+    # configuration now declares the other. Reattaching cannot change what the
+    # running process holds; the platform replaces the runtime instead.
+    ("RUNTIME_MODEL_DELIVERY_CHANGED", 409, "runtime", False, "platform"),
+    # A message names a staged file that expired, another message took, or
+    # the caller did not stage at that endpoint. Uploading it again succeeds.
+    ("INPUT_ATTACHMENT_UNAVAILABLE", 409, "state", False, "client"),
+    ("INPUT_ATTACHMENT_TOO_LARGE", 413, "request", False, "client"),
+    # The element or file is not one a message can carry: an image that is
+    # not PNG, JPEG, GIF or WebP, an element other than text, img or file, or
+    # a link this endpoint did not issue.
+    ("INPUT_ATTACHMENT_UNSUPPORTED", 400, "request", False, "client"),
+    # The reader could not write an accepted message's files into the
+    # workspace, so the engine never read it. Sending it again is a new input.
+    ("INPUT_ATTACHMENT_DELIVERY_FAILED", 502, "runtime", False, "platform"),
     ("CHANNEL_RESPONSE_JUDGE_UNAVAILABLE", 409, "configuration", False, "platform"),
     ("HISTORY_IMPORT_AFTER_CONVERSATION", 409, "state", False, "session"),
     ("HISTORY_IMPORT_CONFLICT", 409, "request", False, "client"),

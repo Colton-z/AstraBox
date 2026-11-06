@@ -161,6 +161,12 @@ def input_message(row: Mapping[str, Any]) -> dict[str, Any]:
     }
     if row.get("failure"):
         metadata["failure"] = deepcopy(row["failure"])
+    if row.get("attachments"):
+        # The files the message carried; the words name where the engine found them.
+        metadata["attachments"] = [
+            {key: item[key] for key in ("attachment_id", "kind", "name", "media_type", "size")}
+            for item in row["attachments"]
+        ]
     if row.get("import_record"):
         metadata["history_import"] = _provenance(row["import_record"])
     return {"id": str(row.get("client_message_id") or row.get("input_id")), "role": "user", "parts": parts, "metadata": metadata}
@@ -188,24 +194,22 @@ def _provenance(record: Mapping[str, Any]) -> dict[str, Any]:
 
 def history_messages(
     page: Mapping[str, Any],
-    outputs: Iterable[Mapping[str, Any]],
+    folded: Mapping[str, dict[str, Any]],
     interactions: Iterable[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
     """The page's messages for one history page, in conversation order.
 
-    Interaction settlement comes from the durable rows, independently of
-    whether the tool returned output before its response ended.
+    ``folded`` holds each response's message as its parts fold
+    (:class:`~.response_folds.ResponseFolds`); this lays the response row and
+    its interactions over it, changing those messages in place. Interaction
+    settlement comes from the durable rows, independently of whether the tool
+    returned output before its response ended.
     """
     settlements = {str(row["interaction_id"]): row for row in interactions}
     decisions = {
         key: row["answer"] for key, row in settlements.items()
         if row.get("answer") is not None and row["status"] in {"open", "answered"}
     }
-    by_response: dict[str, list[dict[str, Any]]] = {}
-    for row in outputs:
-        response_id = row.get("response_id")
-        if response_id:
-            by_response.setdefault(str(response_id), []).append(row["part"])
     inputs = {int(row["seq"]): row for row in page["inputs"]}
     responses = {int(row["seq"]): row for row in page["responses"]}
     messages: list[dict[str, Any]] = []
@@ -215,9 +219,7 @@ def history_messages(
             continue
         response = responses[entry["seq"]]
         record = response.get("import_record")
-        # An imported reply's parts were never output; they live on its row.
-        chunks = record["parts"] if record else by_response.get(str(response["response_id"]), ())
-        message = fold_message(str(response["response_id"]), chunks)
+        message = folded[str(response["response_id"])]
         _apply_approval_decisions(message, decisions)
         for part in message["parts"]:
             if part["type"] != "data-interaction":

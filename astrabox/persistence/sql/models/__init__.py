@@ -20,4 +20,5 @@ from astrabox.persistence.sql.models import (  # noqa: F401 - registration
     vaults,
     sandboxes,
     sessions,
+    satori,
 )

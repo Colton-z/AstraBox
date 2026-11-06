@@ -25,6 +25,8 @@ from satori.element import (
     Br,
     Element,
     Emoji,
+    File,
+    Image,
     Link,
     Paragraph,
     Quote,
@@ -38,6 +40,7 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.providers.channel_gateway import ChannelGatewayClient, ChannelGatewayError
 from astrabox.seams.channel import (
+    ChannelAttachment,
     ChannelAttention,
     ChannelCallbackResponse,
     ChannelDeliveryReceipt,
@@ -48,6 +51,7 @@ from astrabox.seams.channel import (
     ChannelProvider,
     ChannelRecall,
     ChannelSourceEnvelope,
+    FetchedAttachment,
     register_channel,
 )
 
@@ -163,6 +167,16 @@ def _walk_unquoted(elements: Iterable[Element]) -> Iterable[Element]:
         yield from _walk_unquoted(element.children)
 
 
+def _attachments(elements: Iterable[Element]) -> tuple[ChannelAttachment, ...]:
+    """The images and files a message carries outside its quote."""
+    return tuple(
+        ChannelAttachment(src=element.src, kind="image" if isinstance(element, Image) else "file",
+                          title=element.title or None)
+        for element in _walk_unquoted(elements)
+        if isinstance(element, (Image, File)) and element.src
+    )
+
+
 def _render_elements(elements: Iterable[Element], *, self_id: str) -> str:
     parts: list[str] = []
     for element in elements:
@@ -183,6 +197,10 @@ def _render_elements(elements: Iterable[Element], *, self_id: str) -> str:
             continue
         if isinstance(element, Emoji):
             parts.append(f":{element.name or element.id}:")
+            continue
+        if isinstance(element, (Image, File)):
+            # The file itself reaches the agent as an attachment.
+            parts.append(f"[{element.tag}: {element.title or 'untitled'}]")
             continue
         if isinstance(element, Resource):
             title = element.title or element.tag
@@ -497,6 +515,20 @@ class GatewayChannelProvider(ChannelProvider):
 
         return _events()
 
+    async def fetch_attachment(
+        self, *, binding: Mapping[str, Any], attachment: ChannelAttachment, max_bytes: int,
+    ) -> FetchedAttachment:
+        """Fetch through the binding's own adapter, under Satori's proxy rule.
+
+        The gateway reads ``internal:`` links through the adapter and other
+        links only under a prefix the adapter registered as its own; it refuses
+        any other address, so a message cannot point the server at one.
+        """
+        deployment_id = str(binding.get("deployment_id") or "").strip()
+        if not deployment_id:
+            raise RuntimeError("channel attachment fetch requires the binding's deployment")
+        return await self.gateway.resource(deployment_id, attachment.src, max_bytes=max_bytes)
+
     async def deliver_outbound(
         self,
         *,
@@ -682,6 +714,7 @@ class GatewayChannelProvider(ChannelProvider):
             ignore_reason=ignore_reason,
             message_timestamp=timestamp,
             retain_context=not direct,
+            attachments=_attachments(elements),
         )
 
     @staticmethod

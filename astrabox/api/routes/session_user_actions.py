@@ -1,14 +1,11 @@
 """Owner-scoped read and explicit deployment operations, independent of a turn."""
 from __future__ import annotations
 
-from typing import Awaitable
-
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from astrabox.api.routes._shared import _resolve_user
 from astrabox.api.routes.response_envelope import ApiEnvelope
-from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.api_response import success_response
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import API_READ_SCOPE, API_WRITE_SCOPE
@@ -17,11 +14,12 @@ from astrabox.core.service.orchestrator.runtime.environment_ownership import req
 from astrabox.core.service.orchestrator.runtime.preparation import preparation_subject
 from astrabox.persistence.repository.session_repository import SessionRepository
 from astrabox.seams.runtime_preparation import (
-    SessionUserActionContext, SessionUserActionState, runtime_preparation_provider,
+    SessionUserActionContext,
 )
 
+from astrabox.core.service.orchestrator.user_actions import user_action_state
+
 router = APIRouter()
-logger = get_logger(__name__)
 
 
 class UserActionView(BaseModel):
@@ -70,25 +68,12 @@ async def _context(request: Request, session_id: str, *, write: bool) -> Session
     )
 
 
-async def _provider_state(result: Awaitable[SessionUserActionState]) -> dict:
-    try:
-        return {**(await result).public(), "applicable": True}
-    except Exception:
-        logger.exception("session user-action provider failed")
-        raise APIError(code="SESSION_USER_ACTION_FAILED", status_code=502,
-                       message="Unable to determine the session requirements; refresh to try again") from None
-
-
 @router.get("/api/v1/sessions/{session_id}/user-action", response_model=ApiEnvelope[SessionUserActionView])
 async def read_session_user_action(session_id: str, request: Request):
     context = await _context(request, session_id, write=False)
     if context is None:
         return success_response({"applicable": False, "ready": False, "user_action": None, "actions": []})
-    provider = runtime_preparation_provider()
-    state = await _provider_state(provider.read_user_actions(context=context)) if provider else {
-        **SessionUserActionState(ready=True).public(), "applicable": True,
-    }
-    return success_response(state)
+    return success_response(await user_action_state(context))
 
 
 @router.post("/api/v1/sessions/{session_id}/user-action", response_model=ApiEnvelope[SessionUserActionView])
@@ -97,11 +82,4 @@ async def perform_session_user_action(session_id: str, request: Request, body: P
     if context is None:
         raise APIError(code="SESSION_READ_ONLY", status_code=409,
                        message="This conversation is read-only; no preparation operation is available")
-    provider = runtime_preparation_provider()
-    if provider is None:
-        raise APIError(code="INVALID_REQUEST", message="No user operation is configured", status_code=400)
-    current = await _provider_state(provider.read_user_actions(context=context))
-    if body.action_id not in {action["id"] for action in current["actions"]}:
-        raise APIError(code="INVALID_REQUEST", message="This operation is no longer available; refresh its status", status_code=409)
-    state = await _provider_state(provider.perform_user_action(context=context, action_id=body.action_id))
-    return success_response(state)
+    return success_response(await user_action_state(context, action_id=body.action_id))

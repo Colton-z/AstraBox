@@ -83,18 +83,38 @@ def stamp(home: Path) -> tuple[Any, ...]:
         if (home / name).is_file():
             paths.append(home / name)
     for path in paths:
-        metadata = path.stat()
+        try:
+            metadata = path.stat()
+        except FileNotFoundError:
+            # Listed, then gone: SQLite removes a WAL when its last connection
+            # checkpoints it, and Hermes deletes files while it runs. Absent is
+            # a state of its own, so the fingerprint still changes.
+            values.append((str(path.relative_to(home)), None))
+            continue
         values.append((str(path.relative_to(home)), metadata.st_size, metadata.st_mtime_ns))
     return tuple(values)
 
 
-def _add_file(archive: tarfile.TarFile, source: Path, name: str) -> None:
-    data = source.read_bytes()
+def _add_file(archive: tarfile.TarFile, source: Path, name: str) -> bool:
+    """Add ``source`` as it is now; a file deleted after it was listed is left out.
+
+    Returns whether it was added. A directory's restore replaces the whole
+    directory, so a file left out of it is absent after restore, as it was
+    when packed. The size, mode and time come from the open file the bytes
+    were read from.
+    """
+    try:
+        with source.open("rb") as stream:
+            metadata = os.fstat(stream.fileno())
+            data = stream.read()
+    except FileNotFoundError:
+        return False
     info = tarfile.TarInfo(name)
     info.size = len(data)
-    info.mode = source.stat().st_mode & 0o777
-    info.mtime = int(source.stat().st_mtime)
+    info.mode = metadata.st_mode & 0o777
+    info.mtime = int(metadata.st_mtime)
     archive.addfile(info, io.BytesIO(data))
+    return True
 
 
 def pack(home: str | os.PathLike[str]) -> bytes:
@@ -113,9 +133,10 @@ def pack(home: str | os.PathLike[str]) -> bytes:
                 for path in _regular_files(root / name):
                     _add_file(archive, path, path.relative_to(root).as_posix())
         for name in FILES:
-            if (root / name).is_file():
+            # Restore moves each listed file into place, so only one that was
+            # added is listed.
+            if (root / name).is_file() and _add_file(archive, root / name, name):
                 manifest["files"].append(name)
-                _add_file(archive, root / name, name)
         for name in DATABASES:
             if not (root / name).is_file():
                 continue

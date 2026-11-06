@@ -347,3 +347,97 @@ async def cleanup():
  print(json.dumps({'released':True}))
 asyncio.run(cleanup())
 """, json.dumps(sessions))
+
+
+
+@pytest.mark.parametrize("started_under", ["platform", "provider"])
+def test_a_runtime_started_under_the_other_model_delivery_owner_is_replaced(
+    e2e_client: httpx.Client, live_test_deadline: float, started_under: str,
+):
+    """An Agent conversation whose model delivery owner changed continues in a replacement.
+
+    The conversation starts under one owner, its integration then declares the
+    other, and the server restarts. The next message is answered, under the
+    input id it was accepted with, from a new box whose identity, binding
+    receipt and supplier process record the declared owner, by the native
+    conversation that still knows its first turn.
+    """
+    client = e2e_client
+    profile = current_profile()
+    assert profile["engine_kind"] == "claude_code"
+    nonce = uuid.uuid4().hex[:10]
+    declared = {"platform": "provider", "provider": "platform"}[started_under]
+    name = f"delivery-{nonce}-{started_under}"
+    principal = data(client.get("/api/v1/user/current"))["user_id"]
+    source = next(row for row in data(client.get("/api/v1/admin/runtime-profiles")) if row["name"] == profile["runtime_profile_name"])
+    policy = {"session_bound": False, "users": [principal], "refuse_binding": False,
+              "startup_environment": False, "console_base_url": ""}
+    sid = ""
+    succeeded = False
+
+    def declare(delivery: str) -> None:
+        data(client.put(f"/api/v1/runtime-preparation-fixture/binding-policies/{name}",
+                        json={**policy, "model_credential_delivery": delivery}))
+
+    def assert_delivery(delivery: str) -> dict:
+        detail = get_admin_session_detail(client, sid)
+        identity = detail["runtime_identity"]
+        receipts = psql_rows("SELECT sandbox_id, placeholder FROM runtime_preparation_binding_receipts "
+                             f"WHERE session_id={sql_literal(sid)}")
+        if delivery == "provider":
+            assert identity.get("model_credential_id") == sid, identity
+            assert [row["sandbox_id"] for row in receipts] == [detail["sandbox_id"]], receipts
+            # The supplier process holds the integration's inert placeholder, not a model key.
+            native = _native_credentials(_sandbox_exec(detail["sandbox_id"]), identity)
+            assert set(native) == {hashlib.sha256(receipts[0]["placeholder"].encode()).hexdigest()}, native
+        else:
+            assert "model_credential_id" not in identity, identity
+            assert not receipts, receipts
+        return detail
+
+    try:
+        data(client.put(f"/api/v1/admin/runtime-profiles/{name}",
+                        json={**source, "name": name, "display_name": name, "sandbox_backend": "binding_fixture"}))
+        declare(started_under)
+        agent = data(client.post("/api/v1/agents", json={
+            "name": name, "runtime_profile_name": name, "model": profile["model"], "prepared_capacity": 0,
+        }))
+        release_agent(agent["agent_id"])
+        sid = data(client.post(f"/api/v1/agents/{agent['agent_id']}/conversations", json={}))["session_id"]
+        release_session(sid)
+        poll_until_ready(client, sid)
+        word = f"Atlas{nonce}{started_under}"
+        first = send_and_follow(client, sid, f"My project is called {word}. Reply with only OK.", until="end")
+        assert first.ended and not first.error, first.text
+        # Read after a turn, so the supplier process exists to be inspected.
+        before = assert_delivery(started_under)
+
+        declare(declared)
+        _restart_server_container(require_service_container(SERVER_CONTAINER_HANDLE))
+        _wait_health(str(client.base_url).rstrip("/"))
+        question = f"Question {nonce}: what is my project called? Reply with only its name."
+        reply = send_and_follow(client, sid, question, until="end")
+        assert reply.ended and not reply.error and word.lower() in reply.text.lower(), reply.text
+        after = assert_delivery(declared)
+        assert after["sandbox_id"] != before["sandbox_id"] and not after.get("runtime_unavailable"), after
+        accepted = psql_rows(f"SELECT input_id FROM session_inputs WHERE session_id={sql_literal(sid)} "
+                             f"AND client_message_id={sql_literal(reply.client_message_id)}")
+        assert [row["input_id"] for row in accepted] == [reply.input_id], accepted
+        # The replacement continued the same native conversation, not a new one.
+        _until(lambda: transcript_entries(sid), lambda rows: any(
+            row["entry"].get("type") == "user" and question in json.dumps(row["entry"]) for row in rows
+        ), live_test_deadline)
+        print(json.dumps({"phase": "model-delivery-change-replaced", "session_id": sid,
+                          "started_under": started_under, "declared": declared,
+                          "from_sandbox": before["sandbox_id"], "to_sandbox": after["sandbox_id"],
+                          "input_id": reply.input_id, "response_id": reply.response_id}), flush=True)
+        succeeded = True
+    finally:
+        if succeeded and sid:
+            _server_json("""
+import asyncio,sys
+from astrabox.providers.model import LiteLLMModelEndpointProvider
+from astrabox.seams.model import ModelRequestContext
+asyncio.run(LiteLLMModelEndpointProvider().release_session_credential(context=ModelRequestContext(conversation_id=sys.argv[1])))
+print('{"released":true}')
+""", sid)

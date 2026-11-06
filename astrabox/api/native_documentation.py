@@ -156,6 +156,71 @@ def a2a_operation(*, card: bool, assistant: bool) -> dict[str, Any]:
     }
 
 
+SATORI_SPEC = "https://satori.chat/en-US/protocol/api.html"
+_SATORI_ERROR = {
+    "description": "Refused or failed; the transport status is authoritative.",
+    "content": {"application/json": {"schema": object_schema(
+        {"code": {"type": "string"}, "message": {"type": "string"}, "data": {}},
+        required=("code", "message"),
+    )}},
+}
+
+
+def satori_operation(*, proxy: bool) -> dict[str, Any]:
+    """Describe the fixed-Agent Satori v1 action or resource endpoint."""
+    common: dict[str, Any] = {
+        "tags": ["Satori"],
+        "externalDocs": {"url": SATORI_SPEC},
+        "description": (
+            "Satori v1 for one fixed Agent; see the Satori Agent integration guide. Responses are "
+            "Satori objects without the console API envelope. The deployment's identity provider "
+            "verifies the delegated execution identity; reads need `astrabox:read` and writes "
+            "`astrabox:write` where the provider supplies API scopes."
+        ),
+    }
+    if proxy:
+        return {
+            **common,
+            "summary": "Read a Satori resource",
+            "description": common["description"] + " `url` is an `internal:` link this endpoint issued.",
+            "responses": {
+                "200": {"description": "The resource bytes with their media type.",
+                        "content": {"*/*": {"schema": {"type": "string", "format": "binary"}}}},
+                "default": _SATORI_ERROR,
+            },
+        }
+    return {
+        **common,
+        "summary": "Call a Satori action",
+        "description": common["description"] + (
+            " `action` is a Satori method such as `message.create`, `channel.list` or "
+            "`upload.create`, or `internal/astrabox.*` for an AstraBox extension. "
+            "`upload.create` takes multipart/form-data, one file per part; every other action "
+            "takes a JSON object."
+        ),
+        "parameters": [
+            {"name": "Satori-Platform", "in": "header", "required": True,
+             "schema": {"type": "string", "enum": ["astrabox"]}},
+            {"name": "Satori-User-ID", "in": "header", "required": True,
+             "description": "The endpoint's Agent id; it selects the Agent Login, not an employee.",
+             "schema": {"type": "string"}},
+            {"name": "Idempotency-Key", "in": "header", "required": False,
+             "description": "1..128 characters; a retried write with the same key is applied once.",
+             "schema": {"type": "string", "maxLength": 128}},
+        ],
+        "requestBody": {"required": True, "content": {
+            "application/json": {"schema": {"type": "object", "additionalProperties": True}},
+            "multipart/form-data": {"schema": {"type": "object", "additionalProperties": {
+                "type": "string", "format": "binary"}}},
+        }},
+        "responses": {
+            "200": {"description": "The Satori result object of the action.",
+                    "content": {"application/json": {"schema": {}}}},
+            "default": _SATORI_ERROR,
+        },
+    }
+
+
 def mcp_components() -> dict[str, Any]:
     """Read protocol parameter/result schemas from the installed MCP SDK."""
     from mcp.types import (

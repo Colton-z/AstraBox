@@ -2277,7 +2277,7 @@ class SandboxProvider(ABC):
         except Exception as exc:
             raise SandboxUnreachable(sandbox_id, str(exc)) from exc
         try:
-            return await handle.commands.run(command)
+            return await handle.commands.run(command, idempotent=True)
         except SandboxUnreachable:
             raise
         except Exception as exc:

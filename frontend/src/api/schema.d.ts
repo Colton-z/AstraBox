@@ -4,6 +4,46 @@
  */
 
 export interface paths {
+    "/api/satori/agents/{agent_id}/v1/proxy/{url}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read a Satori resource
+         * @description Satori v1 for one fixed Agent; see the Satori Agent integration guide. Responses are Satori objects without the console API envelope. The deployment's identity provider verifies the delegated execution identity; reads need `astrabox:read` and writes `astrabox:write` where the provider supplies API scopes. `url` is an `internal:` link this endpoint issued.
+         */
+        get: operations["satori_proxy__api_satori_agents__agent_id__v1_proxy__url__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/satori/agents/{agent_id}/v1/{action}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Call a Satori action
+         * @description Satori v1 for one fixed Agent; see the Satori Agent integration guide. Responses are Satori objects without the console API envelope. The deployment's identity provider verifies the delegated execution identity; reads need `astrabox:read` and writes `astrabox:write` where the provider supplies API scopes. `action` is a Satori method such as `message.create`, `channel.list` or `upload.create`, or `internal/astrabox.*` for an AstraBox extension. `upload.create` takes multipart/form-data, one file per part; every other action takes a JSON object.
+         */
+        post: operations["satori_action__api_satori_agents__agent_id__v1__action__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin-api/assistants/{assistant_id}/workspace/hibernate": {
         parameters: {
             query?: never;
@@ -5699,6 +5739,8 @@ export interface components {
         AdminSessionDetail: {
             /** Agent Id */
             agent_id?: string | null;
+            /** Agent Name */
+            agent_name?: string | null;
             /** Agent State */
             agent_state?: string | null;
             /** Assistant Id */
@@ -11634,6 +11676,8 @@ export interface components {
         SessionRecord: {
             /** Agent Id */
             agent_id?: string | null;
+            /** Agent Name */
+            agent_name?: string | null;
             /** Agent State */
             agent_state?: string | null;
             /** Assistant Id */
@@ -12129,6 +12173,97 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    satori_proxy__api_satori_agents__agent_id__v1_proxy__url__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+                url: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The resource bytes with their media type. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": string;
+                };
+            };
+            /** @description Refused or failed; the transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        code: string;
+                        data?: unknown;
+                        message: string;
+                    } & {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    satori_action__api_satori_agents__agent_id__v1__action__post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Satori-Platform": "astrabox";
+                /** @description The endpoint's Agent id; it selects the Agent Login, not an employee. */
+                "Satori-User-ID": string;
+                /** @description 1..128 characters; a retried write with the same key is applied once. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                agent_id: string;
+                action: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+                "multipart/form-data": {
+                    [key: string]: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The Satori result object of the action. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Refused or failed; the transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        code: string;
+                        data?: unknown;
+                        message: string;
+                    } & {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
     admin_api_hibernate_assistant_workspace_api_v1_admin_api_assistants__assistant_id__workspace_hibernate_post: {
         parameters: {
             query?: never;

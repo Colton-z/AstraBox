@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import os
+from urllib.parse import unquote
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -20,6 +22,8 @@ CHANNEL_GATEWAY_ORIGIN = f"http://{CHANNEL_GATEWAY_HOST}:{CHANNEL_GATEWAY_PORT}"
 
 _GATEWAY_HEADER = "X-AstraBox-Gateway-Token"
 _REQUEST_TIMEOUT_SECONDS = 30.0
+#: A file can take longer than a control request; its size is bounded by the caller.
+_RESOURCE_TIMEOUT_SECONDS = 120.0
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
@@ -180,6 +184,39 @@ class ChannelGatewayClient:
             status_code=status,
             headers={str(key): str(value) for key, value in response_headers.items()},
             body=response_body,
+        )
+
+    async def resource(self, deployment_id: str, url: str, *, max_bytes: int) -> Any:
+        """One file a binding's message carried, read through its adapter.
+
+        The gateway answers 403 for an address its adapter does not serve and
+        413 for a file over ``max_bytes``.
+        """
+        from astrabox.seams.channel import FetchedAttachment
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=_RESOURCE_TIMEOUT_SECONDS, transport=self._transport
+            ) as client:
+                response = await client.get(
+                    f"{self.base_url}/v1/bindings/{deployment_id}/resources",
+                    params={"url": url, "max_bytes": str(max_bytes)}, headers=self.headers,
+                )
+        except httpx.HTTPError as exc:
+            raise ChannelGatewayError(f"channel gateway transport failed: {type(exc).__name__}") from exc
+        if response.is_error:
+            detail = ""
+            with contextlib.suppress(Exception):
+                detail = str(response.json().get("error") or "").strip()
+            raise ChannelGatewayError(
+                f"channel gateway resource failed ({response.status_code})" + (f": {detail}" if detail else ""),
+                status_code=response.status_code,
+            )
+        name = response.headers.get("x-astrabox-filename")
+        return FetchedAttachment(
+            data=response.content,
+            name=unquote(name) if name else None,
+            media_type=response.headers.get("content-type") or None,
         )
 
     async def health(self) -> None:

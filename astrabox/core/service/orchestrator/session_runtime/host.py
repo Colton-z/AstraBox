@@ -59,7 +59,16 @@ _SWEEP_INTERVAL_S = 5.0
 
 
 class RuntimeGone(Exception):
-    """The session's runtime is confirmed gone (its box died or was reclaimed)."""
+    """The session's runtime cannot serve it, so a replacement takes its inputs.
+
+    ``reason`` says why: ``sandbox_lost`` when its box is confirmed gone (died
+    or reclaimed), ``model_delivery_changed`` when it was initialized under the
+    model delivery owner the session's configuration does not declare.
+    """
+
+    def __init__(self, session_id: str, *, reason: str) -> None:
+        super().__init__(session_id)
+        self.reason = reason
 
 
 class RuntimeEnded(Exception):
@@ -91,7 +100,7 @@ class RuntimeConnector(Protocol):
     async def connect(self, session_id: str) -> ConnectedRuntime:
         """A live client for the session's runtime.
 
-        Raises :class:`RuntimeGone` when the runtime is confirmed gone and
+        Raises :class:`RuntimeGone` when the runtime cannot serve it and
         :class:`RuntimeNotReady` when there is none yet.
         """
         ...
@@ -201,8 +210,8 @@ class ReaderHost:
                     if await self._repo.record(lease, FactBatch(protocol_error=str(exc)), ttl_s=LEASE_TTL_S):
                         logger.error("session %s runtime protocol incompatible: %s", session_id, exc)
                     return
-                except RuntimeGone:
-                    await self._runtime_gone(lease, reason="sandbox_lost")
+                except RuntimeGone as gone:
+                    await self._runtime_gone(lease, reason=gone.reason)
                     return
                 except RuntimeEnded:
                     await self._runtime_gone(lease, reason="conversation_ended")

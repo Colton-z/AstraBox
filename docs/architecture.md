@@ -126,6 +126,15 @@ A RuntimeProfile must select an image compatible with its `engine_kind`. See
 [Add an Agent program](writing-an-engine-adapter.md) for the required interfaces
 and tests.
 
+### External Agent chat
+
+AstraBox also serves a fixed-Agent [Satori v1 endpoint](integrations/satori-agent.md)
+for business backends. Its verified delegated execution principal owns each
+conversation; employees stay in the business application's login flow. The
+facade uses the existing Agent/Session execution and preparation services, with
+database-backed per-principal event replay across replicas. It is separate from
+the outbound Satori client channel described below.
+
 ### Messaging platforms
 
 The server image includes a private gateway for the supported official Satori
