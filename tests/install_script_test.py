@@ -202,3 +202,95 @@ def test_turning_team_login_off_is_refused_while_other_computers_reach_it(
     assert result.returncode != 0
     assert "without login" in result.stderr
     assert "COMPOSE_FILE" in _settings(install_dir / "containers/.env")
+
+
+def _fake_docker_with_images(directory: Path, present: set[str]) -> Path:
+    """A ``docker`` whose image store holds ``present`` and that logs pulls."""
+    binaries = directory / "bin"
+    binaries.mkdir(parents=True, exist_ok=True)
+    script = binaries / "docker"
+    present_words = " ".join(shlex.quote(image) for image in sorted(present))
+    script.write_text(
+        textwrap.dedent(
+            f"""
+            #!/usr/bin/env bash
+            log="{directory}/docker.log"
+            case "$1 $2" in
+              "compose config")
+                printf '%s\\n' redis:8 postgres:17 ghcr.io/colton-z/astrabox-server:1.0.0
+                exit 0 ;;
+              "compose pull") echo "compose pull" >>"$log"; exit 0 ;;
+              "image inspect")
+                for image in {present_words}; do [ "$image" = "$3" ] && exit 0; done
+                exit 1 ;;
+              "pull --quiet") echo "pull $3" >>"$log"; exit 0 ;;
+            esac
+            exit 0
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    return binaries
+
+
+def _run_pull(policy: str | None, *, tmp_path: Path, present: set[str]):
+    binaries = _fake_docker_with_images(tmp_path, present)
+    (tmp_path / "install/containers").mkdir(parents=True)
+    env = {"PATH": f"{binaries}:/usr/bin:/bin", "HOME": str(tmp_path)}
+    if policy is not None:
+        env["ASTRABOX_INSTALL_PULL"] = policy
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'source "{_INSTALLER}"\ninstall_dir="{tmp_path}/install"\n'
+            'read_pull_policy\npull_stack_images 1.0.0 "$install_dir/containers/.env"',
+        ],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+    log = tmp_path / "docker.log"
+    pulls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    return result, pulls
+
+
+def test_default_pull_policy_pulls_every_image(tmp_path: Path) -> None:
+    result, pulls = _run_pull(None, tmp_path=tmp_path, present={"redis:8"})
+
+    assert result.returncode == 0, result.stderr
+    assert pulls == ["compose pull"]
+
+
+def test_missing_pull_policy_pulls_only_absent_images(tmp_path: Path) -> None:
+    """A machine image ships the images; the first boot must not need a registry."""
+    result, pulls = _run_pull(
+        "missing",
+        tmp_path=tmp_path,
+        present={"redis:8", "ghcr.io/colton-z/astrabox-server:1.0.0"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert pulls == ["pull postgres:17"]
+
+
+def test_missing_pull_policy_pulls_nothing_when_every_image_is_present(tmp_path: Path) -> None:
+    result, pulls = _run_pull(
+        "missing",
+        tmp_path=tmp_path,
+        present={"redis:8", "postgres:17", "ghcr.io/colton-z/astrabox-server:1.0.0"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert pulls == []
+    assert "already on this host" in result.stderr
+
+
+def test_unknown_pull_policy_is_refused(tmp_path: Path) -> None:
+    result, pulls = _run_pull("sometimes", tmp_path=tmp_path, present=set())
+
+    assert result.returncode != 0
+    assert "Unknown ASTRABOX_INSTALL_PULL 'sometimes'" in result.stderr
+    assert pulls == []

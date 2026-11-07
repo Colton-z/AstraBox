@@ -43,6 +43,9 @@
 #                                    and removes that path before forwarding.
 #                                    With team login, the console's callback is
 #                                    registered below it.
+#   ASTRABOX_INSTALL_PULL            always (default) or missing. missing pulls only
+#                                    the images this host does not hold yet, for a
+#                                    machine image that ships them (cloud/).
 #
 # Docs: https://www.astrabox.ai/docs/deploy
 set -euo pipefail
@@ -115,6 +118,22 @@ readonly MIN_COMPOSE="2.17.0"
 readonly OIDC_CALLBACK_PATH="/api/v1/auth/callback"
 
 readonly READY_TIMEOUT_SECONDS=600
+
+# always: every run pulls the release's images, as an upgrade needs. missing:
+# an image this host already holds is used as it is, so a machine image with
+# the images baked in (cloud/image) installs without reaching the registry.
+# Checked before anything is installed; the functions below read pull_policy.
+read_pull_policy() {
+  pull_policy="${ASTRABOX_INSTALL_PULL:-always}"
+  case "$pull_policy" in
+    always | missing) ;;
+    *) die "Unknown ASTRABOX_INSTALL_PULL '$pull_policy'." "Use always or missing." ;;
+  esac
+}
+
+image_present() {
+  docker image inspect "$1" >/dev/null 2>&1
+}
 
 # Progress goes to stderr: several steps run inside command substitutions.
 step() { printf '==> %s\n' "$*" >&2; }
@@ -760,6 +779,32 @@ wait_until_ready() {
   rm -f "$page"
 }
 
+pull_stack_images() {
+  local version="$1" env_file="$2" image
+  local -a missing=()
+  if [ "$pull_policy" = always ]; then
+    step "Pulling the AstraBox $version images"
+    compose pull --quiet || die "Cannot pull the AstraBox $version images." \
+      "Check the registry named by ASTRABOX_IMAGE_PREFIX in $env_file, if set."
+    return 0
+  fi
+  local images
+  images="$(compose config --images)" || die "Docker Compose cannot list the stack's images."
+  while IFS= read -r image; do
+    [ -n "$image" ] || continue
+    image_present "$image" || missing+=("$image")
+  done <<<"$images"
+  if [ "${#missing[@]}" -eq 0 ]; then
+    step "Using the AstraBox $version images already on this host"
+    return 0
+  fi
+  for image in "${missing[@]}"; do
+    step "Pulling $image"
+    docker pull --quiet "$image" </dev/null >/dev/null || die "Cannot pull $image." \
+      "Check the registry named by ASTRABOX_IMAGE_PREFIX in $env_file, if set."
+  done
+}
+
 # A Session's first sandbox would otherwise wait on this multi-gigabyte pull.
 # The server names the image, so the installer pulls exactly what it will run.
 pull_agent_image() {
@@ -768,6 +813,10 @@ pull_agent_image() {
     'from astrabox.providers.sandbox_image import resolve_agent_image; print(resolve_agent_image())' \
     </dev/null | tr -d '\r')" || die "Cannot ask the server which Agent sandbox image it runs."
   [ -n "$image" ] || die "The server reported no Agent sandbox image."
+  if [ "$pull_policy" = missing ] && image_present "$image"; then
+    step "Using the Agent sandbox image $image already on this host"
+    return 0
+  fi
   step "Pulling the Agent sandbox image $image"
   docker pull --quiet "$image" </dev/null >/dev/null || die "Cannot pull $image."
 }
@@ -775,6 +824,7 @@ pull_agent_image() {
 # ── main ────────────────────────────────────────────────────────────────────
 
 main() {
+  read_pull_policy
   check_host
 
   # `curl ... | bash` gives the script as stdin, so questions are read from
@@ -832,9 +882,7 @@ main() {
   configure_team_login "$env_file"
 
   compose config --quiet || die "Docker Compose rejected the configuration in $install_dir/containers."
-  step "Pulling the AstraBox $version images"
-  compose pull --quiet || die "Cannot pull the AstraBox $version images." \
-    "Check the registry named by ASTRABOX_IMAGE_PREFIX in $env_file, if set."
+  pull_stack_images "$version" "$env_file"
   step "Starting AstraBox"
   compose up -d --no-build --remove-orphans \
     || { show_failure_evidence; die "Docker Compose could not start the stack."; }
