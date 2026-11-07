@@ -333,6 +333,7 @@ which is off on a new installation.
 | `ASTRABOX_INSTALL_DIR` | Installation directory. Default: `~/astrabox`. |
 | `ASTRABOX_INSTALL_BUNDLE` | Path of an `astrabox-deploy-<version>.tar.gz` downloaded elsewhere, for a host that cannot reach GitHub. |
 | `ASTRABOX_IMAGE_PREFIX` | Repository prefix of a registry mirror holding the published images; the component name is appended. Default: `ghcr.io/colton-z/astrabox-`. |
+| `ASTRABOX_INSTALL_PULL` | `always` (default) pulls the release's images on every run. `missing` pulls only the images the host does not have yet, for a machine image that already contains them, such as the [AstraBox cloud image](cloud-images.md). |
 | `ASTRABOX_INSTALL_MODEL_PROVIDER` | `anthropic`, `deepseek`, `anthropic-compatible`, `openai-compatible` or `none`. |
 | `ASTRABOX_INSTALL_MODEL_API_KEY` | The model service's API key. |
 | `ASTRABOX_INSTALL_MODEL_NAME` | The model ID written as `ANTHROPIC_MODEL`, which a new installation creates its seeded Agents with. Default for DeepSeek: `deepseek-flash`. |

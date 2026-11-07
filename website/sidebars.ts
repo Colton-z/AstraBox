@@ -8,7 +8,7 @@ const sidebars: SidebarsConfig = {
       type: 'category',
       label: 'Quick start',
       collapsed: false,
-      items: ['overview', 'capabilities', 'quickstart', 'all-in-one'],
+      items: ['overview', 'capabilities', 'quickstart', 'all-in-one', 'cloud-images'],
     },
     {
       type: 'category',
