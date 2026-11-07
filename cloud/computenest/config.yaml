@@ -1,0 +1,42 @@
+# Alibaba Cloud Compute Nest service: AstraBox on one ECS instance, made from
+# the AstraBox cloud image (cloud/packer, source alicloud-ecs.astrabox).
+#
+# Before publishing, create an ECS image artifact from that image in the
+# Compute Nest console and put its ID below. See cloud/README.md.
+Service:
+  RegionId: cn-hangzhou
+  DeployType: ros
+  DeployMetadata:
+    ServiceInstanceNameRule:
+      Prefix: astrabox-
+    SupplierDeployMetadata:
+      ArtifactRelation:
+        # The template's ImageId names this key; Compute Nest replaces it with
+        # the artifact's image in the region the service is deployed to.
+        'astrabox':
+          ArtifactId: artifact-REPLACE-WITH-YOUR-ARTIFACT-ID
+    TemplateConfigs:
+      - Name: Single ECS instance
+        Url: 'ros_templates/template.yaml'
+        AllowedRegions:
+          - cn-hangzhou
+          - cn-shanghai
+          - cn-beijing
+          - cn-zhangjiakou
+          - cn-shenzhen
+          - cn-guangzhou
+          - cn-chengdu
+          - cn-hongkong
+          - ap-southeast-1
+          - ap-northeast-1
+          - us-west-1
+          - us-east-1
+          - eu-central-1
+  ServiceType: private
+  ServiceInfo:
+    Locale: zh-CN
+    Name: AstraBox
+    ShortDescription: 开源、自托管的云端 Agent 平台：在你自己的云主机上运行 Claude Code、Codex 等 Agent 程序，自带沙箱、团队登录和 HTTPS。
+    Image: 'resources/icons/service_logo.png'
+  ShareType: Public
+  ApprovalType: Manual

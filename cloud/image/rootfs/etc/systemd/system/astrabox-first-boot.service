@@ -1,0 +1,22 @@
+# Configures AstraBox once, on the first boot of a machine built from the
+# AstraBox cloud image. It runs after cloud-init, so settings that user data
+# writes to /etc/astrabox/cloud.env are read.
+[Unit]
+Description=Configure AstraBox on first boot
+Documentation=https://www.astrabox.ai/docs/cloud-images
+Wants=network-online.target docker.service
+After=network-online.target docker.service cloud-final.service
+ConditionPathExists=!/var/lib/astrabox-cloud/first-boot.done
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/astrabox-first-boot
+StandardOutput=append:/var/log/astrabox-first-boot.log
+StandardError=append:/var/log/astrabox-first-boot.log
+# Pulling nothing, the installation still waits for the console and the
+# certificate: allow well past the installer's own ten-minute limit.
+TimeoutStartSec=30min
+
+[Install]
+WantedBy=multi-user.target

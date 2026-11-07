@@ -1,0 +1,372 @@
+ROSTemplateFormatVersion: '2015-09-01'
+Description:
+  en: AstraBox on one ECS instance, with team login and HTTPS.
+  zh-cn: 在一台 ECS 上部署 AstraBox，自带团队登录和 HTTPS。
+Parameters:
+  PayType:
+    Type: String
+    Label:
+      en: ECS Instance Charge Type
+      zh-cn: 付费类型
+    Default: PostPaid
+    AllowedValues:
+      - PostPaid
+      - PrePaid
+    AssociationProperty: ChargeType
+    AssociationPropertyMetadata:
+      LocaleKey: InstanceChargeType
+  PayPeriodUnit:
+    Type: String
+    Label:
+      en: Pay Period Unit
+      zh-cn: 购买资源时长周期
+    Default: Month
+    AllowedValues:
+      - Month
+      - Year
+    AssociationProperty: PayPeriodUnit
+    AssociationPropertyMetadata:
+      Visible:
+        Condition:
+          Fn::Not:
+            Fn::Equals:
+              - ${PayType}
+              - PostPaid
+  PayPeriod:
+    Type: Number
+    Label:
+      en: Period
+      zh-cn: 购买资源时长
+    Default: 1
+    AllowedValues: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    AssociationProperty: PayPeriod
+    AssociationPropertyMetadata:
+      Visible:
+        Condition:
+          Fn::Not:
+            Fn::Equals:
+              - ${PayType}
+              - PostPaid
+  ZoneId:
+    Type: String
+    Label:
+      en: Zone ID
+      zh-cn: 可用区
+    AssociationProperty: ALIYUN::ECS::Instance::ZoneId
+  EcsInstanceType:
+    Type: String
+    Label:
+      en: Instance Type
+      zh-cn: 实例规格
+    Description:
+      en: At least 2 vCPUs and 8 GiB of memory. Each conversation runs in its own sandbox of up to 1 vCPU and 1 GiB.
+      zh-cn: 建议至少 2 vCPU、8 GiB 内存。每个对话在自己的沙箱中运行，单个沙箱最多占用 1 vCPU、1 GiB。
+    AssociationProperty: ALIYUN::ECS::Instance::InstanceType
+    AssociationPropertyMetadata:
+      ZoneId: ${ZoneId}
+      InstanceChargeType: ${PayType}
+  SystemDiskSize:
+    Type: Number
+    Label:
+      en: System Disk Size (GiB)
+      zh-cn: 系统盘大小（GiB）
+    Description:
+      en: Holds the container images, the database and the conversation workspaces.
+      zh-cn: 用于存放容器镜像、数据库和对话工作区。
+    Default: 100
+    MinValue: 60
+    MaxValue: 2048
+  InternetMaxBandwidthOut:
+    Type: Number
+    Label:
+      en: Public Bandwidth (Mbps)
+      zh-cn: 公网带宽（Mbps）
+    Default: 5
+    MinValue: 1
+    MaxValue: 100
+  InstancePassword:
+    NoEcho: true
+    Type: String
+    Label:
+      en: Instance Password
+      zh-cn: 实例 root 密码
+    Description:
+      en: The operating system's root password. It is not the AstraBox console password, which the instance generates.
+      zh-cn: 服务器操作系统的 root 密码，不是 AstraBox 控制台密码（控制台密码由实例自动生成）。
+    AssociationProperty: ALIYUN::ECS::Instance::Password
+    MinLength: 8
+    MaxLength: 30
+  ModelProvider:
+    Type: String
+    Label:
+      en: Model Service
+      zh-cn: 模型服务
+    Description:
+      en: The model service the default Agents use. You can also add one later in the console under Integrated services > LiteLLM gateway.
+      zh-cn: 默认 Agent 使用的模型服务。也可以部署后在控制台“集成服务 > LiteLLM 网关”中添加。
+    Default: none
+    AllowedValues:
+      - none
+      - deepseek
+      - anthropic
+      - anthropic-compatible
+      - openai-compatible
+    AssociationPropertyMetadata:
+      ValueLabelMapping:
+        none:
+          zh-cn: 暂不配置
+          en: Configure later
+        deepseek:
+          zh-cn: DeepSeek
+          en: DeepSeek
+        anthropic:
+          zh-cn: Anthropic
+          en: Anthropic
+        anthropic-compatible:
+          zh-cn: 兼容 Anthropic 协议的服务（如阿里云百炼）
+          en: Anthropic-compatible service (such as Alibaba Cloud Model Studio)
+        openai-compatible:
+          zh-cn: 兼容 OpenAI 协议的服务
+          en: OpenAI-compatible service
+  ModelBaseUrl:
+    Type: String
+    Label:
+      en: Model Service Base URL
+      zh-cn: 模型服务地址（Base URL）
+    Description:
+      en: The Anthropic-compatible or OpenAI-compatible endpoint, as the model service documents it for Claude Code or OpenAI clients.
+      zh-cn: 模型服务为 Claude Code 或 OpenAI 客户端提供的接口地址，以服务商控制台和文档为准。
+    Default: ''
+    AllowedPattern: '^(https?://[A-Za-z0-9._~:/%-]+)?$'
+    AssociationPropertyMetadata:
+      Visible:
+        Condition:
+          Fn::Or:
+            - Fn::Equals: [anthropic-compatible, ${ModelProvider}]
+            - Fn::Equals: [openai-compatible, ${ModelProvider}]
+  ModelApiKey:
+    Type: String
+    NoEcho: true
+    Label:
+      en: Model Service API Key
+      zh-cn: 模型服务 API Key
+    Default: ''
+    AllowedPattern: '^[A-Za-z0-9._~:/+=-]*$'
+    AssociationPropertyMetadata:
+      Visible:
+        Condition:
+          Fn::Not:
+            Fn::Equals: [none, ${ModelProvider}]
+  ModelName:
+    Type: String
+    Label:
+      en: Model ID
+      zh-cn: 模型 ID
+    Description:
+      en: The model ID as the model service names it. DeepSeek defaults to deepseek-flash.
+      zh-cn: 模型服务中的模型 ID。DeepSeek 留空时使用 deepseek-flash。
+    Default: ''
+    AllowedPattern: '^[A-Za-z0-9._:/-]*$'
+    AssociationPropertyMetadata:
+      Visible:
+        Condition:
+          Fn::Not:
+            Fn::Equals: [none, ${ModelProvider}]
+  ConsoleDomain:
+    Type: String
+    Label:
+      en: Console Domain (optional)
+      zh-cn: 控制台域名（可选）
+    Description:
+      en: Leave empty to serve the console at https://<public IP>. To use host names, set both domains and point their DNS records at the instance; in mainland China regions, the domains must have an ICP filing.
+      zh-cn: 留空则通过 https://<公网 IP> 访问。如需使用域名，请同时填写两个域名，并把 DNS 解析指向实例；中国内地地域的域名需已完成 ICP 备案。
+    Default: ''
+    AllowedPattern: '^([A-Za-z0-9-]+\.)+[A-Za-z0-9-]+$|^$'
+  LoginDomain:
+    Type: String
+    Label:
+      en: Sign-in Domain (optional)
+      zh-cn: 登录页域名（可选）
+    Default: ''
+    AllowedPattern: '^([A-Za-z0-9-]+\.)+[A-Za-z0-9-]+$|^$'
+Conditions:
+  UseDomains:
+    Fn::Not:
+      Fn::Equals: ['', Ref: ConsoleDomain]
+Resources:
+  Vpc:
+    Type: ALIYUN::ECS::VPC
+    Properties:
+      VpcName:
+        Ref: ALIYUN::StackName
+      CidrBlock: 192.168.0.0/16
+  VSwitch:
+    Type: ALIYUN::ECS::VSwitch
+    Properties:
+      VSwitchName:
+        Ref: ALIYUN::StackName
+      VpcId:
+        Ref: Vpc
+      ZoneId:
+        Ref: ZoneId
+      CidrBlock: 192.168.1.0/24
+  SecurityGroup:
+    Type: ALIYUN::ECS::SecurityGroup
+    Properties:
+      SecurityGroupName:
+        Ref: ALIYUN::StackName
+      VpcId:
+        Ref: Vpc
+      # 80: certificate validation and the redirect to HTTPS. 443: the console.
+      # 8443: the sign-in pages, when the console is served at the IP address.
+      SecurityGroupIngress:
+        - PortRange: 80/80
+          SourceCidrIp: 0.0.0.0/0
+          IpProtocol: tcp
+          NicType: intranet
+        - PortRange: 443/443
+          SourceCidrIp: 0.0.0.0/0
+          IpProtocol: tcp
+          NicType: intranet
+        - PortRange: 8443/8443
+          SourceCidrIp: 0.0.0.0/0
+          IpProtocol: tcp
+          NicType: intranet
+  InstanceGroup:
+    Type: ALIYUN::ECS::InstanceGroup
+    Properties:
+      InstanceChargeType:
+        Ref: PayType
+      PeriodUnit:
+        Ref: PayPeriodUnit
+      Period:
+        Ref: PayPeriod
+      VpcId:
+        Ref: Vpc
+      VSwitchId:
+        Ref: VSwitch
+      SecurityGroupId:
+        Ref: SecurityGroup
+      ZoneId:
+        Ref: ZoneId
+      ImageId: astrabox
+      Password:
+        Ref: InstancePassword
+      InstanceType:
+        Ref: EcsInstanceType
+      SystemDiskCategory: cloud_essd
+      SystemDiskSize:
+        Ref: SystemDiskSize
+      InternetMaxBandwidthOut:
+        Ref: InternetMaxBandwidthOut
+      IoOptimized: optimized
+      MaxAmount: 1
+      # cloud-init writes these settings before the image's first-boot service
+      # runs (it starts after cloud-init finishes). The service moves the API key
+      # into the installation's root-only settings and removes it from this file.
+      UserData:
+        Fn::Sub:
+          - |
+            #cloud-config
+            write_files:
+              - path: /etc/astrabox/cloud.env
+                permissions: '0600'
+                owner: root:root
+                content: |
+                  ASTRABOX_INSTALL_MODEL_PROVIDER='${ModelProvider}'
+                  ASTRABOX_INSTALL_MODEL_API_KEY='${ModelApiKey}'
+                  ASTRABOX_INSTALL_MODEL_NAME='${ModelName}'
+                  ASTRABOX_INSTALL_MODEL_BASE_URL='${ModelBaseUrl}'
+                  ASTRABOX_CONSOLE_DOMAIN='${ConsoleDomain}'
+                  ASTRABOX_LOGIN_DOMAIN='${LoginDomain}'
+          - ModelProvider:
+              Ref: ModelProvider
+            ModelApiKey:
+              Ref: ModelApiKey
+            ModelName:
+              Ref: ModelName
+            ModelBaseUrl:
+              Ref: ModelBaseUrl
+            ConsoleDomain:
+              Ref: ConsoleDomain
+            LoginDomain:
+              Ref: LoginDomain
+  # Waits for the first-boot setup, so the deployment reports success only once
+  # the console is served, and fails with the setup's reason otherwise.
+  WaitForSetup:
+    Type: ALIYUN::ECS::RunCommand
+    Properties:
+      InstanceIds:
+        Fn::GetAtt:
+          - InstanceGroup
+          - InstanceIds
+      Type: RunShellScript
+      Sync: true
+      Timeout: 3600
+      CommandContent: |
+        #!/bin/bash
+        systemctl start astrabox-first-boot
+        if [ -f /var/lib/astrabox-cloud/first-boot.done ]; then
+          cat /var/lib/astrabox-cloud/state
+        else
+          cat /var/lib/astrabox-cloud/first-boot.failed 2>/dev/null
+          tail -n 40 /var/log/astrabox-first-boot.log
+          exit 1
+        fi
+Outputs:
+  ConsoleUrl:
+    Label:
+      en: Console
+      zh-cn: 控制台地址
+    Description:
+      en: Sign in as admin. Run `sudo astrabox-cloud info` on the instance (for example in ECS Workbench) for the password.
+      zh-cn: 用户名 admin。在实例上执行 `sudo astrabox-cloud info`（例如通过 ECS 远程连接 Workbench）查看密码。
+    Value:
+      Fn::If:
+        - UseDomains
+        - Fn::Sub: https://${ConsoleDomain}
+        - Fn::Sub:
+            - https://${Address}
+            - Address:
+                Fn::Select:
+                  - 0
+                  - Fn::GetAtt:
+                      - InstanceGroup
+                      - PublicIps
+Metadata:
+  ALIYUN::ROS::Interface:
+    ParameterGroups:
+      - Parameters:
+          - PayType
+          - PayPeriodUnit
+          - PayPeriod
+        Label:
+          default:
+            en: Billing
+            zh-cn: 付费类型
+      - Parameters:
+          - ZoneId
+          - EcsInstanceType
+          - SystemDiskSize
+          - InternetMaxBandwidthOut
+          - InstancePassword
+        Label:
+          default:
+            en: Instance
+            zh-cn: 实例配置
+      - Parameters:
+          - ModelProvider
+          - ModelBaseUrl
+          - ModelApiKey
+          - ModelName
+        Label:
+          default:
+            en: Model service
+            zh-cn: 模型服务
+      - Parameters:
+          - ConsoleDomain
+          - LoginDomain
+        Label:
+          default:
+            en: Domains (optional)
+            zh-cn: 域名（可选）
