@@ -168,8 +168,8 @@ curl --fail --silent --show-error \
 ## 注意事项
 
 1. **游标处理** — `cursor` 是不透明游标，应按响应原样传回
-2. **排序方向** — Session 按更新时间降序排列，并使用 Session ID 处理相同时间
-3. **数据变化** — 游标不会固定数据快照；分页期间更新的 Session 可能移动到列表前面
+2. **排序方向** — Session 按 `last_user_activity_at` 降序排列，并使用 Session ID 处理相同时间。`last_user_activity_at` 是 Session 创建或所有者最后一次操作它的时间；回复、自动生成的标题、阅读和运行时自身的变化不会移动 Session
+3. **数据变化** — 游标不会固定数据快照；分页期间被所有者操作的 Session 会移动到列表前面
 4. **并发分页** — 每个客户端应分别保存自己的游标链
 
 ## 下一步

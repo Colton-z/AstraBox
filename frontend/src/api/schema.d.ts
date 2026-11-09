@@ -5772,6 +5772,8 @@ export interface components {
             /** Last Output At */
             last_output_at?: string | null;
             last_response?: components["schemas"]["ResponseView"] | null;
+            /** Last User Activity At */
+            last_user_activity_at?: string | null;
             /** Mcp Connections */
             mcp_connections: unknown[];
             /** Model Name */
@@ -11705,6 +11707,8 @@ export interface components {
             /** Last Output At */
             last_output_at?: string | null;
             last_response?: components["schemas"]["ResponseView"] | null;
+            /** Last User Activity At */
+            last_user_activity_at?: string | null;
             /** Model Name */
             model_name?: string | null;
             /** Output Seq */

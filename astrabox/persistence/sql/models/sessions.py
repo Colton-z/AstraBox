@@ -63,7 +63,7 @@ class Session(Base):
 
     __tablename__ = "sessions"
     __table_args__ = (
-        Index("ix_sessions_user_list", "user_id", "hidden", "deleted", text("updated_at DESC"), text("session_id DESC")),
+        Index("ix_sessions_user_list", "user_id", "hidden", "deleted", text("last_user_activity_at DESC"), text("session_id DESC")),
         Index("ix_sessions_agent_list", "agent_id", "session_kind", "deleted", text("updated_at DESC")),
         Index(None, "assistant_id", "user_id"),
         Index(None, "owner_type", "owner_id"),
@@ -129,8 +129,12 @@ class Session(Base):
     runtime_versions: Mapped[dict[str, Any] | None]
 
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
-    #: The session list's order: moves when someone sends or the runtime answers.
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    #: The owner's session list order: when the conversation was created or
+    #: its owner last acted on it, by a message, an answer, a stop, a terminal
+    #: command, a file change or a change to its settings. Replies, generated
+    #: titles, reading and the runtime's own changes leave it where it is.
+    last_user_activity_at: Mapped[datetime] = mapped_column(server_default=func.now())
     read_at: Mapped[datetime | None]
     last_output_at: Mapped[datetime | None]
     runtime_status: Mapped[str | None] = mapped_column(payload_text())

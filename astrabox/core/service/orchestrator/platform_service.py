@@ -822,16 +822,20 @@ class AgentPlatformService:
         allow_download: bool = False,
     ) -> dict[str, Any]:
         await self.ensure_bootstrap()
-        return await self._session_share_service.create_session_share(
+        share = await self._session_share_service.create_session_share(
             user,
             session_id,
             expires_in_seconds=expires_in_seconds,
             allow_download=allow_download,
         )
+        await self._sessions_repo.record_user_activity(session_id)
+        return share
 
     async def revoke_session_share(self, user: UserContext, session_id: str) -> dict[str, Any]:
         await self.ensure_bootstrap()
-        return await self._session_share_service.revoke_session_share(user, session_id)
+        revoked = await self._session_share_service.revoke_session_share(user, session_id)
+        await self._sessions_repo.record_user_activity(session_id)
+        return revoked
 
     async def get_session_share(self, user: UserContext, session_id: str) -> dict[str, Any]:
         await self.ensure_bootstrap()
@@ -874,11 +878,13 @@ class AgentPlatformService:
         permission_mode: str,
     ) -> dict[str, Any]:
         await self.ensure_bootstrap()
-        return await self._session_lifecycle.update_session_permission_mode(
+        updated = await self._session_lifecycle.update_session_permission_mode(
             user,
             session_id,
             permission_mode,
         )
+        await self._sessions_repo.record_user_activity(session_id)
+        return updated
 
     async def must_own_session(self, user: UserContext, session_id: str) -> dict[str, Any]:
         await self.ensure_bootstrap()
@@ -904,8 +910,8 @@ class AgentPlatformService:
         """Set the title the owner chose; title generation never replaces it.
 
         The title is one line: runs of whitespace, line breaks included,
-        become one space. Renaming is not activity, so the list keeps its
-        order, and the conversation's open pages reread it from the notice.
+        become one space. Renaming is the owner's action, so the conversation
+        moves first in their list; its open pages reread it from the notice.
         """
 
         await self.ensure_bootstrap()
@@ -928,6 +934,7 @@ class AgentPlatformService:
         )
         if not renamed:
             raise APIError(code="SESSION_NOT_FOUND", message="session not found", status_code=404)
+        await self._sessions_repo.record_user_activity(session_id)
         return {"session_id": session_id, "title": clean}
 
     async def archive_session(self, user: UserContext, session_id: str) -> dict[str, Any]:
@@ -936,15 +943,21 @@ class AgentPlatformService:
 
     async def terminate_sandbox(self, user: UserContext, session_id: str) -> dict[str, Any]:
         await self.ensure_bootstrap()
-        return await self._session_lifecycle.terminate_sandbox(user, session_id)
+        terminated = await self._session_lifecycle.terminate_sandbox(user, session_id)
+        await self._sessions_repo.record_user_activity(session_id)
+        return terminated
 
     async def end_conversation(self, user: UserContext, session_id: str) -> dict[str, Any]:
         await self.ensure_bootstrap()
-        return await self._session_lifecycle.end_conversation(user, session_id)
+        ended = await self._session_lifecycle.end_conversation(user, session_id)
+        await self._sessions_repo.record_user_activity(session_id)
+        return ended
 
     async def recover_session(self, user: UserContext, session_id: str) -> dict[str, Any]:
         await self.ensure_bootstrap()
-        return await self._session_lifecycle.recover_session(user, session_id)
+        recovered = await self._session_lifecycle.recover_session(user, session_id)
+        await self._sessions_repo.record_user_activity(session_id)
+        return recovered
 
     async def get_webshell_url(self, user: UserContext, session_id: str) -> dict[str, Any]:
         await self.ensure_bootstrap()
@@ -977,6 +990,7 @@ class AgentPlatformService:
     ) -> dict[str, Any]:
         await self.ensure_bootstrap()
         session = await self._session_service.must_get_owned_session(user, session_id)
+        await self._sessions_repo.record_user_activity(session_id)
         return await self._session_file_service.upload_files(
             user,
             session_id,
@@ -993,6 +1007,7 @@ class AgentPlatformService:
     ) -> dict[str, Any]:
         await self.ensure_bootstrap()
         session = await self._session_service.must_get_owned_session(user, session_id)
+        await self._sessions_repo.record_user_activity(session_id)
         return await self._session_file_service.create_directory(
             user,
             session_id,
@@ -1009,6 +1024,7 @@ class AgentPlatformService:
     ) -> dict[str, Any]:
         await self.ensure_bootstrap()
         session = await self._session_service.must_get_owned_session(user, session_id)
+        await self._sessions_repo.record_user_activity(session_id)
         return await self._session_file_service.move_path(
             user,
             session_id,
@@ -1025,6 +1041,7 @@ class AgentPlatformService:
     ) -> dict[str, Any]:
         await self.ensure_bootstrap()
         session = await self._session_service.must_get_owned_session(user, session_id)
+        await self._sessions_repo.record_user_activity(session_id)
         return await self._session_file_service.delete_paths(
             user,
             session_id,

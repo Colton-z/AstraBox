@@ -127,6 +127,9 @@ class SessionRecord(BaseModel):
     expires_at: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    #: The list's order: when the conversation was created or its owner last
+    #: acted on it.
+    last_user_activity_at: str | None = None
     #: When the conversation last gained a reply, and when its owner last
     #: read it: newer output than ``read_at`` is unread.
     last_output_at: str | None = None

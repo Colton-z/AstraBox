@@ -169,6 +169,7 @@ AstraBox 会返回同一个 Session，不会重复创建。
 | `runtime_unavailable` | boolean | Session 的沙箱是否已不存在或已释放。 |
 | `created_at` | string/null | 创建时间。 |
 | `updated_at` | string/null | 最后更新时间。 |
+| `last_user_activity_at` | string/null | Session 创建或所有者最后一次操作它的时间。列表按它降序排列。 |
 
 Session 列表响应包含每个 Session 的摘要，其中的 `state` 来自 Agent 程序最近一次
 报告的状态；`GET /api/v1/sessions/{session_id}` 返回当前完整详情。Agent 程序为某条
@@ -321,7 +322,8 @@ curl --silent --show-error --request POST \
         "runtime_status": "idle",
         "title": "code-reviewer",
         "created_at": "2026-05-18T12:00:00Z",
-        "updated_at": "2026-05-18T12:30:00Z"
+        "updated_at": "2026-05-18T12:30:00Z",
+        "last_user_activity_at": "2026-05-18T12:20:00Z"
       }
     ],
     "has_more": false,
@@ -376,7 +378,7 @@ curl --silent --show-error --request POST \
 `last_output_at` 晚于 `read_at` 的 Session 为未读。控制台在可见标签页中打开对话时
 将其标记为已读，并在列表里未读对话旁显示圆点。开启通知后（列表中 **会话** 旁的
 铃铛），只要有控制台标签页打开（包括后台标签页），每条新的未读回复都会弹出浏览器通知。
-回复结束时（包括 Agent 程序自行开始的回复），它所在的对话会移到列表顶部。
+回复会把对话标为未读，但不会移动它在列表中的位置。列表按 `last_user_activity_at` 排序，即所有者最后一次操作对话的时间，例如发送消息、回答、停止回复或子 Agent、运行或停止终端命令、修改文件、重命名、修改权限模式、分享、恢复、结束对话或终止沙箱。阅读对话、文件或浏览器不会移动它，自动生成的标题和运行时自身的变化也不会。
 
 ## Child runs
 

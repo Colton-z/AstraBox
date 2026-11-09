@@ -80,8 +80,8 @@ _VAULT_IDS = (
 )
 
 
-def _encode_session_list_cursor(*, updated_at: str, session_id: str) -> str:
-    payload = {"updated_at": updated_at, "session_id": session_id}
+def _encode_session_list_cursor(*, last_user_activity_at: str, session_id: str) -> str:
+    payload = {"last_user_activity_at": last_user_activity_at, "session_id": session_id}
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
@@ -97,11 +97,11 @@ def _decode_session_list_cursor(cursor: str | None) -> dict[str, str] | None:
         raise InvalidListCursor("invalid session list cursor") from exc
     if not isinstance(payload, dict):
         raise InvalidListCursor("invalid session list cursor")
-    updated_at = str(payload.get("updated_at") or "").strip()
+    last_user_activity_at = str(payload.get("last_user_activity_at") or "").strip()
     session_id = str(payload.get("session_id") or "").strip()
-    if not updated_at or not session_id:
+    if not last_user_activity_at or not session_id:
         raise InvalidListCursor("invalid session list cursor")
-    return {"updated_at": updated_at, "session_id": session_id}
+    return {"last_user_activity_at": last_user_activity_at, "session_id": session_id}
 
 
 def session_view(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
@@ -596,7 +596,7 @@ class SessionRepository:
         return await _many(
             _selected()
             .where(_SESSIONS.c.user_id == user_id, _live(), _SESSIONS.c.hidden.is_(False))
-            .order_by(_SESSIONS.c.updated_at.desc(), _SESSIONS.c.session_id.desc())
+            .order_by(_SESSIONS.c.last_user_activity_at.desc(), _SESSIONS.c.session_id.desc())
             .limit(limit)
         )
 
@@ -604,7 +604,7 @@ class SessionRepository:
         self, user_id: str, *, limit: int = 50, cursor: str | None = None,
         agent_ids: list[str] | None = None, query: str = "",
     ) -> dict[str, Any]:
-        """One page of the user's visible sessions, newest activity first."""
+        """One page of the user's visible sessions, the one they last acted on first."""
         page_limit = max(1, min(int(limit or 50), 100))
         conditions: list[ColumnElement[bool]] = [
             _SESSIONS.c.user_id == user_id,
@@ -617,12 +617,12 @@ class SessionRepository:
             conditions.append(_SESSIONS.c.title.icontains(query.strip(), autoescape=True))
         position = _decode_session_list_cursor(cursor)
         if position is not None:
-            at = from_iso(position["updated_at"])
+            at = from_iso(position["last_user_activity_at"])
             conditions.append(
                 or_(
-                    _SESSIONS.c.updated_at < at,
+                    _SESSIONS.c.last_user_activity_at < at,
                     and_(
-                        _SESSIONS.c.updated_at == at,
+                        _SESSIONS.c.last_user_activity_at == at,
                         _SESSIONS.c.session_id < position["session_id"],
                     ),
                 )
@@ -630,7 +630,7 @@ class SessionRepository:
         rows = await _many(
             _selected()
             .where(*conditions)
-            .order_by(_SESSIONS.c.updated_at.desc(), _SESSIONS.c.session_id.desc())
+            .order_by(_SESSIONS.c.last_user_activity_at.desc(), _SESSIONS.c.session_id.desc())
             .limit(page_limit + 1)
         )
         has_more = len(rows) > page_limit
@@ -639,7 +639,7 @@ class SessionRepository:
         if has_more and visible:
             last = visible[-1]
             next_cursor = _encode_session_list_cursor(
-                updated_at=str(last["updated_at"]), session_id=str(last["session_id"])
+                last_user_activity_at=str(last["last_user_activity_at"]), session_id=str(last["session_id"])
             )
         return {"sessions": visible, "has_more": has_more, "next_cursor": next_cursor}
 
@@ -790,6 +790,13 @@ class SessionRepository:
         return await fetch_all(statement)
 
     # -- writes ------------------------------------------------------------
+
+    async def record_user_activity(self, session_id: str) -> None:
+        """The owner acted on the conversation, which moves it first in their list."""
+        await execute(
+            update(_SESSIONS).where(_SESSIONS.c.session_id == session_id)
+            .values(last_user_activity_at=func.now())
+        )
 
     async def update_session(
         self,

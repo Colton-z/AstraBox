@@ -7,6 +7,26 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## English
+
+### Fixed and improved
+
+- A conversation's place in the list is now its owner's last action on it, exposed as the Session's `last_user_activity_at`: sending a message, answering, stopping a response or a sub-agent, running or stopping a terminal command, changing its files, renaming it, changing its permission mode, sharing it, recovering it, ending it or terminating its sandbox. Previously the list followed the row's update time, which a reply ending and the runtime starting, recovering or failing also move, so a conversation the owner was not using could rise above the one they were working in, while renaming did not move it. Replies still mark a conversation unread, and the time beside each row is the time it is ordered by. Existing conversations take the order from the messages, answers, stops, terminal commands and share changes they recorded when the schema is upgraded.
+
+### Upgrading
+
+- PostgreSQL applies the schema change on startup. External persistence providers need the Session's `last_user_activity_at`, set when a Session is created, accepts an input, receives an answer or is acted on by its owner, and the owner's session list ordered by it.
+
+## 中文
+
+### 修复与改进
+
+- 对话在列表中的位置改为所有者最后一次操作它的时间，即 Session 的 `last_user_activity_at`：发送消息、回答、停止回复或子 Agent、运行或停止终端命令、修改文件、重命名、修改权限模式、分享、恢复、结束对话或终止沙箱。此前列表按行的更新时间排序，而回复结束以及运行时的启动、恢复或失败也会更新它，所以所有者没在用的对话可能排到正在使用的对话之上，而重命名反而不移动对话。回复仍会把对话标为未读，每行旁显示的时间就是排序所用的时间。已有对话在架构升级时按已记录的消息、回答、停止、终端命令和分享变更确定顺序。
+
+### 升级说明
+
+- PostgreSQL 在启动时应用架构变更。外部持久化提供方需要支持 Session 的 `last_user_activity_at`：在 Session 创建、接受输入、收到回答或被所有者操作时写入，并让所有者的会话列表按它排序。
+
 ## [0.1.14] - 2026-11-06
 
 ## English

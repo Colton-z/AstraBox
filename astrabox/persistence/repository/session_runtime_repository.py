@@ -289,7 +289,7 @@ class SessionRuntimeRepository:
                     )
             await conn.execute(
                 update(_SESSIONS).where(_SESSIONS.c.session_id == session_id)
-                .values(updated_at=func.now())
+                .values(updated_at=func.now(), last_user_activity_at=func.now())
             )
             row = (await conn.execute(
                 select(_INPUTS).where(_INPUTS.c.input_id == input_id)
@@ -405,6 +405,10 @@ class SessionRuntimeRepository:
         async def write(conn: AsyncConnection) -> bool:
             if (await conn.execute(statement)).rowcount == 0:
                 return False
+            await conn.execute(
+                update(_SESSIONS).where(_SESSIONS.c.session_id == session_id)
+                .values(last_user_activity_at=func.now())
+            )
             await get_persistence().coordination.notify(
                 conn, SessionNotice(session_id=session_id, kind="answer", seq=0),
             )

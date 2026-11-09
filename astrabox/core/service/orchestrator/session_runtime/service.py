@@ -354,6 +354,7 @@ class SessionRuntimeService:
         the operation; ``idle`` means neither was observed.
         """
         await self._require_owner(user, session_id, execution=True)
+        await self._sessions.record_user_activity(session_id)
         if not await self._repo.open_response_ids(session_id):
             held = await self._repo.open_input_ids(session_id)
             if held:
@@ -381,6 +382,7 @@ class SessionRuntimeService:
     async def stop_child_run(self, user: UserContext, session_id: str, control_ref: str) -> dict[str, Any]:
         """Ask the runtime to stop one sub-agent, named by the runtime's own handle."""
         await self._require_owner(user, session_id, execution=True)
+        await self._sessions.record_user_activity(session_id)
         control = await self._repo.request_control(
             session_id, kind="stop_child", target=control_ref, requested_by=str(user.user_id)
         )
