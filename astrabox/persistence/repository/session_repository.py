@@ -52,6 +52,8 @@ from astrabox.persistence.sql.statements import insert_if_absent
 from astrabox.persistence.sql.models.sessions import (
     PlatformMCPBinding,
     Session,
+    SessionInput,
+    SessionInteraction,
     SessionVaultBinding,
 )
 from astrabox.persistence.provider import get_persistence
@@ -174,6 +176,13 @@ async def _many(statement: Select[Any]) -> list[dict[str, Any]]:
 
 def _live() -> ColumnElement[bool]:
     return _SESSIONS.c.deleted.is_(False)
+
+
+def _latest(current: datetime | None, value: datetime | None) -> datetime | None:
+    moment = from_iso(value)
+    if moment is None:
+        return current
+    return moment if current is None or moment > current else current
 
 
 def _bound_and_open() -> ColumnElement[bool]:
@@ -589,6 +598,84 @@ class SessionRepository:
             .order_by(_SESSIONS.c.session_id)
             .limit(max(1, min(int(limit or 50), 500)))
         )
+
+    async def list_lease_renewal_candidates(
+        self, *, renew_before_iso: str, after_sandbox_id: str | None = None, limit: int = 50,
+        sandbox_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """One page of conversation sandboxes due for renewal, with their last activity.
+
+        A sandbox is due when a conversation bound to it records no expiry or
+        one before ``renew_before_iso``. Each row names the sandbox, the latest
+        expiry recorded for it (``expires_at``), the conversations bound to it
+        (``session_ids``), and the latest activity among them
+        (``activity_at``): an accepted input, a question opened or answered,
+        or stored output. Reads, probes and time spent waiting record none of
+        these. A sandbox with a parked conversation is left out, because
+        renewing a paused sandbox fails it, and so is an Assistant's
+        workspace, which the workspace renewal keeps. Times are ISO-8601
+        strings, ``None`` when absent. ``sandbox_id`` reads that sandbox only.
+        """
+        bound = and_(
+            _SESSIONS.c.environment_name == self.environment_name,
+            _bound_and_open(),
+            _SESSIONS.c.session_kind != "assistant_chat",
+        )
+        conditions: list[ColumnElement[bool]] = [bound]
+        after = str(after_sandbox_id or "").strip()
+        if after:
+            conditions.append(_SESSIONS.c.sandbox_id > after)
+        if sandbox_id is not None:
+            conditions.append(_SESSIONS.c.sandbox_id == sandbox_id)
+        due = (
+            select(_SESSIONS.c.sandbox_id)
+            .where(*conditions)
+            .group_by(_SESSIONS.c.sandbox_id)
+            .having(
+                func.count(_SESSIONS.c.sandbox_parked_at) == 0,
+                or_(
+                    func.count(_SESSIONS.c.expires_at) < func.count(),
+                    func.min(_SESSIONS.c.expires_at) < from_iso(renew_before_iso),
+                ),
+            )
+            .order_by(_SESSIONS.c.sandbox_id)
+            .limit(max(1, min(int(limit or 50), 500)))
+        )
+        sandbox_ids = [str(row["sandbox_id"]) for row in await fetch_all(due)]
+        if not sandbox_ids:
+            return []
+        session_id = _SESSIONS.c.session_id
+        last_input = select(func.max(SessionInput.created_at)).where(
+            SessionInput.session_id == session_id, SessionInput.state != "imported",
+        ).scalar_subquery()
+        last_opened = select(func.max(SessionInteraction.opened_at)).where(
+            SessionInteraction.session_id == session_id,
+        ).scalar_subquery()
+        last_answered = select(func.max(SessionInteraction.answered_at)).where(
+            SessionInteraction.session_id == session_id,
+        ).scalar_subquery()
+        rows = await fetch_all(
+            select(
+                _SESSIONS.c.sandbox_id, session_id, _SESSIONS.c.expires_at, _SESSIONS.c.last_output_at,
+                last_input.label("input_at"), last_opened.label("opened_at"),
+                last_answered.label("answered_at"),
+            ).where(bound, _SESSIONS.c.sandbox_id.in_(sandbox_ids)).order_by(session_id)
+        )
+        boxes: dict[str, dict[str, Any]] = {
+            sandbox_id: {"sandbox_id": sandbox_id, "session_ids": [], "expires_at": None, "activity_at": None}
+            for sandbox_id in sandbox_ids
+        }
+        for row in rows:
+            box = boxes[str(row["sandbox_id"])]
+            box["session_ids"].append(str(row["session_id"]))
+            box["expires_at"] = _latest(box["expires_at"], row["expires_at"])
+            for key in ("last_output_at", "input_at", "opened_at", "answered_at"):
+                box["activity_at"] = _latest(box["activity_at"], row[key])
+        return [
+            {**box, "expires_at": to_iso(box["expires_at"]), "activity_at": to_iso(box["activity_at"])}
+            for box in boxes.values()
+            if box["session_ids"]
+        ]
 
     # -- lists -------------------------------------------------------------
 

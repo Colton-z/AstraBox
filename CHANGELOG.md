@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## English
+
+### Fixed and improved
+
+- An Agent conversation's sandbox is now kept until one lease (`ASTRABOX_SANDBOX_LEASE_SECONDS`, four hours by default) after the last activity of the conversations bound to it: an accepted message, a question opened or answered, or model and tool output. Previously the lease was extended only when the runtime changed status and less than an hour of it remained, so a conversation waiting on an unanswered question, or producing output without a change of status, could lose its sandbox hours early and end the response with `SANDBOX_LOST`. The expiration watcher now reads the deadline from the database on every replica, so it holds with no later event and across restarts; a shared sandbox follows its most recently active conversation. Keep `ASTRABOX_SANDBOX_LEASE_RENEW_THRESHOLD_SECONDS` longer than `ASTRABOX_EXPIRATION_WATCHER_INTERVAL_SECONDS`; the server warns at startup when it is not.
+
+## 中文
+
+### 修复与改进
+
+- Agent 对话的沙箱现在会保留到绑定在它上面的对话最后一次活动之后一个租约期（`ASTRABOX_SANDBOX_LEASE_SECONDS`，默认四小时）。活动包括：接受的消息、打开或回答的问题、模型与工具输出。此前只有在运行时状态变化、且租约剩余不足一小时时才会续期，所以等待未回答问题的对话，或只有输出而状态没变的对话，可能提前几个小时失去沙箱，回复以 `SANDBOX_LOST` 结束。现在由各副本的 expiration watcher 从数据库读取截止时间，之后没有新事件、或者服务重启，截止时间都不受影响；共享沙箱以最近活动的对话为准。`ASTRABOX_SANDBOX_LEASE_RENEW_THRESHOLD_SECONDS` 需大于 `ASTRABOX_EXPIRATION_WATCHER_INTERVAL_SECONDS`，否则服务启动时会给出警告。
+
 ## [0.1.14] - 2026-11-06
 
 ## English

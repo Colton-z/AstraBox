@@ -121,6 +121,8 @@ class ExpirationWatcher:
         # stays a candidate, so a pass that always started from the first row
         # would never reach the ones behind it.
         self._assistant_lease_cursor = KeysetCursor("assistant_id")
+        # Where conversation lease renewal resumes, for the same reason.
+        self._conversation_lease_cursor = KeysetCursor("sandbox_id")
 
     # ── Lifecycle ───────────────────────────────────────────────────────
 
@@ -135,6 +137,17 @@ class ExpirationWatcher:
         task = self._task
         if isinstance(task, asyncio.Task) and not task.done():
             return
+        if settings.sandbox_lease_renew_threshold_seconds <= settings.expiration_watcher_interval_seconds:
+            # Conversation leases are renewed by this loop once they end within
+            # the threshold; a tick interval at least that long can miss the
+            # window, and a box with recent activity then expires.
+            logger.warning(
+                "expiration_watcher: ASTRABOX_SANDBOX_LEASE_RENEW_THRESHOLD_SECONDS=%d is not "
+                "longer than the watcher interval %ds; conversation sandboxes can expire "
+                "before one lease after their last activity",
+                settings.sandbox_lease_renew_threshold_seconds,
+                settings.expiration_watcher_interval_seconds,
+            )
         self._task = self._platform._spawn_background_task(
             self._loop(), name="expiration-watcher",
         )
@@ -301,6 +314,14 @@ class ExpirationWatcher:
         if self._closed:
             return summary
         try:
+            summary.update(await self._keep_conversation_sandboxes_leased())
+        except Exception:
+            if self._closed:
+                raise
+            logger.exception("expiration_watcher: conversation lease renewal failed")
+        if self._closed:
+            return summary
+        try:
             summary.update(await self._heal_assistant_workspaces())
         except Exception:
             if self._closed:
@@ -383,11 +404,9 @@ class ExpirationWatcher:
         """Renew every READY Assistant workspace whose lease is half spent.
 
         An Assistant is always available: its box keeps running scheduled
-        jobs and answering its channels between messages. Activity renews a
-        lease only inside its last hour, and only on the replica holding the
-        conversation's runtime, so a workspace whose owner talks to it daily
-        would still reach the end of its lease. Renewing at half the horizon
-        leaves days of margin for a missed tick or a provider outage.
+        jobs and answering its channels between messages, so its lease does
+        not follow conversation activity. Renewing at half the horizon leaves
+        days of margin for a missed tick or a provider outage.
         """
         settings = self._settings()
         horizon = int(getattr(settings, "agent_sandbox_renew_ttl_seconds", 0) or 0)
@@ -428,6 +447,32 @@ class ExpirationWatcher:
                     sandbox_id,
                     exc,
                 )
+        return summary
+
+    async def _keep_conversation_sandboxes_leased(self) -> dict[str, int]:
+        """Renew every due conversation sandbox to one lease after its last activity.
+
+        The trigger for a conversation that records nothing more; see
+        :mod:`~astrabox.core.service.orchestrator.conversation_lease`.
+        """
+        leases = self._platform._conversation_leases
+        sessions_repo = self._platform._sessions_repo
+        renew_before = leases.renew_before().isoformat()
+        candidates = await self._conversation_lease_cursor.page(
+            lambda after, size: sessions_repo.list_lease_renewal_candidates(
+                renew_before_iso=renew_before, after_sandbox_id=after, limit=size,
+            ),
+            limit=_DEAD_BINDING_SCAN_LIMIT,
+        )
+        summary = {"conversation_leases_renewed": 0, "conversation_lease_renew_failed": 0}
+        for box in candidates:
+            renewed = await leases.hold(box)
+            if renewed is True:
+                summary["conversation_leases_renewed"] += 1
+            elif renewed is False:
+                summary["conversation_lease_renew_failed"] += 1
+        if not any(summary.values()):
+            return {}
         return summary
 
     async def _sweep_dead_bindings(self) -> dict[str, int]:

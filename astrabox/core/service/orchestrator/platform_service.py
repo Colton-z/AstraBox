@@ -49,6 +49,7 @@ from astrabox.core.service.orchestrator.assistant.assistant_workspace_service im
     AssistantWorkspaceService,
 )
 from astrabox.core.service.orchestrator.bootstrap_reconciler import BootstrapReconciler
+from astrabox.core.service.orchestrator.conversation_lease import ConversationLeases
 from astrabox.core.service.orchestrator.expiration_watcher import (
     ExpirationWatcher,
 )
@@ -162,6 +163,9 @@ class AgentPlatformService:
             agent_service_getter=self._agent_service_getter,
         )
         self._sandbox_lifecycle_service = SandboxLifecycleService(platform_service=self)
+        self._conversation_leases = ConversationLeases(
+            sessions_repo=self._sessions_repo, runtime_manager=self._runtime_manager,
+        )
 
         self._ttl_seconds = settings.session_ttl_seconds
         self._bootstrapped = False
@@ -328,7 +332,9 @@ class AgentPlatformService:
             ),
             hooks=reader_hooks(
                 sessions=self._sessions_repo,
-                runtime_manager=self._runtime_manager,
+                hold_sandbox=lambda sandbox_id: self._spawn_background_task(
+                    self._conversation_leases.hold_sandbox(sandbox_id), name="conversation-lease",
+                ),
                 realign_live_sandbox_owners=self._sandbox_lifecycle_service.realign_live_sandbox_owners,
                 committed=committed_facts(self.session_fact_consumers),
                 deliver_attachments=self._deliver_attachments,

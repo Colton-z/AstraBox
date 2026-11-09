@@ -6,7 +6,6 @@ It triggers a dataclass crash under certain import setups.
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
 if TYPE_CHECKING:
@@ -41,11 +40,6 @@ class SessionRuntime:
     #: teardown closes and what a reattach rebuilds from. None on the
     #: per-session tenancy, where the box is itself the conversation's context.
     isolated_session_id: Optional[str] = None
-    # Tracks this sandbox's current lease expiry (set on lazy renew). The owner
-    # replica renews the lease on turn activity only when the remaining lease drops
-    # below the renew threshold; an abandoned session stops renewing and the sandbox
-    # auto-expires ~one lease after the last turn. None means "renew on next activity".
-    sandbox_lease_expires_at: Optional[datetime] = None
     owner_loop: Optional[asyncio.AbstractEventLoop] = None
 
     def __post_init__(self) -> None:

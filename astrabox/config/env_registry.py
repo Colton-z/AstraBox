@@ -1009,7 +1009,7 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ASTRABOX_AGENT_SANDBOX_RENEW_TTL_SECONDS",
         "internal",
         "604200",
-        "Lease TTL an Assistant's workspace sandbox is created with and renewed to on activity; a conversation's sandbox uses ASTRABOX_SANDBOX_LEASE_SECONDS.",
+        "Lease TTL an Assistant's workspace sandbox is created with and renewed to by the expiration watcher at half this horizon; a conversation's sandbox uses ASTRABOX_SANDBOX_LEASE_SECONDS.",
         "astrabox.common.utils.settings",
     ),
     (
@@ -1037,8 +1037,9 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ASTRABOX_SANDBOX_LEASE_SECONDS",
         "internal",
         "14400",
-        "The conversation sandbox lease; renewed on turn/mirror activity. An "
-        "abandoned session dies roughly one lease after its last activity.",
+        "The conversation sandbox lease. The expiration watcher holds a sandbox "
+        "until this long after the last activity of the conversations bound to it: "
+        "an accepted input, a question opened or answered, or stored output.",
         "astrabox.common.utils.settings",
     ),
     (
@@ -1148,7 +1149,7 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ASTRABOX_SANDBOX_LEASE_RENEW_THRESHOLD_SECONDS",
         "internal",
         "3600",
-        "Renew a conversation's sandbox lease only once less than this remains.",
+        "A conversation's sandbox lease is renewed once less than this remains: by the expiration watcher, and at once when its runtime starts working or waits on the user. Keep it longer than ASTRABOX_EXPIRATION_WATCHER_INTERVAL_SECONDS.",
         "astrabox.common.utils.settings",
     ),
     (

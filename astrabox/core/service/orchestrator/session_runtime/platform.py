@@ -204,7 +204,7 @@ def committed_facts(consumers: list[FactConsumer]) -> Callable[[str, FactBatch],
 def reader_hooks(
     *,
     sessions: SessionRepository,
-    runtime_manager: Any,
+    hold_sandbox: Callable[[str], object],
     realign_live_sandbox_owners: Callable[[str], Awaitable[object]],
     committed: Callable[[str, FactBatch], Awaitable[None]],
     deliver_attachments: Callable[[dict[str, Any], RuntimeInput], Awaitable[None]],
@@ -250,8 +250,14 @@ def reader_hooks(
             await committed(session_id, batch)
 
         async def status(value: str) -> None:
+            # A response that starts or waits on the user is activity, and may
+            # come in the last minutes of the lease; the expiration watcher's
+            # next tick could be too late. Renewal runs off the commit path.
             if value in ("working", "waiting"):
-                await runtime_manager.maybe_renew_lease_on_activity(session_id)
+                try:
+                    hold_sandbox(connected.sandbox_id)
+                except Exception:
+                    logger.exception("conversation lease renewal not scheduled session=%s", session_id)
 
         async def permission_mode() -> None:
             session = await sessions.get_session(session_id)
