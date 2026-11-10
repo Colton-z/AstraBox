@@ -37,7 +37,7 @@ dependencies = [
   "pydantic-settings==2.15.0",
   "pyyaml==6.0.3",
   # agent loop (KEYSTONE, Anthropic official MIT package)
-  "claude-agent-sdk==0.2.163",
+  "claude-agent-sdk==0.2.179",
   # default sandbox driver -> /var/run/docker.sock
   # vault secret material at rest (AES-GCM in the local secret store)
   # AWS's latest encryption SDK currently requires cryptography <47 through its
