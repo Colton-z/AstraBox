@@ -20,7 +20,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {
-    "@axe-core/playwright": "4.13.0",
+    "@axe-core/playwright": "4.14.0",
     "@modelcontextprotocol/sdk": "1.32.2",
     "@playwright/test": "1.63.0",
     "@types/node": "^26.4.1",
