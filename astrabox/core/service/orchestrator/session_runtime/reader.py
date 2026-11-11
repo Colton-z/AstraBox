@@ -30,6 +30,7 @@ import json
 import contextlib
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
+import dataclasses
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -168,6 +169,52 @@ class ControlRefused(Exception):
     """A control the reader cannot apply as asked; the message says why."""
 
 
+def _storable_text(text: str) -> str:
+    if text.isascii():
+        return text.replace("\x00", "\ufffd") if "\x00" in text else text
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        # An unpaired surrogate: a UTF-16 string cut inside a pair, relayed as an escape.
+        text = text.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+    return text.replace("\x00", "\ufffd") if "\x00" in text else text
+
+
+def storable(value: Any) -> Any:
+    """``value`` with the characters PostgreSQL text cannot hold replaced by U+FFFD.
+
+    Those are NUL and unpaired surrogates. A runtime relays what its tools
+    print, and binary output decodes to text that can contain either. A part
+    the database refuses stops every reader generation at the same event, so
+    the conversation would never move again. The replacement is made where
+    runtime events and state enter the reader, so the live part and the record
+    carry the same text, as terminal output does. A value that holds neither is
+    returned as it is.
+    """
+
+    if isinstance(value, str):
+        return _storable_text(value)
+    if isinstance(value, dict):
+        pairs = [(storable(key), storable(item)) for key, item in value.items()]
+        if all(new[0] is old[0] and new[1] is old[1] for new, old in zip(pairs, value.items())):
+            return value
+        return dict(pairs)
+    if isinstance(value, (list, tuple)):
+        items = [storable(item) for item in value]
+        if all(new is old for new, old in zip(items, value)):
+            return value
+        return list(items) if isinstance(value, list) else tuple(items)
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        changes = {}
+        for field in dataclasses.fields(value):
+            current = getattr(value, field.name)
+            cleaned = storable(current)
+            if cleaned is not current:
+                changes[field.name] = cleaned
+        return dataclasses.replace(value, **changes) if changes else value
+    return value
+
+
 class SessionReader:
     def __init__(
         self,
@@ -241,7 +288,8 @@ class SessionReader:
 
     async def _read_events(self, cursor: RuntimeCursor | None) -> None:
         events = await self._open_events(cursor)
-        async for event in events:
+        async for raw in events:
+            event = storable(raw)
             if isinstance(event, InputAdmitted):
                 await pass_fault_barrier(
                     "reader_boundary", session_id=self._sid, phase="admission", item_id=event.input_id
@@ -363,6 +411,7 @@ class SessionReader:
 
     async def _reconcile(self, state: RuntimeState) -> None:
         """Align the recorded facts with the runtime's own account of itself."""
+        state = storable(state)
         recorded_open = set(await self._repo.open_response_ids(self._sid))
         runtime_open = {response.response_id: response for response in state.open_responses}
         recorded_interactions = set(await self._repo.open_interaction_ids(self._sid))
