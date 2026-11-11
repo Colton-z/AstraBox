@@ -42,7 +42,7 @@
   ],
   "playwright": {
     "exclusive": {
-      "files": 200,
+      "files": 201,
       "parallel_files": 124,
       "parallel_tests": 218,
       "serial_files": [
@@ -60,6 +60,7 @@
         "specs/an-assistant-runs-its-owners-routine-in-its-main-conversation.exclusive.spec.ts",
         "specs/an-assistant-used-today-keeps-its-box-overnight.exclusive.spec.ts",
         "specs/an-assistant-uses-the-hermes-extensions-its-owner-configures.exclusive.spec.ts",
+        "specs/an-assistant-whose-box-was-replaced-can-be-deleted.exclusive.spec.ts",
         "specs/an-assistants-scheduled-reply-marks-its-conversation-unread.exclusive.spec.ts",
         "specs/an-expired-oauth-credential-is-reported-before-a-conversation-dies-on-it.exclusive.spec.ts",
         "specs/an-exposed-port-outlives-the-idle-window.exclusive.spec.ts",
@@ -123,9 +124,9 @@
         "specs/untouched-tab-catches-up-after-backend-restart.exclusive.spec.ts",
         "specs/vault-environment-survives-reattach.exclusive.spec.ts"
       ],
-      "serial_tests": 120,
+      "serial_tests": 121,
       "serial_workers": 1,
-      "tests": 338,
+      "tests": 339,
       "workers": 5
     },
     "parallel": {
