@@ -437,6 +437,9 @@ for _code, _status, _category, _retryable, _owner in (
     # the reader reconnects can succeed.
     ("INTERRUPT_UNAVAILABLE", 409, "state", True, "session"),
     ("PENDING_INPUTS_NOT_CANCELLED", 409, "state", False, "session"),
+    # Cancelling one input's work: the reader could not stop it without
+    # stopping another sender's message or a message its runtime keeps.
+    ("CANCEL_REFUSED", 409, "state", False, "session"),
     # The conversation's Agent was deleted; its history stays readable.
     ("AGENT_DELETED", 409, "state", False, "session"),
     ("SESSION_READ_ONLY", 409, "state", False, "session"),

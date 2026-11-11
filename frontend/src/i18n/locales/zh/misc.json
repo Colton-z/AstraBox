@@ -29,6 +29,7 @@
     "queue_sending": "发送中",
     "queue_failed": "发送失败",
     "queue_waiting": "等待发送",
+    "cancelled": "发送方在 Agent 处理前取消了这条消息",
     "retry": "重试",
     "send_again": "重新发送",
     "retry_disabled": "当前会话不可重试",

@@ -76,11 +76,19 @@ export function UserMessageStatus({ message, includedInResponse }: { message: UI
   }
   const failure = inputFailure(message);
   if (failure) {
+    // Withdrawn by whoever sent it (an A2A caller's cancellation) before the
+    // Agent took it: nothing went wrong, so it reads as a status, not an error.
+    const cancelled = failure.code === 'INPUT_CANCELLED';
     return (
-      <div className="flex w-full max-w-[85%] flex-col gap-2" data-testid="user-message-failure">
-        {failure.user_action
-          ? <UserActionNotice action={failure.user_action} />
-          : <ErrorNote>{failure.message || t('misc:composer.queue_failed')}</ErrorNote>}
+      <div
+        className="flex w-full max-w-[85%] flex-col gap-2"
+        data-testid={cancelled ? 'user-message-cancelled' : 'user-message-failure'}
+      >
+        {cancelled
+          ? <p role="status" className="text-xs text-muted-foreground">{t('misc:composer.cancelled')}</p>
+          : failure.user_action
+            ? <UserActionNotice action={failure.user_action} />
+            : <ErrorNote>{failure.message || t('misc:composer.queue_failed')}</ErrorNote>}
         <div className="flex items-center justify-end">
           <Button
             variant="ghost"

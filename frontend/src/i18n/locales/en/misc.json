@@ -30,6 +30,7 @@
     "queue_sending": "Sending",
     "queue_failed": "Send failed",
     "queue_waiting": "Queued",
+    "cancelled": "Cancelled by its sender before the Agent took it",
     "retry": "Retry",
     "send_again": "Send again",
     "retry_disabled": "This session can't be retried",

@@ -95,6 +95,9 @@ _READERS = SessionReader.__table__
 _CONTROLS = SessionControl.__table__
 
 _OPEN_INPUT_STATES = ("pending", "delivered")
+#: Inputs a runtime may still answer: the open ones, and those it durably
+#: holds that no response has taken yet.
+_UNANSWERED_INPUT_STATES = (*_OPEN_INPUT_STATES, "admitted")
 
 #: How a message imported from another system's history is marked: the
 #: ``source`` and ``state`` of an imported user message and the ``origin`` of
@@ -187,7 +190,18 @@ class InputsFailed:
     failure: dict[str, Any]
 
 
-Fact = ResponseStart | ResponseEnd | MessagePosition | InteractionOpen | InteractionClose | InputsAdmitted | InputsFailed
+@dataclass(frozen=True, slots=True)
+class InputsCancelled:
+    """Inputs withdrawn before any response took them, with the notice the page shows."""
+
+    input_ids: tuple[str, ...]
+    failure: dict[str, Any]
+
+
+Fact = (
+    ResponseStart | ResponseEnd | MessagePosition | InteractionOpen | InteractionClose
+    | InputsAdmitted | InputsFailed | InputsCancelled
+)
 
 
 @dataclass(slots=True)
@@ -342,6 +356,19 @@ class SessionRuntimeRepository:
         )
         return [str(row["input_id"]) for row in rows]
 
+    async def queued_input_ids(self, session_id: str) -> list[str]:
+        """Inputs a runtime received that no response has taken yet, in acceptance order."""
+        rows = await fetch_all(
+            select(_INPUTS.c.input_id)
+            .where(
+                _INPUTS.c.session_id == session_id,
+                _INPUTS.c.state.in_(("delivered", "admitted")),
+                _INPUTS.c.response_id.is_(None),
+            )
+            .order_by(_INPUTS.c.seq)
+        )
+        return [str(row["input_id"]) for row in rows]
+
     async def undelivered_inputs(self, session_id: str) -> list[dict[str, Any]]:
         """Inputs the platform still holds for a runtime, in acceptance order."""
         return _views(
@@ -468,6 +495,48 @@ class SessionRuntimeRepository:
                     _CONTROLS.c.reader_generation == lease.generation,
                 )
                 .order_by(_CONTROLS.c.requested_at)
+            )
+        )
+
+    async def request_control_for_reader(
+        self, session_id: str, *, kind: str, target: str | None, requested_by: str | None
+    ) -> tuple[str, bool]:
+        """Record a control for the live reader, or for the next one when none is live.
+
+        Returns the control's id and whether a reader is live. A control for
+        the next reader is stamped with the generation its claim will take:
+        the readers row is locked while it is written, so a claim waits and
+        then takes exactly that generation, which applies its controls before
+        it delivers anything.
+        """
+        control_id = str(uuid.uuid4())
+
+        async def write(conn: AsyncConnection) -> tuple[str, bool]:
+            row = (await conn.execute(
+                select(_READERS.c.generation, (_READERS.c.expires_at > func.now()).label("live"))
+                .where(_READERS.c.session_id == session_id)
+                .with_for_update()
+            )).mappings().first()
+            live = bool(row and row["live"])
+            generation = int(row["generation"]) + (0 if live else 1) if row else 1
+            await conn.execute(insert(_CONTROLS).values(
+                control_id=control_id, session_id=session_id, kind=kind, target=target,
+                reader_generation=generation, requested_by=requested_by,
+            ))
+            if live:
+                await get_persistence().coordination.notify(
+                    conn, SessionNotice(session_id=session_id, kind="control", seq=0),
+                )
+            return control_id, live
+
+        return await transaction(write)
+
+    async def get_control(self, session_id: str, control_id: str) -> dict[str, Any] | None:
+        return _view(
+            await fetch_one(
+                select(_CONTROLS.c.state, _CONTROLS.c.error).where(
+                    _CONTROLS.c.session_id == session_id, _CONTROLS.c.control_id == control_id
+                )
             )
         )
 
@@ -1120,6 +1189,20 @@ class SessionRuntimeRepository:
             )
         )
 
+    async def input_ids_by_client_message_ids(
+        self, session_id: str, client_message_ids: Sequence[str]
+    ) -> dict[str, str]:
+        """Each caller id that names an input of the session, with that input's id."""
+        if not client_message_ids:
+            return {}
+        rows = await fetch_all(
+            select(_INPUTS.c.client_message_id, _INPUTS.c.input_id).where(
+                _INPUTS.c.session_id == session_id,
+                _INPUTS.c.client_message_id.in_(list(client_message_ids)),
+            )
+        )
+        return {str(row["client_message_id"]): str(row["input_id"]) for row in rows}
+
     async def inputs_for_response(self, session_id: str, response_id: str) -> list[dict[str, Any]]:
         """The inputs a response answers, in acceptance order."""
         return _views(
@@ -1444,6 +1527,20 @@ async def _apply(conn: AsyncConnection, session_id: str, fact: Fact) -> None:
                     _INPUTS.c.state.in_(_OPEN_INPUT_STATES),
                 )
                 .values(state="failed", failure=fact.failure)
+            )
+    elif isinstance(fact, InputsCancelled):
+        if fact.input_ids:
+            # Only inputs no response has taken: a response that started
+            # answers what it took, and its own end says how it ended.
+            await conn.execute(
+                update(_INPUTS)
+                .where(
+                    _INPUTS.c.session_id == session_id,
+                    _INPUTS.c.input_id.in_(list(fact.input_ids)),
+                    _INPUTS.c.state.in_(_UNANSWERED_INPUT_STATES),
+                    _INPUTS.c.response_id.is_(None),
+                )
+                .values(state="cancelled", failure=fact.failure)
             )
     else:  # pragma: no cover - the union is closed
         raise TypeError(f"unknown fact {fact!r}")

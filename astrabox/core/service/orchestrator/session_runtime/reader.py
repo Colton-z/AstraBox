@@ -67,6 +67,7 @@ from astrabox.core.service.orchestrator.session_runtime.feed import (
 from astrabox.persistence.repository.session_runtime_repository import (
     FactBatch,
     InputsAdmitted,
+    InputsCancelled,
     InputsFailed,
     InteractionClose,
     InteractionOpen,
@@ -154,6 +155,17 @@ def lost_response_parts(response_id: str, reason: str) -> list[dict[str, Any]]:
 
 def input_failed_part(input_id: str, failure: dict[str, Any]) -> dict[str, Any]:
     return {"type": "data-input-failed", "data": {"input_id": input_id, **failure}}
+
+
+#: What a page shows for an input withdrawn before any response took it.
+INPUT_CANCELLED = {
+    "code": "INPUT_CANCELLED",
+    "message": "Cancelled by its sender before the Agent took it.",
+}
+
+
+class ControlRefused(Exception):
+    """A control the reader cannot apply as asked; the message says why."""
 
 
 class SessionReader:
@@ -481,6 +493,8 @@ class SessionReader:
             try:
                 if row["kind"] == "interrupt":
                     await self._client.interrupt()
+                elif row["kind"] == "cancel_input":
+                    await self._cancel_input(json.loads(str(row["target"])))
                 elif row["kind"] == "stop_child":
                     stop = getattr(self._client, "stop_child_run", None)
                     if not callable(stop):
@@ -532,6 +546,61 @@ class SessionReader:
                 self._close_interaction(interaction_id, "answered")
             # Runtime acceptance receipts distinguish redelivery after a lost commit.
             await self._commit()
+
+    async def _cancel_input(self, request: dict[str, Any]) -> None:
+        """Stop the work one input started, touching no input outside ``allowed``.
+
+        An input no runtime has received is withdrawn here. One a running
+        response answers stops with that response, unless the response also
+        answers an input outside ``allowed``. One the runtime holds behind
+        other work goes with everything it queued and the response in
+        progress, which the runtime drops only as a whole, and only a runtime
+        that can drop queued inputs does so. A finished input has nothing left
+        to stop.
+        """
+        input_id = str(request["input_id"])
+        allowed = {str(item) for item in request["allowed"]}
+        row = await self._repo.get_input(self._sid, input_id)
+        if row is None:
+            raise ControlRefused("the message is not in this conversation")
+        if row["state"] not in ("pending", "delivered", "admitted"):
+            return
+        if row.get("response_id"):
+            response_id = str(row["response_id"])
+            response = await self._repo.get_response(self._sid, response_id)
+            if response is None or response["status"] == "ended":
+                return
+            answered = {str(item["input_id"]) for item in await self._repo.inputs_for_response(self._sid, response_id)}
+            if answered - allowed:
+                raise ControlRefused(
+                    "the response answering it also answers a message another sender or conversation sent"
+                )
+            await self._client.interrupt()
+            return
+        if row["state"] == "pending":
+            self._batch.facts.append(InputsCancelled((input_id,), INPUT_CANCELLED))
+            await self._publish_platform(None, [input_failed_part(input_id, INPUT_CANCELLED)])
+            return
+        queued = await self._repo.queued_input_ids(self._sid)
+        running: set[str] = set()
+        for response_id in await self._repo.open_response_ids(self._sid):
+            running |= {
+                str(item["input_id"]) for item in await self._repo.inputs_for_response(self._sid, response_id)
+            }
+        if (set(queued) | running) - allowed:
+            raise ControlRefused(
+                "the runtime drops queued messages only all together, and some came from another "
+                "sender or conversation"
+            )
+        try:
+            await self._client.interrupt(cancel_queued=True)
+        except NotImplementedError as exc:
+            raise ControlRefused(
+                f"the {self._client.engine_kind} runtime keeps a message it queued until it runs it"
+            ) from exc
+        if queued:
+            self._batch.facts.append(InputsCancelled(tuple(queued), INPUT_CANCELLED))
+            await self._publish_platform(None, [input_failed_part(item, INPUT_CANCELLED) for item in queued])
 
     async def _refuse(self, input_id: str, failure: dict[str, Any]) -> None:
         logger.info("session %s input %s refused: %s", self._sid, input_id, failure.get("code"))

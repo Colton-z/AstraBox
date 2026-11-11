@@ -7,8 +7,10 @@ history read what the reader recorded.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+import time
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
@@ -38,6 +40,9 @@ from astrabox.seams.admission import ADMISSION_KIND_INPUT, AdmissionRequest, enf
 from astrabox.seams.runtime_preparation import validated_user_action
 
 _HISTORY_PAGE_LIMIT = 100
+#: How long a cancellation waits for the reader's outcome, and how often it looks.
+_CANCEL_WAIT_S = 10.0
+_CANCEL_POLL_S = 0.2
 
 
 def _encode_before(before: tuple[int, int, int, int] | None) -> str | None:
@@ -377,6 +382,42 @@ class SessionRuntimeService:
                 status_code=409,
             )
         return {"session_id": session_id, "status": "accepted"}
+
+    async def cancel_input(
+        self, user: UserContext, session_id: str, input_id: str, *, allowed: set[str]
+    ) -> dict[str, Any]:
+        """Stop the work one input started, without stopping any input outside ``allowed``.
+
+        The session's reader applies it (``SessionReader._cancel_input``):
+        an input no runtime has received is withdrawn, a response answering
+        only allowed inputs is interrupted, and inputs the runtime queued go
+        with the response in progress when the runtime can drop them. The
+        call waits briefly for a live reader's outcome: ``applied``, or a
+        refusal with its reason. Without a live reader, the next reader
+        applies it before delivering anything, and the call answers
+        ``requested``.
+        """
+        await self._require_owner(user, session_id, execution=True)
+        target = json.dumps({"input_id": input_id, "allowed": sorted(allowed | {input_id})})
+        control_id, live = await self._repo.request_control_for_reader(
+            session_id, kind="cancel_input", target=target, requested_by=str(user.user_id)
+        )
+        if not live:
+            return {"session_id": session_id, "input_id": input_id, "status": "requested"}
+        deadline = time.monotonic() + _CANCEL_WAIT_S
+        while time.monotonic() < deadline:
+            control = await self._repo.get_control(session_id, control_id)
+            state = str((control or {}).get("state") or "")
+            if state == "done":
+                return {"session_id": session_id, "input_id": input_id, "status": "applied"}
+            if state in ("failed", "expired"):
+                raise APIError(
+                    code="CANCEL_REFUSED",
+                    message=str((control or {}).get("error") or "the runtime did not apply the cancellation"),
+                    status_code=409,
+                )
+            await asyncio.sleep(_CANCEL_POLL_S)
+        return {"session_id": session_id, "input_id": input_id, "status": "requested"}
 
     async def stop_child_run(self, user: UserContext, session_id: str, control_ref: str) -> dict[str, Any]:
         """Ask the runtime to stop one sub-agent, named by the runtime's own handle."""

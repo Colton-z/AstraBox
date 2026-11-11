@@ -82,6 +82,8 @@ _ENDED = {
 }
 #: Where the task's input came from, on the input the platform records.
 _SOURCE = "a2a"
+#: Tasks read per page when collecting a context's messages for a cancellation.
+_CONTEXT_PAGE = 200
 
 
 def _response_text(parts: list[dict[str, Any]]) -> str:
@@ -505,6 +507,13 @@ class AgentA2AService:
                     parts=[a2a.Part(text=str(sent["content"]))],
                 )
             )
+            if sent["state"] == "cancelled":
+                state = a2a.TASK_STATE_CANCELED
+                status_message = a2a.Message(
+                    message_id=f"{task_id}:cancelled",
+                    role=a2a.ROLE_AGENT,
+                    parts=[a2a.Part(text=str((sent.get("failure") or {}).get("message") or "Canceled"))],
+                )
             if sent["state"] == "failed":
                 state = a2a.TASK_STATE_FAILED
                 failure = sent.get("failure") or {}
@@ -717,11 +726,53 @@ class AgentA2AService:
     async def cancel(
         self, user: UserContext, agent_id: str, params: a2a.CancelTaskRequest
     ) -> a2a.Task:
+        """Stop the work this task's message started.
+
+        A cancellation may also stop the caller's other tasks in the same
+        context, whose messages the same response answers or the runtime
+        queued with it, never another sender's message: those cases refuse,
+        saying why. The returned task reads CANCELED once the runtime has
+        stopped; a runtime still being connected stops the work before it
+        takes the message.
+        """
         async with _protocol_errors():
             await self._authorize(user, agent_id, write=True)
             row = await self._reference(user, agent_id, params.id)
-            await self._session(user, agent_id, str(row["session_id"]))
-            raise TaskNotCancelableError(message="Task-scoped cancellation is unavailable")
+            session_id = str(row.get("session_id") or "")
+            await self._session(user, agent_id, session_id)
+            current = await self._project(user, agent_id, row)
+            if current.status.state in _TERMINAL:
+                raise TaskNotCancelableError(message="The task has already ended")
+            sent = await self._facts.input_by_client_message_id(session_id, str(row["reference_id"]))
+            if sent is None:
+                raise TaskNotCancelableError(message="The task's message has not reached its conversation yet")
+            allowed = await self._context_input_ids(user, agent_id, str(row["context_id"]), session_id)
+            try:
+                await self._platform.session_runtime.cancel_input(
+                    user, session_id, str(sent["input_id"]), allowed=allowed
+                )
+            except APIError as exc:
+                if exc.code == "CANCEL_REFUSED":
+                    raise TaskNotCancelableError(message=f"The task cannot be canceled: {exc.message}") from None
+                raise
+            return await self._project(user, agent_id, row)
+
+    async def _context_input_ids(
+        self, user: UserContext, agent_id: str, context_id: str, session_id: str
+    ) -> set[str]:
+        """The conversation inputs of every task this caller sent in ``context_id``."""
+        references: list[str] = []
+        after: tuple[Any, str] | None = None
+        while True:
+            page = await self._references.list_tasks(
+                user_id=user.user_id, org_id=str(user.org_id), agent_id=agent_id,
+                context_id=context_id, after=after, limit=_CONTEXT_PAGE,
+            )
+            references += [str(item["reference_id"]) for item in page if item.get("session_id") == session_id]
+            if len(page) < _CONTEXT_PAGE:
+                break
+            after = (parse_iso(page[-1]["created_at"]), str(page[-1]["reference_id"]))
+        return set((await self._facts.input_ids_by_client_message_ids(session_id, references)).values())
 
     def _changes(self, session_id: str) -> Subscription:
         """The session's notices; a task is read again after each one that commits output."""

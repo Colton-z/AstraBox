@@ -11,6 +11,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - Every account that can sign in may now use the deployment by default (`ASTRABOX_ENVIRONMENT_ENTRY_POLICY=authenticated`); the identity provider decides who that is. The Environment member list applies only when `members` is selected, for an identity provider shared with other deployments. Under the previous default, an administrator who was not on the member list could use the console, but work that runs with nobody signed in and carries only their account ID, such as their Assistant's recovery after its box was lost or their channel and schedule work, was refused and recorded only in the server log. **Upgrading opens a deployment to every account its identity provider signs in;** set `ASTRABOX_ENVIRONMENT_ENTRY_POLICY=members` before upgrading to keep admitting only the member list.
 
+### Fixed
+
+- A2A `CancelTask` stops the work a task's message started. Previously every cancellation was refused. A message no runtime has taken yet is withdrawn, and the conversation shows it as cancelled by its sender. A response that answers only the caller's messages in that context is interrupted. Messages a runtime has queued are dropped with the response in progress, where the runtime can drop them (Codex, Pi). A cancellation that would stop another sender's message, or a message that Claude Code, the DeepSeek Harness or Hermes keeps queued, is refused with the reason.
+
 ## [0.1.14] - 2026-11-06
 
 ## English

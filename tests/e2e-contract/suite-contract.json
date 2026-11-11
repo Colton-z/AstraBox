@@ -42,11 +42,12 @@
   ],
   "playwright": {
     "exclusive": {
-      "files": 199,
+      "files": 200,
       "parallel_files": 124,
       "parallel_tests": 218,
       "serial_files": [
         "specs/a-prepared-seat-is-not-a-promise-the-box-can-still-keep.exclusive.spec.ts",
+        "specs/a2a-cancel-task.exclusive.spec.ts",
         "specs/a2a-stream-and-interaction.exclusive.spec.ts",
         "specs/admin-native-transcript-batch-export.exclusive.spec.ts",
         "specs/agent-manager-session-logs.exclusive.spec.ts",
@@ -122,9 +123,9 @@
         "specs/untouched-tab-catches-up-after-backend-restart.exclusive.spec.ts",
         "specs/vault-environment-survives-reattach.exclusive.spec.ts"
       ],
-      "serial_tests": 118,
+      "serial_tests": 120,
       "serial_workers": 1,
-      "tests": 336,
+      "tests": 338,
       "workers": 5
     },
     "parallel": {

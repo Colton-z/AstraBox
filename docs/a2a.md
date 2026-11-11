@@ -117,10 +117,32 @@ have the same public shape. No Hermes plugin replacement or separate Agent
 execution path is needed: the MCP bridge supplies the structured operation the
 pinned text-only tool cannot encode.
 
-Task-scoped cancellation is refused: the platform interrupt stops the
-runtime's response in progress, which can answer several queued messages, and
-cannot fence cancellation to one A2A Task. A pending platform approval requires
-the explicit interaction id and answer; a new text message is not approval.
+`CancelTask` stops the work a task's message started:
+
+- A message no runtime has received yet is withdrawn. The task reads
+  `TASK_STATE_CANCELED`, and the conversation shows the message as cancelled by
+  its sender.
+- A message a running response answers stops with that response, which ends
+  `cancelled`.
+- A message the runtime queued behind other work goes with the response in
+  progress and everything else queued, because runtimes drop queued messages
+  only all together. Codex and Pi can drop them. Claude Code, the DeepSeek
+  Harness and Hermes run a queued message once the work ahead of it ends, so
+  such a task cannot be canceled.
+
+A cancellation may stop the caller's other tasks in the same `contextId`,
+because one response answers several of its messages or they were queued
+together. It never stops another sender's message, such as one the
+conversation's owner typed in the console. When it would, the task is refused
+with `TaskNotCancelableError`, which says why. An already-ended task is refused
+the same way.
+
+`CancelTask` returns once the runtime has stopped. If the conversation's
+runtime is still being connected, it returns the task as it stands, and the
+work stops before the runtime takes the message.
+
+A pending platform approval requires the explicit interaction id and answer; a
+new text message is not approval.
 
 The server accepts text tasks and exposes results and platform interaction data.
 It does not accept uploaded file parts or push-notification configurations.
