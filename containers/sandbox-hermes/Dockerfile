@@ -83,6 +83,15 @@ RUN --mount=type=bind,from=hermes-source,source=/hermes-source.tar.gz,target=/tm
 RUN chmod 0644 /opt/hermes/source/tools/facts.json && \
     rm -f "${HERMES_VENV}/.lock" /opt/hermes/source/pm-runtime/.lock
 
+# Hermes runs from its editable source tree, which the install leaves without
+# bytecode, and the profile account cannot write __pycache__ there: every
+# gateway, bridge and mirror start compiled each module it imported, on the
+# box's one CPU while the Assistant waited. Hash-checked bytecode stays valid
+# whatever timestamps the image export writes.
+RUN "${HERMES_VENV}/bin/python" -m compileall -q -j 0 --invalidation-mode checked-hash \
+      -x '(/uv-cache/|/tests?/|/node_modules/|/skills/|/optional-skills/|/website/|/docs/|/evals/)' \
+      /opt/hermes/source
+
 # astrabox-hermes-config-merge installs plugin dependencies with Hermes' own
 # installer, and the profile setup writes the owner's configuration to its
 # managed scope; a Hermes that moved either fails here, not in a box.
