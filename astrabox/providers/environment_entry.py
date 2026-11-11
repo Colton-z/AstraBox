@@ -13,11 +13,23 @@ from astrabox.seams.environment_entry import ENTRY_POINT_GROUP, EnvironmentEntry
 _REGISTERED: dict[str, EnvironmentEntryPolicy] = {}
 
 
+class AuthenticatedEnvironmentEntryPolicy:
+    """Every verified identity: the deployment's identity provider decides who signs in."""
+
+    async def can_enter(self, user: UserContext, *, environment_name: str, operation: str) -> bool:
+        return True
+
+
 class MembersEnvironmentEntryPolicy:
     """The serving Environment's explicit member list."""
 
     async def can_enter(self, user: UserContext, *, environment_name: str, operation: str) -> bool:
         return await EnvironmentRepository().has_member(environment_name, user.user_id)
+
+
+def configured_environment_entry_policy_name() -> str:
+    """The selected policy's name, as the deployment configured it."""
+    return str(os.getenv("ASTRABOX_ENVIRONMENT_ENTRY_POLICY", "authenticated")).strip().lower()
 
 
 def register_environment_entry_policy(name: str, policy: EnvironmentEntryPolicy) -> None:
@@ -34,7 +46,7 @@ def configured_environment_entry_policy() -> EnvironmentEntryPolicy:
     """Resolve the selected policy at startup; unknown names fail construction."""
     from astrabox.providers import load_provider
 
-    name = str(os.getenv("ASTRABOX_ENVIRONMENT_ENTRY_POLICY", "members")).strip().lower()
+    name = configured_environment_entry_policy_name()
     if not name:
         raise RuntimeError("ASTRABOX_ENVIRONMENT_ENTRY_POLICY must not be empty")
     policy = _REGISTERED.get(name)

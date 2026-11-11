@@ -12196,6 +12196,10 @@
             "title": "Custody Scope",
             "type": "string"
           },
+          "entry_policy": {
+            "title": "Entry Policy",
+            "type": "string"
+          },
           "scheduler_provider": {
             "anyOf": [
               {
@@ -12216,6 +12220,7 @@
           "agent_prewarm_enabled",
           "background_execution_enabled",
           "custody_scope",
+          "entry_policy",
           "scheduler_provider",
           "scheduler_worker_enabled"
         ],

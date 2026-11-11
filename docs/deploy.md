@@ -85,12 +85,14 @@ independent runtime policies use separate Environments and business databases.
 
 ### Access and upgrades
 
-Login establishes identity; Environment membership and resource permissions
-establish access. Open **Console → Environment** to manage local details and member accounts.
+Login establishes identity and, by default, entry: every account that can sign
+in may use the Environment, and resource permissions decide what it can reach. A
+deployment that shares its identity provider with others can admit only a member
+list instead ([Environment entry policy](team-login.md#environment-entry-policy)).
+Open **Console → Environment** to manage local details, and the member accounts
+when that policy is selected.
 Platform administrators can also update metadata and member user IDs through `/api/v1/admin/environments/{name}`. Updates require the
-current `version`; the API cannot create a foreign Environment. Grant execution
-accounts membership too: channel and scheduler dispatch do not inherit the
-administrator role of whoever configured them. The first start of the no-login
+current `version`; the API cannot create a foreign Environment. The first start of the no-login
 local deployment grants its local account membership once; restarting never
 reinstates a removed grant.
 
@@ -100,8 +102,8 @@ recipes become RuntimeProfiles. The upgrade refuses a database containing
 runtime references for multiple execution owners; those require separate
 Environment databases before this deployment model can serve them. For a
 single-owner installation, retain that owner as the Environment name (the
-original default is `astrabox`). A new membership check may require an
-administrator to grant existing signed-in accounts access before they resume
+original default is `astrabox`). Under the `members` entry policy, an
+administrator grants existing signed-in accounts membership before they resume
 use. The upgrade does not copy production history or credentials into gray.
 
 Retiring old network configurations and cleaning ownerless resources require

@@ -14,7 +14,11 @@ pytestmark = [pytest.mark.e2e, pytest.mark.deployment_shape]
 
 
 def test_environment_entry_policy_preserves_identity_and_resource_boundaries() -> None:
-    """Default members and two corporate replicas decide entry from verified identity."""
+    """A member-list deployment and two corporate replicas decide entry from verified identity.
+
+    ``members_url`` selects ``ASTRABOX_ENVIRONMENT_ENTRY_POLICY=members``; the corporate
+    replicas select an installed enterprise policy.
+    """
     fixture = json.loads(Path(os.environ["ASTRABOX_E2E_ENVIRONMENT_ENTRY_FIXTURE"]).read_text())
     enterprise, replica = fixture["enterprise_urls"]
     members = fixture["members_url"]

@@ -67,11 +67,6 @@ def _master_key(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-@pytest.fixture(autouse=True)
-def _environment_membership(environment_member_accounts: set[str]) -> None:
-    environment_member_accounts.add(_USER.user_id)
-
-
 @pytest.fixture
 def backends(monkeypatch: pytest.MonkeyPatch) -> Any:
     """Make the given providers the deployment's only enabled backends.

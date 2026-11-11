@@ -1206,12 +1206,14 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
     (
         "ASTRABOX_ENVIRONMENT_ENTRY_POLICY",
         "public",
-        "members",
-        "Environment entry policy from astrabox.environment.entry. The default "
-        "requires explicit membership; a deployment may select an installed "
-        "policy for verified enterprise identities. Does not grant resource "
-        "permissions or roles. Unknown policies refuse startup; policy failures "
-        "refuse entry.",
+        "authenticated",
+        "Environment entry policy from astrabox.environment.entry. The default, "
+        "authenticated, admits every identity the deployment's sign-in verifies. "
+        "members admits only the Environment's member list, for an identity "
+        "provider shared with other deployments; a deployment may also select an "
+        "installed policy for verified enterprise identities. Does not grant "
+        "resource permissions or roles. Unknown policies refuse startup; policy "
+        "failures refuse entry.",
         "astrabox.providers.environment_entry",
     ),
     (

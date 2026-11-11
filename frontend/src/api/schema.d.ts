@@ -8845,6 +8845,8 @@ export interface components {
              * @constant
              */
             custody_scope: "environment";
+            /** Entry Policy */
+            entry_policy: string;
             /** Scheduler Provider */
             scheduler_provider: string | null;
             /** Scheduler Worker Enabled */

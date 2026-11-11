@@ -15,6 +15,7 @@ from astrabox.common.utils.user_context import get_asserted_user_context
 from astrabox.core.service.environment_access import can_enter_environment
 from astrabox.config.settings import get_settings, validate_environment_name
 from astrabox.persistence.repository.environment_repository import EnvironmentRepository
+from astrabox.providers.environment_entry import configured_environment_entry_policy_name
 from astrabox.seams.scheduler import configured_scheduler, configured_scheduler_name
 
 router = APIRouter()
@@ -35,6 +36,7 @@ class EnvironmentRuntimePolicy(BaseModel):
     agent_prewarm_enabled: bool
     background_execution_enabled: bool
     custody_scope: Literal["environment"]
+    entry_policy: str
     scheduler_provider: str | None
     scheduler_worker_enabled: bool
 
@@ -97,6 +99,7 @@ async def get_current_environment(request: Request):
         "agent_prewarm_enabled": settings.agent_prewarm_enabled,
         "background_execution_enabled": settings.background_execution_enabled,
         "custody_scope": "environment",
+        "entry_policy": configured_environment_entry_policy_name(),
         "scheduler_provider": configured_scheduler_name(),
         "scheduler_worker_enabled": (
             settings.background_execution_enabled and configured_scheduler() is not None

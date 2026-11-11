@@ -417,10 +417,21 @@ ASTRABOX_CASDOOR_API_ACCESS_URL='http://127.0.0.1:8087/applications/astrabox/ast
 
 ### Environment entry policy
 
-Authentication establishes identity. `ASTRABOX_ENVIRONMENT_ENTRY_POLICY=members`
-requires an explicit grant in the serving Environment's member list. Platform
-administrators may enter under their administrator role; that entry is logged
-when they are not members.
+Authentication establishes identity. By default
+(`ASTRABOX_ENVIRONMENT_ENTRY_POLICY=authenticated`) every account that can sign
+in may use the Environment: the deployment's identity provider decides who that
+is, and work that runs with nobody signed in, such as channel messages,
+schedules and an Assistant's recovery, runs as its account without further
+grants.
+
+When one identity provider signs in to several deployments, for example
+production and a gray deployment for a few testers, select
+`ASTRABOX_ENVIRONMENT_ENTRY_POLICY=members`. Each deployment then admits only the
+accounts in its own member list, managed under **Console → Environment**. Add
+every execution account too: work that runs with nobody signed in carries the
+account's ID, not the administrator role of whoever configured it. Platform
+administrators may still enter under their administrator role when they are not
+members; that entry is logged.
 
 A deployment can install a policy under the `astrabox.environment.entry`
 entry-point group and select its name with `ASTRABOX_ENVIRONMENT_ENTRY_POLICY`.

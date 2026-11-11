@@ -42,6 +42,8 @@ export default function EnvironmentPage() {
   }, []);
   useEffect(() => { void load(); }, [load]);
 
+  // The member list decides entry only under the members policy; under any other it is not shown.
+  const memberList = current?.runtime_policy.entry_policy === 'members';
   const sections: EditSectionSpec[] = useMemo(() => [{
     label: t('manage:environment.section'),
     fields: [
@@ -58,15 +60,15 @@ export default function EnvironmentPage() {
         key: 'description', label: t('manage:environment.description'), type: 'textarea',
         get: (d) => d.description, set: (d, value) => ({ ...d, description: value }),
       },
-      {
-        key: 'member_user_ids', label: t('manage:environment.members'), type: 'list',
-        get: (d) => d.member_user_ids,
-        set: (d, value) => ({ ...d, member_user_ids: Array.isArray(value) ? value.map(String) : [] }),
+      ...(memberList ? [{
+        key: 'member_user_ids', label: t('manage:environment.members'), type: 'list' as const,
+        get: (d: Record<string, unknown>) => d.member_user_ids,
+        set: (d: Record<string, unknown>, value: unknown) => ({ ...d, member_user_ids: Array.isArray(value) ? value.map(String) : [] }),
         placeholder: t('manage:agent_form.user_id_placeholder'),
         help: t('manage:environment.members_help'),
-      },
+      }] : []),
     ],
-  }], [t]);
+  }], [t, memberList]);
   const dirty = sectionIsDirty(sections[0].fields, draft, view ? draftOf(view) : null);
   useFrontendReleaseHold(dirty || saving);
 
@@ -104,6 +106,10 @@ export default function EnvironmentPage() {
   return (
     <ConsoleRecordPage title={title} lede={t('manage:environment.lede')} rail={
       <ConsoleFactRail>
+        <ConsoleFact label={t('manage:environment.entry')} value={
+          policy.entry_policy === 'authenticated' ? t('manage:environment.entry_authenticated')
+            : policy.entry_policy === 'members' ? t('manage:environment.entry_members') : policy.entry_policy
+        } />
         <ConsoleFact label={t('manage:environment.prewarm')} value={t(policy.agent_prewarm_enabled ? 'common:enabled' : 'common:disabled')} />
         <ConsoleFact label={t('manage:environment.background')} value={t(policy.background_execution_enabled ? 'common:enabled' : 'common:disabled')} />
       </ConsoleFactRail>
