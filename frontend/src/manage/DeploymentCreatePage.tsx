@@ -77,11 +77,16 @@ export default function DeploymentCreatePage() {
     setLoading(true);
     setLoadError('');
     try {
-      const [visibleAgents, assistantList] = await Promise.all([
+      const [visibleAgents, listedAssistants] = await Promise.all([
         listAgents(),
         listAssistants(),
       ]);
       const agentList = visibleAgents.filter((agent) => agent.can_manage);
+      // Every delivery starts a conversation, which an Assistant whose runtime
+      // hosts none refuses (ASSISTANT_CONVERSATIONS_UNSUPPORTED).
+      const assistantList = listedAssistants.filter(
+        (assistant) => assistant.runtime?.conversations !== false,
+      );
       setAgents(agentList);
       setAssistants(assistantList);
       const firstTarget = agentList[0]

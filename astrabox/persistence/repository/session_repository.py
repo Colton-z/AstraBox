@@ -742,6 +742,20 @@ class SessionRepository:
             )
         )
 
+    async def latest_workspace_starter(self, assistant_id: str) -> dict[str, Any] | None:
+        """The newest hidden Session that started one Assistant's workspace."""
+        rows = await _many(
+            _selected()
+            .where(
+                _SESSIONS.c.owner_type == "assistant_workspace",
+                _SESSIONS.c.owner_id == assistant_id,
+                _SESSIONS.c.hidden.is_(True),
+            )
+            .order_by(_SESSIONS.c.created_at.desc())
+            .limit(1)
+        )
+        return rows[0] if rows else None
+
     async def list_agent_runtime_references(
         self, agent_ids: list[str], *, connection: AsyncConnection | None = None
     ) -> list[dict[str, Any]]:

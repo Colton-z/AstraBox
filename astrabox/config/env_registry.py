@@ -2583,6 +2583,52 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "containers/sandbox-hermes/astrabox-hermes-serve",
     ),
     (
+        "ASTRABOX_DSH_SUPERAGENT_PROFILE_WAIT_SECONDS",
+        "internal",
+        "1800",
+        "Maximum seconds the image-owned dsh-superagent launcher waits for a usable "
+        "Assistant profile, account, workspace and this box's initialization before "
+        "exiting with status 75.",
+        "containers/sandbox-dsh-superagent/astrabox-dsh-superagent-serve",
+    ),
+    (
+        "ASTRABOX_DSH_SUPERAGENT_GITHUB_TOKEN",
+        "public",
+        "",
+        "Token of the GitHub agent account every dsh-superagent Assistant acts as "
+        "unless its owner sets one of their own: a classic token with repo and "
+        "notifications. Read through SecretProvider as the secret "
+        "astrabox-dsh-superagent-github-token, the dsh_superagent engine's "
+        "deployment_secret for its github_token.",
+        "astrabox.core.service.orchestrator.engine.dsh_superagent",
+    ),
+    (
+        "ASTRABOX_DSH_PROFILE_LINUX_USER",
+        "injected",
+        "",
+        "The Assistant's Linux account in a dsh-superagent box, written into the "
+        "profile env file at activation; the launcher runs the harness, the state "
+        "mirror and the GitHub sign-in as this account.",
+        "containers/sandbox-dsh-superagent/astrabox-dsh-superagent-serve",
+    ),
+    (
+        "ASTRABOX_DSH_PROFILE_HOME",
+        "injected",
+        "",
+        "The Assistant's home in a dsh-superagent box, written into the profile env "
+        "file at activation; DSH_HOME and the harness's launch URL live under it.",
+        "containers/sandbox-dsh-superagent/astrabox-dsh-superagent-serve",
+    ),
+    (
+        "ASTRABOX_DSH_WORKSPACE",
+        "injected",
+        "",
+        "The Assistant's workspace in a dsh-superagent box, written into the "
+        "profile env file at activation; the harness runs with it as its working "
+        "directory.",
+        "containers/sandbox-dsh-superagent/astrabox-dsh-superagent-serve",
+    ),
+    (
         "ASTRABOX_HERMES_UPSTREAM_WAIT_SECONDS",
         "internal",
         "1800",
@@ -2981,13 +3027,14 @@ SECRET_NAME_PATTERN_ROW = EnvVarSpec(
     description=(
         "Dynamic: SecretProvider.get_secret(secret_name) reads "
         "secret_name.upper().replace('-', '_') from the environment for whatever "
-        "secret_name a *_secret_name setting names (ASTRABOX_SANDBOX_API_KEY_SECRET_NAME, "
+        "secret_name a *_secret_name setting names "
+        "(ASTRABOX_SANDBOX_API_KEY_SECRET_NAME, "
         "ASTRABOX_MODEL_API_KEY_SECRET_NAME, ASTRABOX_GIT_HTTPS_TOKEN_SECRET_NAME, "
         "ASTRABOX_TITLE_MODEL_API_KEY_SECRET_NAME, an environment's own "
         "provider_access.api_key_secret_name, or a repository deploy key listed "
         "in ASTRABOX_DEPLOY_KEY_SECRET_NAMES) — the operator picks the name, so no "
-        "single literal "
-        "env var represents it."
+        "single literal env var represents it. A secret an engine declares as an "
+        "Assistant's shared credential has a fixed name and a row of its own."
     ),
     read_site="astrabox.secrets",
     is_pattern=True,

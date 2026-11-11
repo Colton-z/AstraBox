@@ -226,6 +226,9 @@ services:
       ASTRABOX_ASSISTANT_SANDBOX_MEMORY_LIMIT: ${ASTRABOX_ASSISTANT_SANDBOX_MEMORY_LIMIT:-}
       ASTRABOX_ASSISTANT_SANDBOX_CPU_REQUEST: ${ASTRABOX_ASSISTANT_SANDBOX_CPU_REQUEST:-}
       ASTRABOX_ASSISTANT_SANDBOX_MEMORY_REQUEST: ${ASTRABOX_ASSISTANT_SANDBOX_MEMORY_REQUEST:-}
+      # The GitHub agent account every dsh-superagent Assistant acts as unless its
+      # owner sets one of their own: a classic token with repo and notifications.
+      ASTRABOX_DSH_SUPERAGENT_GITHUB_TOKEN: ${ASTRABOX_DSH_SUPERAGENT_GITHUB_TOKEN:-}
       # Ceilings on everything one sandbox backend runs; empty keeps the
       # default (on this Docker host, a memory ceiling of its memory less 4Gi).
       ASTRABOX_SANDBOX_QUOTA_BOXES: ${ASTRABOX_SANDBOX_QUOTA_BOXES:-}

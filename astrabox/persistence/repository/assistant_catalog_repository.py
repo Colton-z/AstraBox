@@ -245,6 +245,7 @@ def _record(row: Mapping[str, Any] | None) -> dict[str, Any] | None:
         "connector_servers": servers or None,
         "connectors_off": turned_off or None,
         "credential_vault_ids": list(row["credential_vault_ids"] or []),
+        "owner_secrets": dict(row["owner_secrets"] or {}),
         "credentials_updated_by": row["credentials_updated_by"],
         "credentials_updated_at": to_iso(row["credentials_updated_at"]),
         "main_session_id": row["main_session_id"],
@@ -600,6 +601,23 @@ class AssistantCatalogRepository:
 
         statement = _version_cas(
             assistant_id, expected_version=expected_version, touch=touch, values=changes
+        )
+        return await execute(statement) == 1
+
+    async def set_owner_secret_record(
+        self,
+        assistant_id: str,
+        *,
+        expected_version: int,
+        owner_secrets: Mapping[str, Any],
+    ) -> bool:
+        """Replace the owner-secret records if the Assistant is still at ``expected_version``."""
+
+        statement = _version_cas(
+            assistant_id,
+            expected_version=expected_version,
+            touch=True,
+            values={"owner_secrets": dict(owner_secrets) or None},
         )
         return await execute(statement) == 1
 

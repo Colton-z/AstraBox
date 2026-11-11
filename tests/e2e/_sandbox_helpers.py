@@ -740,9 +740,22 @@ def running_sandbox_image(*, endpoint: str) -> str:
     # BatchSandbox records in `sandbox.opensandbox.io/endpoints`; resolving the
     # same record finds the Pod the gateway serves.
     route = [segment for segment in parsed.path.split("/") if segment]
-    if len(route) < 2 or not route[1].isdigit():
+    if len(route) >= 2 and route[1].isdigit():
+        return seen.get(_gateway_route_pod_address(route[0], kubeconfig, namespace), "")
+    # In wildcard mode the route is the hostname's first label instead:
+    # `<sandbox id>-<port>` (or, signed, `<sandbox id>-<port>-<expiry>-<signature>`)
+    # under the gateway's parent domain.
+    wildcard = _WILDCARD_ROUTE_LABEL.match(host.split(".", 1)[0])
+    if wildcard is None:
         return ""
-    return seen.get(_gateway_route_pod_address(route[0], kubeconfig, namespace), "")
+    return seen.get(_gateway_route_pod_address(wildcard.group(1), kubeconfig, namespace), "")
+
+
+#: The first hostname label of an OpenSandbox wildcard gateway route: a sandbox
+#: id (a UUID), its port, then the expiry and signature of a signed route.
+_WILDCARD_ROUTE_LABEL = re.compile(
+    r"^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-\d+(?:-[0-9a-z]+-[0-9a-z]+)?$"
+)
 
 
 def _gateway_route_pod_address(sandbox_id: str, kubeconfig: str, namespace: str) -> str:

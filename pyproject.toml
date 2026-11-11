@@ -183,6 +183,10 @@ assistant = "astrabox.core.service.orchestrator.engine.hermes:HermesEngineAdapte
 # the same /api gateway its own browser client uses: unary calls plus one
 # downlink socket carrying events, approvals and questions.
 deepseek_harness = "astrabox.core.service.orchestrator.engine.deepseek_harness:DeepSeekHarnessEngineAdapter"
+# The dsh_superagent engine is an Assistant runtime with no conversations: one
+# DeepSeek Harness per Assistant running the dsh-superagent bundle, which the
+# owner supervises in the bundle's own panel.
+dsh_superagent = "astrabox.core.service.orchestrator.engine.dsh_superagent:DshSuperagentEngineAdapter"
 # The pi engine drives earendil-works/pi through its documented headless
 # surface, `pi --mode rpc`: JSON lines on stdin/stdout over the same execd
 # pipe. Pi ships no permission system of its own — it recommends containment
@@ -248,7 +252,8 @@ dbos = "astrabox.providers.scheduler_dbos:DbosSchedulerProvider"
 
 # Environment authorization is independent of authentication and resource ACLs.
 [project.entry-points."astrabox.environment.entry"]
-members = "astrabox.providers.environment_entry:MembersEnvironmentEntryPolicy"
+authenticated = "astrabox.providers.environment_entry:AuthenticatedEnvironmentEntryPolicy"
+members ="astrabox.providers.environment_entry:MembersEnvironmentEntryPolicy"
 
 # One web identity seam covers the browser, JSON API, and public MCP transport.
 [project.entry-points."astrabox.web.identity"]

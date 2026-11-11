@@ -549,6 +549,31 @@ class AssistantWorkspaceRepository:
             )
         )
 
+    async def record_credential_delivery(
+        self, assistant_id: str, *, sandbox_id: str, record: Mapping[str, Any],
+    ) -> bool:
+        """Keep what the platform delivered to the box's credential vault in the box's identity.
+
+        Every Session on an Assistant's box composes its credentials under the
+        box's placeholder context and names what was delivered before, so a
+        later attach, after this process's refresh is gone, reproduces the same
+        placeholders and still withdraws an archived credential.
+        """
+        async def write(conn: AsyncConnection) -> bool:
+            owned = (self._runtime_owner(assistant_id), _COLUMNS.current_sandbox_id == sandbox_id)
+            identity = await conn.scalar(
+                select(_COLUMNS.runtime_identity).where(*owned).with_for_update()
+            )
+            if not isinstance(identity, dict):
+                return False
+            await conn.execute(
+                update(_WORKSPACES).where(*owned)
+                .values(runtime_identity={**identity, **dict(record)}, updated_at=func.now())
+            )
+            return True
+
+        return await transaction(write)
+
     async def mark_profile_ready(
         self,
         assistant_id: str,

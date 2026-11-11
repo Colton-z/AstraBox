@@ -15,15 +15,17 @@ and prompt do not receive the saved value.
 |---|---|---|
 | Model-service credential | Added only to requests for the model gateway selected for the Agent | Agent and Assistant Sessions |
 | Remote MCP credential | Added as the configured bearer token, OAuth token, or API-key header for that remote MCP service | Agent and Assistant Sessions |
-| HTTP Basic credential | Added to a clean HTTPS URL, including private Git repository requests, without a sandbox-side token or placeholder | Agent Sessions |
+| HTTP Basic credential | Added to a clean HTTPS URL, including private Git repository requests, without a sandbox-side token or placeholder | Agent and Assistant Sessions |
 | Credential for another API | Exposed to the Agent program as an opaque environment-variable value and substituted in matching HTTP requests | Agent programs that support protected environment credentials |
-| Credential for another API, [header delivery](#header-delivery) | Exposed as an opaque environment-variable value that the sandbox backend replaces only in one named request header, for the listed domains | Agent Sessions on a sandbox backend that offers header delivery |
+| Credential for another API, [header delivery](#header-delivery) | Exposed as an opaque environment-variable value that the sandbox backend replaces only in one named request header, for the listed domains | Agent and Assistant Sessions on a sandbox backend that offers header delivery |
 
-An Assistant can use saved credentials for remote MCP services. It cannot be
-assigned a Credential Vault that contains an external-API environment variable,
-because its long-lived workspace cannot safely receive a
-conversation-specific placeholder. HTTP Basic Vault assignments are also
-unavailable to Assistants. Unsupported assignments are rejected.
+An Assistant takes every credential type. Its credentials belong to the
+Assistant, which has one owner and one sandbox: they are delivered to that
+sandbox's processes, which every conversation of the Assistant shares, under
+the sandbox's own placeholders, so a conversation adds no variable of its own.
+Every Session there composes the Assistant's current assignment, so a Vault
+assigned or unassigned while the Assistant runs is delivered or withdrawn at the
+next refresh described below.
 
 ## Configure protected credentials in the console
 
@@ -244,8 +246,17 @@ MCP credential types can be assigned to both Agents and Assistants. The engine
 connects directly to the configured MCP URL; AstraBox merges the provider
 gateway header and matching Vault header into one provider-neutral,
 destination-bound plan. Outbound environment credentials are available to
-Agents using a backend that supports protected delivery. The common runtime
-preparation gives each assignment its own placeholder context.
+Agents and Assistants using a backend that supports protected delivery. The
+common runtime preparation gives each assignment its own placeholder context.
+
+Before each turn, and on each tick of the background watcher for an Assistant
+(`ASTRABOX_EXPIRATION_WATCHER_INTERVAL_SECONDS`, 300 seconds by default),
+AstraBox writes the running sandbox's credentials again: a rotated value reaches the placeholder the process
+already holds, and an archived or deleted credential stops being delivered. A
+process holds the environment it started with, so an environment credential
+added after it started reaches it when its runtime next starts: a new
+conversation's sandbox for an Agent, and for an Assistant its next start after
+its sandbox is replaced, it is woken, or its configuration changes.
 
 ## Scope credential substitution
 
@@ -321,8 +332,6 @@ enable or disable it. Creating such a credential is rejected with
 delivery, and the console shows the **Delivery** choice only in that case. A
 Session whose sandbox backend does not offer it is rejected before a sandbox is
 allocated. The maintained OpenSandbox backend does not offer header delivery.
-Assistants cannot be assigned environment-variable credentials with either
-delivery.
 
 ## Use OpenSandbox prepared capacity
 

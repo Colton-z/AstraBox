@@ -133,7 +133,7 @@ COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/astrabox-hermes-serve /usr/lo
 # Hermes seeds these defaults into each writable profile and keeps user edits
 # through its native bundled-skill manifest, including across image updates.
 COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/skills/ /opt/hermes/source/skills/astrabox-platform/
-COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/hermes_native_store.py containers/sandbox-hermes/hermes_profile_state.py containers/sandbox-hermes/hermes_state_transport.py containers/sandbox-hermes/hermes_state_bootstrap.py containers/sandbox-hermes/hermes_state_mirror.py containers/sandbox-hermes/hermes_gateway_bridge.py containers/sandbox-hermes/hermes_gateway_platforms.py containers/sandbox-hermes/hermes_gateway_prepare.py /opt/astrabox/hermes/
+COPY --chmod=u=rwX,go=rX astrabox/core/service/orchestrator/runtime/assistant-state/astrabox_state_transport.py astrabox/core/service/orchestrator/runtime/assistant-state/astrabox_state_gate.py astrabox/core/service/orchestrator/runtime/assistant-state/astrabox_state_mirror.py containers/sandbox-hermes/hermes_native_store.py containers/sandbox-hermes/hermes_profile_state.py containers/sandbox-hermes/hermes_state_bootstrap.py containers/sandbox-hermes/hermes_state_mirror.py containers/sandbox-hermes/hermes_gateway_bridge.py containers/sandbox-hermes/hermes_gateway_platforms.py containers/sandbox-hermes/hermes_gateway_prepare.py /opt/astrabox/hermes/
 COPY --chmod=u=rwX,go=rX astrabox/core/service/orchestrator/runtime/astrabox-transcript-mirror /usr/local/bin/astrabox-transcript-mirror
 COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/supervisord.hermes.conf /opt/gem/supervisord/supervisord.hermes.conf
 RUN set -eux; \
@@ -142,7 +142,7 @@ RUN set -eux; \
     bash -n /usr/local/bin/astrabox-hermes-serve; \
     "${HERMES_VENV}/bin/python" -c 'import ast, pathlib; [ast.parse(p.read_text()) for p in pathlib.Path("/opt/astrabox/hermes").glob("*.py")]'; \
     "${HERMES_VENV}/bin/python" -c 'import ast, pathlib; ast.parse(pathlib.Path("/usr/local/bin/astrabox-transcript-mirror").read_text())'; \
-    PYTHONPATH=/opt/astrabox/hermes "${HERMES_VENV}/bin/python" -c 'import hermes_native_store, hermes_profile_state, hermes_state_transport, hermes_state_bootstrap, hermes_state_mirror, hermes_gateway_bridge, hermes_gateway_platforms, hermes_gateway_prepare'; \
+    PYTHONPATH=/opt/astrabox/hermes "${HERMES_VENV}/bin/python" -c 'import astrabox_state_transport, astrabox_state_gate, astrabox_state_mirror, hermes_native_store, hermes_profile_state, hermes_state_bootstrap, hermes_state_mirror, hermes_gateway_bridge, hermes_gateway_platforms, hermes_gateway_prepare'; \
     supervisord --version
 
 # Bootstrap only the base sandbox services; the gateway above is supervised.

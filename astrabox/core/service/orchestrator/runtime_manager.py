@@ -252,6 +252,19 @@ def _is_this_targets_box(descriptor: Any, ownership: dict[str, str]) -> bool:
     return all(metadata.get(key) == value for key, value in ownership.items())
 
 
+async def _assistant_vault_ids(session: dict[str, Any]) -> list[str]:
+    """The Credential Vaults the Session's Assistant is bound to now, its defaults' included."""
+
+    from astrabox.core.service.orchestrator.agent_config_service import AgentConfigService
+    from astrabox.persistence.repository.agent_repository import AgentRepository
+    from astrabox.persistence.repository.runtime_profile_repository import RuntimeProfileRepository
+
+    view = await AgentConfigService(
+        AgentRepository(), RuntimeProfileRepository(), sessions_repo=SessionRepository(),
+    ).resolve_session_harness(session)
+    return [str(item) for item in (getattr(view, "credential_vault_ids", None) or []) if str(item or "").strip()]
+
+
 def _session_placeholder_context(session_id: str, session: dict[str, Any] | None) -> str:
     """The placeholder context of the box a Session's own startup creates."""
     sandbox_generation = str((session or {}).get("sandbox_generation") or "").strip()
@@ -3531,6 +3544,12 @@ class RemoteAgentRuntimeManager:
             return []
         session = await SessionRepository().get_session(target)
         vault_ids = (session or {}).get("vault_ids")
+        if str((session or {}).get("assistant_id") or "").strip():
+            # An Assistant's credentials belong to its one box, which all its
+            # Sessions share: each composes the Assistant's current binding, so
+            # a Session created before the binding changed neither keeps
+            # delivering a Vault since unassigned nor misses one assigned since.
+            vault_ids = await _assistant_vault_ids(session or {})
         if not isinstance(vault_ids, list) or not vault_ids:
             return []
         session_context = _session_placeholder_context(target, session)

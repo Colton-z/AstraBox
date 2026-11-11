@@ -69,7 +69,6 @@ from astrabox.core.service.orchestrator.runtime.runtime_profile import (
     resolve_sandbox_tenancy,
 )
 from astrabox.core.service.orchestrator.runtime.mcp_credentials import (
-    mcp_credential_refresher,
     resolve_agent_mcp_credential_plan,
     resolve_mcp_credential_plan,
 )
@@ -497,6 +496,110 @@ def credential_delivery_record(
     return record
 
 
+async def reconcile_sandbox_credentials(
+    platform: Any,
+    *,
+    session_id: str,
+    template: Any,
+    backend_adapter: Any,
+    sandbox: Any,
+    placeholder_context: str | None,
+    delivered: set[str],
+    bindings: set[str],
+    vault_enabled: bool,
+    with_mcp: bool = True,
+) -> tuple[set[str], set[str]]:
+    """Write a running sandbox's protected credentials again; what it now delivers.
+
+    It composes the Session's whole outbound plan (MCP destinations,
+    environment and HTTP Basic credentials) under the placeholder context the
+    sandbox's processes were started with, so a rotated value reaches the same
+    placeholder, and names every credential delivered earlier (``delivered``,
+    environment ``credential_id``s; ``bindings``, MCP binding names), so an
+    archived, deleted or unassigned one stops being delivered. A credential
+    added since a process started has no variable in it; its runtime's next
+    start gives it one. Returns the environment credentials and MCP bindings
+    the sandbox delivers afterwards. ``with_mcp=False`` leaves the MCP
+    bindings to the runtimes that refresh them before each turn.
+    """
+
+    mcp_plan = await resolve_mcp_credential_plan(
+        platform, session_id=session_id, template=template, vault_enabled=vault_enabled,
+    ) if with_mcp else None
+    plan, _environment = await resolve_session_environment_credentials(
+        platform,
+        session_id=session_id,
+        vault_enabled=vault_enabled,
+        vault_write=mcp_plan,
+        backend=backend_adapter,
+        placeholder_context=placeholder_context,
+    )
+    composed = {
+        str(item.credential_id) for item in (plan.environment if plan is not None else ())
+    }
+    if (plan is None or plan.is_empty) and not (delivered - composed):
+        return composed, bindings
+    await backend_adapter.apply_credential_vault(
+        sandbox,
+        vault_write=plan if plan is not None else SandboxEgressCredentialPlan(),
+        managed_credential_names=tuple(sorted(delivered)),
+        managed_binding_names=tuple(sorted(bindings)),
+        create_if_missing=False,
+    )
+    return composed, bindings | {
+        item.name
+        for item in (plan.mcp if plan is not None else ())
+        if item.name.startswith("astrabox-mcp-")
+    }
+
+
+def session_credential_refresher(
+    platform: Any,
+    *,
+    session_id: str,
+    template: Any,
+    backend_adapter: Any,
+    sandbox: Any,
+    runtime_identity: Mapping[str, Any] | None,
+    initial_credential_plan: SandboxEgressCredentialPlan | None,
+    vault_enabled: bool,
+) -> Callable[[], Awaitable[None]] | None:
+    """The refresh of a running Session's protected credentials, before each turn and tick.
+
+    See :func:`reconcile_sandbox_credentials`; this keeps what the sandbox
+    delivers between calls. ``None`` for a sandbox nothing can deliver to.
+    """
+
+    identity = dict(runtime_identity or {})
+    placeholder_context = str(identity.get(ENVIRONMENT_PLACEHOLDER_CONTEXT) or "").strip() or None
+    delivered = {str(item) for item in identity.get(ENVIRONMENT_CREDENTIAL_IDS) or ()}
+    bindings = {
+        item.name
+        for item in (initial_credential_plan.mcp if initial_credential_plan is not None else ())
+        if item.name.startswith("astrabox-mcp-")
+    }
+    if not vault_enabled and not bool(
+        getattr(backend_adapter, "supports_header_placeholder_credentials", False)
+    ):
+        return None
+
+    async def refresh() -> None:
+        nonlocal delivered, bindings
+        delivered, bindings = await reconcile_sandbox_credentials(
+            platform,
+            session_id=session_id,
+            template=template,
+            backend_adapter=backend_adapter,
+            sandbox=sandbox,
+            placeholder_context=placeholder_context,
+            delivered=delivered,
+            bindings=bindings,
+            vault_enabled=vault_enabled,
+        )
+
+    return refresh
+
+
 def require_live_credential_delivery(
     *, runtime_identity: dict[str, Any] | None, sandbox_id: str, vault_enabled: bool,
 ) -> None:
@@ -896,6 +999,7 @@ async def plan_workspace_mounts(
     user_id: str | None,
     runtime_identity: dict[str, Any] | None,
     workspace_id: str | None = None,
+    engine_kind: str | None = None,
 ) -> tuple[tuple[str, str], ...]:
     """Plan optional workspace mounts before the box starts.
 
@@ -933,6 +1037,7 @@ async def plan_workspace_mounts(
         agent_id=str(agent_id or "").strip() or None,
         assistant_id=str(assistant_id or "").strip() or None,
         user_id=str(user_id or "").strip() or None,
+        engine_kind=str(engine_kind or "").strip() or None,
         runtime_identity=runtime_identity,
     )
     return tuple((str(box_path), str(subpath)) for box_path, subpath in planned)
@@ -1018,18 +1123,15 @@ async def _assemble_provisioned_sandbox(
         cwd=cwd,
         model_credential=credential,
         mcp_vault_write=mcp_vault_write,
-        prepare_engine_input=(
-            mcp_credential_refresher(
-                manager,
-                session_id=session_id,
-                template=template,
-                backend_adapter=backend_adapter,
-                sandbox=sandbox,
-                initial_credential_plan=mcp_vault_write,
-                vault_enabled=vault_enabled,
-            )
-            if mcp_vault_write is not None
-            else None
+        prepare_engine_input=session_credential_refresher(
+            manager,
+            session_id=session_id,
+            template=template,
+            backend_adapter=backend_adapter,
+            sandbox=sandbox,
+            runtime_identity=runtime_identity,
+            initial_credential_plan=mcp_vault_write,
+            vault_enabled=vault_enabled,
         ),
         resume_session_key=honoured_resume_key,
         runtime_env=dict(runtime_env or {}),
@@ -2068,6 +2170,7 @@ async def claim_prepared_engine_sandbox(
         user_id=str(getattr(workspace_plan, "user_id", "") or user_id or ""),
         runtime_identity=identity,
         workspace_id=None,
+        engine_kind=str(getattr(workspace_plan, "engine_kind", "") or ""),
     )
     if placement == PLACEMENT_CONVERSATION_BOX:
         await bind_prepared_workspace(
@@ -2589,6 +2692,7 @@ async def provision_engine_sandbox(
         assistant_id=str(getattr(workspace_plan, "assistant_id", "") or ""),
         user_id=str(getattr(workspace_plan, "user_id", "") or user_id or ""),
         runtime_identity=runtime_identity,
+        engine_kind=str(getattr(workspace_plan, "engine_kind", "") or ""),
     )
     # The platform has already made every placement decision before it invokes
     # this capability.  A provider receives one complete, immutable box recipe;

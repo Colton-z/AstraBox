@@ -113,29 +113,14 @@ class SessionService:
                     False,
                 )
             )
-            assistant_uses_shared_workspace = session_kind == "assistant_chat"
+            # An Assistant's outbound credentials belong to its one box: every
+            # Session there resolves them under the box's placeholder context
+            # (engine/startup.py), so a conversation adds no variable of its own.
             validated_vault_ids = await self._vault_service.validate_bound_vaults_for_session(
                 managed_vault_ids,
                 backend_name=resolved_sandbox_backend,
-                backend_supports_egress_injection=(
-                    provider_supports_egress_injection
-                    and not assistant_uses_shared_workspace
-                ),
-                backend_supports_header_credentials=(
-                    provider_supports_header_credentials
-                    and not assistant_uses_shared_workspace
-                ),
-                egress_injection_unsupported_reason=(
-                    "Assistant conversations reuse a long-running workspace and currently "
-                    "support saved MCP credentials only; they cannot safely add a "
-                    "conversation-specific environment variable to that workspace."
-                    if assistant_uses_shared_workspace
-                    and (
-                        provider_supports_egress_injection
-                        or provider_supports_header_credentials
-                    )
-                    else None
-                ),
+                backend_supports_egress_injection=provider_supports_egress_injection,
+                backend_supports_header_credentials=provider_supports_header_credentials,
             )
 
         # Admission for the sandbox this session will provision (deployment

@@ -629,9 +629,6 @@ class VaultService:
             raise _invalid("target_type must be 'agent' or 'assistant'")
         cleaned = self._distinct_ids(vault_ids)
         vaults = {vault["vault_id"]: vault for vault in await self._repo.get_vaults(cleaned)}
-        outbound = (
-            await self._first_outbound_credentials(cleaned) if target_type == "assistant" else {}
-        )
         org_id = self._org_id(user)
         for vault_id in cleaned:
             vault = vaults.get(vault_id)
@@ -639,18 +636,6 @@ class VaultService:
                 raise _not_found("vault", vault_id)
             if vault["archived_at"]:
                 raise _invalid(f"vault '{vault_id}' is archived and cannot be bound")
-            credential = outbound.get(vault_id)
-            if credential is not None:
-                raise APIError(
-                    code="ASSISTANT_VAULT_CREDENTIAL_UNSUPPORTED",
-                    message=(
-                        f"vault '{vault_id}' contains an outbound "
-                        f"credential of type '{credential['auth']['type']}'. Assistants "
-                        "reuse a long-running workspace, so only MCP credentials "
-                        "can be bound to an Assistant."
-                    ),
-                    status_code=400,
-                )
         return cleaned
 
     async def describe_binding(
@@ -681,7 +666,6 @@ class VaultService:
         backend_name: str,
         backend_supports_egress_injection: bool,
         backend_supports_header_credentials: bool,
-        egress_injection_unsupported_reason: str | None = None,
     ) -> list[str]:
         """Validate current managed bindings when a Session is created.
 
@@ -692,10 +676,7 @@ class VaultService:
         the way it is configured. A header-delivery ``environment_variable``
         credential needs ``backend_supports_header_credentials`` alone; every
         other outbound credential needs ``ASTRABOX_SANDBOX_CREDENTIAL_VAULT``
-        and ``backend_supports_egress_injection``. A non-empty
-        ``egress_injection_unsupported_reason`` replaces the message of either
-        backend refusal, for a Session that cannot carry outbound credentials
-        whatever its backend supports.
+        and ``backend_supports_egress_injection``.
         """
         from astrabox.common.utils.settings import load_astrabox_settings
 
@@ -727,7 +708,6 @@ class VaultService:
                     vault_enabled=vault_enabled,
                     backend_supports_egress_injection=backend_supports_egress_injection,
                     backend_supports_header_credentials=backend_supports_header_credentials,
-                    unsupported_reason=egress_injection_unsupported_reason,
                 )
         return cleaned
 
@@ -740,7 +720,6 @@ class VaultService:
         vault_enabled: bool,
         backend_supports_egress_injection: bool,
         backend_supports_header_credentials: bool,
-        unsupported_reason: str | None,
     ) -> None:
         """Refuse one outbound credential the Session's backend cannot deliver."""
         auth = dict(credential.get("auth") or {})
@@ -752,13 +731,10 @@ class VaultService:
                 raise APIError(
                     code="VAULT_ENV_CREDENTIAL_UNSUPPORTED",
                     message=(
-                        unsupported_reason
-                        or (
-                            f"managed credential vault '{vault_id}' contains a "
-                            "header-delivery environment_variable credential, but "
-                            f"sandbox backend '{backend_name}' cannot replace a "
-                            "placeholder inside a named request header."
-                        )
+                        f"managed credential vault '{vault_id}' contains a "
+                        "header-delivery environment_variable credential, but "
+                        f"sandbox backend '{backend_name}' cannot replace a "
+                        "placeholder inside a named request header."
                     ),
                     status_code=400,
                 )
@@ -778,13 +754,10 @@ class VaultService:
             raise APIError(
                 code="VAULT_ENV_CREDENTIAL_UNSUPPORTED",
                 message=(
-                    unsupported_reason
-                    or (
-                        f"managed credential vault '{vault_id}' contains "
-                        f"outbound credential of type '{auth.get('type')}', but "
-                        f"sandbox backend '{backend_name}' cannot keep its real "
-                        "value outside the sandbox."
-                    )
+                    f"managed credential vault '{vault_id}' contains "
+                    f"outbound credential of type '{auth.get('type')}', but "
+                    f"sandbox backend '{backend_name}' cannot keep its real "
+                    "value outside the sandbox."
                 ),
                 status_code=400,
             )
@@ -794,17 +767,6 @@ class VaultService:
         """``vault_ids`` stripped, without blanks or repeats, in first-seen order."""
         stripped = (str(raw or "").strip() for raw in vault_ids)
         return list(dict.fromkeys(vault_id for vault_id in stripped if vault_id))
-
-    async def _first_outbound_credentials(
-        self, vault_ids: list[str]
-    ) -> dict[str, dict[str, Any]]:
-        """Each Vault's earliest active outbound (egress-delivered) credential, by Vault id."""
-        first: dict[str, dict[str, Any]] = {}
-        for credential in await self._repo.list_credentials(
-            vault_ids, active_only=True, auth_types=_EGRESS_AUTH_TYPES
-        ):
-            first.setdefault(str(credential["vault_id"]), credential)
-        return first
 
     # ── egress-side resolution ──────────────────────────────────────────────
 

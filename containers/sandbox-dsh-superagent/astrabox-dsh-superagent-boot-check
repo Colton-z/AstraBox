@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# AstraBox — boot the image's dsh-superagent composition once, at image build time.
+#
+#   astrabox-dsh-superagent-boot-check [--source KIND]...
+#
+# The composition must load the bundle against the harness the image ships. A plugin
+# that fails to import leaves the harness healthy and its routes missing, so the check is
+# the bundle's own panel API: its state answers, the page's boot graph carries the panel
+# landing module, and every Source kind named with --source is installed. An image built
+# on this one runs it after adding its own Source plugins (docs/assistants.md).
+set -euo pipefail
+
+sources=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --source) [ -n "${2:-}" ] || { echo "--source needs a Source kind" >&2; exit 64; }; sources+=("$2"); shift 2 ;;
+    *) echo "astrabox-dsh-superagent-boot-check: unknown argument $1" >&2; exit 64 ;;
+  esac
+done
+
+# shellcheck source=/dev/null
+source /opt/astrabox/superagent/composition.sh
+superagent_patch_args
+
+nginx -t -c /opt/astrabox/superagent/panel-hop.conf
+# A box runs the harness as the Assistant's own unprivileged account, which must be
+# able to read every plugin; root would read past a directory nobody else can enter.
+probe_home="$(mktemp -d /tmp/astrabox-superagent.XXXXXX)"
+chown nobody "$probe_home"
+runuser -u nobody -- env DSH_HOME="$probe_home/.dsh" HOME="$probe_home" \
+  ASTRABOX_DSH_GATEWAY_BASE_URL=http://gateway.invalid/v1 ASTRABOX_DSH_MODEL=build-probe \
+  /opt/dsh/node_modules/.bin/dsh --profile web "${SUPERAGENT_PATCH_ARGS[@]}" \
+  --no-open --host 127.0.0.1 --port 44781 >"$probe_home/boot.log" 2>&1 &
+harness=$!
+trap 'kill "$harness" 2>/dev/null || true; wait "$harness" 2>/dev/null || true; rm -rf "$probe_home"' EXIT
+
+ready=0
+for _ in $(seq 1 150); do
+  if curl -fsS -H 'x-orchestrator-request: 1' http://127.0.0.1:44781/orchestrator/api/state \
+       -o "$probe_home/state.json" 2>/dev/null; then ready=1; break; fi
+  kill -0 "$harness" 2>/dev/null || break
+  sleep 0.2
+done
+if [ "$ready" != 1 ]; then cat "$probe_home/boot.log"; exit 1; fi
+python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert "setup" in s and "health" in s, s' \
+  "$probe_home/state.json"
+
+# The page's boot graph must carry the panel landing module, and the bundle the harness
+# serves for it must name its package: the browser loader refuses any other id, and a
+# refused module takes the whole page down with it.
+jar="$probe_home/cookies"
+# The harness prints its login URL after its API starts answering.
+launch=""
+for _ in $(seq 1 150); do
+  launch="$(grep -m 1 -o 'http://127\.0\.0\.1:44781/?token=[A-Za-z0-9_-]*' "$probe_home/boot.log" || true)"
+  [ -z "$launch" ] || break
+  sleep 0.2
+done
+test -n "$launch" || { cat "$probe_home/boot.log"; echo "the harness announced no login URL" >&2; exit 1; }
+curl -fsS -o /dev/null -c "$jar" "$launch"
+curl -fsS -b "$jar" -o "$probe_home/page.html" http://127.0.0.1:44781/
+landing="$(grep -m 1 -o 'plugins/??@astrabox/dsh-panel-landing/client\.js&rev=[0-9a-f]*' "$probe_home/page.html" || true)"
+test -n "$landing" || { echo "the web boot graph has no panel landing module" >&2; exit 1; }
+curl -fsS -b "$jar" -o "$probe_home/landing.js" "http://127.0.0.1:44781/$landing"
+grep -q 'window.__ModuleLoader__.load({ id: "@astrabox/dsh-panel-landing"' "$probe_home/landing.js" \
+  || { echo "the panel landing module does not load under its package name" >&2; exit 1; }
+
+if [ "${#sources[@]}" -gt 0 ]; then
+  curl -fsS -H 'x-orchestrator-request: 1' -b "$jar" http://127.0.0.1:44781/orchestrator/api/sources \
+    -o "$probe_home/sources.json"
+  python3 - "$probe_home/sources.json" "${sources[@]}" <<'PY' || { cat "$probe_home/boot.log"; exit 1; }
+import json, sys
+
+listed = {item.get("id"): item for item in json.load(open(sys.argv[1]))}
+missing = [kind for kind in sys.argv[2:] if not (listed.get(kind) or {}).get("installed")]
+if missing:
+    raise SystemExit(f"the composition installs no Source kind {', '.join(missing)}; installed: {sorted(k for k, v in listed.items() if v.get('installed'))}")
+PY
+fi
+printf 'ASTRABOX_DSH_SUPERAGENT_BOOT_CHECK_OK sources=%s\n' "${sources[*]:-}"

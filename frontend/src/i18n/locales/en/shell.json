@@ -45,5 +45,20 @@
   "assistant_new": "New Assistant",
   "assistant_default_name": "Assistant",
   "assistant_open_failed": "Could not open the Assistant",
-  "assistant_earlier_conversations": "Earlier conversations of {{name}}"
+  "assistant_earlier_conversations": "Earlier conversations of {{name}}",
+  "assistant_panel": {
+    "opening": "Opening {{name}}…",
+    "start_failed": "Could not start {{name}}",
+    "stopped": "{{name}} did not start",
+    "stopped_hint": "Its runtime stopped before it was ready.",
+    "open_failed": "Could not open {{name}}",
+    "route_unsupported": "This deployment cannot show {{name}}",
+    "panel_unsupported": "{{name}} has no page to show",
+    "renew_failed": "Could not renew the connection to {{name}}. The page stops responding when the current one expires.",
+    "read_failed": "Could not read the state of {{name}}",
+    "secret_required_one": "{{name}} needs {{count}} credential from you",
+    "secret_required_other": "{{name}} needs {{count}} credentials from you",
+    "secret_required_hint": "Set {{labels}} in its settings, then open it again.",
+    "open_settings": "Open settings"
+  }
 }

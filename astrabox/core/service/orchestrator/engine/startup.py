@@ -44,10 +44,10 @@ from astrabox.core.service.orchestrator.engine.provisioning import (
     resolve_model_credential_delivery,
     resolve_sandbox_websocket_endpoint,
     resolve_session_environment_credentials,
+    session_credential_refresher,
     write_engine_env_file,
 )
 from astrabox.core.service.orchestrator.runtime.mcp_credentials import (
-    mcp_credential_refresher,
     resolve_mcp_credential_plan,
 )
 from astrabox.core.service.orchestrator.runtime.mcp_servers import (
@@ -57,6 +57,37 @@ from astrabox.core.service.orchestrator.runtime.mcp_servers import (
 from astrabox.core.service.orchestrator.runtime.preparation import prepare_session_runtime_context
 from astrabox.seams.egress_credentials import SandboxEgressCredentialPlan
 from astrabox.secrets import SecretProvider
+
+
+#: What a box's credential delivery leaves in its runtime identity.
+_BOX_DELIVERY_KEYS = (ENVIRONMENT_PLACEHOLDER_CONTEXT, ENVIRONMENT_CREDENTIAL_IDS, CREDENTIAL_VAULT_BINDINGS)
+
+
+async def _with_assistant_box_delivery(
+    identity: dict[str, Any], workspace_plan: Any, sandbox_id: str,
+) -> dict[str, Any]:
+    """``identity`` with the credential delivery its Assistant's box already holds.
+
+    An Assistant's credentials belong to its one box, which all its Sessions
+    share: a Session attaching to it composes them under the placeholder
+    context the box's processes were started with, recorded with the box's
+    identity, rather than as a box that received none.
+    """
+
+    from astrabox.persistence.repository.assistant_workspace_repository import (
+        AssistantWorkspaceRepository,
+    )
+
+    row = await AssistantWorkspaceRepository().get_workspace(
+        str(getattr(workspace_plan, "assistant_id", "") or "")
+    )
+    stored = (row or {}).get("runtime_identity")
+    if not isinstance(stored, dict) or str(stored.get("sandbox_id") or "") != sandbox_id:
+        return identity
+    return {
+        **identity,
+        **{key: stored[key] for key in _BOX_DELIVERY_KEYS if key in stored and key not in identity},
+    }
 
 
 async def _report_progress(callback: Any, stage: str) -> None:
@@ -248,6 +279,69 @@ def _resolve_declared_secrets(
     return resolved
 
 
+async def _resolve_owner_secrets(adapter: EngineAdapter, workspace_plan: Any) -> dict[str, str]:
+    """The credentials an Assistant's runtime is started with, as the adapter declares them.
+
+    Each is the owner's own value, or the deployment's shared one
+    (``deployment_secret``) when the owner set none. Every declared key must
+    resolve: a runtime started without one could only fail somewhere further
+    in, so the start is refused here with the key that is missing.
+    """
+
+    surface = adapter.capabilities.assistant
+    if surface is None or not surface.owner_secrets:
+        return {}
+    if str(getattr(workspace_plan, "subject_kind", "") or "") != "assistant_runtime":
+        return {}
+    from astrabox.core.service.orchestrator.assistant.assistant_secrets import (
+        AssistantOwnerSecrets,
+    )
+
+    assistant_id = str(getattr(workspace_plan, "assistant_id", "") or "").strip()
+    keys = tuple(secret.key for secret in surface.owner_secrets)
+    values = await AssistantOwnerSecrets().read(assistant_id, keys)
+    for secret in surface.owner_secrets:
+        if not str(values.get(secret.key) or "").strip() and secret.deployment_secret:
+            shared = str(SecretProvider.get_secret(secret.deployment_secret) or "").strip()
+            if shared:
+                values[secret.key] = shared
+    missing = [
+        secret.key for secret in surface.owner_secrets
+        if secret.required and not str(values.get(secret.key) or "").strip()
+    ]
+    if missing:
+        labels = ", ".join(
+            secret.label for secret in surface.owner_secrets if secret.key in missing
+        )
+        raise owner_secret_action(
+            "owner_secret_required",
+            f"Set {labels} in this Assistant's settings to start it.",
+            keys=missing,
+        )
+    return values
+
+
+def owner_secret_action(status: str, message: str, *, keys: list[str]) -> APIError:
+    """A start only the Assistant's owner can unblock, by setting a credential.
+
+    Raised as the platform's user-action refusal, so the starting Session
+    records the action and the Assistant's read shows it to the owner.
+    """
+
+    from astrabox.seams.runtime_preparation import TURN_PREPARATION_USER_ACTION_REQUIRED
+
+    return APIError(
+        code=TURN_PREPARATION_USER_ACTION_REQUIRED,
+        message=message,
+        status_code=409,
+        evidence={
+            "reason": status,
+            "user_action": {"status": status, "message": message, "url": None},
+            "keys": keys,
+        },
+    )
+
+
 def _platform_access_targets(
     request: EngineStartupMaterialRequest,
     *,
@@ -411,6 +505,7 @@ async def start_platform_runtime(
         deployment_settings=platform.deployment_settings,
     )
     platform_secrets = _resolve_declared_secrets(adapter, material_request)
+    owner_secrets = await _resolve_owner_secrets(adapter, workspace_plan)
     request = adapter.sandbox_request(
         template=template,
         model_access=model_access,
@@ -489,6 +584,7 @@ async def start_platform_runtime(
             ),
             sandbox_death_notice=sandbox_death_notice,
             platform_secrets=platform_secrets,
+            owner_secrets=owner_secrets,
             platform_mcp_deployment_id=platform_mcp_deployment_id,
         )
         runtime_context = await prepare_session_runtime_context(runtime_context)
@@ -566,6 +662,7 @@ async def attach_platform_runtime(
         deployment_settings=platform.deployment_settings,
     )
     platform_secrets = _resolve_declared_secrets(adapter, material_request)
+    owner_secrets = await _resolve_owner_secrets(adapter, workspace_plan)
     request = adapter.sandbox_request(template=template, model_access=model_access)
     persisted_backend = await platform.resolve_runtime_sandbox_backend(
         session_id,
@@ -587,6 +684,8 @@ async def attach_platform_runtime(
         )
     identity["sandbox_id"] = target_sandbox
     identity["session_id"] = session_id
+    if str(getattr(workspace_plan, "subject_kind", "") or "") == "assistant_runtime":
+        identity = await _with_assistant_box_delivery(identity, workspace_plan, target_sandbox)
     cwd = (
         str(identity.get("workspace_dir") or "").strip()
         or str(request.cwd or "").strip()
@@ -718,6 +817,16 @@ async def attach_platform_runtime(
                 vault_bindings=bool(identity.get(CREDENTIAL_VAULT_BINDINGS)),
             )
         )
+        if str(getattr(workspace_plan, "subject_kind", "") or "") == "assistant_runtime":
+            from astrabox.persistence.repository.assistant_workspace_repository import (
+                AssistantWorkspaceRepository,
+            )
+
+            await AssistantWorkspaceRepository().record_credential_delivery(
+                str(getattr(workspace_plan, "assistant_id", "") or ""),
+                sandbox_id=target_sandbox,
+                record={key: identity[key] for key in _BOX_DELIVERY_KEYS if key in identity},
+            )
 
         shared = (
             workspace_plan.subject_kind == "deployment_conversation"
@@ -838,18 +947,15 @@ async def attach_platform_runtime(
                 request.wait_for_inbox_service_port,
             )
 
-        prepare_engine_input = (
-            mcp_credential_refresher(
-                platform,
-                session_id=session_id,
-                template=template,
-                backend_adapter=backend_adapter,
-                sandbox=sandbox,
-                initial_credential_plan=mcp_vault_write,
-                vault_enabled=vault_enabled,
-            )
-            if mcp_vault_write is not None
-            else None
+        prepare_engine_input = session_credential_refresher(
+            platform,
+            session_id=session_id,
+            template=template,
+            backend_adapter=backend_adapter,
+            sandbox=sandbox,
+            runtime_identity=identity,
+            initial_credential_plan=mcp_vault_write,
+            vault_enabled=vault_enabled,
         )
         platform_mcp_deployment_id = await _publish_platform_mcp_binding(
             template=template,
@@ -897,6 +1003,7 @@ async def attach_platform_runtime(
             ),
             sandbox_death_notice=sandbox_death_notice,
             platform_secrets=platform_secrets,
+            owner_secrets=owner_secrets,
             platform_mcp_deployment_id=platform_mcp_deployment_id,
             attach_mode=attach_mode,
         )

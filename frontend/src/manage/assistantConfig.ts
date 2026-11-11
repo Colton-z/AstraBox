@@ -95,6 +95,23 @@ export function assistantMaterializing(state?: string): boolean {
   return String(state || '') === 'MATERIALIZING';
 }
 
+// ── Runtime surface ──────────────────────────────────────────────────────────
+// The runtime declares how its owner works with it (`runtime`). One that hosts
+// no conversations and serves its own page opens on that page instead.
+export function assistantOpensPanel(a: AssistantRecord): boolean {
+  return a.runtime?.panel === true && a.runtime.conversations === false;
+}
+
+/**
+ * The credentials the runtime declares that neither its owner nor the
+ * deployment's shared value provides. A start
+ * without one fails with an owner action (`workspace_action`), so a start
+ * offered now could only fail.
+ */
+export function assistantMissingSecrets(a: AssistantRecord) {
+  return (a.runtime?.owner_secrets ?? []).filter((secret) => secret.required && !secret.configured && !secret.deployment_default);
+}
+
 // ── Permission mode → label (canonical app vocabulary, mirrored from utils/format) ──
 const PERMISSION_MODE_KEYS: Record<string, string> = {
   default: 'manage:permission_mode.default',

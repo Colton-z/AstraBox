@@ -29,14 +29,16 @@ from astrabox.core.service.orchestrator.engine.extensions import (
 from astrabox.seams.sandbox import SANDBOX_TENANCIES
 
 
+SESSION_KINDS = frozenset({"agent_chat", "assistant_chat"})
+SessionKind = Literal["agent_chat", "assistant_chat"]
+
 # Product defaults are choices AstraBox owns.  They are not compatibility
 # allowlists: any registered adapter can declare support for any session kind.
+# An Assistant has none: its runtime is always the one its RuntimeProfile
+# names, so a missing engine there is corrupt state rather than a choice.
 _SESSION_KIND_DEFAULT_ENGINE: dict[str, str] = {
     "agent_chat": "claude_code",
-    "assistant_chat": "assistant",
 }
-SESSION_KINDS = frozenset(_SESSION_KIND_DEFAULT_ENGINE)
-SessionKind = Literal["agent_chat", "assistant_chat"]
 
 _ENGINE_OPTIONS_FIELD_KEYS = frozenset({
     "key",
@@ -168,6 +170,54 @@ class EngineWorkloadDeclaration:
 
 
 @dataclass(frozen=True)
+class EnginePanelDeclaration:
+    """A browser page the runtime serves from inside its box.
+
+    The page is the runtime's own product surface: the console embeds it, and
+    the platform supplies only the signed address and the runtime's login.
+    ``port`` is the in-box port a browser request arrives on.
+    """
+
+    port: int
+
+
+@dataclass(frozen=True)
+class EngineOwnerSecretDeclaration:
+    """A credential the Assistant's owner supplies for the runtime to use.
+
+    The platform keeps the value in its secret store and hands it to the
+    adapter at activation; it never returns it. ``key`` names it in the API
+    and in the adapter; ``label`` and ``help`` are what the owner reads.
+    """
+
+    key: str
+    label: str
+    help: str = ""
+    #: The deployment's shared value, by SecretProvider name: used for every
+    #: Assistant whose owner sets none. ``None`` means each owner must set one.
+    deployment_secret: str | None = None
+    #: False when the runtime starts without it, and only the part that uses
+    #: it stays unavailable; a required one refuses the start while unset.
+    required: bool = True
+
+
+@dataclass(frozen=True)
+class EngineAssistantDeclaration:
+    """How a runtime serves the Assistant product.
+
+    An Assistant is one resident runtime per owner and Assistant. What the
+    owner works with is the runtime's to say: conversations the platform
+    hosts, a page the runtime serves (``panel``), or both. Credentials the
+    runtime needs from the owner are declared here so the platform can ask for
+    them before it builds a box that could not start.
+    """
+
+    conversations: bool = True
+    panel: EnginePanelDeclaration | None = None
+    owner_secrets: tuple[EngineOwnerSecretDeclaration, ...] = ()
+
+
+@dataclass(frozen=True)
 class EngineRuntimeCapabilities:
     """One adapter's stable runtime shape.
 
@@ -215,6 +265,9 @@ class EngineRuntimeCapabilities:
     #: pairs such an engine with conversation tenancy is refused on a
     #: backend that does not declare ``supports_process_sessions``.
     requires_process_sessions: bool = False
+    #: How the runtime serves Assistants. Declared exactly when
+    #: ``assistant_chat`` is supported.
+    assistant: EngineAssistantDeclaration | None = None
 
 
 def validate_engine_options_schema(
@@ -265,6 +318,89 @@ def validate_engine_options_schema(
                 raise ValueError(f"{label} {text_key} must be a string")
         if "advanced" in field and not isinstance(field.get("advanced"), bool):
             raise ValueError(f"{label} advanced must be a boolean")
+
+
+_OWNER_SECRET_KEY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+def _validate_assistant_declaration(
+    engine_kind: str,
+    capabilities: EngineRuntimeCapabilities,
+    session_kinds: frozenset[str],
+) -> None:
+    """An Assistant runtime says how the owner works with it, or it is not one."""
+
+    declaration = capabilities.assistant
+    serves_assistants = "assistant_chat" in session_kinds
+    if declaration is None:
+        if serves_assistants:
+            raise ValueError(
+                f"engine_kind={engine_kind!r} supports assistant_chat but declares "
+                "no assistant surface"
+            )
+        return
+    if not serves_assistants:
+        raise ValueError(
+            f"engine_kind={engine_kind!r} declares an assistant surface without "
+            "supporting assistant_chat"
+        )
+    if not isinstance(declaration, EngineAssistantDeclaration):
+        raise TypeError(
+            f"engine_kind={engine_kind!r} assistant must be EngineAssistantDeclaration"
+        )
+    if capabilities.workload.config_dir_name is None:
+        # The Assistant account's profile is composed around the runtime's own
+        # directory: its state, its restore target and its environment file.
+        raise ValueError(
+            f"engine_kind={engine_kind!r} supports assistant_chat without a "
+            "workload config_dir_name"
+        )
+    from astrabox.core.service.orchestrator.runtime.conversation_identity import (
+        ASSISTANT_PROFILE_BOOTSTRAP_SCRIPT,
+    )
+
+    if ASSISTANT_PROFILE_BOOTSTRAP_SCRIPT not in capabilities.workload.required_commands:
+        # The platform provisions the Assistant account through the image's
+        # own script; an image without it fails every wake mid-provisioning.
+        raise ValueError(
+            f"engine_kind={engine_kind!r} supports assistant_chat without "
+            f"requiring {ASSISTANT_PROFILE_BOOTSTRAP_SCRIPT}"
+        )
+    panel = declaration.panel
+    if not declaration.conversations and panel is None:
+        raise ValueError(
+            f"engine_kind={engine_kind!r} assistant surface offers neither "
+            "conversations nor a panel"
+        )
+    if panel is not None and (
+        not isinstance(panel, EnginePanelDeclaration)
+        or isinstance(panel.port, bool)
+        or not isinstance(panel.port, int)
+        or not 1 <= panel.port <= 65535
+    ):
+        raise ValueError(
+            f"engine_kind={engine_kind!r} assistant panel must name an in-box port"
+        )
+    secrets = declaration.owner_secrets
+    if not isinstance(secrets, tuple) or any(
+        not isinstance(secret, EngineOwnerSecretDeclaration)
+        or not isinstance(secret.key, str)
+        or not _OWNER_SECRET_KEY_RE.match(secret.key)
+        or not isinstance(secret.label, str)
+        or not secret.label.strip()
+        or not isinstance(secret.help, str)
+        or (secret.deployment_secret is not None and (
+            not isinstance(secret.deployment_secret, str) or not secret.deployment_secret.strip()
+        ))
+        for secret in secrets
+    ):
+        raise ValueError(
+            f"engine_kind={engine_kind!r} owner_secrets must be declarations with "
+            "snake_case keys and non-empty labels"
+        )
+    keys = [secret.key for secret in secrets]
+    if len(set(keys)) != len(keys):
+        raise ValueError(f"engine_kind={engine_kind!r} owner_secrets keys must be unique")
 
 
 def validate_engine_capabilities(
@@ -358,6 +494,7 @@ def validate_engine_capabilities(
             "product runs on the shared tenancy, but its integration places "
             "conversations on the box account"
         )
+    _validate_assistant_declaration(normalized_kind, capabilities, session_kinds)
     permission_modes = capabilities.permission_modes
     if not isinstance(permission_modes, tuple) or any(
         not isinstance(mode, str) or not mode.strip() for mode in permission_modes
@@ -500,7 +637,14 @@ def default_engine_for_session_kind(session_kind: str | None) -> str:
     is corrupt platform state, not a reason to route through Claude.
     """
 
-    return _SESSION_KIND_DEFAULT_ENGINE[require_session_kind(session_kind)]
+    kind = require_session_kind(session_kind)
+    engine = _SESSION_KIND_DEFAULT_ENGINE.get(kind)
+    if engine is None:
+        raise ValueError(
+            f"session_kind={kind!r} has no default engine; its RuntimeProfile "
+            "must name one"
+        )
+    return engine
 
 
 def engine_kinds_for_session_kind(session_kind: str | None) -> frozenset[str]:

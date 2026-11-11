@@ -1,0 +1,2055 @@
+diff --git a/docs/007-architecture.md b/docs/007-architecture.md
+index 184ea54..f048487 100644
+--- a/docs/007-architecture.md
++++ b/docs/007-architecture.md
+@@ -353,12 +353,15 @@ Some generic modules still refer directly to GitHub or Feishu:
+ | `src/app/views/overview.ts` | The overview: Tickets that need a person, problems, the last day's flow and the Executor's load |
+ | `src/executor/dsh.ts` | The DshExecutor, `WorkerSlots`, `ticketExecution`, `inputMessage` and `mandateInstructions` |
+ | `src/executor/background.ts` | A worker's background work in DeepSeek Harness, the shell jobs its Session owns (`ctx.jobs`) and its subagents (`ctx.subagents`): `runningJobs`, `untilQuiet`, `killJobs`, `collectJobs`, `stopSubagents`, `stopBackground`, `until`, and `cancelled`, the workers whose turn a stop of their subagents cancelled |
++| `src/executor/a2a.ts` | The A2A executor, used when the deployment lists agents (`DSH_SUPERAGENT_A2A_AGENTS_FILE`): each Ticket as a conversation of the agent the main Session chose over A2A 1.0, `assignmentMessage`, and its tasks followed to the Ticket's Report |
+ | `src/infra/commands.ts` | `Commands`, the CLI transport: `run`; `api` and `pages`, limited to the configured repository and validated; `lark` as the bot; `git`. `CliError` carries the code a command's output reports, such as a GitHub HTTP status, and a command that prints nothing fails with how it ended, never with its arguments; `validItems` skips and counts the malformed items of a list |
+ | `src/infra/environment.ts` | The agent's process environment: command shims, the git configuration and credential helper, `runAsWorker`, and the checks of the environment and of a Ticket's directory |
++| `src/github-account.ts` | The deployment's GitHub account, for code that runs only when the GitHub Source has one: `githubOf` and `hasGithub` |
+ | `src/infra/paths.ts` | The package's root, where packaged files are |
+ | `src/infra/text.ts` | Word counts and the chat message limit, `fill` and `sameName` |
+ | `src/infra/health.ts` | The `HealthBoard`, every part's health entry, each claimed by its one writer |
+ | `src/sources/kind.ts` | The `SourceKind` protocol |
++| `src/sources/sdk.ts` | The Source interface a Source in its own package imports, exported as `./sources` |
+ | `src/sources/registry.ts` | `SourceRegistry` |
+ | `src/sources/host.ts` | `SourceHost`, `SourceContext`, `Health`, `health` and the fixed health texts |
+ | `src/sources/poll.ts` | What GitHub and Feishu polling share: `POLL_HORIZON_MS`, `polled`, `cursorAt`, and `pollThreads`, which keeps a failure on its Thread as `pollError` |
+diff --git a/docs/008-cookbook.md b/docs/008-cookbook.md
+index 22c279a..7e12162 100644
+--- a/docs/008-cookbook.md
++++ b/docs/008-cookbook.md
+@@ -352,6 +352,14 @@ Enable the plugin in a profile's `cordis.patch.yml` with `id: dsh-superagent-web
+ 
+ Add its module and spec to the module and test tables in [007 Architecture](007-architecture.md). `tests/docs.spec.ts` checks that both indexes are complete.
+ 
++A Source can also live in its own package, a dsh plugin installed beside the bundle. It imports what the steps above
++take from the bundle's modules from `dsh-superagent/sources` instead: the `SourceKind` contract, `health`,
++`sourceContext`, `CliError`, `validItems`, the polling helpers (`pollThreads`, `cursorAt`, `pause`), `KV` for
++`KV.sources.labels`, `record` and `family` for its own cursor keys, and the core `key` and `threadKey`. Declare `dsh-superagent` as an optional peer dependency (`peerDependenciesMeta`), so the plugin runs on the
++installed bundle, pnpm fetches none from a registry, and `CliError` is the class its `Commands` throw.
++Package it as a Bundle whose own `cordis.patch.yml` inserts the plugin, and install it into the profile
++with `dsh plugin add`.
++
+ ### 11. Tests
+ 
+ Create `tests/webhook.spec.ts` using the pattern in `tests/sources.spec.ts`: a real Store in a temporary directory, a `SourceRegistry` with `HealthBoard`, an Engine with stand-in ports, and a `SourceContext` from `sourceContextOf`.
+diff --git a/package.json b/package.json
+index 6afd24b..58c5081 100644
+--- a/package.json
++++ b/package.json
+@@ -16,6 +16,10 @@
+     "./client": "./lib/client.js",
+     "./github-watch": "./lib/github-watch.js",
+     "./feishu-watch": "./lib/feishu-watch.js",
++    "./sources": {
++      "types": "./lib/sources.d.ts",
++      "default": "./lib/sources.js"
++    },
+     "./package.json": "./package.json",
+     "./locale/*.json": "./locale/*.json"
+   },
+@@ -56,6 +60,7 @@
+   },
+   "packageManager": "pnpm@11.7.0",
+   "dependencies": {
++    "@a2a-js/sdk": "1.3.0",
+     "proper-lockfile": "4.1.2",
+     "zod": "4.4.3"
+   },
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index f484dfc..ead3ab6 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -8,6 +8,9 @@ importers:
+ 
+   .:
+     dependencies:
++      '@a2a-js/sdk':
++        specifier: 1.3.0
++        version: 1.3.0
+       proper-lockfile:
+         specifier: 4.1.2
+         version: 4.1.2
+@@ -126,6 +129,34 @@ importers:
+ 
+ packages:
+ 
++  '@a2a-js/sdk@1.3.0':
++    resolution: {integrity: sha512-OpK4nygUnLKlpTFZlM2IrYu7f3c/B7c4u4Z14+vgMq24lEINTVCxH/BqZx+GL92rNf7CoBL5oTP5UhNsl75yyg==}
++    engines: {node: '>=20'}
++    hasBin: true
++    peerDependencies:
++      '@bufbuild/protobuf': ^2.10.2
++      '@grpc/grpc-js': ^1.11.0
++      better-sqlite3: ^12.0.0 || ^13.0.0
++      express: ^4.21.2 || ^5.1.0
++      kysely: ^0.28.17 || ^0.29.0
++      mysql2: ^3.0.0
++      pg: ^8.0.0
++    peerDependenciesMeta:
++      '@bufbuild/protobuf':
++        optional: true
++      '@grpc/grpc-js':
++        optional: true
++      better-sqlite3:
++        optional: true
++      express:
++        optional: true
++      kysely:
++        optional: true
++      mysql2:
++        optional: true
++      pg:
++        optional: true
++
+   '@asamuzakjp/css-color@5.1.11':
+     resolution: {integrity: sha512-KVw6qIiCTUQhByfTd78h2yD1/00waTmm9uy/R7Ck/ctUyAPj+AEDLkQIdJW0T8+qGgj3j5bpNKK7Q3G+LedJWg==}
+     engines: {node: ^20.19.0 || ^22.12.0 || >=24.0.0}
+@@ -987,133 +1018,157 @@ packages:
+     resolution: {integrity: sha512-C/0zV5IhgVdYhGJTwrY0v8dknxlhiKwtVJkMUaexu9/QvRmzlV4vfU3hZlUSgqc2BxQHntL1mCVbDq8j0FRFDw==}
+     cpu: [arm64]
+     os: [android]
++    deprecated: yuku-codegen is pure JavaScript since 0.14
+ 
+   '@yuku-codegen/binding-darwin-arm64@0.8.7':
+     resolution: {integrity: sha512-/u+REDMI4a0/lsJXTM4c53/w31OGZLOReZIyg62uhgLs0kc8NHsj/nOcxTdlQjq5gi0zhdkccD9LaLTXcdzPvw==}
+     cpu: [arm64]
+     os: [darwin]
++    deprecated: yuku-codegen is pure JavaScript since 0.14
+ 
+   '@yuku-codegen/binding-darwin-x64@0.8.7':
+     resolution: {integrity: sha512-sMMzFOwCo4WXR+/6zIBThOocSC50iIIZZdfiIDbaLvj0Ax/rWt/iavyfEAqajyvzydLyCqR/ZItdLWSRlu1umw==}
+     cpu: [x64]
+     os: [darwin]
++    deprecated: yuku-codegen is pure JavaScript since 0.14
+ 
+   '@yuku-codegen/binding-freebsd-x64@0.8.7':
+     resolution: {integrity: sha512-MpdpKXix9P+Y1rKgjvcNeNtGjXeL1CmttNhYINrWls8kRpm4xM/oBGTmn6w7to8lAlwj5jm8q03dQPl5mRv4Qw==}
+     cpu: [x64]
+     os: [freebsd]
++    deprecated: yuku-codegen is pure JavaScript since 0.14
+ 
+   '@yuku-codegen/binding-linux-arm-gnu@0.8.7':
+     resolution: {integrity: sha512-rr1srFLlPAmC1vtxfc9C1YLDe3iH09YjfSeeIidBqKhzx1MATjOAq4mjlRUOnhr/L27MotWIYOFKwVsd5JZFOg==}
+     cpu: [arm]
+     os: [linux]
+     libc: [glibc]
++    deprecated: yuku-codegen is pure JavaScript since 0.14
+ 
+   '@yuku-codegen/binding-linux-arm-musl@0.8.7':
+     resolution: {integrity: sha512-eAufXh8qBRpiSO6ueaMDL+yyoXIGLhpUce72YbcACtZU2qhExwBIJyEtQf5kH2Ki0X2aqkSjSfog4OPtKXan3Q==}
+     cpu: [arm]
+     os: [linux]
+     libc: [musl]
++    deprecated: yuku-codegen is pure JavaScript since 0.14
+ 
+   '@yuku-codegen/binding-linux-arm64-gnu@0.8.7':
+     resolution: {integrity: sha512-gw4w6wPoHObBrdIC4duVWLmJOvpdE25j5D7yrM5mACNlK4klRz/lv8hK+ssQk9EJHBgZjSaqZIJVFgqNYbfv7A==}
+     cpu: [arm64]
+     os: [linux]
+     libc: [glibc]
++    deprecated: yuku-codegen is pure JavaScript since 0.14
+ 
+   '@yuku-codegen/binding-linux-arm64-musl@0.8.7':
+     resolution: {integrity: sha512-L68N6Y4XkqcIaKo3Ra88JEvBEH4AHff44A4INcrxeVWZ8CZtu2tCpfVxe3hR8qQQMcvBSQlDn24KpkCKEhVvfA==}
+     cpu: [arm64]
+     os: [linux]
+     libc: [musl]
++    deprecated: yuku-codegen is pure JavaScript since 0.14
+ 
+   '@yuku-codegen/binding-linux-x64-gnu@0.8.7':
+     resolution: {integrity: sha512-dzyAbltJmf3Cqlb8HcFuYIf5Yn0fl1vTr3XJ9HiVNNvOlhqPSArOqtw9vI1p6/VTXTjrMLXlU+s+/kNHiIy/Cw==}
+     cpu: [x64]
+     os: [linux]
+     libc: [glibc]
++    deprecated: yuku-codegen is pure JavaScript since 0.14
+ 
+   '@yuku-codegen/binding-linux-x64-musl@0.8.7':
+     resolution: {integrity: sha512-Otw4MH3404q0Bbvl+YTdW9aoUV5vXmUw8260bWvt1XlaoIX/ceSgI4ygheRDMfBPoHt6FDayQaO9OLVUZAgkFA==}
+     cpu: [x64]
+     os: [linux]
+     libc: [musl]
++    deprecated: yuku-codegen is pure JavaScript since 0.14
+ 
+   '@yuku-codegen/binding-win32-arm64@0.8.7':
+     resolution: {integrity: sha512-qo/jyrzryiBuKEsFiuWaBCBe3tRMynQ0qFWFgOEjcCMQeZfBm+wKiVEUEFXXLc7bh8YezguAWp0Mtnhq4ARNyA==}
+     cpu: [arm64]
+     os: [win32]
++    deprecated: yuku-codegen is pure JavaScript since 0.14
+ 
+   '@yuku-codegen/binding-win32-x64@0.8.7':
+     resolution: {integrity: sha512-D5lDsVDx6m00E6bWySlWdH72Ca4TPSaphDqB6QjU6MpuNLIJqoGoatYyq2rOmBE8Zv/kunot/o58KGL03P3eiA==}
+     cpu: [x64]
+     os: [win32]
++    deprecated: yuku-codegen is pure JavaScript since 0.14
+ 
+   '@yuku-parser/binding-android-arm64@0.8.7':
+     resolution: {integrity: sha512-eGKYiUDX7Y0V7tDTmg+JTVnXnjMqfXXsorZ+EDf5kxwchQ3Or1HS14MzI2fw+jFhHR85fCWt+mtX33Yao73hIQ==}
+     cpu: [arm64]
+     os: [android]
++    deprecated: yuku-parser runs on yuku-core since 0.14
+ 
+   '@yuku-parser/binding-darwin-arm64@0.8.7':
+     resolution: {integrity: sha512-Re0RHelKLnjEURulY2/KxW+Ngb8zuNA4BRZuMwgGQNzVumT6u4U2N2hc01oeYVNVof0i7GrXE4UCNBgbpRRnjQ==}
+     cpu: [arm64]
+     os: [darwin]
++    deprecated: yuku-parser runs on yuku-core since 0.14
+ 
+   '@yuku-parser/binding-darwin-x64@0.8.7':
+     resolution: {integrity: sha512-Hn8DROtQkjlA1ACbPgj4a7eP9IuVOI504oiTwpkWPbpaDWD9KdmnVYCqW+1LfenNK/g7O9NhWGpXEdaCNX7lIA==}
+     cpu: [x64]
+     os: [darwin]
++    deprecated: yuku-parser runs on yuku-core since 0.14
+ 
+   '@yuku-parser/binding-freebsd-x64@0.8.7':
+     resolution: {integrity: sha512-bAP2OV8wRuzplX/jYxv9+vvqQT8JxyNphI8fLfXGL054Xs+4/J5u33cIm3y4rxY8rdoLmmdiJs2Tq7r7lrDRfA==}
+     cpu: [x64]
+     os: [freebsd]
++    deprecated: yuku-parser runs on yuku-core since 0.14
+ 
+   '@yuku-parser/binding-linux-arm-gnu@0.8.7':
+     resolution: {integrity: sha512-kTYwJQQgmZeAWdDIWabiReIZMpmfLueIj1tCmjStUtFGhR1Z0qwxonKVfUC4N7h/VhGGzLZ//7O1kgt1QKqgCg==}
+     cpu: [arm]
+     os: [linux]
+     libc: [glibc]
++    deprecated: yuku-parser runs on yuku-core since 0.14
+ 
+   '@yuku-parser/binding-linux-arm-musl@0.8.7':
+     resolution: {integrity: sha512-uL4jE8HPT2BLlxAXyD10LqgPuXa9eDa0BKpCdSANmzIJghq/2eZo3/gQNtaxPZMupWoxjYzSad9IXrwu7aYPXQ==}
+     cpu: [arm]
+     os: [linux]
+     libc: [musl]
++    deprecated: yuku-parser runs on yuku-core since 0.14
+ 
+   '@yuku-parser/binding-linux-arm64-gnu@0.8.7':
+     resolution: {integrity: sha512-3gVN4pWSKZmXiNX7cU164dR9MPvesCHnlH6nPfpK+yQsCuYphjKKplcb4SnZBrhiqmXbgb2HR0c2TS0IZUPhgA==}
+     cpu: [arm64]
+     os: [linux]
+     libc: [glibc]
++    deprecated: yuku-parser runs on yuku-core since 0.14
+ 
+   '@yuku-parser/binding-linux-arm64-musl@0.8.7':
+     resolution: {integrity: sha512-S0mwfEjoLpxzXeZw802Wa4RaELsQiPtWqG6INcy8j4GtvNFtl4LCX3eGO1XLn9pyLAISLzTRyU3zUCBUPin8lg==}
+     cpu: [arm64]
+     os: [linux]
+     libc: [musl]
++    deprecated: yuku-parser runs on yuku-core since 0.14
+ 
+   '@yuku-parser/binding-linux-x64-gnu@0.8.7':
+     resolution: {integrity: sha512-lnbWdPmerE5D1uH1G4IEZKnPzCrWCStRGrtgpSIe1RibAo5bZIjDbbbPYXmMHCEh4F+x/JaJpElh26a3r+BPbg==}
+     cpu: [x64]
+     os: [linux]
+     libc: [glibc]
++    deprecated: yuku-parser runs on yuku-core since 0.14
+ 
+   '@yuku-parser/binding-linux-x64-musl@0.8.7':
+     resolution: {integrity: sha512-769uwndMvMzUvATWbAcEvyLHKA+DzhHSCl/obBUrRdYfRo26yxui6S8y3z7uJ+Naup7UKrDxrpK7OnQkxkl9KQ==}
+     cpu: [x64]
+     os: [linux]
+     libc: [musl]
++    deprecated: yuku-parser runs on yuku-core since 0.14
+ 
+   '@yuku-parser/binding-win32-arm64@0.8.7':
+     resolution: {integrity: sha512-mEB/9PlaAkisJ6KWGz0zvywXoU6+80dTlR2LwS7s/jcXXoU6fm2+sitBZXtqu3+Q4DcDgPxM45uWMCzPs0TSRw==}
+     cpu: [arm64]
+     os: [win32]
++    deprecated: yuku-parser runs on yuku-core since 0.14
+ 
+   '@yuku-parser/binding-win32-x64@0.8.7':
+     resolution: {integrity: sha512-8vNB2DP0ou61nGb8tc/qfi41gfyDXz1MHr2zqL3nR+cJ6CEbiuWV/l/a/vv151gCgiZLLAyGkQGENpozdg716w==}
+     cpu: [x64]
+     os: [win32]
++    deprecated: yuku-parser runs on yuku-core since 0.14
+ 
+   '@yuku-toolchain/types@0.8.7':
+     resolution: {integrity: sha512-2Z53dNxAJL6UvFoIrDZvYf3zlO8s4VJK4O2hhaB4mXVwwpX/7ajtss3cmfqKvamlNLWyt9FSWs4eoYdlbxpnHA==}
+@@ -1267,6 +1322,9 @@ packages:
+   is-potential-custom-element-name@1.0.1:
+     resolution: {integrity: sha512-bCYeRA2rVibKZd+s2625gGnGF/t7DSqDs4dP7CrLA1m7jKWz6pps0LpYLJN8Q64HtmPKJ1hrN3nzPNKFEKOUiQ==}
+ 
++  jose@6.2.17:
++    resolution: {integrity: sha512-wOuK9V1yujQFH5S0ZWmLcDZN7+IKh9bUCC2ZPCf2HDlol3WWHy+PPyNjEI75FXRLMp3vDKQcupP59xhVU95hcg==}
++
+   js-tokens@4.0.0:
+     resolution: {integrity: sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==}
+ 
+@@ -1822,6 +1880,10 @@ packages:
+ 
+ snapshots:
+ 
++  '@a2a-js/sdk@1.3.0':
++    dependencies:
++      jose: 6.2.17
++
+   '@asamuzakjp/css-color@5.1.11':
+     dependencies:
+       '@asamuzakjp/generational-cache': 1.0.1
+@@ -2841,6 +2903,8 @@ snapshots:
+ 
+   is-potential-custom-element-name@1.0.1: {}
+ 
++  jose@6.2.17: {}
++
+   js-tokens@4.0.0: {}
+ 
+   js-yaml@4.3.2:
+diff --git a/src/app/assessment.ts b/src/app/assessment.ts
+index 11d2f5b..a87c7dc 100644
+--- a/src/app/assessment.ts
++++ b/src/app/assessment.ts
+@@ -26,6 +26,8 @@ export const AssessmentSchema = z.object({
+   direction: AdmissionDirectionSchema.describe('Required for every decision.'),
+   title: z.string().min(1).max(160),
+   worktree_name: WorktreeNameSchema.optional(),
++  agent: z.string().trim().min(1).max(200).optional().describe('For acceptance, where tickets go to agents: the agent_id of the agent '
++    + 'that works it, from the agents resource.'),
+   scope: z.string().max(1500),
+   intent_evidence: z.string().trim().min(1).max(700).nullish().describe('For acceptance: the quotes that establish the three facts.'),
+   acknowledgement: AcknowledgementSchema.nullish().describe('For acceptance: one sentence in the source language, posted as a reply to the trigger; omit only when a matched rule asks for silence.'),
+diff --git a/src/app/context.ts b/src/app/context.ts
+index a60684b..3c361d0 100644
+--- a/src/app/context.ts
++++ b/src/app/context.ts
+@@ -26,8 +26,10 @@ export const handoffPolicy = (role: 'orchestrator' | 'worker'): string => `${han
+ export const autoMergeThreshold = (lines: number): string => `it changes fewer than ${lines} lines (additions plus deletions);`
+ 
+ /** Retains message content while omitting streamed chunks, usage accounting, and reasoning blocks. */
+-export function transcriptEntry(event: SessionEvent) {
++export function transcriptEntry(event: SessionEvent): TranscriptEntry | undefined {
+   if (event.type !== 'user/message' && event.type !== 'tool/result' && event.type !== 'assistant/message') return undefined
+   const message = event.type === 'user/message' ? event.data : event.data.message
+   return { type: event.type, message: { role: message.role, content: message.content.filter(block => block.type !== 'reasoning') } }
+ }
++/** One message of the conversation that works a Ticket, as the main Session reads it. */
++export interface TranscriptEntry { type: string; message: { role: string; content: ReadonlyArray<{ type: string; text?: string }> } }
+diff --git a/src/app/http.ts b/src/app/http.ts
+index 13c0115..6c268ee 100644
+--- a/src/app/http.ts
++++ b/src/app/http.ts
+@@ -14,6 +14,7 @@ import { SetupError, type SetupProblem } from '../setup.ts'
+ import { UserError, type EngineForPeople, type Ticket } from '../core/index.ts'
+ import type { Deployment, Machine } from '../deployment.ts'
+ import type { DshExecutor } from '../executor/dsh.ts'
++import type { A2AExecutor } from '../executor/a2a.ts'
+ import type { Health } from '../sources/host.ts'
+ import type { SourceRegistry } from '../sources/registry.ts'
+ import type { Sessions } from './sessions.ts'
+@@ -37,7 +38,7 @@ export interface HttpHost {
+   readonly sessions: Pick<Sessions, 'status' | 'notify' | 'delivery'>
+   readonly settings: Pick<Settings, 'view' | 'save' | 'pause' | 'sync' | 'refreshLabels'>
+   readonly engine: EngineForPeople
+-  readonly executor: Pick<DshExecutor, 'activeCount'>
++  readonly executor: Pick<DshExecutor | A2AExecutor, 'kind' | 'activeCount' | 'conversation'>
+   readonly health: Record<string, Health>
+   readonly machine: Machine
+   readonly masterId: string
+@@ -98,7 +99,7 @@ function setupView(runtime: HttpHost) {
+   const resolved = runtime.configured() ? runtime.deployment : undefined
+   return {
+     machine: machineView(runtime.machine), problem: runtime.setupProblem ?? null, feishuProblem: runtime.feishuProblem ?? null,
+-    accounts: resolved ? { repository: resolved.repository, agent: resolved.github.login, feishu: resolved.feishu ? { appId: resolved.feishu.appId, brand: resolved.feishu.brand, botId: resolved.feishu.botId, name: resolved.feishu.name } : null } : null,
++    accounts: resolved ? { repository: resolved.repository ?? null, agent: resolved.github?.login ?? null, feishu: resolved.feishu ? { appId: resolved.feishu.appId, brand: resolved.feishu.brand, botId: resolved.feishu.botId, name: resolved.feishu.name } : null } : null,
+   }
+ }
+ /** Build the `/orchestrator/api/state` response consumed by the management panel and `scripts/dsh-superagent status` (`docs/006-deployment.md`). */
+@@ -108,7 +109,8 @@ export function stateView(runtime: HttpHost) {
+     maxWorkers: settings.executor.maxWorkers },
+     masterId: runtime.masterId, paused: settings.paused, health: runtime.health }
+ }
+-const views = (runtime: HttpHost): ViewHost => ({ store: runtime.store, sources: runtime.sources, links: runtime.links() })
++const views = (runtime: HttpHost): ViewHost => ({ store: runtime.store, sources: runtime.sources, links: runtime.links(),
++  conversation: ticket => runtime.executor.conversation(ticket) })
+ const setupState = (runtime: HttpHost): SetupState => ({ deployment: runtime.configured() ? runtime.deployment : undefined,
+   problem: runtime.setupProblem, feishuProblem: runtime.feishuProblem })
+ export type StateView = ReturnType<typeof stateView>
+@@ -158,7 +160,8 @@ function routes(runtime: HttpHost): Routes {
+       executorLoad(store, runtime.executor.activeCount()), runtime.setupProblem ?? runtime.feishuProblem),
+     'GET search': ({ query }) => search(views(runtime), query.q ?? '', runtime.sourceLinks),
+     'GET sources': () => sourcesStatus(views(runtime), runtime.health, setupState(runtime)),
+-    'GET settings': () => settingsView(store, runtime.sources, runtime.health, setupState(runtime), runtime.machine.stateDir),
++    'GET settings': () => settingsView(store, runtime.sources, runtime.health, setupState(runtime), runtime.machine.stateDir,
++      runtime.executor.kind),
+     'POST sources/:id/labels': ({ params }) => runtime.settings.refreshLabels(params.id),
+     'GET threads': ({ query }) => {
+       const { filter, offset, limit } = ThreadsQuery.parse(query)
+diff --git a/src/app/prompts.ts b/src/app/prompts.ts
+index 51fde05..bd4d439 100644
+--- a/src/app/prompts.ts
++++ b/src/app/prompts.ts
+@@ -117,6 +117,10 @@ export function promptParts(config: PromptConfig, role: Role, environment?: stri
+ export function composePrompt(config: PromptConfig, role: Role, environment?: string, policy?: { key: string; text: string }): string {
+   return promptParts(config, role, environment, policy).map(part => part.text).join('\n\n')
+ }
++/** The team's Ticket scope and Delivery requirements sections, for an agent that is not a DSH worker. */
++export function teamInstructions(config: PromptConfig): string {
++  return (['scope', 'delivery'] as const).filter(name => config[name]).map(name => `## ${TEAM_HEADINGS[name]}\n${config[name]}`).join('\n\n')
++}
+ export function composeSkill(config: PromptConfig, name: string): string {
+   return name === 'feishu' || name === 'github' ? builtIn(config, `skill/${name}`) : config.skills[name] ?? ''
+ }
+@@ -135,16 +139,16 @@ export class PromptConflict extends Error {}
+ export class Prompts {
+   private readonly versions: Versions<PromptVersion>
+   constructor(private readonly store: Store, private readonly maxChars: () => number, private readonly environment: () => Variable[] | undefined,
+-    private readonly feishu: () => boolean) {
++    private readonly feishu: () => boolean, private readonly github: () => boolean) {
+     this.versions = new Versions(store, KV.prompts.revision, KV.prompts.version)
+   }
+   /** A role's prompt; the main Session's Policy section follows the settings as they are now, at each model request. */
+   compose(config: PromptConfig, role: Role, variables = this.environment()): string {
+     return composePrompt(config, role, environmentSection(config, variables), role === 'orchestrator' ? policySection(this.store.settings(), config) : undefined)
+   }
+-  /** Returns skills to register in every Session: built-in Source skills (`feishu` only when a Feishu bot is configured) followed by team skills. */
++  /** Returns skills to register in every Session: built-in Source skills (each only when its account is configured) followed by team skills. */
+   skills(config: PromptConfig): [string, string][] {
+-    return [...this.feishu() ? ['feishu'] : [], 'github', ...Object.keys(config.skills)].map(name => [name, composeSkill(config, name)])
++    return [...this.feishu() ? ['feishu'] : [], ...this.github() ? ['github'] : [], ...Object.keys(config.skills)].map(name => [name, composeSkill(config, name)])
+   }
+   current(): PromptVersion {
+     const revision = this.versions.revision()
+diff --git a/src/app/resources.ts b/src/app/resources.ts
+index f19f742..6fcde21 100644
+--- a/src/app/resources.ts
++++ b/src/app/resources.ts
+@@ -1,5 +1,4 @@
+ /** Serves paginated context resources to orchestrator_read so large bodies stay out of model prompts until requested. */
+-import type { SessionId } from '@deepseek-ai/dsh-session'
+ import { UserError, key, latestReport, reached, runningAssignment, threadKey, type Ticket, type Trigger } from '../core/index.ts'
+ import { batchOf, inputMessage, triggerMessage, workerSessionId } from '../executor/dsh.ts'
+ import { readGithub } from '../sources/github-read.ts'
+@@ -9,7 +8,7 @@ import { feishuTriggerId } from '../sources/feishu-trigger.ts'
+ import { ASSIGNMENTS, INPUTS, assignmentLine, decisionCard, decisionDetails, inputLine, newestPage, preview, textPage, threadCard, ticketCard,
+   ticketDetails, triggerCard, type TicketThread } from './cards.ts'
+ import { threadTitle } from './views/records.ts'
+-import { transcriptEntry } from './context.ts'
++import type { TranscriptEntry } from './context.ts'
+ import { builtInParts, defaultPrompts } from './prompts.ts'
+ import type { Context } from '@deepseek-ai/cordis'
+ import type { Commands } from '../infra/commands.ts'
+@@ -22,6 +21,7 @@ import type { TextCache } from './cache.ts'
+ 
+ /** Resource descriptors exposed via orchestrator_read, marking which resources worker sessions may also read for their own ticket. */
+ export const RESOURCES: readonly { name: string; holds: string; executor?: true }[] = [
++  { name: 'agents', holds: 'the agents a ticket can go to, where tickets go to agents: each agent_id, name and description' },
+   { name: 'tickets', holds: 'ticket cards, newest first; a card\'s state is person/review after a ready report, person/blocked or person/failed after those reports, person/answer with a question, person/delivery when an input could not reach the worker, working or working/queued while it works, idle once the worker ended its turn without a report, else how the ticket ended' },
+   { name: 'triggers', holds: 'trigger cards with where each went, newest first' },
+   { name: 'threads', holds: 'subscribed threads, newest activity first, with their labels, tickets, current assessment and polling errors' },
+@@ -68,6 +68,10 @@ export interface ResourceHost {
+   mayRead(sessionId: string, revision: number): boolean
+   feishuPageSize(): number
+   sourceLink(trigger: Trigger, signal?: AbortSignal): Promise<{ source_url?: string; source_url_read?: string }>
++  /** The agents tickets go to, when the A2A executor works them. */
++  agents?(): Promise<{ agent_id: string; name: string; description: string }[]>
++  /** The conversation that works a Ticket, oldest message first, as its executor keeps it. */
++  transcript(ticketId: string, signal?: AbortSignal): Promise<TranscriptEntry[]>
+ }
+ export interface MainResourceHost extends ResourceHost {
+   readonly sessions: Pick<Sessions, 'status' | 'modelRetry'>
+@@ -111,9 +115,6 @@ async function sourcePage(read: Read, source: string, fetch: () => Promise<unkno
+ const THREAD_DECISIONS = 5
+ const triggerLine = (trigger: Trigger) => ({ trigger_id: trigger.id, actor: trigger.actor.id, human: trigger.human, at: trigger.at,
+   preview: preview(trigger.text), chars: trigger.text.length, read: `trigger/${trigger.id}` })
+-async function transcript(host: ResourceHost, ticketId: string) {
+-  return (await host.context.sessionController.inspect(workerSessionId(ticketId) as SessionId)).events
+-}
+ 
+ const ROUTES: readonly Route[] = [
+   ['tickets', read => {
+@@ -194,6 +195,11 @@ const ROUTES: readonly Route[] = [
+     return { default: catalog.default, roles, failures: catalog.failures,
+       providers: catalog.groups.map(group => ({ id: group.id, name: group.name, count: group.models.length, read: `models/${group.id}` })) }
+   }],
++  ['agents', async read => {
++    if (read.rest || !read.host.agents) throw new Error('This installation does not send tickets to agents')
++    const agents = (await read.host.agents()).map(({ agent_id, name, description }) => ({ agent_id, name, description }))
++    return list(read, (offset, count) => agents.slice(offset, offset + count))
++  }],
+   ['models/', async read => {
+     const models = (await main(read).context.sessionController.modelCatalog()).groups.find(group => group.id === read.rest)?.models
+     if (!models) throw new Error('Unknown model provider')
+@@ -269,8 +275,7 @@ const ROUTES: readonly Route[] = [
+       if (message === undefined) throw new Error('Unknown ticket input')
+       body = message
+     } else if (section === 'message' && part && /^\d+$/.test(part)) {
+-      const event = (await transcript(host, id))[Number(part)]
+-      const entry = event && transcriptEntry(event)
++      const entry = (await host.transcript(id, signal))[Number(part)]
+       if (!entry) throw new Error('Unknown transcript entry')
+       body = JSON.stringify(entry)
+     } else if (section === 'report' && part) {
+@@ -281,11 +286,10 @@ const ROUTES: readonly Route[] = [
+     else if (section === 'assignment') body = ticket.execution?.assignment ?? ''
+     else if (section === 'result') body = latestReport(ticket)?.summary ?? ''
+     else if (section === 'transcript') {
+-      body = (await transcript(host, id)).flatMap((event, index) => {
+-        const entry = transcriptEntry(event)
+-        const said = entry?.message.content.map(block => block.type === 'text' ? block.text : `[${block.type}]`).join(' ') ?? ''
+-        return entry ? [{ type: entry.type, preview: preview(said).slice(0, 80), chars: JSON.stringify(entry).length,
+-          read: `ticket/${id}/message/${index}` }] : []
++      body = (await host.transcript(id, signal)).map((entry, index) => {
++        const said = entry.message.content.map(block => block.type === 'text' ? block.text : `[${block.type}]`).join(' ')
++        return { type: entry.type, preview: preview(said).slice(0, 80), chars: JSON.stringify(entry).length,
++          read: `ticket/${id}/message/${index}` }
+       }).reverse().map(event => JSON.stringify(event)).join('\n')
+     } else throw new Error('Unknown context resource')
+     return text(read, body)
+diff --git a/src/app/runtime.ts b/src/app/runtime.ts
+index a8cfe52..44ea588 100644
+--- a/src/app/runtime.ts
++++ b/src/app/runtime.ts
+@@ -21,6 +21,9 @@ import type { Deployment, Machine } from '../deployment.ts'
+ import { environmentOf, ticketEnvironment, type Variable } from './execution-environment.ts'
+ import type { SetupProblem } from '../setup.ts'
+ import { DshExecutor, sourceTrigger, triggerMessage, workerSessionId } from '../executor/dsh.ts'
++import { A2AExecutor } from '../executor/a2a.ts'
++import { hasGithub } from '../github-account.ts'
++import { teamInstructions } from './prompts.ts'
+ import { ticketCard } from './cards.ts'
+ import { MasterAssessor } from './assessment.ts'
+ import { KV } from '../kv.ts'
+@@ -65,7 +68,8 @@ export class Runtime extends Service implements SourceHost {
+   readonly commands: Commands
+   readonly sessions: Sessions
+   readonly settings: Settings
+-  readonly executor: DshExecutor
++  /** DSH worker Sessions, or, when the deployment lists agents (`DSH_SUPERAGENT_A2A_AGENTS_FILE`), agents over A2A. */
++  readonly executor: DshExecutor | A2AExecutor
+   readonly assessor: MasterAssessor
+   readonly outbox: Outbox
+   readonly engine: Engine
+@@ -100,7 +104,8 @@ export class Runtime extends Service implements SourceHost {
+       const deployed = () => setup.configured()
+         ? environmentOf({ deployment: setup.deployment, sources: this.sources, settings: store.settings() }) : undefined
+       const feishu = () => setup.configured() && !!setup.deployment.feishu
+-      const prompts = this.prompts = new Prompts(store, () => machine.promptMaxChars.get(), deployed, feishu)
++      const github = () => setup.configured() && !!setup.deployment.github
++      const prompts = this.prompts = new Prompts(store, () => machine.promptMaxChars.get(), deployed, feishu, github)
+       const masterId = this.masterId = store.get(KV.runtime.masterId) ?? `orchestrator-${key(machine.stateDir)}`
+       store.set(KV.runtime.masterId, masterId)
+       const commands = this.commands = new Commands(() => setup.deployment, setup.commandEnvironment, this.lifetime)
+@@ -115,9 +120,12 @@ export class Runtime extends Service implements SourceHost {
+       const links: LinkHost = { store, links: this.sourceLinks, commands, sources, lifetime: this.lifetime }
+       const link = (trigger: Trigger, signal?: AbortSignal) => sourceLink(links, trigger, signal)
+       const environment = (ticket: Ticket) => this.ticketEnvironment(ticket)
+-      const resources: ResourceHost = { store, pages: new TextCache(4_000_000), prompts, commands, masterId, context: ctx,
++      const agentsFile = process.env.DSH_SUPERAGENT_A2A_AGENTS_FILE?.trim()
++      const resources: ResourceHost = { ...agentsFile ? { agents: () => (runtime.executor as A2AExecutor).list() } : {},
++        store, pages: new TextCache(4_000_000), prompts, commands, masterId, context: ctx,
+         promptVersion: id => this.sessions.promptVersion(id), mayRead: (id, revision) => this.sessions.mayRead(id, revision),
+-        feishuPageSize: () => feishuSettings(sources).readPageSize, sourceLink: link }
++        feishuPageSize: () => feishuSettings(sources).readPageSize, sourceLink: link,
++        transcript: (ticketId, signal) => runtime.executor.transcript(ticketId, signal) }
+       const sessions = this.sessions = new Sessions({ context: ctx, store, prompts, effects, health: board.claim('models'), masterId,
+         lifetime: this.lifetime,
+         closing: () => this.closing(), environment,
+@@ -125,9 +133,14 @@ export class Runtime extends Service implements SourceHost {
+       const policyChanged: EngineForSettings['policyChanged'] = (from, to, effects) => { this.engine.policyChanged(from, to, effects) }
+       this.settings = new Settings({ store, sources, engine: { policyChanged }, health: board, context: ctx, lifetime: this.lifetime, sessions,
+         sourceHost: this, setup, requestPass: () => { this.passes.request() } })
+-      this.executor = new DshExecutor({ context: ctx, get engine() { return runtime.engine }, store, effects, health: board.claim('worker'), machine,
+-        lifetime: this.lifetime, sessions, closing: () => this.closing(), paused: () => this.paused(), environment, sourceLink: link,
+-        repliedTo: trigger => repliedTo({ store, sources }, trigger) })
++      this.executor = agentsFile
++        ? new A2AExecutor({ get engine() { return runtime.engine }, store, effects, health: board.claim('worker'), machine,
++          lifetime: this.lifetime, sessions, agentsFile, closing: () => this.closing(), paused: () => this.paused(), environment,
++          sourceLink: link, instructions: () => teamInstructions(prompts.current().config),
++          github: () => setup.configured() && hasGithub(setup.deployment) ? runtime.context({ kind: 'github', health: ['github'] }) : undefined })
++        : new DshExecutor({ context: ctx, get engine() { return runtime.engine }, store, effects, health: board.claim('worker'), machine,
++          lifetime: this.lifetime, sessions, closing: () => this.closing(), paused: () => this.paused(), environment, sourceLink: link,
++          repliedTo: trigger => repliedTo({ store, sources }, trigger) })
+       this.assessor = new MasterAssessor({ get engine() { return runtime.engine }, commands, get deployment() { return setup.deployment }, effects,
+         settings: () => store.settings(), paused: () => this.paused(), threadContext: trigger => sources.threadContext(trigger),
+         deliver: (id, text) => sessions.prompt(masterId, id, text, 'steer'), candidateCard: candidate => candidateCard(links, candidate) })
+@@ -146,7 +159,7 @@ export class Runtime extends Service implements SourceHost {
+           if (followup) sessions.relay(followup.id, followup.text)
+           // Notify the ticket's conversations whenever it ends via a pull request.
+           const ended = event.type === 'ticket.ended' ? store.tickets.get(event.data.ticketId) : undefined
+-          if (ended && setup.configured()) {
++          if (ended && setup.configured() && setup.deployment.repository) {
+             const request = store.triggers.get(ended.origin.triggerId)?.text ?? ''
+             for (const message of pullEndNotices(ended, request, setup.deployment.repository)) outbox.send(message)
+           }
+@@ -182,7 +195,7 @@ export class Runtime extends Service implements SourceHost {
+   get feishuProblem(): SetupProblem | undefined { return this.setup.feishuProblem }
+   links(): LinkTarget {
+     const resolved = this.setup.configured() ? this.setup.deployment : undefined
+-    const links = resolved ? { repository: resolved.repository, ...(resolved.feishu ? { feishu: resolved.feishu } : {}) } : {}
++    const links = resolved ? { ...(resolved.repository ? { repository: resolved.repository } : {}), ...(resolved.feishu ? { feishu: resolved.feishu } : {}) } : {}
+     return channel => this.sources.link(channel, links)
+   }
+   ticketEnvironment(ticket: Ticket): Variable[] {
+diff --git a/src/app/tools/executor.ts b/src/app/tools/executor.ts
+index b1a6099..7eab6e6 100644
+--- a/src/app/tools/executor.ts
++++ b/src/app/tools/executor.ts
+@@ -79,7 +79,8 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
+         summary: z.string().min(1),
+         human_action: z.string().trim().min(1).max(1000).nullish().describe('One concrete question for a person, also with state=progress; omit to keep the pending one, null to clear it.'),
+         question_for_trigger_id: z.string().optional().describe('With human_action: the human message that raised the question, which is asked where that person wrote.'),
+-        pr_number: z.number().int().positive().nullish().describe(`The ticket's PR: its source PR, or one by ${host.github.deployment.github.login} from a branch named after this ticket (DSH_SUPERAGENT_NAME).`),
++        pr_number: z.number().int().positive().nullish().describe(host.github.deployment.github ? `The ticket's PR: its source PR, or one by ${host.github.deployment.github.login} from a branch named after this ticket (DSH_SUPERAGENT_NAME).`
++          : 'Omit: this installation has no GitHub account, so a ticket has no PR.'),
+         reply_to_trigger_id: z.string().optional().describe('The explicit human question this report answers; never for ordinary progress.'),
+       }).strict(),
+       execute: async (args, signal) => {
+diff --git a/src/app/tools/main.ts b/src/app/tools/main.ts
+index d499004..47f6144 100644
+--- a/src/app/tools/main.ts
++++ b/src/app/tools/main.ts
+@@ -52,6 +52,8 @@ const RouteItemSchema = z.object({
+   worktree_name: z.string().nullish().describe(`accept: ${WorktreeNameSchema.description ?? ''}`),
+   acknowledgement: z.string().nullish().describe(`accept: one brief sentence of at most ${IM_WORDS} words naming the concrete change and intended result in the source language. It is posted as a reply to the original source on acceptance, so do not quote the source; quote an earlier proposal briefly only when the trigger merely confirms it and the sentence does not already state it. No generic I will handle it.`),
+   note: z.string().nullish().describe(`accept and attach: ${RoutingNoteSchema.description ?? ''}`),
++  agent: z.string().nullish().describe('accept, where tickets go to agents: the agent_id of the agent that works the ticket, the one '
++    + 'whose description fits the request best, from the agents resource.'),
+   reason: z.string().nullish().describe('ignore and stop: why, at most 500 characters; an ignore needs it.'),
+ }).strict()
+ type RouteItem = z.infer<typeof RouteItemSchema>
+@@ -64,6 +66,7 @@ const FIELDS: Record<Field, { check: z.ZodType; reads: readonly Kind[]; needs: r
+   worktree_name: { check: WorktreeNameSchema, reads: ['accept'], needs: ['accept'] },
+   acknowledgement: { check: AcknowledgementSchema, reads: ['accept'], needs: ['accept'] },
+   note: { check: RoutingNoteSchema, reads: ['accept', 'attach'], needs: [] },
++  agent: { check: z.string().max(200), reads: ['accept'], needs: [] },
+   reason: { check: z.string().max(500), reads: ['ignore', 'stop'], needs: ['ignore'] },
+ }
+ /** Why an item cannot run: a field its kind needs is missing, or one it reads breaks its limit. */
+@@ -95,7 +98,7 @@ function route(host: MainToolsHost, item: RouteItem, decided: ReadonlyMap<string
+     case 'accept': {
+       const before = host.store.triggers.disposition(item.trigger_id)?.decisionId
+       const decision = host.engine.decide(item.trigger_id, { kind: 'accept', title: item.title!, scope: item.title!, reason: { code: 'explicitRouted' },
+-        acknowledgement: item.acknowledgement!, name: item.worktree_name!, ...note })
++        acknowledgement: item.acknowledgement!, name: item.worktree_name!, ...note, ...(item.agent ? { agent: item.agent } : {}) })
+       // A Decision that created no ticket is the item's refusal; one that existed before keeps what it was accepted with.
+       if (decision.kind !== 'accept' || !decision.ticketId) return { refused: `Ticket was not created: ${reasonText(decision.reason)}` }
+       if (decision.id === before) {
+diff --git a/src/app/views/records.ts b/src/app/views/records.ts
+index 74dab2e..09cd545 100644
+--- a/src/app/views/records.ts
++++ b/src/app/views/records.ts
+@@ -1,16 +1,19 @@
+ /** Shared view projections for triggers, tickets, threads, decisions, and channel links. */
+ import { z } from 'zod'
+-import { canRetry, followupOwners, latestReport, liveTicket, settled, threadKey, ticketStage, type ActorRef, type ChannelRef, type Decision,
+-  type DecisionKind, type Thread, type ThreadFacts, type Ticket, type TicketStage, type Trigger } from '../../core/index.ts'
++import { canRetry, followupOwners, latestReport, liveTicket, settled, threadKey, ticketStage, type ActorRef, type ChannelRef,
++  type ConversationLink, type Decision, type DecisionKind, type Thread, type ThreadFacts, type Ticket, type TicketStage, type Trigger } from '../../core/index.ts'
+ import { allowedSender, listedBot } from '../../policy.ts'
+ import type { ChannelLink, Localized } from '../../sources/kind.ts'
+ import type { SourceRegistry } from '../../sources/registry.ts'
+-import { workerSessionId } from '../../executor/dsh.ts'
+ import type { Store } from '../store.ts'
+ import { attribute, markdown, plain, preview, readable } from './text.ts'
+ 
+ export type LinkTarget = (channel: ChannelRef) => ChannelLink
+-export interface ViewHost { store: Store; sources: SourceRegistry; links: LinkTarget }
++export interface ViewHost {
++  store: Store; sources: SourceRegistry; links: LinkTarget
++  /** Where a Ticket's work can be watched, as its executor names it. */
++  conversation(ticket: Ticket): ConversationLink | undefined
++}
+ export const page = <T>(items: T[], offset: number, limit: number) => ({ items: items.slice(offset, offset + limit), total: items.length, next_offset: offset + limit < items.length ? offset + limit : null })
+ const DAY = 86_400_000
+ export const dayAgo = () => new Date(Date.now() - DAY).toISOString()
+@@ -115,7 +118,7 @@ function ticketNote(ticket: Ticket, stage: TicketStage): { text: string; error:
+   if ((stage.action !== 'blocked' && stage.action !== 'failed') || !summary) return undefined
+   return { text: preview(summary.split('\n')[0]!), error: stage.action === 'failed' }
+ }
+-export function ticketSummary(ticket: Ticket) {
++export function ticketSummary(ticket: Ticket, conversation: ConversationLink | undefined) {
+   const stage = ticketStage(ticket)
+   const note = ticketNote(ticket, stage)
+   const state = liveTicket(ticket) ? 'open' as const : 'ended' as const
+@@ -123,9 +126,9 @@ export function ticketSummary(ticket: Ticket) {
+     actions: { retry: canRetry(ticket), stop: liveTicket(ticket) }, strength: ticket.mandate.strength, ended: ticket.ended,
+     attention: ticket.attention && { ...ticket.attention, question: markdown(ticket.attention.question) },
+       assignments: ticket.assignments.length, inputs: ticket.inputs.length, undelivered: ticket.undelivered.length,
+-    // Every started Assignment of a Ticket runs in its one shared worker Session.
+-    deliveryError: attribute(ticket.delivery?.error), sessionId: ticket.assignments.some(item => item.startedAt)
+-      ? workerSessionId(ticket.id) : '',
++    // Every started Assignment of a Ticket runs in its one conversation: a worker Session here, or a page of the agent's host.
++    deliveryError: attribute(ticket.delivery?.error), sessionId: conversation && 'session' in conversation ? conversation.session : '',
++    conversationPage: conversation && 'page' in conversation ? conversation.page : '',
+     directory: attribute(ticket.execution?.directory), summary: latestReport(ticket)?.summary ?? '', createdAt: ticket.createdAt,
+     updatedAt: ticket.updatedAt }
+ }
+@@ -138,7 +141,7 @@ export function threadFacts(store: Store, thread: Thread) {
+   return { key: thread.key, source: thread.ref.source, title: threadTitle(store, thread), ...url ? { url } : {}, facts: (thread.meta.facts ?? {}) as ThreadFacts }
+ }
+ export type ThreadFactsView = ReturnType<typeof threadFacts>
+-export const ticketLine = (view: Snapshot, ticket: Ticket) => ({ ...ticketSummary(ticket),
++export const ticketLine = (view: Snapshot, ticket: Ticket) => ({ ...ticketSummary(ticket, view.conversation(ticket)),
+   threads: view.threadsOf(ticket.id).map(thread => threadFacts(view.store, thread)) })
+ export function threadTitle(store: Pick<Store, 'read'>, thread: Thread): string {
+   const label = attribute(thread.meta.label)
+diff --git a/src/app/views/settings.ts b/src/app/views/settings.ts
+index bc138d1..767d62f 100644
+--- a/src/app/views/settings.ts
++++ b/src/app/views/settings.ts
+@@ -18,9 +18,12 @@ function policyOf(sources: SourceRegistry, id: string, health: HealthMap) {
+ }
+ /**
+  * Builds the settings view by block (`{ value, revision }`), per-Source configuration and restart-sensitive fields,
+- * and execution environment details (`stateDir` provides the default ticket working directory root).
++ * and execution environment details (`stateDir` provides the default ticket working directory root). `executorKind` says
++ * who works the Tickets: DSH worker Sessions here (`dsh`), or agents over A2A (`a2a`), which have no worker model,
++ * execution directory or blocked commands of this harness.
+  */
+-export function settingsView(store: Store, sources: SourceRegistry, health: HealthMap, setup: SetupState, stateDir: string) {
++export function settingsView(store: Store, sources: SourceRegistry, health: HealthMap, setup: SetupState, stateDir: string,
++  executorKind: 'dsh' | 'a2a') {
+   const settings = store.settings()
+   const block = <V>(name: 'policy' | 'eval' | 'executor', value: V) => ({ value, revision: store.blockRevision(name) })
+   return {
+@@ -37,6 +40,7 @@ export function settingsView(store: Store, sources: SourceRegistry, health: Heal
+         labels: store.get(KV.sources.labels(instance.id)) ?? {}, ...problem ? { problem } : {}, ...policyOf(sources, instance.id, health) }
+     }),
+     environment: { root: executionRoot(settings, stateDir), variables: declaredVariables(sources, settings) },
++    executorKind,
+   }
+ }
+ export type SettingsView = ReturnType<typeof settingsView>
+diff --git a/src/app/views/threads.ts b/src/app/views/threads.ts
+index 8119de4..00d5111 100644
+--- a/src/app/views/threads.ts
++++ b/src/app/views/threads.ts
+@@ -73,7 +73,8 @@ export function search(host: ViewHost, query: string, links: Pick<TextCache, 'en
+   const reaches = (ticket: Ticket) => [...(ticket.follows ?? []).map(follow => follow.thread),
+     ...view.threadsOf(ticket.id).map(thread => thread.key)]
+   const matches = (ticket: Ticket) => reaches(ticket).some(key => named.threads.includes(key)) || ticket.title.toLowerCase().includes(lower)
+-  const tickets = store.tickets.list().filter(matches).sort(newestFirst).slice(0, 10).map(ticketSummary)
++  const tickets = store.tickets.list().filter(matches).sort(newestFirst).slice(0, 10)
++    .map(ticket => ticketSummary(ticket, view.conversation(ticket)))
+   // Omit automated triggers from threads already included in `threads`.
+   const shownThreads = new Set(threads.map(thread => thread.key))
+   const item = (trigger: Trigger) => {
+diff --git a/src/app/views/tickets.ts b/src/app/views/tickets.ts
+index e5b18bb..ea125a0 100644
+--- a/src/app/views/tickets.ts
++++ b/src/app/views/tickets.ts
+@@ -1,7 +1,6 @@
+ /** Ticket list, ticket detail, mandate basis formatting, and executor load views. */
+ import { liveTicket, threadKey, ticketStage, type AcceptMode, type AdmissionCell, type MandateBasis, type Ticket,
+   type TicketStage } from '../../core/index.ts'
+-import { workerSessionId } from '../../executor/dsh.ts'
+ import type { Store } from '../store.ts'
+ import { channelLink, decisionView, newestFirst, page, snapshot, threadSummary, ticketLine, type Snapshot,
+   type ViewHost } from './records.ts'
+@@ -60,6 +59,7 @@ export function ticketDetail(host: ViewHost, id: string) {
+   const view = snapshot(host)
+   const { stage } = ticketStage(ticket)
+   const decision = store.decisions.get(ticket.decisionId)
++  const conversation = host.conversation(ticket), session = conversation && 'session' in conversation ? conversation.session : undefined
+   const input = (value: Ticket['inputs'][number]) => {
+     const trigger = value.kind === 'trigger' ? store.triggers.get(value.triggerId) : undefined
+     const handback = trigger && store.triggers.disposition(trigger.id)?.handbacks?.find(item => item.ticketId === id)
+@@ -75,8 +75,8 @@ export function ticketDetail(host: ViewHost, id: string) {
+     basis: basisFacts(ticket.mandate.basis, view.rule), paused: store.settings().paused,
+     channels: ticket.channels.map(channel => channelLink(view, channel)),
+     decision: decision ? decisionView(view, decision) : undefined,
+-    // Every started Assignment ran in the ticket's one worker Session. A running assignment whose worker reported a non-progress state has finished its turn unless a human response resumed the ticket.
+-    assignments: ticket.assignments.map(assignment => ({ ...assignment, ...assignment.startedAt ? { ref: workerSessionId(ticket.id) } : {},
++    // Every started Assignment ran in the ticket's one conversation. A running assignment whose worker reported a non-progress state has finished its turn unless a human response resumed the ticket.
++    assignments: ticket.assignments.map(assignment => ({ ...assignment, ...assignment.startedAt && session ? { ref: session } : {},
+       ...assignment.state === 'running' && assignment.report && assignment.report.state !== 'progress' && stage !== 'working'
+         ? { turnEndedAt: assignment.report.at } : {} })),
+     inputs: ticket.inputs.slice().reverse().map(input),
+diff --git a/src/client/deployment.tsx b/src/client/deployment.tsx
+index a345811..9bc0f03 100644
+--- a/src/client/deployment.tsx
++++ b/src/client/deployment.tsx
+@@ -63,7 +63,7 @@ export function DeploymentPage({ setup, form, accounts: showAccounts }: { setup:
+       </div>}
+       {showAccounts && <Section title={t('deploymentDerived')} hint={t('deploymentDerivedHint')}>
+         <KeyValues rows={[[t('deploymentRepository'), accounts?.repository ?? '—'],
+-          [t('deploymentAgent'), accounts ? `@${accounts.agent}` : '—'], [t('deploymentFeishu'), feishu]]} />
++          [t('deploymentAgent'), accounts?.agent ? `@${accounts.agent}` : '—'], [t('deploymentFeishu'), feishu]]} />
+         <Hint>{t('deploymentAccountsWhere')}</Hint>
+       </Section>}
+       <Section title={t('deploymentMachine')}>
+diff --git a/src/client/execution.tsx b/src/client/execution.tsx
+index 8c01838..429c14e 100644
+--- a/src/client/execution.tsx
++++ b/src/client/execution.tsx
+@@ -74,7 +74,9 @@ function EnvironmentVariables({ groups, sources,
+ }
+ export function ExecutionSettings() {
+   const { t } = usePanel()
+-  const { blocks, environment, sources } = useSettings().settings
++  const { blocks, environment, sources, executorKind } = useSettings().settings
++  // Agents over A2A work the Tickets with their own model, workspace and rules; these fields govern only DSH workers.
++  const dsh = executorKind === 'dsh'
+   // Keep raw user text (such as separators between blocked commands) in the draft and parse only on save.
+   const executor = blocks.executor.value
+   const saved = { ...executor, maxWorkers: String(executor.maxWorkers), blockedCommands: executor.blockedCommands.join(' ') }
+@@ -94,8 +96,8 @@ export function ExecutionSettings() {
+       <Fields disabled={draft.busy}>
+         <div className="dt-form dt-block">
+           <h2 className="dt-block-title">{t('term.executor')}<InfoTip text={t('executorIntro')} /></h2>
+-          <Section title={t('executorModel')} hint={t('executorModelHint')}><ModelField id="dt-worker-model" value={value.model}
+-            onChange={model => edit({ model })} /></Section>
++          {dsh && <Section title={t('executorModel')} hint={t('executorModelHint')}><ModelField id="dt-worker-model" value={value.model}
++            onChange={model => edit({ model })} /></Section>}
+           <Field label={t('maxWorkers')} hint={t('maxWorkersHint')}>
+             <Input type="number" min={LIMITS.maxWorkers.min} max={LIMITS.maxWorkers.max} required value={value.maxWorkers}
+               onChange={event => edit({ maxWorkers: event.target.value })} />
+@@ -103,21 +105,21 @@ export function ExecutionSettings() {
+         </div>
+         <div className="dt-form dt-block">
+           <h2 className="dt-block-title">{t('term.environment')}<InfoTip text={t('environmentIntro')} /></h2>
+-          <Field label={t('executionDirectory')} hint={t('executionDirectoryHint')} note={value.directory ? undefined
++          {dsh && <Field label={t('executionDirectory')} hint={t('executionDirectoryHint')} note={value.directory ? undefined
+             : t('executionDirectoryDefault', { root: environment.root })}>
+             <Input className="dt-mono" value={value.directory} placeholder={t('executionDirectoryEmpty')} spellCheck={false} pattern="/.*"
+               onChange={event => edit({ directory: event.target.value })} />
+-          </Field>
++          </Field>}
+           <Field label={t('prepareCommand')} hint={t('prepareCommandHint')}>
+             <textarea ref={prepare} className="dt-textarea dt-mono" rows={3} maxLength={LIMITS.prepareCommand} spellCheck={false}
+               placeholder={t('prepareCommandEmpty')} value={value.prepare}
+               onChange={event => edit({ prepare: event.target.value })} />
+           </Field>
+           <EnvironmentVariables groups={environment.variables} sources={sources} onPick={insert} />
+-          <Field label={t('blockedCommands')} hint={t('blockedCommandsHint')}>
++          {dsh && <Field label={t('blockedCommands')} hint={t('blockedCommandsHint')}>
+             <Input className="dt-mono" value={value.blockedCommands} placeholder={t('blockedCommandsNone')} spellCheck={false}
+               onChange={event => edit({ blockedCommands: event.target.value })} />
+-          </Field>
++          </Field>}
+         </div>
+       </Fields>
+       <SaveBar {...draft} onDiscard={draft.discard} />
+diff --git a/src/client/locales.ts b/src/client/locales.ts
+index d81d0d4..74ede71 100644
+--- a/src/client/locales.ts
++++ b/src/client/locales.ts
+@@ -47,6 +47,7 @@ const TEXT = {
+   'health.evals': ['未完成的评估', 'Unavailable Evals'],
+   none: ['暂无。', 'None.'],
+   openSession: ['打开 Session', 'Open Session'],
++  openConversation: ['打开对话', 'Open conversation'],
+   stop: ['停止', 'Stop'],
+   policyVersion: ['策略版本', 'Policy version'],
+   mediaMarker: ['[媒体]', '[Media]'],
+@@ -724,6 +725,8 @@ const TEXT = {
+   'userError.sourceNotInstalled': ['{source} 来源的插件没有安装。', USER_ERRORS.sourceNotInstalled[1]],
+   'userError.noLabels': ['这个来源没有可以刷新的名称。', USER_ERRORS.noLabels[1]],
+   'userError.nothingToSync': ['{source} 来源上的策略没有指定从哪里同步，或者这个来源已关闭或在等待部署检查。', USER_ERRORS.nothingToSync[1]],
++  'userError.agentRequired': ['在这里接下工单，需要指定由哪个智能体来做：从 {agents} 中选一个 agent_id。', USER_ERRORS.agentRequired[1]],
++  'userError.unknownAgent': ['没有 {agent} 这个智能体：查看 agents 资源，那里列出了工单可以交给的智能体。', USER_ERRORS.unknownAgent[1]],
+   // Setup problems and health codes; English reuses the host's own text read by the log and main Session
+   'setup.repositoryUnset': ['GitHub 来源没有设置监听的仓库。', SETUP_PROBLEMS.repositoryUnset[1]],
+   'setup.foreignFile': ['{file} 不是 dsh-superagent 写入的文件；移走它，或换一个状态目录。', SETUP_PROBLEMS.foreignFile[1]],
+@@ -742,6 +745,7 @@ const TEXT = {
+   'setup.feishuUserIdentity': ['机器人的 lark-cli 允许用户身份（strict mode 为 {mode}）；按 docs/006-deployment.md 给机器人一份 strict mode 为 bot 的单独配置。', SETUP_PROBLEMS.feishuUserIdentity[1]],
+   'setup.feishuNoBot': ['飞书机器人接口没有返回机器人的 open_id。', SETUP_PROBLEMS.feishuNoBot[1]],
+   'healthCode.setupPending': ['等待部署检查', HEALTH_TEXT.setupPending],
++  'healthCode.githubUnset': ['没有 GitHub 账号：来源没有设置仓库和智能体 CLI', HEALTH_TEXT.githubUnset],
+   'healthCode.sourceOff': ['已关闭', HEALTH_TEXT.sourceOff],
+   'healthCode.feishuCliUnset': ['来源已打开，还没有设置机器人的 lark-cli', HEALTH_TEXT.feishuCliUnset],
+   'healthCode.feishuBotMissing': ['等待飞书机器人', HEALTH_TEXT.feishuBotMissing],
+diff --git a/src/client/rows.tsx b/src/client/rows.tsx
+index 54fcd74..4dd5a59 100644
+--- a/src/client/rows.tsx
++++ b/src/client/rows.tsx
+@@ -5,7 +5,7 @@ import { Icon, Tag } from './controls.tsx'
+ import { decisionMark, threadMark, ticketMark } from './marks.ts'
+ import { usePanel } from './provider.tsx'
+ import { actorName, localized, readableMarkers, reasonLabel, valueLabel } from './text.ts'
+-import { ActionLink, ConfirmButton, LabelValue, SessionButton, StageMark, When } from './widgets.tsx'
++import { ActionLink, ConfirmButton, ConversationButton, LabelValue, SessionButton, StageMark, When } from './widgets.tsx'
+ 
+ export function TicketLine({ ticket, question, onChanged, context }: {
+   ticket: TicketRow; question?: boolean; onChanged?: () => Promise<void>; context?: boolean
+@@ -35,6 +35,7 @@ export function TicketLine({ ticket, question, onChanged, context }: {
+           message={t('retryConfirm', { title: ticket.title })}
+           onConfirm={() => after(call('POST tickets/:id/retry', { id: ticket.id }))} />}
+         {ticket.actions.retry && ticket.sessionId && <SessionButton variant="outline" sessionId={ticket.sessionId} />}
++        {ticket.actions.retry && ticket.conversationPage && <ConversationButton variant="outline" page={ticket.conversationPage} />}
+         {ticket.actions.stop && <ConfirmButton variant="outline" icon="stop" label={t('stop')} title={t('stopConfirmTitle')}
+           message={t('stopConfirm', { title: ticket.title })}
+           onConfirm={() => after(call('POST tickets/:id/stop', { id: ticket.id }))} />}
+diff --git a/src/client/ticket.tsx b/src/client/ticket.tsx
+index f240a95..899d2b2 100644
+--- a/src/client/ticket.tsx
++++ b/src/client/ticket.tsx
+@@ -7,8 +7,8 @@ import { usePanel } from './provider.tsx'
+ import { settingsRoute } from './route.ts'
+ import { Earlier, ThreadLine, automatedRuns } from './rows.tsx'
+ import { actorName, localized, readableMarkers, reasonLabel, valueLabel, when } from './text.ts'
+-import { ActionLink, ConfirmButton, ExternalLink, Hint, KeyValues, LabelValue, LoadState, MarkdownLite, PageHead, Section, SessionButton,
+-  StageMark, When } from './widgets.tsx'
++import { ActionLink, ConfirmButton, ConversationButton, ExternalLink, Hint, KeyValues, LabelValue, LoadState, MarkdownLite, PageHead, Section,
++  SessionButton, StageMark, When } from './widgets.tsx'
+ 
+ type Input = TicketPageView['inputs'][number]
+ function InputLine({ input, earlier = [] }: { input: Input; earlier?: { id: string; at: string; preview: string }[] }) {
+@@ -132,6 +132,7 @@ export function TicketPage({ id }: { id: string }) {
+         message={t('retryConfirm', { title: data.title })}
+         onConfirm={() => after(call('POST tickets/:id/retry', { id }))} />}
+       {data.sessionId && <SessionButton variant="outline" sessionId={data.sessionId} />}
++      {data.conversationPage && <ConversationButton variant="outline" page={data.conversationPage} />}
+     </PageHead>
+     {error && <LoadState error={error} loading={false} />}
+     <div className="dt-row-meta dt-status-line">
+diff --git a/src/client/widgets.tsx b/src/client/widgets.tsx
+index 9ddb0f5..75c5c1f 100644
+--- a/src/client/widgets.tsx
++++ b/src/client/widgets.tsx
+@@ -94,6 +94,18 @@ export function SessionButton({ sessionId, label,
+   return <Button variant={variant} size="sm" icon={<Icon name="session" size={14} />}
+     onClick={() => { openSession(sessionId).catch(error => notify(errorText(error))) }}>{label ?? t('openSession')}</Button>
+ }
++/**
++ * Opens the page that shows a Ticket's conversation on the agent's host. The page is the host's own path, so a panel that
++ * host embeds asks it to open the page (`dsh-superagent.open-conversation`); a panel on its own opens it in a new tab.
++ */
++export function ConversationButton({ page, variant = 'ghost' }: { page: string; variant?: 'ghost' | 'outline' }) {
++  const { t } = usePanel()
++  return <Button variant={variant} size="sm" icon={<Icon name="session" size={14} />}
++    onClick={() => {
++      if (window.parent !== window) window.parent.postMessage({ type: 'dsh-superagent.open-conversation', page }, '*')
++      else window.open(page, '_blank', 'noopener')
++    }}>{t('openConversation')}</Button>
++}
+ export function ExternalLink({ href, children, icon = 'external' }: { href: string; children: ReactNode; icon?: IconName }) {
+   return <a className="dt-inline-link dt-icon-link" href={href} {...external}><Icon name={icon} size={13} />{children}</a>
+ }
+diff --git a/src/core/errors.ts b/src/core/errors.ts
+index 9c7096a..2781a05 100644
+--- a/src/core/errors.ts
++++ b/src/core/errors.ts
+@@ -44,6 +44,8 @@ export const USER_ERRORS = {
+   sourceNotInstalled: ['refused', 'The {source} Source kind is not installed'],
+   noLabels: ['refused', 'This Source has no names to refresh'],
+   nothingToSync: ['refused', 'The {source} Source\'s part of the Policy has nothing to sync from, or the Source is off or waiting for setup'],
++  agentRequired: ['refused', 'Accepting a ticket here needs the agent that works it: one agent_id of {agents}'],
++  unknownAgent: ['refused', 'Unknown agent {agent}: read the agents resource for the agents a ticket can go to'],
+ } as const satisfies Record<string, readonly ['missing' | 'refused', string]>
+ export type UserErrorCode = keyof typeof USER_ERRORS
+ 
+diff --git a/src/core/model.ts b/src/core/model.ts
+index 5778312..fa65dd3 100644
+--- a/src/core/model.ts
++++ b/src/core/model.ts
+@@ -312,7 +312,8 @@ export interface Ticket {
+  * Thread closed; the ticket then ends unless its work has not finished (see `Tickets.unfinished`).
+  */
+ export interface Follow { thread: string; own: boolean; closed?: { at: string; outcome: 'merged' | 'closed' } }
+-export interface Execution { name: string; directory: string; assignment: string }
++/** What the Executor chose: the ticket's name and directory, its assignment text, and, for the A2A executor, the agent that works it. */
++export interface Execution { name: string; directory: string; assignment: string; agent?: string }
+ 
+ /** Whether a ticket is open: it has not ended. */
+ export const liveTicket = (ticket: Pick<Ticket, 'ended'>): boolean => !ticket.ended
+diff --git a/src/core/ports.ts b/src/core/ports.ts
+index 08c7a1c..dabd4eb 100644
+--- a/src/core/ports.ts
++++ b/src/core/ports.ts
+@@ -40,9 +40,12 @@ export interface Candidate {
+ export type AssessmentOutcome =
+   | { kind: 'ignore'; reason: string | Reason; audit?: Record<string, unknown> }
+   | { kind: 'unavailable'; reason: string | Reason; audit?: Record<string, unknown> }
+-  /** An accept: `rules` the assessment matched, `name` the ticket's requested short name, and `note` a routing note for its worker. */
++  /**
++   * An accept: `rules` the assessment matched, `name` the ticket's requested short name, `note` a routing note for its worker,
++   * and `agent` the agent that works it, which the A2A executor requires.
++   */
+   | { kind: 'accept'; title: string; scope: string; reason: string | Reason; acknowledgement?: string; rules?: string[]; audit?: Record<string, unknown>;
+-    name?: string; note?: string }
++    name?: string; note?: string; agent?: string }
+   | { kind: 'stop'; ticketId: string; reason: string | Reason; audit?: Record<string, unknown> }
+ 
+ /** Semantic judgement. `request` queues the assessment, idempotently per `evalId`; the outcome returns through `Engine.decide`. */
+@@ -56,6 +59,9 @@ export interface Assessor {
+  * Executes assignments; concurrency and workspace management are its own concern. The Engine calls it inside its
+  * commands, so each method only queues work, which reports back through the Engine's callbacks.
+  */
++/** Where a Ticket's work can be watched: a Session of this harness, or a page of the host that runs the agent. */
++export type ConversationLink = { session: string } | { page: string }
++
+ export interface Executor {
+   /** Queue a pending assignment for launch; reports back through `Engine.assignmentStarted` or a `failed` report. */
+   start(ticket: Ticket, assignment: Assignment): void
+diff --git a/src/deployment.ts b/src/deployment.ts
+index 76340cb..ac21c90 100644
+--- a/src/deployment.ts
++++ b/src/deployment.ts
+@@ -51,8 +51,10 @@ export const FeishuBotSchema = z.object({ cli: z.string().trim().default('') })
+ export const SETUP_FIELDS: Readonly<Record<string, readonly string[]>> = { github: Object.keys(GithubAccountsSchema.shape), feishu: Object.keys(FeishuBotSchema.shape) }
+ 
+ export interface Deployment extends Machine {
+-  repository: string
+-  github: { cli: string; login: string; noreply: string }
++  /** The repository the GitHub Source watches; absent when the GitHub Source names neither a repository nor an agent CLI. */
++  repository?: string
++  /** The agent's GitHub account, present exactly when `repository` is. */
++  github?: { cli: string; login: string; noreply: string }
+   feishu?: FeishuBot
+ }
+ export interface FeishuBot { cli: string; appId: string; brand: 'feishu' | 'lark'; botId: string; name: string }
+@@ -83,11 +85,15 @@ function parsed<T>(schema: z.ZodType<T>, text: string): T | undefined {
+   const result = schema.safeParse(value)
+   return result.success ? result.data : undefined
+ }
+-/** Verify the agent's GitHub CLI identity and push access to the configured repository. */
++/**
++ * Verify the agent's GitHub CLI identity and push access to the configured repository. A GitHub Source that names
++ * neither leaves the installation without GitHub, and its other Sources run; naming only one of them fails setup.
++ */
+ export async function resolveDeployment(machine: Machine, github: unknown, probe: Probe, path = process.env.PATH ?? ''): Promise<Deployment> {
+   const { stateDir } = machine
+   const accounts = GithubAccountsSchema.parse(github ?? {})
+   const remote = accounts.repository
++  if (!remote && !accounts.cli) return { ...machine }
+   if (!remote) throw new SetupError('repositoryUnset')
+   if (!accounts.cli) throw new SetupError('agentCliUnset')
+   let cli: string
+diff --git a/src/executor/a2a.ts b/src/executor/a2a.ts
+new file mode 100644
+index 0000000..566766b
+--- /dev/null
++++ b/src/executor/a2a.ts
+@@ -0,0 +1,392 @@
++/**
++ * A2A executor: works each Ticket as a conversation of an agent reached over the A2A 1.0 protocol, the one the main Session
++ * chose when it accepted the Ticket, instead of a DSH worker Session in this process.
++ *
++ * The agents and how to reach each are in a JSON file the deployment writes (`DSH_SUPERAGENT_A2A_AGENTS_FILE`), read again
++ * whenever it is needed. A Ticket's context id is its own id, so its Assignments and Inputs are one conversation of its
++ * agent; each message's id is its Assignment's id, or the Assignment's and the Input's, so a delivery repeated after a
++ * restart is the same A2A task. The tasks are kept in KV and followed until they end, also after a restart.
++ *
++ * What the agent did becomes the Ticket's Report when its task ends: a completed task is `ready`, its reply the result
++ * the main Session delivers, and a pull request its results name that this Ticket can claim is claimed; a task that asks a
++ * person (`input-required`, `auth-required`) asks it as the Ticket's question; a failed one is `failed`. The main Session
++ * hears each Report as it hears a worker's.
++ */
++import { readFile } from 'node:fs/promises'
++import { ClientFactory, ClientFactoryOptions, DefaultAgentCardResolver, JsonRpcTransportFactory, type Client } from '@a2a-js/sdk/client'
++import { Role, TaskState, type Message, type Task } from '@a2a-js/sdk'
++import { UserError, latestAssignment, liveTicket, runningAssignment, type AssessmentOutcome, type Assignment, type ConversationLink,
++  type EngineForExecutor, type Execution, type Executor, type Ticket, type Trigger } from '../core/index.ts'
++import { family } from '../kv.ts'
++import { Later, type Effects } from '../app/effects.ts'
++import type { Store } from '../app/store.ts'
++import type { Sessions } from '../app/sessions.ts'
++import { reportRelay } from '../app/notices.ts'
++import type { HealthEntry } from '../infra/health.ts'
++import type { Variable } from '../app/execution-environment.ts'
++import type { TranscriptEntry } from '../app/context.ts'
++import { claimPull, readPull } from '../sources/github-pull.ts'
++import type { SourceContext } from '../sources/host.ts'
++import { batchLine, batchOf, inputMessage, mandateInstructions, sourceTrigger, ticketExecution, triggerMessage } from './dsh.ts'
++
++/** One agent the deployment offers, with the A2A endpoint and bearer that reach it. */
++export interface A2AAgent { agent_id: string; name: string; description: string; url: string; token: string }
++/** One A2A task of a Ticket: the message that started it, and whether its end was recorded. */
++interface TicketTask { id: string; assignment: string; input?: string; settled?: true; stopped?: true }
++/** A Ticket's conversation: its agent, the page that shows the conversation, and its tasks, oldest first. */
++interface TicketConversation { agent: string; conversation?: string; tasks: TicketTask[] }
++/** Each Ticket's conversation, by ticket id. */
++const CONVERSATIONS = family<TicketConversation>('a2a-ticket:')
++
++export interface A2AExecutorHost {
++  readonly engine: Pick<EngineForExecutor, 'assignmentStarted' | 'inputsDelivered' | 'inputsRead' | 'turnEnded' | 'deliveryFailed' | 'report'
++    | 'assignmentInterrupted'>
++  readonly store: Pick<Store, 'tickets' | 'triggers' | 'settings' | 'atomic' | 'afterCommit' | 'get' | 'set'>
++  readonly effects: Pick<Effects, 'enqueue' | 'handle'>
++  /** The `worker` health entry: whether the agents can be reached. */
++  readonly health: HealthEntry
++  readonly machine: { stateDir: string }
++  readonly lifetime: AbortSignal
++  readonly sessions: Pick<Sessions, 'relay'>
++  /** The JSON file that lists the agents (`A2AAgent[]`). */
++  readonly agentsFile: string
++  /** The GitHub Source, when this installation has a GitHub account, whose rules govern claiming a pull request. */
++  github(): SourceContext | undefined
++  closing(): boolean
++  paused(): boolean
++  environment(ticket: Ticket): Variable[]
++  sourceLink(trigger: Trigger, signal?: AbortSignal): Promise<{ source_url?: string; source_url_read?: string }>
++  /** The team's Ticket scope and Delivery requirements sections, as the worker prompt has them. */
++  instructions(): string
++}
++
++const terminal = (state: TaskState) => state === TaskState.TASK_STATE_COMPLETED || state === TaskState.TASK_STATE_FAILED
++  || state === TaskState.TASK_STATE_CANCELED || state === TaskState.TASK_STATE_REJECTED
++const asking = (state: TaskState) => state === TaskState.TASK_STATE_INPUT_REQUIRED || state === TaskState.TASK_STATE_AUTH_REQUIRED
++/** The text of a task's status message and result, for a Report. */
++function taskText(task: Task): string {
++  const parts = [...task.status?.message?.parts ?? [], ...task.artifacts.flatMap(artifact => artifact.parts)]
++  return parts.flatMap(part => part.content?.$case === 'text' ? [part.content.value] : []).join('\n\n').trim()
++}
++/** Everything a task carries, as text, where a pull request it opened is named. */
++const taskEvidence = (task: Task): string => JSON.stringify([task.status?.message, task.artifacts])
++const message = (contextId: string, messageId: string, text: string): Message => ({ messageId, contextId, taskId: '', role: Role.ROLE_USER,
++  parts: [{ content: { $case: 'text', value: text }, metadata: undefined, filename: '', mediaType: 'text/plain' }],
++  metadata: undefined, extensions: [], referenceTaskIds: [] })
++
++/** The first message of a Ticket's conversation: what is asked, by whom and where, and how the work is delivered. */
++export function assignmentMessage(ticket: Ticket, request: object | undefined, batch: object[], environment: Variable[],
++  instructions: string, prepare: string): string {
++  const value = (key: string) => environment.find(variable => variable.key === key)?.value ?? ''
++  const repository = value('DSH_SUPERAGENT_GITHUB_REPOSITORY'), name = ticket.execution?.name ?? ''
++  // The installation's prepare command runs in the agent's workspace, where this ticket's directory is a new one of its own.
++  const variables = environment.filter(variable => variable.key !== 'DSH_SUPERAGENT_DIR' && variable.value)
++    .map(variable => `${variable.key}=${JSON.stringify(variable.value)}`)
++  const prepared = prepare.trim() ? [
++    `First prepare this request's directory as this installation does: in your workspace, run the command below with sh, with `
++      + `DSH_SUPERAGENT_DIR set to a new directory named ${name} in your workspace and these variables set: ${variables.join(' ')}. `
++      + 'Then work in that directory.',
++    '```sh\n' + prepare.trim() + '\n```',
++  ] : []
++  const github = repository ? [
++    `The work is in the GitHub repository ${repository}. ${prepare.trim() ? 'Make' : 'Clone it into your workspace and make'} the change `
++      + `on a branch whose last path segment is exactly \`${name}\`, such as \`agent/${name}\`.`,
++    `Commit as ${value('DSH_SUPERAGENT_GITHUB_ACCOUNT')} <${value('DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL')}>, push the branch, and open a pull `
++      + 'request from it with the GitHub CLI. That pull request is how this request is followed; name its URL in your reply.',
++  ] : []
++  return [
++    `You are working one request that dsh-superagent took on: ${ticket.title}.`,
++    ...ticket.execution?.assignment ? [ticket.execution.assignment] : [],
++    ...mandateInstructions(ticket.mandate) ? [mandateInstructions(ticket.mandate)] : [],
++    'The request, as its source recorded it:', JSON.stringify(request ?? {}),
++    ...batch.length ? ['Other messages that came with it:', ...batch.map(line => JSON.stringify(line))] : [],
++    ...prepared,
++    ...github,
++    'Reply, when you are done, with what you did. If you need a person to decide or tell you something, ask in your reply and stop: '
++      + 'their answer arrives as your next message. Later messages here are follow-ups on the same request, such as replies on its '
++      + 'thread or CI results.',
++    ...instructions ? [instructions] : [],
++  ].join('\n\n')
++}
++
++/**
++ * Executes Tickets as A2A conversations. Launches and deliveries run as the `launch` and `delivery` effects, held while
++ * processing is paused; `maxWorkers` bounds the Tickets whose agent works at once.
++ */
++export class A2AExecutor implements Executor {
++  readonly kind = 'a2a' as const
++  private agents: A2AAgent[] = []
++  private readonly clients = new Map<string, Promise<Client>>()
++  /** The tasks being followed, by task id. */
++  private readonly following = new Map<string, AbortController>()
++  constructor(private readonly host: A2AExecutorHost) {
++    host.effects.handle('launch', payload => this.launchQueued(payload), { limit: () => host.paused() ? 0 : 4, retry: [5000, 300_000] })
++    host.effects.handle('delivery', payload => this.deliverQueued(payload.ticketId), { limit: () => host.paused() ? 0 : 4, quiet: true })
++  }
++  /** The agents the deployment offers now; the main Session reads them to choose one. */
++  async list(): Promise<A2AAgent[]> {
++    this.agents = JSON.parse(await readFile(this.host.agentsFile, 'utf8')) as A2AAgent[]
++    return this.agents
++  }
++  /** A newly accepted Ticket's execution: its name, as a worker's, and the agent the main Session chose. */
++  prepare(ticket: Ticket, outcome: Extract<AssessmentOutcome, { kind: 'accept' }>): Ticket {
++    const agent = outcome.agent?.trim()
++    if (!agent) throw new UserError('agentRequired', { agents: this.agents.map(item => `${item.agent_id} (${item.name})`).join(', ') })
++    if (!this.agents.some(item => item.agent_id === agent)) throw new UserError('unknownAgent', { agent })
++    const execution: Execution = { ...ticketExecution(ticket, outcome, this.host.store.settings(), this.host.machine.stateDir), agent }
++    return { ...ticket, execution }
++  }
++  start(ticket: Ticket, assignment: Assignment): void {
++    this.host.effects.enqueue('launch', assignment.id, { ticketId: ticket.id, assignmentId: assignment.id })
++  }
++  deliver(ticket: Ticket, _assignment: Assignment): void { this.host.effects.enqueue('delivery', ticket.id, { ticketId: ticket.id }) }
++  /** Cancels the Ticket's tasks that have not ended; their ends are not reported, as the domain already ended the work. */
++  stop(ticket: Ticket, _assignment: Assignment, _reason: string): void {
++    this.host.store.afterCommit(() => { void this.cancelOpen(ticket.id) })
++  }
++  install(): void { void this.list().catch(error => { this.unreachable(error) }) }
++  /** Follows every task of an open Ticket that has not ended, and launches what waits. */
++  resume(): void {
++    for (const ticket of this.host.store.tickets.open()) {
++      const running = runningAssignment(ticket)
++      const open = (this.host.store.get(CONVERSATIONS(ticket.id))?.tasks ?? []).filter(task => !task.settled)
++      for (const task of open) this.follow(ticket.id, task)
++      if (running && !open.length && !this.host.store.get(CONVERSATIONS(ticket.id))) this.host.engine.assignmentInterrupted(ticket.id, running.id)
++      const pending = latestAssignment(ticket)
++      if (pending?.state === 'pending') this.start(ticket, pending)
++    }
++  }
++  /** Tickets whose agent is working: a task of theirs has not ended. */
++  activeCount(): number {
++    return this.host.store.tickets.open().filter(ticket => (this.host.store.get(CONVERSATIONS(ticket.id))?.tasks ?? [])
++      .some(task => !task.settled)).length
++  }
++  /** The page the agent named for the Ticket's conversation, once a task of it started. */
++  conversation(ticket: Ticket): ConversationLink | undefined {
++    const page = this.host.store.get(CONVERSATIONS(ticket.id))?.conversation
++    return page ? { page } : undefined
++  }
++  /** The Ticket's conversation as the agent keeps it: each task's history, oldest first. */
++  async transcript(ticketId: string, signal?: AbortSignal): Promise<TranscriptEntry[]> {
++    const conversation = this.host.store.get(CONVERSATIONS(ticketId))
++    if (!conversation) return []
++    const client = await this.client(await this.agent(conversation.agent))
++    const entries: TranscriptEntry[] = []
++    for (const { id } of conversation.tasks) {
++      for (const item of (await client.getTask({ tenant: '', id }, { signal })).history) {
++        const role = item.role === Role.ROLE_AGENT ? 'assistant' : 'user'
++        entries.push({ type: `${role}/message`, message: { role, content: item.parts.map(part => part.content?.$case === 'text'
++          ? { type: 'text', text: part.content.value }
++          : { type: part.content?.$case ?? 'part', ...part.content?.$case === 'data' ? { data: part.content.value } : {} }) } })
++      }
++    }
++    return entries
++  }
++  async shutdown(): Promise<void> { for (const controller of this.following.values()) controller.abort() }
++  dispose(): void { this.following.clear(); this.clients.clear() }
++
++  private unreachable(error: unknown): void {
++    this.host.health.set({ state: 'error', detail: `The agents cannot be reached: ${error instanceof Error ? error.message : String(error)}`,
++      at: new Date().toISOString() })
++  }
++  private async agent(id: string): Promise<A2AAgent> {
++    const agent = (await this.list()).find(item => item.agent_id === id)
++    if (!agent) throw new Error(`The agent ${id} is no longer offered`)
++    return agent
++  }
++  /** One A2A client per agent endpoint and bearer, through the agent card the endpoint serves. */
++  private client(agent: A2AAgent): Promise<Client> {
++    const cacheKey = `${agent.url}\n${agent.token}`
++    let client = this.clients.get(cacheKey)
++    if (!client) {
++      const fetchImpl: typeof fetch = (input, init) => {
++        const headers = new Headers(init?.headers)
++        headers.set('Authorization', `Bearer ${agent.token}`)
++        headers.set('A2A-Version', '1.0')
++        return fetch(input, { ...init, headers })
++      }
++      const factory = new ClientFactory(ClientFactoryOptions.createFrom(ClientFactoryOptions.default, {
++        transports: [new JsonRpcTransportFactory({ fetchImpl })], cardResolver: new DefaultAgentCardResolver({ fetchImpl }) }))
++      // The card is served below the agent's own path; a path argument starting with `/` would replace that path.
++      client = factory.createFromUrl(`${agent.url.replace(/\/+$/, '')}/.well-known/agent-card.json`, '')
++      client.catch(() => { this.clients.delete(cacheKey) })
++      this.clients.set(cacheKey, client)
++    }
++    return client
++  }
++  private record(ticketId: string, agent: string, task: TicketTask, conversation?: string): void {
++    const current = this.host.store.get(CONVERSATIONS(ticketId)) ?? { agent, tasks: [] }
++    const tasks = current.tasks.some(item => item.id === task.id) ? current.tasks : [...current.tasks, task]
++    this.host.store.set(CONVERSATIONS(ticketId), { ...current, ...conversation ? { conversation } : {}, tasks })
++  }
++  private settle(ticketId: string, taskId: string): void {
++    const current = this.host.store.get(CONVERSATIONS(ticketId))
++    if (current) this.host.store.set(CONVERSATIONS(ticketId), { ...current, tasks: current.tasks.map(task => task.id === taskId ? { ...task, settled: true } : task) })
++  }
++  /** Sends one message of a Ticket's conversation and returns its task. */
++  private async send(ticket: Ticket, messageId: string, text: string): Promise<Task> {
++    const agent = await this.agent(ticket.execution?.agent ?? '')
++    const result = await (await this.client(agent)).sendMessage({ tenant: '', message: message(ticket.id, messageId, text),
++      configuration: { acceptedOutputModes: [], taskPushNotificationConfig: undefined, historyLength: 0, returnImmediately: true },
++      metadata: undefined }, { signal: this.host.lifetime })
++    if (!('status' in result)) throw new Error('The agent answered with a message instead of a task')
++    this.host.health.set({ state: 'ready', detail: 'The agents answer', at: new Date().toISOString() })
++    return result
++  }
++  private async launchQueued({ ticketId, assignmentId }: { ticketId: string; assignmentId: string }): Promise<void> {
++    const ticket = this.host.store.tickets.get(ticketId)
++    const assignment = ticket && latestAssignment(ticket)
++    if (!ticket || !liveTicket(ticket) || assignment?.id !== assignmentId || assignment.state !== 'pending') return
++    if (this.activeCount() >= this.host.store.settings().executor.maxWorkers) throw new Later('Every worker slot is taken')
++    try {
++      const source = sourceTrigger(this.host, ticket)
++      const request = source ? triggerMessage(source, await this.host.sourceLink(source, this.host.lifetime)) : undefined
++      const text = assignmentMessage(ticket, request, batchOf(this.host, ticket).map(batchLine), this.host.environment(ticket),
++        this.host.instructions(), this.host.store.settings().executor.prepare)
++      const task = await this.send(ticket, assignment.id, text)
++      this.host.store.atomic(() => {
++        this.record(ticket.id, ticket.execution?.agent ?? '', { id: task.id, assignment: assignment.id }, conversationOf(task))
++        this.host.engine.assignmentStarted(ticket.id, assignment.id)
++      })
++      this.follow(ticket.id, { id: task.id, assignment: assignment.id })
++    } catch (error) {
++      if (this.host.closing() || error instanceof Later) throw error
++      this.unreachable(error)
++      throw error
++    }
++  }
++  private async deliverQueued(ticketId: string): Promise<void> {
++    for (;;) {
++      const ticket = this.host.store.tickets.get(ticketId)
++      const assignment = ticket && liveTicket(ticket) ? runningAssignment(ticket) : undefined
++      const inputId = ticket?.undelivered[0]
++      if (!ticket || !assignment || inputId === undefined) return
++      const input = ticket.inputs.find(item => item.id === inputId)
++      try {
++        const trigger = input?.kind === 'trigger' ? this.host.store.triggers.get(input.triggerId) : undefined
++        const card = trigger ? triggerMessage(trigger, await this.host.sourceLink(trigger, this.host.lifetime), input?.kind === 'trigger' ? input.note : undefined) : undefined
++        const text = input ? inputMessage(input, card) : undefined
++        if (text !== undefined) {
++          const task = await this.send(ticket, `${assignment.id}:${inputId}`, text)
++          this.host.store.atomic(() => {
++            this.record(ticket.id, ticket.execution?.agent ?? '', { id: task.id, assignment: assignment.id, input: inputId })
++            this.host.engine.inputsDelivered(ticketId, assignment.id, [inputId])
++          })
++          this.follow(ticket.id, { id: task.id, assignment: assignment.id, input: inputId })
++        } else this.host.engine.inputsDelivered(ticketId, assignment.id, [inputId])
++      } catch (error) {
++        if (this.host.closing() || error instanceof Later) throw error
++        const current = this.host.store.tickets.get(ticketId)
++        if (current && liveTicket(current) && runningAssignment(current)?.id === assignment.id) {
++          this.host.engine.deliveryFailed(ticketId, assignment.id, String(error))
++        }
++        throw error
++      }
++    }
++  }
++  /** Follows one task until it ends, through the agent's task subscription, and records what it did. */
++  private follow(ticketId: string, task: TicketTask): void {
++    if (this.following.has(task.id)) return
++    const controller = new AbortController()
++    this.following.set(task.id, controller)
++    const signal = AbortSignal.any([controller.signal, this.host.lifetime])
++    void (async () => {
++      let delay = 1000
++      while (!signal.aborted) {
++        try {
++          const ticket = this.host.store.tickets.get(ticketId)
++          if (!ticket) return
++          const client = await this.client(await this.agent(ticket.execution?.agent ?? ''))
++          let current = await client.getTask({ tenant: '', id: task.id, historyLength: 0 }, { signal })
++          if (!terminal(current.status?.state ?? TaskState.TASK_STATE_UNSPECIFIED)) {
++            this.observe(ticketId, task, current)
++            for await (const event of client.resubscribeTask({ tenant: '', id: task.id }, { signal })) {
++              const payload = event.payload
++              if (payload?.$case === 'task') current = payload.value
++              else if (payload?.$case === 'statusUpdate') current = { ...current, status: payload.value.status }
++              else if (payload?.$case === 'artifactUpdate') {
++                const artifact = payload.value.artifact
++                current = artifact ? { ...current, artifacts: [...current.artifacts.filter(item => item.artifactId !== artifact.artifactId), artifact] } : current
++              }
++              this.observe(ticketId, task, current)
++              if (terminal(current.status?.state ?? TaskState.TASK_STATE_UNSPECIFIED)) break
++            }
++            current = await client.getTask({ tenant: '', id: task.id, historyLength: 0 }, { signal })
++          }
++          if (terminal(current.status?.state ?? TaskState.TASK_STATE_UNSPECIFIED)) { await this.ended(ticketId, task, current); return }
++        } catch (error) {
++          if (signal.aborted) return
++          this.unreachable(error)
++        }
++        await new Promise(resolve => setTimeout(resolve, delay))
++        delay = Math.min(delay * 2, 60_000)
++      }
++    })().finally(() => { this.following.delete(task.id) })
++  }
++  /** A task that has not ended: its message was taken, or it asks a person. */
++  private observe(ticketId: string, task: TicketTask, current: Task): void {
++    const state = current.status?.state ?? TaskState.TASK_STATE_UNSPECIFIED
++    const ticket = this.host.store.tickets.get(ticketId)
++    if (!ticket || !liveTicket(ticket)) return
++    this.host.store.atomic(() => {
++      if (task.input && state !== TaskState.TASK_STATE_SUBMITTED) this.host.engine.inputsRead(ticketId, [task.input])
++      if (asking(state) && !ticket.attention) {
++        const conversation = this.host.store.get(CONVERSATIONS(ticketId))?.conversation
++        const question = [taskText(current) || 'The agent waits for a person.',
++          ...conversation ? [`Answer it in the agent's conversation: ${conversation}`] : []].join('\n')
++        this.report(ticketId, { state: 'blocked', summary: 'The agent asks a person', question })
++      } else if (state === TaskState.TASK_STATE_WORKING && ticket.attention) {
++        this.report(ticketId, { state: 'progress', summary: 'The agent works again', question: null })
++      }
++    })
++  }
++  /** A task that ended: the Ticket's Report, unless the work was stopped or the Ticket ended. */
++  private async ended(ticketId: string, task: TicketTask, current: Task): Promise<void> {
++    const ticket = this.host.store.tickets.get(ticketId)
++    const record = this.host.store.get(CONVERSATIONS(ticketId))?.tasks.find(item => item.id === task.id)
++    const state = current.status?.state
++    const summary = taskText(current) || 'The agent ended without a reply.'
++    const github = this.host.github()
++    const repository = github?.deployment.repository
++    const numbers = repository && state === TaskState.TASK_STATE_COMPLETED
++      ? [...new Set([...taskEvidence(current).matchAll(new RegExp(`github\\.com/${repository.replace('.', '\\.')}/pull/(\\d+)`, 'g'))].map(match => Number(match[1])))]
++      : []
++    const pulls = github ? await Promise.all(numbers.map(number => readPull(github, number, this.host.lifetime).catch(() => undefined))) : []
++    this.host.store.atomic(() => {
++      this.settle(ticketId, task.id)
++      if (!ticket || !liveTicket(ticket) || record?.stopped) return
++      if (github) for (const pull of pulls) if (pull) claimPull(github, ticketId, pull)
++      if (state === TaskState.TASK_STATE_COMPLETED) {
++        this.report(ticketId, { state: 'ready', summary })
++        this.host.engine.turnEnded(ticketId, task.assignment)
++      } else if (state === TaskState.TASK_STATE_FAILED) this.report(ticketId, { state: 'failed', summary })
++      else if (state === TaskState.TASK_STATE_REJECTED) this.report(ticketId, { state: 'dropped', summary })
++      else this.report(ticketId, { state: 'blocked', summary: `The agent's work was stopped outside this ticket. ${summary}` })
++    })
++  }
++  private report(ticketId: string, report: { state: 'progress' | 'waiting' | 'ready' | 'blocked' | 'failed' | 'dropped'; summary: string;
++    question?: string | null }): void {
++    const updated = this.host.engine.report(ticketId, report)
++    const relay = reportRelay(updated, report)
++    if (relay) this.host.sessions.relay(relay.id, relay.text)
++  }
++  private async cancelOpen(ticketId: string): Promise<void> {
++    const conversation = this.host.store.get(CONVERSATIONS(ticketId))
++    if (!conversation) return
++    this.host.store.atomic(() => {
++      this.host.store.set(CONVERSATIONS(ticketId), { ...conversation,
++        tasks: conversation.tasks.map(task => task.settled ? task : { ...task, stopped: true }) })
++    })
++    const agent = await this.agent(conversation.agent).catch(() => undefined)
++    if (!agent) return
++    const client = await this.client(agent)
++    for (const task of conversation.tasks.filter(item => !item.settled)) {
++      await client.cancelTask({ tenant: '', id: task.id, metadata: undefined }).catch(() => { /* Ended already, or the agent keeps it. */ })
++    }
++  }
++}
++/** The page that shows the agent's conversation, when the agent names one. */
++function conversationOf(task: Task): string | undefined {
++  const path = task.metadata?.session_url_path
++  return typeof path === 'string' && path ? path : undefined
++}
+diff --git a/src/executor/dsh.ts b/src/executor/dsh.ts
+index 26234f3..b771261 100644
+--- a/src/executor/dsh.ts
++++ b/src/executor/dsh.ts
+@@ -5,7 +5,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
+ import { mkdir, rmdir, stat } from 'node:fs/promises'
+ import { dirname, join } from 'node:path'
+ import { key, latestAssignment, latestReport, liveTicket, runningAssignment, threadKey, waitsForPerson } from '../core/index.ts'
+-import type { AssessmentOutcome, Assignment, EngineForExecutor, Execution, Executor, Mandate, PolicyEffect, Ticket, TicketInput, Trigger }
++import type { AssessmentOutcome, Assignment, ConversationLink, EngineForExecutor, Execution, Executor, Mandate, PolicyEffect, Ticket, TicketInput, Trigger }
+   from '../core/index.ts'
+ import type { Machine } from '../deployment.ts'
+ import { runAsWorker, verifyDirectory } from '../infra/environment.ts'
+@@ -16,6 +16,7 @@ import { executionRoot, type Variable } from '../app/execution-environment.ts'
+ import type { Sessions } from '../app/sessions.ts'
+ import { WorktreeNameSchema } from '../app/assessment.ts'
+ import { resultRelay } from '../app/notices.ts'
++import { transcriptEntry, type TranscriptEntry } from '../app/context.ts'
+ import type { HealthEntry } from '../infra/health.ts'
+ import { cancelled, collectJob, killJobs, runningJobs, stopBackground, stopSubagents, until, untilQuiet } from './background.ts'
+ 
+@@ -205,6 +206,7 @@ export class WorkerSlots {
+  * Runtime, Engine, worker tools, and management routes use this class to prepare, launch, deliver to, stop, and resume ticket assignments.
+  */
+ export class DshExecutor implements Executor {
++  readonly kind = 'dsh' as const
+   private readonly disposers: (() => void)[] = []
+   private readonly slots: WorkerSlots
+   /** Transient failure counts tried so far: keyed by `assignment.id` for worker turns and `launch:<assignment.id>` for launches. */
+@@ -402,6 +404,15 @@ export class DshExecutor implements Executor {
+   }
+   /** Number of open tickets whose worker holds a worker slot: its turn runs, or its shell jobs or subagents still run after its turn ended. */
+   activeCount(): number { return this.host.store.tickets.open().filter(ticket => this.running(ticket)).length }
++  /** A started Ticket is worked in its one worker Session, which this harness shows. */
++  conversation(ticket: Ticket): ConversationLink | undefined {
++    return ticket.assignments.some(item => item.startedAt) ? { session: workerSessionId(ticket.id) } : undefined
++  }
++  /** The worker Session's messages, oldest first. */
++  async transcript(ticketId: string): Promise<TranscriptEntry[]> {
++    return (await this.host.context.sessionController.inspect(workerSessionId(ticketId) as SessionId)).events
++      .flatMap(event => transcriptEntry(event) ?? [])
++  }
+   /** Whether a ticket's worker holds a worker slot: its turn runs, or its shell jobs or subagents do after its turn ended. */
+   private running(ticket: Ticket): boolean {
+     if (!runningAssignment(ticket)) return false
+diff --git a/src/github-account.ts b/src/github-account.ts
+new file mode 100644
+index 0000000..6ffaec2
+--- /dev/null
++++ b/src/github-account.ts
+@@ -0,0 +1,12 @@
++/** The deployment's GitHub account, for code that runs only when the GitHub Source has one. */
++import type { Deployment } from './deployment.ts'
++
++export interface GithubAccount { cli: string; login: string; noreply: string; repository: string }
++/** True when setup resolved a GitHub account and repository. */
++export const hasGithub = (deployment: Pick<Deployment, 'github' | 'repository'>): boolean => !!deployment.github && !!deployment.repository
++/** The GitHub account and repository; throws for an installation whose GitHub Source names neither. */
++export function githubOf(deployment: Pick<Deployment, 'github' | 'repository'>): GithubAccount {
++  const { github, repository } = deployment
++  if (!github || !repository) throw new Error('This installation has no GitHub account: set the repository and the agent CLI on the GitHub Source')
++  return { ...github, repository }
++}
+diff --git a/src/infra/commands.ts b/src/infra/commands.ts
+index 120f5a4..6166676 100644
+--- a/src/infra/commands.ts
++++ b/src/infra/commands.ts
+@@ -4,6 +4,7 @@ import { basename } from 'node:path'
+ import { promisify } from 'node:util'
+ import { z } from 'zod'
+ import type { Deployment } from '../deployment.ts'
++import { githubOf } from '../github-account.ts'
+ 
+ const exec = promisify(execFile)
+ const TIMEOUT_MS = 90_000
+@@ -63,7 +64,7 @@ export class Commands {
+    */
+   constructor(private readonly resolved: () => Deployment, private readonly environment: Record<string, string | undefined>, private readonly signal: AbortSignal) {}
+   get deployment(): Deployment { return this.resolved() }
+-  get repository(): string { return this.deployment.repository }
++  get repository(): string { return githubOf(this.deployment).repository }
+   withSignal(signal?: AbortSignal): Commands { return signal ? new Commands(this.resolved, this.environment, AbortSignal.any([this.signal, signal])) : this }
+   async run(program: string, args: string[], cwd?: string): Promise<string> {
+     try {
+@@ -73,7 +74,7 @@ export class Commands {
+     } catch (error) { throw commandError(error, program) }
+   }
+   /** Runs the agent's GitHub CLI and parses its JSON output; callers should prefer `api`, which is restricted to the configured repository and validates output. */
+-  async gh<T>(args: string[]): Promise<T> { return JSON.parse(await this.run(this.deployment.github.cli, args)) as T }
++  async gh<T>(args: string[]): Promise<T> { return JSON.parse(await this.run(githubOf(this.deployment).cli, args)) as T }
+   /**
+    * Calls the GitHub API on a path within the configured repository, validating JSON output when a schema is provided
+    * or returning raw CLI output (such as raw files or `--include` headers) when omitted.
+@@ -82,7 +83,7 @@ export class Commands {
+   async api<T>(schema: z.ZodType<T>, path: string, ...flags: string[]): Promise<T>
+   async api(path: string, ...flags: string[]): Promise<string>
+   async api<T>(schema: z.ZodType<T> | string, ...rest: string[]): Promise<T | string> {
+-    if (typeof schema === 'string') return this.run(this.deployment.github.cli, ['api', this.path(schema), ...rest])
++    if (typeof schema === 'string') return this.run(githubOf(this.deployment).cli, ['api', this.path(schema), ...rest])
+     const [path = '', ...flags] = rest
+     return schema.parse(await this.gh(['api', this.path(path), ...flags]))
+   }
+diff --git a/src/infra/environment.ts b/src/infra/environment.ts
+index b6d92c3..ff48023 100644
+--- a/src/infra/environment.ts
++++ b/src/infra/environment.ts
+@@ -97,10 +97,11 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
+   ].join('\n')
+   const run = (program: string): string => `${withoutShims}\nexec ${shellQuote(program)} "$@"`
+   const fail = (message: string): string => `echo ${shellQuote(message)} >&2\nexit 1`
+-  await shim('gh', run(github.cli))
++  await shim('gh', github ? run(github.cli) : fail('gh is unavailable: this installation has no GitHub account.'))
+   await shim('lark-cli', feishu ? run(feishu.cli) : fail('lark-cli is unavailable: this installation has no Feishu bot.'))
+   for (const name of new Set(blockedCommands.filter(name => !WORKER_COMMANDS.includes(name)))) {
+-    await shim(name, fail(`${name} is blocked in this installation; use gh, which acts as ${github.login}.`))
++    await shim(name, fail(github ? `${name} is blocked in this installation; use gh, which acts as ${github.login}.`
++      : `${name} is blocked in this installation.`))
+   }
+   for (const name of before) if (!kept.has(name)) await unlink(join(dir, name))
+   await own(workerGitConfig(stateDir), [
+@@ -108,8 +109,8 @@ export async function writeEnvironment(deployment: Pick<Deployment, 'stateDir' |
+     // Make git refuse to commit without an explicit identity set by the worker instead of guessing from the operator's OS user.
+     '[user]', '\tuseConfigOnly = true',
+     '[credential]', '\thelper =',
+-    '[credential "https://github.com"]', `\thelper = ${gitQuote(credentialHelper(github.cli))}`,
+-    '[url "https://github.com/"]', '\tinsteadOf = git@github.com:', '\tinsteadOf = ssh://git@github.com/',
++    ...github ? ['[credential "https://github.com"]', `\thelper = ${gitQuote(credentialHelper(github.cli))}`,
++      '[url "https://github.com/"]', '\tinsteadOf = git@github.com:', '\tinsteadOf = ssh://git@github.com/'] : [],
+     // Include Git LFS filters because the operator's global gitconfig (which usually holds them) is ignored.
+     '[filter "lfs"]', '\tclean = git-lfs clean -- %f', '\tsmudge = git-lfs smudge -- %f', '\tprocess = git-lfs filter-process', '\trequired = true',
+   ].join('\n') + '\n')
+@@ -134,12 +135,16 @@ export async function runAsWorker(subprocess: SubprocessRuntime, argv: string[],
+   throw new CliError(read(handle.collected.stderr).trim() || `${argv.join(' ')} ${ended}`, undefined, exitCode ?? undefined)
+ }
+ 
+-/** Verifies that worker git invocations resolve the deployment's GitHub credential helper. */
++/**
++ * Verifies that worker git invocations read the isolated configuration: the deployment's GitHub credential helper, or,
++ * without a GitHub account, its empty `credential.helper`.
++ */
+ export async function verifyEnvironment(deployment: Pick<Deployment, 'github' | 'stateDir'>, subprocess: SubprocessRuntime, signal: AbortSignal): Promise<void> {
+   const { github, stateDir } = deployment
+   // `-z` separates fields with NUL and never quotes paths.
+-  const helpers = (await runAsWorker(subprocess, ['git', 'config', '-z', '--show-origin', '--get-all', 'credential.https://github.com.helper'], stateDir, AbortSignal.any([signal, AbortSignal.timeout(60_000)])).catch(() => '')).split('\0')
+-  if (helpers.join('\0') !== [`file:${workerGitConfig(stateDir)}`, credentialHelper(github.cli), ''].join('\0')) throw new SetupError('gitTooOld')
++  const key = github ? 'credential.https://github.com.helper' : 'credential.helper'
++  const helpers = (await runAsWorker(subprocess, ['git', 'config', '-z', '--show-origin', '--get-all', key], stateDir, AbortSignal.any([signal, AbortSignal.timeout(60_000)])).catch(() => '')).split('\0')
++  if (helpers.join('\0') !== [`file:${workerGitConfig(stateDir)}`, github ? credentialHelper(github.cli) : '', ''].join('\0')) throw new SetupError('gitTooOld')
+ }
+ 
+ /**
+diff --git a/src/policy.ts b/src/policy.ts
+index b6a66cf..aae3b89 100644
+--- a/src/policy.ts
++++ b/src/policy.ts
+@@ -30,6 +30,8 @@ export function directionAllowed(value: unknown): value is AdmissionDirection {
+ export interface Assessment {
+   decision: 'accept' | 'ignore' | 'unavailable'; rule_assessments: RuleAssessment[]; direction: unknown
+   title: string; scope: string; reason: string; intent_evidence?: string | null; acknowledgement?: string | null; worktree_name?: string
++  /** For acceptance, where tickets go to agents: the agent that works it. */
++  agent?: string
+ }
+ /**
+  * Validate an assessment against enabled rules and convert it into an engine `AssessmentOutcome`.
+@@ -51,13 +53,13 @@ export function assessmentOutcome(assessment: Assessment, settings: Pick<Setting
+   if (!directionAllowed(assessment.direction)) return { kind: 'ignore', audit, reason: { code: 'directionUnsettled' } }
+   if (!matches.length) return { kind: 'ignore', audit, reason: { code: 'noRuleMatched' } }
+   if (!assessment.intent_evidence) throw new Error('Acceptance requires intent_evidence')
+-  const { title, scope, worktree_name: name } = assessment
++  const { title, scope, worktree_name: name, agent } = assessment
+   if (strength === 'inferred' && settings.eval.mode !== 'auto') {
+     const proposal = { title, scope, worktree_name: name }
+     return { kind: 'ignore', audit: { ...audit, would_accept: true, proposal }, reason: { code: 'observed', values: { text: assessment.reason } } }
+   }
+   return { kind: 'accept', title, scope, reason: assessment.reason, ...(assessment.acknowledgement ? { acknowledgement: assessment.acknowledgement } : {}),
+-    rules: matches.map(match => match.rule_id), audit, ...(name ? { name } : {}) }
++    rules: matches.map(match => match.rule_id), audit, ...(name ? { name } : {}), ...(agent ? { agent } : {}) }
+ }
+ const DEFAULT_RULES = [
+   { id: 'copy', name: 'Copy fixes', enabled: true, instruction: 'Explicit requests to correct a typo, wording, punctuation or existing translation. Preserve product promises and business meaning.' },
+diff --git a/src/sources/github-channel.ts b/src/sources/github-channel.ts
+index 34c4aea..cc00bda 100644
+--- a/src/sources/github-channel.ts
++++ b/src/sources/github-channel.ts
+@@ -1,4 +1,5 @@
+ /** GitHub outbound channel: posts issue/PR comments and review thread replies under the agent account. */
++import { githubOf } from '../github-account.ts'
+ import { z } from 'zod'
+ import type { OutboundMessage } from '../core/index.ts'
+ import { CliError } from '../infra/commands.ts'
+@@ -17,7 +18,7 @@ const missing = (error: unknown): boolean => error instanceof CliError && (error
+ /** Posts a comment or review-thread reply with an embedded HTML marker so retries do not create duplicate comments. */
+ export async function sendGithub(host: Pick<SourceContext, 'commands'>, message: OutboundMessage): Promise<'sent' | 'gone'> {
+   const { commands } = host
+-  const { repository, github } = commands.deployment
++  const { repository, login } = githubOf(commands.deployment)
+   const number = Number(message.channel.address.number)
+   if (!number) throw new Error('Missing GitHub reply target')
+   try {
+@@ -32,7 +33,7 @@ export async function sendGithub(host: Pick<SourceContext, 'commands'>, message:
+     }
+     const path = rootId === undefined ? `issues/${number}/comments` : `pulls/${number}/comments`
+     const marker = `<!-- dsh-superagent:${message.id} -->`
+-    const mine = (comment: z.infer<typeof CommentSchema>) => sameName(comment.user?.login ?? '', github.login)
++    const mine = (comment: z.infer<typeof CommentSchema>) => sameName(comment.user?.login ?? '', login)
+       && (rootId === undefined || comment.in_reply_to_id === rootId) && (comment.body ?? '').includes(marker)
+     if ((await commands.pages(CommentSchema, path)).some(mine)) return 'sent'
+     const target = rootId === undefined ? path : `${path}/${rootId}/replies`
+diff --git a/src/sources/github-pull.ts b/src/sources/github-pull.ts
+index 87976b5..524fd78 100644
+--- a/src/sources/github-pull.ts
++++ b/src/sources/github-pull.ts
+@@ -2,6 +2,7 @@
+ import { z } from 'zod'
+ import { key, liveTicket, type Follow, type OutboundMessage, type ThreadFact, type Ticket } from '../core/index.ts'
+ import type { Deployment } from '../deployment.ts'
++import { githubOf, hasGithub } from '../github-account.ts'
+ import { sameName } from '../infra/text.ts'
+ import type { SourceContext } from './host.ts'
+ import { githubPage, SOURCE, UserSchema } from './github-trigger.ts'
+@@ -22,7 +23,7 @@ export const pullOf = (ticket: Pick<Ticket, 'follows'>): number | undefined => p
+ /** True when the PR was opened by the agent account from a branch in the configured repository (not a fork). */
+ export const agentPull = (pr: { user: { login: string }; head?: { repo?: { full_name: string } | null } | null },
+   deployment: Pick<Deployment, 'github' | 'repository'>): boolean =>
+-  sameName(pr.user.login, deployment.github.login) && sameName(pr.head?.repo?.full_name ?? '', deployment.repository)
++  hasGithub(deployment) && sameName(pr.user.login, githubOf(deployment).login) && sameName(pr.head?.repo?.full_name ?? '', githubOf(deployment).repository)
+ /** True when a branch belongs to the ticket: its last path segment is the ticket's short name, such as `agent/<name>`. */
+ export const ticketBranch = (ticket: Pick<Ticket, 'execution'>, ref: string): boolean =>
+   !!ticket.execution?.name && ref.split('/').at(-1) === ticket.execution.name
+@@ -39,7 +40,7 @@ export function claimPull(ctx: SourceContext, ticketId: string, pr: Pull): strin
+   const started = source?.source === SOURCE && source.meta.isPr === true && source.meta.number === pr.number
+   const opened = agentPull(pr, ctx.deployment) && ticketBranch(ticket, pr.head.ref)
+   if (!started && !opened) {
+-    const { login } = ctx.deployment.github
++    const { login } = githubOf(ctx.deployment)
+     return `PR does not belong to this ticket: use the source PR or a PR by ${login} from a branch whose last path segment is DSH_SUPERAGENT_NAME; omit pr_number when no PR exists`
+   }
+   const owner = ctx.tickets.open().find(item => pullsOf(item, true).includes(pr.number))
+diff --git a/src/sources/github.ts b/src/sources/github.ts
+index f9b80b6..37edc00 100644
+--- a/src/sources/github.ts
++++ b/src/sources/github.ts
+@@ -3,6 +3,7 @@ import type { Context } from '@deepseek-ai/cordis'
+ import { key, type Thread } from '../core/index.ts'
+ import { sameName } from '../infra/text.ts'
+ import { GithubAccountsSchema } from '../deployment.ts'
++import { githubOf, hasGithub } from '../github-account.ts'
+ import { CliError, validItems, type Tally } from '../infra/commands.ts'
+ import { ciCounts, ciFact, ciFailures, ciSummary, githubThreadContext, pullChecks } from './github-read.ts'
+ import { branchCiTrigger, ciTrigger, commentTrigger, CommentSchema, githubAddress, issueTrigger, IssueSchema, pullTrigger, SOURCE }
+@@ -99,11 +100,13 @@ export const githubKind: SourceKind<GithubConfig> = {
+     ],
+     values: ({ deployment, trigger }) => {
+       const number = trigger?.threads[0]?.source === SOURCE ? Number(trigger.meta.number) || 0 : 0
+-      return { DSH_SUPERAGENT_GITHUB_REPOSITORY: deployment.repository, DSH_SUPERAGENT_GITHUB_ACCOUNT: deployment.github.login, DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL: deployment.github.noreply, DSH_SUPERAGENT_GITHUB_NUMBER: number ? String(number) : '',
++      // Without a GitHub account every variable is empty, as for a Ticket from another Source.
++      const github = hasGithub(deployment) ? githubOf(deployment) : undefined
++      return { DSH_SUPERAGENT_GITHUB_REPOSITORY: github?.repository ?? '', DSH_SUPERAGENT_GITHUB_ACCOUNT: github?.login ?? '', DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL: github?.noreply ?? '', DSH_SUPERAGENT_GITHUB_NUMBER: number ? String(number) : '',
+         DSH_SUPERAGENT_GITHUB_PR_HEAD: number && trigger?.meta.isPr === true ? `refs/pull/${number}/head` : '' }
+     },
+   },
+-  facts: (deployment): Record<string, Localized | string> => deployment ? {
++  facts: (deployment): Record<string, Localized | string> => deployment?.github ? {
+     cli: { zh: `当前账号 @${deployment.github.login}`, en: `Current account @${deployment.github.login}` },
+   } : {},
+ }
+@@ -130,6 +133,8 @@ async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
+   await ctx.ready
+   // Setup restarts dsh-superagent once it resolves the accounts; until then nothing is polled.
+   if (!ctx.configured()) { ctx.report('github', health('paused', 'setupPending')); return }
++  // Setup restarts dsh-superagent when the GitHub Source's account changes, so an installation without one never polls.
++  if (!hasGithub(ctx.deployment)) { ctx.report('github', health('paused', 'githubUnset')); return }
+   while (!signal.aborted) {
+     const config = ctx.config<GithubConfig>(SOURCE)
+     try {
+@@ -218,7 +223,7 @@ async function readStream(ctx: SourceContext, round: Round, id: string, path: st
+   }
+   const { headers, body } = included(raw)
+   const items = validItems(ListedSchema, z.array(z.unknown()).parse(JSON.parse(body)), round.tally)
+-  const { login } = ctx.deployment.github
++  const { login } = githubOf(ctx.deployment)
+   const fresh = (at: string | null | undefined, kind: string) =>
+     kind in started && Date.parse(at ?? '') >= Math.max(Date.parse(started[kind]!), horizon)
+   for (const item of items) {
+@@ -264,7 +269,7 @@ async function pollBranchCi(ctx: SourceContext, round: Round): Promise<void> {
+   if (known && JSON.stringify(now) !== JSON.stringify(known)) {
+     revision += 1
+     const summary = ciSummary(snapshot, branch, `github/commits/${head.sha}/checks`)
+-    const url = `https://github.com/${ctx.deployment.repository}/commit/${head.sha}`
++    const url = `https://github.com/${githubOf(ctx.deployment).repository}/commit/${head.sha}`
+     await ctx.receive(branchCiTrigger(branch, head.sha, revision, summary, url))
+     ctx.threads.describe(`github:ci:${branch}`, { label: `CI on ${branch}`, facts: { ci: ciFact(counts) } })
+   }
+@@ -300,7 +305,7 @@ async function pollNotifications(ctx: SourceContext, round: Round): Promise<{ co
+   const commands = ctx.commands.withSignal(round.signal)
+   const since = state.get(KV.github.since) ?? round.started
+   if (state.get(KV.github.since) === undefined) state.set(KV.github.since, since)
+-  const { repository } = ctx.deployment
++  const { repository } = githubOf(ctx.deployment)
+   const path = `notifications?all=true&per_page=50&since=${encodeURIComponent(since)}`
+   const raw = await commands.api(path, '--include')
+   const split = raw.search(/\r?\n\r?\n/)
+@@ -351,7 +356,7 @@ async function readNotified(ctx: SourceContext, round: Round, number: number, it
+     if (!isPr) {
+       // An Issue opened by someone other than the agent since the cursor brings its body so a mention in it reaches the gate.
+       // A mention added by a later edit to the body is not read: only the author can be the actor of the body.
+-      const { login } = ctx.deployment.github
++      const { login } = githubOf(ctx.deployment)
+       const opened = Date.parse(issue.created_at) >= Date.parse(since) && !sameName(issue.user.login, login)
+       if (opened) await ctx.receive(issueTrigger(issue, login))
+       await intakeComments(ctx, { number, isPr: false, url: issue.html_url }, since, round)
+@@ -361,7 +366,7 @@ async function readNotified(ctx: SourceContext, round: Round, number: number, it
+   if (isPr) {
+     const pr = await pull(ctx, round, number)
+     // Emit a PR description trigger for PRs opened since the cursor; its ID is the same as the one produced by the repository PR stream.
+-    const { login } = ctx.deployment.github
++    const { login } = githubOf(ctx.deployment)
+     if (pr.created_at && Date.parse(pr.created_at) >= Date.parse(since) && !sameName(pr.user.login, login)) {
+       const opened = { number, title: pr.title ?? '', body: pr.body, user: pr.user, created_at: pr.created_at, html_url: pr.html_url }
+       await ctx.receive(pullTrigger(opened, login))
+@@ -383,7 +388,7 @@ function pull(ctx: SourceContext, round: Round, number: number): Promise<Pull> {
+ }
+ async function intakeComments(ctx: SourceContext, ref: PullRef, since: string, round: Round): Promise<void> {
+   const commands = ctx.commands.withSignal(round.signal)
+-  const { login } = ctx.deployment.github
++  const { login } = githubOf(ctx.deployment)
+   const kinds = ref.isPr ? ['conversation', 'inline', 'review'] as const : ['conversation'] as const
+   for (const kind of kinds) {
+     const suffix = `&since=${encodeURIComponent(since)}`
+diff --git a/src/sources/host.ts b/src/sources/host.ts
+index 20f2088..1988979 100644
+--- a/src/sources/host.ts
++++ b/src/sources/host.ts
+@@ -10,6 +10,7 @@ import { fill } from '../infra/text.ts'
+ /** Fixed English health templates (`{name}` placeholders); the panel localizes each `code` in the interface language. */
+ export const HEALTH_TEXT = {
+   setupPending: 'Waiting for the deployment check',
++  githubUnset: 'No GitHub account: the Source names no repository or agent CLI',
+   sourceOff: 'Off',
+   feishuCliUnset: 'The Source is on, and its bot lark-cli is not set',
+   feishuBotMissing: 'Waiting for the Feishu bot',
+diff --git a/src/sources/sdk.ts b/src/sources/sdk.ts
+new file mode 100644
+index 0000000..5d58f41
+--- /dev/null
++++ b/src/sources/sdk.ts
+@@ -0,0 +1,12 @@
++/**
++ * The Source plugin interface for a separate package (docs/008-cookbook.md): a dsh plugin that implements a `SourceKind`
++ * and registers it with the `orchestrator` service. It imports from `dsh-superagent/sources`, the same installed package
++ * the bundle runs, so `CliError` and the Source host are the bundle's own.
++ */
++export type * from './kind.ts'
++export type { Health, HealthCode, SourceContext, SourceHost, ThreadDescription } from './host.ts'
++export { HEALTH_TEXT, health, sourceContext } from './host.ts'
++export { CliError, validItems, type Commands, type Tally } from '../infra/commands.ts'
++export { KV, family, record, type Family, type Key } from '../kv.ts'
++export { POLL_HORIZON_MS, cursorAt, pause, pollThreads, polled } from './poll.ts'
++export * from '../core/index.ts'
+diff --git a/tests/commands.spec.ts b/tests/commands.spec.ts
+index 004e65e..0ad9ba2 100644
+--- a/tests/commands.spec.ts
++++ b/tests/commands.spec.ts
+@@ -12,7 +12,7 @@ import { testDeployment } from './fixtures/deployment.ts'
+ const sources = new SourceRegistry(() => SettingsSchema.parse({}))
+ sources.register(feishuKind); sources.register(githubKind)
+ const send = (commands: Commands, message: OutboundMessage) => sources.send(message, commands)
+-const deployment = testDeployment({ github: { ...testDeployment().github, cli: '/path/agent-gh' } })
++const deployment = testDeployment({ github: { ...testDeployment().github!, cli: '/path/agent-gh' } })
+ const REPOSITORY = deployment.repository
+ const reply = { id: 'stable-operation', channel: githubChannel(8), text: 'Done', kind: 'reply' as const }
+ describe('account-isolated operations', () => {
+diff --git a/tests/deployment.spec.ts b/tests/deployment.spec.ts
+index 532b40b..abae1c4 100644
+--- a/tests/deployment.spec.ts
++++ b/tests/deployment.spec.ts
+@@ -65,6 +65,11 @@ describe('setup', () => {
+     // A renamed repository is still resolved by its old name; notifications carry GitHub's current full_name.
+     expect((await resolveDeployment(machine(), { repository: 'acme/gadgets', cli: 'gh' }, probe, path)).repository).toBe('acme/widgets')
+   })
++  it('leaves the installation without GitHub when the GitHub Source names neither a repository nor a CLI', async () => {
++    const deployment = await resolveDeployment(machine(), {}, probe, path)
++    expect(deployment).not.toHaveProperty('github')
++    expect(deployment).not.toHaveProperty('repository')
++  })
+   it('names what setup needs and where it is set', async () => {
+     const needs = (place: string, code: string, values: Record<string, unknown>, github: unknown) =>
+       expect(resolveDeployment(machine(), github, probe, path)).rejects.toEqual(setupError(place, code, values))
+diff --git a/tests/environment.spec.ts b/tests/environment.spec.ts
+index db2bf3e..0997bcf 100644
+--- a/tests/environment.spec.ts
++++ b/tests/environment.spec.ts
+@@ -26,7 +26,7 @@ describe('worker shims', () => {
+   it('run a wrapper that calls `gh` by name without reaching the shim again, and keep the caller\'s other PATH entries', async () => {
+     program(join(dir, 'real', 'gh'), 'echo "{\\"login\\":\\"agent-bot\\",\\"config\\":\\"$GH_CONFIG_DIR\\",\\"path\\":\\"$PATH\\"}"')
+     const wrapper = program(join(dir, 'gh-agent'), `GH_CONFIG_DIR=${dir}/agent-config exec gh "$@"`)
+-    await writeEnvironment(testDeployment({ stateDir: dir, github: { ...testDeployment().github, cli: wrapper }, feishu: undefined }), [])
++    await writeEnvironment(testDeployment({ stateDir: dir, github: { ...testDeployment().github!, cli: wrapper }, feishu: undefined }), [])
+     const bin = workerBin(dir)
+     const path = [bin, join(dir, 'venv'), join(dir, 'real'), '/usr/bin', '/bin'].join(':')
+     const { stdout } = await exec('gh', ['api', 'user'], { env: { PATH: path }, timeout: 10_000 })
+@@ -38,10 +38,17 @@ describe('worker shims', () => {
+     await expect(exec(join(bin, 'lark-cli'), ['im', '+chat-list'])).rejects.toMatchObject({ code: 1, stderr: 'lark-cli is unavailable: this installation has no Feishu bot.\n' })
+     await expect(exec(join(bin, 'personal-gh'), [])).rejects.toMatchObject({ code: 1, stderr: 'personal-gh is blocked in this installation; use gh, which acts as agent-bot.\n' })
+   })
++  it('make `gh` fail without a GitHub account, name no account for a blocked command, and give git no GitHub credential', async () => {
++    await writeEnvironment(testDeployment({ stateDir: dir, repository: undefined, github: undefined, feishu: undefined }), ['personal-gh'])
++    const bin = workerBin(dir)
++    await expect(exec(join(bin, 'gh'), ['api', 'user'])).rejects.toMatchObject({ code: 1, stderr: 'gh is unavailable: this installation has no GitHub account.\n' })
++    await expect(exec(join(bin, 'personal-gh'), [])).rejects.toMatchObject({ code: 1, stderr: 'personal-gh is blocked in this installation.\n' })
++    expect(readFileSync(workerGitConfig(dir), 'utf8')).not.toContain('github.com')
++  })
+   it('keep `gh` and `lark-cli` working, and shim no `git`, when the blocked commands name the commands workers need', async () => {
+     const gh = program(join(dir, 'gh-agent'), 'echo gh "$@"'), lark = program(join(dir, 'lark-bot'), 'echo lark "$@"')
+     const base = testDeployment()
+-    await writeEnvironment(testDeployment({ stateDir: dir, github: { ...base.github, cli: gh }, feishu: { ...base.feishu!, cli: lark } }), ['gh', 'git', 'lark-cli'])
++    await writeEnvironment(testDeployment({ stateDir: dir, github: { ...base.github!, cli: gh }, feishu: { ...base.feishu!, cli: lark } }), ['gh', 'git', 'lark-cli'])
+     const bin = workerBin(dir)
+     expect([(await exec(join(bin, 'gh'), ['api', 'user'])).stdout, (await exec(join(bin, 'lark-cli'), ['im'])).stdout]).toEqual(['gh api user\n', 'lark im\n'])
+     expect(readdirSync(bin)).not.toContain('git')
+@@ -76,7 +83,7 @@ describe('agent git configuration', () => {
+     const home = join(dir, 'home'); mkdirSync(home)
+     // Operator configuration that rewrites HTTPS to SSH, enables commit signing, and sets a credential helper.
+     writeFileSync(join(home, '.gitconfig'), '[url "git@github.com:"]\n\tinsteadOf = https://github.com/\n[commit]\n\tgpgsign = true\n[credential]\n\thelper = osxkeychain\n')
+-    const deployment = testDeployment({ stateDir: dir, github: { ...testDeployment().github, cli: '/opt/agent tools/gh' } })
++    const deployment = testDeployment({ stateDir: dir, github: { ...testDeployment().github!, cli: '/opt/agent tools/gh' } })
+     await writeEnvironment(deployment, [])
+     // Operator identity variables and git's fallback from the OS username must not apply to worker commits.
+     const env = workerEnv({ PATH: process.env.PATH, HOME: home, GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.abbrev', GIT_CONFIG_VALUE_0: '12', GIT_AUTHOR_NAME: 'Operator', GIT_COMMITTER_EMAIL: 'operator@example.com', ...agentVariables(dir) })
+@@ -100,7 +107,7 @@ it('fails instead of asking the operator\'s askpass helpers when the agent\'s cr
+   const log = join(dir, 'asked')
+   const askpass = program(join(dir, 'askpass'), `echo asked >> ${log}; echo operator-secret`)
+   const agent = program(join(dir, 'real', 'gh'), 'exit 0')
+-  const deployment = testDeployment({ stateDir: dir, github: { ...testDeployment().github, cli: agent } })
++  const deployment = testDeployment({ stateDir: dir, github: { ...testDeployment().github!, cli: agent } })
+   await writeEnvironment(deployment, [])
+   const env = workerEnv({ PATH: process.env.PATH, HOME: dir, GIT_ASKPASS: askpass, SSH_ASKPASS: askpass, ...agentVariables(dir) })
+   await exec('git', ['init', '-q', 'repo'], { cwd: dir, env })
+diff --git a/tests/fixtures/panel-server.ts b/tests/fixtures/panel-server.ts
+index 513d91a..a5417cd 100644
+--- a/tests/fixtures/panel-server.ts
++++ b/tests/fixtures/panel-server.ts
+@@ -37,7 +37,8 @@ export function actor(source: string, id: string, human = true): Actor {
+ type TicketFields = Omit<TicketRow, 'stage' | 'action'>
+ const TICKET = {
+   id: 't1', title: '修复回归', state: 'open', actions: { retry: false, stop: true }, strength: 'explicit', ended: undefined,
+-  attention: undefined, assignments: 1, inputs: 2, undelivered: 0, deliveryError: undefined, sessionId: 'worker-t1', directory: '/w/t1',
++  attention: undefined, assignments: 1, inputs: 2, undelivered: 0, deliveryError: undefined, sessionId: 'worker-t1', conversationPage: '',
++  directory: '/w/t1',
+   summary: 'working on it', createdAt: '2026-09-22T00:00:00Z', updatedAt: '2026-09-23T00:00:00Z',
+   threads: [{ key: 'github:42', source: 'github', title: '#42 Fix login', url: 'https://github.com/acme/widgets/pull/42',
+     facts: { number: { value: '#42' }, ci: { label: { zh: 'CI 失败', en: 'CI failed' }, value: '1', problem: true } } }],
+@@ -113,7 +114,8 @@ export let server: PanelServer
+ 
+ function resolved() {
+   const accounts = server.setup.accounts
+-  return accounts ? testDeployment({ repository: accounts.repository, github: { cli: '/bin/false', login: accounts.agent, noreply: '' },
++  return accounts ? testDeployment({ repository: accounts.repository ?? undefined,
++    github: accounts.agent ? { cli: '/bin/false', login: accounts.agent, noreply: '' } : undefined,
+     ...accounts.feishu ? { feishu: { cli: '/bin/false', ...accounts.feishu } } : { feishu: undefined } }) : undefined
+ }
+ /** Default source health: paused during setup; Feishu defaults to `socket closed` unless overridden or paused by setup. */
+@@ -175,6 +177,7 @@ const settingsView = (): ApiResponse<'GET settings'> => ({
+       { key: 'DSH_SUPERAGENT_NAME', description: { zh: '工单短名', en: 'Short name' } }] },
+     { owner: 'github', enabled: false, variables: [{ key: 'DSH_SUPERAGENT_GITHUB_REPOSITORY', description: { zh: '仓库',
+       en: 'Repository' } }] }] },
++  executorKind: 'dsh',
+ })
+ const overviewView = (): ApiResponse<'GET overview'> => {
+   const { problem, feishuProblem } = server.setup
+diff --git a/tests/migration.spec.ts b/tests/migration.spec.ts
+index ce86bb1..f35990d 100644
+--- a/tests/migration.spec.ts
++++ b/tests/migration.spec.ts
+@@ -242,7 +242,7 @@ const opened = (records: Record<string, unknown>) => {
+ 
+ it('writes a prompt version saved before the team sections in them, keeping its skills and auto-merge threshold, and marks it', () => {
+   const store = opened({ ...legacyPrompts(3, { notes: 'Call orchestrator_create_task with event_id, read event/<id>, follow guide/work and guide/release, load dsh-tag-github, cd "$DSH_TAG_DIR".' }) })
+-  const prompts = new Prompts(store, () => 100000, () => undefined, () => true)
++  const prompts = new Prompts(store, () => 100000, () => undefined, () => true, () => true)
+   const { config } = prompts.version(3)
+   expect(config.communication).toBe(defaultPrompts().communication)
+   expect(config.delivery).toContain('it changes fewer than 350 lines (additions plus deletions);')
+@@ -264,7 +264,7 @@ it('writes saved team sections and skills under current names: earlier project n
+     skills: { notes: 'Load dsh-freelancer-github; cd "$DSH_FREELANCER_DIR". List with orchestrator_tickets, then orchestrator_ticket_inspect.',
+       routing: 'Accept with orchestrator_ticket_accept; stop with orchestrator_ticket_stop, never orchestrator_trigger_ignore.' } }
+   const store = opened({ 'prompt-version:1': { revision: 1, previousRevision: 0, savedAt: '', source: 'web', config }, 'prompt-revision': 1, 'prompt-settings-text': 1 })
+-  const { config: current } = new Prompts(store, () => 100000, () => undefined, () => true).current()
++  const { config: current } = new Prompts(store, () => 100000, () => undefined, () => true, () => true).current()
+   expect(current.delivery).toBe('Merge with --repo $DSH_SUPERAGENT_GITHUB_REPOSITORY.')
+   expect(current.skills.notes).toBe('Load dsh-superagent-github; cd "$DSH_SUPERAGENT_DIR". List with orchestrator_read tickets, then orchestrator_read ticket/<id>.')
+   // The four routing tools are one.
+@@ -275,7 +275,7 @@ it('writes saved team sections and skills under current names: earlier project n
+ it('writes the removed auto-merge threshold and member identities into the prompts as one new version, unless an earlier version did', () => {
+   const before = { policy: { autoMergeLineLimit: 350, members: [{ name: 'Alice', feishuId: 'ou_alice', github: 'alice' }, { name: 'Bob', feishuId: 'ou_bob', github: '' }] } }
+   const store = opened({ 'settings-before-9': before })
+-  const prompts = new Prompts(store, () => 100000, () => undefined, () => true)
++  const prompts = new Prompts(store, () => 100000, () => undefined, () => true, () => true)
+   const migrated = prompts.current()
+   expect(migrated).toMatchObject({ revision: 1, previousRevision: 0, source: 'settings-migration' })
+   expect(migrated.config.delivery).toContain('it changes fewer than 350 lines (additions plus deletions);')
+@@ -285,15 +285,15 @@ it('writes the removed auto-merge threshold and member identities into the promp
+   store.close()
+   // The default threshold and nobody with two identities change nothing; other delivery text gains the threshold as its own sentence.
+   const unchanged = opened({ 'settings-before-9': { policy: { members: [{ name: 'Bob', feishuId: 'ou_bob', github: '' }] } } })
+-  expect(new Prompts(unchanged, () => 100000, () => undefined, () => true).current().revision).toBe(0)
++  expect(new Prompts(unchanged, () => 100000, () => undefined, () => true, () => true).current().revision).toBe(0)
+   unchanged.close()
+   const own = opened({ 'settings-before-9': { policy: { autoMergeLineLimit: 80 } }, 'prompt-revision': 1,
+     'prompt-version:1': { revision: 1, previousRevision: 0, savedAt: '', source: 'panel', config: { ...defaultPrompts(), delivery: 'Deliver PRs.' } } })
+-  expect(new Prompts(own, () => 100000, () => undefined, () => true).current().config.delivery)
++  expect(new Prompts(own, () => 100000, () => undefined, () => true, () => true).current().config.delivery)
+     .toBe('Deliver PRs.\nEnable auto-merge only on a PR that changes fewer than 80 lines (additions plus deletions).')
+   own.close()
+   const done = opened({ 'settings-before-9': before, 'prompt-settings-text': 1 })
+-  expect(new Prompts(done, () => 100000, () => undefined, () => true).current().revision).toBe(0)
++  expect(new Prompts(done, () => 100000, () => undefined, () => true, () => true).current().revision).toBe(0)
+   done.close()
+ })
+ 
+@@ -302,7 +302,7 @@ it('reads a current prompt version that does not read as the one before it, keep
+   const store = opened({ 'prompt-revision': 2, 'prompt-settings-text': 1,
+     'prompt-version:1': { revision: 1, previousRevision: 0, savedAt: '', source: 'web', config },
+     'prompt-version:2': { revision: 2, previousRevision: 1, savedAt: '', source: 'web', config: { delivery: ['not text'] } } })
+-  const prompts = new Prompts(store, () => 100000, () => undefined, () => true)
++  const prompts = new Prompts(store, () => 100000, () => undefined, () => true, () => true)
+   expect(prompts.current()).toMatchObject({ revision: 2, config, legacy: { config: { delivery: ['not text'] } } })
+   expect(prompts.history(0, 2).revisions.map(version => version.changed)).toEqual([['legacy'], []])
+   store.close()
+diff --git a/tests/prompts.spec.ts b/tests/prompts.spec.ts
+index f94d027..ff2b7a4 100644
+--- a/tests/prompts.spec.ts
++++ b/tests/prompts.spec.ts
+@@ -15,7 +15,7 @@ import type { Variable } from '../src/app/execution-environment.ts'
+ /** The execution environment outside any ticket, as the runtime passes it once setup has finished. */
+ const variables = (): Variable[] => [{ key: 'DSH_SUPERAGENT_GITHUB_REPOSITORY', value: 'acme/widgets', description: { zh: '仓库', en: 'The repository' }, owner: 'github' }]
+ const ENVIRONMENT_LINE = '- DSH_SUPERAGENT_GITHUB_REPOSITORY = "acme/widgets": The repository.'
+-const promptsOf = (store: Store, maxChars = 100000) => new Prompts(store, () => maxChars, variables, () => true)
++const promptsOf = (store: Store, maxChars = 100000) => new Prompts(store, () => maxChars, variables, () => true, () => true)
+ function withStore(body: (store: Store, dir: string) => void): void {
+   const dir = mkdtempSync(join(tmpdir(), 'prompts-')); const store = new Store(join(dir, 'db'))
+   try { body(store, dir) } finally { store.close(); rmSync(dir, { recursive: true, force: true }) }
+@@ -108,7 +108,7 @@ it('lists a ticket\'s execution environment in its prompt, and says setup is inc
+     expect(promptsOf(store).compose(defaultPrompts(), 'worker', ticket).endsWith('- DSH_SUPERAGENT_DIR = "/srv/work/fix-1": This ticket\'s directory.')).toBe(true)
+     expect(promptParts(defaultPrompts(), 'worker', 'env').at(-1)).toEqual({ name: 'runtime/environment', kind: 'generated', key: 'runtime/environment',
+       text: 'env' })
+-    expect(new Prompts(store, () => 100000, () => undefined, () => false).compose(defaultPrompts(), 'worker')).toContain('dsh-superagent is waiting for setup')
++    expect(new Prompts(store, () => 100000, () => undefined, () => false, () => true).compose(defaultPrompts(), 'worker')).toContain('dsh-superagent is waiting for setup')
+   })
+ })
+ 
+@@ -119,7 +119,8 @@ it('registers the built-in Source skills, Feishu only with a Feishu bot, before
+     expect(skills.map(([name]) => name)).toEqual(['feishu', 'github', 'release'])
+     expect(skills[1]![1]).toContain('## CLI usage')
+     expect(skills[2]![1]).toBe('Tag releases.')
+-    expect(new Prompts(store, () => 100000, variables, () => false).skills(config).map(([name]) => name)).toEqual(['github', 'release'])
++    expect(new Prompts(store, () => 100000, variables, () => false, () => true).skills(config).map(([name]) => name)).toEqual(['github', 'release'])
++    expect(new Prompts(store, () => 100000, variables, () => false, () => false).skills(config).map(([name]) => name)).toEqual(['release'])
+   })
+ })
+ 
+diff --git a/tests/runtime.spec.ts b/tests/runtime.spec.ts
+index fd737f2..4245ef8 100644
+--- a/tests/runtime.spec.ts
++++ b/tests/runtime.spec.ts
+@@ -22,7 +22,7 @@ import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
+ import { feishuKind } from '../src/sources/feishu.ts'
+ import { githubKind, pollRound } from '../src/sources/github.ts'
+ import { CliError, Commands } from '../src/infra/commands.ts'
+-import { UserError, key, runningAssignment, said, threadKey, waitsForPerson, type Trigger } from '../src/core/index.ts'
++import { UserError, key, runningAssignment, said, threadKey, waitsForPerson, type Ticket, type Trigger } from '../src/core/index.ts'
+ import { feishuTrigger } from '../src/sources/feishu.ts'
+ import { feishuChannel } from '../src/sources/feishu-trigger.ts'
+ import { commentTrigger, githubChannel } from '../src/sources/github-trigger.ts'
+@@ -36,7 +36,8 @@ import { decisionList, search, threadDetail, threadList } from '../src/app/views
+ import { executorLoad, ticketDetail, ticketList } from '../src/app/views/tickets.ts'
+ 
+ let runtime: Runtime
+-const viewsOf = (value: Runtime) => ({ store: value.store, sources: value.sources, links: value.links() })
++const viewsOf = (value: Runtime) => ({ store: value.store, sources: value.sources, links: value.links(),
++  conversation: (ticket: Ticket) => value.executor.conversation(ticket) })
+ const overviewOf = (value: Runtime) => overview(viewsOf(value), value.health, policyVersion(value.store.settings()), executorLoad(value.store, value.executor.activeCount()), value.setupProblem ?? value.feishuProblem)
+ let directory: string
+ let controller: { create: ReturnType<typeof vi.fn>; selectModel: ReturnType<typeof vi.fn>; resolveAgent: ReturnType<typeof vi.fn>; rename: ReturnType<typeof vi.fn>; prompt: ReturnType<typeof vi.fn>; inspect: ReturnType<typeof vi.fn> }
+diff --git a/tests/timeline.spec.ts b/tests/timeline.spec.ts
+index 8c63e7c..e36007d 100644
+--- a/tests/timeline.spec.ts
++++ b/tests/timeline.spec.ts
+@@ -20,7 +20,7 @@ beforeEach(() => {
+ afterEach(() => { store.close(); rmSync(directory, { recursive: true, force: true }) })
+ const sources = new SourceRegistry(() => SettingsSchema.parse({}))
+ sources.register(githubKind)
+-const host = () => ({ store, sources, links: (channel: ChannelRef) => githubLink(channel.address, {}) })
++const host = () => ({ store, sources, links: (channel: ChannelRef) => githubLink(channel.address, {}), conversation: () => undefined })
+ const engine = () => new Engine({ repo: store, scope: sources, policy: () => settingsPolicy(SettingsSchema.parse({}), sources),
+   assessor: { request: () => {} }, executor: { start: async () => {}, deliver: async () => {}, stop: async () => {} },
+   outbox: { send: () => {}, status: () => undefined, withdraw: () => {} } })
+diff --git a/tests/views.spec.ts b/tests/views.spec.ts
+index 8056e9e..95f3f5b 100644
+--- a/tests/views.spec.ts
++++ b/tests/views.spec.ts
+@@ -55,7 +55,7 @@ function views() {
+     rules: [{ id: 'copy', name: 'Copy fixes', enabled: true, instruction: 'Fix copy' }] } }))
+   const sources = new SourceRegistry(() => store.settings())
+   sources.register(feishuKind); sources.register(githubKind)
+-  return { store, sources, links }
++  return { store, sources, links, conversation: () => undefined }
+ }
+ const at = new Date().toISOString()
+ /** A live ticket with no Assignment, as a follow-up's owner needs one. */
+@@ -122,12 +122,12 @@ it('follows the Ticket\'s stage: a blocked Ticket a person answered since is wor
+       report: blocked }],
+     inputs: [] as { id: string; kind: 'trigger'; triggerId: string; at: string; human?: true }[] }
+   store.tickets.save(ticket)
+-  const row = ticketSummary(store.tickets.get('t1')!)
++  const row = ticketSummary(store.tickets.get('t1')!, undefined)
+   expect(row).toMatchObject({ stage: 'person', action: 'blocked', actions: { retry: true }, note: { text: 'Needs the design file',
+     error: false } })
+   expect(ticketDetail(host, 't1')!.assignments[0]).toMatchObject({ turnEndedAt: blocked.at })
+   store.tickets.save({ ...ticket, inputs: [{ id: 'i1', kind: 'trigger', triggerId: 'e2', at: '2026-09-22T00:02:00Z', human: true }] })
+-  const answered = ticketSummary(store.tickets.get('t1')!)
++  const answered = ticketSummary(store.tickets.get('t1')!, undefined)
+   expect(answered).toMatchObject({ stage: 'working', actions: { retry: false } })
+   expect(answered).not.toHaveProperty('note')
+   expect(ticketDetail(host, 't1')!.assignments[0]).not.toHaveProperty('turnEndedAt')
+@@ -224,7 +224,7 @@ it('names a listed bot as the Policy lists it, and gives a bot\'s Mandate a basi
+   store.saveSettings(SettingsSchema.parse({ policy: { sources: { feishu: { allowed: [], bots: [{ id: 'cli_review', name: '评审机器人' }] } } } }))
+   const sources = new SourceRegistry(() => store.settings())
+   sources.register(feishuKind)
+-  const view = snapshot({ store, sources, links })
++  const view = snapshot({ store, sources, links, conversation: () => undefined })
+   expect(view.actor({ source: 'feishu', id: 'cli_review' }, false).name).toEqual({ zh: '评审机器人', en: '评审机器人' })
+   expect(basisFacts({ via: 'bot', sender: '评审机器人', addressed: 'mention', observation: { mode: 'auto' } }, view.rule).facts)
+     .toEqual([{ name: 'sender', value: '评审机器人' }, { name: 'bot' }, { name: 'addressed', value: 'mention' }, { name: 'mode', value: 'auto' }])
+diff --git a/tsdown.config.ts b/tsdown.config.ts
+index 0aabd00..47a41c5 100644
+--- a/tsdown.config.ts
++++ b/tsdown.config.ts
+@@ -7,7 +7,7 @@ const raw = { name: 'raw',
+   load: (id: string) => id.endsWith('?raw') ? { code: `export default ${JSON.stringify(readFileSync(id.slice(0, -4), 'utf8'))}`, moduleType: 'js' as const }
+     : undefined }
+ export default defineConfig([
+-  { entry: { index: 'src/index.ts', 'github-watch': 'src/sources/github.ts', 'feishu-watch': 'src/sources/feishu.ts' }, outDir: 'lib', format: 'esm', fixedExtension: false, platform: 'node', target: 'es2024', dts: true, clean: true, deps: { neverBundle: [/^@deepseek-ai\//, 'zod', 'proper-lockfile'] } },
++  { entry: { index: 'src/index.ts', 'github-watch': 'src/sources/github.ts', 'feishu-watch': 'src/sources/feishu.ts', sources: 'src/sources/sdk.ts' }, outDir: 'lib', format: 'esm', fixedExtension: false, platform: 'node', target: 'es2024', dts: true, clean: true, deps: { neverBundle: [/^@deepseek-ai\//, 'zod', 'proper-lockfile'] } },
+   { entry: { client: 'src/client/index.tsx' }, outDir: 'lib', format: 'cjs', platform: 'browser', dts: false, clean: false, plugins: [raw],
+     deps: { neverBundle: ['react', 'react/jsx-runtime', 'react-dom'] },
+     outputOptions: { entryFileNames: 'client.js', banner: 'window.__ModuleLoader__.load({ id: "dsh-superagent", factory: (require) => {', footer: 'return module.exports; } });', intro: 'var module = { exports: {} }; var exports = module.exports;' } },

@@ -45,3 +45,41 @@ async def resolve_assistant_a2a_user(
         owner_id, org_id=assistant.get("org_id"),
         api_scopes=[API_READ_SCOPE, API_WRITE_SCOPE],
     )
+
+
+async def assistant_a2a_targets(
+    *, assistant_id: str, binding_id: str | None, proxy_base_url: str,
+) -> list[dict[str, str]]:
+    """The Agents an Assistant runtime may call, each with its ingress URL and bearer.
+
+    Resolved from the durable workspace owner, never from model arguments:
+    every Agent the owner can see. Each call is checked again at the ingress.
+    """
+    from urllib.parse import quote
+
+    from astrabox.common.utils.errors import APIError
+    from astrabox.core.service.orchestrator.service_registry import get_agent_service
+
+    binding = await PlatformMCPBindingRepository().get_binding(binding_id or "")
+    assistant = await AssistantCatalogRepository().get_assistant(assistant_id)
+    if (
+        not binding or binding.get("scope_kind") != "assistant_workspace"
+        or binding.get("assistant_id") != assistant_id or not assistant
+        or not binding.get("user_id") or assistant.get("owner_id") != binding["user_id"]
+    ):
+        raise APIError(code="MCP_BINDING_NOT_FOUND", message="Assistant binding not found", status_code=404)
+    if not proxy_base_url.strip():
+        raise APIError(code="MCP_PROXY_NOT_CONFIGURED", message="Assistant A2A proxy is not configured", status_code=503)
+    user = UserContext(str(binding["user_id"]), org_id=assistant.get("org_id"))
+    targets = []
+    for agent in await get_agent_service().list_agents(user):
+        agent_id = str(agent["agent_id"])
+        targets.append({
+            "agent_id": agent_id,
+            "name": str(agent.get("name") or agent_id),
+            "description": str(agent.get("description") or ""),
+            "url": f"{proxy_base_url.rstrip('/')}/api/v1/assistant-a2a/"
+            f"{quote(str(binding_id), safe='')}/agents/{quote(agent_id, safe='')}",
+            "token": mint_assistant_a2a_capability(str(binding_id), agent_id),
+        })
+    return targets

@@ -438,7 +438,13 @@ class SessionStartup:
             return current
         # A lost box never ends a conversation: a failed replacement leaves it
         # READY, and the reader fails the messages that were waiting for it.
-        stays_open = bool(user_action) or replacing
+        # A Session that only starts an Assistant's workspace takes no messages,
+        # so nothing would ever answer its action: it ends with the action
+        # recorded, which the Assistant's read reports to its owner.
+        lifecycle_only = (
+            bool(current.get("hidden")) and current.get("owner_type") == "assistant_workspace"
+        )
+        stays_open = (bool(user_action) and not lifecycle_only) or replacing
         updates: dict[str, Any] = {
             "state": SessionState.READY.value if stays_open else SessionState.TERMINATED.value,
             # A message sent while this is set is answered with the action.

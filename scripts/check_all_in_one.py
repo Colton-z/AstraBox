@@ -88,6 +88,9 @@ PASS_THROUGH = frozenset(
         "ASTRABOX_ASSISTANT_SANDBOX_CPU_REQUEST",
         "ASTRABOX_ASSISTANT_SANDBOX_MEMORY_REQUEST",
         "ASTRABOX_SANDBOX_QUOTA_BOXES",
+        # The deployment's shared GitHub agent account for dsh-superagent
+        # Assistants: a deployment secret with the same effect as in Compose.
+        "ASTRABOX_DSH_SUPERAGENT_GITHUB_TOKEN",
         "ASTRABOX_SANDBOX_QUOTA_MEMORY",
         "ASTRABOX_SANDBOX_QUOTA_CPU",
         "ASTRABOX_SANDBOX_QUOTA_CONCURRENT_CREATES",

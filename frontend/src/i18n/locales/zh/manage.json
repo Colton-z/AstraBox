@@ -453,7 +453,19 @@
     "field_current_sandbox": "当前沙箱",
     "err_runtime_profile_required": "请选择这个 Assistant 使用的运行配置。",
     "card_note": "Agent 程序和 运行配置 在创建 Assistant 时确定，其他字段可以随时修改。",
-    "create_title": "创建 Assistant"
+    "create_title": "创建 Assistant",
+    "owner_secrets_title": "凭据",
+    "owner_secrets_intro": "它的运行环境启动前需要你提供的内容。每个值都只写不读：AstraBox 将其保存在密钥存储中，之后不再显示。",
+    "owner_secret_configured": "已配置",
+    "owner_secret_missing": "未设置",
+    "owner_secret_optional_unset": "未设置，不使用",
+    "owner_secret_deployment_default": "使用部署的共享账号",
+    "owner_secret_updated": "更新于 {{when}}",
+    "owner_secret_placeholder_set": "输入值",
+    "owner_secret_placeholder_replace": "输入新值以替换",
+    "owner_secret_set": "设置",
+    "owner_secret_replace": "替换",
+    "owner_secret_saving": "正在保存…"
   },
   "assistant_form": {
     "section_basic": "基本信息",

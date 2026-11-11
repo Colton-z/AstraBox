@@ -6,6 +6,9 @@
 #     sandbox-claude-code, sandbox-codex,  the per-session sandbox image of each
 #     sandbox-deepseek-harness,            bundled Agent program
 #     sandbox-hermes, sandbox-pi
+#     sandbox-dsh-superagent               the dsh-superagent Assistant runtime,
+#                                          built FROM the sandbox-deepseek-harness
+#                                          image this run pushed, by digest
 #     workspace-mounter                    the host-side helper for persistent
 #                                          workspaces
 #   ghcr.io/<owner>/astrabox               the all-in-one image
@@ -276,8 +279,68 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  build-dsh-superagent:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - os: ubuntu-24.04
+            arch: amd64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: repo
+        run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: digests-sandbox-deepseek-harness-${{ matrix.runner.arch }}
+          path: /tmp/dsh-digest
+
+      - id: dsh
+        name: The DeepSeek Harness image this architecture pushed
+        run: |
+          digests=(/tmp/dsh-digest/*)
+          [ "${#digests[@]}" -eq 1 ] || { echo "expected one sandbox-deepseek-harness digest, found ${#digests[@]}"; exit 1; }
+          echo "image=${{ env.REGISTRY }}/${{ steps.repo.outputs.owner }}/astrabox-sandbox-deepseek-harness@sha256:$(basename "${digests[0]}")" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: containers/sandbox-dsh-superagent/Dockerfile
+          platforms: linux/${{ matrix.runner.arch }}
+          build-args: DSH_IMAGE=${{ steps.dsh.outputs.image }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ steps.repo.outputs.owner }}/astrabox-sandbox-dsh-superagent,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=astrabox-sandbox-dsh-superagent-${{ matrix.runner.arch }}
+          cache-to: type=gha,mode=max,scope=astrabox-sandbox-dsh-superagent-${{ matrix.runner.arch }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests/sandbox-dsh-superagent
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/sandbox-dsh-superagent/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-sandbox-dsh-superagent-${{ matrix.runner.arch }}
+          path: /tmp/digests/sandbox-dsh-superagent/*
+          if-no-files-found: error
+          retention-days: 1
+
   merge:
-    needs: [build-execd, build, build-all-in-one]
+    needs: [build-execd, build, build-all-in-one, build-dsh-superagent]
     runs-on: ubuntu-24.04
     strategy:
       matrix:
@@ -289,6 +352,7 @@ jobs:
           - sandbox-deepseek-harness
           - sandbox-hermes
           - sandbox-pi
+          - sandbox-dsh-superagent
           - workspace-mounter
           - all-in-one
     steps:

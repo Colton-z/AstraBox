@@ -60,6 +60,20 @@ def published_components() -> tuple[set[str], list[str]]:
     ):
         problems.append("build-all-in-one does not build containers/all-in-one/Dockerfile")
     built.add("all-in-one")
+    # The dsh-superagent runtime is built FROM the DeepSeek Harness image each
+    # architecture just pushed, for the same reason.
+    superagent = jobs["build-dsh-superagent"]
+    if "build" not in _needs(superagent):
+        problems.append(
+            "build-dsh-superagent does not need build, so it is not built from the "
+            "sandbox-deepseek-harness digest"
+        )
+    if not any(
+        (step.get("with") or {}).get("file") == "containers/sandbox-dsh-superagent/Dockerfile"
+        for step in superagent["steps"]
+    ):
+        problems.append("build-dsh-superagent does not build containers/sandbox-dsh-superagent/Dockerfile")
+    built.add("sandbox-dsh-superagent")
     execd = jobs["build-execd"]
     built.update(execd["strategy"]["matrix"]["component"])
     if "build-execd" not in _needs(jobs["build"]):
@@ -69,7 +83,7 @@ def published_components() -> tuple[set[str], list[str]]:
         problems.append(f"built {sorted(built)} but tags {sorted(merged)}")
     # A failed build of any image must skip every merge, so a release never
     # tags half its images.
-    if not {"build-execd", "build", "build-all-in-one"} <= _needs(jobs["merge"]):
+    if not {"build-execd", "build", "build-all-in-one", "build-dsh-superagent"} <= _needs(jobs["merge"]):
         problems.append("merge does not wait for all image build jobs")
     return built, problems
 

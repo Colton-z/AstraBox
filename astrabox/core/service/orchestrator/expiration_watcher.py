@@ -359,11 +359,20 @@ class ExpirationWatcher:
         tick re-resolves them; a token close to expiry is refreshed by the
         connector service before it is written.
         """
+        from astrabox.core.service.orchestrator.engine.capabilities import (
+            capabilities_for_engine_kind,
+        )
+
         refreshed = 0
         failed = 0
         for runtime in self._platform._runtime_manager.live_runtimes():
             refresh = getattr(runtime, "prepare_engine_input", None)
-            if getattr(runtime, "engine_kind", None) != "assistant" or refresh is None:
+            engine_kind = str(getattr(runtime, "engine_kind", "") or "")
+            if (
+                refresh is None
+                or not engine_kind
+                or capabilities_for_engine_kind(engine_kind).assistant is None
+            ):
                 continue
             try:
                 await refresh()
@@ -546,6 +555,9 @@ class ExpirationWatcher:
                     summary["assistant_profiles_refreshed"] = (
                         summary.get("assistant_profiles_refreshed", 0) + 1
                     )
+                outcome = await self._refresh_assistant_box_credentials(row)
+                if outcome:
+                    summary[outcome] = summary.get(outcome, 0) + 1
                 continue
             summary["assistant_boxes_dead"] += 1
             convergence = await lifecycle.converge_dead_sandbox_owners(
@@ -556,6 +568,100 @@ class ExpirationWatcher:
             )
             await self._wake_assistants(convergence.converged_assistant_workspaces)
         return summary
+
+    async def _refresh_assistant_box_credentials(self, row: dict[str, Any]) -> str | None:
+        """Write a live Assistant box's protected credentials again.
+
+        An Assistant's credentials belong to its one box. A runtime this
+        process holds refreshes them before each turn, but a box may have
+        none here: a runtime that serves no conversations (dsh-superagent)
+        keeps no runtime after its box is prepared, and a restarted server
+        holds none until someone attaches. So each tick composes the
+        Assistant's current assignment under the placeholder context the
+        box's identity records and keeps what the box then delivers: a
+        rotated environment or HTTP Basic value reaches it and an archived,
+        deleted or unassigned one is withdrawn, with nobody using the
+        Assistant.
+        """
+        from astrabox.common.utils.settings import load_astrabox_settings
+        from astrabox.core.service.orchestrator.agent_config_service import AgentConfigService
+        from astrabox.core.service.orchestrator.engine.provisioning import (
+            ENVIRONMENT_CREDENTIAL_IDS,
+            ENVIRONMENT_PLACEHOLDER_CONTEXT,
+            connect_engine_sandbox,
+            reconcile_sandbox_credentials,
+        )
+        from astrabox.persistence.repository.agent_repository import AgentRepository
+        from astrabox.persistence.repository.assistant_workspace_repository import (
+            AssistantWorkspaceRepository,
+        )
+        from astrabox.persistence.repository.runtime_profile_repository import (
+            RuntimeProfileRepository,
+        )
+        from astrabox.persistence.repository.session_repository import SessionRepository
+        from astrabox.seams.sandbox import sandbox_for_name
+
+        assistant_id = str(row.get("assistant_id") or "")
+        sandbox_id = str(row.get("current_sandbox_id") or "")
+        identity = row.get("runtime_identity")
+        if not isinstance(identity, dict) or str(identity.get("sandbox_id") or "") != sandbox_id:
+            return None
+        context = str(identity.get(ENVIRONMENT_PLACEHOLDER_CONTEXT) or "").strip()
+        if not context:
+            return None
+        vault_enabled = bool(
+            getattr(load_astrabox_settings(), "sandbox_credential_vault_enabled", False)
+        )
+        try:
+            sessions = SessionRepository()
+            # Any Session on the box resolves the same plan: the Assistant's
+            # current assignment, under the box's placeholder context.
+            session = await sessions.find_session_by_sandbox_id(sandbox_id)
+            session_id = str((session or {}).get("session_id") or "").strip()
+            backend = str((session or {}).get("sandbox_backend") or "").strip().lower()
+            if not isinstance(session, dict) or not session_id or not backend:
+                return None
+            backend_adapter = sandbox_for_name(backend)
+            if not vault_enabled and not bool(
+                getattr(backend_adapter, "supports_header_placeholder_credentials", False)
+            ):
+                return None
+            template = await AgentConfigService(
+                AgentRepository(), RuntimeProfileRepository(), sessions_repo=sessions,
+            ).resolve_session_harness(session)
+            platform = self._platform._runtime_manager
+            sandbox = await connect_engine_sandbox(platform, sandbox_id=sandbox_id, template=template)
+            delivered = {str(item) for item in identity.get(ENVIRONMENT_CREDENTIAL_IDS) or ()}
+            now, _bindings = await reconcile_sandbox_credentials(
+                platform,
+                session_id=session_id,
+                template=template,
+                backend_adapter=backend_adapter,
+                sandbox=sandbox,
+                placeholder_context=context,
+                delivered=delivered,
+                bindings=set(),
+                vault_enabled=vault_enabled,
+                # MCP bindings follow each conversation's own Vault scope and
+                # are refreshed by its runtime before each turn.
+                with_mcp=False,
+            )
+            if now != delivered:
+                await AssistantWorkspaceRepository().record_credential_delivery(
+                    assistant_id,
+                    sandbox_id=sandbox_id,
+                    record={ENVIRONMENT_CREDENTIAL_IDS: sorted(now)},
+                )
+        except Exception as exc:  # noqa: BLE001 — the next tick retries
+            logger.warning(
+                "expiration_watcher: assistant box credential refresh failed "
+                "assistant=%s sandbox=%s: %s",
+                assistant_id,
+                sandbox_id,
+                exc,
+            )
+            return "assistant_box_credential_refresh_failed"
+        return "assistant_box_credentials_refreshed"
 
     async def _refresh_assistant_profile(self, row: dict[str, Any]) -> bool:
         from astrabox.common.utils.user_context import UserContext

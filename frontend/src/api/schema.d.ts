@@ -2428,6 +2428,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/assistants/{assistant_id}/owner-secrets/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Set Assistant Owner Secret */
+        put: operations["set_assistant_owner_secret_api_v1_assistants__assistant_id__owner_secrets__key__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assistants/{assistant_id}/panel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Open Assistant Panel */
+        get: operations["open_assistant_panel_api_v1_assistants__assistant_id__panel_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/assistants/{assistant_id}/workspace": {
         parameters: {
             query?: never;
@@ -6759,6 +6793,14 @@ export interface components {
             /** Message */
             message: string;
         };
+        /** ApiEnvelope[AssistantPanel] */
+        ApiEnvelope_AssistantPanel_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["AssistantPanel"];
+            /** Message */
+            message: string;
+        };
         /** ApiEnvelope[AssistantWorkspaceDestruction] */
         ApiEnvelope_AssistantWorkspaceDestruction_: {
             /** Code */
@@ -7955,6 +7997,7 @@ export interface components {
             permission_mode_default?: string | null;
             /** Primary */
             primary?: boolean | null;
+            runtime?: components["schemas"]["AssistantRuntimeSurface"] | null;
             /** Runtime Profile Name */
             runtime_profile_name?: string | null;
             /** Skills */
@@ -7967,6 +8010,12 @@ export interface components {
             timezone?: string | null;
             /** Updated At */
             updated_at?: string | null;
+            /** Workspace Action */
+            workspace_action?: {
+                [key: string]: unknown;
+            } | null;
+            /** Workspace Error */
+            workspace_error?: string | null;
             /** Workspace State */
             workspace_state?: string | null;
         } & {
@@ -8124,6 +8173,64 @@ export interface components {
             ready?: number | null;
             /** Total */
             total?: number | null;
+        };
+        /**
+         * AssistantOwnerSecretStatus
+         * @description One credential the Assistant's runtime asks its owner for; never its value.
+         */
+        AssistantOwnerSecretStatus: {
+            /** Configured */
+            configured: boolean;
+            /**
+             * Deployment Default
+             * @default false
+             */
+            deployment_default: boolean;
+            /**
+             * Help
+             * @default
+             */
+            help: string;
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /**
+             * Required
+             * @default true
+             */
+            required: boolean;
+            /** Updated At */
+            updated_at?: string | null;
+        };
+        /**
+         * AssistantPanel
+         * @description A signed browser address for the Assistant runtime's panel.
+         *
+         *     The address carries the runtime's login. ``expires_at`` is when it stops
+         *     routing (``null`` when the deployment does not sign sandbox addresses);
+         *     ask for a new one before then.
+         */
+        AssistantPanel: {
+            /** Expires At */
+            expires_at?: string | null;
+            /** Url */
+            url: string;
+        };
+        /**
+         * AssistantRuntimeSurface
+         * @description How the Assistant's runtime serves its owner.
+         *
+         *     ``conversations``: the console hosts its conversations. ``panel``: the
+         *     runtime serves its own page, opened through ``GET .../panel``.
+         */
+        AssistantRuntimeSurface: {
+            /** Conversations */
+            conversations: boolean;
+            /** Owner Secrets */
+            owner_secrets: components["schemas"]["AssistantOwnerSecretStatus"][];
+            /** Panel */
+            panel: boolean;
         };
         /**
          * AssistantWorkspace
@@ -11132,6 +11239,14 @@ export interface components {
             sandbox_id: string;
             /** Session Id */
             session_id: string;
+        };
+        /**
+         * OwnerSecretValue
+         * @description A write-only credential value.
+         */
+        OwnerSecretValue: {
+            /** Value */
+            value: string;
         };
         /** PerformUserAction */
         PerformUserAction: {
@@ -20118,6 +20233,91 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_StartedAssistantConversation_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    set_assistant_owner_secret_api_v1_assistants__assistant_id__owner_secrets__key__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assistant_id: string;
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OwnerSecretValue"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_Assistant_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    open_assistant_panel_api_v1_assistants__assistant_id__panel_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assistant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AssistantPanel_"];
                 };
             };
             /** @description Request validation failed (INVALID_REQUEST). */

@@ -519,18 +519,6 @@ async def test_env_credentials_require_egress_capable_backend_at_attach() -> Non
     assert disabled.value.code == "VAULT_ENV_CREDENTIAL_UNSUPPORTED"
     assert "ASTRABOX_SANDBOX_CREDENTIAL_VAULT=1" in disabled.value.message
 
-    with pytest.raises(APIError) as assistant:
-        await service.validate_bound_vaults_for_session(
-            [vault_id],
-            backend_name="open_sandbox",
-            backend_supports_egress_injection=False,
-            backend_supports_header_credentials=False,
-            egress_injection_unsupported_reason=(
-                "Assistant conversations support saved MCP credentials only."
-            ),
-        )
-    assert "Assistant conversations" in assistant.value.message
-
 
 @pytest.mark.parametrize(
     "allowed_requests",

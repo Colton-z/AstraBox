@@ -414,6 +414,15 @@ for _code, _status, _category, _retryable, _owner in (
     # No RuntimeProfile for Assistants yet: an administrator sets one in the
     # Assistant defaults, so the user's retry cannot change the answer.
     ("ASSISTANT_DEFAULTS_UNAVAILABLE", 409, "configuration.runtime_profile", False, "template"),
+    # The Assistant's runtime serves its owner through its own panel rather
+    # than through conversations, so no retry or input can start one.
+    ("ASSISTANT_CONVERSATIONS_UNSUPPORTED", 409, "request", False, "client"),
+    # The owner has not supplied a credential the runtime declares; setting it
+    # in the Assistant's settings is the only thing that changes the answer.
+    ("ASSISTANT_PANEL_UNSUPPORTED", 409, "request", False, "client"),
+    # The deployment's sandbox gateway routes by path prefix; only an operator
+    # switching it to wildcard routes changes the answer.
+    ("ASSISTANT_PANEL_ROUTE_UNSUPPORTED", 409, "configuration.sandbox", False, "platform"),
     ("RUNTIME_PROFILE_IN_USE", 409, "configuration.runtime_profile", False, "template"),
     # The row names a stored credential that is absent from the secret store.
     ("RUNTIME_PROFILE_SECRET_MISSING", 500, "configuration.runtime_profile", False, "platform"),

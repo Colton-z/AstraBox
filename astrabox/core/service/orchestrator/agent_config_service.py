@@ -92,6 +92,7 @@ _ASSISTANT_RUNTIME_FIELDS = (
     "mcp_assignments",
     "connector_servers",
     "credential_vault_ids",
+    "owner_secrets",
 )
 
 
@@ -271,6 +272,7 @@ class AgentConfigService:
             LAYER_RUNTIME_FIELDS,
             inherited_layers,
             joined_instructions,
+            layers_for_engine,
             merged_engine_options,
             narrowest,
         )
@@ -282,7 +284,11 @@ class AgentConfigService:
         env = await self._require_runtime_profile(
             env_name, ref=f"assistant '{assistant_id}'", require_enabled=require_enabled_runtime_profile
         )
-        layers = await inherited_layers()
+        layers = await layers_for_engine(
+            await inherited_layers(),
+            str(env.get("engine_kind") or "").strip(),
+            await self._runtime_profile_repo.list_all(),
+        )
         model_override = assistant.get("model_config_override") or {}
         model = (
             str(model_override.get("model_name") or "").strip()
@@ -376,7 +382,10 @@ class AgentConfigService:
 
     @staticmethod
     def _assistant_revision(
-        assistant: dict[str, Any], env: dict[str, Any], *, layers: list[dict[str, Any]] | None = None
+        assistant: dict[str, Any],
+        env: dict[str, Any],
+        *,
+        layers: list[dict[str, Any]] | None = None,
     ) -> str:
         """The identity of what an Assistant's runtime is prepared from.
 

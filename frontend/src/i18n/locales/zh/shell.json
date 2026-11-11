@@ -45,5 +45,20 @@
   "assistant_new": "新建助手",
   "assistant_default_name": "助手",
   "assistant_open_failed": "无法打开助手",
-  "assistant_earlier_conversations": "{{name}} 以前的对话"
+  "assistant_earlier_conversations": "{{name}} 以前的对话",
+  "assistant_panel": {
+    "opening": "正在打开 {{name}}…",
+    "start_failed": "无法启动 {{name}}",
+    "stopped": "{{name}} 没有启动",
+    "stopped_hint": "它的运行环境在就绪前停止了。",
+    "open_failed": "无法打开 {{name}}",
+    "route_unsupported": "本部署无法显示 {{name}}",
+    "panel_unsupported": "{{name}} 没有可显示的页面",
+    "renew_failed": "无法续期与 {{name}} 的连接。当前连接到期后，页面将停止响应。",
+    "read_failed": "无法读取 {{name}} 的状态",
+    "secret_required_one": "{{name}} 还需要你提供 {{count}} 项凭据",
+    "secret_required_other": "{{name}} 还需要你提供 {{count}} 项凭据",
+    "secret_required_hint": "请在它的设置中填写{{labels}}，然后重新打开它。",
+    "open_settings": "打开设置"
+  }
 }

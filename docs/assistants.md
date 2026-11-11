@@ -183,6 +183,172 @@ files and Hermes' sync records in the database for restoration into a new box.
 Skills supplied through the Assistant's `skills` configuration remain managed
 by those sources: update the source to change what the configuration supplies.
 
+## Assistants that work from a panel: dsh-superagent {#panel-runtimes}
+
+Some Agent programs do not hold conversations with their owner.
+[dsh-superagent](https://github.com/deepseek-ai/dsh-superagent-prototype)
+runs on DeepSeek Harness, takes requests from its Sources (a GitHub
+repository, or a ticket or to-do service your own Source plugin reads), turns
+each into a Ticket, and has one of its owner's Agents work it. People talk to it where
+they already work; the owner supervises it in the bundle's own panel. An Assistant on a
+RuntimeProfile with the `dsh_superagent` engine therefore has no
+conversations: opening it shows the panel, on its Superagent page, inside the
+console, and the Assistant keeps running between visits so it can answer
+its Sources.
+
+The deployment needs:
+
+- **OpenSandbox with Secure Access and wildcard routes** (`gatewayRouteMode:
+  wildcard` on the lifecycle server). The console opens the panel through a
+  short-lived signed address of the form
+  `<sandbox>-<port>-<expiry>-<signature>.<gateway domain>`; a header-routed
+  gateway cannot be opened by a browser and the Assistant shows why. The
+  address lives `ASTRABOX_SANDBOX_ENDPOINT_URL_TTL_SECONDS` (15 minutes by
+  default); the console fetches the next one before it expires, which reloads
+  the panel.
+- **The gateway domain on the console's site.** The harness keeps its login in
+  a `SameSite=Strict` cookie, which a browser sends inside the console's frame
+  only when both share a registrable domain and a scheme: for example a
+  console at `https://astrabox.example.com` with a gateway at
+  `*.sbx.example.com`, both HTTPS. A wildcard certificate for the gateway
+  domain has to be issued with a DNS challenge.
+- **A GitHub account for the agent, to work from GitHub.** Set the deployment secret
+  `astrabox-dsh-superagent-github-token` (through the environment that is
+  `ASTRABOX_DSH_SUPERAGENT_GITHUB_TOKEN`) to a token of one bot account, and
+  every dsh-superagent Assistant uses it. An owner who wants the work done
+  under another account sets **GitHub agent account token** on the
+  Assistant's settings page; it is stored encrypted and replaces the shared one for that Assistant
+  only. Without either, the agent has no GitHub account: the GitHub Source
+  stays unset and its other Sources run. The account must receive mentions on GitHub itself: in its
+  notification settings, **Participating, @mentions and custom** must include
+  **On GitHub**. The token is a classic personal access token with the `repo`
+  and `notifications` scopes.
+
+To put an Assistant to work, invite the bot account to the repository, then
+in the panel's **Settings** set the GitHub Source's repository, the accounts
+whose requests it may act on, and the command that prepares a Ticket's
+checkout, for example:
+
+```bash
+git clone --quiet "https://github.com/$DSH_SUPERAGENT_GITHUB_REPOSITORY.git" "$DSH_SUPERAGENT_DIR" \
+  && git -C "$DSH_SUPERAGENT_DIR" checkout -q -b "agent/$DSH_SUPERAGENT_NAME"
+```
+
+A mention of the bot in an issue from an allowed account then becomes a
+Ticket; the bot answers on the issue, and a code change arrives as a pull
+request for a person to merge. The bundle's own model calls use the
+Assistant's model through the deployment's model gateway.
+
+The work itself is done by one of the owner's Agents. For each Ticket, the
+bundle's main Session picks the Agent whose name and description fit the
+request, and the Ticket becomes a conversation of that Agent, started over
+[A2A](a2a.md) as the Assistant's owner. The owner sees it in the console like
+any other conversation, and **Open conversation** on the Ticket's page opens
+it; the request's follow-ups, such as new comments on the issue, go to the
+same conversation. The Agent works in its own sandbox with its own program and
+model, and the prepare command above runs in its workspace, so the panel's
+execution settings leave out the bundle's own worker model, execution
+directory and blocked commands. When the Agent's work on a message completes,
+its reply is the Ticket's result, which the Assistant answers the request with
+on its thread; a pull request the reply names from the Ticket's branch becomes
+the Ticket's to follow. A question the Agent asks, or an approval it waits
+for, shows on the Ticket and is answered in the Agent's conversation. Stopping
+a Ticket cancels its conversation's work ([cancellation](a2a.md)). The Agents
+the Assistant can choose are the ones its owner can use when its runtime
+starts; an Agent added later is offered after the next start.
+
+Give the Agents that do code work access to GitHub as the bot. The bundle
+follows only pull requests the bot opened from a Ticket's branch, so an Agent
+that works as another account opens pull requests its Ticket does not follow.
+An administrator puts the bot's token in a Vault twice, and assigns the Vault
+to those Agents
+([Authenticate with Vaults](credentials.md#2-add-a-credential)):
+
+- as an **HTTP Basic (Git HTTPS)** credential for the repository's HTTPS URL,
+  for example `https://github.com/your-org/your-repo.git`, with the bot's
+  login as the username, which `git push` uses; and
+- as an **Environment variable** credential named `GH_TOKEN` for
+  `api.github.com`, which `gh pr create` uses.
+
+The Agents' sandbox image needs `git` and `gh`; the Claude Code image has both.
+
+The bundle keeps its Tickets, threads and decisions in its own database. The
+platform saves that database, with the harness's Session logs and settings,
+in the platform database as the box works, and restores them into a new box
+after the box is released or lost; Ticket checkouts are prepared again.
+
+Limits:
+
+- The bot reads the notifications of the repository each Assistant names and
+  never marks them read, so several Assistants can share one bot as long as
+  each watches its own repository. Nothing stops two Assistants from naming
+  the same repository, and an Assistant can be pointed at any repository the
+  bot was invited to.
+- The Skills, MCP servers, packages and Agent-program configuration in the
+  [Assistant defaults](#defaults) are written for the program of the
+  RuntimeProfile the defaults choose. An Assistant on another program does
+  not inherit them. The defaults' model still applies; dsh-superagent has no
+  place for the organization instructions.
+- Feishu, the bundle's second Source, is not configured by the platform.
+- A process holds the environment it started with: an environment credential
+  added to an assigned Vault reaches the bundle when the Assistant's runtime
+  next starts, while a rotated or archived one applies to the running one
+  ([Protect credentials](egress-credential-injection.md#add-an-outbound-credential)).
+
+### Your own Sources {#own-sources}
+
+A Source is a dsh-superagent plugin that reads a service's events and replies
+on it ([the bundle's cookbook](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/008-cookbook.md#add-a-source)).
+AstraBox's image patches the bundle so that GitHub is optional and a Source can
+live in its own package, importing the bundle's Source interface from
+`dsh-superagent/sources` (`containers/sandbox-dsh-superagent/upstream-changes.patch`,
+offered upstream). An organization adds its ticket or to-do service by building
+its own image on AstraBox's:
+
+```dockerfile
+FROM ghcr.io/colton-z/astrabox-sandbox-dsh-superagent:<version>
+# The plugin package, with its own dependencies; `dsh-superagent` resolves to the installed bundle.
+COPY --chmod=u=rwX,go=rX my-tickets-source /opt/astrabox/dsh-plugins/my-tickets-source
+# Its loader layer: inserted after AstraBox's, in name order.
+COPY --chmod=0444 50-my-tickets.yml /opt/astrabox/superagent/patches.d/50-my-tickets.yml
+# Boot the composition once and require the Source kind to be installed.
+RUN /usr/local/bin/astrabox-dsh-superagent-boot-check --source my-tickets
+```
+
+with a loader layer such as:
+
+```yaml
+- insert:
+    - id: my-tickets-source
+      name: file:///opt/astrabox/dsh-plugins/my-tickets-source/lib/index.js
+```
+
+The check boots the harness as an unprivileged account, as a box runs it under
+the Assistant's own account, so a plugin file that account cannot read fails the
+build instead of leaving the Source silently uninstalled; keep the plugin's files
+readable by everyone, as `--chmod=u=rwX,go=rX` does. Point a RuntimeProfile on
+the `dsh_superagent` engine at that image. The
+Source's settings appear in the panel's **Settings**. The plugin reaches its
+service with a credential from a Credential Vault assigned to the Assistant:
+an `environment_variable` credential bound to the service's host gives the
+plugin a placeholder in its environment, which the sandbox's outbound proxy
+replaces in matching requests ([Protect credentials](egress-credential-injection.md#add-an-outbound-credential)).
+The RuntimeProfile's network access must admit the service's host.
+
+An owner can also add a Source to their own Assistant, with no image of their
+own: package it as a dsh plugin Bundle whose own `cordis.patch.yml` inserts the
+plugin, and list it under **Profile package.json** on the Assistant's **Skills,
+plugins and configuration** card, for example
+`{"dependencies": {"my-tickets-source": "1.2.0"}}` (npm versions, git specs or
+tarball URLs). Saving prepares the Assistant again on its box: the harness's own
+`dsh plugin` installs the Bundle and the harness restarts; a failed install
+stops the start with pnpm's own message. Every new box installs the Bundles
+again from the configuration; they are not part of the saved state. The
+[Assistant defaults](#defaults) can list Bundles for every Assistant on that
+program. With limited network access, a public registry or git host is admitted
+for the Assistant; a private one, such as an internal registry, only once an
+administrator names it in the RuntimeProfile's allowed hosts.
+
 ## When a change takes effect
 
 Saving a change never ends a reply in progress. When the change reaches a
@@ -430,16 +596,19 @@ Only the owner can list, open, update, pause, resume, or delete an Assistant.
 Requests from other accounts receive the same not-found response as requests for
 an unknown Assistant.
 
-Credential delivery is separate from ownership. Assigned MCP credentials
-require sandbox credential protection. The sandbox provider attaches the
+Credential delivery is separate from ownership. Assigned MCP, environment and
+HTTP Basic credentials require sandbox credential protection. The sandbox provider attaches the
 credential only to matching outbound requests, keeping its stored value outside
 the Assistant's sandbox. An authenticated managed MCP binding is rejected when
 that protection is disabled.
 
 Administrators can assign a Credential Vault to an Assistant from
-**Management console → Credentials**. The Assistant can then use the assigned
-MCP credentials without exposing their stored values to the user or Agent
-program. See [Credentials](credentials.md) for supported credential types and
+**Management console → Credentials**. The Assistant can then use every assigned
+credential without exposing its stored value to the user or Agent program: MCP
+credentials for its remote MCP servers, and environment and HTTP Basic
+credentials for the programs in its sandbox, such as a dsh-superagent Source
+plugin calling its own ticket service. They belong to the Assistant's one
+sandbox, which all its conversations share. See [Credentials](credentials.md) for supported credential types and
 assignment rules.
 
 ## Delete an Assistant

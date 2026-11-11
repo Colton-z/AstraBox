@@ -453,7 +453,19 @@
     "field_current_sandbox": "Current sandbox",
     "err_runtime_profile_required": "Select the runtime profile this assistant runs on.",
     "card_note": "Agent program and runtime profile are fixed when the Assistant is created. Everything here can change at any time.",
-    "create_title": "New assistant"
+    "create_title": "New assistant",
+    "owner_secrets_title": "Credentials",
+    "owner_secrets_intro": "What its runtime needs from you before it can start. Each value is write-only: AstraBox keeps it in the secret store and never shows it again.",
+    "owner_secret_configured": "Configured",
+    "owner_secret_missing": "Not set",
+    "owner_secret_optional_unset": "Not set, not used",
+    "owner_secret_deployment_default": "Using the deployment's shared account",
+    "owner_secret_updated": "Updated {{when}}",
+    "owner_secret_placeholder_set": "Enter the value",
+    "owner_secret_placeholder_replace": "Enter a new value to replace it",
+    "owner_secret_set": "Set",
+    "owner_secret_replace": "Replace",
+    "owner_secret_saving": "Saving…"
   },
   "assistant_form": {
     "section_basic": "Basics",

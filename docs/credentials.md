@@ -226,9 +226,9 @@ curl -X PUT \
 New Sessions created from that Agent automatically gain access to every active
 Credential in the Vault. For MCP credentials, the first Vault with a matching
 MCP server URL wins. HTTP Basic credentials likewise use the first Vault with a
-matching destination URL. An Assistant can use MCP credentials, but it cannot
-be assigned a Vault containing `environment_variable` or `http_basic`
-credentials.
+matching destination URL. An Assistant takes every credential type; its
+outbound credentials are delivered to its one sandbox, shared by all its
+conversations ([how delivery keeps up with changes](egress-credential-injection.md#add-an-outbound-credential)).
 
 ## Parameters
 

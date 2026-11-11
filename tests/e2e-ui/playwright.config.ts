@@ -53,6 +53,11 @@ const sandboxEnvelopeDeployment = Boolean((process.env.ASTRABOX_E2E_SANDBOX_ENVE
 // it runs is a different deployment shape from the lanes' unlimited one. Its
 // specs are collected only when the run declares ASTRABOX_E2E_SANDBOX_QUOTA=1.
 const sandboxQuotaDeployment = process.env.ASTRABOX_E2E_SANDBOX_QUOTA === '1';
+// A dsh-superagent image built with its own Source (docs/assistants.md, "Your own
+// Sources") is a different deployment shape from the lanes' one. Its specs are
+// collected only when the run names that image's RuntimeProfile in
+// ASTRABOX_E2E_SUPERAGENT_SOURCE_RUNTIME_PROFILE.
+const superagentSourceDeployment = Boolean((process.env.ASTRABOX_E2E_SUPERAGENT_SOURCE_RUNTIME_PROFILE || '').trim());
 // Historical cursor recovery upgrades the host in place using a declared source-bind fixture.
 const claudeCursorUpgrade = Boolean((process.env.ASTRABOX_E2E_CLAUDE_CLIENT_BIND_FILE || '').trim());
 export default defineConfig({
@@ -67,6 +72,7 @@ export default defineConfig({
     ...(pathPrefixDeployment ? [] : ['**/*.path-prefix.spec.ts']),
     ...(sandboxEnvelopeDeployment ? [] : ['**/*.sandbox-envelope.spec.ts']),
     ...(sandboxQuotaDeployment ? [] : ['**/*.sandbox-quota.spec.ts']),
+    ...(superagentSourceDeployment ? [] : ['**/*.superagent-source.spec.ts']),
     ...(claudeCursorUpgrade ? [] : ['**/claude-compacted-result-reattach.exclusive.spec.ts']),
   ],
   fullyParallel: true,

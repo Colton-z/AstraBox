@@ -10,8 +10,9 @@ because one alone lets the registry and the code drift apart from the other end:
 * **Completeness.** An AST scan of every ``.py`` file under ``astrabox/`` and
   ``scripts/runtime/`` finds each ``os.getenv`` / ``os.environ[...]`` /
   ``os.environ.get`` with a literal name, a name a module-level constant or a
-  ``for`` loop over a literal tuple resolves, and the first argument of the
-  wrappers in ``_WRAPPER_CALLS``. The ``AstraBoxSettings`` and
+  ``for`` loop over a literal tuple resolves, the first argument of the
+  wrappers in ``_WRAPPER_CALLS``, and an engine's ``deployment_secret``, which
+  ``SecretProvider`` reads as ``secret_env_key(name)``. The ``AstraBoxSettings`` and
   ``AstraBoxRuntimeSettings`` fields are read by pydantic-settings, which no
   call site shows, so they are resolved from the live classes. Every name found
   must have a row.
@@ -65,6 +66,7 @@ IMAGE_PROGRAMS_ROOT = REPO_ROOT / "scripts" / "runtime"
 sys.path.insert(0, str(REPO_ROOT))
 
 from astrabox.config.env_registry import ENV_REGISTRY, concrete_names  # noqa: E402
+from astrabox.secrets import secret_env_key  # noqa: E402
 
 #: Wrapper functions that compose an env-var name from a literal argument, so a
 #: plain search for ``os.getenv`` never sees their call sites. Keyed by
@@ -292,7 +294,25 @@ class _ModuleScanner(ast.NodeVisitor):
             index = _WRAPPER_CALLS.get((self.module, func.id))
             if index is not None and len(node.args) > index:
                 self._handle(node, node.args[index], func.id)
+        for keyword in node.keywords:
+            # An engine's shared credential, by SecretProvider name.
+            if keyword.arg == "deployment_secret" and not (
+                isinstance(keyword.value, ast.Constant) and keyword.value.value is None
+            ):
+                self._handle_secret(node, keyword.value)
         self.generic_visit(node)
+
+    def _handle_secret(self, node: ast.AST, arg: ast.expr) -> None:
+        line = getattr(node, "lineno", 0)
+        names = [_literal_str(arg)] if _literal_str(arg) is not None else (
+            self._resolve(arg) if isinstance(arg, ast.Name) else None
+        )
+        if not names:
+            self.result.unresolved.add((self.module, line))
+            return
+        for name in names:
+            if name is not None:
+                self.result.add(secret_env_key(name), self.module, line, "deployment_secret")
 
 
 def _add_settings_fields(result: ScanResult) -> None:
@@ -383,6 +403,9 @@ def _embedded_scripts() -> dict[str, str]:
         "sandbox-hermes/hermes_gateway_bridge.py": (hermes / "hermes_gateway_bridge.py").read_text(
             encoding="utf-8"
         ),
+        "sandbox-dsh-superagent/astrabox-dsh-superagent-serve": (
+            REPO_ROOT / "containers/sandbox-dsh-superagent/astrabox-dsh-superagent-serve"
+        ).read_text(encoding="utf-8"),
     }
 
 

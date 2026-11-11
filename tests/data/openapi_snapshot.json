@@ -6350,6 +6350,28 @@
         "title": "ApiEnvelope[AssistantListPage]",
         "type": "object"
       },
+      "ApiEnvelope_AssistantPanel_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AssistantPanel"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[AssistantPanel]",
+        "type": "object"
+      },
       "ApiEnvelope_AssistantWorkspaceDestruction_": {
         "properties": {
           "code": {
@@ -9673,6 +9695,16 @@
             ],
             "title": "Primary"
           },
+          "runtime": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AssistantRuntimeSurface"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "runtime_profile_name": {
             "anyOf": [
               {
@@ -9738,6 +9770,29 @@
               }
             ],
             "title": "Updated At"
+          },
+          "workspace_action": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Action"
+          },
+          "workspace_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Error"
           },
           "workspace_state": {
             "anyOf": [
@@ -10239,6 +10294,111 @@
           "has_more"
         ],
         "title": "AssistantListPage",
+        "type": "object"
+      },
+      "AssistantOwnerSecretStatus": {
+        "additionalProperties": false,
+        "description": "One credential the Assistant's runtime asks its owner for; never its value.",
+        "properties": {
+          "configured": {
+            "title": "Configured",
+            "type": "boolean"
+          },
+          "deployment_default": {
+            "default": false,
+            "title": "Deployment Default",
+            "type": "boolean"
+          },
+          "help": {
+            "default": "",
+            "title": "Help",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "required": {
+            "default": true,
+            "title": "Required",
+            "type": "boolean"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "configured"
+        ],
+        "title": "AssistantOwnerSecretStatus",
+        "type": "object"
+      },
+      "AssistantPanel": {
+        "additionalProperties": false,
+        "description": "A signed browser address for the Assistant runtime's panel.\n\nThe address carries the runtime's login. ``expires_at`` is when it stops\nrouting (``null`` when the deployment does not sign sandbox addresses);\nask for a new one before then.",
+        "properties": {
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "AssistantPanel",
+        "type": "object"
+      },
+      "AssistantRuntimeSurface": {
+        "additionalProperties": false,
+        "description": "How the Assistant's runtime serves its owner.\n\n``conversations``: the console hosts its conversations. ``panel``: the\nruntime serves its own page, opened through ``GET .../panel``.",
+        "properties": {
+          "conversations": {
+            "title": "Conversations",
+            "type": "boolean"
+          },
+          "owner_secrets": {
+            "items": {
+              "$ref": "#/components/schemas/AssistantOwnerSecretStatus"
+            },
+            "title": "Owner Secrets",
+            "type": "array"
+          },
+          "panel": {
+            "title": "Panel",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "conversations",
+          "panel",
+          "owner_secrets"
+        ],
+        "title": "AssistantRuntimeSurface",
         "type": "object"
       },
       "AssistantWorkspace": {
@@ -17109,6 +17269,21 @@
           "sandbox_id"
         ],
         "title": "NativeStateInitialization",
+        "type": "object"
+      },
+      "OwnerSecretValue": {
+        "additionalProperties": false,
+        "description": "A write-only credential value.",
+        "properties": {
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "title": "OwnerSecretValue",
         "type": "object"
       },
       "PerformUserAction": {
@@ -35587,6 +35762,147 @@
           "Assistant"
         ],
         "x-required-api-scope": "astrabox:write"
+      }
+    },
+    "/api/v1/assistants/{assistant_id}/owner-secrets/{key}": {
+      "put": {
+        "operationId": "set_assistant_owner_secret_api_v1_assistants__assistant_id__owner_secrets__key__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "title": "Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OwnerSecretValue"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_Assistant_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Set Assistant Owner Secret",
+        "tags": [
+          "Assistant"
+        ],
+        "x-required-api-scope": "astrabox:write"
+      }
+    },
+    "/api/v1/assistants/{assistant_id}/panel": {
+      "get": {
+        "operationId": "open_assistant_panel_api_v1_assistants__assistant_id__panel_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AssistantPanel_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Open Assistant Panel",
+        "tags": [
+          "Assistant"
+        ],
+        "x-required-api-scope": "astrabox:read"
       }
     },
     "/api/v1/assistants/{assistant_id}/workspace": {

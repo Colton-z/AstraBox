@@ -135,7 +135,6 @@ class _ValidatingManagedVaults:
         backend_name: str,
         backend_supports_egress_injection: bool,
         backend_supports_header_credentials: bool,
-        egress_injection_unsupported_reason: str | None = None,
     ) -> list[str]:
         self.calls.append(
             {
@@ -143,7 +142,6 @@ class _ValidatingManagedVaults:
                 "backend_name": backend_name,
                 "backend_supports_egress_injection": backend_supports_egress_injection,
                 "backend_supports_header_credentials": backend_supports_header_credentials,
-                "egress_injection_unsupported_reason": egress_injection_unsupported_reason,
             }
         )
         return ["vault-managed-b", "vault-managed-a"]
@@ -186,7 +184,6 @@ async def test_session_inherits_managed_binding_without_using_user_identity(
             "backend_name": "selected-backend",
             "backend_supports_egress_injection": True,
             "backend_supports_header_credentials": False,
-            "egress_injection_unsupported_reason": None,
         }
     ]
     assert sessions.payload is not None

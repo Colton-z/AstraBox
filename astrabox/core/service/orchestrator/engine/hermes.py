@@ -31,7 +31,6 @@ import posixpath
 from urllib.parse import urlsplit
 import re
 import shlex
-import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, Mapping
@@ -39,6 +38,14 @@ from typing import Any, Awaitable, Callable, Literal, Mapping
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.config.release_images import release_image
 from astrabox.common.utils.errors import APIError
+from astrabox.core.service.orchestrator.engine.assistant_state_barrier import (
+    await_command_channel,
+    close_supervised_restarts,
+    confirm_forced_save,
+    restart_resident_program,
+    stop_supervised_program,
+    wait_until_answering,
+)
 from astrabox.core.service.orchestrator.engine.base import (
     EngineAdapter,
     EngineCapabilityManifest,
@@ -49,6 +56,7 @@ from astrabox.core.service.orchestrator.engine.base import (
 )
 from astrabox.core.service.orchestrator.engine.capabilities import (
     CONVERSATION_PLACEMENT_PER_ACCOUNT,
+    EngineAssistantDeclaration,
     EngineRuntimeCapabilities,
     EngineWorkloadDeclaration,
 )
@@ -76,6 +84,7 @@ from astrabox.core.service.orchestrator.engine.hermes_runtime_client import (
     HermesRuntimeClient,
     end_native_session,
 )
+from astrabox.core.service.orchestrator.engine.openai_wire import resolve_openai_base_url
 from astrabox.core.service.orchestrator.engine.runtime import RuntimeProtocolError, initialize_runtime_client
 from astrabox.core.service.orchestrator.runtime.pty_terminal import (
     resolve_sandbox_endpoint,
@@ -216,42 +225,6 @@ _HERMES_PROFILE_SETUP_SCRIPT = (
     Path(__file__).parents[1] / "runtime" / "hermes-profile-setup"
 ).read_text(encoding="utf-8")
 
-# Execd may take a few seconds after container start to accept commands. Poll it
-# after the sandbox handle is tracked — not folded into create_sandbox — so a
-# readiness timeout reaches start_runtime's cleanup path and the just-started
-# container is killed rather than orphaned.
-_HERMES_INBOX_READY_TIMEOUT_S = 90
-
-
-async def _await_hermes_inbox_ready(
-    sandbox: Any, *, timeout_s: int | None = None
-) -> None:
-    """Block until the box's command service runs a command, or fail loud.
-
-    Each attempt is a no-op through the box's commands face with a five-second
-    deadline of its own. ``timeout_s`` defaults to the module constant,
-    resolved at call time.
-    """
-    effective_s = _HERMES_INBOX_READY_TIMEOUT_S if timeout_s is None else timeout_s
-    deadline = time.monotonic() + float(effective_s)
-    last_exc: BaseException | None = None
-    while True:
-        try:
-            await sandbox.commands.run("true", timeout=5.0)
-            return
-        except Exception as exc:  # noqa: BLE001 — box still booting; retry to deadline
-            last_exc = exc
-        if time.monotonic() >= deadline:
-            raise APIError(
-                code="SANDBOX_INBOX_SERVER_UNREADY",
-                message=(
-                    f"hermes command service did not become ready within "
-                    f"{effective_s}s: {last_exc}"
-                ),
-                status_code=502,
-            )
-        await asyncio.sleep(1.0)
-
 
 class HermesEngineAdapter(EngineAdapter):
     """EngineAdapter for Hermes — declares and connects its gateway client."""
@@ -336,6 +309,7 @@ class HermesEngineAdapter(EngineAdapter):
             conversation_placement=CONVERSATION_PLACEMENT_PER_ACCOUNT,
             default_runtime_image=release_image(HERMES_RUNTIME_IMAGE_COMPONENT),
             extensions=HERMES_EXTENSIONS,
+            assistant=EngineAssistantDeclaration(),
         )
 
     def sandbox_request(
@@ -386,7 +360,7 @@ class HermesEngineAdapter(EngineAdapter):
         runtime_identity = context.runtime_identity
         profile_prepared = False
         try:
-            await _await_hermes_inbox_ready(sandbox)
+            await await_command_channel(sandbox, engine_label="hermes")
             if not runtime_identity:
                 raise APIError(
                     code="HERMES_PROFILE_INVALID",
@@ -594,41 +568,16 @@ class HermesEngineAdapter(EngineAdapter):
                 raise RuntimeError("native state initialization could not be observed")
             if observed.output.strip() == "HERMES_NATIVE_STATE_NOT_STARTED":
                 return
-            # A restart already running finishes first; none starts after.
-            closed = await commands.run(
-                "mkdir -p " + shlex.quote(posixpath.dirname(_HERMES_PAUSING_MARKER))
-                + " && exec flock " + shlex.quote(_HERMES_SUPERVISE_LOCK)
-                + " touch " + shlex.quote(_HERMES_PAUSING_MARKER),
-                # Waits out a restart holding the lock, which supervisor's
-                # stop waits bound.
-                timeout=None,
+            await close_supervised_restarts(
+                commands, lock=_HERMES_SUPERVISE_LOCK, marker=_HERMES_PAUSING_MARKER
             )
-            if closed.exit_code != 0:
-                raise RuntimeError("the box did not record that its restarts are closed")
             for program, phase in (
                 ("astrabox-hermes-state-mirror", "hermes_stop_state_mirror"),
                 # The gateway, its cron ticker included, writes the native
                 # state the save reads.
                 (_HERMES_BACKEND_PROGRAM, "hermes_stop_backend"),
             ):
-                # A failed mirror can already have exited. Supervisor's
-                # read-back, not the stop command's result, confirms no writer.
-                await commands.run("supervisorctl stop " + shlex.quote(program))
-                status = await commands.run(
-                    "bash -lc " + shlex.quote(
-                        "status=0; supervisorctl status " + shlex.quote(program)
-                        + '; status=$?; if [ "$status" -ne 0 ] '
-                        '&& [ "$status" -ne 3 ]; then exit "$status"; fi'
-                    ),
-                )
-                if (
-                    status.exit_code != 0
-                    or re.fullmatch(
-                        re.escape(program) + r"\s+(?:STOPPED|EXITED|FATAL)(?:\s+[^\n]*)?",
-                        status.output.strip(),
-                    ) is None
-                ):
-                    raise RuntimeError("supervisor did not confirm a stopped process")
+                await stop_supervised_program(commands, program)
             phase = "hermes_native_state_save"
             await self._restore_runtime_state(commands, runtime_identity)
             await self._save_runtime_state(commands, runtime_identity)
@@ -681,18 +630,9 @@ class HermesEngineAdapter(EngineAdapter):
             "astrabox-hermes-state-save", profile_env,
             runtime_identity["linux_user"], runtime_identity["home_dir"],
         ])
-        # A save is as long as the profile's native state is large.
-        result = await commands.run(command, timeout=None)
-        markers = [
-            line for line in result.output.splitlines()
-            if re.fullmatch(r"HERMES_STATE_SAVE_COMPLETE snapshot_id=\S+", line)
-        ]
-        if result.exit_code != 0 or len(markers) != 1:
-            raise RuntimeError(
-                "native state save did not confirm its snapshot: "
-                f"exit_code={result.exit_code}, stdout={result.stdout[-1000:]!r}, "
-                f"stderr={result.stderr[-2000:]!r}"
-            )
+        await confirm_forced_save(
+            commands, command, re.compile(r"HERMES_STATE_SAVE_COMPLETE snapshot_id=\S+")
+        )
 
 
 # The shared assistant workspace root baked into the Hermes runtime image (WORKDIR).
@@ -1101,9 +1041,6 @@ HERMES_BRIDGE_HEALTH_PATH = "/healthz"
 #: plugin dependencies before the gateway serves requests. Keep that native
 #: preparation inside one bounded wait; a healthy cold install can exceed 120s.
 _BACKEND_ANSWER_BUDGET_SECONDS = 300
-#: The probe's exit status when the port answers its readiness path with a
-#: status the bridge never sends.
-_FOREIGN_BACKEND_EXIT = 3
 
 
 async def _wait_until_backend_answers(commands: SandboxCommands) -> None:
@@ -1121,36 +1058,34 @@ async def _wait_until_backend_answers(commands: SandboxCommands) -> None:
     program serves the port, so that answer is a protocol mismatch at once.
     A refused connection is still a bridge that has not started.
     """
-    probe = (
-        f"deadline=$((SECONDS + {_BACKEND_ANSWER_BUDGET_SECONDS})); "
-        "while :; do "
-        "code=$(curl -sS -o /dev/null -m 3 -w '%{http_code}' "
-        f"http://127.0.0.1:{HERMES_BACKEND_PORT}{HERMES_BRIDGE_HEALTH_PATH} 2>/dev/null); "
-        'case "$code" in 200) exit 0;; 503|000|"") ;; '
-        f'*) echo "$code"; exit {_FOREIGN_BACKEND_EXIT};; esac; '
-        'if [ "$SECONDS" -ge "$deadline" ]; then exit 124; fi; sleep 0.2; done'
-    )
-    result = await commands.run(
-        "bash -c " + shlex.quote(probe), timeout=_BACKEND_ANSWER_BUDGET_SECONDS + 30,
-    )
-    if result.exit_code == _FOREIGN_BACKEND_EXIT:
-        lines = (result.stdout or "").strip().splitlines()
-        status = lines[-1] if lines else "an unknown status"
-        raise RuntimeProtocolError(
+
+    def foreign(status: str) -> RuntimeProtocolError:
+        return RuntimeProtocolError(
             f"Port {HERMES_BACKEND_PORT} in the Assistant's sandbox answered HTTP {status} at "
             f"{HERMES_BRIDGE_HEALTH_PATH}, where this server's Hermes bridge answers only 200 or 503. "
             "The sandbox runs an image that does not match this server. Update the Assistant's "
             "sandbox image, then recover the conversation; its waiting messages are kept."
         )
-    if result.exit_code != 0:
-        raise APIError(
+
+    def unready(exit_code: int) -> APIError:
+        return APIError(
             code="HERMES_BACKEND_NOT_READY",
             message=(
                 "the Assistant's Hermes gateway was not ready within "
-                f"{_BACKEND_ANSWER_BUDGET_SECONDS}s (probe exit {result.exit_code})"
+                f"{_BACKEND_ANSWER_BUDGET_SECONDS}s (probe exit {exit_code})"
             ),
             status_code=503,
         )
+
+    await wait_until_answering(
+        commands,
+        "curl -sS -o /dev/null -m 3 -w '%{http_code}' "
+        f"http://127.0.0.1:{HERMES_BACKEND_PORT}{HERMES_BRIDGE_HEALTH_PATH}",
+        _BACKEND_ANSWER_BUDGET_SECONDS,
+        waiting_statuses=("503",),
+        foreign=foreign,
+        unready=unready,
+    )
 
 
 #: The upgrade header that carries the bridge credential from this host into
@@ -1263,7 +1198,6 @@ _HERMES_SUPERVISE_LOCK = "/run/astrabox/hermes-supervise.lock"
 #: Written under that lock when the box's Assistant starts pausing; a restart
 #: that finds it does not start the services the pause is stopping.
 _HERMES_PAUSING_MARKER = "/run/astrabox/hermes-pausing"
-_HERMES_RESTART_REFUSED_EXIT = 75
 
 
 async def _hermes_process_standing(
@@ -1365,46 +1299,18 @@ async def _restart_hermes_backend(commands: SandboxCommands) -> None:
     connection that follows spends its bounded wait on the gateway coming back.
     """
 
-    # The program may take its supervisor stop wait before starting again.
-    restart = (
-        f"test ! -e {shlex.quote(_HERMES_PAUSING_MARKER)} || exit {_HERMES_RESTART_REFUSED_EXIT}; "
-        f"exec supervisorctl restart {_HERMES_BACKEND_PROGRAM}"
+    await restart_resident_program(
+        commands,
+        program=_HERMES_BACKEND_PROGRAM,
+        lock=_HERMES_SUPERVISE_LOCK,
+        marker=_HERMES_PAUSING_MARKER,
+        label="Hermes gateway",
+        # The registered code for "the gateway is not up under the profile
+        # this host just wrote", which is exactly what a refused restart
+        # leaves behind. A separate code would name the same owner, the
+        # same phase and the same client action.
+        error_code="HERMES_GATEWAY_START_FAILED",
     )
-    result = await commands.run(
-        "bash -lc "
-        + shlex.quote(
-            "set -euo pipefail; mkdir -p "
-            + shlex.quote(posixpath.dirname(_HERMES_SUPERVISE_LOCK))
-            + "; exec flock " + shlex.quote(_HERMES_SUPERVISE_LOCK)
-            + " bash -c " + shlex.quote(restart)
-        ),
-        timeout=None,
-    )
-    if result.exit_code == _HERMES_RESTART_REFUSED_EXIT:
-        raise APIError(
-            code="ASSISTANT_WORKSPACE_NOT_READY",
-            message=(
-                "the Assistant is pausing, so its Hermes gateway is not "
-                "restarted for a changed profile"
-            ),
-            status_code=409,
-        )
-    output = result.output
-    if result.exit_code != 0 or "started" not in output:
-        raise APIError(
-            # The registered code for "the gateway is not up under the profile
-            # this host just wrote", which is exactly what a refused restart
-            # leaves behind. A separate code would name the same owner, the
-            # same phase and the same client action.
-            code="HERMES_GATEWAY_START_FAILED",
-            message=(
-                "the Hermes gateway did not restart for a changed profile, so it "
-                f"would keep serving the old one: "
-                f"{_hermes_failure(result, missing='no start marker')}; "
-                f"output={output[:2000]!r}"
-            ),
-            status_code=502,
-        )
     logger.info("restarted the Hermes gateway for a changed profile")
 
 
@@ -1496,7 +1402,11 @@ def _hermes_credential_request(model_access: ResolvedModelAccess) -> ModelCreden
     return ModelCredentialRequest(
         access=replace(
             model_access,
-            base_url=_resolve_hermes_openai_base_url(model_access),
+            base_url=resolve_openai_base_url(
+                model_access,
+                engine_label="Hermes",
+                error_code="HERMES_MODEL_BASE_URL_NOT_OPENAI_COMPATIBLE",
+            ),
         ),
         request_paths=("chat/completions",),
         missing_code="HERMES_MODEL_API_KEY_NOT_CONFIGURED",
@@ -1531,7 +1441,11 @@ def _build_hermes_config_overwrite(
     dependencies the profile merger prepares through Hermes' package manager
     in its per-home environment. Other profiles keep installs disabled.
     """
-    model_base_url = _resolve_hermes_openai_base_url(model_access)
+    model_base_url = resolve_openai_base_url(
+        model_access,
+        engine_label="Hermes",
+        error_code="HERMES_MODEL_BASE_URL_NOT_OPENAI_COMPATIBLE",
+    )
     if not model_base_url:
         raise APIError(
             code="HERMES_MODEL_BASE_URL_NOT_CONFIGURED",
@@ -1636,39 +1550,6 @@ def _build_hermes_soul_content(template: Any) -> str:
 
     content = str(getattr(template, "system", None) or "").strip()
     return f"{content}\n" if content else ""
-
-
-def _resolve_hermes_openai_base_url(
-    model_access: ResolvedModelAccess,
-) -> str:
-    base_url = _normalize_hermes_openai_base_url(model_access.base_url or "")
-    if _looks_anthropic_compatible_base_url(base_url):
-        raise APIError(
-            code="HERMES_MODEL_BASE_URL_NOT_OPENAI_COMPATIBLE",
-            message=(
-                "Hermes requires an OpenAI-compatible model base URL; the "
-                "RuntimeProfile's model connection names an Anthropic-compatible one"
-            ),
-            status_code=500,
-        )
-    return base_url
-
-
-def _normalize_hermes_openai_base_url(raw_value: str) -> str:
-    value = str(raw_value or "").strip().rstrip("/")
-    if not value:
-        return ""
-    lowered = value.lower()
-    for suffix in ("/chat/completions", "/responses"):
-        if lowered.endswith(suffix):
-            value = value[: -len(suffix)].rstrip("/")
-            break
-    return value
-
-
-def _looks_anthropic_compatible_base_url(value: str) -> bool:
-    lowered = str(value or "").strip().lower().rstrip("/")
-    return lowered.endswith("/api/anthropic") or "/api/anthropic/" in lowered
 
 
 class HermesProcessDisposal:

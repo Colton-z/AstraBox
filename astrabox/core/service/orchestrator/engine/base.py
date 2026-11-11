@@ -166,6 +166,11 @@ class EngineStartupContext:
     #: ``startup_material_request`` are present; adapters never reach into the
     #: platform secret store themselves.
     platform_secrets: dict[str, str] = field(default_factory=dict)
+    #: The credentials an Assistant's owner supplied, by the keys the
+    #: adapter's ``assistant.owner_secrets`` declares. Present only for an
+    #: Assistant runtime, and complete: the platform refuses to build a box
+    #: for an Assistant missing one.
+    owner_secrets: dict[str, str] = field(default_factory=dict, repr=False)
     #: Platform-owned routing identity for MCP servers hosted by AstraBox.
     #: The adapter may render it into its vendor configuration, but it never
     #: creates, updates, or deletes the corresponding platform binding.
@@ -311,6 +316,17 @@ def validate_manifest_vocabulary(manifest: EngineCapabilityManifest) -> None:
             f"engine_kind={manifest.engine_kind!r} declares unknown input content "
             f"types: {unknown_content_types!r}"
         )
+    from astrabox.core.service.orchestrator.engine.registry import get_engine_adapter
+
+    surface = get_engine_adapter(str(manifest.engine_kind)).capabilities.assistant
+    if surface is not None and not surface.conversations:
+        # A runtime that hosts no conversations takes no turn input at all.
+        if input_content_types:
+            raise TypeError(
+                f"engine_kind={manifest.engine_kind!r} hosts no conversations but "
+                f"declares input content types {input_content_types!r}"
+            )
+        return
     if "text" not in input_content_types:
         raise TypeError(
             f"engine_kind={manifest.engine_kind!r} must accept text input"
@@ -556,6 +572,19 @@ class EngineAdapter(ABC):
         """Stop native state writers and confirm durable storage before release."""
         raise NotImplementedError(
             f"engine_kind={self.engine_kind!r} cannot quiesce and save runtime state"
+        )
+
+    async def panel_launch_path(
+        self, sandbox: Any, *, runtime_identity: dict[str, Any]
+    ) -> str:
+        """The path, with its login, a browser opens the runtime's panel at.
+
+        Required of an adapter whose ``assistant.panel`` is declared. The
+        platform joins it to the signed address of the panel's port; what the
+        login is, and how long it lasts, is the runtime's own.
+        """
+        raise NotImplementedError(
+            f"engine_kind={self.engine_kind!r} declares no Assistant panel"
         )
 
     def process_disposal(self) -> Any | None:

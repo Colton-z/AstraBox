@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useMatch } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import useSWR from 'swr';
 import { ChevronRight, Plus } from 'lucide-react';
@@ -22,6 +22,7 @@ import { ErrorNote, RAIL_ROW_ACTIVE } from '@/components/shell';
 import { keepsLastRead } from '@/hooks/useKeepCurrent';
 import { isUnread } from '@/lib/replyNotifications';
 import { cn } from '@/lib/utils';
+import { assistantOpensPanel } from '@/manage/assistantConfig';
 import { ApiError } from '../api';
 import type { SessionRecord } from '../types';
 
@@ -89,7 +90,9 @@ export function useRailAssistants() {
  * entry that cannot be opened. A row opens the Assistant's main conversation,
  * so it carries that conversation's unread mark. Its earlier conversations,
  * the main ones it has replaced and any others it was given, open under the
- * row; the sessions list below holds Agent conversations only.
+ * row; the sessions list below holds Agent conversations only. An Assistant
+ * whose runtime hosts no conversations opens on its runtime's own page at its
+ * own address, which is what selects its row; it has no conversations to list.
  */
 export function AssistantRail({
   sessions,
@@ -100,6 +103,7 @@ export function AssistantRail({
 }) {
   const { t } = useTranslation();
   const { primary, list } = useRailAssistants();
+  const openedAssistantId = useMatch('/assistants/:assistantId')?.params.assistantId ?? null;
   const unavailable = primary.error instanceof ApiError
     && primary.error.code === 'ASSISTANT_DEFAULTS_UNAVAILABLE';
   const assistants = useMemo(() => {
@@ -149,11 +153,14 @@ export function AssistantRail({
       <SidebarGroupContent>
         <SidebarMenu className="gap-0.5">
           {assistants.map((assistant) => {
+            const panel = assistantOpensPanel(assistant);
             const main = assistant.main_session_id ?? null;
-            const isActive = main !== null && main === activeSessionId;
+            const isActive = panel
+              ? openedAssistantId === assistant.assistant_id
+              : main !== null && main === activeSessionId;
             const mainSession = main ? byId.get(main) : undefined;
             const unread = !isActive && mainSession !== undefined && isUnread(mainSession);
-            const earlier = earlierById.get(assistant.assistant_id) ?? [];
+            const earlier = panel ? [] : earlierById.get(assistant.assistant_id) ?? [];
             const expanded = opened.has(assistant.assistant_id)
               || earlier.some((s) => s.session_id === activeSessionId);
             return (

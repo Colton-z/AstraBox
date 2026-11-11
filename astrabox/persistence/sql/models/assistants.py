@@ -81,6 +81,10 @@ class Assistant(Base):
     #: The Skill descriptors a catalog selection compiled, as the extension
     #: provider produced them.
     extension_catalog: Mapped[dict[str, Any] | None] = mapped_column(payload_json())
+    #: Which owner-supplied runtime credentials are set, by key, with when and
+    #: by whom: ``{key: {"updated_at", "updated_by"}}``. The values are in the
+    #: secret store under the Assistant's scope.
+    owner_secrets: Mapped[dict[str, Any] | None] = mapped_column(payload_json())
     credentials_updated_by: Mapped[str | None] = mapped_column(payload_text())
     credentials_updated_at: Mapped[datetime | None]
     #: Sessions also name their Assistant, so this constraint is added after

@@ -33,6 +33,7 @@ PKG             ?= astrabox
 AGENT_IMAGE         ?= astrabox/sandbox-claude-code:latest
 ASSISTANT_IMAGE     ?= astrabox/sandbox-hermes:latest
 DSH_IMAGE           ?= astrabox/sandbox-deepseek-harness:latest
+DSH_SUPERAGENT_IMAGE ?= astrabox/sandbox-dsh-superagent:latest
 CODEX_IMAGE         ?= astrabox/sandbox-codex:latest
 PI_IMAGE            ?= astrabox/sandbox-pi:latest
 # An explicit execd input belongs to the caller; build only the implicit default.
@@ -61,7 +62,7 @@ NPM_REGISTRY        ?= https://registry.npmjs.org/
         check-comments check-comments-report check-i18n check-upstream check-api-client check-all-in-one check-dockerfile-modes check-sandbox-seam \
         check-env-registry check-http-surface check-background-tasks check-release \
         test-web test-channel-gateway test-layout utilisation build-web build-dist e2e e2e-smoke e2e-browser e2e-live \
-        build-agent-image build-assistant-image build-dsh-image build-codex-image build-pi-image build-execd-image build-workspace-mounter-image build-all-in-one-image clean \
+        build-agent-image build-assistant-image build-dsh-image build-dsh-superagent-image build-codex-image build-pi-image build-execd-image build-workspace-mounter-image build-all-in-one-image clean \
         k8s-testbed-up k8s-testbed-status k8s-testbed-down k8s-testbed-purge
 
 help: ## Show this help.
@@ -255,6 +256,12 @@ build-dsh-image: ## Build the in-sandbox DeepSeek Harness runtime image.
 	  --build-arg SANDBOX_EXECD_IMAGE=$(EXECD_IMAGE) \
 	  --build-arg SANDBOX_BASE_IMAGE=$(SANDBOX_BASE_IMAGE) \
 	  -f containers/sandbox-deepseek-harness/Dockerfile \
+	  .
+
+build-dsh-superagent-image: build-dsh-image ## Build the dsh-superagent Assistant runtime image, FROM the DeepSeek Harness image.
+	docker build -t $(DSH_SUPERAGENT_IMAGE) \
+	  --build-arg DSH_IMAGE=$(DSH_IMAGE) \
+	  -f containers/sandbox-dsh-superagent/Dockerfile \
 	  .
 
 build-codex-image: ## Build the in-sandbox Codex app-server runtime image.

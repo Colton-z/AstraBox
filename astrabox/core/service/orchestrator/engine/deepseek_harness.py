@@ -111,6 +111,22 @@ DSH_BASE_URL_ENV_VAR = "DEEPSEEK_BASE_URL"
 DSH_WORKSPACE_ENV_VAR = "ASTRABOX_WORKSPACE"
 
 #: Native creation options are interpreted by the harness gateway.
+#: The harness's web profile package.json, which also a dsh-superagent
+#: Assistant takes (engine/dsh_superagent.py).
+DSH_PROFILE_PACKAGE_OPTION: dict[str, Any] = {
+    "key": "profile_package",
+    "label": "Profile package.json",
+    "type": "object",
+    "protected_keys": ["dsh"],
+    "help": (
+        "Fields of the harness's web profile package.json, written before the "
+        "harness starts and installed with `dsh plugin --profile web install`. Its "
+        'dependencies are plugin Bundles, for example {"dependencies": {"humanizer-ru": '
+        '"3.31.3"}}: npm versions, git specs or tarball URLs. The harness keeps the '
+        "Bundle list (dsh.profile.bundles) in step with what is installed."
+    ),
+}
+
 DSH_ENGINE_OPTIONS_SCHEMA: tuple[dict[str, Any], ...] = (
     {
         "key": "session_create",
@@ -124,19 +140,7 @@ DSH_ENGINE_OPTIONS_SCHEMA: tuple[dict[str, Any], ...] = (
             "Applied only when creating a conversation; reconnect keeps its configuration."
         ),
     },
-    {
-        "key": "profile_package",
-        "label": "Profile package.json",
-        "type": "object",
-        "protected_keys": ["dsh"],
-        "help": (
-            "Fields of the conversation's web profile package.json, written before the "
-            "harness starts and installed with `dsh plugin --profile web install`. Its "
-            'dependencies are plugin Bundles, for example {"dependencies": {"humanizer-ru": '
-            '"3.31.3"}}: npm versions, git specs or tarball URLs. The harness keeps the '
-            "Bundle list (dsh.profile.bundles) in step with what is installed."
-        ),
-    },
+    DSH_PROFILE_PACKAGE_OPTION,
 )
 
 #: Installs an Agent's plugin Bundles with the harness's own plugin command,
@@ -214,6 +218,25 @@ _NPM_REGISTRY_HOST = "registry.npmjs.org"
 _URL_HOST = re.compile(r"^(?:git\+)?[a-z][a-z0-9+.-]*://(?:[^@/]+@)?([^/:?#]+)", re.IGNORECASE)
 _SCP_HOST = re.compile(r"^(?:git\+)?[^@/\s]+@([^:/\s]+):")
 _GITHUB_SHORTHAND = re.compile(r"^(?:github:)?[\w.-]+/[\w.-]+(?:#.*)?$")
+
+
+def profile_package_step(fields: dict[str, Any]) -> str:
+    """The shell step that installs ``fields`` into the web profile under ``$dsh_home``."""
+
+    return _DSH_PROFILE_PACKAGE_STEP.replace("@FIELDS@", shlex.quote(json.dumps(fields)))
+
+
+def profile_package_hosts(engine_options: dict[str, Any]) -> list[str]:
+    """The hosts pnpm reaches for the profile package's dependencies."""
+
+    fields = engine_options.get("profile_package")
+    dependencies = fields.get("dependencies") if isinstance(fields, dict) else None
+    hosts: list[str] = []
+    for spec in (dependencies or {}).values() if isinstance(dependencies, dict) else ():
+        for host in _dependency_hosts(str(spec)):
+            if host not in hosts:
+                hosts.append(host)
+    return hosts
 
 
 def _dependency_hosts(spec: str) -> list[str]:
@@ -877,14 +900,7 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
     def install_egress_hosts(self, engine_options: dict[str, Any]) -> list[str]:
         """The hosts pnpm reaches for the profile package's dependencies."""
 
-        fields = engine_options.get("profile_package")
-        dependencies = fields.get("dependencies") if isinstance(fields, dict) else None
-        hosts: list[str] = []
-        for spec in (dependencies or {}).values() if isinstance(dependencies, dict) else ():
-            for host in _dependency_hosts(str(spec)):
-                if host not in hosts:
-                    hosts.append(host)
-        return hosts
+        return profile_package_hosts(engine_options)
 
     def conversation_install_script(
         self,
@@ -904,7 +920,7 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
             )
         fields = engine_options.get("profile_package")
         if isinstance(fields, dict) and fields:
-            steps.append(_DSH_PROFILE_PACKAGE_STEP.replace("@FIELDS@", shlex.quote(json.dumps(fields))))
+            steps.append(profile_package_step(fields))
         if len(steps) == 3:
             return None
         return "\n".join(steps) + "\nprintf 'DSH_EXTENSIONS_READY\\n'\n"

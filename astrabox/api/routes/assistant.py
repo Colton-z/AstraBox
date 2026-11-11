@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import Body, Header, Request
+from fastapi import Body, Header, Request, Response
 from pydantic import BaseModel, ConfigDict
 
 from astrabox.api.documentation import query_parameter, request_body
@@ -83,6 +83,59 @@ class EnsurePrimaryAssistantRequest(BaseModel):
     timezone: str | None = None
 
 
+class AssistantOwnerSecretStatus(BaseModel):
+    """One credential the Assistant's runtime asks its owner for; never its value."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str
+    label: str
+    help: str = ""
+    #: The owner has set their own value.
+    configured: bool
+    updated_at: str | None = None
+    #: The deployment provides a shared value, used while the owner sets none.
+    deployment_default: bool = False
+    #: The runtime refuses to start while neither value is set.
+    required: bool = True
+
+
+class AssistantRuntimeSurface(BaseModel):
+    """How the Assistant's runtime serves its owner.
+
+    ``conversations``: the console hosts its conversations. ``panel``: the
+    runtime serves its own page, opened through ``GET .../panel``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    conversations: bool
+    panel: bool
+    owner_secrets: list[AssistantOwnerSecretStatus]
+
+
+class AssistantPanel(BaseModel):
+    """A signed browser address for the Assistant runtime's panel.
+
+    The address carries the runtime's login. ``expires_at`` is when it stops
+    routing (``null`` when the deployment does not sign sandbox addresses);
+    ask for a new one before then.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str
+    expires_at: str | None = None
+
+
+class OwnerSecretValue(BaseModel):
+    """A write-only credential value."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    value: str
+
+
 class Assistant(BaseModel):
     """One Assistant's catalog row, as ``AssistantService._sanitize_assistant``
     renders it.
@@ -137,6 +190,15 @@ class Assistant(BaseModel):
     main_session_id: str | None = None
     #: What the deployment's and organization's Assistant defaults provide, read-only.
     inherited: InheritedExtensions | None = None
+    #: How its runtime serves the owner; ``null`` when the engine is not installed.
+    runtime: AssistantRuntimeSurface | None = None
+    #: Detail reads only, when the workspace's last start failed: what only the
+    #: owner can do to unblock it (``status``, ``message``, ``url``), for example
+    #: set a credential the runtime asks for.
+    workspace_action: dict[str, Any] | None = None
+    #: Detail reads only, when the workspace's last start failed for another
+    #: reason: the error it ended with.
+    workspace_error: str | None = None
 
 
 class AssistantListPage(BaseModel):
@@ -371,6 +433,33 @@ def register_assistant_routes(app: Any) -> None:
         # personal schedules created from it, must stop firing; they belong to
         # it and no other account can manage them.
         await get_platform_service().delete_target_deployments(assistant_id=assistant_id)
+        return success_response(result)
+
+    @app.get(
+        "/api/v1/assistants/{assistant_id}/panel",
+        response_model=ApiEnvelope[AssistantPanel],
+        response_model_exclude_unset=True,
+    )
+    async def open_assistant_panel(assistant_id: str, request: Request, response: Response):
+        user = await get_current_user_context(request)
+        result = await _service.panel(user, assistant_id)
+        # The address is a bearer credential for the runtime's own login.
+        response.headers["Cache-Control"] = "no-store"
+        return success_response(result)
+
+    @app.put(
+        "/api/v1/assistants/{assistant_id}/owner-secrets/{key}",
+        response_model=ApiEnvelope[Assistant],
+        response_model_exclude_unset=True,
+    )
+    async def set_assistant_owner_secret(
+        assistant_id: str,
+        key: str,
+        request: Request,
+        payload: OwnerSecretValue = Body(...),
+    ):
+        user = await get_current_user_context(request)
+        result = await _service.set_owner_secret(user, assistant_id, key, payload.value)
         return success_response(result)
 
     @app.post(

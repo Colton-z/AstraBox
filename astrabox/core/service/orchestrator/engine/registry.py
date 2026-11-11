@@ -24,6 +24,35 @@ class EngineKindNotRegistered(KeyError):
     """Raised when get_engine_adapter is called with an unregistered engine_kind."""
 
 
+def _validate_assistant_obligations(engine_kind: str, adapter: "EngineAdapter") -> None:
+    """An Assistant runtime implements what its declaration obliges.
+
+    The platform releases an Assistant's box only after the adapter has
+    stopped its writers and saved its state, and it opens a declared panel
+    through the adapter's own login; an adapter that declares either without
+    implementing it would fail at the first hibernation or the first open.
+    """
+    from astrabox.core.service.orchestrator.engine.base import EngineAdapter
+
+    surface = adapter.capabilities.assistant
+    if surface is None:
+        return
+    implementation = type(adapter)
+    if implementation.quiesce_and_save_runtime_state is EngineAdapter.quiesce_and_save_runtime_state:
+        raise ValueError(
+            f"engine_kind={engine_kind!r} serves Assistants without implementing "
+            "quiesce_and_save_runtime_state"
+        )
+    if (
+        surface.panel is not None
+        and implementation.panel_launch_path is EngineAdapter.panel_launch_path
+    ):
+        raise ValueError(
+            f"engine_kind={engine_kind!r} declares an Assistant panel without "
+            "implementing panel_launch_path"
+        )
+
+
 def register_engine_adapter(engine_kind: str, adapter: "EngineAdapter") -> None:
     """Register an adapter for the given engine_kind.
 
@@ -39,6 +68,7 @@ def register_engine_adapter(engine_kind: str, adapter: "EngineAdapter") -> None:
     )
     validate_engine_capabilities(normalized_kind, adapter.capabilities)
     validate_engine_client_type(adapter.engine_client_type)
+    _validate_assistant_obligations(normalized_kind, adapter)
     if normalized_kind in _REGISTRY:
         existing = type(_REGISTRY[normalized_kind]).__name__
         new = type(adapter).__name__

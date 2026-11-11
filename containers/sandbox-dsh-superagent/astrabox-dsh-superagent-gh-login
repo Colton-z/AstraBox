@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Sign the agent account's GitHub CLI in with the token the platform delivered.
+#
+# Runs as the Assistant's account. The platform writes the token to a private
+# file in this account's home; this reads it on stdin, so it never appears in
+# a process listing or the environment, signs `gh-agent` in, and removes the
+# file. A token GitHub refuses fails here with GitHub's own message.
+set -euo pipefail
+token_file="${HOME}/.config/astrabox/github-token"
+if [ ! -f "$token_file" ] || [ -L "$token_file" ]; then
+  printf 'astrabox-dsh-superagent-gh-login: no token file at %s\n' "$token_file" >&2
+  exit 66
+fi
+trap 'rm -f "$token_file"' EXIT
+mkdir -p -m 0700 "${HOME}/.config/gh-agent"
+/usr/local/bin/gh-agent auth login --hostname github.com --git-protocol https --with-token < "$token_file"
+login="$(/usr/local/bin/gh-agent api user --jq .login)"
+printf 'ASTRABOX_GITHUB_AGENT_SIGNED_IN login=%s\n' "$login"

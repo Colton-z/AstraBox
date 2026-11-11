@@ -1,0 +1,8 @@
+#!/bin/sh
+# The agent account's GitHub CLI, the wrapper dsh-superagent's GitHub Source names.
+#
+# dsh-superagent reads the account from this CLI and removes GH_TOKEN and GITHUB_TOKEN
+# (and any variable named like a credential) from what it runs, so the account lives in
+# the CLI's own configuration directory, in the runtime's private home. The platform
+# writes the Assistant's token there; nothing else signs this CLI in.
+GH_CONFIG_DIR="${HOME}/.config/gh-agent" exec /usr/local/bin/gh "$@"
