@@ -731,6 +731,14 @@ class SessionRepository:
             .limit(limit)
         )
 
+    async def find_agent_conversations_holding_boxes(self, agent_id: str) -> list[dict[str, Any]]:
+        """The Agent's conversations whose row still names a box."""
+        return await _many(
+            _selected().where(
+                _live(), _SESSIONS.c.agent_id == agent_id, _SESSIONS.c.sandbox_id.isnot(None)
+            )
+        )
+
     async def list_assistant_conversations(self, user_id: str, assistant_id: str) -> list[dict[str, Any]]:
         """The owner's visible conversations with one Assistant."""
         return await _many(

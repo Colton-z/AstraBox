@@ -535,6 +535,7 @@ class AgentService:
         if retirement is not None:
             await retirement
         await self._release_records_naming(agent_id)
+        await self._release_conversation_boxes(agent_id)
         await self._agent_repo.soft_delete(agent_id)
         agent["state"] = AgentState.DELETED.value
         agent["expires_at"] = None
@@ -555,6 +556,18 @@ class AgentService:
         # Its schedules, webhooks and channel bindings must stop firing.
         await self._platform.delete_target_deployments(agent_id=agent_id)
         await agent_catalog.favorite_repository().remove_agent(agent_id)
+
+    async def _release_conversation_boxes(self, agent_id: str) -> None:
+        """Release the boxes of an Agent's conversations as the Agent is deleted.
+
+        Its conversations keep their history and take no new messages once
+        the Agent is deleting, so a box one holds serves nothing. This runs
+        before the Agent is hidden: a box that could not be released leaves
+        the Agent to be deleted again.
+        """
+        lifecycle = self._platform._session_lifecycle
+        for session in await self._sessions_repo.find_agent_conversations_holding_boxes(agent_id):
+            await lifecycle.release_deleted_agent_conversation(session)
 
     def _schedule_runtime_reconciliation(self, agent_id: str) -> bool:
         """Reconcile persisted configuration without delaying its caller.

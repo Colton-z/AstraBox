@@ -507,21 +507,33 @@ class SessionLifecycleService:
             "destruction_detail": destruction.detail,
         }
 
+    async def release_deleted_agent_conversation(self, session: dict[str, Any]) -> None:
+        """Release the box of a conversation whose Agent is being deleted.
+
+        Such a conversation keeps its history and takes no new messages
+        (``AGENT_DELETED``), so its box serves nothing. A response it was still
+        running fails as one whose box died, with its history kept.
+        """
+        await self._reclaim_sandbox(session, while_working=True)
+
     async def _reclaim_sandbox(
         self,
         session: dict[str, Any],
         *,
         before_publish: Callable[[], Awaitable[None]] | None = None,
+        while_working: bool = False,
     ) -> dict[str, Any]:
         """Release an Agent conversation's box; the conversation stays ``READY``.
 
         The conversation keeps its history and is woken by its next message
         on a new box, which resumes the engine's session. Only archive and
-        delete take a conversation out of the active set.
+        delete take a conversation out of the active set. A working
+        conversation is refused unless ``while_working``.
         """
         require_environment_ownership(session)
         session_id = str(session["session_id"])
-        _refuse_while_working(session, "terminate sandbox")
+        if not while_working:
+            _refuse_while_working(session, "terminate sandbox")
         if is_assistant_user_conversation(session):
             raise APIError(
                 code="INVALID_REQUEST",

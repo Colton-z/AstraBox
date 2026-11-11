@@ -42,7 +42,7 @@
   ],
   "playwright": {
     "exclusive": {
-      "files": 201,
+      "files": 202,
       "parallel_files": 124,
       "parallel_tests": 218,
       "serial_files": [
@@ -90,6 +90,7 @@
         "specs/console-extension-save-reschedules-prewarm.exclusive.spec.ts",
         "specs/cross-host-backend-claim.exclusive.spec.ts",
         "specs/dead-agent-box-does-not-leave-a-claimable-prepared-slot.exclusive.spec.ts",
+        "specs/deleting-an-agent-releases-its-conversations-boxes.exclusive.spec.ts",
         "specs/distributed-prewarm.exclusive.spec.ts",
         "specs/dsh-channel-background-completion.exclusive.spec.ts",
         "specs/dsh-gateway-model-route.exclusive.spec.ts",
@@ -124,9 +125,9 @@
         "specs/untouched-tab-catches-up-after-backend-restart.exclusive.spec.ts",
         "specs/vault-environment-survives-reattach.exclusive.spec.ts"
       ],
-      "serial_tests": 121,
+      "serial_tests": 122,
       "serial_workers": 1,
-      "tests": 339,
+      "tests": 340,
       "workers": 5
     },
     "parallel": {
