@@ -269,7 +269,6 @@ class AgentConfigService:
         Assistant, is treated as in :meth:`_build_agent_view`.
         """
         from astrabox.core.service.orchestrator.assistant.assistant_layers import (
-            LAYER_RUNTIME_FIELDS,
             inherited_layers,
             joined_instructions,
             layers_for_engine,
@@ -364,14 +363,7 @@ class AgentConfigService:
                 ]
             ),
             runtime_profile_name=env_name,
-            assistant_revision=self._assistant_revision(
-                assistant,
-                env,
-                layers=[
-                    {field: layer.get(field) for field in LAYER_RUNTIME_FIELDS}
-                    for _label, layer in layers
-                ],
-            ),
+            assistant_revision=self._assistant_revision(assistant, env, layers=layers),
         )
         self._overlay_runtime_profile(view, env)
         if require_enabled_runtime_profile:
@@ -385,13 +377,14 @@ class AgentConfigService:
         assistant: dict[str, Any],
         env: dict[str, Any],
         *,
-        layers: list[dict[str, Any]] | None = None,
+        layers: list[tuple[str, dict[str, Any]]],
     ) -> str:
         """The identity of what an Assistant's runtime is prepared from.
 
         The Assistant's fields its runtime view is built from
-        (``_ASSISTANT_RUNTIME_FIELDS``), the runtime fields of the layers it
-        inherits as the caller passes them, and the RuntimeProfile's revision.
+        (``_ASSISTANT_RUNTIME_FIELDS``), the runtime fields of the layers as
+        this Assistant receives them (``assistant_layers.layers_for_engine``),
+        and the RuntimeProfile's revision.
         Bookkeeping (the main conversation, the workspace id, the primary mark,
         versions and timestamps) is left out, so writing it prepares nothing
         again. It says only that the definition moved; which change matters to
@@ -399,11 +392,16 @@ class AgentConfigService:
         profile again.
         """
 
+        from astrabox.core.service.orchestrator.assistant.assistant_layers import LAYER_RUNTIME_FIELDS
+
         definition = {field: assistant.get(field) for field in _ASSISTANT_RUNTIME_FIELDS}
         payload = json.dumps(
             {
                 "assistant": definition,
-                "layers": list(layers or []),
+                "layers": [
+                    {field: layer.get(field) for field in LAYER_RUNTIME_FIELDS}
+                    for _label, layer in layers
+                ],
                 "runtime_profile_updated_at": str(env.get("updated_at") or ""),
             },
             sort_keys=True,
