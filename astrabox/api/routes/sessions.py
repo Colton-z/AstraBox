@@ -78,6 +78,20 @@ class ResponseView(BaseModel):
     ended_at: str | None = None
 
 
+class BackgroundTaskView(BaseModel):
+    """Work the runtime keeps running in its box after its response ended.
+
+    ``kind`` is the engine's own name for the task's type, such as Claude
+    Code's ``local_bash``; ``description`` is the engine's own label for it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str
+    kind: str
+    description: str
+
+
 class HeldInputView(BaseModel):
     """An input the platform still holds: accepted, not yet durably taken by the runtime."""
 
@@ -107,7 +121,7 @@ class SessionRecord(BaseModel):
     session_id: str
     user_id: str | None = None
     state: str | None = None
-    #: ``idle``, ``working`` or ``waiting``, as the runtime last reported.
+    #: ``idle``, ``working``, ``waiting`` or ``background``, as the runtime last reported.
     runtime_status: str | None = None
     permission_mode: str | None = None
     model_name: str | None = None
@@ -148,6 +162,8 @@ class SessionRecord(BaseModel):
     current_responses: list[ResponseView] | None = None
     last_response: ResponseView | None = None
     held_inputs: list[HeldInputView] | None = None
+    #: Work running in the box with or without a response; each can be stopped on its own.
+    background_tasks: list[BackgroundTaskView] | None = None
     output_seq: int | None = None
 
 
@@ -297,6 +313,20 @@ class ChildRunStopResult(BaseModel):
 
     session_id: str
     child_run_id: str
+    status: str
+
+
+class BackgroundTaskStopResult(BaseModel):
+    """Acknowledgement that the runtime was asked to stop one background task.
+
+    The task leaves the session's ``background_tasks`` when the runtime
+    reports it ended.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    task_id: str
     status: str
 
 
@@ -628,6 +658,21 @@ async def stop_session_child_run(
 ):
     user = await _resolve_user(request)
     result = await _svc().stop_session_child_run(user, session_id, child_run_id)
+    return success_response(result)
+
+
+@router.post(
+    "/api/v1/sessions/{session_id}/background-tasks/{task_id}/stop",
+    response_model=ApiEnvelope[BackgroundTaskStopResult],
+    response_model_exclude_unset=True,
+)
+async def stop_session_background_task(
+    session_id: str,
+    task_id: str,
+    request: Request,
+):
+    user = await _resolve_user(request)
+    result = await _svc().stop_session_background_task(user, session_id, task_id)
     return success_response(result)
 
 

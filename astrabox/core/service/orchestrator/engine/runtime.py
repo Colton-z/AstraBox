@@ -42,13 +42,29 @@ from astrabox.core.service.orchestrator.engine.base import (
 )
 from astrabox.core.service.orchestrator.engine.emissions import public_ui_frame
 
-RuntimeStatus = Literal["idle", "working", "waiting"]
+RuntimeStatus = Literal["idle", "working", "waiting", "background"]
 """What the runtime reports about itself.
 
-``working`` means it is producing a response (including background work it
-started itself); ``waiting`` means a response is paused on a person (an
-approval or a question); ``idle`` means neither.
+``working`` means it is producing a response; ``waiting`` means a response is
+paused on a person (an approval or a question); ``background`` means no
+response is being produced but work the runtime started keeps running in its
+box (:class:`BackgroundTask`), which may end by itself, start a response of
+its own when it does, or be stopped; ``idle`` means none of these.
 """
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundTask:
+    """Work a runtime keeps running after its response ended, stoppable by ``task_id``.
+
+    ``kind`` is the engine's own name for the task's type (Claude Code's
+    ``task_type``, such as ``local_bash``), carried verbatim; ``description``
+    is the engine's own label for it.
+    """
+
+    task_id: str
+    kind: str
+    description: str
 
 ResponseOrigin = Literal["input", "engine"]
 """``input``: the response answers one or more submitted inputs.
@@ -272,9 +288,10 @@ class ResponseEnded(RuntimeEvent):
 
 @dataclass(frozen=True, slots=True)
 class StatusChanged(RuntimeEvent):
-    """The runtime's own status changed."""
+    """The runtime's own status changed, with the background tasks it now runs."""
 
     status: RuntimeStatus
+    background_tasks: tuple[BackgroundTask, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -327,6 +344,8 @@ class RuntimeState:
     #: Native closure receipts retained by the runtime for reader recovery.
     closed_interactions: tuple[InteractionClosed, ...] = ()
     refused_inputs: tuple[InputRefused, ...] = ()
+    #: Work the runtime keeps running in its box with no response open.
+    background_tasks: tuple[BackgroundTask, ...] = ()
 
 
 # --------------------------------------------------------------------------

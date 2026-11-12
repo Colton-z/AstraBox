@@ -3440,6 +3440,20 @@
             ],
             "title": "Assistant Id"
           },
+          "background_tasks": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/BackgroundTaskView"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Background Tasks"
+          },
           "conversation_state": {
             "title": "Conversation State",
             "type": "string"
@@ -6480,6 +6494,28 @@
           "data"
         ],
         "title": "ApiEnvelope[AuthorizeResponse]",
+        "type": "object"
+      },
+      "ApiEnvelope_BackgroundTaskStopResult_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/BackgroundTaskStopResult"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[BackgroundTaskStopResult]",
         "type": "object"
       },
       "ApiEnvelope_ChannelAccountLinkRecord_": {
@@ -10612,6 +10648,56 @@
           "authorize_url"
         ],
         "title": "AuthorizeResponse",
+        "type": "object"
+      },
+      "BackgroundTaskStopResult": {
+        "additionalProperties": false,
+        "description": "Acknowledgement that the runtime was asked to stop one background task.\n\nThe task leaves the session's ``background_tasks`` when the runtime\nreports it ended.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "task_id",
+          "status"
+        ],
+        "title": "BackgroundTaskStopResult",
+        "type": "object"
+      },
+      "BackgroundTaskView": {
+        "additionalProperties": false,
+        "description": "Work the runtime keeps running in its box after its response ended.\n\n``kind`` is the engine's own name for the task's type, such as Claude\nCode's ``local_bash``; ``description`` is the engine's own label for it.",
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "kind",
+          "description"
+        ],
+        "title": "BackgroundTaskView",
         "type": "object"
       },
       "Body_transcribe_session_speech_api_v1_sessions__session_id__speech_input_post": {
@@ -18589,6 +18675,20 @@
               }
             ],
             "title": "Assistant Id"
+          },
+          "background_tasks": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/BackgroundTaskView"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Background Tasks"
           },
           "created_at": {
             "anyOf": [
@@ -39666,6 +39766,76 @@
           }
         ],
         "summary": "Archive Session",
+        "tags": [
+          "Sessions"
+        ],
+        "x-required-api-scope": "astrabox:write"
+      }
+    },
+    "/api/v1/sessions/{session_id}/background-tasks/{task_id}/stop": {
+      "post": {
+        "operationId": "stop_session_background_task_api_v1_sessions__session_id__background_tasks__task_id__stop_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_BackgroundTaskStopResult_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Stop Session Background Task",
         "tags": [
           "Sessions"
         ],

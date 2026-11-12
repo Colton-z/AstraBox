@@ -62,7 +62,8 @@ from astrabox.seams.sandbox_disposal import (
 logger = get_logger(__name__)
 
 #: The runtime status during which a conversation may not be taken offline.
-_WORKING = "working"
+#: What the runtime reports while work runs in its box: a response, or only background tasks.
+_WORKING = frozenset({"working", "background"})
 
 
 class SessionLifecycleService:
@@ -778,8 +779,9 @@ def _refuse_while_working(session: dict[str, Any], operation: str) -> None:
     status reads, so its last working snapshot cannot veto explicit disposal;
     the finalizer must still confirm that disposal before ending the Session.
     """
+    status = str(session.get("runtime_status") or "")
     if (
-        str(session.get("runtime_status") or "") != _WORKING
+        status not in _WORKING
         or session.get("runtime_unavailable")
         or session.get("recovery_reason") == RUNTIME_PROTOCOL_INCOMPATIBLE
     ):
@@ -789,7 +791,7 @@ def _refuse_while_working(session: dict[str, Any], operation: str) -> None:
         code="SESSION_BUSY",
         message=f"cannot {operation} while the agent is working",
         status_code=409,
-        data={"runtime_status": _WORKING},
+        data={"runtime_status": status},
     )
 
 

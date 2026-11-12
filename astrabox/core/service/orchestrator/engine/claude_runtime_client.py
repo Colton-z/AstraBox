@@ -57,6 +57,7 @@ from astrabox.core.service.orchestrator.engine.interaction_contract import (
 )
 from astrabox.core.service.orchestrator.engine.runner_link import DeliveryCommand, RunnerLink
 from astrabox.core.service.orchestrator.engine.runtime import (
+    BackgroundTask,
     InputAdmitted,
     InputMessageObserved,
     InputRefused,
@@ -81,6 +82,21 @@ from astrabox.core.service.orchestrator.engine.runtime import (
 )
 
 logger = get_logger(__name__)
+
+
+def _background_tasks(tasks: Any) -> tuple[BackgroundTask, ...]:
+    """The runner's open background tasks: Claude Code's task id, ``task_type`` and description of each."""
+    if tasks is None:
+        return ()
+    if not isinstance(tasks, list):
+        raise ValueError(f"runner background tasks are not a list: {tasks!r}")
+    out = []
+    for task in tasks:
+        task_id = str((task or {}).get("task_id") or "").strip() if isinstance(task, dict) else ""
+        if not task_id:
+            raise ValueError(f"runner background task has no task_id: {task!r}")
+        out.append(BackgroundTask(task_id, str(task.get("task_type") or ""), str(task.get("description") or "")))
+    return tuple(out)
 
 _ABORTED_TERMINAL_REASONS = frozenset({"aborted_streaming", "aborted_tools"})
 #: A frame index past every event one frame can produce: "after this whole frame".
@@ -138,11 +154,16 @@ class _Translation:
             return [InteractionClosed(None, interaction_id, reason)]
         if op == "status":
             state = frame.get("state")
+            status: RuntimeStatus
             if state == "busy":
-                return [StatusChanged(None, "working")]
-            if state == "idle":
-                return [StatusChanged(None, "idle")]
-            raise ValueError(f"runner status has an unknown state {state!r}")
+                status = "working"
+            elif state == "background":
+                status = "background"
+            elif state == "idle":
+                status = "idle"
+            else:
+                raise ValueError(f"runner status has an unknown state {state!r}")
+            return [StatusChanged(None, status, _background_tasks(frame.get("tasks")))]
         if op == "turn_interrupted":
             if self.response_id is None or frame.get("command_id") != self.interrupt_target:
                 return []
@@ -680,7 +701,10 @@ class ClaudeRuntimeClient:
                 )
             )
         pending = tuple(pending_items)
-        status: RuntimeStatus = "waiting" if pending else ("working" if snapshot.get("busy") else "idle")
+        background = _background_tasks(snapshot.get("background_tasks"))
+        status: RuntimeStatus = (
+            "waiting" if pending else "working" if snapshot.get("busy") else "background" if background else "idle"
+        )
         run_start = snapshot.get("run_start_seq")
         # Replay the open response and any earlier SDK events still awaiting custody.
         through = int(run_start) - 1 if isinstance(run_start, int) else int(snapshot.get("last_seq") or 0)
@@ -707,6 +731,7 @@ class ClaudeRuntimeClient:
                 for key, reason in (("answered_interaction_ids", "answered"), ("expired_interaction_ids", "expired"))
                 for interaction_id in snapshot.get(key) or []
             ),
+            background_tasks=background,
         )
 
     async def answer(self, interaction_id: str, response: dict[str, Any]) -> None:
@@ -776,6 +801,9 @@ class ClaudeRuntimeClient:
 
     async def stop_child_run(self, control_id: str) -> None:
         await self._link.stop_task(control_id)
+
+    async def stop_background_task(self, task_id: str) -> None:
+        await self._link.stop_task(task_id)
 
     async def get_server_info(self) -> dict[str, Any] | None:
         info = await self._link.get_init_info()

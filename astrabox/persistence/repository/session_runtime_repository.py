@@ -218,6 +218,8 @@ class FactBatch:
     facts: list[Fact] = field(default_factory=list)
     cursor: dict[str, Any] | None = None
     status: str | None = None
+    #: The runtime's background tasks after the batch, recorded with ``status``.
+    background_tasks: list[dict[str, str]] | None = None
     protocol_error: str | None = None
 
     def __bool__(self) -> bool:
@@ -772,6 +774,7 @@ class SessionRuntimeRepository:
             if batch.status is not None:
                 session_values["runtime_status"] = batch.status
                 session_values["runtime_status_at"] = func.now()
+                session_values["runtime_background_tasks"] = batch.background_tasks or []
             if batch.output:
                 session_values["last_output_at"] = func.now()
             if any(isinstance(fact, ResponseEnd) for fact in batch.facts):

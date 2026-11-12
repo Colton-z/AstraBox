@@ -3203,6 +3203,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sessions/{session_id}/background-tasks/{task_id}/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Stop Session Background Task */
+        post: operations["stop_session_background_task_api_v1_sessions__session_id__background_tasks__task_id__stop_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sessions/{session_id}/browser": {
         parameters: {
             query?: never;
@@ -5779,6 +5796,8 @@ export interface components {
             agent_state?: string | null;
             /** Assistant Id */
             assistant_id?: string | null;
+            /** Background Tasks */
+            background_tasks?: components["schemas"]["BackgroundTaskView"][] | null;
             /** Conversation State */
             conversation_state: string;
             /** Created At */
@@ -6838,6 +6857,14 @@ export interface components {
             /** Code */
             code: string;
             data: components["schemas"]["AuthorizeResponse"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[BackgroundTaskStopResult] */
+        ApiEnvelope_BackgroundTaskStopResult_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["BackgroundTaskStopResult"];
             /** Message */
             message: string;
         };
@@ -8309,6 +8336,36 @@ export interface components {
         AuthorizeResponse: {
             /** Authorize Url */
             authorize_url: string;
+        };
+        /**
+         * BackgroundTaskStopResult
+         * @description Acknowledgement that the runtime was asked to stop one background task.
+         *
+         *     The task leaves the session's ``background_tasks`` when the runtime
+         *     reports it ended.
+         */
+        BackgroundTaskStopResult: {
+            /** Session Id */
+            session_id: string;
+            /** Status */
+            status: string;
+            /** Task Id */
+            task_id: string;
+        };
+        /**
+         * BackgroundTaskView
+         * @description Work the runtime keeps running in its box after its response ended.
+         *
+         *     ``kind`` is the engine's own name for the task's type, such as Claude
+         *     Code's ``local_bash``; ``description`` is the engine's own label for it.
+         */
+        BackgroundTaskView: {
+            /** Description */
+            description: string;
+            /** Kind */
+            kind: string;
+            /** Task Id */
+            task_id: string;
         };
         /** Body_transcribe_session_speech_api_v1_sessions__session_id__speech_input_post */
         Body_transcribe_session_speech_api_v1_sessions__session_id__speech_input_post: {
@@ -11799,6 +11856,8 @@ export interface components {
             agent_state?: string | null;
             /** Assistant Id */
             assistant_id?: string | null;
+            /** Background Tasks */
+            background_tasks?: components["schemas"]["BackgroundTaskView"][] | null;
             /** Created At */
             created_at?: string | null;
             /** Current Responses */
@@ -22621,6 +22680,47 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_SessionArchival_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    stop_session_background_task_api_v1_sessions__session_id__background_tasks__task_id__stop_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_BackgroundTaskStopResult_"];
                 };
             };
             /** @description Request validation failed (INVALID_REQUEST). */

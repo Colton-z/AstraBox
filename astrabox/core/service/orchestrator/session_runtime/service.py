@@ -83,12 +83,18 @@ def interaction_view(row: dict[str, Any], *, include_tool_input: bool) -> dict[s
     return {**view, "response_id": row["response_id"]}
 
 
+#: Page states in which the runtime's last report describes a box it still runs in.
+_REACHABLE = frozenset({SessionState.READY.value, "PROCESSING", "WAITING_INPUT"})
+
+
 def runtime_view_state(session: dict[str, Any], activity: dict[str, Any]) -> str:
     """The session's state as the page shows it.
 
     The lifecycle state while the session is not READY, recovery required
     while its runtime is unavailable, and otherwise what the runtime reports,
-    with inputs the platform still holds counted as work.
+    with inputs the platform still holds counted as work. Background work
+    alone leaves the session READY: no response runs, so the next message is
+    sent as usual, and the work is listed apart (``background_tasks``).
     """
     lifecycle = str(session.get("state") or "")
     if lifecycle != SessionState.READY.value:
@@ -433,6 +439,31 @@ class SessionRuntimeService:
             )
         return {"session_id": session_id, "status": "accepted"}
 
+    async def stop_background_task(self, user: UserContext, session_id: str, task_id: str) -> dict[str, Any]:
+        """Ask the runtime to stop one of the background tasks it last reported.
+
+        The stop is accepted when the reader takes it; the task's end arrives
+        as a runtime status that omits it.
+        """
+        await self._require_owner(user, session_id, execution=True)
+        session = await self._sessions.get_session(session_id) or {}
+        if task_id not in {str(task.get("task_id")) for task in session.get("runtime_background_tasks") or []}:
+            raise APIError(
+                code="BACKGROUND_TASK_NOT_FOUND",
+                message="the conversation's runtime reports no running background task with this id",
+                status_code=404,
+            )
+        control = await self._repo.request_control(
+            session_id, kind="stop_background", target=task_id, requested_by=str(user.user_id)
+        )
+        if control is None:
+            raise APIError(
+                code="BACKGROUND_TASK_CONTROL_UNAVAILABLE",
+                message="the conversation's runtime is not connected, so nothing can stop the background task",
+                status_code=409,
+            )
+        return {"session_id": session_id, "task_id": task_id, "status": "accepted"}
+
     # -- reads -------------------------------------------------------------
 
     async def follow(self, user: UserContext, session_id: str, *, after_seq: int) -> AsyncIterator[dict[str, Any]]:
@@ -486,8 +517,9 @@ class SessionRuntimeService:
         activity = await self._repo.activity(session_id)
         waiting = [row for row in activity["open_interactions"] if row.get("answer") is None]
         last_response = activity["last_response"]
+        state = runtime_view_state(session, activity)
         return {
-            "state": runtime_view_state(session, activity),
+            "state": state,
             "runtime_status": session.get("runtime_status"),
             "current_responses": [response_view(row) for row in activity["open_responses"]],
             "last_response": response_view(last_response) if last_response else None,
@@ -496,6 +528,8 @@ class SessionRuntimeService:
                 {key: row.get(key) for key in ("input_id", "client_message_id", "content", "state", "created_at")}
                 for row in activity["held_inputs"]
             ],
+            # What the runtime last reported, while its box is reachable; a lost box ended its work.
+            "background_tasks": list(session.get("runtime_background_tasks") or []) if state in _REACHABLE else [],
             "output_seq": output_seq,
         }
 

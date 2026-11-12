@@ -19,15 +19,18 @@ A Session reports one of these statuses in `state`:
 | Status | Description | Transitions to |
 | --- | --- | --- |
 | `CREATING` | Preparing or assigning the runtime. | `READY`, `TERMINATED` |
-| `READY` | Nothing is running; the Session accepts a message. | `PROCESSING`, `WAITING_INPUT`, `TERMINATED`, `DELETED` |
+| `READY` | No response is running; the Session accepts a message. Background tasks may still run (`background_tasks`). | `PROCESSING`, `WAITING_INPUT`, `TERMINATED`, `DELETED` |
 | `PROCESSING` | The Agent program is working, a response is open, or AstraBox still holds messages the program has not taken. | `READY`, `WAITING_INPUT`, `TERMINATED`, `DELETED` |
 | `WAITING_INPUT` | A response is paused on an approval or a question. | `PROCESSING`, `READY`, `TERMINATED`, `DELETED` |
 | `TERMINATED` | The runtime is offline. | `CREATING`, `DELETED` |
 | `DELETED` | Deleted. | — (terminal state) |
 
 `runtime_status` carries the Agent program's own report: `working`, `waiting`,
-or `idle`. `PROCESSING` and `WAITING_INPUT` are derived from it and from the
-responses, questions, and messages AstraBox has recorded for the Session.
+`background` or `idle`. `PROCESSING` and `WAITING_INPUT` are derived from it and
+from the responses, questions, and messages AstraBox has recorded for the
+Session. `background` means no response is running but work the program started
+keeps running in the sandbox, such as a Claude Code shell run in the
+background: the Session is `READY` and lists that work in `background_tasks`.
 
 Two additional lifecycle markers are surfaced alongside `state`:
 
@@ -46,9 +49,14 @@ Two additional lifecycle markers are surfaced alongside `state`:
    which starts a response.
 4. <b>PROCESSING → WAITING_INPUT → PROCESSING</b> A response that needs an
    approval or an answer pauses until someone responds, then continues.
-5. <b>PROCESSING → READY</b> The response ends and the Agent program reports it
-   is idle. A program that keeps working on its own, such as on a background
-   task, stays `PROCESSING` until it reports idle.
+5. <b>PROCESSING → READY</b> The response ends. Work the program keeps running
+   after it, such as a Claude Code background shell, is listed in
+   `background_tasks` while the Session is `READY`: the next message is sent as
+   usual, and each task can be stopped with
+   `POST /api/v1/sessions/{session_id}/background-tasks/{task_id}/stop`. A task
+   leaves the list when the program reports it ended, and the sandbox is kept
+   while any runs. The Session cannot be archived, ended or deleted while one
+   runs; stop it first.
 6. <b>TERMINATED</b> The conversation remains stored, but its runtime must be
    recovered (`POST /api/v1/sessions/{session_id}/recover`) before more work can
    run.
@@ -187,11 +195,12 @@ commonly used fields are:
 | `title` | string/null | Session title. |
 | `model_name` | string/null | Model reported for the current runtime. |
 | `permission_mode` | string/null | Mode selected for the Agent program, when supported. |
-| `runtime_status` | string/null | `idle`, `working` or `waiting`, as the Agent program last reported. |
+| `runtime_status` | string/null | `idle`, `working`, `waiting` or `background`, as the Agent program last reported. |
 | `current_responses` | array | Responses the Agent program is producing now. |
 | `last_response` | object/null | The most recent response that ended, with its `outcome` (`completed`, `failed` or `cancelled`) and the program's own `native_reason`. |
 | `pending_interaction` | object/null | The approval or question the Session is waiting on. |
 | `held_inputs` | array | Messages accepted but not yet taken by the Agent program. |
+| `background_tasks` | array | Work the Agent program keeps running in the sandbox: each `task_id`, the program's own `kind` (Claude Code: `local_bash`) and `description`. |
 | `output_seq` | integer | The output position to follow the Session's stream from. |
 | `runtime_unavailable` | boolean | Whether the Session's sandbox is gone or released. |
 | `created_at` | string/null | Creation time. |

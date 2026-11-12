@@ -203,7 +203,7 @@ class SessionRecovery:
     ) -> None:
         session_id = ownership.session_id
         if runtime_preparation_plan(template).session_mcp_servers:
-            if session.get("runtime_status") == "working":
+            if session.get("runtime_status") in ("working", "background"):
                 raise _GiveBack("session_busy", "Wait for the current response before reconnecting Session MCP servers")
             # Explicit recovery must cross the bound-material activation
             # barrier, even when this host has a cached client. Closing that

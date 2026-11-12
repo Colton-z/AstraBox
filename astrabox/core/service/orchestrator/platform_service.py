@@ -812,6 +812,13 @@ class AgentPlatformService:
         receipt = await self.session_runtime.stop_child_run(user, session_id, control_ref)
         return {**receipt, "child_run_id": child_run_id}
 
+    async def stop_session_background_task(
+        self, user: UserContext, session_id: str, task_id: str
+    ) -> dict[str, Any]:
+        """Hand a background task's stop to the runtime through the session's reader."""
+        await self.ensure_bootstrap()
+        return await self.session_runtime.stop_background_task(user, session_id, task_id)
+
     # ── Session sharing (delegated to session_share_service) ─────────────────
     async def create_session_share(
         self,

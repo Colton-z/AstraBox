@@ -19,6 +19,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 
+- A Claude Code conversation whose reply left a background shell running is no longer stuck as working with a Stop that does nothing. The conversation is ready: the next message is sent instead of queued, and the console lists the running shells apart from the conversation, each with a Stop that ends that shell through Claude Code's own task stop (`POST /api/v1/sessions/{session_id}/background-tasks/{task_id}/stop`). The session reports them as `background_tasks` with `runtime_status` `background`, and its sandbox is kept while any runs.
 - Deleting an Agent stops the boxes its conversations hold. They kept running until their lease ran out, although a deleted Agent's conversations take no new messages; their history stays.
 - Deleting an Assistant, or ending, archiving or deleting one of its conversations, no longer fails with `SESSION_PROCESS_CLEANUP_FAILED` after the Assistant's box was replaced and before the conversation ran again. The conversation's processes are ended in the box the Assistant's workspace has now, not the one the conversation last ran in.
 - A conversation no longer stops for good when a command prints a NUL character, for example a `cat` of a binary file. The database refused the output, the conversation's reader stopped at the same place on every restart, and the console kept showing the response as running. Such characters, and unpaired surrogates, are now recorded as U+FFFD, as terminal output already was.

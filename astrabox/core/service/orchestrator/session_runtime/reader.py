@@ -165,6 +165,11 @@ INPUT_CANCELLED = {
 }
 
 
+def background_task_records(tasks: Any) -> list[dict[str, str]]:
+    """The runtime's background tasks as the session row keeps them."""
+    return [{"task_id": task.task_id, "kind": task.kind, "description": task.description} for task in tasks]
+
+
 class ControlRefused(Exception):
     """A control the reader cannot apply as asked; the message says why."""
 
@@ -383,6 +388,7 @@ class SessionReader:
             self._take(ResponseOutput(event.cursor, None, input_failed_part(event.input_id, event.failure)))
         elif isinstance(event, StatusChanged):
             batch.status = event.status
+            batch.background_tasks = background_task_records(event.background_tasks)
         elif isinstance(event, RuntimeDiagnostic):
             logger.info(
                 "runtime diagnostic session=%s type=%s raw=%s",
@@ -442,6 +448,7 @@ class SessionReader:
             batch.facts.append(InputsFailed((refused.input_id,), refused.failure))
         batch.output.extend(lost_parts)
         batch.status = state.status
+        batch.background_tasks = background_task_records(state.background_tasks)
         batch.cursor = state.cursor.as_json() if state.cursor is not None else None
         await self._commit()
         for lost in lost_parts:
@@ -548,6 +555,11 @@ class SessionReader:
                     stop = getattr(self._client, "stop_child_run", None)
                     if not callable(stop):
                         raise RuntimeError(f"the {self._client.engine_kind} runtime cannot stop a sub-agent")
+                    await stop(str(row["target"]))
+                elif row["kind"] == "stop_background":
+                    stop = getattr(self._client, "stop_background_task", None)
+                    if not callable(stop):
+                        raise RuntimeError(f"the {self._client.engine_kind} runtime cannot stop a background task")
                     await stop(str(row["target"]))
                 else:
                     raise RuntimeError(f"unknown control {row['kind']!r}")

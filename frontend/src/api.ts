@@ -2506,6 +2506,13 @@ export async function stopSessionChildRun(
   })) as Promise<{ status: string }>;
 }
 
+export async function stopSessionBackgroundTask(sessionId: string, taskId: string): Promise<{ status: string }> {
+  return send((wire) => client.POST('/api/v1/sessions/{session_id}/background-tasks/{task_id}/stop', {
+    ...wire,
+    params: { path: { session_id: sessionId, task_id: taskId } },
+  })) as Promise<{ status: string }>;
+}
+
 export async function terminateSandbox(sessionId: string): Promise<SandboxTerminateResult> {
   // Sandbox termination can legitimately take tens of seconds while the
   // backend tears down the remote runtime. A short client-side abort produces

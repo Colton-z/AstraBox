@@ -281,6 +281,12 @@
     "delete_title": "删除助手",
     "delete_confirm": "删除 {{name}}?它的工作区会被移除,之后无法再打开。"
   },
+  "background_tasks": {
+    "title": "后台运行中",
+    "hint": "回复已经结束，可以直接发送下一条消息。这些任务会在对话的沙箱里继续运行，直到结束或被停止。",
+    "stop": "停止",
+    "stopping": "正在停止…"
+  },
   "user_action": {
     "open": "前往完成操作",
     "checking": "正在检查会话运行条件…",

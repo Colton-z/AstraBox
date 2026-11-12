@@ -281,6 +281,12 @@
     "delete_title": "Delete Assistant",
     "delete_confirm": "Delete {{name}}? Its workspace is removed and it can no longer be opened."
   },
+  "background_tasks": {
+    "title": "Running in the background",
+    "hint": "The reply has ended, so you can send your next message. These keep running in the conversation's sandbox until they finish or you stop them.",
+    "stop": "Stop",
+    "stopping": "Stopping…"
+  },
   "user_action": {
     "open": "Open required action",
     "checking": "Checking session requirements…",

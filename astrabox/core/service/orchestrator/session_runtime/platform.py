@@ -250,7 +250,8 @@ def reader_hooks(
             await committed(session_id, batch)
 
         async def status(value: str) -> None:
-            if value in ("working", "waiting"):
+            # Background work runs in the box too, so it keeps the lease as a response does.
+            if value in ("working", "waiting", "background"):
                 await runtime_manager.maybe_renew_lease_on_activity(session_id)
 
         async def permission_mode() -> None:

@@ -135,6 +135,9 @@ class Session(Base):
     last_output_at: Mapped[datetime | None]
     runtime_status: Mapped[str | None] = mapped_column(payload_text())
     runtime_status_at: Mapped[datetime | None]
+    #: The background tasks the runtime reported with ``runtime_status``: each
+    #: ``task_id``, the engine's ``kind`` and its ``description``.
+    runtime_background_tasks: Mapped[list[dict[str, Any]] | None] = mapped_column(payload_json())
 
     # The box this conversation runs in.
     sandbox_backend: Mapped[str | None] = mapped_column(payload_text())
@@ -332,7 +335,8 @@ class SessionControl(Base):
 
     control_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
     session_id: Mapped[str] = mapped_column(ForeignKey(_SESSION_FK, ondelete="CASCADE"))
-    #: ``interrupt`` or ``stop_child`` (``target`` is the runtime's sub-agent handle).
+    #: ``interrupt``, ``cancel_input``, ``stop_child`` (``target`` is the runtime's
+    #: sub-agent handle) or ``stop_background`` (``target`` is a background task's id).
     kind: Mapped[str] = mapped_column(payload_text())
     target: Mapped[str | None] = mapped_column(payload_text())
     reader_generation: Mapped[int] = mapped_column(BigInteger)
