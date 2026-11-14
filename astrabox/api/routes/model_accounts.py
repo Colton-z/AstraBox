@@ -112,7 +112,7 @@ class ModelAccount(BaseModel):
     updated_at: str
 
 
-class TeamPool(BaseModel):
+class ModelAccountTeamPool(BaseModel):
     """Whether the deployment's team pool of model accounts is on."""
 
     model_config = ConfigDict(extra="allow")
@@ -192,7 +192,7 @@ def register_model_account_routes(app: Any) -> None:
 
     @app.get(
         "/api/v1/me/model-accounts/team-pool",
-        response_model=ApiEnvelope[TeamPool],
+        response_model=ApiEnvelope[ModelAccountTeamPool],
         response_model_exclude_unset=True,
     )
     async def get_model_account_team_pool(request: Request) -> dict[str, Any]:

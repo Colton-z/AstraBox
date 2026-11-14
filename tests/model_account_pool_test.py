@@ -187,7 +187,7 @@ async def test_a_limit_holds_an_account_for_an_hour_and_never_moves_a_running_re
 async def test_with_the_pool_off_nothing_switches_and_nothing_can_be_shared(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Off is today's behaviour: the preferred account always, and no sharing.
+    """Off, a conversation spends its preferred account, and nothing can be shared.
 
     A limited account is still the one spent, a flag left set while the pool
     was on lends nothing, and a request to share is refused rather than
