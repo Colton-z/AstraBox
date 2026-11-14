@@ -290,3 +290,30 @@ async def test_saving_refuses_a_size_the_deployment_could_never_create(
     # Every refusal left the saved size in place.
     stored = await svc.get_runtime_profile("build")
     assert stored is not None and (stored["sandbox_cpu"], stored["sandbox_memory"]) == ("8", "16Gi")
+
+
+async def test_a_memory_ceiling_derived_from_the_host_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Nothing set: the ceiling is the host's memory less 4Gi. The source the
+    # console reads names that derivation, and startup warns that it counts
+    # nothing else the host runs.
+    class _Host:
+        name = "derived-backend"
+        supports_inventory_listing = True
+
+        async def host_memory_bytes(self) -> int:
+            return 16 * _GIB
+
+    warnings: list[str] = []
+    monkeypatch.setattr(sandbox_quota, "_QUOTAS", {})
+    monkeypatch.setattr(
+        sandbox_quota.logger, "warning", lambda message, *args: warnings.append(message % args)
+    )
+    quotas = await sandbox_quota.configure_sandbox_quotas({"derived-backend": _Host()})
+    quota = quotas["derived-backend"]
+    assert quota.memory == 12 * _GIB
+    assert quota.sources["memory"] == sandbox_quota.QUOTA_SOURCE_HOST_MEMORY
+    [warning] = warnings
+    assert "12.00Gi" in warning and "16.00Gi" in warning
+    assert "not counted" in warning and "ASTRABOX_SANDBOX_QUOTA_MEMORY" in warning

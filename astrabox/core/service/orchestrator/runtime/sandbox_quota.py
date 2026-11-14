@@ -44,6 +44,9 @@ QUOTA_MEMORY_METADATA_KEY = "astrabox.quota-memory-bytes"
 
 #: Memory the derived default leaves to the platform, its stores and the host.
 _HOST_RESERVE_BYTES = 4 * 2**30
+#: The memory ceiling's source when it is derived from the host's total memory.
+#: The console states what it means (``SandboxQuotaCard``).
+QUOTA_SOURCE_HOST_MEMORY = "derived from host memory"
 #: A reservation whose create never answered is released when its box has not
 #: appeared in an inventory taken this long after it was made.
 _CREATE_GRACE = timedelta(minutes=15)
@@ -76,7 +79,7 @@ class SandboxQuota:
     memory: int | None = None
     cpu: float | None = None
     concurrent_creates: int | None = None
-    #: Where each ceiling came from: configured, derived (and from what), or unlimited.
+    #: Where each ceiling came from: configured, derived from host memory, or unlimited.
     sources: Mapping[str, str] = field(default_factory=dict)
 
 
@@ -171,9 +174,19 @@ async def configure_sandbox_quotas(providers: Mapping[str, Any]) -> dict[str, Sa
             host = await provider.host_memory_bytes()
             if host is not None:
                 memory = max(host - _HOST_RESERVE_BYTES, 0)
-                memory_source = (
-                    f"derived: host memory {host / _GIB:.1f}Gi less "
-                    f"{_HOST_RESERVE_BYTES // _GIB}Gi for the platform and the host"
+                memory_source = QUOTA_SOURCE_HOST_MEMORY
+                # The host's total says nothing about what else runs on it, so
+                # this ceiling lets sandboxes take memory other software holds.
+                logger.warning(
+                    "sandbox quota for backend %s: the memory ceiling, %s, is this whole "
+                    "host's memory (%s) less %dGi for AstraBox and the host. Software "
+                    "the host runs beside AstraBox is not counted, and sandboxes can take "
+                    "the memory it needs. Set ASTRABOX_SANDBOX_QUOTA_MEMORY to the memory "
+                    "this deployment's sandboxes may hold, or to 'unlimited'.",
+                    name,
+                    _format_memory(memory),
+                    _format_memory(host),
+                    _HOST_RESERVE_BYTES // _GIB,
                 )
         quota = SandboxQuota(
             boxes=boxes,

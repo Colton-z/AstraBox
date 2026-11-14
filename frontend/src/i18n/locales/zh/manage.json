@@ -588,6 +588,7 @@
     "quota_source_configured": "已配置",
     "quota_source_unlimited": "设为不限",
     "quota_source_unset": "未设置",
+    "quota_source_host_memory": "未设置：取整台宿主机的内存减去 4 GiB。宿主机上的其他软件不计在内，沙箱可能占用它们所需的内存。请将 ASTRABOX_SANDBOX_QUOTA_MEMORY 设为沙箱可占用的内存。",
     "quota_in_use": "使用中",
     "quota_prepared": "待命",
     "quota_starting": "启动中",

@@ -402,7 +402,8 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "Kubernetes quantity such as 12Gi). Empty: on the bundled Docker "
         "server, the Docker host's memory less 4Gi; elsewhere no ceiling. "
         "unlimited sets none. Startup logs the value in force and where it came "
-        "from.",
+        "from, and warns when it is derived from the host: the host's memory "
+        "says nothing about other software running on it.",
         "astrabox.config.settings",
     ),
     (

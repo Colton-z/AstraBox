@@ -588,6 +588,7 @@
     "quota_source_configured": "Configured",
     "quota_source_unlimited": "Set to unlimited",
     "quota_source_unset": "Not set",
+    "quota_source_host_memory": "Not set: this host's whole memory less 4 GiB. Other software on the host is not counted, so sandboxes can take the memory it needs. Set ASTRABOX_SANDBOX_QUOTA_MEMORY to what they may hold.",
     "quota_in_use": "In use",
     "quota_prepared": "Prepared",
     "quota_starting": "Starting",

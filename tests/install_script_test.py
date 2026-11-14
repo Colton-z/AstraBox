@@ -32,6 +32,8 @@ _SECRET_NAMES = (
     "casdoor_admin_password",
     "casdoor_builtin_admin_password",
 )
+#: What the fake ``docker info`` reports as the Docker host's memory.
+_HOST_MEMORY_BYTES = 32 * 2**30
 
 
 def _fake_docker(directory: Path, *, volume_exists: bool) -> Path:
@@ -45,6 +47,7 @@ def _fake_docker(directory: Path, *, volume_exists: bool) -> Path:
             #!/usr/bin/env bash
             case "$1 $2" in
               "volume inspect") exit {0 if volume_exists else 1} ;;
+              "info --format") echo {_HOST_MEMORY_BYTES} ;;
             esac
             exit 0
             """
@@ -196,6 +199,63 @@ def test_a_first_install_goes_through_the_settings_that_depend_on_the_host(
         assert result.stderr.count(f"{name} [") == 1, result.stderr
     for name in SETUP_REVIEW:
         assert name in result.stdout, result.stdout
+
+
+def test_a_first_install_decides_how_much_memory_sandboxes_hold(tmp_path: Path) -> None:
+    """A first install does not leave the sandboxes' memory to the server's default.
+
+    That default is the Docker host's memory less 4 GiB, and the host's memory
+    says nothing about what else runs on it. Without a terminal the installer
+    stops and names the setting; from a terminal it shows the host's memory,
+    offers that default, refuses a size without its unit, and writes the
+    answer. A later run asks nothing. An unattended upgrade of an installation
+    that never decided is not stopped: its server warns instead.
+    """
+    env_file = tmp_path / ".env"
+    reference = _REPO_ROOT / "containers/settings.reference.env"
+    upgraded = _run(
+        f"""
+        create_env_file "{env_file}"
+        have_tty=0
+        previous_version=0.1.14
+        configure_review_settings "{env_file}" "{reference}"
+        """,
+        tmp_path=tmp_path,
+    )
+    assert upgraded.returncode == 0, upgraded.stderr
+    assert "ASTRABOX_SANDBOX_QUOTA_MEMORY" not in _settings(env_file)
+    env_file.unlink()
+
+    refused = _run(
+        f"""
+        create_env_file "{env_file}"
+        have_tty=0
+        configure_review_settings "{env_file}" "{reference}"
+        """,
+        tmp_path=tmp_path,
+    )
+    assert refused.returncode != 0
+    assert "ASTRABOX_SANDBOX_QUOTA_MEMORY=24Gi" in refused.stderr, refused.stderr
+    assert "ASTRABOX_SANDBOX_QUOTA_MEMORY" not in _settings(env_file)
+    assert "ASTRABOX_INSTALL_SETTINGS_REVIEWED" not in _settings(env_file)
+
+    # A bare number, which the server would read as bytes, then 20Gi; then no
+    # to going through the other settings.
+    (tmp_path / "answers").write_text("20\n20Gi\nn\n", encoding="utf-8")
+    asked = _run(
+        f"""
+        exec 3<"{tmp_path / 'answers'}"
+        have_tty=1
+        configure_review_settings "{env_file}" "{reference}"
+        configure_review_settings "{env_file}" "{reference}"
+        """,
+        tmp_path=tmp_path,
+    )
+    assert asked.returncode == 0, asked.stderr
+    assert asked.stderr.count("This Docker host has 32 GiB of memory") == 1, asked.stderr
+    assert asked.stderr.count("ASTRABOX_SANDBOX_QUOTA_MEMORY [28Gi]") == 2, asked.stderr
+    assert asked.stderr.count("Enter a size with its unit") == 1, asked.stderr
+    assert _settings(env_file)["ASTRABOX_SANDBOX_QUOTA_MEMORY"] == "20Gi"
 
 
 # ── team login ───────────────────────────────────────────────────────────────

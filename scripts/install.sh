@@ -562,11 +562,51 @@ review_settings() {
   done <"$reference"
 }
 
+# How much memory sandboxes may hold together is decided before the settings
+# are first reviewed. Unset, the server takes the Docker host's memory less
+# 4 GiB, and nothing on the host tells it what else runs there. Taken from the
+# environment or the settings file when either sets it; otherwise asked. A
+# first install without a terminal to ask on is refused; an upgrade without one
+# keeps the server's default, which the server then warns about. An install is
+# an upgrade when main found an installed VERSION file (`previous_version`).
+decide_sandbox_memory() {
+  local env_file="$1" host_bytes host_gib suggestion="" value
+  if [ -n "${ASTRABOX_SANDBOX_QUOTA_MEMORY:-}" ] \
+    || [ -n "$(env_get "$env_file" ASTRABOX_SANDBOX_QUOTA_MEMORY)" ]; then
+    return 0
+  fi
+  if [ "$have_tty" != 1 ]; then
+    [ -z "${previous_version:-}" ] || return 0
+    die "Decide how much memory this host's sandboxes may hold together:" \
+      "AstraBox cannot see what else runs on the host. Set, for example," \
+      "ASTRABOX_SANDBOX_QUOTA_MEMORY=24Gi, or ASTRABOX_SANDBOX_QUOTA_MEMORY=unlimited." \
+      "See $DOCS_URL"
+  fi
+  host_bytes="$(docker info --format '{{.MemTotal}}' </dev/null)" || host_bytes=""
+  [[ "$host_bytes" =~ ^[0-9]+$ ]] || die "Cannot read the Docker host's memory from docker info."
+  host_gib=$((host_bytes / 1073741824))
+  # The server's own default, written out so the operator sees what it is.
+  [ "$host_gib" -le 4 ] || suggestion="$((host_gib - 4))Gi"
+  printf '\nThis Docker host has %s GiB of memory. AstraBox cannot see what else\n' "$host_gib" >&2
+  printf 'runs on it. How much may its sandboxes hold together? Enter a size such\n' >&2
+  printf 'as 24Gi, or unlimited.\n' >&2
+  [ -z "$suggestion" ] || printf '%s leaves 4 GiB for AstraBox itself and the host.\n' "$suggestion" >&2
+  value="$(prompt ASTRABOX_SANDBOX_QUOTA_MEMORY "$suggestion")"
+  # A size needs its unit: the server reads a bare number as bytes.
+  until [[ "$value" =~ ^([0-9]+(\.[0-9]+)?([KMGTP]i|[kMGTP])|unlimited)$ ]]; do
+    printf 'Enter a size with its unit, such as 24Gi or 768Mi, or unlimited.\n' >&2
+    value="$(prompt ASTRABOX_SANDBOX_QUOTA_MEMORY "$suggestion")"
+  done
+  env_set "$env_file" ASTRABOX_SANDBOX_QUOTA_MEMORY "$value"
+}
+
 # Takes each setting to review from the environment when it is set there, and
 # on a first interactive install offers to go through the rest. A setting
 # already in the settings file is kept.
 configure_review_settings() {
   local env_file="$1" reference="$2" key default reason value ask=0
+  [ -n "$(env_get "$env_file" ASTRABOX_INSTALL_SETTINGS_REVIEWED)" ] \
+    || decide_sandbox_memory "$env_file"
   if [ -z "$(env_get "$env_file" ASTRABOX_INSTALL_SETTINGS_REVIEWED)" ] && [ "$have_tty" = 1 ]; then
     printf '\nSome defaults depend on this host and your team, such as how much of\n' >&2
     printf 'the host sandboxes may use. Enter keeps the default shown.\n' >&2
@@ -855,6 +895,9 @@ main() {
   local env_file="$install_dir/containers/.env"
   local previous_version=""
   [ -f "$install_dir/VERSION" ] && previous_version="$(tr -d '\r\n' <"$install_dir/VERSION")"
+  # Without a terminal, a first install whose sandbox memory is undecided stops
+  # here, before it writes the VERSION that would make a re-run an upgrade.
+  [ "$have_tty" = 1 ] || decide_sandbox_memory "$env_file"
 
   local bundle version
   work="$(mktemp -d)"

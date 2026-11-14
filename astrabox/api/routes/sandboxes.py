@@ -301,7 +301,7 @@ class AdminSandboxQuotaCeilings(BaseModel):
     memory_bytes: int | None
     cpu: float | None
     concurrent_creates: int | None
-    #: Where each ceiling came from: configured, derived (and from what), or unlimited.
+    #: Where each ceiling came from: configured, derived from host memory, or unlimited.
     sources: dict[str, str]
 
 

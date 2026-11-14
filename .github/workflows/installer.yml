@@ -190,6 +190,9 @@ jobs:
           ASTRABOX_INSTALL_DIR: ${{ runner.temp }}/astrabox
           ASTRABOX_IMAGE_PREFIX: ${{ env.REGISTRY_PREFIX }}
           ASTRABOX_INSTALL_MODEL_PROVIDER: none
+          # A first install without a terminal is refused until the sandboxes'
+          # memory is decided: a 16 GiB runner less 4 GiB for the stack.
+          ASTRABOX_SANDBOX_QUOTA_MEMORY: 12Gi
         # The script arrives on stdin, as it does from `curl ... | bash`.
         run: bash < scripts/install.sh
 

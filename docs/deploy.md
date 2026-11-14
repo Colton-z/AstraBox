@@ -401,6 +401,16 @@ of them from the environment (`ASTRABOX_SANDBOX_QUOTA_MEMORY=24Gi bash
 install.sh`) whether or not it can ask; and every run ends by listing them
 with the value each has.
 
+How much memory sandboxes may hold together is not left to a default on a
+first install, because AstraBox cannot see what else the host runs. From a
+terminal the installer asks for it, showing the host's memory and suggesting
+that amount less 4 GiB; a first install without a terminal stops before it
+writes anything until `ASTRABOX_SANDBOX_QUOTA_MEMORY` is set, to a size or to
+`unlimited`. An upgrade does not stop for it: run from a terminal, the
+installer asks the first time it reviews an installation's settings;
+otherwise the [derived ceiling](#cap-what-a-sandbox-backend-runs) stays, and
+the server warns about it.
+
 Manage the installed stack from that directory with the ordinary Compose
 commands, `docker compose ps`, `docker compose logs -f server` and
 `docker compose down`. With team login on, they include Casdoor.
@@ -990,7 +1000,12 @@ ten conversations with their own sandboxes. On a host of 8 GiB or less the
 ceiling is 4 GiB or less, too little for one shared sandbox of the default size
 (4 GiB and its sidecar), so an Agent or Assistant whose RuntimeProfile shares a
 sandbox cannot start: lower `ASTRABOX_SHARED_SANDBOX_MEMORY_LIMIT` and its request, or raise
-`ASTRABOX_SANDBOX_QUOTA_MEMORY`. Set a variable to `unlimited` to remove the
+`ASTRABOX_SANDBOX_QUOTA_MEMORY`. The host's memory says nothing about what
+else the host runs, so on a host shared with other software this default lets
+sandboxes take the memory that software needs: set
+`ASTRABOX_SANDBOX_QUOTA_MEMORY` to what sandboxes may hold. While the ceiling
+is derived, startup logs a warning that says so, and the **Sandboxes** page
+says it under the memory ceiling. Set a variable to `unlimited` to remove the
 ceiling. Startup logs each ceiling and where it came from, and
 refuses a ceiling on a backend that cannot list its sandboxes, since what it
 runs could not be counted. The **Sandboxes** page of the console shows each
