@@ -68,9 +68,12 @@ decrypts an HTTPS connection only when its server name matches a host a
 credential is bound to in the sandbox, and passes every other connection
 through untouched, with the destination's own certificate. The release's
 egress image (`containers/egress`) adds this choice to OpenSandbox's proxy,
-which on its own decrypts every HTTPS connection. In a sandbox with protected
-delivery, the sandbox backend sets `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE`
-(OpenSSL-based tools such as `curl`, and Python `requests`) and
+which in its supported sidecar mode decrypts every HTTPS connection. A host
+newly bound in the sandbox is decrypted from the next connection opened to it;
+a connection already passed through stays untouched. When the proxy cannot read
+the sandbox's credentials, it decrypts the connection and refuses its requests.
+In a sandbox with protected delivery, the sandbox backend sets `SSL_CERT_FILE`
+and `REQUESTS_CA_BUNDLE` (OpenSSL-based tools such as `curl`, and Python `requests`) and
 `NODE_EXTRA_CA_CERTS` (Node.js) to bundles that include the proxy's certificate
 authority, so those clients trust it without configuration. A client that pins
 certificates, or reads only its own trust store and ignores these variables,
@@ -204,9 +207,9 @@ Vault assignment leaves the RuntimeProfile record unchanged. RuntimeProfile
 networking and Vault record lifecycle are independent. Removing the assignment
 removes its managed host grant from new sandbox policy.
 
-OpenSandbox egress v1.1.7 supports credential interception on HTTPS 443, or HTTP
-80 when the credential explicitly permits insecure transport, and requires
-`dns+nft`. It also validates that each runtime binding host is explicitly
+OpenSandbox egress (release 1.2.1) supports credential interception on HTTPS
+443, or HTTP 80 when the credential explicitly permits insecure transport, and
+requires `dns+nft`. It also validates that each runtime binding host is explicitly
 reachable. The adapter therefore renders each attached binding host as an exact
 allow rule. Under unrestricted networking that rule is redundant; under limited
 networking it is the host grant carried by the Vault assignment. The RuntimeProfile
