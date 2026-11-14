@@ -2300,8 +2300,9 @@ class OpenSandboxSandboxProvider(SandboxProvider):
                         "port through execd, which it cannot authenticate to. "
                         "HTML preview, the Browser panel and exposed ports need "
                         "the Kubernetes runtime with the OpenSandbox ingress "
-                        "Gateway, or ASTRABOX_SANDBOX_UNAUTHENTICATED_EXECD=true "
-                        "for sandboxes created afterwards (see docs/deploy.md)"
+                        "Gateway, or sandboxes created with "
+                        "ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN unset "
+                        "(see docs/deploy.md)"
                     ),
                     status_code=409,
                 )

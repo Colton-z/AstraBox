@@ -704,20 +704,19 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "astrabox.common.utils.settings",
     ),
     (
-        "ASTRABOX_SANDBOX_UNAUTHENTICATED_EXECD",
+        "ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN",
         "public",
         "false",
-        "Create Docker sandboxes whose execd answers without a credential. By "
-        "default each sandbox's execd requires a per-sandbox token, so other "
-        "containers and host processes that reach its published port cannot run "
-        "commands or read files in it. On the Docker runtime a browser reaches an "
-        "in-box port only through execd, and a browser cannot send the token, so "
-        "with the default HTML preview, the Browser panel, exposed ports and Pi "
-        "Agents that share a sandbox between conversations are unavailable. True "
-        "restores them for sandboxes created afterwards and puts every process "
-        "and container that can reach the Docker bridge gateway inside the trust "
-        "boundary. Applies only to the bundled lifecycle server on Docker; "
-        "elsewhere a true value refuses every sandbox create.",
+        "Give each new Docker sandbox's execd a per-sandbox access token. Unset, "
+        "a sandbox's execd answers anyone who reaches its published port on the "
+        "Docker bridge gateway, so other containers on the bridge and processes "
+        "on the host can run commands and read files in it. True closes that for "
+        "sandboxes created afterwards. On the Docker runtime a browser reaches an "
+        "in-box port only through execd and cannot send the token, so with true "
+        "HTML preview, the Browser panel, exposed ports and Pi Agents that share "
+        "a sandbox between conversations are unavailable. Applies only to the "
+        "bundled lifecycle server on Docker; elsewhere true refuses every "
+        "sandbox create.",
         "astrabox.common.utils.settings",
     ),
     (

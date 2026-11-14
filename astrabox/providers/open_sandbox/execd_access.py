@@ -18,6 +18,11 @@ vendor's (``components/execd/pkg/flag/parser.go`` and
 credential, then requires it too, and ``/proxy/<port>`` does not forward it to
 any in-box service but execd itself.
 
+A sandbox gets the credential when ``ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN`` is
+true (:func:`execd_access_required`). It is off by default because on Docker a
+browser reaches an in-box port only through execd and cannot send the token:
+HTML preview, the Browser panel and exposed ports need execd open.
+
 **Custody.** The token is derived, not stored: an HMAC of the deployment's
 secret root (:func:`derive_platform_key` under :func:`platform_secret_root`, as
 the :8080 key in :mod:`.aio_auth` is) over a random subject written to the
@@ -36,8 +41,8 @@ command, terminal and isolated session it starts, and a process of another
 account cannot read a root process's ``/proc/<pid>/environ``. A workload that
 runs as root in the sandbox can read it there.
 
-A sandbox whose metadata carries no subject was created without a token, and
-AstraBox sends it none.
+A sandbox whose metadata carries no subject was created without a token, with
+the setting off or before it was turned on, and AstraBox sends it none.
 """
 
 from __future__ import annotations
@@ -71,28 +76,27 @@ _EXECD_ACCESS_DOMAIN = "astrabox-execd-access"
 def execd_access_required(settings: Any) -> bool:
     """Whether a sandbox this deployment creates gets an execd credential.
 
-    Only the bundled lifecycle server on Docker: there AstraBox selects the
-    execd image, so :func:`require_execd_access_enforced` can hold every box
-    to it. ``ASTRABOX_SANDBOX_UNAUTHENTICATED_EXECD`` turns it off there and
-    is refused anywhere else, where it would change nothing.
+    ``ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN`` asks for it, and only the bundled
+    lifecycle server on Docker can honour it: there AstraBox selects the execd
+    image, so :func:`require_execd_access_enforced` can hold every box to it.
+    Anywhere else the setting is refused rather than ignored.
     """
 
     from astrabox.providers.open_sandbox.sandbox import OpenSandboxSandboxProvider
 
-    unauthenticated = bool(getattr(settings, "sandbox_unauthenticated_execd", False))
+    if not bool(getattr(settings, "sandbox_execd_access_token", False)):
+        return False
     if OpenSandboxSandboxProvider._bundled_docker():
-        return not unauthenticated
-    if unauthenticated:
-        raise APIError(
-            code="SANDBOX_CONFIG_INVALID",
-            message=(
-                "ASTRABOX_SANDBOX_UNAUTHENTICATED_EXECD=true applies only to the "
-                "bundled lifecycle server on the Docker runtime; this deployment "
-                "creates every sandbox without an execd credential already"
-            ),
-            status_code=500,
-        )
-    return False
+        return True
+    raise APIError(
+        code="SANDBOX_CONFIG_INVALID",
+        message=(
+            "ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN=true applies only to the bundled "
+            "lifecycle server on the Docker runtime; this deployment cannot give "
+            "a sandbox's execd its access token"
+        ),
+        status_code=500,
+    )
 
 
 def new_execd_access_subject() -> str:

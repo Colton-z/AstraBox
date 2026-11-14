@@ -262,9 +262,9 @@ services:
       # OpenSandbox Secure Access for sandbox endpoints: Kubernetes with the
       # ingress gateway only. The bundled Docker runtime refuses it at startup.
       ASTRABOX_SANDBOX_SECURE_ACCESS: ${ASTRABOX_SANDBOX_SECURE_ACCESS:-false}
-      # Each sandbox's execd requires a per-sandbox token unless this is true;
-      # true restores browser routes through execd (docs/deploy.md).
-      ASTRABOX_SANDBOX_UNAUTHENTICATED_EXECD: ${ASTRABOX_SANDBOX_UNAUTHENTICATED_EXECD:-false}
+      # True gives each new sandbox's execd a per-sandbox token, at the cost of
+      # browser routes through execd (docs/deploy.md).
+      ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN: ${ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN:-false}
       ASTRABOX_SANDBOX_SERVER_EXECD_IMAGE: ${ASTRABOX_SANDBOX_SERVER_EXECD_IMAGE:-}
       ASTRABOX_SANDBOX_EGRESS_IMAGE: ${ASTRABOX_SANDBOX_EGRESS_IMAGE:-}
       ASTRABOX_SANDBOX_EGRESS_MODE: ${ASTRABOX_SANDBOX_EGRESS_MODE:-dns+nft}

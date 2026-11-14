@@ -183,14 +183,13 @@ stack keeps the platform off that network:
   `docker network inspect bridge`), not on the host's other interfaces:
   execd, which runs commands, serves files and the terminal, and is the only
   route to every other in-box port; the image's web gateway on 8080; and the
-  egress sidecar's API. Each requires a credential of that sandbox:
-  execd its access token ([below](#sandbox-execd-authentication)), the
-  gateway the sandbox's `SANDBOX_API_KEY`, and the egress API the token
-  OpenSandbox gives the sidecar. Keep `ASTRABOX_PUBLISH_HOST_IP` on the bridge
-  gateway anyway: execd's liveness and readiness routes and the egress API's
-  health route answer anyone, and a sandbox created with
-  `ASTRABOX_SANDBOX_UNAUTHENTICATED_EXECD=true` or before AstraBox 0.1.15 has
-  an execd that answers anyone.
+  egress sidecar's API. The gateway requires the sandbox's `SANDBOX_API_KEY`
+  and the egress API the token OpenSandbox gives the sidecar; their health
+  routes answer anyone. execd answers anyone that reaches it, unless
+  `ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN=true` gives it a token of the sandbox
+  ([below](#sandbox-execd-authentication)). Do not set
+  `ASTRABOX_PUBLISH_HOST_IP` to `0.0.0.0` unless something in front of those
+  ports authenticates every request.
 - Every sandbox's egress policy, under both `Limited` and `Unrestricted`
   networking, denies Docker's default bridge except `sandbox-edge`: other
   sandboxes and the bridge gateway where sandbox ports are published. The deny
@@ -209,10 +208,13 @@ stack keeps the platform off that network:
 `Unrestricted` still allows every other destination, including the host's
 other addresses and your LAN. Other containers on the default bridge that are
 not AstraBox sandboxes, and processes on the host, can reach the published
-sandbox ports, and each of those ports asks them for the sandbox's credential.
-Root on the host, and anything that can use the Docker socket, can read those
-credentials from the containers' configuration and stays inside the trust
-boundary.
+sandbox ports. By default execd answers them, so they can run commands as
+root, read and write files and open every in-box service in any sandbox: the
+host and its other containers are inside the trust boundary. With
+`ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN=true` every published port asks them for
+a credential of the sandbox, and only root on the host and anything that can
+use the Docker socket, which can read those credentials from the containers'
+configuration, stay inside it.
 
 Docker gives the two edges their bridge addresses when they start, and an edge
 that restarts can come back at a different one. Every sandbox keeps the
@@ -235,26 +237,31 @@ docker ps -aq --filter label=opensandbox.io/egress-sidecar-for | xargs -r docker
 
 ### Sandbox execd authentication {#sandbox-execd-authentication}
 
-Every sandbox the bundled lifecycle server creates on Docker starts execd with
-an access token of its own, OpenSandbox's `EXECD_ACCESS_TOKEN`. execd refuses
-every request without it in `X-EXECD-ACCESS-TOKEN` with `401`: commands, files,
-the terminal, isolated sessions, metrics, and its `/proxy/<port>` route to the
-sandbox's other ports. Only `/ping` and `/ready` answer without it. AstraBox's
-execd image adds two changes to OpenSandbox's (`containers/execd/README.md`):
-the route that replaces the token requires the token too, and the proxy does
-not pass the token on to the other in-box services.
+With `ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN=true`, every sandbox the bundled
+lifecycle server creates on Docker starts execd with an access token of its
+own, OpenSandbox's `EXECD_ACCESS_TOKEN`. execd then refuses every request
+without it in `X-EXECD-ACCESS-TOKEN` with `401`: commands, files, the terminal,
+isolated sessions, metrics, and its `/proxy/<port>` route to the sandbox's
+other ports. Only `/ping` and `/ready` answer without it. AstraBox's execd
+image adds two changes to OpenSandbox's (`containers/execd/README.md`): the
+route that replaces the token requires the token too, and the proxy does not
+pass the token on to the other in-box services. The setting is off by default
+because it costs the browser features described below; turn it on where other
+containers or users of the host must not reach the sandboxes.
 
 AstraBox stores no token. It writes a random value to the sandbox's metadata
 when it creates the sandbox and derives the token from that value and the
 deployment's secret (`ASTRABOX_TRANSCRIPT_SIGNING_KEY`, else
-`ASTRABOX_VAULT_MASTER_KEY` or the local secret store's master key), so every AstraBox replica, a restarted server, a prepared sandbox
-claimed later and every conversation of a shared sandbox derive the same token,
-and someone who reads the sandbox's metadata through the lifecycle API cannot.
-Changing that secret leaves existing sandboxes unreachable; remove them as
-shown in [the sandbox network boundary](#sandbox-network-boundary). Before AstraBox uses a new sandbox, it checks that execd
-refuses a request without the token and accepts it with the token, and that
-execd's token-replacing route refuses it; a sandbox that fails is destroyed and
-the conversation fails with `SANDBOX_EXECD_ACCESS_UNVERIFIED`. That happens when
+`ASTRABOX_VAULT_MASTER_KEY` or the local secret store's master key), so every
+AstraBox replica, a restarted server, a prepared sandbox claimed later and
+every conversation of a shared sandbox derive the same token, and someone who
+reads the sandbox's metadata through the lifecycle API cannot. Changing that
+secret leaves existing sandboxes with a token unreachable; remove them as shown
+in [the sandbox network boundary](#sandbox-network-boundary). Before AstraBox
+uses a new sandbox with a token, it checks that execd refuses a request without
+the token and accepts it with the token, and that execd's token-replacing route
+refuses it; a sandbox that fails is destroyed and the conversation fails with
+`SANDBOX_EXECD_ACCESS_UNVERIFIED`. That happens when
 `ASTRABOX_SANDBOX_SERVER_EXECD_IMAGE` names an execd image other than
 AstraBox's.
 
@@ -270,27 +277,25 @@ already gives. `docker exec` also starts its processes with the token, from the
 container's configuration.
 
 On the Docker runtime a browser reaches an in-box port only through execd's
-`/proxy/<port>` route, and a browser cannot send the token. With the token,
-HTML preview, the Browser panel and exposed ports therefore fail with
-`SANDBOX_BROWSER_ROUTE_UNAVAILABLE`, and a Pi Agent cannot share a sandbox
+`/proxy/<port>` route, and a browser cannot send the token. In a sandbox with
+the token, HTML preview, the Browser panel and exposed ports therefore fail
+with `SANDBOX_BROWSER_ROUTE_UNAVAILABLE`, and a Pi Agent cannot share a sandbox
 between conversations, because each such conversation runs its own execd
 behind the sandbox's and both read the same header. Use the Kubernetes runtime
-with the OpenSandbox ingress Gateway for browser features, or set
-`ASTRABOX_SANDBOX_UNAUTHENTICATED_EXECD=true` to create sandboxes without the
-token. That puts every process and container that can reach the bridge
-gateway inside the trust boundary again; use it only on a host where that is
-already so, such as a single-user workstation.
+with the OpenSandbox ingress Gateway when you need both the browser features
+and authenticated sandboxes.
 
 The setting applies to sandboxes created afterwards. A sandbox created without
 a token keeps answering without one until it is replaced; AstraBox sends a
-token only to a sandbox whose metadata records one. To close the sandboxes an
-earlier release created at once, remove every sandbox on the host as shown in
-[the sandbox network boundary](#sandbox-network-boundary); each conversation
-continues on a new one.
+token only to a sandbox whose metadata records one. To close the existing
+sandboxes at once after turning the setting on, remove every sandbox on the
+host as shown in [the sandbox network boundary](#sandbox-network-boundary);
+each conversation continues on a new one. Turning it off again leaves the
+sandboxes that have a token as they are.
 
 Kubernetes sandboxes and sandboxes of a lifecycle service the deployment runs
 itself are created without an execd token, and
-`ASTRABOX_SANDBOX_UNAUTHENTICATED_EXECD=true` refuses their creation. There,
+`ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN=true` refuses their creation. There,
 a `NetworkPolicy` keeps other Pods away from sandbox Pods and OpenSandbox
 Secure Access protects the ingress Gateway
 ([OpenSandbox](providers/opensandbox.md#sandbox-network-policy)).

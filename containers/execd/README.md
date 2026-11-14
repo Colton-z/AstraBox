@@ -49,8 +49,11 @@ the port can take the token over. With `access-token.patch`,
 environment token nor an applied token hash); afterwards it requires the token
 like every other route. execd authenticates before it validates a request, so
 an empty `POST /internal/init` without the token answers 401 from this build
-and 400 from the supplier's; AstraBox uses that answer to refuse an execd image
-without the patch (`astrabox/providers/open_sandbox/execd_access.py`). The patch
+and 400 from the supplier's; with `ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN=true`,
+AstraBox uses that answer to refuse an execd image without the patch
+(`astrabox/providers/open_sandbox/execd_access.py`). The image carries the patch
+whether or not the setting is on; without a token in force it changes nothing.
+The patch
 also removes `X-EXECD-ACCESS-TOKEN` from requests that `/proxy/<port>` passes
 to another in-box service, as the supplier's per-user filesystem proxy
 (`filesystem_identity_linux.go`) already does, so a service running as the

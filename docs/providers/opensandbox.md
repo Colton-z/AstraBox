@@ -483,9 +483,9 @@ Gateway's `/status.ok` endpoint and TLS certificate for deployment health.
 Acceptance still requires opening HTML resources and controlling the Browser
 from the actual console origin. On local Docker a browser opens these through
 the sandbox's published execd, which must be reachable from the user's
-browser and must answer without a credential: by default each Docker
-sandbox's execd requires a per-sandbox token that a browser cannot send, and
-these features are refused until `ASTRABOX_SANDBOX_UNAUTHENTICATED_EXECD=true`
+browser and must answer without a credential. A sandbox created with
+`ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN=true` has an execd that requires a
+per-sandbox token a browser cannot send, and refuses these features
 ([Deploy](../deploy.md#sandbox-execd-authentication)). Kubernetes Gateway
 settings do not configure the Docker runtime.
 
@@ -501,7 +501,7 @@ accepts ingress only from the platform, not from other Pods.
 
 The control runner and the Codex backend forwarder also refuse a connection
 that does not carry a credential derived from the deployment's own secret, so
-reaching those two ports is not enough to use them. AstraBox gives execd an
+reaching those two ports is not enough to use them. AstraBox can give execd an
 access token only on the bundled Docker runtime
 ([Deploy](../deploy.md#sandbox-execd-authentication)); a Kubernetes sandbox's
 execd answers any caller that reaches the Pod. The policy is what keeps other

@@ -1023,8 +1023,8 @@ async def box_process_faces(
                 "a Pi conversation in a shared sandbox runs its own execd behind "
                 "the sandbox's execd, and this sandbox's execd requires its own "
                 "credential in the same header. A Pi Agent cannot share a Docker "
-                "sandbox between conversations unless "
-                "ASTRABOX_SANDBOX_UNAUTHENTICATED_EXECD=true (see docs/deploy.md)"
+                "sandbox between conversations while "
+                "ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN=true (see docs/deploy.md)"
             ),
             status_code=409,
         )
