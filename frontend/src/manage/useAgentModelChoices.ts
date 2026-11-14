@@ -9,27 +9,29 @@ import {
 import type { ModelAccount, RuntimeProfileConfig } from '@/types';
 import { localizeDisplayText } from '@/utils/format';
 
-import { spendsChatGptPlan, type ChatGptPlanChoice, type ModelChoice } from './agentEditConfig';
+import { ownerAccountVendor, type ModelChoice, type OwnerAccountChoice } from './agentEditConfig';
 
 /**
  * What the Agent form offers for the selected RuntimeProfile's model.
  *
  * A gateway profile offers its gateway's catalog, and free entry when the
- * gateway lists nothing. A ChatGPT plan profile offers the models of the chosen
- * account (`accountId`, or the reader's default account when it is empty),
- * read again whenever the account changes, as OpenAI's plan-usage guide asks;
- * it also offers the reader's accounts to choose from when `chooseAccount`.
- * Someone else's Agent names its creator's account, which the reader cannot
- * read, so there the models are those of the reader's default account.
+ * gateway lists nothing. A profile that spends an owner's model account (a
+ * ChatGPT plan or an Anthropic API key) offers the models of the chosen account
+ * (`accountId`, or the reader's default account of that vendor when it is
+ * empty), read again whenever the account changes, as OpenAI's plan-usage guide
+ * asks; it also offers the reader's accounts of that vendor to choose from when
+ * `chooseAccount`. Someone else's Agent names its creator's account, which the
+ * reader cannot read, so there the models are those of the reader's default
+ * account.
  */
 export function useAgentModelChoices(
   profile: RuntimeProfileConfig | undefined,
   accountId: string,
   chooseAccount: boolean,
-): { models: ModelChoice[]; chatgptPlan?: ChatGptPlanChoice } {
+): { models: ModelChoice[]; ownerAccount?: OwnerAccountChoice } {
   const name = profile?.name ?? '';
-  const plan = spendsChatGptPlan(profile);
-  const account = plan ? (chooseAccount && accountId) || DEFAULT_MODEL_ACCOUNT : '';
+  const vendor = ownerAccountVendor(profile);
+  const account = vendor ? (chooseAccount && accountId) || DEFAULT_MODEL_ACCOUNT : '';
   const [models, setModels] = useState<ModelChoice[]>([]);
   const [modelsError, setModelsError] = useState('');
   const [accounts, setAccounts] = useState<ModelAccount[]>([]);
@@ -37,7 +39,7 @@ export function useAgentModelChoices(
 
   useEffect(() => {
     let current = true;
-    if (!plan || !chooseAccount) {
+    if (!vendor || !chooseAccount) {
       setAccounts([]);
       setAccountsError('');
       return () => {
@@ -47,7 +49,7 @@ export function useAgentModelChoices(
     void listModelAccounts()
       .then((rows) => {
         if (!current) return;
-        setAccounts(rows);
+        setAccounts(rows.filter((row) => row.vendor === vendor));
         setAccountsError('');
       })
       .catch((e: unknown) => {
@@ -58,7 +60,7 @@ export function useAgentModelChoices(
     return () => {
       current = false;
     };
-  }, [plan, chooseAccount]);
+  }, [vendor, chooseAccount]);
 
   useEffect(() => {
     let current = true;
@@ -69,8 +71,8 @@ export function useAgentModelChoices(
         current = false;
       };
     }
-    const load: Promise<ModelChoice[]> = account
-      ? listModelAccountModels(account).then((rows) =>
+    const load: Promise<ModelChoice[]> = vendor && account
+      ? listModelAccountModels(account, vendor).then((rows) =>
           rows.map((model) => ({ value: model.id, label: model.display_name })))
       : listAgentRuntimeProfileModels(name).then((ids) =>
           ids.map((id) => ({ value: id, label: id })));
@@ -83,23 +85,25 @@ export function useAgentModelChoices(
         setModels([]);
         // A gateway that cannot list its models leaves free entry, as before;
         // an account whose list cannot be read says why (no default account,
-        // a sign-in OpenAI ended), which is what the reader has to fix.
+        // a sign-in OpenAI ended, a key Anthropic refused), which is what the
+        // reader has to fix.
         if (account) setModelsError(localizeDisplayText((e as Error).message));
       });
     return () => {
       current = false;
     };
-  }, [name, account]);
+  }, [name, vendor, account]);
 
-  const chatgptPlan = useMemo<ChatGptPlanChoice | undefined>(
-    () => (plan
+  const ownerAccount = useMemo<OwnerAccountChoice | undefined>(
+    () => (vendor
       ? {
+          vendor,
           accounts: chooseAccount ? accounts : undefined,
           accountsError: accountsError || undefined,
           modelsError: modelsError || undefined,
         }
       : undefined),
-    [plan, chooseAccount, accounts, accountsError, modelsError],
+    [vendor, chooseAccount, accounts, accountsError, modelsError],
   );
-  return { models, chatgptPlan };
+  return { models, ownerAccount };
 }

@@ -161,7 +161,7 @@ export default function AgentDetailPage() {
   const profile = runtime_profiles.find((e) => e.name === runtimeProfileName);
   // The account an Agent names is its creator's: only the creator's own
   // conversations spend it, so only the creator chooses it.
-  const { models, chatgptPlan } = useAgentModelChoices(
+  const { models, ownerAccount } = useAgentModelChoices(
     profile,
     String(draft?.model_account_id || ''),
     Boolean(record?.created_by) && record?.created_by === userInfo?.user_id,
@@ -193,13 +193,13 @@ export default function AgentDetailPage() {
         runtime_profiles,
         engineOptionsSchema: profile?.engine_options_schema,
         models,
-        chatgptPlan,
+        ownerAccount,
         catalogName: extensionProvider?.display_name,
         categories,
         agents,
         tagSuggestions,
       }).sections,
-    [schema, draft, runtime_profiles, profile, models, chatgptPlan, extensionProvider, categories, agents, tagSuggestions, t],
+    [schema, draft, runtime_profiles, profile, models, ownerAccount, extensionProvider, categories, agents, tagSuggestions, t],
   );
 
   const isDirty = (fields: EditFieldSpec[]) =>

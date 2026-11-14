@@ -517,6 +517,16 @@ export const DISPLAY_TEXT_REPLACEMENTS: Array<[string, string]> = [
     'this conversation has no owner whose ChatGPT account it could use; a ChatGPT plan RuntimeProfile runs conversations a signed-in user starts',
     'misc:wire.model_account_no_owner',
   ],
+  // The same for an Anthropic API key runtime profile (model_accounts/service.py,
+  // providers/model_anthropic.py).
+  [
+    "no default Anthropic API key is stored for this user; add one with `astrabox model-account add anthropic` or on the console's Model accounts page, or choose a default",
+    'misc:wire.model_account_required_anthropic',
+  ],
+  [
+    'this conversation has no owner whose Anthropic API key it could use; an Anthropic API key RuntimeProfile runs conversations a signed-in user starts',
+    'misc:wire.model_account_no_owner_anthropic',
+  ],
 ];
 
 // Wire sentences that carry values, matched whole so the localized sentence
@@ -528,6 +538,13 @@ export const DISPLAY_TEXT_PATTERNS: Array<[RegExp, string]> = [
   [
     /ChatGPT account (['"])(?<account>.*?)\1 needs a new sign-in: (?<reason>[^.]*)\. Run `astrabox model-account login chatgpt --account (?<account_id>[^`\s]+)`/g,
     'misc:wire.model_account_sign_in_required',
+  ],
+  // CLAUDE_LOGIN_REQUIRED (engine/claude_code_runtime.py, `claude_login_hint`): the
+  // two terminal commands stay as the server wrote them, and Claude Code's own
+  // words after the sentence stay untranslated.
+  [
+    /Claude Code in this conversation's sandbox is not signed in to a Claude account\. Sign in from the conversation's terminal: run `(?<login>[^`]+)`, open the address it prints, sign in, and copy the code the page shows; then run `(?<code>[^`]+)` with that code\. When it says the login succeeded, send your message again\. The login stays in this sandbox only, and a replacement sandbox needs a new one\./g,
+    'misc:wire.claude_login_required',
   ],
 ];
 

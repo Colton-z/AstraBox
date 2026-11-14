@@ -25,6 +25,7 @@ import type {
   ModelAccount,
   ModelAccountModel,
   ModelAccountTeamPool,
+  ModelAccountVendor,
   AdminSandboxDiagnostics,
   AdminSandboxSecurity,
   AdminSandboxDiagnosticScope,
@@ -1624,8 +1625,8 @@ export async function revokeMcpClientToken(tokenId: string): Promise<void> {
   }));
 }
 
-// ── The signed-in user's model accounts (ChatGPT plan usage) ────────────────
-/** The caller's linked ChatGPT accounts, oldest first. Never carries a token. */
+// ── The signed-in user's model accounts (ChatGPT plans, Anthropic API keys) ──
+/** The caller's model accounts of every vendor, oldest first. Never carries a token or key. */
 export async function listModelAccounts(): Promise<ModelAccount[]> {
   return expectList<ModelAccount>(
     await send((wire) => client.GET('/api/v1/me/model-accounts', wire)),
@@ -1634,12 +1635,24 @@ export async function listModelAccounts(): Promise<ModelAccount[]> {
 }
 
 /**
- * Rename an account, make it the caller's default, or share it with the team
- * pool (`shared`); an absent field is left as it is.
+ * Keep an Anthropic API key as one of the caller's accounts. The server checks
+ * it with Anthropic first and refuses a key Anthropic does not accept.
+ */
+export async function addAnthropicApiKey(body: { api_key: string; label?: string }): Promise<ModelAccount> {
+  return send((wire) => client.POST('/api/v1/me/model-accounts/anthropic', {
+    ...wire,
+    body,
+  }));
+}
+
+/**
+ * Rename an account, make it the caller's default of its vendor, share a
+ * ChatGPT account with the team pool (`shared`), or replace an Anthropic API
+ * key account's key; an absent field is left as it is.
  */
 export async function updateModelAccount(
   accountId: string,
-  body: { label?: string; is_default?: boolean; shared?: boolean },
+  body: { label?: string; is_default?: boolean; shared?: boolean; api_key?: string },
 ): Promise<ModelAccount> {
   return send((wire) => client.PATCH('/api/v1/me/model-accounts/{account_id}', {
     ...wire,
@@ -1649,8 +1662,9 @@ export async function updateModelAccount(
 }
 
 /**
- * Remove an account. The server revokes its session at OpenAI first;
- * `revocation_confirmed` is false when OpenAI did not confirm it.
+ * Remove an account. For a ChatGPT account the server revokes its session at
+ * OpenAI first; `revocation_confirmed` is false when OpenAI did not confirm it,
+ * and null for an Anthropic API key, which AstraBox cannot revoke.
  */
 export async function deleteModelAccount(accountId: string): Promise<DeletedModelAccount> {
   return send((wire) => client.DELETE('/api/v1/me/model-accounts/{account_id}', {
@@ -1667,12 +1681,18 @@ export async function getModelAccountTeamPool(): Promise<ModelAccountTeamPool> {
 /** The id that names the caller's default account to the model list. */
 export const DEFAULT_MODEL_ACCOUNT = 'default';
 
-/** The models an account can use, in OpenAI's order; `default` is the caller's default account. */
-export async function listModelAccountModels(accountId: string): Promise<ModelAccountModel[]> {
+/**
+ * The models an account can use, in its vendor's order. `default` is the
+ * caller's default account of `vendor`.
+ */
+export async function listModelAccountModels(
+  accountId: string,
+  vendor: ModelAccountVendor,
+): Promise<ModelAccountModel[]> {
   return expectList<ModelAccountModel>(
     await send((wire) => client.GET('/api/v1/me/model-accounts/{account_id}/models', {
       ...wire,
-      params: { path: { account_id: accountId } },
+      params: { path: { account_id: accountId }, query: { vendor } },
     })),
     '/me/model-accounts/{account_id}/models',
   );

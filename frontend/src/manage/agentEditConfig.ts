@@ -16,6 +16,7 @@ import type {
   FormFieldSchema,
   FormSchema,
   ModelAccount,
+  ModelAccountVendor,
   RuntimeProfileConfig,
 } from '@/types';
 import { deleteByPath, getByPath, setByPath } from '@/components/form/paths';
@@ -108,39 +109,47 @@ function accessors(field: FormFieldSchema): Pick<EditFieldSpec, 'get' | 'set'> {
 export type ModelChoice = { value: string; label: string };
 
 /**
- * The model endpoint provider whose conversations spend their owner's linked
- * ChatGPT account rather than the deployment's model gateway.
+ * The model endpoint providers whose conversations spend their owner's model
+ * account rather than the deployment's model gateway, and the kind of account
+ * each spends.
  */
-export const CHATGPT_PLAN_PROVIDER = 'chatgpt_plan';
+const OWNER_ACCOUNT_PROVIDERS: Record<string, ModelAccountVendor> = {
+  chatgpt_plan: 'chatgpt_plan',
+  anthropic_api_key: 'anthropic_api_key',
+};
 
-/** Whether an Agent on this RuntimeProfile spends a linked ChatGPT account. */
-export function spendsChatGptPlan(profile: RuntimeProfileConfig | undefined): boolean {
-  return profile?.endpoint_provider === CHATGPT_PLAN_PROVIDER;
+/** The kind of model account an Agent on this RuntimeProfile spends; undefined where the deployment pays. */
+export function ownerAccountVendor(profile: RuntimeProfileConfig | undefined): ModelAccountVendor | undefined {
+  return OWNER_ACCOUNT_PROVIDERS[profile?.endpoint_provider ?? ''];
 }
 
 /**
  * The Agent payload to send for this RuntimeProfile.
  *
- * `model_account_id` means something only on a ChatGPT plan profile, so it is
- * not sent for any other: a choice left in the draft by a profile the reader
- * switched away from would otherwise be stored where nothing reads it.
+ * `model_account_id` means something only on a profile that spends an owner's
+ * account, so it is not sent for any other: a choice left in the draft by a
+ * profile the reader switched away from would otherwise be stored where
+ * nothing reads it.
  */
 export function agentPayloadForProfile<T extends object>(
   payload: T,
   profile: RuntimeProfileConfig | undefined,
 ): T {
-  if (spendsChatGptPlan(profile)) return payload;
+  if (ownerAccountVendor(profile)) return payload;
   const next = { ...payload } as Record<string, unknown>;
   delete next.model_account_id;
   return next as T;
 }
 
-/** What the form knows on a ChatGPT plan RuntimeProfile. */
-export type ChatGptPlanChoice = {
+/** What the form knows on a RuntimeProfile that spends an owner's model account. */
+export type OwnerAccountChoice = {
+  /** The kind of account the profile spends. */
+  vendor: ModelAccountVendor;
   /**
-   * The reader's linked accounts, offered for `model_account_id`. Absent when
-   * the Agent is someone else's: the account it names is its creator's, and
-   * the reader's own conversations with it spend the reader's default.
+   * The reader's accounts of that vendor, offered for `model_account_id`.
+   * Absent when the Agent is someone else's: the account it names is its
+   * creator's, and the reader's own conversations with it spend the reader's
+   * default.
    */
   accounts?: ModelAccount[];
   /** Why the reader's accounts could not be read; said under the account field. */
@@ -156,11 +165,12 @@ export type AgentEditOpts = {
   runtime_profiles?: RuntimeProfileConfig[];
   /**
    * The models the model field offers: the selected RuntimeProfile's gateway
-   * catalog, or on a ChatGPT plan profile the chosen account's models.
+   * catalog, or on a profile that spends an owner's account the chosen
+   * account's models.
    */
   models?: ModelChoice[];
-  /** Present when the selected RuntimeProfile spends a linked ChatGPT account. */
-  chatgptPlan?: ChatGptPlanChoice;
+  /** Present when the selected RuntimeProfile spends an owner's model account. */
+  ownerAccount?: OwnerAccountChoice;
   /**
    * The selected RuntimeProfile's engine declaration for the engine_options bag.
    * Non-empty: declares native JSON blocks, not their internal fields. Empty or absent:
@@ -284,18 +294,21 @@ function accountOptionLabel(account: ModelAccount): string {
 }
 
 /**
- * The ChatGPT account the creator's conversations spend: one of the reader's
- * linked accounts, or their default.
+ * The account the creator's conversations spend: one of the reader's accounts
+ * of the profile's vendor, or their default of it.
  *
  * The empty choice is the default account and is stored as `null`, so picking
  * it on a saved Agent clears an account chosen before; an absent key would
  * leave the stored one in place.
  */
-function modelAccountField(field: FormFieldSchema, accounts: ModelAccount[], error?: string): EditFieldSpec {
+function modelAccountField(field: FormFieldSchema, choice: OwnerAccountChoice, accounts: ModelAccount[]): EditFieldSpec {
   const fallback = accounts.find((account) => account.is_default);
+  const anthropic = choice.vendor === 'anthropic_api_key';
   return {
     key: field.key,
-    label: i18n.t('misc:agent_form.fields.model_account_id.label'),
+    label: i18n.t(anthropic
+      ? 'misc:agent_form.fields.model_account_id.label_anthropic_api_key'
+      : 'misc:agent_form.fields.model_account_id.label'),
     type: 'select',
     get: (draft) => (draft.model_account_id == null ? '' : String(draft.model_account_id)),
     set: (draft, value) => ({ ...draft, model_account_id: value ? String(value) : null }),
@@ -310,17 +323,28 @@ function modelAccountField(field: FormFieldSchema, accounts: ModelAccount[], err
     ],
     idTag: field.key,
     help: createElement(Fragment, null,
-      error ?? i18n.t('misc:agent_form.fields.model_account_id.help'), ' ',
+      choice.accountsError ?? i18n.t(anthropic
+        ? 'misc:agent_form.fields.model_account_id.help_anthropic_api_key'
+        : 'misc:agent_form.fields.model_account_id.help'), ' ',
       createElement(ModelAccountsPageLink)),
   };
 }
 
+/** The model field's help on a profile that spends an owner's account of `vendor`. */
+function ownerAccountModelHelp(vendor: ModelAccountVendor) {
+  return vendor === 'anthropic_api_key'
+    ? createElement(Fragment, null,
+      i18n.t('misc:agent_form.fields.model.help_anthropic_api_key'), ' ', createElement(ModelAccountsPageLink))
+    : createElement(Fragment, null,
+      i18n.t('misc:agent_form.fields.model.help_chatgpt_plan'), ' ', createElement(ManageUsageLink));
+}
+
 function toFieldSpec(field: FormFieldSchema, opts: AgentEditOpts): EditFieldSpec {
-  if (field.key === 'model_account_id' && opts.chatgptPlan?.accounts) {
-    return modelAccountField(field, opts.chatgptPlan.accounts, opts.chatgptPlan.accountsError);
+  if (field.key === 'model_account_id' && opts.ownerAccount?.accounts) {
+    return modelAccountField(field, opts.ownerAccount, opts.ownerAccount.accounts);
   }
   const isModel = field.key === 'model';
-  const chatgptPlan = isModel ? opts.chatgptPlan : undefined;
+  const ownerAccount = isModel ? opts.ownerAccount : undefined;
   const ownCopy = ownExtensionCopy(field.key, opts.catalogName);
   const type: EditFieldType = isModel ? 'search_select' : editType(field);
   const example = fieldExample(field, type);
@@ -354,9 +378,8 @@ function toFieldSpec(field: FormFieldSchema, opts: AgentEditOpts): EditFieldSpec
     editable: field.key === 'name' ? opts.nameEditable : true,
     required: field.required,
     idTag: field.key,
-    help: chatgptPlan
-      ? createElement(Fragment, null,
-          i18n.t('misc:agent_form.fields.model.help_chatgpt_plan'), ' ', createElement(ManageUsageLink))
+    help: ownerAccount
+      ? ownerAccountModelHelp(ownerAccount.vendor)
       : isModel
       ? createElement(Fragment, null,
           i18n.t('misc:agent_form.fields.model.help'), ' ', createElement(ModelGatewayLink))
@@ -383,8 +406,8 @@ function toFieldSpec(field: FormFieldSchema, opts: AgentEditOpts): EditFieldSpec
     searchPlaceholder: isModel
       ? i18n.t('manage:agent_form.search_model_placeholder')
       : undefined,
-    emptyLabel: chatgptPlan
-      ? chatgptPlan.modelsError ?? i18n.t('manage:agent_form.no_account_models')
+    emptyLabel: ownerAccount
+      ? ownerAccount.modelsError ?? i18n.t('manage:agent_form.no_account_models')
       : isModel
       ? i18n.t('manage:agent_form.no_models')
       : field.type === 'runtime_profile_ref'
@@ -406,15 +429,16 @@ function toFieldSpec(field: FormFieldSchema, opts: AgentEditOpts): EditFieldSpec
 const CATALOG_KEYS = new Set(['categories', 'tags']);
 
 /**
- * The ChatGPT account decides which models the model field offers, so it
- * stands directly after the model, and is never folded away from it. It shows
- * only on a ChatGPT plan RuntimeProfile, where it is a question worth asking.
+ * The account decides which models the model field offers, so it stands
+ * directly after the model, and is never folded away from it. It shows only on
+ * a RuntimeProfile that spends an owner's account, where it is a question
+ * worth asking.
  */
 function accountBesideModel(fields: FormFieldSchema[], opts: AgentEditOpts): FormFieldSchema[] {
   const account = fields.find((field) => field.key === 'model_account_id');
   if (!account) return fields;
   const rest = fields.filter((field) => field !== account);
-  if (!opts.chatgptPlan?.accounts) return rest;
+  if (!opts.ownerAccount?.accounts) return rest;
   return rest.flatMap((field) => (field.key === 'model' ? [field, account] : [field]));
 }
 

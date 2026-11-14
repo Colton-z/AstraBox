@@ -181,7 +181,10 @@
     "workspace_hibernated": "The sandbox timed out, so this workspace was paused. It will be restored the next time you open it.",
     "model_account_required": "You have no default ChatGPT account. Link one by running `astrabox model-account login chatgpt` on your own computer, or choose a default under Console → Model accounts.",
     "model_account_no_owner": "This conversation has no owner whose ChatGPT account it could spend. A ChatGPT plan runtime profile runs only conversations a signed-in user starts.",
-    "model_account_sign_in_required": "ChatGPT account {{account}} needs a new sign-in ({{reason}}). Run `astrabox model-account login chatgpt --account {{account_id}}` on your own computer; Console → Model accounts shows the full command."
+    "model_account_sign_in_required": "ChatGPT account {{account}} needs a new sign-in ({{reason}}). Run `astrabox model-account login chatgpt --account {{account_id}}` on your own computer; Console → Model accounts shows the full command.",
+    "model_account_required_anthropic": "You have no default Anthropic API key. Add one under Console → Model accounts, or with `astrabox model-account add anthropic`.",
+    "model_account_no_owner_anthropic": "This conversation has no owner whose Anthropic API key it could spend. An Anthropic API key runtime profile runs only conversations a signed-in user starts.",
+    "claude_login_required": "Claude Code in this conversation's sandbox is not signed in to a Claude account. Sign in from the conversation's terminal: run `{{login}}`, open the address it prints, sign in, and copy the code the page shows; then run `{{code}}` with that code. When it says the login succeeded, send your message again. The login stays in this sandbox only, and a replacement sandbox needs a new one."
   },
   "prompt_input": {
     "stopping": "Stopping",
@@ -275,7 +278,8 @@
         "label": "Model",
         "manage_gateway": "Manage models in {{name}}",
         "help": "Enter the model ID exposed by the model-service connection for the selected runtime runtime profile",
-        "help_chatgpt_plan": "Using ChatGPT plan: the models the chosen ChatGPT account can use. Conversations spend that account's plan, not the model gateway."
+        "help_chatgpt_plan": "Using ChatGPT plan: the models the chosen ChatGPT account can use. Conversations spend that account's plan, not the model gateway.",
+        "help_anthropic_api_key": "Using your Anthropic API key: the models the chosen key can use. Conversations spend that key, not the model gateway."
       },
       "system": {
         "label": "System prompt",
@@ -325,7 +329,9 @@
         "help": "Which of your linked ChatGPT accounts your conversations with this Agent spend. Other people's conversations spend their own default account.",
         "default": "My default account",
         "default_named": "My default account ({{account}})",
-        "needs_sign_in": "{{account}} — sign in again"
+        "needs_sign_in": "{{account}} — sign in again",
+        "label_anthropic_api_key": "Anthropic API key",
+        "help_anthropic_api_key": "Which of your Anthropic API keys your conversations with this Agent spend. Other people's conversations spend their own default key."
       },
       "exposure_mode": {
         "label": "Available through",

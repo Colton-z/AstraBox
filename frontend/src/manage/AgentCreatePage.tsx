@@ -92,7 +92,7 @@ export default function AgentCreatePage() {
   const runtimeProfileName = String(draft?.runtime_profile_name || '').trim();
   const profile = runtime_profiles.find((e) => e.name === runtimeProfileName);
   // Whoever creates the Agent is its creator, so the account is theirs to choose.
-  const { models, chatgptPlan } = useAgentModelChoices(
+  const { models, ownerAccount } = useAgentModelChoices(
     profile,
     String(draft?.model_account_id || ''),
     true,
@@ -111,13 +111,13 @@ export default function AgentCreatePage() {
         nameEditable: true,
         runtime_profiles,
         models,
-        chatgptPlan,
+        ownerAccount,
         engineOptionsSchema: profile?.engine_options_schema,
         categories,
         agents,
         tagSuggestions,
       }),
-    [schema, draftVisibility, draft?.a2a_access, runtime_profiles, models, chatgptPlan, profile, categories, agents, tagSuggestions, t],
+    [schema, draftVisibility, draft?.a2a_access, runtime_profiles, models, ownerAccount, profile, categories, agents, tagSuggestions, t],
   );
 
   if (loading) {

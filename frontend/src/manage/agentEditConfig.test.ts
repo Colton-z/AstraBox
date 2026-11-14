@@ -83,7 +83,7 @@ describe('engine_options rendering follows the engine declaration', () => {
   });
 });
 
-describe('the ChatGPT account beside the model', () => {
+describe("the owner's model account beside the model", () => {
   const PLAN_SCHEMA: FormSchema = {
     version: 1,
     groups: [{ id: 'model' }],
@@ -118,7 +118,8 @@ describe('the ChatGPT account beside the model', () => {
   it('stands after the model on a ChatGPT plan profile, unfolded, with the default account first', () => {
     const { sections, advancedKeys } = buildAgentEditSections(PLAN_SCHEMA, {}, {
       nameEditable: true,
-      chatgptPlan: {
+      ownerAccount: {
+        vendor: 'chatgpt_plan',
         accounts: [
           account({}),
           account({ account_id: 'mact_home', label: 'Home', email: null, is_default: false, status: 'sign_in_required' }),
@@ -141,10 +142,26 @@ describe('the ChatGPT account beside the model', () => {
     expect(field.set({}, 'mact_home')).toEqual({ model_account_id: 'mact_home' });
   });
 
+  it('names an Anthropic API key on an Anthropic API key profile', () => {
+    const { sections } = buildAgentEditSections(PLAN_SCHEMA, {}, {
+      nameEditable: true,
+      ownerAccount: {
+        vendor: 'anthropic_api_key',
+        accounts: [account({ account_id: 'mact_key', vendor: 'anthropic_api_key', label: 'Personal key', email: null })],
+      },
+    });
+    const field = sections.flatMap((s) => s.fields).find((f) => f.key === 'model_account_id')!;
+    expect(field.label).toBe('Anthropic API key');
+    expect(field.options).toEqual([
+      { value: '', label: 'My default account (Personal key)' },
+      { value: 'mact_key', label: 'Personal key' },
+    ]);
+  });
+
   it('is not offered, and not sent, where it would mean nothing', () => {
     // Another profile, and someone else's Agent on a ChatGPT plan profile.
-    for (const chatgptPlan of [undefined, {}]) {
-      const { sections } = buildAgentEditSections(PLAN_SCHEMA, {}, { nameEditable: false, chatgptPlan });
+    for (const ownerAccount of [undefined, { vendor: 'chatgpt_plan' as const }]) {
+      const { sections } = buildAgentEditSections(PLAN_SCHEMA, {}, { nameEditable: false, ownerAccount });
       expect(modelKeys(sections)).toEqual(['model', 'system']);
     }
     const draft = { name: 'helper', model: 'gpt-6.1-sol', model_account_id: 'mact_work' };
@@ -152,5 +169,8 @@ describe('the ChatGPT account beside the model', () => {
       .toEqual({ name: 'helper', model: 'gpt-6.1-sol' });
     expect(agentPayloadForProfile(draft, undefined)).toEqual({ name: 'helper', model: 'gpt-6.1-sol' });
     expect(agentPayloadForProfile(draft, { name: 'plan', endpoint_provider: 'chatgpt_plan' })).toEqual(draft);
+    expect(agentPayloadForProfile(draft, { name: 'key', endpoint_provider: 'anthropic_api_key' })).toEqual(draft);
+    expect(agentPayloadForProfile(draft, { name: 'login', endpoint_provider: 'claude_login' }))
+      .toEqual({ name: 'helper', model: 'gpt-6.1-sol' });
   });
 });

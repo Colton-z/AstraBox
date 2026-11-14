@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { ErrorNote, PageShell } from '@/components/shell';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { FieldError } from '@/components/ui/field';
+import { Field, FieldError, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import {
@@ -19,6 +19,7 @@ import {
 import { CodeBlock, CodeBlockCopyButton } from '@/components/ai-elements/code-block';
 import {
   MODULE_BASE,
+  addAnthropicApiKey,
   deleteModelAccount,
   getModelAccountTeamPool,
   listModelAccounts,
@@ -58,18 +59,25 @@ function loginCommand(accountId?: string): string {
 
 type Renaming = { id: string; label: string; error: string; saving: boolean };
 
+type NewKey = { label: string; key: string; error: string; saving: boolean };
+
+const NO_KEY: NewKey = { label: '', key: '', error: '', saving: false };
+
 /**
- * The signed-in user's ChatGPT accounts: the ones whose plans their
- * conversations on a ChatGPT plan RuntimeProfile spend.
+ * The signed-in user's model accounts: the ChatGPT accounts whose plans, and
+ * the Anthropic API keys whose usage, their conversations spend on a
+ * RuntimeProfile that spends its owner's account.
  *
- * The page lists, renames, chooses the default, and removes. It does not link:
- * linking is the CLI's, for the reason {@link loginCommand} gives, so the page
- * hands the reader that command instead of a button that could not work.
+ * The page lists, renames, chooses the default of each kind, and removes, and
+ * it adds an Anthropic API key. It does not link a ChatGPT account: linking is
+ * the CLI's, for the reason {@link loginCommand} gives, so the page hands the
+ * reader that command instead of a button that could not work.
  *
- * While the deployment's team pool is on, each account can be shared with the
- * team, and the page says when a teammate's conversation last spent it and
- * whether a reported usage limit holds it back. With the pool off nothing can
- * be shared, so the control is not shown.
+ * While the deployment's team pool is on, each ChatGPT account can be shared
+ * with the team, and the page says when a teammate's conversation last spent
+ * it and whether a reported usage limit holds it back. With the pool off
+ * nothing can be shared, so the control is not shown; an Anthropic API key
+ * can never be shared, so it never has the control.
  */
 export default function ModelAccountsPage() {
   const { t } = useTranslation();
@@ -82,6 +90,7 @@ export default function ModelAccountsPage() {
   const [unrevoked, setUnrevoked] = useState('');
   const [busy, setBusy] = useState('');
   const [renaming, setRenaming] = useState<Renaming | null>(null);
+  const [newKey, setNewKey] = useState<NewKey>(NO_KEY);
   const loaded = useRef(false);
 
   const load = useCallback(async (context?: ReloadContext) => {
@@ -153,6 +162,20 @@ export default function ModelAccountsPage() {
       setRenaming(null);
     } catch (e) {
       setRenaming((prev) => prev && { ...prev, saving: false, error: (e as Error).message });
+    }
+  };
+
+  const addKey = async () => {
+    const key = newKey.key.trim();
+    if (!key) return;
+    setNewKey({ ...newKey, saving: true, error: '' });
+    try {
+      const label = newKey.label.trim();
+      await addAnthropicApiKey(label ? { api_key: key, label } : { api_key: key });
+      setNewKey(NO_KEY);
+      await load();
+    } catch (e) {
+      setNewKey((prev) => ({ ...prev, saving: false, error: (e as Error).message }));
     }
   };
 
@@ -234,6 +257,7 @@ export default function ModelAccountsPage() {
                 const editing = renaming?.id === account.account_id ? renaming : null;
                 const inputId = `model-account-${account.account_id}-label`;
                 const signInRequired = account.status === 'sign_in_required';
+                const apiKey = account.vendor === 'anthropic_api_key';
                 const working = busy === account.account_id;
                 return (
                   <Item
@@ -299,6 +323,7 @@ export default function ModelAccountsPage() {
                           <div className="flex min-w-0 flex-col gap-0.5">
                             <div className="flex min-w-0 flex-wrap items-center gap-2">
                               <ItemTitle className="t-label block truncate text-13">{account.label}</ItemTitle>
+                              <Badge variant="outline">{t(`manage:model_accounts.vendor_${account.vendor}`)}</Badge>
                               {account.is_default && (
                                 <Badge variant="secondary">{t('manage:model_accounts.default_badge')}</Badge>
                               )}
@@ -314,7 +339,9 @@ export default function ModelAccountsPage() {
                             <ItemDescription className="t-copy-sm text-xs">
                               {[
                                 account.email && account.email !== account.label ? account.email : '',
-                                t('manage:model_accounts.linked_at', { at: formatDateTime(account.created_at) }),
+                                t(apiKey ? 'manage:model_accounts.added_at' : 'manage:model_accounts.linked_at', {
+                                  at: formatDateTime(account.created_at),
+                                }),
                               ].filter(Boolean).join(' · ')}
                             </ItemDescription>
                             {poolEnabled && (account.shared || account.usage_limited_until) && (
@@ -336,7 +363,7 @@ export default function ModelAccountsPage() {
                               </ItemDescription>
                             )}
                           </div>
-                          {poolEnabled && (
+                          {poolEnabled && !apiKey && (
                             <label className="t-label-sm inline-flex items-center gap-2">
                               <Switch
                                 checked={account.shared}
@@ -389,7 +416,9 @@ export default function ModelAccountsPage() {
                             confirm={{
                               title: t('manage:model_accounts.remove_title', { account: account.label }),
                               description: [
-                                t('manage:model_accounts.remove_description'),
+                                t(apiKey
+                                  ? 'manage:model_accounts.remove_description_api_key'
+                                  : 'manage:model_accounts.remove_description'),
                                 account.is_default ? t('manage:model_accounts.remove_default') : '',
                               ].filter(Boolean).join(' '),
                               action: t('manage:model_accounts.remove_action'),
@@ -415,6 +444,52 @@ export default function ModelAccountsPage() {
           <CodeBlock code={loginCommand()} language="bash">
             <CodeBlockCopyButton aria-label={t('common:copy')} />
           </CodeBlock>
+        </ConsoleCard>
+        <ConsoleCard
+          title={t('manage:model_accounts.key_title')}
+          intro={t('manage:model_accounts.key_intro')}
+          note={t('manage:model_accounts.key_note')}
+        >
+          <form
+            className="flex flex-col gap-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void addKey();
+            }}
+          >
+            <Field>
+              <FieldLabel htmlFor="anthropic-key-label">{t('manage:model_accounts.key_label')}</FieldLabel>
+              <Input
+                id="anthropic-key-label"
+                maxLength={LABEL_MAX_CHARS}
+                value={newKey.label}
+                placeholder={t('manage:model_accounts.key_label_placeholder')}
+                readOnly={newKey.saving}
+                onChange={(event) => setNewKey({ ...newKey, label: event.target.value, error: '' })}
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="anthropic-key-value">{t('manage:model_accounts.key_value')}</FieldLabel>
+              <Input
+                id="anthropic-key-value"
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                value={newKey.key}
+                placeholder="sk-ant-…"
+                aria-invalid={newKey.error ? true : undefined}
+                aria-describedby={newKey.error ? 'anthropic-key-error' : undefined}
+                readOnly={newKey.saving}
+                onChange={(event) => setNewKey({ ...newKey, key: event.target.value, error: '' })}
+              />
+              {newKey.error && <FieldError id="anthropic-key-error">{newKey.error}</FieldError>}
+            </Field>
+            <div className="flex justify-end">
+              <Button type="submit" disabled={newKey.saving || !newKey.key.trim()}>
+                {t('manage:model_accounts.key_add')}
+              </Button>
+            </div>
+          </form>
         </ConsoleCard>
       </div>
     </PageShell>
