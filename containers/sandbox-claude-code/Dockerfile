@@ -319,4 +319,14 @@ RUN set -eux; \
 COPY --chmod=0555 containers/container-engine/astrabox-container-engine /usr/local/bin/astrabox-container-engine
 COPY --chmod=u=rwX,go=rX containers/container-engine/supervisord.container-engine.conf \
      /opt/gem/supervisord/supervisord.container-engine.conf
-RUN bash -n /usr/local/bin/astrabox-container-engine
+# The engine's boot strips every setuid and setgid bit but the two id-mapping
+# helpers (astrabox-container-engine, "serve"). Finding them means walking the
+# whole root filesystem, which takes over a minute in a 1 CPU box and is the
+# same answer for every box of this image, so it is done once here. This must
+# stay the last step that can add a file to the image.
+RUN bash -n /usr/local/bin/astrabox-container-engine && \
+    find / -xdev -type f -perm /6000 \
+        ! -path /usr/bin/newuidmap ! -path /usr/bin/newgidmap -print0 \
+        > /opt/astrabox/container-engine-setuid-files && \
+    chmod 0444 /opt/astrabox/container-engine-setuid-files && \
+    test -u /usr/bin/newuidmap && test -u /usr/bin/newgidmap

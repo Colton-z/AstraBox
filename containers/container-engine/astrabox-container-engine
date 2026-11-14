@@ -27,6 +27,7 @@ FAILURE_FILE="${STATE_DIR}/failure"
 # root: the engine's own overlay snapshots cannot use an upper directory that
 # is itself on overlayfs.
 DATA_ROOT=/var/lib/astrabox/container-engine
+SETUID_FILES=/opt/astrabox/container-engine-setuid-files
 ENGINE_LOG="${LOG_DIR:-/var/log}/astrabox-container-engine.log"
 # How long `ready` waits for the daemon: rootlesskit, slirp4netns, containerd
 # and dockerd start in a few seconds on an idle host.
@@ -105,9 +106,11 @@ serve() {
     # that flag grants exactly those two programs and not sudo, su or the like.
     grep -q '^NoNewPrivs:[[:space:]]*0$' /proc/self/status \
         || fail "the box was created with no_new_privileges, so newuidmap cannot map the engine's id range"
-    find / -xdev -type f -perm /6000 \
-        ! -path /usr/bin/newuidmap ! -path /usr/bin/newgidmap \
-        -exec chmod ug-s {} +
+    # The image lists its setuid and setgid files at build; walking the root
+    # filesystem here would outlast the wait for the engine in a small box.
+    [ -r "${SETUID_FILES}" ] \
+        || fail "the image has no ${SETUID_FILES}; it was not built for the container engine"
+    xargs -0 -r chmod ug-s < "${SETUID_FILES}"
 
     local refusal
     if ! refusal="$(runuser -u "${USER}" -- unshare --user --map-root-user --pid --fork --mount-proc true 2>&1)"; then

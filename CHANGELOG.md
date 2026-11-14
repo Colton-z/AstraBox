@@ -9,6 +9,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
+- An Agent conversation started over A2A can report its task's outcome with `report_outcome`. A declined request ends `TASK_STATE_REJECTED` with the Agent's reason. A hand-back, and the work's repository, branch, commit and pull request, travel in the A2A task outcome extension (`https://www.astrabox.ai/docs/a2a#task-outcome-v1`). A2A messages may reference earlier tasks with `referenceTaskIds`.
+- dsh-superagent: a declined Ticket ends dropped and the person is told why. A person's follow-up is answered on its thread. Agents push the Ticket's branch as they go and continue from it. A note naming related Tickets refers to their latest tasks.
 - A `channel:generic_json` request can carry an event's fields in `data` (any JSON value). The Agent receives them as that JSON after `text` and a blank line, or as the whole message when there is no `text`.
 - Users can keep their own Anthropic API keys as model accounts (console, `astrabox model-account add anthropic`, `POST /api/v1/me/model-accounts/anthropic`); a RuntimeProfile with `endpoint_provider: anthropic_api_key` runs Claude Code conversations on the conversation owner's key, which the egress boundary attaches to `api.anthropic.com` only. Anthropic API keys cannot be shared with the team pool (`MODEL_ACCOUNT_NOT_SHAREABLE`); a conversation is only ever given an account of the kind its RuntimeProfile spends.
 - A RuntimeProfile with `endpoint_provider: claude_login` runs Claude Code on the login its user makes with Claude Code's own sign-in in the conversation's terminal; AstraBox delivers and keeps no Claude credential, and a response without a login fails with `CLAUDE_LOGIN_REQUIRED` and the sign-in steps.
@@ -29,6 +31,10 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Changed
 
+- OpenSandbox moves to release 1.2.1 for the bundled lifecycle server, the SDK, the execd image and the egress sidecar image. On Kubernetes, install the controller, CRDs and ingress Gateway from the same release, with charts rendered from the `release-1.2.1` tag.
+- On Kubernetes, the bundled lifecycle server now sets the egress sidecar's and execd init container's resources itself (1 CPU / 128 MiB limit, 50m / 128 MiB request). The LimitRange the deployment guide asked for is no longer needed.
+- On Docker, sandboxes at the Advanced permission level now run without masked or read-only `/proc` and `/sys` paths. This is OpenSandbox's behaviour for isolation boxes; give that level only to trusted teams.
+- A host-run bundled lifecycle server that publishes sandbox ports on a non-loopback address is refused at startup.
 - `GET /api/v1/me/model-accounts/default/models` now requires `?vendor=`; each user has one default account per vendor.
 - A first install now asks how much memory sandboxes may hold together, showing the Docker host's memory; without a terminal it stops until `ASTRABOX_SANDBOX_QUOTA_MEMORY` is set. While the memory ceiling is still derived from the whole host, the server logs a warning and the Sandboxes page says that other software on the host is not counted.
 - Codex and DeepSeek Harness conversations start in `danger-full-access` when no permission mode is selected, as Claude Code conversations already start in `bypassPermissions`. They used to start in `workspace-write`, where the program's own sandbox inside the AstraBox sandbox asked for approval to reach the network or a container engine. Select a narrower mode per conversation to keep approvals.
@@ -37,8 +43,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Update the bundled Codex to 0.169.0.
 - Every account that can sign in may now use the deployment by default (`ASTRABOX_ENVIRONMENT_ENTRY_POLICY=authenticated`); the identity provider decides who that is. The Environment member list applies only when `members` is selected, for an identity provider shared with other deployments. Under the previous default, an administrator who was not on the member list could use the console, but work that runs with nobody signed in and carries only their account ID, such as their Assistant's recovery after its box was lost or their channel and schedule work, was refused and recorded only in the server log. **Upgrading opens a deployment to every account its identity provider signs in;** set `ASTRABOX_ENVIRONMENT_ENTRY_POLICY=members` before upgrading to keep admitting only the member list.
 
+### Removed
+
+- `ASTRABOX_SANDBOX_SERVER_KUBE_INFORMER`, which OpenSandbox no longer reads.
+
 ### Fixed
 
+- A sandbox with a container engine no longer walks its whole filesystem at start to find setuid files; the image lists them at build. In a sandbox of the default size the walk could outlast the wait for the engine, and the conversation failed to start.
 - On the bundled Docker server, a sandbox CPU limit above the host's CPU count that is not a whole number (such as `12.5`) is lowered to the count instead of failing every create.
 - `POST /api/v1/sessions/{session_id}/inputs` refuses a field it does not take, naming it. It used to accept the request and drop the field, so a `permission_mode` sent with a message returned 200 and changed nothing; a mode is set with `POST /api/v1/sessions/{session_id}/permission-mode`.
 - When a bundled service is killed by a signal while the server container starts, the fatal line names the signal and, for SIGKILL, points at the container's memory limit and the host's kernel log. It used to read `exited with code -9`, which pointed at the supervisor. The deployment guide now states the server container's memory need (4 GiB).
