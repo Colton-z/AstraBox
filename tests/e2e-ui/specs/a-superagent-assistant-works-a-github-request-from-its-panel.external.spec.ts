@@ -31,8 +31,9 @@
  *   puts in the working Agent's Vault, as an administrator would.
  * - ASTRABOX_E2E_SUPERAGENT_REQUESTER_TOKEN_FILE: a token of the account that
  *   asks, able to open and close issues and pull requests there.
- * No token is printed; the repository is left with the issue and pull request
- * closed and the branch deleted.
+ * No token is printed; the repository is left with the issue and the pull
+ * requests of the run, including one a handed-back request led to, closed and
+ * their branches deleted.
  */
 import fs from 'node:fs';
 
@@ -106,9 +107,17 @@ let issueNumber = 0;
 let pullNumber = 0;
 let branch = '';
 let head = '';
+let started = '';
 onPassOnly(async ({ request }) => {
   if (pullNumber) await github('PATCH', `/repos/${repository}/pulls/${pullNumber}`, { state: 'closed' });
   if (branch) await github('DELETE', `/repos/${repository}/git/refs/heads/${branch}`);
+  // A handed-back request is routed again and may become a Ticket with a pull request of its own.
+  const others = await github<Array<{ number: number; user: { login: string }; head: { ref: string }; created_at: string }>>(
+    'GET', `/repos/${repository}/pulls?state=open&per_page=50`);
+  for (const other of others.filter((pull) => pull.user.login === agentLogin && started && pull.created_at >= started)) {
+    await github('PATCH', `/repos/${repository}/pulls/${other.number}`, { state: 'closed' });
+    await github('DELETE', `/repos/${repository}/git/refs/heads/${other.head.ref}`);
+  }
   if (issueNumber) await github('PATCH', `/repos/${repository}/issues/${issueNumber}`, { state: 'closed' });
   const api = new AstraApi(request);
   if (assistantId) await api.deleteAssistant(assistantId);
@@ -120,6 +129,7 @@ test('a dsh-superagent Assistant has an owner\'s Agent work a GitHub mention, an
   test.setTimeout(50 * 60_000);
   const api = new AstraApi(request);
   const marker = `superagent-e2e-${Date.now().toString(36)}`;
+  started = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
   const requester = (await github<{ login: string }>('GET', '/user')).login;
 
   // The Agent that works the Tickets, with the bot's GitHub access in a Vault: Git over HTTPS and the GitHub API.
@@ -298,6 +308,8 @@ test('a dsh-superagent Assistant has an owner\'s Agent work a GitHub mention, an
   // task outcome extension, and superagent hands the message back as a worker does (upstream's Engine.handback): the
   // message goes to a fresh assessment carrying the Agent's reason, and the Ticket keeps its work.
   const elsewhere = `handback-${marker}`;
+  // The page shows the Agent's conversation now; the Ticket's page is in the panel again.
+  await openOnPanel(again, assistantId);
   await github('POST', `/repos/${repository}/issues/${issueNumber}/comments`, {
     body: `@${agentLogin} ${elsewhere}: a separate request, translate README.md into French. It is not part of this pull `
       + 'request and is another agent\'s work: hand it back for routing instead of doing it.' });
