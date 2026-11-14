@@ -22,7 +22,7 @@ Each command below includes its purpose, parameters/options, examples, and opera
 | `run` | **Run an Agent**: Send a task and stream the reply. | Use an Agent from a terminal or script. |
 | `status` | **View status**: Probe the deployment's health and readiness endpoints. | Monitor a local or remote deployment. |
 | `destroy` | **Clean up resources**: Delete the Agents declared in a file. | Remove declared Agents with explicit confirmation. |
-| `model-account` | **Link model accounts**: Sign in to a ChatGPT account and link it to your user, or list linked accounts. | Let conversations you start spend your ChatGPT plan. |
+| `model-account` | **Link model accounts**: Sign in to a ChatGPT account and link it to your user, list linked accounts, or share one with your team. | Let conversations you start spend your ChatGPT plan. |
 | `up` | **Start locally**: Start the maintained Compose deployment. | Run AstraBox from a source checkout. |
 | `down` | **Stop locally**: Stop the maintained Compose deployment. | Stop services or delete their volumes. |
 | `logs` | **View local logs**: Read or follow Compose service logs. | Diagnose a local deployment. |
@@ -839,6 +839,8 @@ astrabox destroy -f astrabox.yaml --yes --output json
 ```bash
 astrabox model-account login chatgpt [--account <account_id>] [--timeout <seconds>] [options]
 astrabox model-account list [options]
+astrabox model-account share <account_id> [options]
+astrabox model-account unshare <account_id> [options]
 ```
 
 ### Parameter Description
@@ -847,6 +849,7 @@ astrabox model-account list [options]
 | :--- | :--- | :--- |
 | `chatgpt` | The account's vendor (`login` only). | Required |
 | `--account` | Sign in to this linked account again instead of linking another (`login` only). | None |
+| `<account_id>` | The account to share with your team's pool, or to stop sharing (`share` and `unshare`). | Required |
 | `--timeout` | Seconds to wait for the browser to return (`login` only). | `600` |
 | `--endpoint` | Deployment base URL. | `ASTRABOX_ENDPOINT`, then `http://127.0.0.1:$ASTRABOX_SERVER_HOST_PORT` |
 | `--token` | Bearer token. | `ASTRABOX_TOKEN`, then OAuth client credentials |
@@ -863,6 +866,10 @@ OpenAI returns the browser to `http://127.0.0.1:<port>/auth/callback`, which rea
 
 A started sign-in can be completed once, within ten minutes. Your first linked account becomes your default.
 
+### Share an account with your team
+
+`share` lets other members' conversations spend the account's ChatGPT plan once their own accounts reach their plan usage limit; `unshare` takes it back from their next response. The deployment's team pool must be on (`ASTRABOX_MODEL_ACCOUNT_POOL_ENABLED`); otherwise `share` fails with `MODEL_ACCOUNT_POOL_DISABLED`. `list` shows `shared`, when the pool last gave the account to a teammate (`pool_last_used_at`), and until when a reported usage limit holds it back (`usage_limited_until`). See [Share accounts with the team](../models.md#share-accounts-with-the-team).
+
 ### Usage Examples
 
 ```bash
@@ -877,6 +884,10 @@ astrabox model-account list
 
 # Example 4: machine-readable list
 astrabox model-account list --output json
+
+# Example 5: share an account with your team's pool, then stop sharing it
+astrabox model-account share mact_0123456789abcdef0123456789abcdef
+astrabox model-account unshare mact_0123456789abcdef0123456789abcdef
 ```
 
 ### Output

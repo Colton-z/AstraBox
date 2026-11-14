@@ -26,7 +26,7 @@ The `astrabox` CLI provides commands to manage a deployment and its **Agents**:
 | `astrabox destroy` | Delete the Agents declared in `astrabox.yaml`. |
 | `astrabox run` | Send a task to an Agent and stream its reply. |
 | `astrabox status` | View the deployment's health, readiness, and endpoint. |
-| `astrabox model-account` | Link a ChatGPT account whose plan pays for your model requests, or list linked accounts. |
+| `astrabox model-account` | Link a ChatGPT account whose plan pays for your model requests, list linked accounts, or share one with your team. |
 
 ### Deployment and Integration Commands
 

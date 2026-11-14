@@ -329,10 +329,12 @@ run on your computer; the page cannot link an account itself, because OpenAI
 returns the browser to `127.0.0.1`.
 
 - **Several accounts.** Each sign-in through `login chatgpt` links one account.
-  The first becomes the user's default; nothing switches between accounts on
-  its own. Make another the default on the Model accounts page, or with
-  `PATCH /api/v1/me/model-accounts/{account_id}` and `{"is_default": true}`.
-  Deleting the default account leaves the user without one.
+  The first becomes the user's default. Unless the deployment's
+  [team pool](#share-accounts-with-the-team) is on, nothing switches between
+  accounts on its own. Make another the default on the Model accounts page, or
+  with `PATCH /api/v1/me/model-accounts/{account_id}` and
+  `{"is_default": true}`. Deleting the default account leaves the user without
+  one.
 - **Status.** `astrabox model-account list` shows each account's status. An
   account whose renewal OpenAI refuses for good (an expired, revoked or reused
   refresh token) is `sign_in_required`; sign in to it again with
@@ -365,13 +367,20 @@ conversations.
   linked account ends with `MODEL_ACCOUNT_REQUIRED`. An Agent can name one of
   its creator's accounts in `model_account_id`; the creator's conversations
   with it then use that account instead of their default, and other people's
-  conversations use their own default.
+  conversations use their own default. The session detail
+  (`GET /api/v1/sessions/{session_id}`) names in `model_account_id` the
+  account whose plan its last response spent.
 - The sandbox holds a placeholder. The egress boundary attaches the account's
   access token to `POST https://api.openai.com/v1/responses` only, and the
   server renews the token before each turn and while a response runs.
-- When the plan's usage limit is reached the response fails with OpenAI's
-  error; nothing switches to another account or to the gateway. OpenAI offers
-  no way to read the remaining usage; the account's owner sees it under
+- When the plan's usage limit is reached the response fails, and nothing
+  replays it. Its `error` keeps Codex's report (`message`, `codexErrorInfo`)
+  and adds `code` `MODEL_PLAN_USAGE_LIMIT`, the `account_id` that met the limit,
+  and `resets_at`. `resets_at` is always `null`: OpenAI's plan-usage error does
+  not say when the limit resets, and OpenAI asks applications not to infer
+  it. Nothing switches to the gateway. Without the team pool the next response
+  spends the same account again. OpenAI offers no way to read the remaining
+  usage; the account's owner sees it under
   [ChatGPT Settings → Usage](https://chatgpt.com/settings/usage).
 - Conversation titles are still generated through the deployment's model
   gateway, not the user's plan.
@@ -380,6 +389,64 @@ OpenAI documents plan usage for open-source and self-hosted applications, and
 asks operators of paid or remotely hosted services to
 [register their interest](https://openai.com/form/sign-in-with-chatgpt-interest/)
 first.
+
+### Share accounts with the team
+
+A team can spend its members' ChatGPT plans for one another: when a member's
+account reaches its plan usage limit, their conversations go on with an
+account another member chose to share.
+
+An administrator turns the pool on for the deployment with
+`ASTRABOX_MODEL_ACCOUNT_POOL_ENABLED=true` (default `false`; restart to apply).
+Then each account's owner decides whether to share it: the **Share with the
+team** switch on the Model accounts page,
+`astrabox model-account share <account_id>` (and `unshare`), or
+`PATCH /api/v1/me/model-accounts/{account_id}` with `{"shared": true}`. Nothing
+is shared until its owner says so. `GET /api/v1/me/model-accounts/team-pool`
+answers whether the pool is on; while it is off, sharing is refused with
+`MODEL_ACCOUNT_POOL_DISABLED`, and conversations behave as described above.
+
+With the pool on, before each response a conversation spends:
+
+1. its owner's preferred account (the one its Agent names, or the default),
+   unless a usage limit holds that account back;
+2. otherwise the owner's other active accounts, the default first;
+3. otherwise the active accounts that other members of the same organization
+   shared, oldest-linked first.
+
+An account is held back for one hour after OpenAI reports its plan usage
+limit, then offered again; a conversation goes back to its owner's account as
+soon as that account's hour has passed. The response that met the limit stays
+failed, and nothing replays it. A response never changes accounts while it
+runs: an input sent while a response runs, a renewal of the access token
+during a response, and a reconnect to a running sandbox keep the account that
+response started on. When every candidate is held back, the input is refused
+with `MODEL_PLAN_USAGE_LIMIT`, whose `evidence` names the owner's account and
+until when it is held back. A member without any linked account is not given
+a shared one; their conversations end with `MODEL_ACCOUNT_REQUIRED`.
+
+Owners see their own accounts' state on the Model accounts page and in
+`GET /api/v1/me/model-accounts`: `shared`, `pool_last_used_at` (when the pool
+last gave it to a teammate's conversation for a response) and
+`usage_limited_until` (until when a reported limit holds it back). A member
+sees only the `account_id` of a shared account their conversation spends,
+never its owner's name, email or tokens; the tokens stay on the server as for
+any account. Stopping sharing takes effect from each conversation's next
+response; a response already running keeps the access token it has, which is
+then not renewed.
+
+Sharing spends each member's own sign-in, and only after its owner opted in.
+Operators are responsible for the terms of the ChatGPT plans their members
+share.
+
+AstraBox reads a usage limit from Codex's report of the failed turn. Codex
+0.169 does not pass on OpenAI's code `subscription_sharing_usage_limit_exceeded`:
+it reports any HTTP 429 from the model API that it does not recognise as
+`codexErrorInfo` `{"responseTooManyFailedAttempts": {"httpStatusCode": 429}}`.
+AstraBox counts that report, and Codex's own `usageLimitExceeded`, as the
+plan usage limit. On a ChatGPT plan RuntimeProfile OpenAI documents HTTP 429
+only for the plan usage limit; any other 429 it sends would also hold the
+account back for an hour.
 
 ## Verify the connection
 
