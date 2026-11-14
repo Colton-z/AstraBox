@@ -7,7 +7,6 @@ import {
   createAgent,
   getAgentSchema,
   listAgentCategories,
-  listAgentRuntimeProfileModels,
   listAgentRuntimeProfiles,
   listAgentTags,
   listAgents,
@@ -23,7 +22,8 @@ import {
   useRecordCrumb,
 } from './console';
 import { buildAgentDraft } from './agentConfig';
-import { buildAgentEditSections } from './agentEditConfig';
+import { agentPayloadForProfile, buildAgentEditSections } from './agentEditConfig';
+import { useAgentModelChoices } from './useAgentModelChoices';
 import { MANAGE_NAV_COUNT_KEYS } from './navCounts';
 
 /**
@@ -44,7 +44,6 @@ export default function AgentCreatePage() {
   const [categories, setCategories] = useState<AgentCategory[]>([]);
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [tagSuggestions, setTagSuggestions] = useState<string[]>([]);
-  const [models, setModels] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -91,46 +90,34 @@ export default function AgentCreatePage() {
   }, [load]);
 
   const runtimeProfileName = String(draft?.runtime_profile_name || '').trim();
-  useEffect(() => {
-    let current = true;
-    if (!runtimeProfileName) {
-      setModels([]);
-      return () => {
-        current = false;
-      };
-    }
-    void listAgentRuntimeProfileModels(runtimeProfileName)
-      .then((items) => {
-        if (current) setModels(items);
-      })
-      .catch(() => {
-        if (current) setModels([]);
-      });
-    return () => {
-      current = false;
-    };
-  }, [runtimeProfileName]);
+  const profile = runtime_profiles.find((e) => e.name === runtimeProfileName);
+  // Whoever creates the Agent is its creator, so the account is theirs to choose.
+  const { models, chatgptPlan } = useAgentModelChoices(
+    profile,
+    String(draft?.model_account_id || ''),
+    true,
+  );
 
   // Only `visibility` changes which fields the config produces (it toggles the
   // allowlist), so the memo keys on that value rather than the whole draft —
   // otherwise every keystroke rebuilds every section's closures.
   const draftVisibility = (draft as Record<string, unknown> | null)?.visibility;
   // The engine_options fields come from the engine declaration of whichever
-  // environment is selected, so the memo also keys on the chosen environment
-  // name.
+  // environment is selected, and the model and account fields from its model
+  // endpoint, so the memo also keys on the chosen profile and its choices.
   const { sections, advancedKeys } = useMemo(
     () =>
       buildAgentEditSections(schema, { visibility: draftVisibility, a2a_access: draft?.a2a_access }, {
         nameEditable: true,
         runtime_profiles,
         models,
-        engineOptionsSchema: runtime_profiles.find((e) => e.name === runtimeProfileName)
-          ?.engine_options_schema,
+        chatgptPlan,
+        engineOptionsSchema: profile?.engine_options_schema,
         categories,
         agents,
         tagSuggestions,
       }),
-    [schema, draftVisibility, draft?.a2a_access, runtime_profiles, models, runtimeProfileName, categories, agents, tagSuggestions, t],
+    [schema, draftVisibility, draft?.a2a_access, runtime_profiles, models, chatgptPlan, profile, categories, agents, tagSuggestions, t],
   );
 
   if (loading) {
@@ -194,7 +181,7 @@ export default function AgentCreatePage() {
         setSaving(true);
         setError('');
         setRefusedKey(null);
-        void createAgent({ ...draft, name }, schema)
+        void createAgent(agentPayloadForProfile({ ...draft, name }, profile), schema)
           // Straight to the record: what the reader wanted was the agent, and
           // the list they came from cannot show them the one they just made
           // any better than its own page can.

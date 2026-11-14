@@ -252,6 +252,10 @@ for _code, _status, _category, _retryable, _owner in (
     # OpenAI granted the sign-in without ChatGPT plan usage (the scope
     # chatgpt.tokens.use.direct); the owner signs in again and allows it.
     ("MODEL_ACCOUNT_PLAN_USAGE_NOT_ENABLED", 409, "auth", False, "client"),
+    # OpenAI's list of the models an account can use could not be read: the
+    # API was unreachable or answered 5xx. A refusal or an answer without a
+    # model list is raised with retryable=False.
+    ("MODEL_ACCOUNT_MODELS_UNAVAILABLE", 502, "model", True, "platform"),
     # An ASGI host mounted AstraBox at a path other than
     # ASTRABOX_PUBLIC_PATH_PREFIX; the operator sets the variable to the mount
     # path (astrabox/web/public_path_middleware.py).

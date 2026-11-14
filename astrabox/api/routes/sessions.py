@@ -429,6 +429,16 @@ class SessionFileChanges(BaseModel):
     responses: list[SessionFileChangeResponse]
 
 
+#: The statuses a runtime reports of itself (``engine.runtime.RuntimeStatus``).
+_RUNTIME_STATUSES = frozenset({"idle", "working", "waiting", "background"})
+
+
+def _comma_separated(value: str | None) -> list[str] | None:
+    """A comma-separated query value as its items; ``None`` when the parameter is absent or empty."""
+    items = [item.strip() for item in str(value or "").split(",") if item.strip()]
+    return items or None
+
+
 @router.get(
     "/api/v1/sessions",
     # Two shapes, and both are live: the console's `listSessions` reads the
@@ -451,6 +461,17 @@ class SessionFileChanges(BaseModel):
                 default=50,
             ),
             query_parameter("cursor", "string", "Opaque next_cursor from the preceding page."),
+            query_parameter(
+                "agent_id",
+                "string",
+                "Keep the sessions of these Agents (comma-separated ids); used only with page=1.",
+            ),
+            query_parameter(
+                "runtime_status",
+                "string",
+                "Keep the sessions whose runtime last reported one of these statuses "
+                "(comma-separated: idle, working, waiting, background); used only with page=1.",
+            ),
         ]
     },
 )
@@ -459,7 +480,19 @@ async def list_sessions(request: Request):
     if str(request.query_params.get("page") or "").strip() == "1":
         limit = min(max(int(request.query_params.get("limit", "50")), 1), 100)
         cursor = request.query_params.get("cursor")
-        page = await _svc().list_sessions_page(user, limit=limit, cursor=cursor)
+        agent_ids = _comma_separated(request.query_params.get("agent_id"))
+        runtime_statuses = _comma_separated(request.query_params.get("runtime_status"))
+        unknown = sorted(set(runtime_statuses or ()) - _RUNTIME_STATUSES)
+        if unknown:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message=f"runtime_status must be among {sorted(_RUNTIME_STATUSES)}, not {unknown}",
+                status_code=400,
+            )
+        page = await _svc().list_sessions_page(
+            user, limit=limit, cursor=cursor,
+            agent_ids=agent_ids, runtime_statuses=runtime_statuses,
+        )
         return success_response(page)
     sessions = await _svc().list_sessions(user)
     return success_response(sessions)

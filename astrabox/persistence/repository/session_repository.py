@@ -603,8 +603,15 @@ class SessionRepository:
     async def list_user_sessions_page(
         self, user_id: str, *, limit: int = 50, cursor: str | None = None,
         agent_ids: list[str] | None = None, query: str = "",
+        runtime_statuses: list[str] | None = None,
     ) -> dict[str, Any]:
-        """One page of the user's visible sessions, newest activity first."""
+        """One page of the user's visible sessions, newest activity first.
+
+        ``agent_ids`` and ``runtime_statuses`` each keep the sessions of one of
+        the given Agents, or whose runtime last reported one of the given
+        statuses; a session whose runtime has reported nothing counts as
+        ``idle``.
+        """
         page_limit = max(1, min(int(limit or 50), 100))
         conditions: list[ColumnElement[bool]] = [
             _SESSIONS.c.user_id == user_id,
@@ -615,6 +622,10 @@ class SessionRepository:
             conditions.append(_SESSIONS.c.agent_id.in_(agent_ids))
         if query.strip():
             conditions.append(_SESSIONS.c.title.icontains(query.strip(), autoescape=True))
+        if runtime_statuses is not None:
+            conditions.append(
+                func.coalesce(_SESSIONS.c.runtime_status, "idle").in_(runtime_statuses)
+            )
         position = _decode_session_list_cursor(cursor)
         if position is not None:
             at = from_iso(position["updated_at"])

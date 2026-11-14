@@ -154,10 +154,16 @@ class SessionReads:
         """The owner's newest sessions."""
         return [session_summary(row) for row in await self._sessions.list_user_sessions(str(user.user_id))]
 
-    async def sessions_page(self, user: UserContext, *, limit: int, cursor: str | None) -> dict[str, Any]:
+    async def sessions_page(
+        self, user: UserContext, *, limit: int, cursor: str | None,
+        agent_ids: list[str] | None = None, runtime_statuses: list[str] | None = None,
+    ) -> dict[str, Any]:
         """One page of the owner's sessions, newest activity first."""
         try:
-            page = await self._sessions.list_user_sessions_page(str(user.user_id), limit=limit, cursor=cursor)
+            page = await self._sessions.list_user_sessions_page(
+                str(user.user_id), limit=limit, cursor=cursor,
+                agent_ids=agent_ids, runtime_statuses=runtime_statuses,
+            )
         except InvalidListCursor as exc:
             raise APIError(code="INVALID_REQUEST", message="cursor is not one this list returned", status_code=400) from exc
         return {

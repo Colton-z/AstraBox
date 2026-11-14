@@ -701,9 +701,14 @@ class AgentPlatformService:
         *,
         limit: int = 50,
         cursor: str | None = None,
+        agent_ids: list[str] | None = None,
+        runtime_statuses: list[str] | None = None,
     ) -> dict[str, Any]:
         await self._ensure_session_list_bootstrap()
-        return await self.session_reads.sessions_page(user, limit=limit, cursor=cursor)
+        return await self.session_reads.sessions_page(
+            user, limit=limit, cursor=cursor,
+            agent_ids=agent_ids, runtime_statuses=runtime_statuses,
+        )
 
     async def get_session(self, user: UserContext, session_id: str) -> dict[str, Any]:
         await self.ensure_bootstrap()

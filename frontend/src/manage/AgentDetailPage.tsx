@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import useSWR from 'swr';
 
 import i18n from '@/i18n';
 import {
@@ -10,8 +11,8 @@ import {
   getAgentAccess,
   getAgentExtensions,
   getAgentSchema,
+  getCurrentUser,
   listAgentCategories,
-  listAgentRuntimeProfileModels,
   listAgentRuntimeProfiles,
   listAgentTags,
   listAgents,
@@ -26,6 +27,7 @@ import type {
   AgentExtensionCatalog,
   RuntimeProfileConfig,
   FormSchema,
+  UserInfo,
 } from '@/types';
 
 import { ErrorNote } from '@/components/shell';
@@ -53,7 +55,8 @@ import {
   hasCatalogSelection,
 } from './UnavailableCatalogSelection';
 import { agentDisplayName, agentModel, formatDateTime } from './agentConfig';
-import { buildAgentEditSections } from './agentEditConfig';
+import { agentPayloadForProfile, buildAgentEditSections } from './agentEditConfig';
+import { useAgentModelChoices } from './useAgentModelChoices';
 import { useFrontendReleaseHold } from '@/hooks/useFrontendReleaseHold';
 import { useExtensionProvider } from '@/hooks/useExtensionProvider';
 import { AgentPrewarmStatus } from './AgentPrewarmStatus';
@@ -117,7 +120,7 @@ export default function AgentDetailPage() {
   const [categories, setCategories] = useState<AgentCategory[]>([]);
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [tagSuggestions, setTagSuggestions] = useState<string[]>([]);
-  const [models, setModels] = useState<string[]>([]);
+  const { data: userInfo } = useSWR<UserInfo>('user:current', getCurrentUser);
 
   useRecordCrumb(record ? agentDisplayName(record) : t('common:agent'));
 
@@ -155,25 +158,14 @@ export default function AgentDetailPage() {
   }, [load]);
 
   const runtimeProfileName = String(draft?.runtime_profile_name || '').trim();
-  useEffect(() => {
-    let current = true;
-    if (!runtimeProfileName) {
-      setModels([]);
-      return () => {
-        current = false;
-      };
-    }
-    void listAgentRuntimeProfileModels(runtimeProfileName)
-      .then((items) => {
-        if (current) setModels(items);
-      })
-      .catch(() => {
-        if (current) setModels([]);
-      });
-    return () => {
-      current = false;
-    };
-  }, [runtimeProfileName]);
+  const profile = runtime_profiles.find((e) => e.name === runtimeProfileName);
+  // The account an Agent names is its creator's: only the creator's own
+  // conversations spend it, so only the creator chooses it.
+  const { models, chatgptPlan } = useAgentModelChoices(
+    profile,
+    String(draft?.model_account_id || ''),
+    Boolean(record?.created_by) && record?.created_by === userInfo?.user_id,
+  );
 
   useEffect(
     () => () => {
@@ -199,15 +191,15 @@ export default function AgentDetailPage() {
       buildAgentEditSections(schema, draft as Record<string, unknown> | null, {
         nameEditable: false,
         runtime_profiles,
-        engineOptionsSchema: runtime_profiles.find((e) => e.name === runtimeProfileName)
-          ?.engine_options_schema,
+        engineOptionsSchema: profile?.engine_options_schema,
         models,
+        chatgptPlan,
         catalogName: extensionProvider?.display_name,
         categories,
         agents,
         tagSuggestions,
       }).sections,
-    [schema, draft, runtime_profiles, models, extensionProvider, categories, agents, tagSuggestions, t],
+    [schema, draft, runtime_profiles, profile, models, chatgptPlan, extensionProvider, categories, agents, tagSuggestions, t],
   );
 
   const isDirty = (fields: EditFieldSpec[]) =>
@@ -328,10 +320,13 @@ export default function AgentDetailPage() {
         // The version the record was read at: the server refuses the write
         // (409) if somebody else saved this agent in between. updateAgent then
         // projects this fetched record onto the schema's authoring keys.
+        // A card's save writes its own fields over the stored record, so the
+        // RuntimeProfile this write names is the payload's, not the draft's.
+        const savedProfile = runtime_profiles.find((e) => e.name === payload.runtime_profile_name);
         await updateAgent(
           record.agent_id,
           {
-            ...(payload as unknown as AgentDraft),
+            ...agentPayloadForProfile(payload as unknown as AgentDraft, savedProfile),
             version: record.version,
           },
           schema,

@@ -1272,6 +1272,11 @@ class AgentConfigService:
                     "enabled": True,
                     "engine_available": True,
                     "supported_session_kinds": ["agent_chat"],
+                    # The model endpoint provider, so the form asks for what
+                    # it needs: a ChatGPT plan one spends a linked account.
+                    # None when the deployment's default serves the profile.
+                    "endpoint_provider": str(config.get("endpoint_provider") or "").strip()
+                    or None,
                     # The engine's declared engine_options shape, carried so
                     # the Agent form can render the bag's fields for the
                     # chosen environment. Empty means the engine takes no bag

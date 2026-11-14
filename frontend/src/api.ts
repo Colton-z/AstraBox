@@ -21,6 +21,9 @@ import type {
   AdminProcessHealth,
   IssuedMcpClientToken,
   McpClientToken,
+  DeletedModelAccount,
+  ModelAccount,
+  ModelAccountModel,
   AdminSandboxDiagnostics,
   AdminSandboxSecurity,
   AdminSandboxDiagnosticScope,
@@ -1618,6 +1621,52 @@ export async function revokeMcpClientToken(tokenId: string): Promise<void> {
     ...wire,
     params: { path: { token_id: tokenId } },
   }));
+}
+
+// ── The signed-in user's model accounts (ChatGPT plan usage) ────────────────
+/** The caller's linked ChatGPT accounts, oldest first. Never carries a token. */
+export async function listModelAccounts(): Promise<ModelAccount[]> {
+  return expectList<ModelAccount>(
+    await send((wire) => client.GET('/api/v1/me/model-accounts', wire)),
+    '/me/model-accounts',
+  );
+}
+
+/** Rename an account or make it the caller's default; an absent field is left as it is. */
+export async function updateModelAccount(
+  accountId: string,
+  body: { label?: string; is_default?: boolean },
+): Promise<ModelAccount> {
+  return send((wire) => client.PATCH('/api/v1/me/model-accounts/{account_id}', {
+    ...wire,
+    params: { path: { account_id: accountId } },
+    body,
+  }));
+}
+
+/**
+ * Remove an account. The server revokes its session at OpenAI first;
+ * `revocation_confirmed` is false when OpenAI did not confirm it.
+ */
+export async function deleteModelAccount(accountId: string): Promise<DeletedModelAccount> {
+  return send((wire) => client.DELETE('/api/v1/me/model-accounts/{account_id}', {
+    ...wire,
+    params: { path: { account_id: accountId } },
+  }));
+}
+
+/** The id that names the caller's default account to the model list. */
+export const DEFAULT_MODEL_ACCOUNT = 'default';
+
+/** The models an account can use, in OpenAI's order; `default` is the caller's default account. */
+export async function listModelAccountModels(accountId: string): Promise<ModelAccountModel[]> {
+  return expectList<ModelAccountModel>(
+    await send((wire) => client.GET('/api/v1/me/model-accounts/{account_id}/models', {
+      ...wire,
+      params: { path: { account_id: accountId } },
+    })),
+    '/me/model-accounts/{account_id}/models',
+  );
 }
 
 export async function listAgentDeployments(agentId: string): Promise<AgentDeployment[]> {

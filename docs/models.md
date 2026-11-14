@@ -271,11 +271,18 @@ address on that computer, so the command listens there on a free port before it
 opens OpenAI's sign-in page. It then hands the browser's return to the
 deployment, which exchanges the code, validates the ID token, and stores the
 account. Allow plan usage on OpenAI's page: a sign-in without it links nothing.
-The AstraBox server must reach `https://auth.openai.com`.
+The AstraBox server must reach `https://auth.openai.com`, and
+`https://api.openai.com` to list an account's models.
+
+The console's **Model accounts** page (under Configure) lists your linked
+accounts and their status, renames them, chooses your default and removes
+them. It shows the `login` command pointed at its own deployment, to copy and
+run on your computer; the page cannot link an account itself, because OpenAI
+returns the browser to `127.0.0.1`.
 
 - **Several accounts.** Each sign-in through `login chatgpt` links one account.
   The first becomes the user's default; nothing switches between accounts on
-  its own. Make another the default with
+  its own. Make another the default on the Model accounts page, or with
   `PATCH /api/v1/me/model-accounts/{account_id}` and `{"is_default": true}`.
   Deleting the default account leaves the user without one.
 - **Status.** `astrabox model-account list` shows each account's status. An
@@ -300,7 +307,12 @@ conversations.
   credential delivery on. An Agent on it must have `prepared_capacity` 0: a
   sandbox prepared before a conversation exists has no owner whose account it
   could use.
-- The Agent's model is one the account can use, such as `gpt-6.1-sol`.
+- The Agent's model is one the account can use, such as `gpt-6.1-sol`. On
+  such a RuntimeProfile the Agent form offers the models of the chosen account,
+  read from OpenAI with `GET /api/v1/me/model-accounts/{account_id}/models`
+  (`default` names your default account), and a ChatGPT account field beside
+  the model. Neither shows on any other RuntimeProfile, and the form does not
+  send `model_account_id` there.
 - The conversation's owner pays. A conversation started by someone with no
   linked account ends with `MODEL_ACCOUNT_REQUIRED`. An Agent can name one of
   its creator's accounts in `model_account_id`; the creator's conversations

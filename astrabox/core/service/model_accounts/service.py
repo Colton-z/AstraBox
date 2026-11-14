@@ -69,6 +69,12 @@ ISSUER = "https://auth.openai.com"
 DISCOVERY_URL = f"{ISSUER}/.well-known/openid-configuration"
 #: The API the access token is for, sent with every token request.
 RESOURCE = "https://api.openai.com/v1"
+#: The models the access token may call, in the order OpenAI offers them.
+MODELS_ENDPOINT = f"{RESOURCE}/models"
+#: The ``visibility`` of a model OpenAI means for a model picker.
+_LISTED_MODEL = "list"
+#: The account id that names the caller's default account.
+DEFAULT_ACCOUNT = "default"
 #: The scope that lets the access token spend the user's ChatGPT plan. A
 #: valid ID token alone does not grant it.
 PLAN_USAGE_SCOPE = "chatgpt.tokens.use.direct"
@@ -105,7 +111,7 @@ _SIGN_IN_AGAIN_ERRORS = frozenset(
 _ID_TOKEN_LEEWAY_S = 5
 _ID_TOKEN_ALGORITHMS = ["RS256", "ES256"]
 
-#: Bound on one request to OpenAI's authorization server, connection included.
+#: Bound on one request to OpenAI, connection included.
 _HTTP_TIMEOUT_S = 30.0
 
 #: How long a refresh claim lasts. It exceeds :data:`_HTTP_TIMEOUT_S` with room
@@ -191,6 +197,15 @@ def _refresh_failed(account_id: str, message: str, *, retryable: bool = True) ->
     )
 
 
+def _models_unavailable(account_id: str, message: str, *, retryable: bool = True) -> APIError:
+    return APIError(
+        code="MODEL_ACCOUNT_MODELS_UNAVAILABLE",
+        message=f"model account {account_id!r}: {message}",
+        status_code=502,
+        retryable=retryable,
+    )
+
+
 def _due(expires_at: str | None) -> bool:
     """Whether an access token expiring at ``expires_at`` needs renewing now."""
     if not expires_at:
@@ -267,6 +282,17 @@ async def _post_form(url: str, data: Mapping[str, str]) -> httpx.Response:
             timeout=httpx.Timeout(_HTTP_TIMEOUT_S, connect=10.0), follow_redirects=False
         ) as client:
             return await client.post(url, data=dict(data), headers={"Accept": "application/json"})
+
+
+async def _get_with_token(url: str, access_token: str) -> httpx.Response:
+    async with asyncio.timeout(_HTTP_TIMEOUT_S):
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(_HTTP_TIMEOUT_S, connect=10.0), follow_redirects=False
+        ) as client:
+            return await client.get(
+                url,
+                headers={"Accept": "application/json", "Authorization": f"Bearer {access_token}"},
+            )
 
 
 async def _get_json(url: str) -> dict[str, Any]:
@@ -719,6 +745,54 @@ class ModelAccountService:
         )
         return {"account_id": account_id, "revocation_confirmed": revoked}
 
+    async def list_models(self, user: UserContext, account_id: str) -> list[dict[str, str]]:
+        """The models an account can use, as ``{id, display_name}`` in OpenAI's order.
+
+        ``account_id`` is one of the user's accounts, or :data:`DEFAULT_ACCOUNT`
+        for their default. OpenAI's ``GET /v1/models`` answers the models the
+        account's plan offers; only those whose ``visibility`` is ``list`` are
+        meant for a model picker. ``id`` is the ``slug`` an Agent names as its
+        model. Raises what :meth:`access_token` raises, and
+        ``MODEL_ACCOUNT_MODELS_UNAVAILABLE`` when OpenAI's list could not be
+        read.
+        """
+        token = await self.access_token(
+            user_id=user.user_id,
+            account_id=None if account_id == DEFAULT_ACCOUNT else account_id,
+        )
+        try:
+            response = await _get_with_token(MODELS_ENDPOINT, token.access_token)
+        except (httpx.HTTPError, TimeoutError) as exc:
+            raise _models_unavailable(
+                token.account_id, f"OpenAI's model list could not be reached ({type(exc).__name__})"
+            ) from exc
+        if response.status_code != 200:
+            raise _models_unavailable(
+                token.account_id,
+                f"OpenAI's model list answered {response.status_code}",
+                retryable=response.status_code >= 500,
+            )
+        entries = _json_object(response).get("models")
+        if not isinstance(entries, list):
+            raise _models_unavailable(
+                token.account_id, "OpenAI's model list answer has no models array", retryable=False
+            )
+        models: list[dict[str, str]] = []
+        for entry in entries:
+            if not isinstance(entry, Mapping) or entry.get("visibility") != _LISTED_MODEL:
+                continue
+            slug = str(entry.get("slug") or "").strip()
+            if not slug:
+                raise _models_unavailable(
+                    token.account_id,
+                    "OpenAI's model list names a listed model without a slug",
+                    retryable=False,
+                )
+            models.append(
+                {"id": slug, "display_name": str(entry.get("display_name") or "").strip() or slug}
+            )
+        return models
+
     async def _revoke(self, account_id: str | None, *, refresh_token: str, client_id: str) -> bool:
         """End a grant's renewable session at OpenAI; whether OpenAI confirmed it.
 
@@ -951,6 +1025,8 @@ def get_model_account_service() -> ModelAccountService:
 
 __all__ = [
     "AUTHORIZE_ENDPOINT",
+    "DEFAULT_ACCOUNT",
+    "MODELS_ENDPOINT",
     "ModelAccountService",
     "ext_agent_host_id",
     "ModelAccountToken",

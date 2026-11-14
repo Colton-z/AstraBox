@@ -171,7 +171,10 @@
     "sandbox_unavailable": "沙箱不可用",
     "sandbox_terminated": "沙箱已终止",
     "sandbox_did_not_receive": "沙箱未接收到该消息",
-    "workspace_hibernated": "沙箱超时后，工作区已暂停；下次打开时会自动恢复。"
+    "workspace_hibernated": "沙箱超时后，工作区已暂停；下次打开时会自动恢复。",
+    "model_account_required": "你还没有默认的 ChatGPT 账号。请在你自己的电脑上运行 `astrabox model-account login chatgpt` 关联一个，或在 控制台 → 模型账号 中选择默认账号。",
+    "model_account_no_owner": "这个对话没有可以使用其 ChatGPT 账号的所有者。使用 ChatGPT 订阅的运行配置只运行已登录用户发起的对话。",
+    "model_account_sign_in_required": "ChatGPT 账号 {{account}} 需要重新登录（{{reason}}）。请在你自己的电脑上运行 `astrabox model-account login chatgpt --account {{account_id}}`；控制台 → 模型账号 中有完整命令。"
   },
   "prompt_input": {
     "stopping": "停止中",
@@ -264,7 +267,8 @@
       "model": {
         "label": "模型",
         "manage_gateway": "在 {{name}} 管理模型",
-        "help": "填写所选运行配置的模型服务连接所提供的模型 ID"
+        "help": "填写所选运行配置的模型服务连接所提供的模型 ID",
+        "help_chatgpt_plan": "使用 ChatGPT 订阅：所选 ChatGPT 账号可用的模型。对话消耗该账号的订阅额度，而不是模型网关。"
       },
       "system": {
         "label": "系统提示词",
@@ -311,7 +315,10 @@
       },
       "model_account_id": {
         "label": "ChatGPT 账号",
-        "help": "在使用 ChatGPT 订阅的运行配置上：你与这个 Agent 的对话使用你已关联的哪个 ChatGPT 账号（填账号 ID）。留空使用你的默认账号。其他人的对话使用他们各自的默认账号。"
+        "help": "你与这个 Agent 的对话使用你已关联的哪个 ChatGPT 账号。其他人的对话使用他们各自的默认账号。",
+        "default": "我的默认账号",
+        "default_named": "我的默认账号（{{account}}）",
+        "needs_sign_in": "{{account}}（需重新登录）"
       },
       "exposure_mode": {
         "label": "使用入口",

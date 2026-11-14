@@ -2940,6 +2940,23 @@ export interface paths {
         patch: operations["update_model_account_api_v1_me_model_accounts__account_id__patch"];
         trace?: never;
     };
+    "/api/v1/me/model-accounts/{account_id}/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Model Account Models */
+        get: operations["list_model_account_models_api_v1_me_model_accounts__account_id__models_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/schedules": {
         parameters: {
             query?: never;
@@ -6471,6 +6488,8 @@ export interface components {
             display_name: string;
             /** Enabled */
             enabled: boolean;
+            /** Endpoint Provider */
+            endpoint_provider?: string | null;
             /** Engine Kind */
             engine_kind: string;
             /**
@@ -7652,6 +7671,15 @@ export interface components {
             code: string;
             /** Data */
             data: components["schemas"]["EnvironmentView"][];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[list[ModelAccountModel]] */
+        ApiEnvelope_list_ModelAccountModel__: {
+            /** Code */
+            code: string;
+            /** Data */
+            data: components["schemas"]["ModelAccountModel"][];
             /** Message */
             message: string;
         };
@@ -11467,6 +11495,18 @@ export interface components {
             authorize_url: string;
             /** Expires At */
             expires_at: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * ModelAccountModel
+         * @description One model an account can use.
+         */
+        ModelAccountModel: {
+            /** Display Name */
+            display_name: string;
+            /** Id */
+            id: string;
         } & {
             [key: string]: unknown;
         };
@@ -22029,6 +22069,46 @@ export interface operations {
             };
         };
     };
+    list_model_account_models_api_v1_me_model_accounts__account_id__models_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_list_ModelAccountModel__"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     list_personal_schedules_api_v1_me_schedules_get: {
         parameters: {
             query?: {
@@ -22929,6 +23009,10 @@ export interface operations {
                 limit?: number;
                 /** @description Opaque next_cursor from the preceding page. */
                 cursor?: string;
+                /** @description Keep the sessions of these Agents (comma-separated ids); used only with page=1. */
+                agent_id?: string;
+                /** @description Keep the sessions whose runtime last reported one of these statuses (comma-separated: idle, working, waiting, background); used only with page=1. */
+                runtime_status?: string;
             };
             header?: never;
             path?: never;

@@ -7,6 +7,10 @@ in the browser; the client posts the query OpenAI redirected the browser to
 ``…/authorizations/{authorization_id}/callback``, and the server completes the
 sign-in. ``astrabox model-account login chatgpt`` is that client.
 
+``GET /api/v1/me/model-accounts/{account_id}/models`` lists the models an
+account can use (``default`` names the caller's default account), for choosing
+an Agent's model on a ChatGPT plan RuntimeProfile.
+
 Each route acts on the caller's own accounts only. No answer carries a token:
 the tokens stay in the server's secret store
 (:mod:`astrabox.core.service.model_accounts.service`).
@@ -105,6 +109,16 @@ class DeletedModelAccount(BaseModel):
     revocation_confirmed: bool | None
 
 
+class ModelAccountModel(BaseModel):
+    """One model an account can use."""
+
+    model_config = ConfigDict(extra="allow")
+
+    #: OpenAI's model slug, the value an Agent names as its ``model``.
+    id: str
+    display_name: str
+
+
 def register_model_account_routes(app: Any) -> None:
     global _registered_on
     if _registered_on == id(app):
@@ -154,6 +168,17 @@ def register_model_account_routes(app: Any) -> None:
     async def list_model_accounts(request: Request) -> dict[str, Any]:
         user = await get_current_user_context(request)
         return success_response(await get_model_account_service().list_accounts(user))
+
+    @app.get(
+        "/api/v1/me/model-accounts/{account_id}/models",
+        response_model=ApiEnvelope[list[ModelAccountModel]],
+        response_model_exclude_unset=True,
+    )
+    async def list_model_account_models(account_id: str, request: Request) -> dict[str, Any]:
+        user = await get_current_user_context(request)
+        return success_response(
+            await get_model_account_service().list_models(user, account_id)
+        )
 
     @app.patch(
         "/api/v1/me/model-accounts/{account_id}",

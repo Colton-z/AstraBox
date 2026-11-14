@@ -187,6 +187,9 @@ class AgentRuntimeProfileOption(BaseModel):
     display_name: str
     engine_kind: str
     enabled: bool
+    #: The RuntimeProfile's model endpoint provider; null when the
+    #: deployment's default serves it.
+    endpoint_provider: str | None = None
     #: The engine's declared engine_options field schema (may be empty). The
     #: platform carries the declaration for form rendering and interprets none
     #: of its keys.

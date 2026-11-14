@@ -395,7 +395,15 @@ Example paginated response:
 ```
 
 Paged list responses use `has_more` and `next_cursor`. Without `page=1`, the
-same list route returns the console's unpaged array.
+same list route returns the console's unpaged array of the 50 most recently
+active Sessions.
+
+A paged request can narrow the list: `agent_id` keeps the Sessions of the
+given Agents and `runtime_status` those whose runtime last reported one of the
+given statuses (`idle`, `working`, `waiting`, `background`), each a
+comma-separated list. `?page=1&runtime_status=working,background` lists what
+is running; `runtime_status=waiting` lists what waits on a person. A Session
+whose runtime has reported nothing yet counts as `idle`.
 
 The title and the permission mode are the Session settings this route family
 updates. Only the Session's owner can rename it. A title is one line of at

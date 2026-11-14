@@ -506,12 +506,39 @@ export const DISPLAY_TEXT_REPLACEMENTS: Array<[string, string]> = [
   ['sandbox terminated', 'misc:wire.sandbox_terminated'],
   ['the sandbox did not receive this message', 'misc:wire.sandbox_did_not_receive'],
   ['sandbox TTL expired; workspace hibernated, will be rebuilt on next access', 'misc:wire.workspace_hibernated'],
+  // A conversation on a ChatGPT plan runtime profile that cannot start
+  // (astrabox/core/service/model_accounts/service.py, providers/model_chatgpt_plan.py):
+  // its owner has no default account to spend, or it has no owner at all.
+  [
+    'no default ChatGPT account is linked for this user; link one with `astrabox model-account login chatgpt` or choose a default',
+    'misc:wire.model_account_required',
+  ],
+  [
+    'this conversation has no owner whose ChatGPT account it could use; a ChatGPT plan RuntimeProfile runs conversations a signed-in user starts',
+    'misc:wire.model_account_no_owner',
+  ],
+];
+
+// Wire sentences that carry values, matched whole so the localized sentence
+// can place each named group (passed as an interpolation value) where its
+// language puts it. The source is the server's own sentence, quoted beside it.
+export const DISPLAY_TEXT_PATTERNS: Array<[RegExp, string]> = [
+  // MODEL_ACCOUNT_SIGN_IN_REQUIRED (model_accounts/service.py, `_sign_in_required`):
+  // "ChatGPT account 'Work' needs a new sign-in: <reason>. Run `astrabox model-account login chatgpt --account <id>`"
+  [
+    /ChatGPT account (['"])(?<account>.*?)\1 needs a new sign-in: (?<reason>[^.]*)\. Run `astrabox model-account login chatgpt --account (?<account_id>[^`\s]+)`/g,
+    'misc:wire.model_account_sign_in_required',
+  ],
 ];
 
 export function localizeDisplayText(text: string): string {
   let localized = text;
   DISPLAY_TEXT_REPLACEMENTS.forEach(([source, key]) => {
     localized = localized.split(source).join(t(key));
+  });
+  DISPLAY_TEXT_PATTERNS.forEach(([pattern, key]) => {
+    localized = localized.replace(pattern, (...match: unknown[]) =>
+      t(key, match[match.length - 1] as Record<string, string>));
   });
   return localized;
 }

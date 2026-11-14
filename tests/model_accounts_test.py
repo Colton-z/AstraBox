@@ -1,8 +1,8 @@
 """ChatGPT model accounts on the PostgreSQL test database, against a stand-in for OpenAI.
 
-The stand-in answers OpenAI's discovery document, signing keys, token endpoint
-and revocation endpoint through an httpx ``MockTransport``, so every request the
-service builds is encoded as it would be on the wire. It signs ID tokens with
+The stand-in answers OpenAI's discovery document, signing keys, token endpoint,
+revocation endpoint and model list through an httpx ``MockTransport``, so every
+request the service builds is encoded as it would be on the wire. It signs ID tokens with
 its own RSA key and checks the PKCE verifier against the challenge the
 authorization URL carried. Its refresh tokens rotate on every use and a spent
 one is refused, as OpenAI's are.
@@ -39,6 +39,7 @@ from astrabox.core.service.model_accounts.service import (
     AUTHORIZE_ENDPOINT,
     DISCOVERY_URL,
     ISSUER,
+    MODELS_ENDPOINT,
     RESOURCE,
     TOKEN_ENDPOINT,
     ModelAccountService,
@@ -85,6 +86,9 @@ class _OpenAI:
         self.refresh_token = "rt-1"
         self.refusal: dict[str, Any] | None = None
         self.id_tokens: list[str] = []
+        self.models: list[dict[str, str]] = []
+        self.models_status = 200
+        self.model_requests: list[str] = []
 
     def approve(self, authorize_url: str) -> dict[str, str]:
         """The query the browser brings back once the user approves the sign-in."""
@@ -119,6 +123,11 @@ class _OpenAI:
             return httpx.Response(200, json={"keys": [self.jwk]})
         if url == _REVOCATION_ENDPOINT:
             return httpx.Response(200)
+        if url == MODELS_ENDPOINT and request.method == "GET":
+            self.model_requests.append(request.headers.get("authorization", ""))
+            if self.models_status != 200:
+                return httpx.Response(self.models_status)
+            return httpx.Response(200, json={"models": self.models})
         if url != TOKEN_ENDPOINT:
             return httpx.Response(404)
         form = _form(request)
@@ -350,3 +359,38 @@ async def test_a_terminal_refresh_error_requires_a_new_sign_in(
         await service.access_token(user_id=_USER.user_id)
     assert again.value.code == "MODEL_ACCOUNT_SIGN_IN_REQUIRED"
     assert len(openai.refreshes) == 1
+
+
+async def test_an_accounts_models_are_its_listed_ones_in_openai_order(openai: _OpenAI) -> None:
+    """The model choices come from OpenAI as the account, picker entries only.
+
+    OpenAI answers every model the plan knows; ``visibility: "list"`` marks the
+    ones meant for a picker, in the order to offer them. ``default`` names the
+    caller's default account, and another user's account is not the caller's.
+    """
+    service = ModelAccountService()
+    account = await _link(service, openai)
+    openai.models = [
+        {"slug": "gpt-6.1-sol", "display_name": "GPT-6.1 Sol", "visibility": "list"},
+        {"slug": "codex-review", "display_name": "Review", "visibility": "hide"},
+        {"slug": "gpt-5.6-luna", "display_name": "GPT-5.6 Luna", "visibility": "list"},
+    ]
+    listed = [
+        {"id": "gpt-6.1-sol", "display_name": "GPT-6.1 Sol"},
+        {"id": "gpt-5.6-luna", "display_name": "GPT-5.6 Luna"},
+    ]
+
+    assert await service.list_models(_USER, "default") == listed
+    assert await service.list_models(_USER, account["account_id"]) == listed
+    assert openai.model_requests == ["Bearer at-signed-in", "Bearer at-signed-in"]
+
+    with pytest.raises(APIError) as not_theirs:
+        await service.list_models(UserContext(user_id="someone-else"), account["account_id"])
+    assert not_theirs.value.code == "MODEL_ACCOUNT_NOT_FOUND"
+
+    openai.models_status = 401
+    with pytest.raises(APIError) as refused:
+        await service.list_models(_USER, "default")
+    assert (refused.value.code, refused.value.retryable) == (
+        "MODEL_ACCOUNT_MODELS_UNAVAILABLE", False,
+    )

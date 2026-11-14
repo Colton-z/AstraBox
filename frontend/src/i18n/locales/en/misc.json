@@ -178,7 +178,10 @@
     "sandbox_unavailable": "Sandbox unavailable",
     "sandbox_terminated": "Sandbox terminated",
     "sandbox_did_not_receive": "The sandbox didn't receive this message",
-    "workspace_hibernated": "The sandbox timed out, so this workspace was paused. It will be restored the next time you open it."
+    "workspace_hibernated": "The sandbox timed out, so this workspace was paused. It will be restored the next time you open it.",
+    "model_account_required": "You have no default ChatGPT account. Link one by running `astrabox model-account login chatgpt` on your own computer, or choose a default under Console → Model accounts.",
+    "model_account_no_owner": "This conversation has no owner whose ChatGPT account it could spend. A ChatGPT plan runtime profile runs only conversations a signed-in user starts.",
+    "model_account_sign_in_required": "ChatGPT account {{account}} needs a new sign-in ({{reason}}). Run `astrabox model-account login chatgpt --account {{account_id}}` on your own computer; Console → Model accounts shows the full command."
   },
   "prompt_input": {
     "stopping": "Stopping",
@@ -271,7 +274,8 @@
       "model": {
         "label": "Model",
         "manage_gateway": "Manage models in {{name}}",
-        "help": "Enter the model ID exposed by the model-service connection for the selected runtime runtime profile"
+        "help": "Enter the model ID exposed by the model-service connection for the selected runtime runtime profile",
+        "help_chatgpt_plan": "Using ChatGPT plan: the models the chosen ChatGPT account can use. Conversations spend that account's plan, not the model gateway."
       },
       "system": {
         "label": "System prompt",
@@ -318,7 +322,10 @@
       },
       "model_account_id": {
         "label": "ChatGPT account",
-        "help": "On a ChatGPT plan runtime profile: the ID of one of your linked ChatGPT accounts that your conversations with this Agent use. Empty uses your default account. Other people's conversations use their own default account."
+        "help": "Which of your linked ChatGPT accounts your conversations with this Agent spend. Other people's conversations spend their own default account.",
+        "default": "My default account",
+        "default_named": "My default account ({{account}})",
+        "needs_sign_in": "{{account}} — sign in again"
       },
       "exposure_mode": {
         "label": "Available through",

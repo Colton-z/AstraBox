@@ -5268,6 +5268,17 @@
             "title": "Enabled",
             "type": "boolean"
           },
+          "endpoint_provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endpoint Provider"
+          },
           "engine_kind": {
             "title": "Engine Kind",
             "type": "string"
@@ -8503,6 +8514,32 @@
           "data"
         ],
         "title": "ApiEnvelope[list[EnvironmentView]]",
+        "type": "object"
+      },
+      "ApiEnvelope_list_ModelAccountModel__": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/ModelAccountModel"
+            },
+            "title": "Data",
+            "type": "array"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[list[ModelAccountModel]]",
         "type": "object"
       },
       "ApiEnvelope_list_ModelAccount__": {
@@ -17690,6 +17727,26 @@
           "expires_at"
         ],
         "title": "ModelAccountAuthorization",
+        "type": "object"
+      },
+      "ModelAccountModel": {
+        "additionalProperties": true,
+        "description": "One model an account can use.",
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "display_name"
+        ],
+        "title": "ModelAccountModel",
         "type": "object"
       },
       "MoveSessionFilesRequest": {
@@ -38725,6 +38782,67 @@
         "x-required-api-scope": "astrabox:write"
       }
     },
+    "/api/v1/me/model-accounts/{account_id}/models": {
+      "get": {
+        "operationId": "list_model_account_models_api_v1_me_model_accounts__account_id__models_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "title": "Account Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_list_ModelAccountModel__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "List Model Account Models",
+        "tags": [
+          "Model Accounts"
+        ],
+        "x-required-api-scope": "astrabox:read"
+      }
+    },
     "/api/v1/me/schedules": {
       "get": {
         "operationId": "list_personal_schedules_api_v1_me_schedules_get",
@@ -40236,6 +40354,24 @@
             "description": "Opaque next_cursor from the preceding page.",
             "in": "query",
             "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Keep the sessions of these Agents (comma-separated ids); used only with page=1.",
+            "in": "query",
+            "name": "agent_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Keep the sessions whose runtime last reported one of these statuses (comma-separated: idle, working, waiting, background); used only with page=1.",
+            "in": "query",
+            "name": "runtime_status",
             "required": false,
             "schema": {
               "type": "string"
