@@ -16,7 +16,9 @@
  * same conversation, which the Ticket's page opens in the console. The box is
  * then deleted behind the platform's back; the Assistant comes back on a new box
  * by itself, and its panel shows the same Ticket, still opening that
- * conversation.
+ * conversation. A last follow-up asks for other work, which the Agent hands
+ * back: superagent sends the message to a fresh assessment with the Agent's
+ * reason, and the Ticket keeps waiting for review.
  *
  * Needs (ASTRABOX_E2E_EXTERNAL_ACCOUNTS=1):
  * - ASTRABOX_E2E_SUPERAGENT_RUNTIME_PROFILE: an enabled RuntimeProfile on the
@@ -37,7 +39,7 @@ import fs from 'node:fs';
 import { expect, test, type APIRequestContext, type Frame, type Page } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
-import { sessionInputRows } from '../fixtures/dbOracle';
+import { postgresRows, sessionInputRows, sqlLiteral } from '../fixtures/dbOracle';
 import { apiPath } from '../fixtures/env';
 import { onPassOnly } from '../fixtures/sessionCleanup';
 import { a2aConversations, loseTheBoxAndRecover, openOnPanel, panelApi, panelFrame, type Ticket } from '../fixtures/superagentPanel';
@@ -291,4 +293,26 @@ test('a dsh-superagent Assistant has an owner\'s Agent work a GitHub mention, an
   expect(kept.find((entry) => entry.id === ticket.id)?.title).toEqual(ticket.title);
   await showsTicket(reopened, ticket.title);
   await opensConversation(again, reopened, ticket.title, conversation.session_id);
+
+  // A follow-up that asks for other work: the Agent hands it back. Its task ends rejected with the hand-back in the
+  // task outcome extension, and superagent hands the message back as a worker does (upstream's Engine.handback): the
+  // message goes to a fresh assessment carrying the Agent's reason, and the Ticket keeps its work.
+  const elsewhere = `handback-${marker}`;
+  await github('POST', `/repos/${repository}/issues/${issueNumber}/comments`, {
+    body: `@${agentLogin} ${elsewhere}: a separate request, translate README.md into French. It is not part of this pull `
+      + 'request and is another agent\'s work: hand it back for routing instead of doing it.' });
+  await expect.poll(async () => {
+    const detail = await panelApi<{ inputs: Array<{ trigger?: { preview: string; handback?: { reason: string } } }> }>(
+      await panelFrame(again), 'GET', `tickets/${ticket.id}`);
+    return detail.inputs.find((input) => input.trigger?.preview.includes(elsewhere))?.trigger?.handback?.reason ?? '';
+  }, { message: 'superagent hands the follow-up back with the Agent\'s reason', timeout: 15 * 60_000, intervals: [10_000] })
+    .not.toEqual('');
+  const outcomes = postgresRows<{ data: { state: string; handback?: boolean; message: string } }>(
+    `SELECT data FROM tool_cards WHERE session_id = ${sqlLiteral(conversation.session_id)} AND kind = 'a2a_task_outcome' `
+      + 'ORDER BY created_at').map((row) => row.data);
+  expect(outcomes.at(-1), 'the Agent reports the follow-up rejected and handed back')
+    .toMatchObject({ state: 'TASK_STATE_REJECTED', handback: true });
+  const still = (await panelApi<{ items: Ticket[] }>(await panelFrame(again), 'GET', 'tickets')).items
+    .find((entry) => entry.id === ticket.id);
+  expect([still?.stage, still?.action], 'the Ticket keeps waiting for review of its pull request').toEqual(['person', 'review']);
 });
