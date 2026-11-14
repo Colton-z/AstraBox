@@ -1556,7 +1556,10 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         Kubernetes runtime has no such hooks: a Pod has one network, and a
         host path or claim there is a cluster decision AstraBox has not
         verified. An existing OpenSandbox service applies only its own
-        configuration.
+        configuration. On the bundled server, host networks also need a Docker
+        Engine that can join a network below the box's own gateway
+        (``network_attachment_refusal``); the server asks the daemon again at
+        each create.
         """
         if not self._bundled_docker():
             if payload.get("sandbox_networks"):
@@ -1579,6 +1582,19 @@ class OpenSandboxSandboxProvider(SandboxProvider):
                         "(ASTRABOX_SANDBOX_SERVER_RUNTIME=docker, no "
                         "ASTRABOX_SANDBOX_OPENAPI_BASE_URL)"
                     ),
+                    status_code=409,
+                )
+        elif payload.get("sandbox_networks"):
+            from astrabox.deploy.sandbox_server import (
+                docker_engine_version,
+                network_attachment_refusal,
+            )
+
+            refusal = network_attachment_refusal(docker_engine_version())
+            if refusal:
+                raise APIError(
+                    code="SANDBOX_NETWORK_NOT_ALLOWED",
+                    message=f"environment payload: sandbox_networks: {refusal}",
                     status_code=409,
                 )
         engine = str(

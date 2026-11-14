@@ -271,7 +271,10 @@ Prepare what you list before a sandbox uses it:
   or delete one.
 
 Only the bundled OpenSandbox server on the Docker runtime applies these
-settings. With `ASTRABOX_SANDBOX_SERVER_RUNTIME=kubernetes` or an existing
+settings, and host networks also need Docker Engine 28.0 (API 1.48) or later:
+older engines give a joined network the sandbox's default route and published
+ports when its name sorts before `bridge`, so on them a RuntimeProfile with
+host networks is refused when it is saved and when a sandbox is created. With `ASTRABOX_SANDBOX_SERVER_RUNTIME=kubernetes` or an existing
 OpenSandbox service, the server warns at startup that they have no effect, and
 RuntimeProfiles that use them are refused.
 

@@ -610,6 +610,122 @@ def test_a_box_resolves_single_label_names_of_a_joined_networks_services() -> No
     assert lines == ["192.168.16.2\tfoundry-postgres-1 postgres", "192.168.16.3\tkafka"]
 
 
+#: ``/proc/net/route`` of a sidecar whose default route leaves through the
+#: bridge (172.17.0.1), and after a joined network took it (192.168.16.1).
+_BRIDGE_ROUTE = (
+    "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n"
+    "eth0\t00000000\t010011AC\t0003\t0\t0\t0\t00000000\t0\t0\t0\n"
+)
+_JOINED_ROUTE = _BRIDGE_ROUTE.replace("eth0\t00000000\t010011AC", "eth1\t00000000\t0110A8C0")
+
+
+def _joining(api_version: str, routes: list[str]) -> tuple[Any, SimpleNamespace]:
+    """A hooked create against fakes of the Docker objects ``_join`` touches."""
+    constants = _upstream("opensandbox_server.services.constants")
+    networking = _upstream("opensandbox_server.services.docker.networking")
+    from docker.api import client as docker_api_client
+
+    seen = SimpleNamespace(posts=[], disconnected=[], created=[])
+    sidecar = SimpleNamespace(
+        id="sidecar-1",
+        attrs={
+            "Config": {
+                "Env": [
+                    f"{constants.EGRESS_RULES_ENV}="
+                    + json.dumps({"defaultAction": "deny", "egress": [{"action": "deny", "target": "169.254.0.0/16"}]})
+                ]
+            },
+            "NetworkSettings": {"Ports": {"18080/tcp": [{"HostIp": "172.17.0.1", "HostPort": "20005"}]}},
+        },
+        reload=lambda: None,
+        exec_run=lambda command, user: SimpleNamespace(
+            exit_code=0,
+            output=(routes.pop(0) if command == ["cat", "/proc/net/route"] else "nameserver 10.0.0.2\n").encode(),
+        ),
+    )
+    network = SimpleNamespace(
+        id="net-1",
+        name="aaa-foundry",
+        attrs={"EnableIPv6": False, "IPAM": {"Config": [{"Subnet": "192.168.16.0/20"}]}, "Containers": {}},
+        reload=lambda: None,
+        disconnect=lambda container, force: seen.disconnected.append(container.id),
+    )
+    client = SimpleNamespace(
+        version=lambda: {"ApiVersion": api_version, "Version": "test"},
+        containers=SimpleNamespace(get=lambda _id: sidecar),
+        networks=SimpleNamespace(get=lambda _name: network),
+        api=SimpleNamespace(
+            base_url="http+docker://localhost",
+            _post_json=lambda url, data: seen.posts.append((url, data)),
+            _raise_for_status=lambda _response: None,
+        ),
+    )
+
+    class _Ops:
+        def _create_and_start_container(self: Any, *args: Any) -> None:
+            seen.created.append(args)
+
+    ops = ModuleType("container_ops")
+    ops.DockerContainerOpsMixin = _Ops  # type: ignore[attr-defined]
+    launcher.attach_allowlisted_networks(
+        ops, networking, constants, docker_api_client, ("aaa-foundry",)
+    )
+    service = SimpleNamespace(
+        docker_client=client,
+        _resolve_proxy_host=lambda: "172.17.0.1",
+        _wait_for_egress_sidecar_ready=lambda *_args, **_kwargs: None,
+    )
+
+    def create() -> None:
+        _Ops._create_and_start_container(
+            service,
+            "sbx",
+            "image",
+            [],
+            {**launcher.network_metadata(["aaa-foundry"]), constants.SANDBOX_EGRESS_AUTH_TOKEN_METADATA_KEY: "t"},
+            [],
+            {"network_mode": "container:sidecar-1"},
+            None,
+            None,
+        )
+
+    return create, seen
+
+
+def test_a_joined_network_is_kept_off_the_gateway_or_the_create_fails() -> None:
+    """A network whose name sorts before ``bridge`` took the default route and the
+    published ports when joined at Docker's default priority.
+    """
+    from fastapi import HTTPException
+
+    create, seen = _joining("1.52", [_BRIDGE_ROUTE, _JOINED_ROUTE])
+    with pytest.raises(HTTPException) as moved:
+        create()
+    assert seen.posts == [
+        (
+            "http+docker://localhost/v1.48/networks/net-1/connect",
+            {"Container": "sidecar-1", "EndpointConfig": {"GwPriority": -(2**63)}},
+        )
+    ]
+    assert "moved the sandbox's default route from ('eth0', '172.17.0.1') to " in (
+        moved.value.detail["message"]
+    )
+    assert "('eth1', '192.168.16.1')" in moved.value.detail["message"]
+    assert seen.disconnected == ["sidecar-1"]
+    assert seen.created == []
+
+
+def test_a_docker_engine_without_gateway_priority_cannot_join_a_network() -> None:
+    from fastapi import HTTPException
+
+    create, seen = _joining("1.47", [_BRIDGE_ROUTE, _BRIDGE_ROUTE])
+    with pytest.raises(HTTPException) as refused:
+        create()
+    assert refused.value.status_code == 400
+    assert "Docker Engine 28.0 (API 1.48)" in refused.value.detail["message"]
+    assert seen.posts == [] and seen.created == []
+
+
 def test_a_joined_box_keeps_dns_in_its_sidecar_and_refuses_the_network_inbound() -> None:
     import ipaddress
 

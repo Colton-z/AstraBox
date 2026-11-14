@@ -742,7 +742,7 @@
       },
       "sandbox_networks": {
         "label": "Host networks",
-        "help": "Docker networks of the sandbox host that each sandbox joins, so the Agent reaches services there by their container names. Only networks the deployment allows (ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS) can be named. A joined network is reachable on every port, in both network access modes; connections from it into the sandbox are refused. Available only with the bundled OpenSandbox server on Docker. Enable it only for teams you trust with every service on that network."
+        "help": "Docker networks of the sandbox host that each sandbox joins, so the Agent reaches services there by their container names. Only networks the deployment allows (ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS) can be named. A joined network is reachable on every port, in both network access modes; connections from it into the sandbox are refused. Available only with the bundled OpenSandbox server on Docker Engine 28.0 or later. Enable it only for teams you trust with every service on that network."
       },
       "sandbox_mounts": {
         "label": "Host storage",

@@ -44,8 +44,7 @@ import re
 import sys
 import tempfile
 import threading
-import urllib.error
-import urllib.request
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -2144,13 +2143,82 @@ DOCKER_EMBEDDED_DNS = "127.0.0.11"
 #: never written, so a container on the network cannot take over a name a
 #: protected credential is bound to.
 _HOST_NAME_LABEL = re.compile(r"[A-Za-z0-9]([A-Za-z0-9_-]{0,61}[A-Za-z0-9])?")
-#: The egress API's policy endpoint, inside the sidecar (OpenSandbox egress
-#: ``PATCH /policy``: merges rules by target and keeps ``defaultAction``).
-_EGRESS_POLICY_PATH = "/policy"
+#: The egress API's port inside the sidecar, published like execd's.
 _EGRESS_API_PORT = "18080"
+#: How long a joined sidecar's published egress API has to answer before the
+#: join is judged to have moved its published ports.
+_JOINED_PORT_CHECK_SECONDS = 5.0
+#: The Docker Engine release, and its Engine API version, that added an
+#: endpoint's ``GwPriority`` (Engine API version history, v1.48; Docker 28.0
+#: release notes). Joining a box to a host network needs it
+#: (:func:`connect_below_the_gateway`).
+NETWORK_ATTACHMENT_MIN_DOCKER_ENGINE: Final = "28.0"
+NETWORK_ATTACHMENT_MIN_DOCKER_API_VERSION: Final = "1.48"
+#: The ``GwPriority`` a joined network's endpoint gets: the lowest an int64
+#: takes, below the box's own network's 0.
+JOINED_NETWORK_GW_PRIORITY: Final = -(2**63)
 EGRESS_AUTH_HEADER_ATTR = "OPEN_SANDBOX_EGRESS_AUTH_HEADER"
 EGRESS_AUTH_TOKEN_LABEL_ATTR = "SANDBOX_EGRESS_AUTH_TOKEN_METADATA_KEY"
 EGRESS_RULES_ENV_ATTR = "EGRESS_RULES_ENV"
+
+
+def network_attachment_refusal(reported: dict[str, Any]) -> str | None:
+    """Why the Docker daemon that reported ``reported`` (``GET /version``) cannot
+    join a box to a host network, or None when it can.
+    """
+    from docker.utils import version_lt
+
+    api_version = str(reported.get("ApiVersion") or "").strip()
+    if api_version and not version_lt(api_version, NETWORK_ATTACHMENT_MIN_DOCKER_API_VERSION):
+        return None
+    engine = str(reported.get("Version") or "unknown").strip()
+    return (
+        f"joining a sandbox to host networks needs Docker Engine "
+        f"{NETWORK_ATTACHMENT_MIN_DOCKER_ENGINE} (API {NETWORK_ATTACHMENT_MIN_DOCKER_API_VERSION}) "
+        "or later, which can join a network without letting it take over the "
+        "sandbox's default gateway and published ports; this daemon is Docker "
+        f"Engine {engine} (API {api_version or 'unknown'})"
+    )
+
+
+def connect_below_the_gateway(api: Any, network_id: str, container_id: str) -> None:
+    """Join ``container_id`` to a network that must not become its gateway.
+
+    Docker gives a container's default route, and the target of its published
+    ports, to the endpoint with the highest ``GwPriority`` and breaks a tie by
+    network name, the first in sort order winning (Engine API v1.48,
+    ``EndpointSettings.GwPriority``). A sidecar's own ``bridge`` endpoint has
+    priority 0, so a joined network whose name sorts before ``bridge`` took
+    both: the sidecar's published execd, file and egress-API ports stopped
+    answering, and every connection left through the joined network's gateway.
+    The joined endpoint gets :data:`JOINED_NETWORK_GW_PRIORITY`.
+
+    docker-py 7.2's ``connect_container_to_network`` has no parameter for the
+    field, so this sends the request it would send with the field added, at
+    the API version that defines it.
+    """
+    url = (
+        f"{api.base_url}/v{NETWORK_ATTACHMENT_MIN_DOCKER_API_VERSION}/networks/"
+        f"{urllib.parse.quote(network_id, safe='')}/connect"
+    )
+    api._raise_for_status(
+        api._post_json(
+            url,
+            data={
+                "Container": container_id,
+                "EndpointConfig": {"GwPriority": JOINED_NETWORK_GW_PRIORITY},
+            },
+        )
+    )
+
+
+def default_route(route_table: str) -> tuple[str, str] | None:
+    """The interface and gateway of the default route in ``/proc/net/route``."""
+    for line in route_table.splitlines()[1:]:
+        fields = line.split()
+        if len(fields) >= 3 and fields[1] == "00000000":
+            return fields[0], str(ipaddress.IPv4Address(bytes.fromhex(fields[2])[::-1]))
+    return None
 
 
 def network_isolation_rules(subnets: Iterable[Any]) -> str:
@@ -2228,6 +2296,7 @@ def attach_allowlisted_networks(
     container_ops_module: ModuleType,
     networking_module: ModuleType,
     constants_module: ModuleType,
+    docker_api_client_module: ModuleType,
     allowed: tuple[str, ...],
 ) -> None:
     """Join a box to the host networks its create names, under its egress sidecar.
@@ -2241,10 +2310,16 @@ def attach_allowlisted_networks(
     before ``_create_and_start_container`` creates the box, and keeps the
     sidecar in charge of what leaves it:
 
-    * The network must be in ``allowed`` (``ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS``),
-      exist, be IPv4-only, and lie outside every network the sidecar's policy
-      denies; otherwise the create is refused. A denied subnet could never be
-      reached, and the sidecar disables IPv6 in its namespace.
+    * The daemon must be Docker Engine 28.0 (API 1.48) or later, and the network
+      in ``allowed`` (``ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS``), existing,
+      IPv4-only, and outside every network the sidecar's policy denies;
+      otherwise the create is refused. A denied subnet could never be reached,
+      and the sidecar disables IPv6 in its namespace.
+    * The sidecar joins below its own network's gateway priority
+      (:func:`connect_below_the_gateway`). Its default route must be the one it
+      had, and its published egress API must still answer through the path
+      the lifecycle server's readiness wait uses; otherwise the joined networks
+      are disconnected and the create fails.
     * Connecting a user-defined network makes Docker point ``resolv.conf`` at
       its embedded DNS server, whose NAT rule precedes the sidecar's DNS
       redirect: every name would bypass the egress DNS proxy, so a Limited
@@ -2258,7 +2333,10 @@ def attach_allowlisted_networks(
       created after it moved.
     * The sidecar's policy is patched to allow each joined subnet, which a
       Limited policy otherwise drops: joining a network is the RuntimeProfile's
-      grant to reach it. The policy's deny rules still apply.
+      grant to reach it. The policy's deny rules still apply. The patch goes
+      through the OpenSandbox SDK's egress client to the published egress API,
+      where the lifecycle server's readiness wait also reaches it; that inbound
+      request needs no allow rule, since the policy filters only what leaves.
     * New connections from the joined subnets into the box are refused.
 
     The box shares the sidecar's ``resolv.conf`` and ``/etc/hosts``. Removing
@@ -2285,6 +2363,19 @@ def attach_allowlisted_networks(
         ),
         "join sandboxes to host networks",
     )
+    _require_attributes(
+        docker_api_client_module,
+        (DOCKER_API_CLIENT_ATTR,),
+        "join sandboxes to host networks",
+    )
+    api_client = getattr(docker_api_client_module, DOCKER_API_CLIENT_ATTR)
+    missing = [name for name in ("_post_json", "_raise_for_status") if not hasattr(api_client, name)]
+    if missing:
+        raise SandboxServerConfigError(
+            f"the installed docker SDK's {api_client.__name__} no longer has {missing}, so "
+            "AstraBox cannot join sandboxes to host networks below their gateway. Pin "
+            "docker in pyproject.toml, or update astrabox/deploy/sandbox_server.py."
+        )
     ops_mixin = getattr(container_ops_module, CONTAINER_OPS_MIXIN_ATTR)
     if not hasattr(ops_mixin, CREATE_AND_START_ATTR):
         raise SandboxServerConfigError(
@@ -2341,7 +2432,18 @@ def attach_allowlisted_networks(
             )
         return output
 
-    def _join(service: Any, sandbox_id: str, names: list[str], sidecar_id: str, labels: dict[str, str]) -> None:
+    def _disconnect(sidecar: Any, networks: list[Any]) -> None:
+        for network in networks:
+            try:
+                network.disconnect(sidecar, force=True)
+            except Exception as exc:
+                logger.warning(
+                    "cannot disconnect sidecar %s from %s: %s", sidecar.id, network.name, exc
+                )
+
+    def _join(
+        service: Any, sandbox_id: str, names: list[str], sidecar_id: str, labels: dict[str, str]
+    ) -> None:
         refused = [name for name in names if name not in allowed]
         if refused:
             raise _refused(
@@ -2349,11 +2451,13 @@ def attach_allowlisted_networks(
                 f"{', '.join(refused)}"
             )
         client = service.docker_client
+        version_refusal = network_attachment_refusal(client.version())
+        if version_refusal:
+            raise _refused(f"sandbox {sandbox_id}: {version_refusal}")
         sidecar = client.containers.get(sidecar_id)
         denied = _denied_networks(sidecar)
-        resolv_conf = _run(sidecar, ["cat", "/etc/resolv.conf"])
+        networks: list[Any] = []
         subnets: list[Any] = []
-        hosts: list[str] = []
         for name in names:
             try:
                 network = client.networks.get(name)
@@ -2382,15 +2486,46 @@ def attach_allowlisted_networks(
                     f"({', '.join(map(str, joined))}) is inside networks every sandbox's "
                     f"egress denies ({', '.join(covered)}), so it could never be reached"
                 )
-            network.connect(sidecar)
+            networks.append(network)
+            subnets.extend(joined)
+        resolv_conf = _run(sidecar, ["cat", "/etc/resolv.conf"])
+        route_before = default_route(_run(sidecar, ["cat", "/proc/net/route"]))
+        connected: list[Any] = []
+        try:
+            for network in networks:
+                connect_below_the_gateway(client.api, network.id, sidecar.id)
+                connected.append(network)
+            route_after = default_route(_run(sidecar, ["cat", "/proc/net/route"]))
+            if route_after != route_before:
+                raise _failed(
+                    f"sandbox {sandbox_id}: joining {', '.join(names)} moved the sandbox's "
+                    f"default route from {route_before} to {route_after}, and with it its "
+                    "published ports; the networks were disconnected"
+                )
+            port = _published_host_ports(sidecar, [_EGRESS_API_PORT])[_EGRESS_API_PORT]
+            token = labels.get(token_label, "")
+            try:
+                service._wait_for_egress_sidecar_ready(
+                    sandbox_id, port, token, timeout_seconds=_JOINED_PORT_CHECK_SECONDS
+                )
+            except Exception as exc:
+                raise _failed(
+                    f"sandbox {sandbox_id}: after joining {', '.join(names)} the sandbox's "
+                    f"published egress API no longer answers ({exc}); the networks were "
+                    "disconnected"
+                ) from exc
+        except BaseException:
+            _disconnect(sidecar, connected)
+            raise
+        hosts: list[str] = []
+        for network in networks:
             network.reload()
             members = [
                 client.api.inspect_container(container_id)
                 for container_id in (network.attrs.get("Containers") or {})
                 if container_id != sidecar.id
             ]
-            hosts.extend(network_host_entries(name, members, sidecar_label=sidecar_label))
-            subnets.extend(joined)
+            hosts.extend(network_host_entries(network.name, members, sidecar_label=sidecar_label))
         _run(
             sidecar,
             [
@@ -2404,35 +2539,46 @@ def attach_allowlisted_networks(
                 network_isolation_rules(subnets),
             ],
         )
-        host = service._resolve_proxy_host()
-        port = _published_host_ports(sidecar, [_EGRESS_API_PORT])[_EGRESS_API_PORT]
-        request = urllib.request.Request(
-            f"http://{host}:{port}{_EGRESS_POLICY_PATH}",
-            data=json.dumps(
-                [{"action": "allow", "target": str(subnet)} for subnet in subnets]
-            ).encode("utf-8"),
-            headers={auth_header: labels.get(token_label, ""), "Content-Type": "application/json"},
-            method="PATCH",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=10) as response:  # nosec B310 - the sidecar's published port
-                status = response.status
-        except urllib.error.HTTPError as exc:
-            status = exc.code
-        except OSError as exc:
-            raise _failed(f"sandbox {sandbox_id}: egress policy update failed: {exc}") from exc
-        if not 200 <= status < 300:
-            raise _failed(
-                f"sandbox {sandbox_id}: egress sidecar answered {status} to allowing "
-                f"{', '.join(map(str, subnets))}"
-            )
+        _allow_subnets(service, sandbox_id, port, token, subnets)
         logger.info(
-            "sandbox %s joined %s (%s); %d name(s) of those networks resolve in it",
+            "sandbox %s joined %s (%s) below its gateway; %d name(s) of those networks "
+            "resolve in it",
             sandbox_id,
             ", ".join(names),
             ", ".join(map(str, subnets)),
             len(hosts),
         )
+
+    def _allow_subnets(
+        service: Any, sandbox_id: str, port: int, token: str, subnets: list[Any]
+    ) -> None:
+        import httpx
+        from opensandbox.api.egress.api.policy import patch_policy
+        from opensandbox.api.egress.client import Client
+        from opensandbox.api.egress.models.network_rule import NetworkRule
+        from opensandbox.api.egress.models.network_rule_action import NetworkRuleAction
+
+        egress_api = Client(
+            base_url=f"http://{service._resolve_proxy_host()}:{port}",
+            headers={auth_header: token},
+            timeout=httpx.Timeout(10.0),
+        )
+        try:
+            with egress_api as connection:
+                response = patch_policy.sync_detailed(
+                    client=connection,
+                    body=[
+                        NetworkRule(action=NetworkRuleAction.ALLOW, target=str(subnet))
+                        for subnet in subnets
+                    ],
+                )
+        except httpx.HTTPError as exc:
+            raise _failed(f"sandbox {sandbox_id}: egress policy update failed: {exc}") from exc
+        if not 200 <= int(response.status_code) < 300:
+            raise _failed(
+                f"sandbox {sandbox_id}: egress sidecar answered {int(response.status_code)} "
+                f"to allowing {', '.join(map(str, subnets))}"
+            )
 
     def _astrabox_create_and_start_container(
         self: Any,
@@ -3627,7 +3773,11 @@ def prepare() -> dict[str, Any]:
         grant_container_engine_boxes(container_ops_module, docker_api_client_module)
         mountable_volumes()
         attach_allowlisted_networks(
-            container_ops_module, networking_module, constants_module, attachable_networks()
+            container_ops_module,
+            networking_module,
+            constants_module,
+            docker_api_client_module,
+            attachable_networks(),
         )
         redirect_proxy_host(networking_module, host_ip)
         redirect_public_endpoint_host(networking_module, host_ip)

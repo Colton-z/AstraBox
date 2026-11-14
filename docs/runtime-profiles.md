@@ -266,6 +266,10 @@ Requirements, checked when the RuntimeProfile is saved:
   Docker. The Kubernetes runtime, where a Pod has one network and host paths
   and volume claims are a cluster decision, and a separately operated
   OpenSandbox service are refused.
+- Host networks need Docker Engine 28.0 (API 1.48) or later, which can join a
+  network without giving it the sandbox's default route and published ports.
+  Docker 26 and 27, which AstraBox otherwise supports, are refused for this
+  field; host storage works on them.
 
 When a sandbox is created, a network that is missing, has IPv6 enabled, or
 lies inside the deployment's denied networks, and a host directory or volume

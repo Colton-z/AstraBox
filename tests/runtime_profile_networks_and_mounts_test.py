@@ -129,6 +129,8 @@ async def test_saving_checks_the_allowlists_and_keeps_what_was_granted(
     monkeypatch.setenv("ASTRABOX_SANDBOX_SERVER_RUNTIME", "docker")
     monkeypatch.setenv("ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS", "foundry-shared")
     monkeypatch.setenv("ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS", "/srv/git-objects")
+    daemon = {"ApiVersion": "1.52", "Version": "29.1.3"}
+    monkeypatch.setattr("astrabox.deploy.sandbox_server.docker_engine_version", lambda: daemon)
     svc = AgentConfigService(
         agent_repo=object(),  # type: ignore[arg-type]  # unused on the RuntimeProfile path
         runtime_profile_repo=RuntimeProfileRepository(),
@@ -158,3 +160,11 @@ async def test_saving_checks_the_allowlists_and_keeps_what_was_granted(
         with pytest.raises(APIError) as refused:
             await svc.upsert_runtime_profile_config(admin, "foundry", {**profile, **change})
         assert refused.value.code == code
+
+    # Docker 26 and 27 cannot keep a joined network off the sandbox's gateway.
+    daemon.update(ApiVersion="1.47", Version="27.5.1")
+    with pytest.raises(APIError) as too_old:
+        await svc.upsert_runtime_profile_config(admin, "foundry", profile)
+    assert too_old.value.code == "SANDBOX_NETWORK_NOT_ALLOWED"
+    assert "Docker Engine 28.0 (API 1.48)" in too_old.value.message
+    await svc.upsert_runtime_profile_config(admin, "foundry", {**profile, "sandbox_networks": []})

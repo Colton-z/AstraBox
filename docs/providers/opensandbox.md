@@ -323,10 +323,21 @@ policy with a user-defined network because the egress sidecar runs on the
 default bridge. A sandbox shares its sidecar's network namespace, so the
 create carries one metadata entry per network (`astrabox.network.<n>`) and a
 hook of the bundled server (`attach_allowlisted_networks`) connects the
-sidecar to each before the sandbox is created. Connecting a user-defined
-network points the namespace's `resolv.conf` at Docker's embedded DNS server,
-whose NAT rule precedes the sidecar's DNS redirect, so names would no longer
-pass the egress proxy. The hook therefore:
+sidecar to each before the sandbox is created.
+
+Docker gives a container's default route, and the target of its published
+ports, to the endpoint with the highest `GwPriority`, and breaks a tie by
+network name, the first in sort order winning (Engine API v1.48). At the
+default priority a joined network named before `bridge` takes both, so the
+sidecar's published execd, file and egress-API ports stop answering and every
+connection leaves through the joined network's gateway. The hook joins with the
+lowest priority, which needs Docker Engine 28.0 (API 1.48), compares the
+sidecar's default route before and after, and checks that its published egress
+API still answers; otherwise it disconnects the networks and fails the create.
+
+Connecting a user-defined network also points the namespace's `resolv.conf` at
+Docker's embedded DNS server, whose NAT rule precedes the sidecar's DNS
+redirect, so names would no longer pass the egress proxy. The hook therefore:
 
 - writes back the `resolv.conf` the sidecar had, so names keep resolving
   through the egress proxy and its upstream;
@@ -336,10 +347,12 @@ pass the egress proxy. The hook therefore:
 - writes the network's single-label container names and aliases to
   `/etc/hosts`;
 - adds an allow rule for each joined subnet through the sidecar's
-  `PATCH /policy`.
+  `PATCH /policy`, sent with the OpenSandbox SDK's egress client to the
+  published egress-API port the lifecycle server's readiness wait uses.
 
-A network that is not allowed, missing, IPv6-enabled, or inside a network the
-sidecar's policy denies refuses the create, and the sidecar is removed with
+A daemon older than API 1.48, or a network that is not allowed, missing,
+IPv6-enabled, or inside a network the sidecar's policy denies, refuses the
+create, and the sidecar is removed with
 it. Removing the sidecar disconnects it from the networks.
 
 ## Select a sandbox runtime
