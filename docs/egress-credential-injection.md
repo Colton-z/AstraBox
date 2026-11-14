@@ -58,14 +58,24 @@ For placeholder-based credentials:
    rules.
 
 The real value is never returned by the credentials API or shown in the
-console. Rotated MCP credentials are refreshed before AstraBox hands the Agent
-program its next message; the Agent uses its placeholder. Outbound
-environment-variable and HTTP Basic credentials are resolved when AstraBox
-prepares or reconnects the runtime, not before every message in an already
-running runtime. A reconnect also removes from the sandbox any of these
-credentials archived or deleted since the sandbox received it. A reconnected
-runtime keeps the placeholders its process started with, including one that
-started in prepared capacity.
+console. A rotated, archived or deleted credential takes effect before the
+Agent program's next turn, as described in
+[Add an outbound credential](#add-an-outbound-credential) below; the Agent program keeps the
+placeholder it started with, including one that started in prepared capacity.
+
+The proxy terminates TLS to substitute the value. In a sandbox with protected
+delivery, the sandbox backend sets `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE`
+(OpenSSL-based tools such as `curl`, and Python `requests`) and
+`NODE_EXTRA_CA_CERTS` (Node.js) to bundles that include the proxy's certificate
+authority, so those clients trust it without configuration. A client that pins
+certificates, or reads only its own trust store and ignores these variables,
+fails the TLS handshake to a host whose credential is substituted until it is
+pointed at the bundle `SSL_CERT_FILE` names.
+
+Codex hands the commands it runs the placeholder: its default
+`shell_environment_policy` keeps the variable. An Agent whose Codex `config`
+sets a policy that excludes the variable's name withholds it from those
+commands.
 
 HTTP Basic uses direct header injection instead. Configure the clean target
 URL, username, and write-only password or token in the Vault; the sandbox
