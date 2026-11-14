@@ -733,7 +733,9 @@ def test_a_joined_box_keeps_dns_in_its_sidecar_and_refuses_the_network_inbound()
         [ipaddress.ip_network("192.168.16.0/20"), ipaddress.ip_network("10.30.0.0/24")]
     )
     assert "ip daddr 127.0.0.11 drop" in rules
-    assert "ip saddr { 192.168.16.0/20, 10.30.0.0/24 } ct state new drop" in rules
+    # Loopback is exempt: the sidecar's interception redirect delivers the
+    # box's own port-80/443 connections there with a joined-network source.
+    assert 'iifname != "lo" ip saddr { 192.168.16.0/20, 10.30.0.0/24 } ct state new drop' in rules
     assert launcher.networks_from_labels(
         {**launcher.network_metadata(["foundry", "git"]), "astrabox.network-wiring": "x"}
     ) == ["foundry", "git"]

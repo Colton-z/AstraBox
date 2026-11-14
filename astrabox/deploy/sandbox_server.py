@@ -2230,7 +2230,11 @@ def network_isolation_rules(subnets: Iterable[Any]) -> str:
     the egress policy. ``input`` refuses new connections from the joined
     subnets, so a box is a client of the network and never a server on it: the
     boxes of other conversations joined to the same network cannot reach its
-    in-box services. Both chains run before the egress table's, at priority
+    in-box services. The rule leaves the loopback interface alone: with
+    protected credentials on, the sidecar redirects the box's own connections
+    to ports 80 and 443 to its interception proxy, and such a connection to a
+    joined network arrives on loopback still carrying the box's address on
+    that network. Both chains run before the egress table's, at priority
     -200, and the egress sidecar replaces only its own table on a policy change.
     """
     targets = ", ".join(str(subnet) for subnet in subnets)
@@ -2242,7 +2246,7 @@ def network_isolation_rules(subnets: Iterable[Any]) -> str:
         "  }\n"
         "  chain input {\n"
         "    type filter hook input priority -200; policy accept;\n"
-        f"    ip saddr {{ {targets} }} ct state new drop\n"
+        f'    iifname != "lo" ip saddr {{ {targets} }} ct state new drop\n'
         "  }\n"
         "}\n"
     )
