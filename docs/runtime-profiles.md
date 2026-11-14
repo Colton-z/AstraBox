@@ -42,6 +42,8 @@ The console presents the following settings.
 | Sandbox sharing | No | Gives each conversation its own sandbox or shares one sandbox across the same Agent's conversations. Sharing runs each conversation in an isolated session, and is refused on a sandbox service that cannot. Without sharing, an Agent program that runs as a long-lived process in the sandbox (pi), and an Agent's terminal panel, need a sandbox service that keeps such processes; they are refused on one that does not. |
 | Sandbox permissions | No | Grants the system permissions required by the selected Agent program and sandbox-sharing mode. |
 | Container engine | No | `None` (default) or `Docker`: runs a rootless Docker Engine in each sandbox so the Agent can build images, run containers and use Docker Compose. Requires a sandbox per conversation, `Advanced` sandbox permissions and the bundled OpenSandbox server on Docker. See [Container engine](#container-engine). |
+| Host networks | No | Docker networks of the sandbox host that each sandbox joins (`sandbox_networks`), from those the deployment allows. See [Host networks and storage](#host-networks-and-storage). |
+| Host storage | No | Host directories and named volumes mounted into each sandbox (`sandbox_mounts`), read-only unless stated, from those the deployment allows. See [Host networks and storage](#host-networks-and-storage). |
 | Model connection | No | Selects the model gateway and its connection details for Agents in this RuntimeProfile. |
 | Tracing | No | Sends supported OpenTelemetry data from the Agent program to your collector. |
 
@@ -206,6 +208,78 @@ restrict them through AppArmor by default; set
 `kernel.apparmor_restrict_unprivileged_userns=0` on the host (see
 [Deploy](deploy.md#container-engine-host)). Otherwise the sandbox is refused
 with a message naming that setting.
+
+## Host networks and storage {#host-networks-and-storage}
+
+A RuntimeProfile can give its sandboxes reach beyond the sandbox: services on
+a Docker network of the sandbox host, such as a shared database, message
+broker or object store, and host directories or Docker named volumes, such as
+a shared git object store or package caches that should not be downloaded
+again for every sandbox. The deployment operator lists what may be used
+([Deploy](deploy.md#share-host-networks-and-storage)); a RuntimeProfile can
+name only those, and is checked again each time a sandbox is created from it.
+
+```json
+{
+  "sandbox_networks": ["foundry-shared"],
+  "sandbox_mounts": [
+    {"source": "/srv/foundry/git-objects", "target": "/mnt/git-objects"},
+    {"source": "foundry-npm-cache", "target": "/mnt/npm-cache", "read_only": false}
+  ]
+}
+```
+
+**Host networks.** Each sandbox joins the named networks when it is created,
+cold or prepared, and a replacement sandbox joins them again. The Agent reaches the
+network's containers by their container names and their network aliases that
+have no dots, at the addresses they had when the sandbox was created, or by
+address. The whole network is reachable, every port, in both network access
+modes: joining a network is the RuntimeProfile's grant to reach it, and a
+`Limited` allow list does not narrow it. Everything else still leaves under
+the RuntimeProfile's network access rules, names still resolve through the
+sandbox's egress proxy, and containers on the network cannot open connections
+into the sandbox. With one sandbox per Agent, every conversation of the Agent
+shares the joined networks.
+
+**Host storage.** A `source` that starts with `/` is a host directory; any
+other source is a named volume. Each is mounted at `target` in every sandbox
+of the RuntimeProfile, read-only unless `read_only` is `false`. The storage
+is shared: every sandbox that mounts it sees the same files, and it outlives
+every sandbox. Files are read and written as the sandbox's own user, so the
+operator sets the directory's or volume's ownership. A target cannot be at,
+under or above a directory the platform or the system uses in the sandbox:
+`/workspace`, `/home`, `/tmp`, `/opt/astrabox`, `/opt/conversation-runtime`,
+`/opt/gem`, `/opt/opensandbox`, `/var/lib/astrabox`, `/var/lib/execd` and the
+system directories (`/bin`, `/boot`, `/dev`, `/etc`, `/lib*`, `/proc`,
+`/root`, `/run`, `/sbin`, `/sys`, `/usr`, `/var/run`). Mount under `/mnt` or
+`/srv`, and point tools at the mount, for example with
+`GIT_ALTERNATE_OBJECT_DIRECTORIES` or a package manager's cache setting in the
+sandbox image.
+
+Requirements, checked when the RuntimeProfile is saved:
+
+- Every network, host directory and volume is one the deployment allows
+  (`SANDBOX_NETWORK_NOT_ALLOWED`, `SANDBOX_MOUNT_NOT_ALLOWED`); a host directory
+  is named exactly, not by a parent.
+- Each target is used once and stays clear of the directories above.
+- The sandbox service is the OpenSandbox server bundled with AstraBox, on
+  Docker. The Kubernetes runtime, where a Pod has one network and host paths
+  and volume claims are a cluster decision, and a separately operated
+  OpenSandbox service are refused.
+
+When a sandbox is created, a network that is missing, has IPv6 enabled, or
+lies inside the deployment's denied networks, and a host directory or volume
+that does not exist, refuse the sandbox with the reason.
+
+Use these only for teams you trust with what they reach:
+
+- A joined network bypasses the RuntimeProfile's `Limited` allow list for that
+  network's addresses. The Agent can connect to every service on the network
+  with whatever access those services grant an unauthenticated or credentialed
+  client.
+- A read-write mount is write access to that host directory or volume: the
+  Agent can change or delete everything in it, for every sandbox and process
+  that uses it. A read-only mount still exposes every file in it to the Agent.
 
 ## Create a RuntimeProfile
 

@@ -223,6 +223,71 @@ docker ps -aq --filter label=opensandbox.io/id | xargs -r docker rm -f
 docker ps -aq --filter label=opensandbox.io/egress-sidecar-for | xargs -r docker rm -f
 ```
 
+### Share host networks and storage with sandboxes {#share-host-networks-and-storage}
+
+A RuntimeProfile can join its sandboxes to Docker networks of this host and
+mount host directories or named volumes into them
+([RuntimeProfiles](runtime-profiles.md#host-networks-and-storage)), but only
+what you list in the settings file:
+
+```dotenv
+# Docker networks a sandbox may join (user-defined networks, IPv4 only).
+ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS=foundry-shared
+# Host directories a sandbox may mount, each named exactly.
+ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS=/srv/foundry/git-objects,/srv/foundry/build-cache
+# Docker named volumes a sandbox may mount.
+ASTRABOX_SANDBOX_MOUNTABLE_VOLUMES=foundry-npm-cache
+```
+
+Empty lists allow nothing, which is the default. Restart the server after a
+change. The server refuses to start when an entry cannot be applied: `bridge`,
+`host` or `none` as a network, a network name that is not at most 63 letters,
+digits, `-`, `_` or `.`, a host path that is not absolute and normalized, or a
+volume name with characters other than lowercase letters, digits and `-`.
+RuntimeProfiles are checked against the lists when they are saved and again
+for every sandbox created from them, so removing an entry refuses the next
+sandbox of every RuntimeProfile that names it, with `SANDBOX_NETWORK_NOT_ALLOWED`
+or `SANDBOX_MOUNT_NOT_ALLOWED`.
+
+Prepare what you list before a sandbox uses it:
+
+- Create the network and attach the services to it, for example with
+  `docker network create foundry-shared` or a Compose project's own network
+  (Compose prefixes its name with the project). Give each service a container
+  name or network alias without dots: a sandbox resolves those names, as they
+  were when the sandbox was created. A service that later moves to another
+  address is reached at that address only by sandboxes created afterwards, so
+  give shared services fixed addresses (Compose `ipv4_address`) when sandboxes
+  run for a long time. A network whose subnet lies in
+  `ASTRABOX_SANDBOX_EGRESS_DENY_CIDRS` or `169.254.0.0/16`, or that has IPv6
+  enabled, is refused when a sandbox is created.
+- Create each host directory, with ownership that lets the sandbox's processes
+  read or write it: they run as the image's workload account (uid 1000 in the
+  bundled images) or, with one sandbox per Agent, as one account per
+  conversation. A missing directory is refused when a sandbox is created; it is
+  not created for you.
+- Create each named volume (`docker volume create foundry-npm-cache`). A
+  missing volume is refused when a sandbox is created; sandboxes never create
+  or delete one.
+
+Only the bundled OpenSandbox server on the Docker runtime applies these
+settings. With `ASTRABOX_SANDBOX_SERVER_RUNTIME=kubernetes` or an existing
+OpenSandbox service, the server warns at startup that they have no effect, and
+RuntimeProfiles that use them are refused.
+
+What you grant:
+
+- A sandbox on a network reaches every port of every container on it, in both
+  network access modes: the sandbox's egress policy allows the network's
+  subnet. Containers on the network cannot open connections into the sandbox,
+  and two sandboxes on one network cannot reach each other.
+- A read-write host directory or volume is host storage the sandbox's Agent
+  can change or delete, shared by every sandbox that mounts it. A read-only
+  one still lets the Agent read everything in it.
+
+List only networks and storage that every team using such a RuntimeProfile
+may use.
+
 ### Install a release {#install-a-release}
 
 ```bash

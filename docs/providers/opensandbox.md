@@ -298,6 +298,50 @@ other container is created as before. The sandbox is returned once
 the create fails with `SANDBOX_CONTAINER_ENGINE_UNAVAILABLE` and the sandbox's
 own diagnosis.
 
+## Join host networks and mount host storage {#host-networks-and-storage}
+
+A RuntimeProfile's `sandbox_networks` and `sandbox_mounts`
+([RuntimeProfiles](../runtime-profiles.md#host-networks-and-storage)) are
+created only by the bundled lifecycle server on the Docker runtime; the
+Kubernetes runtime and an existing OpenSandbox service are refused when the
+RuntimeProfile is saved.
+
+Storage uses OpenSandbox's own create `volumes`. A host directory is a `host`
+volume, allowed by the server's `storage.allowed_host_paths`, which AstraBox
+renders from `ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS`. OpenSandbox checks a host
+path by resolving it, and creating it when missing, in the lifecycle server's
+own filesystem; the bundled server runs in AstraBox's container, where the
+host's paths are absent, so a hook (`mount_volumes_through_docker` in
+`astrabox/deploy/sandbox_server.py`) accepts only a path the list names
+exactly and hands it to Docker as a bind mount, which Docker refuses when the
+source does not exist. A named volume is a `pvc` volume with
+`createIfNotExists` and `deleteOnSandboxTermination` off.
+
+OpenSandbox 0.2.3 has no create field for a second network: one
+`docker.network_mode` applies to every sandbox, and it refuses a network
+policy with a user-defined network because the egress sidecar runs on the
+default bridge. A sandbox shares its sidecar's network namespace, so the
+create carries one metadata entry per network (`astrabox.network.<n>`) and a
+hook of the bundled server (`attach_allowlisted_networks`) connects the
+sidecar to each before the sandbox is created. Connecting a user-defined
+network points the namespace's `resolv.conf` at Docker's embedded DNS server,
+whose NAT rule precedes the sidecar's DNS redirect, so names would no longer
+pass the egress proxy. The hook therefore:
+
+- writes back the `resolv.conf` the sidecar had, so names keep resolving
+  through the egress proxy and its upstream;
+- adds an nftables table of its own that drops traffic to `127.0.0.11` and
+  new connections from the joined subnets, beside the egress sidecar's table,
+  which a policy change replaces without touching this one;
+- writes the network's single-label container names and aliases to
+  `/etc/hosts`;
+- adds an allow rule for each joined subnet through the sidecar's
+  `PATCH /policy`.
+
+A network that is not allowed, missing, IPv6-enabled, or inside a network the
+sidecar's policy denies refuses the create, and the sidecar is removed with
+it. Removing the sidecar disconnects it from the networks.
+
 ## Select a sandbox runtime
 
 `ASTRABOX_SANDBOX_SECURE_RUNTIME` selects one container runtime for the
