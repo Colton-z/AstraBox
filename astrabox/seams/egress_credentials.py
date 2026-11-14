@@ -273,6 +273,12 @@ def host_matches(request_host: str, request_port: int | None, allowed: str) -> b
     return host == entry
 
 
+#: How long before its expiry the platform renews an access token it obtains,
+#: in seconds. A token that lives less than about twice this is renewed
+#: continuously and cannot be relied on.
+ACCESS_TOKEN_RENEWAL_WINDOW_S = 60
+
+
 @dataclass(frozen=True)
 class EgressCredential:
     """One resolved ``environment_variable`` credential, egress-side view."""
@@ -301,6 +307,11 @@ class EgressCredential:
     #: The one request header a :data:`DELIVERY_HEADER` placeholder is
     #: replaced in. Empty for substitution.
     header_name: str = ""
+    #: When ``secret_value`` stops being accepted, for a value the platform
+    #: obtains by a grant (ISO 8601). ``None`` for a stored value. A sandbox
+    #: that still runs then needs the credential written again with the
+    #: renewed value, inside :data:`ACCESS_TOKEN_RENEWAL_WINDOW_S` of this.
+    expires_at: str | None = None
 
     def allows_host(self, host: str, port: int | None) -> bool:
         kind = str(self.networking.get("type") or "").strip()

@@ -246,7 +246,8 @@ conversations ([how delivery keeps up with changes](egress-credential-injection.
 | `auth.username` | string | Yes for `http_basic` | HTTP Basic username; no colon or control characters |
 | `auth.password` | string | Yes for `http_basic` | Password or access token; write-only |
 | `auth.secret_name` | string | Yes for `environment_variable` | Environment variable name |
-| `auth.secret_value` | string | Yes for `environment_variable` | Secret value; write-only |
+| `auth.secret_value` | string | Yes for `environment_variable` without `auth.oauth` | Secret value; write-only |
+| `auth.oauth` | object | No | `environment_variable` only, in place of `auth.secret_value`: the OAuth2 grant AstraBox obtains and renews the value by; see [Use a short-lived access token](egress-credential-injection.md#oauth-grant) |
 | `auth.delivery` | string | No | `environment_variable` only: `substitution` (default) or `header`; see [header delivery](egress-credential-injection.md#header-delivery) |
 | `auth.expires_at` | string | No | OAuth access-token expiration time in RFC 3339 format |
 | `auth.refresh` | object | No | OAuth refresh configuration |

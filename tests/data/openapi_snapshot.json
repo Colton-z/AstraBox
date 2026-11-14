@@ -11569,6 +11569,16 @@
               }
             ]
           },
+          "oauth": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CredentialTokenGrant"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "refresh": {
             "anyOf": [
               {
@@ -11800,6 +11810,80 @@
           }
         },
         "title": "CredentialRefresh",
+        "type": "object"
+      },
+      "CredentialTokenGrant": {
+        "additionalProperties": true,
+        "description": "Non-secret half of the OAuth2 grant an environment credential obtains its value by.",
+        "properties": {
+          "auth_method": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auth Method"
+          },
+          "client_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Id"
+          },
+          "grant_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grant Type"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope"
+          },
+          "token_endpoint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token Endpoint"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Username"
+          }
+        },
+        "title": "CredentialTokenGrant",
         "type": "object"
       },
       "CurrentEnvironment": {

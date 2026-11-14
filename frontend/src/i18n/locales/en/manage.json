@@ -104,6 +104,7 @@
     "allowed_domains": "Domains allowed to receive this credential",
     "expires_on": "Expires {{when}}",
     "expired_on": "Expired {{when}}",
+    "token_from": "Access token obtained from {{endpoint}} and renewed automatically",
     "expires_at": "Expires at (optional)",
     "credential_required": "Enter both the service or variable and its secret value.",
     "header_required": "Enter the request header that the MCP service expects.",

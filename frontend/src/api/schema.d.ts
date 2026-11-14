@@ -8714,6 +8714,7 @@ export interface components {
             /** Mcp Server Url */
             mcp_server_url?: string | null;
             networking?: components["schemas"]["CredentialNetworking"] | null;
+            oauth?: components["schemas"]["CredentialTokenGrant"] | null;
             refresh?: components["schemas"]["CredentialRefresh"] | null;
             /** Secret Name */
             secret_name?: string | null;
@@ -8797,6 +8798,26 @@ export interface components {
             scope?: string | null;
             /** Token Endpoint */
             token_endpoint?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * CredentialTokenGrant
+         * @description Non-secret half of the OAuth2 grant an environment credential obtains its value by.
+         */
+        CredentialTokenGrant: {
+            /** Auth Method */
+            auth_method?: string | null;
+            /** Client Id */
+            client_id?: string | null;
+            /** Grant Type */
+            grant_type?: string | null;
+            /** Scope */
+            scope?: string | null;
+            /** Token Endpoint */
+            token_endpoint?: string | null;
+            /** Username */
+            username?: string | null;
         } & {
             [key: string]: unknown;
         };

@@ -42,11 +42,12 @@
   ],
   "playwright": {
     "exclusive": {
-      "files": 203,
+      "files": 204,
       "parallel_files": 124,
       "parallel_tests": 218,
       "serial_files": [
         "specs/a-background-task-runs-apart-from-the-reply.exclusive.spec.ts",
+        "specs/a-granted-access-token-is-renewed-while-a-response-runs.exclusive.spec.ts",
         "specs/a-prepared-seat-is-not-a-promise-the-box-can-still-keep.exclusive.spec.ts",
         "specs/a2a-cancel-task.exclusive.spec.ts",
         "specs/a2a-stream-and-interaction.exclusive.spec.ts",
@@ -126,9 +127,9 @@
         "specs/untouched-tab-catches-up-after-backend-restart.exclusive.spec.ts",
         "specs/vault-environment-survives-reattach.exclusive.spec.ts"
       ],
-      "serial_tests": 123,
+      "serial_tests": 124,
       "serial_workers": 1,
-      "tests": 341,
+      "tests": 342,
       "workers": 5
     },
     "parallel": {

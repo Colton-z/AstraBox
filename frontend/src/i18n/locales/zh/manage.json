@@ -104,6 +104,7 @@
     "allowed_domains": "允许接收这项凭证的域名",
     "expires_on": "{{when}} 到期",
     "expired_on": "已于 {{when}} 过期",
+    "token_from": "访问令牌从 {{endpoint}} 获取并自动续期",
     "expires_at": "过期时间（可选）",
     "credential_required": "请填写服务地址或变量名，并填写密钥内容。",
     "header_required": "请填写 MCP 服务要求的请求头名称。",

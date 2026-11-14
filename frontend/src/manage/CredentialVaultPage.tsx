@@ -491,6 +491,13 @@ export default function CredentialVaultPage() {
                       <> · {environmentDeliveryLabel(credential.auth, t)}</>
                     )}
                   </div>
+                  {credential.auth.oauth?.token_endpoint && (
+                    <div className="t-copy-sm mt-1 truncate text-muted-foreground">
+                      {t('manage:credentials.token_from', {
+                        endpoint: credential.auth.oauth.token_endpoint,
+                      })}
+                    </div>
+                  )}
                   {/* An expiry is the one fact about a credential that changes
                       with nobody touching it: a conversation that reaches for
                       an expired one fails in provisioning, so the record says

@@ -268,6 +268,57 @@ added after it started reaches it when its runtime next starts: a new
 conversation's sandbox for an Agent, and for an Assistant its next start after
 its sandbox is replaced, it is woken, or its configuration changes.
 
+## Use a short-lived access token {#oauth-grant}
+
+Many APIs accept only an OAuth2 access token that lives for minutes. Give the
+credential the grant instead of a value, and AstraBox obtains the token,
+renews it before it expires, and substitutes the current one:
+
+```http
+POST /api/v1/admin/vaults/{vault_id}/credentials
+Content-Type: application/json
+
+{
+  "display_name": "Reports API",
+  "auth": {
+    "type": "environment_variable",
+    "secret_name": "REPORTS_TOKEN",
+    "oauth": {
+      "grant_type": "password",
+      "token_endpoint": "https://auth.example.com/realms/main/protocol/openid-connect/token",
+      "client_id": "reports-cli",
+      "auth_method": "none",
+      "username": "svc-reports",
+      "password": "…",
+      "scope": "openid api:reports-read"
+    },
+    "networking": {"type": "limited", "allowed_hosts": ["api.example.com"]},
+    "injection_location": {"header": true, "body": false}
+  }
+}
+```
+
+`grant_type` is `password` (a service user, with `username` and `password`) or
+`client_credentials`. `auth_method` says how the client authenticates to the
+token endpoint: `none` for a public client, which sends only its `client_id`;
+`client_secret_basic` or `client_secret_post` with a `client_secret`.
+`client_credentials` needs one of the last two. `password` and `client_secret`
+are write-only, like every secret value.
+
+The AstraBox server calls the token endpoint; the sandbox never does and never
+holds the password, the client secret or a token. The endpoint therefore has
+to be reachable from the server, and may be a host the sandbox cannot reach.
+The Agent program sees the same kind of placeholder as for a stored value.
+
+The token is renewed 60 seconds before it expires: before a turn starts, and
+while a response or background work runs, so a response that outlasts the
+token keeps working. Every conversation using the credential shares one
+token, and each renewal runs the grant again; a refresh token the endpoint
+returns is not used. The token endpoint must return `expires_in`, and a token
+that lives less than about two minutes is renewed too late to rely on. While
+a sandbox is idle its token is left to expire; the next turn starts with a
+current one.
+
 ## Scope credential substitution
 
 | Field | Accepted scope |

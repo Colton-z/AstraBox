@@ -256,6 +256,14 @@ def reader_hooks(
             # runs in the box too, so it keeps the lease as a response does.
             if value in ("working", "waiting", "background"):
                 await runtime_manager.maybe_renew_lease_on_activity(session_id)
+                # An access token the platform obtains can expire within one
+                # response; the box gets the renewed one while it works.
+                due = getattr(connected.refresh, "due", None)
+                if connected.refresh is not None and callable(due) and due():
+                    try:
+                        await connected.refresh()
+                    except Exception:
+                        logger.exception("credential renewal failed session=%s", session_id)
 
         async def permission_mode() -> None:
             session = await sessions.get_session(session_id)

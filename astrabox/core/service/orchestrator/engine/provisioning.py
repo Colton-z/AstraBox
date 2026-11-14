@@ -33,6 +33,7 @@ vocabulary says when an environment supplies neither.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import shlex
@@ -47,6 +48,7 @@ from astrabox.persistence.repository.session_repository import (
 )
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.settings import load_astrabox_settings
+from astrabox.common.utils.time_utils import parse_iso
 from astrabox.core.service.orchestrator.runtime.config_resolver import (
     required_network_host,
     resolve_network_policy,
@@ -82,6 +84,7 @@ from astrabox.core.service.orchestrator.runtime.packages import (
 from astrabox.providers.sandbox_image import sandbox_boot_env
 from astrabox.config.settings import get_settings
 from astrabox.seams.egress_credentials import (
+    ACCESS_TOKEN_RENEWAL_WINDOW_S,
     DELIVERY_HEADER,
     EGRESS_HELD_PLACEHOLDER,
     ModelEgressCredential,
@@ -508,7 +511,7 @@ async def reconcile_sandbox_credentials(
     bindings: set[str],
     vault_enabled: bool,
     with_mcp: bool = True,
-) -> tuple[set[str], set[str]]:
+) -> tuple[set[str], set[str], datetime | None]:
     """Write a running sandbox's protected credentials again; what it now delivers.
 
     It composes the Session's whole outbound plan (MCP destinations,
@@ -519,7 +522,8 @@ async def reconcile_sandbox_credentials(
     archived, deleted or unassigned one stops being delivered. A credential
     added since a process started has no variable in it; its runtime's next
     start gives it one. Returns the environment credentials and MCP bindings
-    the sandbox delivers afterwards. ``with_mcp=False`` leaves the MCP
+    the sandbox delivers afterwards, and when the first of the access tokens
+    it delivers expires, if it delivers any. ``with_mcp=False`` leaves the MCP
     bindings to the runtimes that refresh them before each turn.
     """
 
@@ -534,11 +538,12 @@ async def reconcile_sandbox_credentials(
         backend=backend_adapter,
         placeholder_context=placeholder_context,
     )
-    composed = {
-        str(item.credential_id) for item in (plan.environment if plan is not None else ())
-    }
+    environment = plan.environment if plan is not None else ()
+    composed = {str(item.credential_id) for item in environment}
+    expiries = [parse_iso(item.expires_at) for item in environment if item.expires_at]
+    token_expiry = min(expiries) if expiries else None
     if (plan is None or plan.is_empty) and not (delivered - composed):
-        return composed, bindings
+        return composed, bindings, token_expiry
     await backend_adapter.apply_credential_vault(
         sandbox,
         vault_write=plan if plan is not None else SandboxEgressCredentialPlan(),
@@ -550,7 +555,38 @@ async def reconcile_sandbox_credentials(
         item.name
         for item in (plan.mcp if plan is not None else ())
         if item.name.startswith("astrabox-mcp-")
-    }
+    }, token_expiry
+
+
+class SessionCredentialRefresh:
+    """The refresh of a running Session's protected credentials.
+
+    Calling it writes the sandbox's credentials again
+    (:func:`reconcile_sandbox_credentials`) and keeps what the sandbox
+    delivers between calls. It runs before each turn. A credential whose value
+    is an access token the platform obtains also has to be written again
+    before that token expires, however long a turn runs: :meth:`due` says when.
+    """
+
+    def __init__(self, reconcile: Callable[[set[str], set[str]], Awaitable[tuple[set[str], set[str], datetime | None]]],
+                 *, delivered: set[str], bindings: set[str]) -> None:
+        self._reconcile = reconcile
+        self._delivered = delivered
+        self._bindings = bindings
+        self._token_expiry: datetime | None = None
+        self._lock = asyncio.Lock()
+
+    async def __call__(self) -> None:
+        async with self._lock:
+            self._delivered, self._bindings, self._token_expiry = await self._reconcile(
+                self._delivered, self._bindings
+            )
+
+    def due(self) -> bool:
+        """Whether a delivered access token is inside its renewal window."""
+        return self._token_expiry is not None and self._token_expiry <= datetime.now(
+            timezone.utc
+        ) + timedelta(seconds=ACCESS_TOKEN_RENEWAL_WINDOW_S)
 
 
 def session_credential_refresher(
@@ -563,12 +599,8 @@ def session_credential_refresher(
     runtime_identity: Mapping[str, Any] | None,
     initial_credential_plan: SandboxEgressCredentialPlan | None,
     vault_enabled: bool,
-) -> Callable[[], Awaitable[None]] | None:
-    """The refresh of a running Session's protected credentials, before each turn and tick.
-
-    See :func:`reconcile_sandbox_credentials`; this keeps what the sandbox
-    delivers between calls. ``None`` for a sandbox nothing can deliver to.
-    """
+) -> SessionCredentialRefresh | None:
+    """The refresh of a running Session's protected credentials; ``None`` for a sandbox nothing can deliver to."""
 
     identity = dict(runtime_identity or {})
     placeholder_context = str(identity.get(ENVIRONMENT_PLACEHOLDER_CONTEXT) or "").strip() or None
@@ -583,9 +615,10 @@ def session_credential_refresher(
     ):
         return None
 
-    async def refresh() -> None:
-        nonlocal delivered, bindings
-        delivered, bindings = await reconcile_sandbox_credentials(
+    async def reconcile(
+        delivered: set[str], bindings: set[str]
+    ) -> tuple[set[str], set[str], datetime | None]:
+        return await reconcile_sandbox_credentials(
             platform,
             session_id=session_id,
             template=template,
@@ -597,6 +630,15 @@ def session_credential_refresher(
             vault_enabled=vault_enabled,
         )
 
+    refresh = SessionCredentialRefresh(reconcile, delivered=delivered, bindings=bindings)
+    # A sandbox starts with the tokens its plan carried; their expiry is the
+    # first renewal's.
+    expiries = [
+        parse_iso(item.expires_at)
+        for item in (initial_credential_plan.environment if initial_credential_plan is not None else ())
+        if item.expires_at
+    ]
+    refresh._token_expiry = min(expiries) if expiries else None
     return refresh
 
 

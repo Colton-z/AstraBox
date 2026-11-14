@@ -120,6 +120,20 @@ class CredentialRefresh(BaseModel):
     scope: str | None = None
 
 
+class CredentialTokenGrant(BaseModel):
+    """Non-secret half of the OAuth2 grant an environment credential obtains its value by."""
+
+    model_config = ConfigDict(extra="allow")
+
+    token_endpoint: str | None = None
+    client_id: str | None = None
+    auth_method: str | None = None
+    scope: str | None = None
+    #: ``password`` or ``client_credentials``.
+    grant_type: str | None = None
+    username: str | None = None
+
+
 class CredentialAuthSummary(BaseModel):
     """Key fields and rules of one credential — never a secret payload."""
 
@@ -139,6 +153,9 @@ class CredentialAuthSummary(BaseModel):
     allowed_requests: CredentialAllowedRequests | None = None
     allow_insecure_http: bool | None = None
     refresh: CredentialRefresh | None = None
+    #: ``environment_variable`` only, when the value is an access token the
+    #: platform obtains and renews.
+    oauth: CredentialTokenGrant | None = None
 
 
 class VaultCredential(BaseModel):

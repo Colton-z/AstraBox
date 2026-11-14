@@ -632,7 +632,7 @@ class ExpirationWatcher:
             platform = self._platform._runtime_manager
             sandbox = await connect_engine_sandbox(platform, sandbox_id=sandbox_id, template=template)
             delivered = {str(item) for item in identity.get(ENVIRONMENT_CREDENTIAL_IDS) or ()}
-            now, _bindings = await reconcile_sandbox_credentials(
+            now, _bindings, _token_expiry = await reconcile_sandbox_credentials(
                 platform,
                 session_id=session_id,
                 template=template,

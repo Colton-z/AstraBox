@@ -178,6 +178,8 @@ export interface VaultCredentialSummary {
       allowed_hosts?: string[];
     };
     injection_location?: { header?: boolean; body?: boolean };
+    /** The grant an environment credential obtains its value by, when it has one. */
+    oauth?: { token_endpoint?: string; grant_type?: string };
   };
   archived_at?: string | null;
 }

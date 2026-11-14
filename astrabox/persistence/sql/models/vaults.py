@@ -62,9 +62,10 @@ class VaultCredential(Base):
     credentials, so two concurrent creates of one key cannot both succeed.
     Archived credentials stay for audit and leave the indexes.
 
-    ``refresh_claimed_until`` is the OAuth refresh claim: a replica refreshing
-    an expired ``mcp_oauth`` access token holds it until then, and no other
-    replica may refresh the token meanwhile.
+    ``refresh_claimed_until`` is the OAuth refresh claim: a replica renewing
+    an access token (an ``mcp_oauth`` credential's, or the one an
+    ``environment_variable`` credential obtains by a grant) holds it until
+    then, and no other replica may renew the token meanwhile.
     """
 
     __tablename__ = "vault_credentials"
@@ -109,14 +110,20 @@ class VaultCredential(Base):
     secret_name: Mapped[str | None] = mapped_column(KeyText(512))
     username: Mapped[str | None] = mapped_column(payload_text())
     header_name: Mapped[str | None] = mapped_column(payload_text())
-    #: When an ``mcp_oauth`` access token expires; ``NULL`` when unknown.
+    #: When the credential's access token expires; ``NULL`` when unknown or
+    #: not yet obtained.
     expires_at: Mapped[datetime | None]
-    #: An ``mcp_oauth`` refresh configuration is present exactly when its token
-    #: endpoint is.
+    #: A token endpoint configuration is present exactly when its token
+    #: endpoint is: an ``mcp_oauth`` refresh, or the grant an
+    #: ``environment_variable`` credential obtains its value by.
     refresh_token_endpoint: Mapped[str | None] = mapped_column(payload_text())
     refresh_client_id: Mapped[str | None] = mapped_column(payload_text())
     refresh_auth_method: Mapped[str | None] = mapped_column(payload_text())
     refresh_scope: Mapped[str | None] = mapped_column(payload_text())
+    #: ``environment_variable`` only: the OAuth2 grant that obtains the value,
+    #: ``password`` (with ``username``) or ``client_credentials``. ``NULL``
+    #: for a credential whose value is stored.
+    token_grant_type: Mapped[str | None] = mapped_column(payload_text())
     refresh_claimed_until: Mapped[datetime | None]
     #: ``environment_variable`` delivery rules. ``network_access`` is
     #: ``limited`` (with ``allowed_hosts``) or ``unrestricted``; a ``NULL``
