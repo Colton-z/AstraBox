@@ -31,6 +31,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 
+- `POST /api/v1/sessions/{session_id}/inputs` refuses a field it does not take, naming it. It used to accept the request and drop the field, so a `permission_mode` sent with a message returned 200 and changed nothing; a mode is set with `POST /api/v1/sessions/{session_id}/permission-mode`.
 - When a bundled service is killed by a signal while the server container starts, the fatal line names the signal and, for SIGKILL, points at the container's memory limit and the host's kernel log. It used to read `exited with code -9`, which pointed at the supervisor. The deployment guide now states the server container's memory need (4 GiB).
 - The source-development stack (`make dev`, `containers/compose.source.yaml`) runs the server with the checkout's entry points. A provider or engine added in the checkout used to be missing there, because the server image's installed metadata listed only the entry points of the release it was built from.
 - A message whose turn cannot get a credential it needs (a Vault credential's token endpoint refuses, a model account has to be signed in to again) now fails with that reason, and the conversation takes the next message. The failure used to escape the conversation's reader, which restarted and met it again.

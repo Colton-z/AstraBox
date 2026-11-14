@@ -1370,7 +1370,6 @@ def send_input(
     content: str | list,
     *,
     client_message_id: str | None = None,
-    permission_mode: str | None = None,
     duplicate: bool = False,
 ) -> dict:
     """Send one message as the console does and return the platform's receipt.
@@ -1379,8 +1378,6 @@ def send_input(
     a new input, the same one again is the earlier input's receipt.
     """
     body: dict = {"content": content, "client_message_id": client_message_id or str(uuid.uuid4())}
-    if permission_mode is not None:
-        body["permission_mode"] = permission_mode
     receipt = data(client.post(f"/api/v1/sessions/{sid}/inputs", json=body))
     assert receipt.get("session_id") == sid and receipt.get("input_id"), (
         f"the input receipt names no input of this session: {receipt}"
@@ -1521,7 +1518,6 @@ def send_and_follow(
     *,
     until: str = "pause",
     client_message_id: str | None = None,
-    permission_mode: str | None = None,
     timeout: float | None = None,
     allow_refusal: bool = False,
 ) -> Reply:
@@ -1533,9 +1529,7 @@ def send_and_follow(
     """
     stream = SessionStream(sid, cursor=output_position(client, sid))
     sent_at, sent_wall = time.monotonic(), time.time()
-    receipt = send_input(
-        client, sid, content, client_message_id=client_message_id, permission_mode=permission_mode
-    )
+    receipt = send_input(client, sid, content, client_message_id=client_message_id)
     reply = Reply(
         session_id=sid,
         input_id=str(receipt["input_id"]),
