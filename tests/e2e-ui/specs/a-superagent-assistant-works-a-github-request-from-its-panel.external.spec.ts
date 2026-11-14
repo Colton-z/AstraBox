@@ -214,8 +214,10 @@ test('a dsh-superagent Assistant has an owner\'s Agent work a GitHub mention, an
     { message: 'the Ticket goes to the working Agent', timeout: 5 * 60_000, intervals: [5_000] }).toBe(1);
   const [conversation] = a2aConversations(workerId);
   expect(conversation.user_id).toEqual(owner);
+  // The A2A service creates the conversation, then records its message.
+  await expect.poll(() => sessionInputRows(conversation.session_id).length,
+    { message: 'the Ticket\'s first message reaches the conversation', timeout: 60_000, intervals: [2_000] }).toBe(1);
   const firstInputs = sessionInputRows(conversation.session_id);
-  expect(firstInputs).toHaveLength(1);
   expect(firstInputs[0].content, 'the Agent is told what was asked, and the Ticket\'s name').toContain(marker);
   expect(firstInputs[0].content).toContain(ticketName);
 
