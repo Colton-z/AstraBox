@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
 import {
   Item,
   ItemActions,
@@ -19,6 +20,7 @@ import { CodeBlock, CodeBlockCopyButton } from '@/components/ai-elements/code-bl
 import {
   MODULE_BASE,
   deleteModelAccount,
+  getModelAccountTeamPool,
   listModelAccounts,
   updateModelAccount,
 } from '@/api';
@@ -63,10 +65,16 @@ type Renaming = { id: string; label: string; error: string; saving: boolean };
  * The page lists, renames, chooses the default, and removes. It does not link:
  * linking is the CLI's, for the reason {@link loginCommand} gives, so the page
  * hands the reader that command instead of a button that could not work.
+ *
+ * While the deployment's team pool is on, each account can be shared with the
+ * team, and the page says when a teammate's conversation last spent it and
+ * whether a reported usage limit holds it back. With the pool off nothing can
+ * be shared, so the control is not shown.
  */
 export default function ModelAccountsPage() {
   const { t } = useTranslation();
   const [accounts, setAccounts] = useState<ModelAccount[] | null>(null);
+  const [poolEnabled, setPoolEnabled] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [actionError, setActionError] = useState('');
@@ -80,7 +88,9 @@ export default function ModelAccountsPage() {
     const background = context?.background === true;
     if (!background) setRefreshing(true);
     try {
-      setAccounts(await listModelAccounts());
+      const [listed, pool] = await Promise.all([listModelAccounts(), getModelAccountTeamPool()]);
+      setAccounts(listed);
+      setPoolEnabled(pool.enabled);
       loaded.current = true;
       setLoadError('');
     } catch (e) {
@@ -103,6 +113,21 @@ export default function ModelAccountsPage() {
     try {
       await updateModelAccount(account.account_id, { is_default: true });
       await load();
+    } catch (e) {
+      setActionError((e as Error).message);
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const share = async (account: ModelAccount, shared: boolean) => {
+    setActionError('');
+    setBusy(account.account_id);
+    try {
+      const saved = await updateModelAccount(account.account_id, { shared });
+      setAccounts((prev) =>
+        prev && prev.map((item) => (item.account_id === saved.account_id ? saved : item)),
+      );
     } catch (e) {
       setActionError((e as Error).message);
     } finally {
@@ -196,6 +221,7 @@ export default function ModelAccountsPage() {
           title={t('manage:model_accounts.list_title')}
           intro={t('manage:model_accounts.list_intro')}
           actions={<ManageUsageLink />}
+          note={poolEnabled ? t('manage:model_accounts.pool_note') : undefined}
         >
           {accounts.length === 0 ? (
             <ConsoleEmptyState
@@ -276,6 +302,9 @@ export default function ModelAccountsPage() {
                               {account.is_default && (
                                 <Badge variant="secondary">{t('manage:model_accounts.default_badge')}</Badge>
                               )}
+                              {poolEnabled && account.shared && (
+                                <Badge variant="secondary">{t('manage:model_accounts.shared_badge')}</Badge>
+                              )}
                               {signInRequired ? (
                                 <StatusPill tone="approval">{t('manage:model_accounts.status_sign_in_required')}</StatusPill>
                               ) : (
@@ -288,7 +317,36 @@ export default function ModelAccountsPage() {
                                 t('manage:model_accounts.linked_at', { at: formatDateTime(account.created_at) }),
                               ].filter(Boolean).join(' · ')}
                             </ItemDescription>
+                            {poolEnabled && (account.shared || account.usage_limited_until) && (
+                              <ItemDescription className="t-copy-sm text-xs" data-testid="model-account-pool-state">
+                                {[
+                                  account.shared
+                                    ? account.pool_last_used_at
+                                      ? t('manage:model_accounts.pool_last_used', {
+                                          at: formatDateTime(account.pool_last_used_at),
+                                        })
+                                      : t('manage:model_accounts.pool_never_used')
+                                    : '',
+                                  account.usage_limited_until
+                                    ? t('manage:model_accounts.usage_limited', {
+                                        at: formatDateTime(account.usage_limited_until),
+                                      })
+                                    : '',
+                                ].filter(Boolean).join(' · ')}
+                              </ItemDescription>
+                            )}
                           </div>
+                          {poolEnabled && (
+                            <label className="t-label-sm inline-flex items-center gap-2">
+                              <Switch
+                                checked={account.shared}
+                                disabled={working}
+                                onCheckedChange={(next: boolean) => void share(account, next)}
+                                aria-label={t('manage:model_accounts.share_button', { account: account.label })}
+                              />
+                              {t('manage:model_accounts.share')}
+                            </label>
+                          )}
                           {signInRequired && (
                             <div className="flex flex-col gap-2">
                               <p className="t-copy-sm text-muted-foreground">

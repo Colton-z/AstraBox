@@ -53,6 +53,8 @@ export type ModelAccount = Schemas['ModelAccount'];
 export type DeletedModelAccount = Schemas['DeletedModelAccount'];
 /** A model a linked account can use: `id` is what an Agent names as its model. */
 export type ModelAccountModel = Schemas['ModelAccountModel'];
+/** Whether the deployment's team pool of model accounts is on. */
+export type ModelAccountTeamPool = Schemas['ModelAccountTeamPool'];
 export type ConversationEndResult = Schemas['ConversationEndResult'];
 export type AgentCategory = Schemas['AgentCategory'];
 export type AdminAgentCategory = Schemas['AdminAgentCategory'];

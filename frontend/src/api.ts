@@ -24,6 +24,7 @@ import type {
   DeletedModelAccount,
   ModelAccount,
   ModelAccountModel,
+  ModelAccountTeamPool,
   AdminSandboxDiagnostics,
   AdminSandboxSecurity,
   AdminSandboxDiagnosticScope,
@@ -1632,10 +1633,13 @@ export async function listModelAccounts(): Promise<ModelAccount[]> {
   );
 }
 
-/** Rename an account or make it the caller's default; an absent field is left as it is. */
+/**
+ * Rename an account, make it the caller's default, or share it with the team
+ * pool (`shared`); an absent field is left as it is.
+ */
 export async function updateModelAccount(
   accountId: string,
-  body: { label?: string; is_default?: boolean },
+  body: { label?: string; is_default?: boolean; shared?: boolean },
 ): Promise<ModelAccount> {
   return send((wire) => client.PATCH('/api/v1/me/model-accounts/{account_id}', {
     ...wire,
@@ -1653,6 +1657,11 @@ export async function deleteModelAccount(accountId: string): Promise<DeletedMode
     ...wire,
     params: { path: { account_id: accountId } },
   }));
+}
+
+/** Whether this deployment's team pool is on, without which no account can be shared. */
+export async function getModelAccountTeamPool(): Promise<ModelAccountTeamPool> {
+  return send((wire) => client.GET('/api/v1/me/model-accounts/team-pool', wire));
 }
 
 /** The id that names the caller's default account to the model list. */
