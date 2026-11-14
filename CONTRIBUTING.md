@@ -41,7 +41,10 @@ needs the server image (`make build-server-image` once):
 
 - **Backend** — uvicorn (`astrabox.api.app:create_app`) with `--reload` in the server
   container of the maintained Compose stack, published at **:8000**.
-  `containers/compose.source.yaml` mounts this checkout over the installed package,
+  `containers/compose.source.yaml` mounts this checkout over the installed package
+  and runs the server with the entry points of this checkout's `pyproject.toml`,
+  so a provider or engine you add is found without rebuilding the image; restart
+  the stack after changing the entry points,
   and `astrabox.deploy.onebox` starts the bundled OpenSandbox lifecycle server beside
   it with access to `/var/run/docker.sock`.
 - **Frontend** — the Vite dev server (`frontend/`) at **:5173**, whose `/api` proxies
