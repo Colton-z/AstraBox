@@ -242,7 +242,7 @@ the terminal, isolated sessions, metrics, and its `/proxy/<port>` route to the
 sandbox's other ports. Only `/ping` and `/ready` answer without it. AstraBox's
 execd image adds two changes to OpenSandbox's (`containers/execd/README.md`):
 the route that replaces the token requires the token too, and the proxy does
-not pass the token on to the in-box service.
+not pass the token on to the other in-box services.
 
 AstraBox stores no token. It writes a random value to the sandbox's metadata
 when it creates the sandbox and derives the token from that value and the
