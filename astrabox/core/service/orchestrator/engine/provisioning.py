@@ -80,7 +80,7 @@ from astrabox.core.service.orchestrator.runtime.mcp_credentials import (
     resolve_mcp_credential_plan,
 )
 from astrabox.core.service.orchestrator.runtime.mcp_servers import (
-    artifact_tools_enabled,
+    prepared_runtime_serves,
     sandbox_mcp_egress_hosts,
 )
 from astrabox.core.service.orchestrator.runtime.packages import (
@@ -2124,9 +2124,10 @@ async def claim_prepared_engine_sandbox(
     from astrabox.core.service.orchestrator.agent.client_pool import prepared_capacity
 
 
-    if not artifact_tools_enabled(getattr(template, "session_source_type", None)):
-        # Prepared native processes froze personal artifact tools before any Session existed.
-        logger.info("channel Session %s starts its own runtime without private artifact tools", session_id)
+    source_type = getattr(template, "session_source_type", None)
+    if not prepared_runtime_serves(source_type):
+        # Prepared native processes froze their platform MCP servers before any Session existed.
+        logger.info("%s Session %s starts its own runtime with its own platform tools", source_type, session_id)
         return None
 
     if (
@@ -2505,7 +2506,7 @@ async def _claim_conversation_pool_box(
 ) -> _ConversationPoolClaim | None:
     """Recover or atomically acquire the Session's official-pool box."""
 
-    if recovered_assignment is None and not artifact_tools_enabled(getattr(template, "session_source_type", None)):
+    if recovered_assignment is None and not prepared_runtime_serves(getattr(template, "session_source_type", None)):
         return None
 
     from astrabox.core.service.orchestrator.agent.client_pool import (

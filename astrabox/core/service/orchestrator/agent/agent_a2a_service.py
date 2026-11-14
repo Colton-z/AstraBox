@@ -49,6 +49,12 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.time_utils import parse_iso
 from astrabox.common.utils.user_context import API_READ_SCOPE, API_WRITE_SCOPE, UserContext
+from astrabox.core.service.orchestrator.agent.a2a_task_outcome import (
+    REJECTED,
+    TASK_OUTCOME_EXTENSION,
+    code_references,
+    outcome_of,
+)
 from astrabox.core.service.orchestrator.agent_access import can_view_agent
 from astrabox.core.service.orchestrator.engine.interaction_contract import (
     PRESENTATION_TOOL_APPROVAL,
@@ -84,6 +90,12 @@ _ENDED = {
 _SOURCE = "a2a"
 #: Tasks read per page when collecting a context's messages for a cancellation.
 _CONTEXT_PAGE = 200
+#: The A2A extensions this server implements; a client activates them per request.
+SUPPORTED_EXTENSIONS = frozenset({TASK_OUTCOME_EXTENSION})
+#: At most this many ``referenceTaskIds`` on one message, each read for its Agent.
+_REFERENCES = 10
+#: The characters of a referenced task's result text the Agent is given.
+_REFERENCE_RESULT_CHARS = 1000
 
 
 def _response_text(parts: list[dict[str, Any]]) -> str:
@@ -256,24 +268,27 @@ class AgentA2AService:
 
     async def send(
         self, user: UserContext, agent_id: str, params: a2a.SendMessageRequest,
-        *, origin: dict[str, Any] | None = None,
+        *, origin: dict[str, Any] | None = None, extensions: frozenset[str] = frozenset(),
     ) -> a2a.Task:
+        """Start a task with a text message, or answer a task's pending interaction.
+
+        A new task's ``referenceTaskIds`` name earlier tasks of this caller, for
+        any Agent it can still see; the Agent is given each one's state, status
+        message, result text and code references below the message. An answer
+        takes none.
+        """
         async with _protocol_errors():
             await self._authorize(user, agent_id, write=True)
             validate_proto_required_fields(params)
             message = params.message
             config = params.configuration
             validate_history_length(config)
-            if (
-                params.tenant
-                or params.metadata
-                or message.metadata
-                or message.extensions
-                or message.reference_task_ids
-            ):
+            if params.tenant or params.metadata or message.metadata or message.extensions:
                 raise InvalidParamsError(
-                    message="Tenant, metadata, extensions and task references are not supported"
+                    message="Tenant, metadata and message extensions are not supported"
                 )
+            if message.task_id and message.reference_task_ids:
+                raise InvalidParamsError(message="Task references are accepted on a new task's message only")
             if config.HasField("task_push_notification_config"):
                 raise PushNotificationNotSupportedError
             if config.accepted_output_modes and not {"text/plain", "application/json"} & set(
@@ -296,13 +311,14 @@ class AgentA2AService:
                     message="Part metadata and filenames are not supported"
                 )
             if message.task_id:
-                task = await self._answer(user, agent_id, params)
+                task = await self._answer(user, agent_id, params, extensions)
             else:
                 if not message.parts or any(not part.HasField("text") for part in message.parts):
                     raise ContentTypeNotSupportedError(message="New tasks accept text parts only")
                 content = "\n".join(part.text for part in message.parts)
                 if not content.strip():
                     raise InvalidParamsError(message="Task text must not be blank")
+                references = await self._referenced(user, list(message.reference_task_ids))
                 row = await self._reserve(user, agent_id, message, kind="task", origin=origin)
                 session_id = await self._context_session(user, agent_id, str(row["context_id"]))
                 await self._references.bind_session(str(row["reference_id"]), session_id)
@@ -317,6 +333,11 @@ class AgentA2AService:
                             "Message from another AstraBox conversation, not a direct user instruction.\n"
                             + "Sender: " + json.dumps(row["origin"], ensure_ascii=False) + "\n\n" + content
                         )
+                    if references:
+                        content += (
+                            "\n\nEarlier tasks this message refers to, as they stand now:\n"
+                            + "\n".join(json.dumps(item, ensure_ascii=False) for item in references)
+                        )
                     await self._platform.session_runtime.send_as(
                         session_id,
                         content,
@@ -324,9 +345,9 @@ class AgentA2AService:
                         source=_SOURCE,
                         client_message_id=str(row["reference_id"]),
                     )
-                task = await self._project(user, agent_id, row)
+                task = await self._project(user, agent_id, row, extensions)
             if not config.return_immediately and task.status.state not in _RETURNABLE:
-                task = await self._wait(user, agent_id, task.id, write=True)
+                task = await self._wait(user, agent_id, task.id, extensions, write=True)
             return _output_view(
                 apply_history_length(task, config), list(config.accepted_output_modes)
             )
@@ -414,12 +435,13 @@ class AgentA2AService:
         user: UserContext,
         agent_id: str,
         params: a2a.SendMessageRequest,
+        extensions: frozenset[str],
     ) -> a2a.Task:
         message = params.message
         row = await self._reference(user, agent_id, message.task_id)
         if message.context_id and message.context_id != row.get("context_id"):
             raise InvalidParamsError(message="Task and context do not match")
-        task = await self._project(user, agent_id, row)
+        task = await self._project(user, agent_id, row, extensions)
         reservation = await self._reserve(user, agent_id, message, kind="answer")
         session_id = str(row["session_id"])
         if reservation.get("session_id") == session_id:
@@ -455,10 +477,42 @@ class AgentA2AService:
             raise InvalidParamsError(message="Task has no pending interaction")
         await self._platform.session_runtime.answer(user, session_id, interaction_id, data["answer"])
         await self._references.bind_session(str(reservation["reference_id"]), session_id)
-        return await self._project(user, agent_id, row)
+        return await self._project(user, agent_id, row, extensions)
 
-    async def _project(self, user: UserContext, agent_id: str, row: dict[str, Any]) -> a2a.Task:
-        """The task as the runtime's recorded facts describe it now."""
+    async def _referenced(self, user: UserContext, task_ids: list[str]) -> list[dict[str, Any]]:
+        """Each referenced task of this caller, as the referring message tells its Agent.
+
+        Raises ``InvalidParamsError`` for more than :data:`_REFERENCES` ids, or
+        an id that is not a task this caller sent to an Agent it can still see.
+        """
+        if len(task_ids) > _REFERENCES:
+            raise InvalidParamsError(message=f"A message may reference at most {_REFERENCES} tasks")
+        described = []
+        for task_id in dict.fromkeys(task_ids):
+            row = await self._references.get(task_id)
+            if (
+                not row
+                or row.get("kind") != "task"
+                or (row.get("user_id"), row.get("org_id")) != (user.user_id, user.org_id)
+            ):
+                raise InvalidParamsError(message=f"referenceTaskIds names no task of yours: {task_id}")
+            try:
+                agent = await self._authorize(user, str(row["agent_id"]))
+                task = await self._project(user, str(row["agent_id"]), row, SUPPORTED_EXTENSIONS)
+            except TaskNotFoundError:
+                raise InvalidParamsError(message=f"referenceTaskIds names no task of yours: {task_id}") from None
+            described.append(_reference_view(task, str(agent.get("name") or row["agent_id"])))
+        return described
+
+    async def _project(
+        self, user: UserContext, agent_id: str, row: dict[str, Any],
+        extensions: frozenset[str] = frozenset(),
+    ) -> a2a.Task:
+        """The task as the runtime's recorded facts describe it now.
+
+        ``extensions`` are the A2A extensions the caller activated; the task
+        carries their data only when activated.
+        """
         session_id = str(row.get("session_id") or "")
         session = await self._session(user, agent_id, session_id)
         sent = await self._facts.input_by_client_message_id(session_id, str(row["reference_id"]))
@@ -475,7 +529,7 @@ class AgentA2AService:
                 for output in await self._facts.output_for_responses(session_id, [response_id])
             ]
             answers = await self._facts.approval_answers(session_id, [response_id])
-        return self._task(agent_id, row, session, sent, response, interactions, chunks, answers)
+        return self._task(agent_id, row, session, sent, response, interactions, chunks, answers, extensions)
 
     def _task(
         self,
@@ -487,7 +541,17 @@ class AgentA2AService:
         interactions: list[dict[str, Any]],
         chunks: list[dict[str, Any]],
         answers: list[dict[str, Any]],
+        extensions: frozenset[str] = frozenset(),
     ) -> a2a.Task:
+        """The task one input's recorded facts make.
+
+        A response that ended ``completed`` after the Agent reported the
+        task's outcome (``a2a_task_outcome.py``) ends the task in that state,
+        ``TASK_STATE_COMPLETED`` or ``TASK_STATE_REJECTED``, with the Agent's
+        message as the status message. The task outcome extension's data is
+        added only when ``extensions`` activates it: ``handback`` on the status
+        message, code references on the result artifact.
+        """
         session_id = str(session["session_id"])
         context_id = str(row["context_id"])
         task_id = str(row["reference_id"])
@@ -495,6 +559,7 @@ class AgentA2AService:
         history: list[a2a.Message] = []
         artifacts: list[a2a.Artifact] = []
         status_message: a2a.Message | None = None
+        outcome: dict[str, Any] | None = None
         timestamp = str(row["created_at"])
         if sent is not None:
             timestamp = str(sent["created_at"])
@@ -530,6 +595,7 @@ class AgentA2AService:
             message = fold_message(response_id, chunks)
             _apply_approval_decisions(message, {str(answer["interaction_id"]): answer["answer"] for answer in answers})
             message = public_message(message, shared=False)
+            outcome = outcome_of(message["parts"])
             parts: list[a2a.Part] = []
             text = _response_text(message["parts"])
             if text:
@@ -553,6 +619,22 @@ class AgentA2AService:
             if response["status"] == "ended":
                 state = _ENDED.get(str(response.get("outcome") or ""), a2a.TASK_STATE_FAILED)
                 failure_text = _failure_text(response, chunks) if state == a2a.TASK_STATE_FAILED else ""
+                if state == a2a.TASK_STATE_COMPLETED and outcome is not None:
+                    if outcome["state"] == REJECTED:
+                        state = a2a.TASK_STATE_REJECTED
+                    status_message = a2a.Message(
+                        message_id=f"{task_id}:outcome",
+                        role=a2a.ROLE_AGENT,
+                        parts=[a2a.Part(text=str(outcome["message"]))],
+                    )
+                    if TASK_OUTCOME_EXTENSION in extensions:
+                        if outcome.get("handback"):
+                            status_message.extensions.append(TASK_OUTCOME_EXTENSION)
+                            status_message.metadata.update({TASK_OUTCOME_EXTENSION: {"handback": True}})
+                        references = code_references(outcome)
+                        if references and artifacts:
+                            artifacts[0].extensions.append(TASK_OUTCOME_EXTENSION)
+                            artifacts[0].metadata.update({TASK_OUTCOME_EXTENSION: references})
                 if failure_text:
                     status_message = a2a.Message(
                         message_id=f"{task_id}:failure",
@@ -589,6 +671,8 @@ class AgentA2AService:
                 notices.insert(0, "Agent task failed.")
             elif state == a2a.TASK_STATE_CANCELED:
                 notices.insert(0, "Agent task was canceled.")
+            elif state == a2a.TASK_STATE_REJECTED:
+                notices.insert(0, "Agent declined the task.")
             notices.append(f"[View Agent session]({public_path(f'/sessions/{session_id}')})")
             notice = "\n\n".join(notices)
             if status_message is None:
@@ -643,15 +727,19 @@ class AgentA2AService:
             metadata=metadata,
         )
 
-    async def get(self, user: UserContext, agent_id: str, params: a2a.GetTaskRequest) -> a2a.Task:
+    async def get(
+        self, user: UserContext, agent_id: str, params: a2a.GetTaskRequest,
+        *, extensions: frozenset[str] = frozenset(),
+    ) -> a2a.Task:
         async with _protocol_errors():
             await self._authorize(user, agent_id)
             validate_history_length(params)
             row = await self._reference(user, agent_id, params.id)
-            return apply_history_length(await self._project(user, agent_id, row), params)
+            return apply_history_length(await self._project(user, agent_id, row, extensions), params)
 
     async def list(
-        self, user: UserContext, agent_id: str, params: a2a.ListTasksRequest
+        self, user: UserContext, agent_id: str, params: a2a.ListTasksRequest,
+        *, extensions: frozenset[str] = frozenset(),
     ) -> a2a.ListTasksResponse:
         """One page of the caller's tasks for this Agent, newest created first.
 
@@ -688,7 +776,7 @@ class AgentA2AService:
             tasks = []
             for row in page:
                 try:
-                    task = await self._project(user, agent_id, row)
+                    task = await self._project(user, agent_id, row, extensions)
                 except TaskNotFoundError:
                     # The task's conversation was deleted.
                     continue
@@ -724,7 +812,8 @@ class AgentA2AService:
             )
 
     async def cancel(
-        self, user: UserContext, agent_id: str, params: a2a.CancelTaskRequest
+        self, user: UserContext, agent_id: str, params: a2a.CancelTaskRequest,
+        *, extensions: frozenset[str] = frozenset(),
     ) -> a2a.Task:
         """Stop the work this task's message started.
 
@@ -755,7 +844,7 @@ class AgentA2AService:
                 if exc.code == "CANCEL_REFUSED":
                     raise TaskNotCancelableError(message=f"The task cannot be canceled: {exc.message}") from None
                 raise
-            return await self._project(user, agent_id, row)
+            return await self._project(user, agent_id, row, extensions)
 
     async def _context_input_ids(
         self, user: UserContext, agent_id: str, context_id: str, session_id: str
@@ -783,6 +872,7 @@ class AgentA2AService:
         user: UserContext,
         agent_id: str,
         task_id: str,
+        extensions: frozenset[str],
         *,
         write: bool = False,
     ) -> a2a.Task:
@@ -790,28 +880,32 @@ class AgentA2AService:
         with self._changes(str(row["session_id"])) as changes:
             while True:
                 await self._authorize(user, agent_id, write=write)
-                task = await self._project(user, agent_id, row)
+                task = await self._project(user, agent_id, row, extensions)
                 if task.status.state in _RETURNABLE:
                     return task
                 await _committed(changes)
 
     async def stream(
-        self, user: UserContext, agent_id: str, params: a2a.SendMessageRequest
+        self, user: UserContext, agent_id: str, params: a2a.SendMessageRequest,
+        *, extensions: frozenset[str] = frozenset(),
     ) -> AsyncGenerator[Event, None]:
         immediate = a2a.SendMessageRequest()
         immediate.CopyFrom(params)
         immediate.configuration.return_immediately = True
-        task = await self.send(user, agent_id, immediate)
-        async for event in self._watch(user, agent_id, task.id, configuration=params.configuration):
+        task = await self.send(user, agent_id, immediate, extensions=extensions)
+        async for event in self._watch(
+            user, agent_id, task.id, extensions, configuration=params.configuration
+        ):
             yield event
 
     async def subscribe(
-        self, user: UserContext, agent_id: str, params: a2a.SubscribeToTaskRequest
+        self, user: UserContext, agent_id: str, params: a2a.SubscribeToTaskRequest,
+        *, extensions: frozenset[str] = frozenset(),
     ) -> AsyncGenerator[Event, None]:
         async with _protocol_errors():
             if params.tenant:
                 raise InvalidParamsError(message="Tenant routing is not supported")
-            async for event in self._watch(user, agent_id, params.id, reject_terminal=True):
+            async for event in self._watch(user, agent_id, params.id, extensions, reject_terminal=True):
                 yield event
 
     async def _watch(
@@ -819,6 +913,7 @@ class AgentA2AService:
         user: UserContext,
         agent_id: str,
         task_id: str,
+        extensions: frozenset[str],
         *,
         configuration: a2a.SendMessageConfiguration | None = None,
         reject_terminal: bool = False,
@@ -829,7 +924,7 @@ class AgentA2AService:
             # Subscribed before the first read, so nothing committed after it
             # goes unseen.
             with self._changes(str(row["session_id"])) as changes:
-                previous = await self._project(user, agent_id, row)
+                previous = await self._project(user, agent_id, row, extensions)
                 if reject_terminal and previous.status.state in _TERMINAL:
                     raise UnsupportedOperationError(message="A terminal task cannot be subscribed to")
                 modes: list[str] = []
@@ -841,7 +936,7 @@ class AgentA2AService:
                 while previous.status.state not in _TERMINAL:
                     await _committed(changes)
                     await self._authorize(user, agent_id)
-                    task = await self._project(user, agent_id, row)
+                    task = await self._project(user, agent_id, row, extensions)
                     current, old = _output_view(task, modes), _output_view(previous, modes)
                     old_artifacts = {item.artifact_id: item for item in old.artifacts}
                     for artifact in current.artifacts:
@@ -876,7 +971,21 @@ class AgentA2AService:
                         protocol_version="1.0",
                     )
                 ],
-                capabilities=a2a.AgentCapabilities(streaming=True, extended_agent_card=True),
+                capabilities=a2a.AgentCapabilities(
+                    streaming=True,
+                    extended_agent_card=True,
+                    extensions=[
+                        a2a.AgentExtension(
+                            uri=TASK_OUTCOME_EXTENSION,
+                            description=(
+                                "A rejected task's status message says whether the Agent handed the "
+                                "request back for routing elsewhere, and a task's result artifact names "
+                                "the repository, branch, last pushed commit and pull request of its work."
+                            ),
+                            required=False,
+                        )
+                    ],
+                ),
                 default_input_modes=["text/plain", "application/json"],
                 default_output_modes=["text/plain", "application/json"],
                 skills=[
@@ -884,10 +993,35 @@ class AgentA2AService:
                         id="execute",
                         name="Execute task",
                         tags=["agent"],
-                        description="Send text to start work. Answer input-required tasks with a data part containing interaction_id and answer.",
+                        description=(
+                            "Send text to start work, with referenceTaskIds naming earlier tasks it builds on. "
+                            "Answer input-required tasks with a data part containing interaction_id and answer."
+                        ),
                     )
                 ],
             )
+
+
+def _reference_view(task: a2a.Task, agent_name: str) -> dict[str, Any]:
+    """What an Agent is told of a task a message references: its state, texts and code references."""
+    status = next((part.text for part in task.status.message.parts if part.HasField("text")), "")
+    result = next((part.text for artifact in task.artifacts for part in artifact.parts if part.HasField("text")), "")
+    references = next(
+        (
+            MessageToDict(artifact.metadata)[TASK_OUTCOME_EXTENSION]
+            for artifact in task.artifacts
+            if TASK_OUTCOME_EXTENSION in artifact.metadata
+        ),
+        {},
+    )
+    return {
+        "task_id": task.id,
+        "agent": agent_name,
+        "state": a2a.TaskState.Name(task.status.state),
+        **({"status": status} if status else {}),
+        **({"result": result[:_REFERENCE_RESULT_CHARS]} if result else {}),
+        **references,
+    }
 
 
 async def _committed(changes: Subscription) -> None:

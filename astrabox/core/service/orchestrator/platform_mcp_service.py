@@ -10,11 +10,18 @@ from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator.agent_schema import agent_artifacts_enabled
 from astrabox.core.service.orchestrator.agent.assistant_agent_tools import agent_tools, call_agent_tool
 from astrabox.core.service.orchestrator.agent.agent_collaboration import CONVERSATION_TOOLS, collaboration_access
+from astrabox.core.service.orchestrator.agent.a2a_task_outcome import (
+    TASK_OUTCOME_CARD,
+    task_outcome,
+    task_outcome_tools,
+)
 from astrabox.persistence.repository.agent_repository import AgentRepository
 from astrabox.persistence.repository.assistant_catalog_repository import AssistantCatalogRepository
 from astrabox.core.service.orchestrator.runtime.mcp_servers import (
+    A2A_PLATFORM_SERVER,
     AGENTS_PLATFORM_SERVER,
     ARTIFACTS_PLATFORM_SERVER,
+    a2a_task_tools_enabled,
     artifact_tools_enabled,
     binding_mcp_server_definitions,
     binds_artifact_tools,
@@ -67,6 +74,7 @@ class PlatformMCPService:
             EXPOSE_PORT_PLATFORM_SERVER: (self._expose_tools, self._handle_expose_tool),
             ARTIFACTS_PLATFORM_SERVER: (artifact_tools, self._handle_artifact_tool),
             CONNECTIONS_PLATFORM_SERVER: (_connection_tools, self._handle_connection_tool),
+            A2A_PLATFORM_SERVER: (task_outcome_tools, self._handle_a2a_tool),
         }
 
     async def resolve_server(self, deployment_id: str, server_name: str) -> dict[str, Any] | None:
@@ -80,6 +88,12 @@ class PlatformMCPService:
             return {"deployment_id": deployment_id, "server_name": server_name,
                     "platform_server": AGENTS_PLATFORM_SERVER,
                     "allowed_tools": names, "coordination_binding": binding}
+        if server_name == A2A_PLATFORM_SERVER:
+            if await self._a2a_session(deployment_id) is None:
+                return None
+            return {"deployment_id": deployment_id, "server_name": server_name,
+                    "platform_server": A2A_PLATFORM_SERVER,
+                    "allowed_tools": {t["name"] for t in task_outcome_tools()}}
         if server_name == ARTIFACTS_PLATFORM_SERVER:
             binding = await self._binding_repo.get_binding(deployment_id)
             sid = (binding or {}).get("session_id") or (deployment_id if not binding else None)
@@ -115,7 +129,7 @@ class PlatformMCPService:
         if not is_platform_mcp_server(config):
             return None
         platform_server = platform_mcp_server_id(server_name, config)
-        if platform_server == AGENTS_PLATFORM_SERVER:
+        if platform_server in (AGENTS_PLATFORM_SERVER, A2A_PLATFORM_SERVER):
             return None
         if platform_server not in self._servers:
             return None
@@ -295,6 +309,36 @@ class PlatformMCPService:
         if type(port) is not int or not 1 <= port <= 65535:
             raise APIError(code="INVALID_REQUEST", message="port is required: start your web server on a port of its own and pass that port", status_code=400)
         return await self._expose_port_service.expose_port(deployment_id=server["deployment_id"], port=port, title=arguments.get("title"))
+
+    async def _a2a_session(self, deployment_id: str) -> dict[str, Any] | None:
+        """The Agent conversation an A2A context created that this address serves, if it is one."""
+        try:
+            binding = await self._session_binding(deployment_id)
+        except APIError as exc:
+            if exc.code == "MCP_BINDING_NOT_FOUND":
+                return None
+            raise
+        if not binding.get("session_id") or not a2a_task_tools_enabled(binding.get("source_type")):
+            return None
+        return binding
+
+    async def _handle_a2a_tool(self, server: dict[str, Any], name: str, args: dict[str, Any]) -> dict[str, Any]:
+        """Record the outcome of the A2A task this conversation answers.
+
+        The record is a card of the conversation, which the session reader
+        binds to this call in the response's parts; the A2A projection reads
+        the response's last one when the response ends.
+        """
+        binding = await self._a2a_session(server["deployment_id"])
+        if binding is None:
+            raise APIError(code="MCP_BINDING_NOT_FOUND", message="this conversation answers no A2A task", status_code=404)
+        outcome = task_outcome(args)
+        card_id = await record_card(
+            session_id=str(binding["session_id"]), server=A2A_PLATFORM_SERVER, tool=name,
+            kind=TASK_OUTCOME_CARD, data=outcome, repository=self._tool_cards,
+        )
+        return {"card": card_id, **outcome,
+                "recorded": "The sender reads the last report of this reply as the task's outcome when the reply ends."}
 
     async def _session_binding(self, deployment_id: str) -> dict[str, Any]:
         """Who a call through this address acts for, and the artifact it is limited to.
@@ -588,6 +632,7 @@ class PlatformMCPService:
             AGENTS_PLATFORM_SERVER: agent_tools,
             ARTIFACTS_PLATFORM_SERVER: artifact_tools,
             CONNECTIONS_PLATFORM_SERVER: _connection_tools,
+            A2A_PLATFORM_SERVER: task_outcome_tools,
         }.get(str(server.get("platform_server") or ""), PlatformMCPService._expose_tools)()
         return [t for t in tools if t["name"] in server["allowed_tools"]]
 

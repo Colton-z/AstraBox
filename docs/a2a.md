@@ -62,6 +62,85 @@ Repeating an identical `messageId` reuses its input. Reusing it with different
 message content is refused. Hermes generates its own message ids, so asking
 the Assistant to call again is a new request, not an idempotent retry.
 
+A new task's message may name earlier tasks in `referenceTaskIds`, at most ten,
+each a task the same caller sent to any Agent it can still use; another id is
+refused with `InvalidParamsError`. The Agent receives, below the message, each
+referenced task as it stands: its id, Agent, state, status message, the start
+of its result text and the code references the
+[task outcome extension](#task-outcome-v1) gives it. A message that answers a
+task's interaction takes no references.
+
+## Task outcomes
+
+A conversation that an A2A context created has one more platform tool, on the
+`a2a` MCP server: `report_outcome`. The Agent calls it before its final reply to
+say what became of the request, whatever its engine (Claude Code, Codex, Pi or
+the DeepSeek Harness):
+
+| `state` | Meaning | The task |
+|---|---|---|
+| `TASK_STATE_COMPLETED` | It did what was asked; `message` says what it did | `TASK_STATE_COMPLETED` |
+| `TASK_STATE_REJECTED` | It did not and will not; `message` says why | `TASK_STATE_REJECTED` |
+
+With `TASK_STATE_REJECTED` it may add `handback: true`: the request belongs to
+another agent or must be split, and `message` says what should happen instead.
+When its work is in a git repository it names `repository`, `branch`, the last
+`commit` it pushed and the `pull_request` it opened. The platform records the
+call with the response; when the response ends `completed`, the last report of
+that response decides the task's state, and its `message` is the task's
+`TaskStatus.message`, ahead of the conversation link. A response that ends
+failed or cancelled keeps that state. A response without a report is a
+completed task, as for a conversation without the tool.
+
+The task's state and status message are A2A 1.0 core: any client reads a
+declined request as `TASK_STATE_REJECTED` and why. The hand-back and the code
+references have no core element; they travel in the task outcome extension
+below, for a client that activates it.
+
+The tool exists only in conversations an A2A context created, not in a console
+conversation that `send_agent_message` reaches. Because a prepared Agent
+runtime fixed its platform tools before any conversation claimed it, a
+conversation an A2A context created starts its own runtime rather than claiming
+a prepared one.
+
+## Task outcome extension (v1) {#task-outcome-v1}
+
+URI: `https://www.astrabox.ai/docs/a2a#task-outcome-v1`
+
+A profile extension, in the sense of the
+[A2A extensions guide](https://a2a-protocol.org/v1.0.0/topics/extensions/): it
+adds data to core objects and changes no method. The Agent Card lists it in
+`capabilities.extensions` with `required: false`. A client activates it per
+request with the `A2A-Extensions` header, as in
+`A2A-Extensions: https://www.astrabox.ai/docs/a2a#task-outcome-v1`; the
+response's `A2A-Extensions` header then names it, and every task the response
+carries has the data below. Without activation a task carries none of it.
+
+The data sits in the core objects' `metadata`, under the extension's URI as
+the key, and the object's `extensions` list names the URI:
+
+- On a `TASK_STATE_REJECTED` task's `status.message`, when the Agent handed the
+  request back: `{"handback": true}`. The request belongs to another agent or
+  must be split; the status message says what should happen instead. A
+  rejected task without it is a plain decline.
+- On the task's result artifact (`artifactId` `<task id>:result`), when the
+  Agent named them: `repository`, `branch`, `commit` (lowercase hexadecimal)
+  and `pull_request` (an http(s) URL), each a string and each optional.
+
+```json
+{
+  "status": {
+    "state": "TASK_STATE_REJECTED",
+    "message": {
+      "role": "ROLE_AGENT",
+      "parts": [{"text": "Agent declined the task.\n\nThis is a billing change; the billing agent owns it.\n\n[View Agent session](/sessions/…)"}],
+      "extensions": ["https://www.astrabox.ai/docs/a2a#task-outcome-v1"],
+      "metadata": {"https://www.astrabox.ai/docs/a2a#task-outcome-v1": {"handback": true}}
+    }
+  }
+}
+```
+
 ## Message an existing conversation
 
 Agent administrators configure **Agent collaboration** on the Agent's management
@@ -144,7 +223,8 @@ work stops before the runtime takes the message.
 A pending platform approval requires the explicit interaction id and answer; a
 new text message is not approval.
 
-The server accepts text tasks and exposes results and platform interaction data.
+The server accepts text tasks, with `referenceTaskIds`, and exposes results and
+platform interaction data.
 It does not accept uploaded file parts or push-notification configurations.
 `SendMessage`, `SendStreamingMessage`, `GetTask`, `ListTasks` and
 `SubscribeToTask` read the same recorded responses. A new task's message is

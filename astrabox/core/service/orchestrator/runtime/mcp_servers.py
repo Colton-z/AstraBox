@@ -11,6 +11,10 @@ EXPOSE_PORT_PLATFORM_SERVER = "expose_port"
 ARTIFACTS_PLATFORM_SERVER = "artifacts"
 CONNECTIONS_PLATFORM_SERVER = "connections"
 AGENTS_PLATFORM_SERVER = "agents"
+#: The A2A task outcome tool (``agent/a2a_task_outcome.py``), in conversations an A2A context created.
+A2A_PLATFORM_SERVER = "a2a"
+#: The Session provenance of a conversation an A2A context created.
+A2A_SOURCE_TYPE = "a2a"
 #: A work-app connector, relayed to the connector hub as the Session's person.
 CONNECTOR_PLATFORM_SERVER = "connector"
 
@@ -47,6 +51,26 @@ def artifact_tools_enabled(source_type: str | None) -> bool:
     return source_type != "channel"
 
 
+def a2a_task_tools_enabled(source_type: str | None) -> bool:
+    """Whether a Session of this provenance holds the ``a2a`` task outcome tool.
+
+    Only a conversation an A2A context created answers A2A tasks, so only its
+    engine can report a task's outcome.
+    """
+    return source_type == A2A_SOURCE_TYPE
+
+
+def prepared_runtime_serves(source_type: str | None) -> bool:
+    """Whether a prepared native process can serve a Session of this provenance.
+
+    A prepared process froze its platform MCP servers before any Session
+    existed: the servers of a Session with no provenance. A channel Session is
+    given fewer (no artifact tools) and an A2A Session one more (the ``a2a``
+    server), so each starts a runtime of its own.
+    """
+    return artifact_tools_enabled(source_type) and not a2a_task_tools_enabled(source_type)
+
+
 def personal_connections_enabled(source_type: str | None, *, agent_id: str | None) -> bool:
     """Whether a Session's connector servers act for a person.
 
@@ -80,7 +104,9 @@ def binding_mcp_server_definitions(
     where connectors are offered, the platform's connections tools come with
     them. The ``artifacts`` server is added or removed by
     :func:`binds_artifact_tools`, and a removal also drops authored aliases of
-    it, so no name can reach those tools on a binding that has none. All of
+    it, so no name can reach those tools on a binding that has none. An Agent
+    conversation an A2A context created also gets the ``a2a`` server
+    (:func:`a2a_task_tools_enabled`), which no authored definition reaches. All of
     this is decided here, at the engine, rather than in the resolved view:
     the Agent's runtime generation and its box's egress are the same for
     every Session of the Agent, so a channel conversation neither retires the
@@ -102,6 +128,20 @@ def binding_mcp_server_definitions(
     if session_source_type == "channel":
         servers = {name: config for name, config in servers.items()
                    if platform_mcp_server_id(name, config) != AGENTS_PLATFORM_SERVER}
+    # The task outcome tool is the platform's alone: no author definition reaches it.
+    servers = {name: config for name, config in servers.items()
+               if platform_mcp_server_id(name, config) != A2A_PLATFORM_SERVER}
+    if agent_id and not assistant_id and a2a_task_tools_enabled(session_source_type):
+        if A2A_PLATFORM_SERVER in servers:
+            raise APIError(
+                code="AGENT_MCP_NAME_CONFLICT",
+                message=(
+                    f"the MCP server name {A2A_PLATFORM_SERVER!r} is the platform's A2A task "
+                    "outcome tool; rename the server"
+                ),
+                status_code=409,
+            )
+        servers = {**servers, A2A_PLATFORM_SERVER: {"platform_server": A2A_PLATFORM_SERVER}}
     if not personal_connections_enabled(session_source_type, agent_id=agent_id):
         servers = {name: config for name, config in servers.items()
                    if platform_mcp_server_id(name, config) != CONNECTOR_PLATFORM_SERVER}
