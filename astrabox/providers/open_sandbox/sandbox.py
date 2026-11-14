@@ -47,7 +47,7 @@ from astrabox.providers.execd.commands import ReportedExitStatus, join_execd_lin
 from astrabox.providers.open_sandbox import _config
 from astrabox.providers.open_sandbox.aio_auth import AIO_HTTP_PORT
 from astrabox.providers.open_sandbox.execd_access import (
-    DIRECTLY_PUBLISHED_PORTS,
+    ENDPOINTS_OUTSIDE_EXECD,
     EXECD_ACCESS_TOKEN_HEADER,
     execd_access_headers,
     with_execd_access,
@@ -589,7 +589,7 @@ class OpenSandboxHandle:
         resolved = SandboxEndpoint(
             url=_config.endpoint_url(raw.endpoint, settings=settings),
             headers={
-                **({} if key in DIRECTLY_PUBLISHED_PORTS else self.execd_access),
+                **({} if key in ENDPOINTS_OUTSIDE_EXECD else self.execd_access),
                 **_endpoint_headers(raw.headers),
             },
         )

@@ -59,9 +59,11 @@ EXECD_ACCESS_TOKEN_HEADER = "X-EXECD-ACCESS-TOKEN"
 #: The sandbox metadata key holding the token's derivation subject.
 SANDBOX_EXECD_ACCESS_METADATA_KEY = "astrabox.execd-access"
 
-#: In-box ports the Docker runtime publishes directly rather than through
-#: execd's ``/proxy/<port>``: the image's :8080 gateway and the egress API.
-DIRECTLY_PUBLISHED_PORTS = frozenset({8080, 18080})
+#: In-box ports whose Docker endpoint is their own published port rather than
+#: execd's ``/proxy/<port>`` (``_resolve_host_mapped_endpoint`` in
+#: ``services/docker/networking.py``): only the image's :8080 gateway. The egress
+#: API is published too, but its endpoint is execd's proxy like every other port.
+ENDPOINTS_OUTSIDE_EXECD = frozenset({8080})
 
 _EXECD_ACCESS_DOMAIN = "astrabox-execd-access"
 
@@ -220,7 +222,7 @@ async def require_execd_access_enforced(
 
 
 __all__ = [
-    "DIRECTLY_PUBLISHED_PORTS",
+    "ENDPOINTS_OUTSIDE_EXECD",
     "EXECD_ACCESS_TOKEN_ENV",
     "EXECD_ACCESS_TOKEN_HEADER",
     "SANDBOX_EXECD_ACCESS_METADATA_KEY",
