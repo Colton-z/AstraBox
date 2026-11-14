@@ -122,6 +122,11 @@ class Session(Base):
 
     permission_mode: Mapped[str | None] = mapped_column(payload_text())
     model_name: Mapped[str | None] = mapped_column(payload_text())
+    #: The model account whose access token the sandbox spends, on a model
+    #: endpoint paid by the conversation's owner (the ChatGPT plan). The
+    #: platform changes it only between responses, so it names the account the
+    #: last response spent.
+    model_account_id: Mapped[str | None] = mapped_column(payload_text())
     slash_commands: Mapped[list[Any] | None]
     slash_command_details: Mapped[list[Any] | None]
     engine_capabilities: Mapped[dict[str, Any] | None]

@@ -78,7 +78,7 @@ _SUMMARY_FIELDS = (
     "last_error",
     "startup_progress",
 )
-_DETAIL_FIELDS = ("model_name", "terminal_cwd")
+_DETAIL_FIELDS = ("model_name", "model_account_id", "terminal_cwd")
 _NO_ACTIVITY: dict[str, list[Any]] = {"open_interactions": [], "open_responses": [], "held_inputs": []}
 #: What an input's author and route say; a share link does not carry it.
 _OWNER_INPUT_METADATA = ("author_user_id", "source")

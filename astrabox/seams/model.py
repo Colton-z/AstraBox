@@ -75,6 +75,11 @@ class ModelRequestContext:
     #: The model account the conversation's Agent names, for a provider whose
     #: credential is the Session owner's; ``None`` means the owner's default.
     account_id: str | None = None
+    #: For a provider whose credential is the Session owner's: renew the
+    #: credential of the account the conversation spends now instead of
+    #: choosing one. True while a response may be running, which must not
+    #: change accounts.
+    keep_account: bool = False
 
 
 class ModelEndpointConfigurationError(RuntimeError):

@@ -34,7 +34,7 @@ class SessionRuntime:
     # Host-side preparation that must finish before a new input reaches the
     # engine. Protected MCP credentials use it to refresh the
     # process-local egress Vault after rotation without entering engine config.
-    prepare_engine_input: Optional[Callable[[], Awaitable[None]]] = None
+    prepare_engine_input: Optional[Callable[..., Awaitable[None]]] = None
     #: Under the shared-sandbox tenancy, the isolated session this conversation
     #: runs in. ``sandbox_id`` stays the box — every lifecycle operation
     #: addresses the box, and many conversations share one — so this is what

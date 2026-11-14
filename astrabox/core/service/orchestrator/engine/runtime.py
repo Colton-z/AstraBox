@@ -276,7 +276,10 @@ class ResponseEnded(RuntimeEvent):
 
     ``outcome`` is the adapter's declared reading of the vendor's ending;
     ``native_reason`` is the vendor's own word for it, unchanged. ``usage`` and
-    ``error`` are what the vendor reported.
+    ``error`` are what the vendor reported. ``usage_limited`` is the adapter's
+    declared reading that the model provider refused the response's request
+    because a usage limit of the credential it spent was reached; the platform
+    holds that credential's model account back from later responses.
     """
 
     response_id: str
@@ -284,6 +287,7 @@ class ResponseEnded(RuntimeEvent):
     native_reason: str | None = None
     usage: dict[str, Any] | None = None
     error: dict[str, Any] | None = None
+    usage_limited: bool = False
 
 
 @dataclass(frozen=True, slots=True)

@@ -125,6 +125,10 @@ class SessionRecord(BaseModel):
     runtime_status: str | None = None
     permission_mode: str | None = None
     model_name: str | None = None
+    #: The model account whose plan the session's last response spent, on a
+    #: ChatGPT plan RuntimeProfile; with the team pool on it may be an account
+    #: another member shared.
+    model_account_id: str | None = None
     sandbox_id: str | None = None
     terminal_cwd: str | None = None
     title: str | None = None

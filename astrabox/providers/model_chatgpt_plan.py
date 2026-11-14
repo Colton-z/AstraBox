@@ -5,8 +5,10 @@ OpenAI's "Sign in with ChatGPT" lets an application call the Responses API at
 account, and charges that user's plan. The application signs the user in and
 keeps the tokens (:mod:`astrabox.core.service.model_accounts`); this provider
 is the model endpoint a RuntimeProfile selects to run its conversations that
-way. It has no credential of its own: each Session spends its owner's access
-token, which the platform renews and the sandbox never holds.
+way. It has no credential of its own: each Session spends the access token of
+the account :meth:`~astrabox.core.service.model_accounts.service.ModelAccountService.conversation_token`
+chooses for it (its owner's, or with the team pool on, an account another
+member shared), which the platform renews and the sandbox never holds.
 
 The AstraBox server's own completions (conversation titles) are not the
 user's requests, so they stay on the deployment's default model endpoint.
@@ -50,7 +52,7 @@ class ChatGPTPlanModelEndpointProvider(ModelEndpointProvider):
             settings=settings
         )
 
-    async def _token(self, context: ModelRequestContext) -> Any:
+    async def _token(self, context: ModelRequestContext, *, keep: bool) -> Any:
         from astrabox.core.service.model_accounts.service import get_model_account_service
 
         user_id = str(context.user_id or "").strip()
@@ -63,15 +65,20 @@ class ChatGPTPlanModelEndpointProvider(ModelEndpointProvider):
                 ),
                 status_code=409,
             )
-        return await get_model_account_service().access_token(
-            user_id=user_id, account_id=str(context.account_id or "").strip() or None
+        return await get_model_account_service().conversation_token(
+            user_id=user_id,
+            account_id=str(context.account_id or "").strip() or None,
+            session_id=str(context.conversation_id or "").strip() or None,
+            keep=keep,
         )
 
     async def ensure_session_credential(self, *, context: ModelRequestContext) -> str | None:
-        return str((await self._token(context)).access_token)
+        return str((await self._token(context, keep=context.keep_account)).access_token)
 
     async def session_credential_expires_at(
         self, *, context: ModelRequestContext
     ) -> datetime | None:
-        expires_at: datetime = (await self._token(context)).expires_at
+        # The expiry of the token the conversation spends now, which the last
+        # ensure_session_credential chose.
+        expires_at: datetime = (await self._token(context, keep=True)).expires_at
         return expires_at

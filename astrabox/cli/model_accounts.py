@@ -1,4 +1,4 @@
-"""``astrabox model-account`` — link a ChatGPT account to your AstraBox user, and list them.
+"""``astrabox model-account`` — link a ChatGPT account to your AstraBox user, list them, share one.
 
 OpenAI's "Sign in with ChatGPT" sends the browser back to an HTTP loopback
 address, ``http://127.0.0.1:<port>/auth/callback``. That address reaches the
@@ -7,6 +7,10 @@ listener here: it binds a free port on ``127.0.0.1`` before anything opens the
 browser, asks the deployment to start a sign-in for that address, opens the
 sign-in page, and hands the redirect's query to the deployment, which exchanges
 the code and keeps the tokens. No token reaches this machine.
+
+``share`` and ``unshare`` give an account to the deployment's team pool, or take
+it back: a shared account may be spent by other members' conversations once
+their own accounts reached their plan usage limit.
 """
 
 from __future__ import annotations
@@ -34,7 +38,10 @@ DEFAULT_LOGIN_TIMEOUT_SECONDS = 600
 #: read its signing keys, so its answer can take longer than an ordinary call.
 _COMPLETE_TIMEOUT_SECONDS = 120.0
 
-_ACCOUNT_COLUMNS = ("label", "email", "status", "is_default", "account_id")
+_ACCOUNT_COLUMNS = (
+    "label", "email", "status", "is_default", "shared", "usage_limited_until",
+    "pool_last_used_at", "account_id",
+)
 
 _DONE_PAGE = (
     b"<!doctype html><html><head><meta charset=\"utf-8\"><title>AstraBox</title></head>"
@@ -86,6 +93,32 @@ def register(subparsers: Any) -> None:
         description="List the model accounts linked to your AstraBox user.",
     )
     listing.set_defaults(func=_cmd_list)
+
+    share = commands.add_parser(
+        "share",
+        parents=[connection_flags()],
+        help="Share an account with your team's pool.",
+        description=(
+            "Let other members' conversations spend this account's ChatGPT plan once "
+            "their own accounts reached their plan usage limit. The deployment's team "
+            "pool must be on (ASTRABOX_MODEL_ACCOUNT_POOL_ENABLED). `list` shows when "
+            "the pool last used the account."
+        ),
+    )
+    share.add_argument("account_id", help="The account to share.")
+    share.set_defaults(func=_cmd_share, shared=True)
+
+    unshare = commands.add_parser(
+        "unshare",
+        parents=[connection_flags()],
+        help="Stop sharing an account with your team's pool.",
+        description=(
+            "Take an account back from the team pool: other members' conversations stop "
+            "spending it from their next response."
+        ),
+    )
+    unshare.add_argument("account_id", help="The account to stop sharing.")
+    unshare.set_defaults(func=_cmd_share, shared=False)
 
 
 class _Callback:
@@ -169,6 +202,14 @@ def _cmd_login(args: Any) -> int:
     finally:
         server.shutdown()
         server.server_close()
+    emit(account, output=args.output, table=[account], columns=_ACCOUNT_COLUMNS)
+    return EXIT_OK
+
+
+def _cmd_share(args: Any) -> int:
+    """Handle ``astrabox model-account share`` and ``unshare``."""
+    with ApiClient(resolve_endpoint(endpoint=args.endpoint, token=args.token)) as client:
+        account = client.patch(f"{_ACCOUNTS}/{args.account_id}", json={"shared": args.shared})
     emit(account, output=args.output, table=[account], columns=_ACCOUNT_COLUMNS)
     return EXIT_OK
 

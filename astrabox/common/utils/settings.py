@@ -282,6 +282,18 @@ class AstraBoxRuntimeSettings(BaseSettings):
             "ASTRABOX_MODEL_ENDPOINT_PROVIDER", AliasPath("astrabox", "model", "endpoint_provider")
         ),
     )
+    # The team pool of model accounts (astrabox/core/service/model_accounts):
+    # a conversation whose owner's account reached its plan usage limit spends
+    # the owner's other accounts, then accounts other members shared. Off, a
+    # conversation spends only its owner's chosen account and no account can
+    # be shared.
+    model_account_pool_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "ASTRABOX_MODEL_ACCOUNT_POOL_ENABLED",
+            AliasPath("astrabox", "model_accounts", "pool_enabled"),
+        ),
+    )
     # Which ExtensionProvider supplies the catalog and runtime bindings.
     # Empty selects the provider that explicitly declares itself the default;
     # `none` runs no extension catalog (astrabox.seams.extensions).

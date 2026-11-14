@@ -842,6 +842,18 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "astrabox.common.utils.settings",
     ),
     (
+        "ASTRABOX_MODEL_ACCOUNT_POOL_ENABLED",
+        "public",
+        "false",
+        "Turn on the team pool of ChatGPT accounts. A conversation on a ChatGPT plan "
+        "RuntimeProfile whose owner's account reported its plan usage limit spends, from "
+        "its next response on, the owner's other accounts and then accounts other members "
+        "of the organization shared with the team. False: a conversation spends only its "
+        "owner's chosen account, and no account can be shared. YAML: "
+        "astrabox.model_accounts.pool_enabled. Restart to apply.",
+        "astrabox.common.utils.settings",
+    ),
+    (
         "ASTRABOX_TITLE_MODEL_ENABLED",
         "public",
         "true",

@@ -35,6 +35,10 @@ class ModelAccount(Base):
     ``refresh_claimed_until`` is the refresh claim: a replica renewing the
     access token holds it until then, and no other replica may renew the token
     meanwhile, because the vendor rotates the refresh token on every renewal.
+
+    ``shared`` is the owner's consent to the team pool: only a shared account
+    is ever spent by another member's conversation, and only while the
+    deployment's pool is on (``ASTRABOX_MODEL_ACCOUNT_POOL_ENABLED``).
     """
 
     __tablename__ = "model_accounts"
@@ -47,7 +51,7 @@ class ModelAccount(Base):
             predicate=text("is_default"), marker="_default_slot",
         ),
         Index(None, "owner_user_id", "created_at"),
-        *boolean_checks("is_default"),
+        *boolean_checks("is_default", "shared"),
         MYSQL_TABLE_OPTIONS,
     )
 
@@ -71,6 +75,12 @@ class ModelAccount(Base):
     #: The vendor's error code from the renewal that required a new sign-in.
     last_error_code: Mapped[str | None] = mapped_column(payload_text())
     last_error_at: Mapped[datetime | None]
+    shared: Mapped[bool] = mapped_column(server_default=text("false"))
+    #: Until when a usage limit the vendor reported keeps the account from
+    #: being chosen for a conversation; a past time means it is offered again.
+    usage_limited_until: Mapped[datetime | None]
+    #: When the pool last gave the account to another member's conversation.
+    pool_last_used_at: Mapped[datetime | None]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
 

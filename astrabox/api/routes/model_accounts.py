@@ -11,6 +11,10 @@ sign-in. ``astrabox model-account login chatgpt`` is that client.
 account can use (``default`` names the caller's default account), for choosing
 an Agent's model on a ChatGPT plan RuntimeProfile.
 
+``PATCH …/{account_id}`` with ``shared`` shares an account with the team pool,
+or stops sharing it; ``GET /api/v1/me/model-accounts/team-pool`` answers
+whether the deployment's pool is on, without which nothing can be shared.
+
 Each route acts on the caller's own accounts only. No answer carries a token:
 the tokens stay in the server's secret store
 (:mod:`astrabox.core.service.model_accounts.service`).
@@ -60,6 +64,8 @@ class UpdateModelAccountRequest(BaseModel):
 
     label: str | None = None
     is_default: bool | None = None
+    #: Share the account with the team pool (true) or stop sharing it (false).
+    shared: bool | None = None
 
 
 # ── response payloads ───────────────────────────────────────────────────────
@@ -95,8 +101,23 @@ class ModelAccount(BaseModel):
     access_expires_at: str | None
     last_error_code: str | None
     last_error_at: str | None
+    #: Whether the owner shared the account with the team pool.
+    shared: bool
+    #: Until when the plan usage limit OpenAI reported keeps the account from
+    #: being chosen for a conversation; ``null`` when no limit holds it back.
+    usage_limited_until: str | None
+    #: When the pool last gave the account to another member's conversation.
+    pool_last_used_at: str | None
     created_at: str
     updated_at: str
+
+
+class TeamPool(BaseModel):
+    """Whether the deployment's team pool of model accounts is on."""
+
+    model_config = ConfigDict(extra="allow")
+
+    enabled: bool
 
 
 class DeletedModelAccount(BaseModel):
@@ -170,6 +191,15 @@ def register_model_account_routes(app: Any) -> None:
         return success_response(await get_model_account_service().list_accounts(user))
 
     @app.get(
+        "/api/v1/me/model-accounts/team-pool",
+        response_model=ApiEnvelope[TeamPool],
+        response_model_exclude_unset=True,
+    )
+    async def get_model_account_team_pool(request: Request) -> dict[str, Any]:
+        user = await get_current_user_context(request)
+        return success_response(await get_model_account_service().team_pool(user))
+
+    @app.get(
         "/api/v1/me/model-accounts/{account_id}/models",
         response_model=ApiEnvelope[list[ModelAccountModel]],
         response_model_exclude_unset=True,
@@ -191,7 +221,7 @@ def register_model_account_routes(app: Any) -> None:
         user = await get_current_user_context(request)
         return success_response(
             await get_model_account_service().update_account(
-                user, account_id, label=body.label, is_default=body.is_default
+                user, account_id, label=body.label, is_default=body.is_default, shared=body.shared
             )
         )
 

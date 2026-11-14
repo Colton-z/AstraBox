@@ -21,10 +21,20 @@ ChatGPT account, and charges that user's plan. AstraBox is the application:
   of its expiry. OpenAI rotates the refresh token on every renewal and refuses
   a used one, so renewal runs under a compare-and-set claim on the account's
   row: one caller renews, the others wait for its result.
-* **Accounts.** A user may link several accounts; one is their default, and
-  nothing switches between them on its own. Each registration keeps its own
-  issued client id; the installation is one host
+* **Accounts.** A user may link several accounts; one is their default. Each
+  registration keeps its own issued client id; the installation is one host
   (``ext_agent_host_id``, derived from the installation id).
+* **Which account a conversation spends.**
+  :meth:`ModelAccountService.conversation_token` decides it, when a
+  conversation starts and before each of its responses, and records it on the
+  session. A conversation spends its owner's preferred account: the one its
+  Agent names, or the owner's default. With the team pool off that is all.
+  With it on (``ASTRABOX_MODEL_ACCOUNT_POOL_ENABLED``), an account whose plan
+  usage limit was reported (:meth:`ModelAccountService.record_usage_limit`) is
+  passed over until the hold ends, and the conversation spends the owner's
+  other accounts, then the accounts other members of the organization shared
+  with the team. The response that met the limit stays failed; nothing
+  replays it, and a response never changes accounts while it runs.
 """
 
 from __future__ import annotations
@@ -45,6 +55,7 @@ import jwt
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
+from astrabox.common.utils.settings import load_astrabox_settings
 from astrabox.common.utils.time_utils import parse_iso, utcnow
 from astrabox.common.utils.user_context import UserContext, default_org_id
 from astrabox.core.service.secret_changes import SecretStoreChange, prepare_secret_change
@@ -54,6 +65,7 @@ from astrabox.persistence.repository.model_account_repository import (
     ModelAccountRepository,
     new_account_id,
 )
+from astrabox.persistence.repository.session_repository import SessionRepository
 from astrabox.providers.identity_oidc import make_pkce_pair
 from astrabox.seams.egress_credentials import ACCESS_TOKEN_RENEWAL_WINDOW_S
 from astrabox.seams.secrets import SecretStore, secret_store_for_name
@@ -123,6 +135,16 @@ _REFRESH_CLAIM_S = 60.0
 _REFRESH_POLL_S = 0.25
 
 _LABEL_MAX_CHARS = 200
+
+#: The error a response, or an input with no account left to spend, fails with
+#: when the plan usage limit of the account it spends was reached.
+PLAN_USAGE_LIMIT = "MODEL_PLAN_USAGE_LIMIT"
+
+#: How long a reported usage limit keeps an account from being chosen. OpenAI's
+#: plan-usage error names no reset time and its guide says not to infer one
+#: (https://developers.openai.com/siwc/token-sharing-open-source/errors-and-recovery),
+#: so the account is offered again after this.
+USAGE_LIMIT_HOLD_S = 3600
 
 #: Secret-store keys under an account's scope.
 _ACCESS_TOKEN = "access_token"
@@ -206,11 +228,37 @@ def _models_unavailable(account_id: str, message: str, *, retryable: bool = True
     )
 
 
+def _usage_limit_reached(account: Mapping[str, Any]) -> APIError:
+    return APIError(
+        code=PLAN_USAGE_LIMIT,
+        message=(
+            f"ChatGPT account {account['label']!r} reached its plan usage limit and is used "
+            f"again after {account['usage_limited_until']}; no other linked or shared account "
+            "can be used now"
+        ),
+        status_code=429,
+        evidence={
+            "account_id": account["account_id"],
+            "usage_limited_until": account["usage_limited_until"],
+        },
+    )
+
+
 def _due(expires_at: str | None) -> bool:
     """Whether an access token expiring at ``expires_at`` needs renewing now."""
     if not expires_at:
         return True
     return parse_iso(expires_at) <= utcnow() + timedelta(seconds=ACCESS_TOKEN_RENEWAL_WINDOW_S)
+
+
+def _usage_limited(account: Mapping[str, Any]) -> bool:
+    """Whether a reported usage limit still holds the account back."""
+    until = account["usage_limited_until"]
+    return bool(until) and parse_iso(until) > utcnow()
+
+
+def _pool_enabled() -> bool:
+    return load_astrabox_settings().model_account_pool_enabled
 
 
 def _json_object(response: httpx.Response) -> dict[str, Any]:
@@ -271,6 +319,9 @@ def _public_view(account: Mapping[str, Any]) -> dict[str, Any]:
         "access_expires_at": account["access_expires_at"],
         "last_error_code": account["last_error_code"],
         "last_error_at": account["last_error_at"],
+        "shared": account["shared"],
+        "usage_limited_until": account["usage_limited_until"] if _usage_limited(account) else None,
+        "pool_last_used_at": account["pool_last_used_at"],
         "created_at": account["created_at"],
         "updated_at": account["updated_at"],
     }
@@ -704,18 +755,50 @@ class ModelAccountService:
         *,
         label: str | None = None,
         is_default: bool | None = None,
+        shared: bool | None = None,
     ) -> dict[str, Any]:
-        """Rename an account, or make it (or stop it being) the user's default."""
+        """Rename an account, make it (or stop it being) the user's default, or share it with the team.
+
+        A shared account may be spent by other members' conversations whose
+        own accounts reached their plan usage limit. Sharing is refused with
+        ``MODEL_ACCOUNT_POOL_DISABLED`` while the deployment's team pool is
+        off; stopping sharing is always accepted, and takes effect from the
+        next response of each conversation spending the account.
+        """
         if label is not None:
             label = label.strip()
             if not label or len(label) > _LABEL_MAX_CHARS:
                 raise _invalid(f"label must be 1 to {_LABEL_MAX_CHARS} characters")
+        if shared and not _pool_enabled():
+            raise APIError(
+                code="MODEL_ACCOUNT_POOL_DISABLED",
+                message=(
+                    "this deployment's team pool of model accounts is off, so no account can "
+                    "be shared; an administrator turns it on with "
+                    "ASTRABOX_MODEL_ACCOUNT_POOL_ENABLED"
+                ),
+                status_code=409,
+            )
         account = await self._repo.update_account(
-            account_id, owner_user_id=user.user_id, label=label, is_default=is_default
+            account_id,
+            owner_user_id=user.user_id,
+            label=label,
+            is_default=is_default,
+            shared=shared,
         )
         if account is None:
             raise _not_found(account_id)
+        if shared is not None:
+            logger.info(
+                "model account sharing changed: account=%s user=%s shared=%s",
+                account_id, user.user_id, shared,
+            )
         return _public_view(account)
+
+    async def team_pool(self, user: UserContext) -> dict[str, Any]:
+        """Whether this deployment's team pool is on, so the user's accounts can be shared."""
+        _ = user
+        return {"enabled": _pool_enabled()}
 
     async def delete_account(self, user: UserContext, account_id: str) -> dict[str, Any]:
         """Sign the account out at OpenAI, then delete it and its tokens.
@@ -839,20 +922,145 @@ class ModelAccountService:
         usage, and ``MODEL_ACCOUNT_REFRESH_FAILED`` when renewal failed
         otherwise.
         """
-        if account_id:
-            account = await self._owned(user_id, account_id)
-        else:
-            found = await self._repo.get_default_account(user_id)
-            if found is None:
+        return await self._account_token(await self._preferred(user_id, account_id))
+
+    async def conversation_token(
+        self,
+        *,
+        user_id: str,
+        account_id: str | None = None,
+        session_id: str | None = None,
+        keep: bool = False,
+    ) -> ModelAccountToken:
+        """The access token a conversation of ``user_id`` spends now.
+
+        ``account_id`` is one of the user's accounts the conversation's Agent
+        names; without it the user's default account is preferred. The account
+        chosen is recorded on the session ``session_id`` names
+        (``model_account_id``):
+
+        * With the team pool off (``ASTRABOX_MODEL_ACCOUNT_POOL_ENABLED``),
+          the preferred account.
+        * With it on, the preferred account unless a reported usage limit
+          holds it back (:meth:`record_usage_limit`). Then the user's other
+          active accounts, the default first, and after them the active
+          accounts other members of the session's organization shared, oldest
+          first; an account held back is skipped, and one whose token cannot be
+          obtained is logged and skipped. ``MODEL_PLAN_USAGE_LIMIT`` (429) when
+          none is left, with the preferred account in its evidence.
+
+        ``keep`` is for a response in progress: it renews the token of the
+        account the session already spends instead of choosing, so a running
+        response never changes accounts, even when a limit reported elsewhere
+        holds that account back. ``MODEL_ACCOUNT_NOT_FOUND`` when that account
+        was deleted, or its owner stopped sharing it. Otherwise raises what
+        :meth:`access_token` raises.
+        """
+        sessions = SessionRepository()
+        session = await sessions.get_session(session_id) if session_id else None
+        current = str((session or {}).get("model_account_id") or "").strip()
+        org_id = str((session or {}).get("org_id") or "").strip() or default_org_id()
+        pool = _pool_enabled()
+        if keep and current:
+            account = await self._repo.get_account(current)
+            if account is None or not (
+                account["owner_user_id"] == user_id
+                or (pool and account["shared"] and account["org_id"] == org_id)
+            ):
+                raise _not_found(current)
+            try:
+                return await self._account_token(account)
+            except APIError as exc:
+                if account["owner_user_id"] == user_id:
+                    raise
+                # The errors name the account by its label, which is its
+                # owner's, and tell its owner how to sign in again.
                 raise APIError(
-                    code="MODEL_ACCOUNT_REQUIRED",
-                    message=(
-                        "no default ChatGPT account is linked for this user; link one with "
-                        "`astrabox model-account login chatgpt` or choose a default"
-                    ),
-                    status_code=409,
+                    code=exc.code,
+                    message=f"the shared ChatGPT account {current!r} cannot be used now ({exc.code})",
+                    status_code=exc.status_code,
+                    retryable=exc.retryable,
+                ) from exc
+        preferred = await self._preferred(user_id, account_id)
+        if pool and _usage_limited(preferred):
+            token = await self._pooled_token(preferred, user_id=user_id, org_id=org_id)
+        else:
+            token = await self._account_token(preferred)
+        if session_id and token.account_id != current:
+            await sessions.update_session(
+                session_id, {"model_account_id": token.account_id}, touch_updated_at=False
+            )
+            logger.info(
+                "conversation model account chosen: session=%s account=%s previous=%s",
+                session_id, token.account_id, current or None,
+            )
+        return token
+
+    async def _pooled_token(
+        self, preferred: Mapping[str, Any], *, user_id: str, org_id: str
+    ) -> ModelAccountToken:
+        """The token of the first account the pool offers in place of ``preferred``."""
+        # sorted() keeps the repository's oldest-first order among equals.
+        own = sorted(
+            (
+                account
+                for account in await self._repo.list_accounts(user_id)
+                if account["account_id"] != preferred["account_id"]
+                and account["status"] == STATUS_ACTIVE
+            ),
+            key=lambda account: not account["is_default"],
+        )
+        shared = await self._repo.list_pool_accounts(org_id=org_id, excluding_owner=user_id)
+        for account in [*own, *shared]:
+            if _usage_limited(account):
+                continue
+            try:
+                token = await self._account_token(account)
+            except APIError as exc:
+                logger.warning(
+                    "model account passed over by the pool: account=%s code=%s",
+                    account["account_id"], exc.code,
                 )
-            account = found
+                continue
+            if account["owner_user_id"] != user_id:
+                await self._repo.record_pool_use(account["account_id"])
+            return token
+        raise _usage_limit_reached(preferred)
+
+    async def record_usage_limit(self, account_id: str) -> dict[str, Any]:
+        """Hold the account back from conversations after its vendor reported its usage limit.
+
+        The hold lasts :data:`USAGE_LIMIT_HOLD_S`. Returns what a failed
+        response reports about it: the stable ``code``, the ``account_id``,
+        and ``resets_at``, which is ``None`` because OpenAI's plan-usage error
+        names no reset time.
+        """
+        until = (utcnow() + timedelta(seconds=USAGE_LIMIT_HOLD_S)).isoformat()
+        await self._repo.limit_usage(account_id, until=until)
+        logger.warning(
+            "model account reached its plan usage limit: account=%s held_until=%s",
+            account_id, until,
+        )
+        return {"code": PLAN_USAGE_LIMIT, "account_id": account_id, "resets_at": None}
+
+    async def _preferred(self, user_id: str, account_id: str | None) -> dict[str, Any]:
+        """``account_id``, which must be the user's, or the user's default account."""
+        if account_id:
+            return await self._owned(user_id, account_id)
+        found = await self._repo.get_default_account(user_id)
+        if found is None:
+            raise APIError(
+                code="MODEL_ACCOUNT_REQUIRED",
+                message=(
+                    "no default ChatGPT account is linked for this user; link one with "
+                    "`astrabox model-account login chatgpt` or choose a default"
+                ),
+                status_code=409,
+            )
+        return found
+
+    async def _account_token(self, account: Mapping[str, Any]) -> ModelAccountToken:
+        """The account's current access token, renewed first when it is due."""
         if account["status"] != STATUS_ACTIVE:
             raise _sign_in_required(account, f"OpenAI refused renewal ({account['last_error_code']})")
         if _due(account["access_expires_at"]):

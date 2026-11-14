@@ -256,6 +256,15 @@ for _code, _status, _category, _retryable, _owner in (
     # API was unreachable or answered 5xx. A refusal or an answer without a
     # model list is raised with retryable=False.
     ("MODEL_ACCOUNT_MODELS_UNAVAILABLE", 502, "model", True, "platform"),
+    # The plan usage limit of the ChatGPT account a conversation spends was
+    # reached: a response fails with it, and so does an input when the team
+    # pool has no other account to offer. The account's owner waits for the
+    # limit to reset or manages usage in ChatGPT; with the team pool on, the
+    # conversation's next response spends another account.
+    ("MODEL_PLAN_USAGE_LIMIT", 429, "model", False, "client"),
+    # An account was to be shared while the deployment's team pool of model
+    # accounts is off; an administrator sets ASTRABOX_MODEL_ACCOUNT_POOL_ENABLED.
+    ("MODEL_ACCOUNT_POOL_DISABLED", 409, "configuration", False, "platform"),
     # An ASGI host mounted AstraBox at a path other than
     # ASTRABOX_PUBLIC_PATH_PREFIX; the operator sets the variable to the mount
     # path (astrabox/web/public_path_middleware.py).

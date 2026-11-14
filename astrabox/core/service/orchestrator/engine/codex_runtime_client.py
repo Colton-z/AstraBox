@@ -12,7 +12,8 @@ resumes.
   (``origin="engine"``: a queued goal round, a sub-agent's mail). It ends at
   ``turn/completed``, whose ``status`` is the native reason: ``completed`` is
   read as completed, ``interrupted`` as cancelled, ``failed`` as failed with
-  the vendor's ``TurnError``.
+  the vendor's ``TurnError``, declared ``usage_limited`` when that error says
+  the model API refused for a usage limit (:func:`usage_limited`).
 * **An input is admitted at its ``userMessage`` item.** Codex appends an
   event to the thread's canonical history, the rollout file the platform
   mirrors out of the box, before it delivers the event to a client
@@ -169,6 +170,37 @@ _TURN_ENDINGS: dict[str, tuple[ResponseOutcome, str]] = {
 
 #: `ThreadActiveFlag` values that mean the turn waits on a person.
 _WAITING_FLAGS = frozenset({"waitingOnApproval", "waitingOnUserInput"})
+
+#: The HTTP status OpenAI answers a request refused for a usage limit with.
+_TOO_MANY_REQUESTS = 429
+
+
+def usage_limited(error: dict[str, Any] | None) -> bool:
+    """Whether a failed turn's `TurnError` says the model API refused it for a usage limit.
+
+    `codexErrorInfo` is Codex's machine-readable reading of the failure
+    (`CodexErrorInfo` in codex-rs/app-server-protocol/src/protocol/v2/shared.rs,
+    rust-v0.169.0). Codex reports `usageLimitExceeded` for a 429 whose body's
+    error `type` is `usage_limit_reached`, `usage_not_included` or
+    `insufficient_quota`, or whose `code` is a quota code. It does not know the
+    code OpenAI's plan usage answers with,
+    `subscription_sharing_usage_limit_exceeded` (HTTP 429, see
+    https://developers.openai.com/siwc/token-sharing-open-source/errors-and-recovery):
+    any other 429 becomes `responseTooManyFailedAttempts` with
+    `httpStatusCode` 429 (`map_api_error_details` in
+    codex-rs/codex-api/src/api_bridge.rs), and the body, with the code, is
+    dropped. Both readings count. A usage-limit error OpenAI sends inside a
+    stream that has begun is retried by Codex as a stream error, and the
+    retried request meets the limit as a 429.
+    """
+
+    info = (error or {}).get("codexErrorInfo")
+    if info == "usageLimitExceeded":
+        return True
+    if isinstance(info, dict):
+        attempts = info.get("responseTooManyFailedAttempts")
+        return isinstance(attempts, dict) and attempts.get("httpStatusCode") == _TOO_MANY_REQUESTS
+    return False
 
 #: A child thread's notifications that change what the console shows of it.
 _CHILD_METHODS = frozenset(
@@ -421,7 +453,12 @@ class _Stream:
             for request_id, interaction_id in self._requests.items()
             if interaction_id in self.interactions
         }
-        self._emit(ResponseEnded(None, turn_id, outcome, status, None, error))
+        self._emit(
+            ResponseEnded(
+                None, turn_id, outcome, status, None, error,
+                usage_limited=outcome == "failed" and usage_limited(error),
+            )
+        )
 
     def item(self, method: str, params: dict[str, Any]) -> None:
         item = params.get("item")

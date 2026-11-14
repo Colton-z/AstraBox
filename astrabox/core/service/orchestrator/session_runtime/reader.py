@@ -107,13 +107,17 @@ class ReaderHooks:
     runtime's own status as it changes, and again with every renewal of the
     reader's lease while it holds: one response can run for hours without a
     change of status. ``permission_mode`` applies the
-    session's stored permission mode to the runtime.
+    session's stored permission mode to the runtime. ``usage_limited``
+    receives a response the runtime ended for a model usage limit
+    (:attr:`~astrabox.core.service.orchestrator.engine.runtime.ResponseEnded.usage_limited`)
+    before it is recorded, and returns the ending to record.
     """
 
     prepare: Callable[[RuntimeInput], Awaitable[None]]
     committed: Callable[[FactBatch], Awaitable[None]]
     status: Callable[[str], Awaitable[None]]
     permission_mode: Callable[[], Awaitable[None]]
+    usage_limited: Callable[[ResponseEnded], Awaitable[ResponseEnded]] | None = None
 
 
 ReaderExit = Literal["stream_ended", "lease_lost", "protocol_error"]
@@ -315,6 +319,8 @@ class SessionReader:
                 )
                 # Resolve cards before the source cursor can enter a commit.
                 cards = await card_parts(self._sid, event.frame)
+            if isinstance(event, ResponseEnded) and event.usage_limited and self._hooks.usage_limited:
+                event = await self._hooks.usage_limited(event)
             self._take(event)
             if not isinstance(event, ResponseOutput):
                 continue

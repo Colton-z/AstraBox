@@ -657,8 +657,9 @@ async def attach_platform_runtime(
         )
 
     user_id = str(workspace_plan.user_id or user_id or "").strip() or None
+    # The box may be in the middle of a response, which keeps its model account.
     model_access = await session_model_access(
-        platform, template, session_id=session_id, user_id=user_id
+        platform, template, session_id=session_id, user_id=user_id, keep_account=True
     )
     material_request = _startup_material_request(
         adapter,

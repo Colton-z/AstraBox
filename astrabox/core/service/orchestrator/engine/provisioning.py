@@ -302,7 +302,7 @@ class ProvisionedEngineSandbox:
     #: Re-resolve and atomically reconcile MCP credentials before each new
     #: root input. The callback refuses a missing process-local Vault instead
     #: of creating an incomplete one without the model credential beside it.
-    prepare_engine_input: Callable[[], Awaitable[None]] | None = None
+    prepare_engine_input: Callable[..., Awaitable[None]] | None = None
     #: The conversation this box can actually rejoin. For an engine whose
     #: transcript the platform moves (``session_log``), this is the planned key
     #: only when the store had something to put back; when it had nothing the
@@ -574,8 +574,14 @@ async def reconcile_sandbox_credentials(
     }, token_expiry
 
 
-def session_model_context(template: Any, *, session_id: str, user_id: str | None) -> Any:
-    """Who a Session's model requests are made for."""
+def session_model_context(
+    template: Any, *, session_id: str, user_id: str | None, keep_account: bool = False
+) -> Any:
+    """Who a Session's model requests are made for.
+
+    ``keep_account`` asks for the account the Session spends now instead of a
+    new choice; see :attr:`~astrabox.seams.model.ModelRequestContext.keep_account`.
+    """
     from astrabox.seams.model import ModelRequestContext
 
     return ModelRequestContext(
@@ -588,17 +594,25 @@ def session_model_context(template: Any, *, session_id: str, user_id: str | None
             if user_id and str(user_id) == str(getattr(template, "model_account_owner_id", "") or "")
             else None
         ),
+        keep_account=keep_account,
     )
 
 
 async def session_model_access(
-    platform: Any, template: Any, *, session_id: str, user_id: str | None
+    platform: Any,
+    template: Any,
+    *,
+    session_id: str,
+    user_id: str | None,
+    keep_account: bool = False,
 ) -> ResolvedModelAccess:
     """A Session's model access, with its owner's credential where the endpoint has no other.
 
     A model endpoint whose credential is the Session owner's
     (``credential_owner``) resolves with none; the owner's is obtained here,
-    for the Session that is starting or being attached to.
+    for the Session that is starting or being attached to. ``keep_account``
+    keeps the model account the Session spends now (a box being attached to
+    may be in the middle of a response).
     """
     from astrabox.seams.model import model_endpoint_for_name
 
@@ -607,19 +621,24 @@ async def session_model_access(
     if provider.credential_owner != "session_owner":
         return access
     credential = await provider.ensure_session_credential(
-        context=session_model_context(template, session_id=session_id, user_id=user_id)
+        context=session_model_context(
+            template, session_id=session_id, user_id=user_id, keep_account=keep_account
+        )
     )
     return dataclasses.replace(access, credential=credential)
 
 
 def _owner_model_renewal(
     platform: Any, *, session_id: str, template: Any, backend_adapter: Any, sandbox: Any,
-) -> Callable[[], Awaitable[datetime | None]] | None:
+) -> Callable[[bool], Awaitable[datetime | None]] | None:
     """Write the Session owner's renewed model credential to its running sandbox.
 
     ``None`` for a model endpoint with a deployment credential, which does not
     expire. The process keeps the placeholder it started with; only the value
-    behind it at the egress boundary changes, and only when it has.
+    behind it at the egress boundary changes, and only when it has. The
+    returned call takes ``choose_account``: True lets the model-account
+    service choose the account (before a response), False renews the one the
+    Session spends.
     """
     from astrabox.core.service.orchestrator.engine.registry import get_engine_adapter
     from astrabox.seams.model import model_endpoint_for_name
@@ -631,11 +650,12 @@ def _owner_model_renewal(
         return None
     written: list[str] = []
 
-    async def renew() -> datetime | None:
+    async def renew(choose_account: bool) -> datetime | None:
         session = await SessionRepository().get_session(session_id)
         user_id = str((session or {}).get("user_id") or "").strip() or None
         access = await session_model_access(
-            platform, template, session_id=session_id, user_id=user_id
+            platform, template, session_id=session_id, user_id=user_id,
+            keep_account=not choose_account,
         )
         if written != [access.credential]:
             request = get_engine_adapter(str(template.engine_kind)).sandbox_request(
@@ -648,7 +668,9 @@ def _owner_model_renewal(
             )
             written[:] = [str(access.credential)]
         return await provider.session_credential_expires_at(
-            context=session_model_context(template, session_id=session_id, user_id=user_id)
+            context=session_model_context(
+                template, session_id=session_id, user_id=user_id, keep_account=True
+            )
         )
 
     return renew
@@ -662,6 +684,10 @@ class SessionCredentialRefresh:
     delivers between calls. It runs before each turn. A credential whose value
     is an access token the platform obtains also has to be written again
     before that token expires, however long a turn runs: :meth:`due` says when.
+    ``choose_account=True`` is for an input no response is running for: the
+    model-account service may then give the Session another model account
+    (:meth:`~astrabox.core.service.model_accounts.service.ModelAccountService.conversation_token`).
+    Every other call renews the account the Session spends.
     """
 
     def __init__(
@@ -672,7 +698,7 @@ class SessionCredentialRefresh:
         *,
         delivered: set[str],
         bindings: set[str],
-        model: Callable[[], Awaitable[datetime | None]] | None = None,
+        model: Callable[[bool], Awaitable[datetime | None]] | None = None,
     ) -> None:
         self._reconcile = reconcile
         self._delivered = delivered
@@ -682,13 +708,13 @@ class SessionCredentialRefresh:
         self._token_expiry: datetime | None = datetime.now(timezone.utc) if model else None
         self._lock = asyncio.Lock()
 
-    async def __call__(self) -> None:
+    async def __call__(self, *, choose_account: bool = False) -> None:
         async with self._lock:
             self._delivered, self._bindings, expiry = await self._reconcile(
                 self._delivered, self._bindings
             )
             if self._model is not None:
-                model_expiry = await self._model()
+                model_expiry = await self._model(choose_account)
                 if model_expiry is not None and (expiry is None or model_expiry < expiry):
                     expiry = model_expiry
             self._token_expiry = expiry

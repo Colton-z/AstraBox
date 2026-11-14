@@ -79,6 +79,9 @@ def _account_view(row: Mapping[str, Any]) -> dict[str, Any]:
         "refresh_claimed_until": to_iso(row["refresh_claimed_until"]),
         "last_error_code": row["last_error_code"],
         "last_error_at": to_iso(row["last_error_at"]),
+        "shared": bool(row["shared"]),
+        "usage_limited_until": to_iso(row["usage_limited_until"]),
+        "pool_last_used_at": to_iso(row["pool_last_used_at"]),
         "created_at": to_iso(row["created_at"]),
         "updated_at": to_iso(row["updated_at"]),
     }
@@ -240,8 +243,9 @@ class ModelAccountRepository:
         owner_user_id: str,
         label: str | None = None,
         is_default: bool | None = None,
+        shared: bool | None = None,
     ) -> dict[str, Any] | None:
-        """Rename the account and make it, or stop it being, the owner's default.
+        """Rename the account, make it (or stop it being) the owner's default, share it or stop sharing it.
 
         ``None`` leaves that field as it is. The owner's rows are locked first,
         so two concurrent changes of the default apply one after the other.
@@ -271,6 +275,8 @@ class ModelAccountRepository:
                 values["label"] = label
             if is_default is not None:
                 values["is_default"] = is_default
+            if shared is not None:
+                values["shared"] = shared
             if values:
                 await conn.execute(
                     update(_ACCOUNTS)
@@ -304,6 +310,38 @@ class ModelAccountRepository:
             return True
 
         return await transaction(work)
+
+    # ── the team pool ───────────────────────────────────────────────────────
+
+    async def list_pool_accounts(self, *, org_id: str, excluding_owner: str) -> list[dict[str, Any]]:
+        """The active accounts other owners of ``org_id`` shared with the team, oldest first."""
+        rows = await fetch_all(
+            select(_ACCOUNTS)
+            .where(
+                _ACCOUNTS.c.org_id == org_id,
+                _ACCOUNTS.c.owner_user_id != excluding_owner,
+                _ACCOUNTS.c.shared.is_(True),
+                _ACCOUNTS.c.status == STATUS_ACTIVE,
+            )
+            .order_by(_ACCOUNTS.c.created_at, _ACCOUNTS.c.account_id)
+        )
+        return [_account_view(row) for row in rows]
+
+    async def limit_usage(self, account_id: str, *, until: str) -> None:
+        """Keep the account from being chosen for a conversation until ``until``."""
+        await execute(
+            update(_ACCOUNTS)
+            .where(_ACCOUNTS.c.account_id == account_id)
+            .values(usage_limited_until=from_iso(until), updated_at=func.now())
+        )
+
+    async def record_pool_use(self, account_id: str) -> None:
+        """Note that the pool gave the account to another member's conversation now."""
+        await execute(
+            update(_ACCOUNTS)
+            .where(_ACCOUNTS.c.account_id == account_id)
+            .values(pool_last_used_at=func.now())
+        )
 
     # ── refresh claim ───────────────────────────────────────────────────────
 

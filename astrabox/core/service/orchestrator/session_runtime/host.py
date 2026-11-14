@@ -93,7 +93,7 @@ class ConnectedRuntime:
     runtime_identity: dict[str, Any]
     engine_kind: str
     #: The adapter's host-side refresh before each input (rotated MCP credentials).
-    refresh: Callable[[], Awaitable[None]] | None = None
+    refresh: Callable[..., Awaitable[None]] | None = None
 
 
 class RuntimeConnector(Protocol):
