@@ -309,6 +309,10 @@
         "label": "运行配置",
         "help": "选择已经保存的运行设置，其中包含 Agent 程序、沙箱设置、网络访问和模型连接。Credential Vault（凭证库）需要另行分配。"
       },
+      "model_account_id": {
+        "label": "ChatGPT 账号",
+        "help": "在使用 ChatGPT 订阅的运行配置上：你与这个 Agent 的对话使用你已关联的哪个 ChatGPT 账号（填账号 ID）。留空使用你的默认账号。其他人的对话使用他们各自的默认账号。"
+      },
       "exposure_mode": {
         "label": "使用入口",
         "help": "选择用户可通过网页对话、MCP，或两者使用这个 Agent"

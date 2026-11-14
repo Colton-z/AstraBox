@@ -82,6 +82,7 @@ class AgentRecord(BaseModel):
     packages: list[dict[str, Any]] | None = None
     runtime_profile_name: str | None = None
     exposure_mode: str | None = None
+    model_account_id: str | None = None
     idle_hibernate_seconds: int | None = None
     prepared_capacity: int | None = None
     enabled: bool | None = None

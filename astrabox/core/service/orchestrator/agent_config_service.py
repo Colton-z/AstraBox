@@ -6,7 +6,7 @@ from astrabox.core.service.orchestrator.runtime.skill_sources import normalize_s
 import hashlib
 import json
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, is_dataclass, replace
 from typing import Any
 
@@ -501,6 +501,8 @@ class AgentConfigService:
             ),
             runtime_profile_name=env_name,
             exposure_mode=str(item.get("exposure_mode") or "").strip() or None,
+            model_account_id=str(item.get("model_account_id") or "").strip() or None,
+            model_account_owner_id=str(item.get("created_by") or "").strip() or None,
             idle_hibernate_seconds=self._coerce_positive_int(item.get("idle_hibernate_seconds")),
             terminal_panel=bool(item.get("terminal_panel", False)),
             diff_panel=bool(item.get("diff_panel", False)),
@@ -875,9 +877,12 @@ class AgentConfigService:
         if editable.get("prepared_capacity") is None:
             # Written, not assumed on read: the capacity sweep selects Agents
             # whose stored value is positive, so an absent key would stay cold.
-            editable["prepared_capacity"] = default_prepared_capacity(
-                str(env.get("sandbox_backend") or "")
+            editable["prepared_capacity"] = (
+                0
+                if self._owner_pays_for_model(env)
+                else default_prepared_capacity(str(env.get("sandbox_backend") or ""))
             )
+        self._check_prepared_capacity_owner(int(editable["prepared_capacity"]), environment=env)
         self._check_prepared_capacity_backend(
             int(editable["prepared_capacity"]),
             sandbox_backend=str(env.get("sandbox_backend") or ""),
@@ -1001,6 +1006,14 @@ class AgentConfigService:
             },
         )
         if "prepared_capacity" in updates or "runtime_profile_name" in updates:
+            self._check_prepared_capacity_owner(
+                int(
+                    updates["prepared_capacity"]
+                    if "prepared_capacity" in updates
+                    else existing.get("prepared_capacity") or 0
+                ),
+                environment=env,
+            )
             self._check_prepared_capacity_backend(
                 int(
                     updates["prepared_capacity"]
@@ -1066,6 +1079,30 @@ class AgentConfigService:
             # than a runtime field.
             raise _version_conflict()
         return self.sanitize_agent_doc(written)
+
+    @staticmethod
+    def _owner_pays_for_model(environment: Mapping[str, Any]) -> bool:
+        """Whether the RuntimeProfile's model endpoint is paid by each conversation's owner."""
+        from astrabox.seams.model import model_endpoint_for_name
+
+        name = str(environment.get("endpoint_provider") or "").strip()
+        return bool(name) and model_endpoint_for_name(name).credential_owner == "session_owner"
+
+    @classmethod
+    def _check_prepared_capacity_owner(
+        cls, capacity: int, *, environment: Mapping[str, Any]
+    ) -> None:
+        """Refuse prepared capacity where a box needs its conversation's owner to exist.
+
+        A box prepared before a conversation claims it has no owner whose
+        account its model requests could spend.
+        """
+        if capacity > 0 and cls._owner_pays_for_model(environment):
+            raise invalid_request(
+                "prepared_capacity must be 0 on a RuntimeProfile whose model endpoint "
+                f"({environment.get('endpoint_provider')!r}) is paid by each conversation's owner: "
+                "a box prepared before a conversation exists has no owner"
+            )
 
     @staticmethod
     def _check_prepared_capacity_backend(capacity: int, *, sandbox_backend: str) -> None:

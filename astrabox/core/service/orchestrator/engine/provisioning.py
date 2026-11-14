@@ -38,6 +38,7 @@ import contextlib
 import json
 import shlex
 from collections.abc import Awaitable, Callable, Mapping
+import dataclasses
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -558,6 +559,86 @@ async def reconcile_sandbox_credentials(
     }, token_expiry
 
 
+def session_model_context(template: Any, *, session_id: str, user_id: str | None) -> Any:
+    """Who a Session's model requests are made for."""
+    from astrabox.seams.model import ModelRequestContext
+
+    return ModelRequestContext(
+        conversation_id=str(session_id or "").strip() or None,
+        user_id=str(user_id or "").strip() or None,
+        # An Agent names one of its creator's accounts; anyone else's
+        # conversation with it spends their own default account.
+        account_id=(
+            str(getattr(template, "model_account_id", "") or "").strip() or None
+            if user_id and str(user_id) == str(getattr(template, "model_account_owner_id", "") or "")
+            else None
+        ),
+    )
+
+
+async def session_model_access(
+    platform: Any, template: Any, *, session_id: str, user_id: str | None
+) -> ResolvedModelAccess:
+    """A Session's model access, with its owner's credential where the endpoint has no other.
+
+    A model endpoint whose credential is the Session owner's
+    (``credential_owner``) resolves with none; the owner's is obtained here,
+    for the Session that is starting or being attached to.
+    """
+    from astrabox.seams.model import model_endpoint_for_name
+
+    access: ResolvedModelAccess = platform.resolve_model_access(template.model_config or {})
+    provider = model_endpoint_for_name(access.endpoint_provider)
+    if provider.credential_owner != "session_owner":
+        return access
+    credential = await provider.ensure_session_credential(
+        context=session_model_context(template, session_id=session_id, user_id=user_id)
+    )
+    return dataclasses.replace(access, credential=credential)
+
+
+def _owner_model_renewal(
+    platform: Any, *, session_id: str, template: Any, backend_adapter: Any, sandbox: Any,
+) -> Callable[[], Awaitable[datetime | None]] | None:
+    """Write the Session owner's renewed model credential to its running sandbox.
+
+    ``None`` for a model endpoint with a deployment credential, which does not
+    expire. The process keeps the placeholder it started with; only the value
+    behind it at the egress boundary changes, and only when it has.
+    """
+    from astrabox.core.service.orchestrator.engine.registry import get_engine_adapter
+    from astrabox.seams.model import model_endpoint_for_name
+
+    provider = model_endpoint_for_name(
+        platform.resolve_model_access(template.model_config or {}).endpoint_provider
+    )
+    if provider.credential_owner != "session_owner":
+        return None
+    written: list[str] = []
+
+    async def renew() -> datetime | None:
+        session = await SessionRepository().get_session(session_id)
+        user_id = str((session or {}).get("user_id") or "").strip() or None
+        access = await session_model_access(
+            platform, template, session_id=session_id, user_id=user_id
+        )
+        if written != [access.credential]:
+            request = get_engine_adapter(str(template.engine_kind)).sandbox_request(
+                template=template, model_access=access
+            )
+            await backend_adapter.apply_credential_vault(
+                sandbox,
+                vault_write=model_credential_plan(request.credential),
+                create_if_missing=False,
+            )
+            written[:] = [str(access.credential)]
+        return await provider.session_credential_expires_at(
+            context=session_model_context(template, session_id=session_id, user_id=user_id)
+        )
+
+    return renew
+
+
 class SessionCredentialRefresh:
     """The refresh of a running Session's protected credentials.
 
@@ -568,19 +649,34 @@ class SessionCredentialRefresh:
     before that token expires, however long a turn runs: :meth:`due` says when.
     """
 
-    def __init__(self, reconcile: Callable[[set[str], set[str]], Awaitable[tuple[set[str], set[str], datetime | None]]],
-                 *, delivered: set[str], bindings: set[str]) -> None:
+    def __init__(
+        self,
+        reconcile: Callable[
+            [set[str], set[str]], Awaitable[tuple[set[str], set[str], datetime | None]]
+        ],
+        *,
+        delivered: set[str],
+        bindings: set[str],
+        model: Callable[[], Awaitable[datetime | None]] | None = None,
+    ) -> None:
         self._reconcile = reconcile
         self._delivered = delivered
         self._bindings = bindings
-        self._token_expiry: datetime | None = None
+        self._model = model
+        # A model credential's expiry is learned by the first refresh.
+        self._token_expiry: datetime | None = datetime.now(timezone.utc) if model else None
         self._lock = asyncio.Lock()
 
     async def __call__(self) -> None:
         async with self._lock:
-            self._delivered, self._bindings, self._token_expiry = await self._reconcile(
+            self._delivered, self._bindings, expiry = await self._reconcile(
                 self._delivered, self._bindings
             )
+            if self._model is not None:
+                model_expiry = await self._model()
+                if model_expiry is not None and (expiry is None or model_expiry < expiry):
+                    expiry = model_expiry
+            self._token_expiry = expiry
 
     def due(self) -> bool:
         """Whether a delivered access token is inside its renewal window."""
@@ -630,15 +726,24 @@ def session_credential_refresher(
             vault_enabled=vault_enabled,
         )
 
-    refresh = SessionCredentialRefresh(reconcile, delivered=delivered, bindings=bindings)
-    # A sandbox starts with the tokens its plan carried; their expiry is the
-    # first renewal's.
-    expiries = [
-        parse_iso(item.expires_at)
-        for item in (initial_credential_plan.environment if initial_credential_plan is not None else ())
-        if item.expires_at
-    ]
-    refresh._token_expiry = min(expiries) if expiries else None
+    model = _owner_model_renewal(
+        platform, session_id=session_id, template=template,
+        backend_adapter=backend_adapter, sandbox=sandbox,
+    ) if vault_enabled else None
+    refresh = SessionCredentialRefresh(
+        reconcile, delivered=delivered, bindings=bindings, model=model
+    )
+    if model is None:
+        # A sandbox starts with the tokens its plan carried; their expiry is
+        # the first renewal's.
+        expiries = [
+            parse_iso(item.expires_at)
+            for item in (
+                initial_credential_plan.environment if initial_credential_plan is not None else ()
+            )
+            if item.expires_at
+        ]
+        refresh._token_expiry = min(expiries) if expiries else None
     return refresh
 
 

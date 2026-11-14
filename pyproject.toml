@@ -205,6 +205,7 @@ codex = "astrabox.core.service.orchestrator.engine.codex:CodexEngineAdapter"
 # bundled `direct` passthrough — see the reasoning in astrabox/providers/model.py.
 [project.entry-points."astrabox.providers.model"]
 litellm = "astrabox.providers.model:LiteLLMModelEndpointProvider"
+chatgpt_plan = "astrabox.providers.model_chatgpt_plan:ChatGPTPlanModelEndpointProvider"
 
 [project.entry-points."astrabox.providers.skills"]
 git = "astrabox.providers.skill_git:GitSkillContentProvider"

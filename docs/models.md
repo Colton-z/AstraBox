@@ -252,6 +252,75 @@ whole request. It does not add retries. A timeout retains the default Session
 title and records the timeout type and configured duration in administrator
 Session detail and server logs.
 
+## Use a ChatGPT plan
+
+A user can link one or more ChatGPT accounts to their AstraBox user through
+OpenAI's [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source)
+plan usage. The AstraBox server keeps each account's access, refresh and ID
+tokens in its secret store and renews the access token itself; the tokens
+never reach the user's computer.
+
+Link an account from the computer whose browser signs in:
+
+```bash
+astrabox model-account login chatgpt
+```
+
+OpenAI returns the browser to `http://127.0.0.1:<port>/auth/callback`, an
+address on that computer, so the command listens there on a free port before it
+opens OpenAI's sign-in page. It then hands the browser's return to the
+deployment, which exchanges the code, validates the ID token, and stores the
+account. Allow plan usage on OpenAI's page: a sign-in without it links nothing.
+The AstraBox server must reach `https://auth.openai.com`.
+
+- **Several accounts.** Each sign-in through `login chatgpt` links one account.
+  The first becomes the user's default; nothing switches between accounts on
+  its own. Make another the default with
+  `PATCH /api/v1/me/model-accounts/{account_id}` and `{"is_default": true}`.
+  Deleting the default account leaves the user without one.
+- **Status.** `astrabox model-account list` shows each account's status. An
+  account whose renewal OpenAI refuses for good (an expired, revoked or reused
+  refresh token) is `sign_in_required`; sign in to it again with
+  `astrabox model-account login chatgpt --account <account_id>`.
+- **Removal.** `DELETE /api/v1/me/model-accounts/{account_id}` revokes the
+  account's session at OpenAI, then deletes the account and its tokens. When
+  OpenAI does not confirm the revocation, the answer's `revocation_confirmed`
+  is `false`; disconnect AstraBox in ChatGPT's settings to end the session.
+
+### Run Codex conversations on it
+
+A RuntimeProfile whose `endpoint_provider` is `chatgpt_plan` sends its
+conversations' model requests to OpenAI's API as the conversation owner's
+linked ChatGPT account, and OpenAI charges that account's plan. Nothing goes
+through the model gateway, so the gateway records no spend for these
+conversations.
+
+- The RuntimeProfile's `engine_kind` must be `codex` and its
+  `sandbox_tenancy` `conversation`, and the deployment must keep protected
+  credential delivery on. An Agent on it must have `prepared_capacity` 0: a
+  sandbox prepared before a conversation exists has no owner whose account it
+  could use.
+- The Agent's model is one the account can use, such as `gpt-6.1-sol`.
+- The conversation's owner pays. A conversation started by someone with no
+  linked account ends with `MODEL_ACCOUNT_REQUIRED`. An Agent can name one of
+  its creator's accounts in `model_account_id`; the creator's conversations
+  with it then use that account instead of their default, and other people's
+  conversations use their own default.
+- The sandbox holds a placeholder. The egress boundary attaches the account's
+  access token to `POST https://api.openai.com/v1/responses` only, and the
+  server renews the token before each turn and while a response runs.
+- When the plan's usage limit is reached the response fails with OpenAI's
+  error; nothing switches to another account or to the gateway. OpenAI offers
+  no way to read the remaining usage; the account's owner sees it under
+  [ChatGPT Settings → Usage](https://chatgpt.com/settings/usage).
+- Conversation titles are still generated through the deployment's model
+  gateway, not the user's plan.
+
+OpenAI documents plan usage for open-source and self-hosted applications, and
+asks operators of paid or remotely hosted services to
+[register their interest](https://openai.com/form/sign-in-with-chatgpt-interest/)
+first.
+
 ## Verify the connection
 
 Before making an Agent available:

@@ -5081,6 +5081,17 @@
             ],
             "title": "Model"
           },
+          "model_account_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Account Id"
+          },
           "name": {
             "anyOf": [
               {
@@ -6760,6 +6771,28 @@
         "title": "ApiEnvelope[DeletedDeployment]",
         "type": "object"
       },
+      "ApiEnvelope_DeletedModelAccount_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/DeletedModelAccount"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[DeletedModelAccount]",
+        "type": "object"
+      },
       "ApiEnvelope_DeploymentExtensionProvider_": {
         "properties": {
           "code": {
@@ -7044,6 +7077,50 @@
           "data"
         ],
         "title": "ApiEnvelope[MCPServer]",
+        "type": "object"
+      },
+      "ApiEnvelope_ModelAccountAuthorization_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ModelAccountAuthorization"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[ModelAccountAuthorization]",
+        "type": "object"
+      },
+      "ApiEnvelope_ModelAccount_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ModelAccount"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[ModelAccount]",
         "type": "object"
       },
       "ApiEnvelope_PermissionModeUpdate_": {
@@ -8426,6 +8503,32 @@
           "data"
         ],
         "title": "ApiEnvelope[list[EnvironmentView]]",
+        "type": "object"
+      },
+      "ApiEnvelope_list_ModelAccount__": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/ModelAccount"
+            },
+            "title": "Data",
+            "type": "array"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[list[ModelAccount]]",
         "type": "object"
       },
       "ApiEnvelope_list_SessionRecord__": {
@@ -11152,6 +11255,54 @@
         "title": "ChildRunStopResult",
         "type": "object"
       },
+      "CompleteAuthorizationRequest": {
+        "additionalProperties": false,
+        "description": "The query OpenAI redirected the browser to, as the client received it.",
+        "properties": {
+          "client_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Id"
+          },
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "CompleteAuthorizationRequest",
+        "type": "object"
+      },
       "ConfigureRequest": {
         "additionalProperties": false,
         "properties": {
@@ -12062,6 +12213,33 @@
           "deleted"
         ],
         "title": "DeletedDeployment",
+        "type": "object"
+      },
+      "DeletedModelAccount": {
+        "additionalProperties": true,
+        "description": "A removed account, and whether OpenAI confirmed its session ended.",
+        "properties": {
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "revocation_confirmed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revocation Confirmed"
+          }
+        },
+        "required": [
+          "account_id",
+          "revocation_confirmed"
+        ],
+        "title": "DeletedModelAccount",
         "type": "object"
       },
       "DeploymentExtensionProvider": {
@@ -17388,6 +17566,132 @@
         "title": "MkdirSessionFilesRequest",
         "type": "object"
       },
+      "ModelAccount": {
+        "additionalProperties": true,
+        "description": "One linked account, without its tokens.",
+        "properties": {
+          "access_expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Access Expires At"
+          },
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "is_default": {
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "last_error_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error At"
+          },
+          "last_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Code"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Scopes",
+            "type": "array"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          },
+          "vendor": {
+            "title": "Vendor",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "vendor",
+          "label",
+          "email",
+          "status",
+          "is_default",
+          "scopes",
+          "access_expires_at",
+          "last_error_code",
+          "last_error_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ModelAccount",
+        "type": "object"
+      },
+      "ModelAccountAuthorization": {
+        "additionalProperties": true,
+        "description": "A started sign-in: where to send the browser, and until when it can complete.",
+        "properties": {
+          "authorization_id": {
+            "title": "Authorization Id",
+            "type": "string"
+          },
+          "authorize_url": {
+            "title": "Authorize Url",
+            "type": "string"
+          },
+          "expires_at": {
+            "title": "Expires At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "authorization_id",
+          "authorize_url",
+          "expires_at"
+        ],
+        "title": "ModelAccountAuthorization",
+        "type": "object"
+      },
       "MoveSessionFilesRequest": {
         "description": "Body for ``POST /sessions/{id}/files/move``.",
         "properties": {
@@ -19497,6 +19801,32 @@
         "title": "SpeechInputTranscript",
         "type": "object"
       },
+      "StartAuthorizationRequest": {
+        "additionalProperties": false,
+        "description": "Body for starting a ChatGPT sign-in.",
+        "properties": {
+          "account_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Id"
+          },
+          "redirect_uri": {
+            "title": "Redirect Uri",
+            "type": "string"
+          }
+        },
+        "required": [
+          "redirect_uri"
+        ],
+        "title": "StartAuthorizationRequest",
+        "type": "object"
+      },
       "StartConversationRequest": {
         "additionalProperties": false,
         "description": "Conversation start body.\n\nCredentials are deliberately absent. They are bound to the managed Agent or\nAssistant configuration; accepting a user-supplied Vault id here would let a\nconversation replace that management decision. Keeping an empty, strict\nmodel lets ``POST`` without a body and ``{}`` work while unknown fields fail.",
@@ -19795,6 +20125,36 @@
           }
         },
         "title": "UpdateMCPServerRequest",
+        "type": "object"
+      },
+      "UpdateModelAccountRequest": {
+        "additionalProperties": false,
+        "description": "Body for changing an account; an absent or null field is left as it is.",
+        "properties": {
+          "is_default": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Default"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          }
+        },
+        "title": "UpdateModelAccountRequest",
         "type": "object"
       },
       "UserActionCommandView": {
@@ -27497,6 +27857,16 @@
                   "model": {
                     "type": "string"
                   },
+                  "model_account_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "name": {
                     "type": "string"
                   },
@@ -28133,6 +28503,16 @@
                   },
                   "model": {
                     "type": "string"
+                  },
+                  "model_account_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   },
                   "name": {
                     "type": "string"
@@ -38030,6 +38410,317 @@
         "summary": "Revoke Mcp Token",
         "tags": [
           "Mcp Tokens"
+        ],
+        "x-required-api-scope": "astrabox:write"
+      }
+    },
+    "/api/v1/me/model-accounts": {
+      "get": {
+        "operationId": "list_model_accounts_api_v1_me_model_accounts_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_list_ModelAccount__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "List Model Accounts",
+        "tags": [
+          "Model Accounts"
+        ],
+        "x-required-api-scope": "astrabox:read"
+      }
+    },
+    "/api/v1/me/model-accounts/chatgpt/authorizations": {
+      "post": {
+        "operationId": "start_chatgpt_authorization_api_v1_me_model_accounts_chatgpt_authorizations_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartAuthorizationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_ModelAccountAuthorization_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Start Chatgpt Authorization",
+        "tags": [
+          "Model Accounts"
+        ],
+        "x-required-api-scope": "astrabox:write"
+      }
+    },
+    "/api/v1/me/model-accounts/chatgpt/authorizations/{authorization_id}/callback": {
+      "post": {
+        "operationId": "complete_chatgpt_authorization_api_v1_me_model_accounts_chatgpt_authorizations__authorization_id__callback_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "authorization_id",
+            "required": true,
+            "schema": {
+              "title": "Authorization Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompleteAuthorizationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_ModelAccount_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Complete Chatgpt Authorization",
+        "tags": [
+          "Model Accounts"
+        ],
+        "x-required-api-scope": "astrabox:write"
+      }
+    },
+    "/api/v1/me/model-accounts/{account_id}": {
+      "delete": {
+        "operationId": "delete_model_account_api_v1_me_model_accounts__account_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "title": "Account Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_DeletedModelAccount_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Delete Model Account",
+        "tags": [
+          "Model Accounts"
+        ],
+        "x-required-api-scope": "astrabox:write"
+      },
+      "patch": {
+        "operationId": "update_model_account_api_v1_me_model_accounts__account_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "title": "Account Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateModelAccountRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_ModelAccount_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Update Model Account",
+        "tags": [
+          "Model Accounts"
         ],
         "x-required-api-scope": "astrabox:write"
       }

@@ -412,10 +412,18 @@ class RuntimeConfigResolver:
         payload, endpoint_provider, endpoint = self._resolve_model_configuration(
             model_config
         )
-        credential, credential_kind = self._resolve_model_credential(
-            payload,
-            endpoint=endpoint,
-        )
+        credential: str | None
+        credential_kind: ModelCredentialKind
+        if model_endpoint_for_name(endpoint_provider).credential_owner == "session_owner":
+            # The Session's owner supplies the credential when the Session
+            # starts; the deployment's own model credentials must never be
+            # sent to this provider's endpoint in its place.
+            credential, credential_kind = None, endpoint.credential_kind or "bearer"
+        else:
+            credential, credential_kind = self._resolve_model_credential(
+                payload,
+                endpoint=endpoint,
+            )
         public_configuration = dict(payload)
         public_configuration.pop("api_key", None)
         return ResolvedModelAccess(

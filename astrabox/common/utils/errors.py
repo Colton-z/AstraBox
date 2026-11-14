@@ -225,6 +225,33 @@ for _code, _status, _category, _retryable, _owner in (
     # raise site gives the status (400 for a bad response, 502 for an
     # unreachable or failing server).
     ("CONNECTOR_AUTHORIZATION_FAILED", 502, "auth", True, "platform"),
+    # A conversation that spends its owner's ChatGPT plan found no linked
+    # account, or none chosen as the owner's default; the owner links one or
+    # chooses a default (astrabox/core/service/model_accounts/service.py).
+    ("MODEL_ACCOUNT_REQUIRED", 409, "state", False, "client"),
+    # OpenAI refused for good to renew the account's access token (its refresh
+    # token expired, was revoked or was reused); the owner signs in again.
+    ("MODEL_ACCOUNT_SIGN_IN_REQUIRED", 409, "auth", False, "client"),
+    # Renewing the access token failed with no verdict on the sign-in: the
+    # token endpoint was unreachable or answered 5xx. A refusal that is not a
+    # sign-in verdict, such as invalid_client, is raised with retryable=False.
+    ("MODEL_ACCOUNT_REFRESH_FAILED", 502, "auth", True, "platform"),
+    ("MODEL_ACCOUNT_NOT_FOUND", 404, "request", False, "client"),
+    # The sign-in is not the caller's, was already completed, or expired; the
+    # caller starts a new one.
+    ("MODEL_ACCOUNT_AUTHORIZATION_NOT_FOUND", 404, "request", False, "client"),
+    # The owner declined consent at OpenAI.
+    ("MODEL_ACCOUNT_AUTHORIZATION_DECLINED", 409, "request", False, "client"),
+    # The sign-in could not be completed, and it is used up, so the caller
+    # starts a new one. The raise site gives the status: 400 for a callback
+    # that does not match its sign-in, 409 for a different ChatGPT account than
+    # the one being signed in to again, 502 when OpenAI's endpoints failed,
+    # refused the code exchange, or answered with an ID token that does not
+    # validate.
+    ("MODEL_ACCOUNT_AUTHORIZATION_FAILED", 400, "auth", False, "client"),
+    # OpenAI granted the sign-in without ChatGPT plan usage (the scope
+    # chatgpt.tokens.use.direct); the owner signs in again and allows it.
+    ("MODEL_ACCOUNT_PLAN_USAGE_NOT_ENABLED", 409, "auth", False, "client"),
     # An ASGI host mounted AstraBox at a path other than
     # ASTRABOX_PUBLIC_PATH_PREFIX; the operator sets the variable to the mount
     # path (astrabox/web/public_path_middleware.py).

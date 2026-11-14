@@ -107,6 +107,10 @@ class Agent(Base):
     terminal_panel: Mapped[bool] = mapped_column(server_default=text("false"))
     diff_panel: Mapped[bool] = mapped_column(server_default=text("false"))
     exposure_mode: Mapped[str | None] = mapped_column(payload_text())
+    #: The model account of the Agent's creator that its creator's
+    #: conversations spend, on a RuntimeProfile whose model endpoint is paid by
+    #: each conversation's owner. ``NULL`` means the owner's default account.
+    model_account_id: Mapped[str | None] = mapped_column(payload_text())
     idle_hibernate_seconds: Mapped[int | None] = mapped_column(Integer)
     prepared_capacity: Mapped[int] = mapped_column(Integer, server_default="0")
     enabled: Mapped[bool] = mapped_column(server_default=true())

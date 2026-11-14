@@ -99,6 +99,10 @@ class AgentView:
     endpoint_provider: str | None = None
     # ── runtime settings ─────────────────────────────────────────────────
     exposure_mode: str | None = None
+    #: The model account the Agent names and whose it is (its creator's); see
+    #: ``ModelRequestContext.account_id``.
+    model_account_id: str | None = None
+    model_account_owner_id: str | None = None
     idle_hibernate_seconds: int | None = None
     #: Keep one platform-ready runtime prepared for this Agent. Shared tenancy
     #: obtains base boxes through the sandbox provider's client-pool capability;

@@ -316,6 +316,10 @@
         "label": "Runtime runtime profile",
         "help": "Select the saved runtime setup that provides the Agent program, sandbox settings, network access, and model connection. Credential Vaults are assigned separately."
       },
+      "model_account_id": {
+        "label": "ChatGPT account",
+        "help": "On a ChatGPT plan runtime profile: the ID of one of your linked ChatGPT accounts that your conversations with this Agent use. Empty uses your default account. Other people's conversations use their own default account."
+      },
       "exposure_mode": {
         "label": "Available through",
         "help": "Choose whether users can start conversations in the web app, through MCP, or both"

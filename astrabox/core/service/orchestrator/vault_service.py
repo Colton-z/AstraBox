@@ -49,13 +49,11 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
-from sqlalchemy.ext.asyncio import AsyncConnection
 
 from astrabox.persistence.repository.vault_repository import (
     CredentialKeyTaken,
@@ -70,7 +68,7 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.time_utils import parse_iso, utcnow
 from astrabox.common.utils.user_context import UserContext, default_org_id
-from astrabox.providers.secret_store import EncryptedCollectionSecretStore
+from astrabox.core.service.secret_changes import SecretStoreChange, prepare_secret_change
 from astrabox.seams.egress_credentials import (
     ACCESS_TOKEN_RENEWAL_WINDOW_S,
     DELIVERY_HEADER,
@@ -202,47 +200,6 @@ def _expired(expires_at: str | None) -> bool:
     return parse_iso(expires_at) <= utcnow() + timedelta(seconds=_EXPIRY_SKEW_SECONDS)
 
 
-@dataclass(frozen=True)
-class _SecretChange:
-    """The secret-store side of one metadata change; built by :meth:`VaultService._secret_change`.
-
-    :meth:`apply` runs inside the metadata change's transaction, after its
-    statements have succeeded. ``put`` holds sealed values when the store keeps
-    its values in the platform database and plain values otherwise.
-    """
-
-    store: SecretStore
-    scope: str
-    put: Mapping[str, str]
-    remove: tuple[str, ...]
-    purge: bool
-
-    async def apply(self, conn: AsyncConnection) -> None:
-        if isinstance(self.store, EncryptedCollectionSecretStore):
-            await self.store.apply(
-                conn, scope=self.scope, put=self.put, remove=self.remove, purge=self.purge
-            )
-            return
-        if self.purge:
-            await self.store.purge_scope(scope=self.scope)
-        for key in self.remove:
-            await self.store.delete(scope=self.scope, key=key)
-        for key, value in self.put.items():
-            await self.store.put(scope=self.scope, key=key, value=value)
-
-    async def discard(self) -> None:
-        """Remove what :meth:`apply` stored for a change whose transaction did not commit.
-
-        Only a store outside the database needs it: there the values were
-        written before the commit failed. Callers use it for new keys only,
-        which held nothing before the change.
-        """
-        if isinstance(self.store, EncryptedCollectionSecretStore):
-            return
-        for key in self.put:
-            await self.store.delete(scope=self.scope, key=key)
-
-
 class VaultService:
     """Vault + credential CRUD, and credential resolution for the proxies."""
 
@@ -275,7 +232,7 @@ class VaultService:
         put: Mapping[str, str] | None = None,
         remove: Sequence[str] = (),
         purge: bool = False,
-    ) -> _SecretChange:
+    ) -> SecretStoreChange:
         """The secret-store writes that go with one metadata change of ``vault_id``.
 
         A store that keeps its values in the platform database writes them on
@@ -289,18 +246,10 @@ class VaultService:
         limit, a Vault still in use) never reaches the store, and a store write
         that fails rolls the metadata back. Only a commit that fails after the
         store writes leaves the two apart; a create then discards its values
-        (:meth:`_SecretChange.discard`), and an archive or delete can be repeated.
+        (:meth:`SecretStoreChange.discard`), and an archive or delete can be repeated.
         """
-        store = self._store()
-        scope = self._scope(vault_id)
-        values = dict(put or {})
-        if isinstance(store, EncryptedCollectionSecretStore):
-            values = {
-                key: await store.seal(scope=scope, key=key, value=value)
-                for key, value in values.items()
-            }
-        return _SecretChange(
-            store=store, scope=scope, put=values, remove=tuple(remove), purge=purge
+        return await prepare_secret_change(
+            self._store(), self._scope(vault_id), put=put, remove=remove, purge=purge
         )
 
     # ── vaults ──────────────────────────────────────────────────────────────

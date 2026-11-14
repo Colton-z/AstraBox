@@ -348,6 +348,7 @@ def validate_runtime_profile_payload(payload: dict[str, Any]) -> None:
     _assert_idle_action_is_reachable(payload)
     _assert_permission_level_is_reachable(payload)
     _assert_tenancy_has_permission_level(payload)
+    _assert_owner_credential_is_deliverable(payload)
     _assert_backend_capabilities(payload)
     _assert_provider_configuration_is_reachable(payload)
 
@@ -442,6 +443,39 @@ def _assert_idle_action_is_reachable(payload: dict[str, Any]) -> None:
         f"destroyed with its workspace; use 'terminate', or select a backend "
         f"that supports pausing."
     )
+
+
+def _assert_owner_credential_is_deliverable(payload: dict[str, Any]) -> None:
+    """Refuse a model endpoint paid by each conversation's owner where it cannot be kept to them.
+
+    Such an endpoint (``credential_owner`` ``session_owner``, the ChatGPT plan)
+    gives every conversation its owner's credential. An Agent's shared box
+    serves several users' conversations behind one egress boundary, where one
+    could spend another's; the Codex wire is the one the ChatGPT plan route
+    accepts; and with protected delivery off the token would sit in the box's
+    environment, where it cannot be renewed.
+    """
+    from astrabox.common.utils.settings import load_astrabox_settings
+    from astrabox.seams.model import model_endpoint_for_name
+
+    name = str(payload.get("endpoint_provider") or "").strip()
+    if not name or model_endpoint_for_name(name).credential_owner != "session_owner":
+        return
+    tenancy = str(payload.get("sandbox_tenancy") or SANDBOX_TENANCY_CONVERSATION).strip().lower()
+    if tenancy != SANDBOX_TENANCY_CONVERSATION:
+        raise invalid_request(
+            f"environment payload: endpoint_provider {name!r} spends each conversation "
+            "owner's own account and requires sandbox_tenancy 'conversation'"
+        )
+    if name == "chatgpt_plan" and str(payload.get("engine_kind") or "").strip() != "codex":
+        raise invalid_request(
+            "environment payload: endpoint_provider 'chatgpt_plan' requires engine_kind 'codex'"
+        )
+    if not bool(getattr(load_astrabox_settings(), "sandbox_credential_vault_enabled", False)):
+        raise invalid_request(
+            f"environment payload: endpoint_provider {name!r} requires protected credential "
+            "delivery (ASTRABOX_SANDBOX_CREDENTIAL_VAULT)"
+        )
 
 
 def _assert_tenancy_has_permission_level(payload: dict[str, Any]) -> None:

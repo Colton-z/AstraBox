@@ -22,6 +22,7 @@ Each command below includes its purpose, parameters/options, examples, and opera
 | `run` | **Run an Agent**: Send a task and stream the reply. | Use an Agent from a terminal or script. |
 | `status` | **View status**: Probe the deployment's health and readiness endpoints. | Monitor a local or remote deployment. |
 | `destroy` | **Clean up resources**: Delete the Agents declared in a file. | Remove declared Agents with explicit confirmation. |
+| `model-account` | **Link model accounts**: Sign in to a ChatGPT account and link it to your user, or list linked accounts. | Let conversations you start spend your ChatGPT plan. |
 | `up` | **Start locally**: Start the maintained Compose deployment. | Run AstraBox from a source checkout. |
 | `down` | **Stop locally**: Stop the maintained Compose deployment. | Stop services or delete their volumes. |
 | `logs` | **View local logs**: Read or follow Compose service logs. | Diagnose a local deployment. |
@@ -826,6 +827,61 @@ astrabox destroy -f astrabox.yaml --yes --output json
 3. **Ambiguous names fail**: If several stored Agents share the declared name, the command exits with a conflict instead of choosing one.
 4. **RuntimeProfile deletion is not supported**: RuntimeProfiles remain on the deployment.
 5. **Keep a recoverable declaration**: Store the reviewed file in version control if you may need to recreate the Agent later.
+
+---
+
+## `astrabox model-account`
+
+`astrabox model-account` links the ChatGPT accounts whose plans pay for your model requests to your AstraBox user, through OpenAI's Sign in with ChatGPT. The deployment keeps each account's tokens; none reaches your computer. See [Use a ChatGPT plan](../models.md#use-a-chatgpt-plan).
+
+### Usage
+
+```bash
+astrabox model-account login chatgpt [--account <account_id>] [--timeout <seconds>] [options]
+astrabox model-account list [options]
+```
+
+### Parameter Description
+
+| Option | Description | Default |
+| :--- | :--- | :--- |
+| `chatgpt` | The account's vendor (`login` only). | Required |
+| `--account` | Sign in to this linked account again instead of linking another (`login` only). | None |
+| `--timeout` | Seconds to wait for the browser to return (`login` only). | `600` |
+| `--endpoint` | Deployment base URL. | `ASTRABOX_ENDPOINT`, then `http://127.0.0.1:$ASTRABOX_SERVER_HOST_PORT` |
+| `--token` | Bearer token. | `ASTRABOX_TOKEN`, then OAuth client credentials |
+| `--output`, `-o` | Output format: `table` or `json`. | `table` |
+
+### How `login` works
+
+OpenAI returns the browser to `http://127.0.0.1:<port>/auth/callback`, which reaches the computer running the browser. Run `login` on that computer, against your deployment's address:
+
+1. The command listens on a free port of `127.0.0.1`.
+2. It asks the deployment to start a sign-in for that address and opens the returned OpenAI page in your browser. It also prints the address, for a browser that does not open by itself.
+3. You approve the account and its plan usage at OpenAI. The browser returns to the listener and shows a page you can close.
+4. The command hands the browser's return to the deployment, which exchanges the code, validates the sign-in, and stores the account. The command prints the linked account.
+
+A started sign-in can be completed once, within ten minutes. Your first linked account becomes your default.
+
+### Usage Examples
+
+```bash
+# Example 1: link a ChatGPT account to your user on a remote deployment
+astrabox model-account login chatgpt --endpoint https://astrabox.example.com
+
+# Example 2: sign in again to an account whose status is sign_in_required
+astrabox model-account login chatgpt --account mact_0123456789abcdef0123456789abcdef
+
+# Example 3: list your linked accounts
+astrabox model-account list
+
+# Example 4: machine-readable list
+astrabox model-account list --output json
+```
+
+### Output
+
+`login` prints the linked account and `list` prints every linked account, with the columns `LABEL`, `EMAIL`, `STATUS`, `IS_DEFAULT` and `ACCOUNT_ID`. `STATUS` is `active`, or `sign_in_required` once OpenAI refused to renew the account's access token for good. A declined sign-in exits with code 5 and the deployment's `MODEL_ACCOUNT_AUTHORIZATION_DECLINED`.
 
 ---
 

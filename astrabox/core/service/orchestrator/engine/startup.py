@@ -45,6 +45,7 @@ from astrabox.core.service.orchestrator.engine.provisioning import (
     resolve_sandbox_websocket_endpoint,
     resolve_session_environment_credentials,
     session_credential_refresher,
+    session_model_access,
     write_engine_env_file,
 )
 from astrabox.core.service.orchestrator.runtime.mcp_credentials import (
@@ -497,7 +498,9 @@ async def start_platform_runtime(
 ) -> Any:
     """Run the one platform startup line, then hand activation to an engine."""
 
-    model_access = platform.resolve_model_access(template.model_config or {})
+    model_access = await session_model_access(
+        platform, template, session_id=session_id, user_id=user_id
+    )
     material_request = _startup_material_request(
         adapter,
         template=template,
@@ -654,7 +657,9 @@ async def attach_platform_runtime(
         )
 
     user_id = str(workspace_plan.user_id or user_id or "").strip() or None
-    model_access = platform.resolve_model_access(template.model_config or {})
+    model_access = await session_model_access(
+        platform, template, session_id=session_id, user_id=user_id
+    )
     material_request = _startup_material_request(
         adapter,
         template=template,

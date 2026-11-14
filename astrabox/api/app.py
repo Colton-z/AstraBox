@@ -565,6 +565,7 @@ def _register_feature_routes(app: FastAPI) -> None:
     from astrabox.api.routes.assistant_defaults import register_assistant_defaults_routes
     from astrabox.api.routes.deployments import register_deployment_routes
     from astrabox.api.routes.connectors import register_connector_routes
+    from astrabox.api.routes.model_accounts import register_model_account_routes
     from astrabox.api.routes.share import register_share_routes
     from astrabox.api.routes.artifacts import register_artifact_routes
 
@@ -592,6 +593,7 @@ def _register_feature_routes(app: FastAPI) -> None:
     register_assistant_defaults_routes(app)
     register_deployment_routes(app)
     register_connector_routes(app)
+    register_model_account_routes(app)
     register_share_routes(app)
     register_artifact_routes(app)
 

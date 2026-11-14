@@ -80,7 +80,9 @@ CODEX_FORWARD_TOKEN_FILE_NAME = ".astrabox-codex-forward-token"
 #: What AstraBox tells the server it is. The server echoes this back inside
 #: the user agent it presents upstream, so it is a real identifier and not
 #: decoration.
-CODEX_CLIENT_NAME = "astrabox"
+#: Also the name a ChatGPT account is asked to authorize (``AGENT_NAME_HINT``
+#: in the model accounts service): OpenAI asks for the two to be the same.
+CODEX_CLIENT_NAME = "AstraBox"
 CODEX_CLIENT_TITLE = "AstraBox"
 
 _CONNECT_TIMEOUT_SECONDS = 30.0
