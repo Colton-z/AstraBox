@@ -263,7 +263,11 @@ entrypoint is started without it, and execd removes it from every command,
 terminal and isolated session it starts, so the Agent's processes do not have
 it in their environment. It remains in the environment of the sandbox's first
 process and of execd, both running as root, which only root in the sandbox can
-read. The bundled images run the Agent as their own unprivileged account.
+read. The bundled images run the Agent as their own unprivileged account; the
+conversation's terminal runs as root and can read it, which gives the person at
+the terminal nothing beyond the root access to that sandbox the terminal
+already gives. `docker exec` also starts its processes with the token, from the
+container's configuration.
 
 On the Docker runtime a browser reaches an in-box port only through execd's
 `/proxy/<port>` route, and a browser cannot send the token. With the token,
