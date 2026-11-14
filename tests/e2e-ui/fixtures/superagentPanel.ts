@@ -8,8 +8,8 @@ import { killSandbox, requireSandboxHandle, waitForSandboxStopped } from './sand
 
 export type Ticket = {
   id: string; title: string; directory?: string; threads: Array<{ url?: string }>;
-  /** How it ended, once it has; and the summary of its latest Report. */
-  ended?: { outcome: string }; summary?: string;
+  /** Its stage and the action it waits for, such as person and review; how it ended; the summary of its latest Report. */
+  stage?: string; action?: string; ended?: { outcome: string }; summary?: string;
 };
 
 /** The conversations of `agentId` that A2A started, oldest first: how an Assistant's Tickets reach its owner's Agents. */

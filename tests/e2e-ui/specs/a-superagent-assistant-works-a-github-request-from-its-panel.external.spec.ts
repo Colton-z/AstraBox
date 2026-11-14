@@ -103,6 +103,7 @@ let vaultId = '';
 let issueNumber = 0;
 let pullNumber = 0;
 let branch = '';
+let head = '';
 onPassOnly(async ({ request }) => {
   if (pullNumber) await github('PATCH', `/repos/${repository}/pulls/${pullNumber}`, { state: 'closed' });
   if (branch) await github('DELETE', `/repos/${repository}/git/refs/heads/${branch}`);
@@ -223,12 +224,13 @@ test('a dsh-superagent Assistant has an owner\'s Agent work a GitHub mention, an
 
   // GitHub is the evidence: the bot's reply and this Ticket's pull request with exactly the asked-for file.
   await expect.poll(async () => {
-    const pulls = await github<Array<{ number: number; user: { login: string }; head: { ref: string } }>>(
+    const pulls = await github<Array<{ number: number; user: { login: string }; head: { ref: string; sha: string } }>>(
       'GET', `/repos/${repository}/pulls?state=open&per_page=50`);
     const pull = pulls.find((candidate) => candidate.user.login === agentLogin && candidate.head.ref.split('/').at(-1) === ticketName);
     if (!pull) return [];
     pullNumber = pull.number;
     branch = pull.head.ref;
+    head = pull.head.sha;
     return (await github<Array<{ filename: string }>>('GET', `/repos/${repository}/pulls/${pull.number}/files`))
       .map((entry) => entry.filename);
   }, { message: "the Ticket's pull request changes exactly the asked-for file", timeout: 30 * 60_000, intervals: [20_000] })
@@ -241,12 +243,28 @@ test('a dsh-superagent Assistant has an owner\'s Agent work a GitHub mention, an
     return comments.some((comment) => comment.user.login === agentLogin && comment.body.includes(`/pull/${pullNumber}`));
   }, { message: 'the bot answers on the issue with its pull request', timeout: 10 * 60_000, intervals: [10_000] }).toBe(true);
 
+  // The Ticket waits for a person's review, and its result names what the Agent pushed, which superagent reads from the
+  // task's outcome extension (docs/a2a.md, "Task outcome extension"): the branch, the pull request's head commit and the
+  // pull request.
+  let reviewed: Ticket | undefined;
+  await expect.poll(async () => {
+    reviewed = (await panelApi<{ items: Ticket[] }>(await panelFrame(page), 'GET', 'tickets')).items
+      .find((entry) => entry.id === ticket.id);
+    return [reviewed?.stage, reviewed?.action];
+  }, { message: 'the Ticket waits for review', timeout: 5 * 60_000, intervals: [5_000] }).toEqual(['person', 'review']);
+  const pushed = (reviewed?.summary ?? '').split('\n').find((line) => line.startsWith('Pushed: ')) ?? '';
+  expect(pushed, 'the result names the branch').toContain(`branch ${branch}`);
+  expect(pushed, 'and the pull request').toContain(`pull_request https://github.com/${repository}/pull/${pullNumber}`);
+  const commit = /\bcommit ([0-9a-f]{7,64})\b/.exec(pushed)?.[1] ?? '';
+  expect(head.startsWith(commit) && commit.length > 0, `the result names the pull request's head commit ${head}: ${pushed}`).toBe(true);
+
   // A follow-up on the issue reaches the same conversation of the same Agent.
   const followUp = `follow-up-${marker}`;
   await github('POST', `/repos/${repository}/issues/${issueNumber}/comments`,
     { body: `@${agentLogin} thanks; reply with the word ${followUp} so I know you saw this.` });
-  await expect.poll(() => sessionInputRows(conversation.session_id).some((row) => row.content.includes(followUp)),
-    { message: 'the follow-up arrives in the Ticket\'s conversation', timeout: 10 * 60_000, intervals: [10_000] }).toBe(true);
+  await expect.poll(() => sessionInputRows(conversation.session_id).findIndex((row) => row.content.includes(followUp)),
+    { message: 'the follow-up arrives as the second input of the Ticket\'s conversation', timeout: 10 * 60_000, intervals: [10_000] })
+    .toBe(1);
   expect(a2aConversations(workerId), 'a follow-up starts no second conversation').toHaveLength(1);
   // The Agent's answer to the follow-up reaches the person on the issue.
   await expect.poll(async () => {
