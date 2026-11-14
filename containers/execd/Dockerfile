@@ -16,17 +16,18 @@ RUN --mount=type=bind,from=execd-source,source=/source.tar.gz,target=/tmp/source
     tar -xzf /tmp/source.tar.gz --strip-components=1
 COPY --chmod=0644 containers/execd/stream-upload.patch /tmp/stream-upload.patch
 COPY --chmod=0644 containers/execd/pty-refusal-frames.patch /tmp/pty-refusal-frames.patch
-RUN git apply --check --unidiff-zero /tmp/stream-upload.patch /tmp/pty-refusal-frames.patch \
-    && git apply --unidiff-zero /tmp/stream-upload.patch /tmp/pty-refusal-frames.patch
+COPY --chmod=0644 containers/execd/access-token.patch /tmp/access-token.patch
+RUN git apply --check --unidiff-zero /tmp/stream-upload.patch /tmp/pty-refusal-frames.patch /tmp/access-token.patch \
+    && git apply --unidiff-zero /tmp/stream-upload.patch /tmp/pty-refusal-frames.patch /tmp/access-token.patch
 WORKDIR /source/components/execd
 RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false \
-    -ldflags="-buildid= -B none -X github.com/alibaba/opensandbox/internal/version.Version=1.2.1+astrabox.stream-upload.refusal-frames" \
+    -ldflags="-buildid= -B none -X github.com/alibaba/opensandbox/internal/version.Version=1.2.1+astrabox.stream-upload.refusal-frames.access-token" \
     -o /build/execd ./main.go
 RUN go run github.com/cilium/ebpf/cmd/bpf2go@v0.16.0 \
     -cc clang -no-strip -cflags "-Ipkg/ebpf/prog" -target "${TARGETARCH}" \
     -go-package ebpf -output-dir pkg/ebpf audit pkg/ebpf/prog/audit.bpf.c
 RUN CGO_ENABLED=0 go build -tags ebpf -trimpath -buildvcs=false \
-    -ldflags="-buildid= -B none -X github.com/alibaba/opensandbox/internal/version.Version=1.2.1+astrabox.stream-upload.refusal-frames" \
+    -ldflags="-buildid= -B none -X github.com/alibaba/opensandbox/internal/version.Version=1.2.1+astrabox.stream-upload.refusal-frames.access-token" \
     -o /build/execd-ebpf ./main.go
 
 FROM ${UPSTREAM_EXECD_IMAGE}
