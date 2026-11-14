@@ -128,6 +128,11 @@ jobs:
         # path). The .env above names it as ASTRABOX_AGENT_IMAGE.
         run: make build-agent-image
 
+      - name: Build the sandbox egress sidecar image (astrabox/egress:latest)
+        # Every sandbox is created under a network policy, so its sidecar runs
+        # this image, which a checkout deployment names astrabox/egress:latest.
+        run: make build-egress-image
+
       - name: Build the source-development server image
         # The live launchers mount the checkout over this image's installed
         # package while reusing its pinned dependencies and maintained Compose

@@ -24444,6 +24444,21 @@
                               }
                             ]
                           },
+                          "sandbox_container_engine": {
+                            "anyOf": [
+                              {
+                                "enum": [
+                                  "none",
+                                  "docker"
+                                ],
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": "none"
+                          },
                           "sandbox_permission_level": {
                             "anyOf": [
                               {
@@ -24891,6 +24906,21 @@
                       }
                     ]
                   },
+                  "sandbox_container_engine": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "none",
+                          "docker"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": "none"
+                  },
                   "sandbox_permission_level": {
                     "anyOf": [
                       {
@@ -25240,6 +25270,21 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "sandbox_container_engine": {
+                          "anyOf": [
+                            {
+                              "enum": [
+                                "none",
+                                "docker"
+                              ],
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "default": "none"
                         },
                         "sandbox_permission_level": {
                           "anyOf": [

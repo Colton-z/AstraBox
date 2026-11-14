@@ -49,11 +49,26 @@ SANDBOX_SELF_DESCRIPTION = {
 }
 
 
-def sandbox_boot_env(*, shared: bool) -> dict[str, str]:
+#: The image's switch for its container engine
+#: (``containers/container-engine/astrabox-container-engine``): ``docker``
+#: starts a rootless Docker Engine at boot. A box without an engine is created
+#: without the variable, which the image reads as ``none``.
+CONTAINER_ENGINE_ENV = "ASTRABOX_CONTAINER_ENGINE"
+#: Where the image's engine keeps its images, containers and build cache. A
+#: create mounts a volume of the box's own here: the engine's overlay snapshots
+#: cannot have their upper directory on the box's overlay root.
+CONTAINER_ENGINE_DATA_ROOT = "/var/lib/astrabox/container-engine"
+#: Waits until the engine answers the workload account on the default socket
+#: path; otherwise prints why it cannot and exits non-zero.
+CONTAINER_ENGINE_READY_COMMAND = "/usr/local/bin/astrabox-container-engine ready"
+
+
+def sandbox_boot_env(*, shared: bool, container_engine: str) -> dict[str, str]:
     return {
         **SANDBOX_SELF_DESCRIPTION,
         "DISABLE_BROWSER": "true" if shared else "false",
         "DISABLE_VNC": "true" if shared else "false",
+        **({CONTAINER_ENGINE_ENV: container_engine} if container_engine != "none" else {}),
     }
 
 

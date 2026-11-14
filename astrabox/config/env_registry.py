@@ -2113,9 +2113,13 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
     (
         "ASTRABOX_SANDBOX_EGRESS_IMAGE",
         "public",
-        "opensandbox/egress:v1.1.7",
+        "derived",
         "OpenSandbox outbound proxy image used for provider network enforcement and "
-        "protected credential injection. The default is the tested image. A missing "
+        "protected credential injection. Unset, it is the release image "
+        "<ASTRABOX_IMAGE_PREFIX>egress:<ASTRABOX_IMAGE_TAG>: OpenSandbox egress v1.1.7 "
+        "with an addon that decrypts HTTPS only to hosts a protected credential is "
+        "bound to, so every other connection, including those of containers an Agent "
+        "runs in its sandbox, keeps the destination's own certificate. A missing "
         "image makes either requested OpenSandbox capability fail before allocation.",
         "astrabox.deploy.sandbox_server",
     ),
@@ -2292,6 +2296,16 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "Deadline in seconds for a sandbox probe, connection, or delete operation. "
         "Command and Agent streams use their own lifetimes.",
         "astrabox.core.service.orchestrator.runtime_manager",
+    ),
+    (
+        "ASTRABOX_CONTAINER_ENGINE",
+        "injected",
+        "none",
+        "Container engine the sandbox image starts at boot: docker starts a rootless "
+        "Docker Engine as the workload account, none starts nothing. Set by the "
+        "create of a box whose RuntimeProfile has sandbox_container_engine docker, "
+        "and only then; the box is handed out once the engine answers.",
+        "containers/container-engine/astrabox-container-engine (image: astrabox-container-engine)",
     ),
     (
         "ASTRABOX_RUNNER_PORT",

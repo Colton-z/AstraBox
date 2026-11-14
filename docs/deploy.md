@@ -139,6 +139,31 @@ The installer and the server both check the daemon and refuse an older one,
 naming the version they found; the server checks at every start, so upgrading
 the host never leaves it running on an engine it does not support.
 
+### A container engine in sandboxes {#container-engine-host}
+
+A RuntimeProfile can give each of its sandboxes a rootless Docker Engine
+([RuntimeProfiles](runtime-profiles.md#container-engine)). The bundled server
+creates such a sandbox without masked `/proc` paths and without
+`no_new_privileges`, which the engine needs to map its user ids and to give
+each container its own `/proc`. Whoever gains root in such a sandbox can
+therefore change kernel settings of this host; offer the engine only to teams
+you trust with that.
+
+The engine creates user namespaces as the sandbox's unprivileged user, which
+Ubuntu 23.10 and later restrict through AppArmor by default. Allow them on the
+host:
+
+```bash
+echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-astrabox-userns.conf
+sudo sysctl --system
+```
+
+Without it, a sandbox created for the engine is refused with a message naming
+the setting. Each such sandbox keeps its images and build cache on a Docker
+volume of its own, created and deleted with the sandbox; the volume has no size
+limit, so the host's Docker data disk bounds it. The two grants apply only to
+sandboxes created for the engine.
+
 ### The sandbox network boundary {#sandbox-network-boundary}
 
 Each sandbox is a container on Docker's default `bridge` network, paired with
@@ -413,7 +438,8 @@ console without login to other computers.
 Every release publishes these images, tagged with its version. The installer
 writes that version to the settings file as `ASTRABOX_IMAGE_TAG`; a deployment
 that names no image of its own runs `<ASTRABOX_IMAGE_PREFIX><component>:<ASTRABOX_IMAGE_TAG>`
-for its server, every Agent program's sandbox and the workspace helper.
+for its server, every Agent program's sandbox, each sandbox's egress sidecar
+and the workspace helper.
 
 | Image | Architectures |
 |---|---|
@@ -423,6 +449,7 @@ for its server, every Agent program's sandbox and the workspace helper.
 | `ghcr.io/colton-z/astrabox-sandbox-deepseek-harness` | amd64, arm64 |
 | `ghcr.io/colton-z/astrabox-sandbox-hermes` | amd64, arm64 |
 | `ghcr.io/colton-z/astrabox-sandbox-pi` | amd64, arm64 |
+| `ghcr.io/colton-z/astrabox-egress` | amd64, arm64 |
 | `ghcr.io/colton-z/astrabox-workspace-mounter` | amd64 |
 
 The workspace helper is amd64 only: it installs the mergerfs release archive
@@ -433,7 +460,7 @@ built for that architecture.
 A checkout builds and runs its own images, `astrabox/<component>:latest`:
 
 ```bash
-make build-agent-image
+make build-agent-image build-egress-image
 
 export ANTHROPIC_API_KEY="your-anthropic-api-key"
 export ANTHROPIC_MODEL="your-model-name"

@@ -79,6 +79,7 @@ from astrabox.core.service.orchestrator.engine.runtime_profiles import (
 )
 from astrabox.core.service.orchestrator.runtime.models import SessionRuntime
 from astrabox.core.service.orchestrator.runtime.sandbox_client import extract_sandbox_id
+from astrabox.seams.sandbox import SANDBOX_CONTAINER_ENGINE_DOCKER
 
 logger = get_logger(__name__)
 
@@ -624,6 +625,8 @@ class CodexEngineAdapter(EngineAdapter):
             # three, spelled as profile ids (`:workspace`), and those are
             # config-selected while these are what `thread/start` takes.
             default_runtime_image=release_image(CODEX_RUNTIME_IMAGE_COMPONENT),
+            # containers/sandbox-codex/Dockerfile, "container engine".
+            container_engines=(SANDBOX_CONTAINER_ENGINE_DOCKER,),
             permission_modes=CODEX_SANDBOX_MODES,
             permission_mode_defaults=(("agent_chat", "workspace-write"),),
             # Codex writes the rollout and mentions it to nobody: no protocol

@@ -197,7 +197,7 @@ def test_compose_keeps_postgresql_off_the_sandbox_bridge_and_uses_file_secrets()
         "${ASTRABOX_SANDBOX_SERVER_PORT_RANGE:-20000-32000}"
     )
     assert server["environment"]["ASTRABOX_SANDBOX_EGRESS_IMAGE"] == (
-        "${ASTRABOX_SANDBOX_EGRESS_IMAGE:-opensandbox/egress:v1.1.7}"
+        "${ASTRABOX_SANDBOX_EGRESS_IMAGE:-}"
     )
     assert server["environment"]["ASTRABOX_SANDBOX_EGRESS_MODE"] == (
         "${ASTRABOX_SANDBOX_EGRESS_MODE:-dns+nft}"

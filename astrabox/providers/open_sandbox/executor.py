@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+import uuid
 import weakref
 from datetime import timedelta
 from typing import Any, Protocol
@@ -17,6 +18,7 @@ from astrabox.providers.execd import EXECD_PORT
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.settings import load_astrabox_settings
+from astrabox.deploy.sandbox_server import CONTAINER_ENGINE_METADATA_KEY
 from astrabox.providers.open_sandbox import _config
 from astrabox.providers.open_sandbox.aio_auth import (
     AIO_SANDBOX_API_KEY_ENV,
@@ -41,10 +43,14 @@ from astrabox.providers.open_sandbox.sandbox import (
 )
 from astrabox.providers.sandbox_image import (
     AIO_IMAGE_ENTRYPOINT,
+    CONTAINER_ENGINE_DATA_ROOT,
+    CONTAINER_ENGINE_READY_COMMAND,
     IN_BOX_SIDECAR_PORT,
 )
 from astrabox.seams.sandbox import (
     SANDBOX_ASSIGNMENT_ID_METADATA_KEY,
+    SANDBOX_CONTAINER_ENGINE_NONE,
+    SANDBOX_CONTAINER_ENGINES,
     SANDBOX_ENVIRONMENT_METADATA_KEY,
     SANDBOX_INSTALLATION_METADATA_KEY,
     SANDBOX_MANAGED_BY_METADATA_KEY,
@@ -895,6 +901,71 @@ async def require_open_sandbox_permission_level(
     )
 
 
+#: How long the platform waits for the image's engine check, which itself
+#: gives up after 60 seconds (containers/container-engine/astrabox-container-engine).
+_CONTAINER_ENGINE_READY_TIMEOUT_SECONDS = 75.0
+
+
+def _container_engine_volume(container_engine: str) -> list[dict[str, Any]]:
+    """The per-box volume the engine keeps its state on, created and deleted with the box.
+
+    A fresh name per create: the lifecycle server deletes a volume with its
+    sandbox only when that create made it, so a name another create could
+    already hold would outlive the box.
+    """
+    if container_engine == SANDBOX_CONTAINER_ENGINE_NONE:
+        return []
+    return [
+        {
+            "name": "container-engine",
+            "pvc": {
+                "claimName": f"astrabox-container-engine-{uuid.uuid4().hex}",
+                "createIfNotExists": True,
+                "deleteOnSandboxTermination": True,
+            },
+            "mountPath": CONTAINER_ENGINE_DATA_ROOT,
+        }
+    ]
+
+
+async def require_open_sandbox_container_engine(
+    handle: OpenSandboxHandle,
+    container_engine: str,
+    *,
+    session_id: str,
+) -> None:
+    """Prove the box's container engine answers its workload account.
+
+    The image starts the engine at boot and runs this check's other half; a
+    box whose engine cannot start (a grant missing from its create, the host's
+    user-namespace restriction, an image without the engine) is refused with
+    the box's own diagnosis.
+    """
+    if container_engine == SANDBOX_CONTAINER_ENGINE_NONE:
+        return
+    result = await handle.commands.run(
+        CONTAINER_ENGINE_READY_COMMAND,
+        timeout=_CONTAINER_ENGINE_READY_TIMEOUT_SECONDS,
+    )
+    if result.exit_code == 0:
+        logger.info(
+            "open_sandbox container engine ready: session=%s sandbox=%s %s",
+            session_id,
+            handle.sandbox_id,
+            result.stdout.strip(),
+        )
+        return
+    raise APIError(
+        code="SANDBOX_CONTAINER_ENGINE_UNAVAILABLE",
+        message=(
+            f"open_sandbox sandbox {handle.sandbox_id!r} cannot run container engine "
+            f"{container_engine!r} (exit {result.exit_code}): {result.output.strip()[-1500:]}"
+        ),
+        status_code=409,
+        data={"sandbox_id": handle.sandbox_id, "sandbox_container_engine": container_engine},
+    )
+
+
 async def create_open_sandbox_box(
     *,
     session_id: str,
@@ -911,6 +982,7 @@ async def create_open_sandbox_box(
     transport: Any = None,
     network_policy: Any = None,
     permission_level: str = SANDBOX_PERMISSION_LEVEL_DEFAULT,
+    container_engine: str = SANDBOX_CONTAINER_ENGINE_NONE,
     credential_proxy_enabled: bool = False,
     vault_write: tuple[list[Any], list[Any]] | None = None,
     volumes: list[dict[str, Any]] | None = None,
@@ -945,7 +1017,11 @@ async def create_open_sandbox_box(
     ``permission_level`` is mapped to OpenSandbox's namespaced execd-isolation
     extension for ``advanced`` and then verified against the running box;
     ``privileged`` has no direct-create mapping and is refused before the API is
-    called. ``credential_proxy_enabled`` creates the credential proxy without writing a
+    called. ``container_engine`` ``docker`` is created only through the bundled
+    server on Docker, whose hooks grant it (``CONTAINER_ENGINE_METADATA_KEY``),
+    with a per-box engine volume, and the box is returned only once its engine
+    answers (:func:`require_open_sandbox_container_engine`).
+    ``credential_proxy_enabled`` creates the credential proxy without writing a
     vault yet; this is the safe Agent-prewarm state. A non-empty ``vault_write``
     also enables the proxy and immediately writes its contents. ``cwd``, when
     given, is pre-created inside the box so a later process spawn cannot race
@@ -968,6 +1044,26 @@ async def create_open_sandbox_box(
             message="open_sandbox create requires a non-empty assignment_id",
             status_code=500,
         )
+    if container_engine not in SANDBOX_CONTAINER_ENGINES:
+        raise APIError(
+            code="UNSUPPORTED_SANDBOX_CONTAINER_ENGINE",
+            message=f"open_sandbox cannot create sandbox_container_engine={container_engine!r}",
+            status_code=409,
+            data={"sandbox_container_engine": container_engine},
+        )
+    if (
+        container_engine != SANDBOX_CONTAINER_ENGINE_NONE
+        and not OpenSandboxSandboxProvider._bundled_docker()
+    ):
+        raise APIError(
+            code="SANDBOX_CONTAINER_ENGINE_UNAVAILABLE",
+            message=(
+                f"open_sandbox creates sandbox_container_engine={container_engine!r} only "
+                "through the bundled lifecycle server on the Docker runtime"
+            ),
+            status_code=409,
+            data={"sandbox_container_engine": container_engine},
+        )
     assignment_metadata = assignment_metadata_value(assignment)
     session_metadata = session_metadata_value(session_id)
     caller_metadata = {
@@ -981,6 +1077,7 @@ async def create_open_sandbox_box(
         SANDBOX_ASSIGNMENT_ID_METADATA_KEY,
         SANDBOX_NETWORK_WIRING_METADATA_KEY,
         SANDBOX_INSTALLATION_METADATA_KEY,
+        CONTAINER_ENGINE_METADATA_KEY,
     }
     collisions = sorted(reserved_metadata & set(caller_metadata))
     if collisions:
@@ -1050,6 +1147,7 @@ async def create_open_sandbox_box(
     # metadata projection — the exact string stored on the box. The key stays
     # in its create environment and is never returned in a browser URL.
     create_env[AIO_SANDBOX_API_KEY_ENV] = derive_aio_api_key(assignment_metadata)
+    create_volumes = [*(volumes or []), *_container_engine_volume(container_engine)]
     provider = OpenSandboxSandboxProvider(transport=transport)
     recovered = await provider.find_sandbox_by_assignment(assignment)
     if recovered is not None and recovered.session_id != session_metadata:
@@ -1133,13 +1231,18 @@ async def create_open_sandbox_box(
                     # refuses a box whose record differs from the deployment's.
                     SANDBOX_NETWORK_WIRING_METADATA_KEY: sandbox_network_wiring(settings),
                     SANDBOX_INSTALLATION_METADATA_KEY: installation,
+                    **(
+                        {CONTAINER_ENGINE_METADATA_KEY: container_engine}
+                        if container_engine != SANDBOX_CONTAINER_ENGINE_NONE
+                        else {}
+                    ),
                 },
                 connection_config=connection_config,
                 # Durable storage, when the caller planned any. Passed at CREATE
                 # because that is the only moment a mount can be established:
                 # this backend offers no in-box remount, and a pooled box is
                 # created before the conversation that borrows it exists.
-                volumes=_volumes_from_specs(volumes) if volumes else None,
+                volumes=_volumes_from_specs(create_volumes) if create_volumes else None,
             )
         except Exception as exc:
             raise RuntimeError(
@@ -1154,6 +1257,9 @@ async def create_open_sandbox_box(
         await require_open_sandbox_permission_level(handle, permission_level)
         if require_execd_command_stream:
             await _wait_for_execd_command_stream(handle, session_id=str(session_id))
+        await require_open_sandbox_container_engine(
+            handle, container_engine, session_id=str(session_id)
+        )
         if vault_write is not None:
             # BEFORE anything else uses the box. The CLI is launched with a
             # placeholder, so until this lands the sandbox holds a credential
@@ -1205,5 +1311,6 @@ async def create_open_sandbox_box(
 
 __all__ = [
     "create_open_sandbox_box",
+    "require_open_sandbox_container_engine",
     "require_open_sandbox_permission_level",
 ]

@@ -263,7 +263,7 @@ services:
       # ingress gateway only. The bundled Docker runtime refuses it at startup.
       ASTRABOX_SANDBOX_SECURE_ACCESS: ${ASTRABOX_SANDBOX_SECURE_ACCESS:-false}
       ASTRABOX_SANDBOX_SERVER_EXECD_IMAGE: ${ASTRABOX_SANDBOX_SERVER_EXECD_IMAGE:-}
-      ASTRABOX_SANDBOX_EGRESS_IMAGE: ${ASTRABOX_SANDBOX_EGRESS_IMAGE:-opensandbox/egress:v1.1.7}
+      ASTRABOX_SANDBOX_EGRESS_IMAGE: ${ASTRABOX_SANDBOX_EGRESS_IMAGE:-}
       ASTRABOX_SANDBOX_EGRESS_MODE: ${ASTRABOX_SANDBOX_EGRESS_MODE:-dns+nft}
       ASTRABOX_SANDBOX_SERVER_NETWORK_MODE: bridge
       # Docker chooses each published sandbox port from this range in the

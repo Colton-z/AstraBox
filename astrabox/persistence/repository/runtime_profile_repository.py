@@ -51,6 +51,7 @@ _SCALAR_COLUMNS = {
     "idle_action": "idle_action",
     "sandbox_tenancy": "sandbox_tenancy",
     "sandbox_permission_level": "sandbox_permission_level",
+    "sandbox_container_engine": "sandbox_container_engine",
     "endpoint_provider": "endpoint_provider",
 }
 

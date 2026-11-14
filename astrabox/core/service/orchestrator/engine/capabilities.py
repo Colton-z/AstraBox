@@ -239,6 +239,11 @@ class EngineRuntimeCapabilities:
     #: engine's process and control protocol. ``None`` requires every
     #: RuntimeProfile for the adapter to name an image explicitly.
     default_runtime_image: str | None = None
+    #: In-box container engines that image carries
+    #: (``astrabox.seams.sandbox.SANDBOX_CONTAINER_ENGINES``), started by the
+    #: image itself when a box is created with one. A RuntimeProfile that asks
+    #: this engine for any other is refused when it is saved.
+    container_engines: tuple[str, ...] = ()
     #: Permission modes required for bootstrap and advertised before a Session
     #: has connected. A verified runtime manifest may add vendor modes; it may
     #: not remove these because defaults and pre-runtime configuration rely on

@@ -15015,6 +15015,8 @@ export interface operations {
                     } | null;
                     runtime_template_name?: string | null;
                     sandbox_backend?: string | null;
+                    /** @default none */
+                    sandbox_container_engine?: ("none" | "docker") | null;
                     /** @default default */
                     sandbox_permission_level?: ("default" | "advanced" | "privileged") | null;
                     /** @default conversation */

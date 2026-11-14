@@ -103,10 +103,12 @@ UPSTREAM_DNS_ENV = "OPENSANDBOX_EGRESS_DNS_UPSTREAM"
 EGRESS_IMAGE_ENV = "ASTRABOX_SANDBOX_EGRESS_IMAGE"
 EGRESS_MODE_ENV = "ASTRABOX_SANDBOX_EGRESS_MODE"
 
-#: The sidecar upstream publishes, pinned like every other image this module
-#: names. It is available by default but is added to a sandbox only when that
-#: sandbox requests provider network enforcement or protected credentials.
-DEFAULT_EGRESS_IMAGE = "opensandbox/egress:v1.1.7"
+#: Release component of the sidecar image used when ``ASTRABOX_SANDBOX_EGRESS_IMAGE``
+#: is unset: OpenSandbox's pinned egress image plus an addon that decrypts only
+#: credential-bound hosts (``containers/egress``). It is added to a sandbox only
+#: when that sandbox requests provider network enforcement or protected
+#: credentials.
+EGRESS_IMAGE_COMPONENT = "egress"
 
 #: The one of upstream's two modes AstraBox runs. `dns+nft` enforces IP and CIDR
 #: rules with nftables; upstream's `dns` filters names only and applies no IP or
@@ -547,10 +549,10 @@ def egress() -> dict[str, Any]:
     delivery, so this is the deployment saying which image it would use and how
     strictly, not turning something on.
 
-    Off by default, and off means the block is absent rather than present and
-    empty — upstream validates ``image`` as non-empty when the block is there.
+    The image is ``ASTRABOX_SANDBOX_EGRESS_IMAGE``, or this release's
+    :data:`EGRESS_IMAGE_COMPONENT` image when that is unset.
     """
-    image = _env(EGRESS_IMAGE_ENV, DEFAULT_EGRESS_IMAGE).strip()
+    image = _env(EGRESS_IMAGE_ENV, "") or release_image(EGRESS_IMAGE_COMPONENT)
     mode = _env(EGRESS_MODE_ENV, EGRESS_MODE).strip().lower()
     if mode == "dns":
         raise SandboxServerConfigError(
@@ -563,8 +565,6 @@ def egress() -> dict[str, Any]:
         raise SandboxServerConfigError(
             f"{EGRESS_MODE_ENV}={mode!r} is not an egress mode; use {EGRESS_MODE!r}"
         )
-    if not image:
-        return {}
     return {"image": image, "mode": mode, "disable_ipv6": EGRESS_DISABLE_IPV6}
 
 
@@ -2003,6 +2003,123 @@ def mount_volume_subpaths_through_docker(
     setattr(ops_mixin, CREATE_AND_START_ATTR, _astrabox_create_and_start_container)
 
 
+#: Create metadata (a Docker label once OpenSandbox copies it) naming the
+#: container engine a box is created for. The OpenSandbox executor writes it;
+#: :func:`grant_container_engine_boxes` reads it.
+CONTAINER_ENGINE_METADATA_KEY = "astrabox.container-engine"
+
+#: What a container-engine box's HostConfig adds: the Docker CLI's
+#: ``--security-opt systempaths=unconfined``, which the API spells as empty
+#: path lists.
+_CONTAINER_ENGINE_HOST_CONFIG: Final[dict[str, list[str]]] = {"MaskedPaths": [], "ReadonlyPaths": []}
+
+#: Per provisioning thread: the HostConfig fields ``_create_and_start_container``
+#: hands to the one ``create_host_config`` call it makes.
+_container_engine_host_config = threading.local()
+
+DOCKER_API_CLIENT_ATTR = "APIClient"
+CREATE_HOST_CONFIG_ATTR = "create_host_config"
+
+
+def grant_container_engine_boxes(
+    container_ops_module: ModuleType,
+    docker_api_client_module: ModuleType,
+) -> None:
+    """Give a box created for an in-box container engine the two grants it needs.
+
+    A box whose create carries :data:`CONTAINER_ENGINE_METADATA_KEY` ``docker``
+    runs a rootless Docker Engine (``containers/container-engine``). It is
+    created:
+
+    * with no masked or read-only paths under ``/proc``. Each inner container
+      mounts its own ``/proc`` from a user namespace, which the kernel refuses
+      while any part of the box's ``/proc`` is covered.
+    * without ``no-new-privileges``. ``newuidmap`` and ``newgidmap`` must run
+      setuid to map the engine's subordinate id range; the image removes every
+      other setuid and setgid bit in such a box before the engine starts.
+
+    Everything else the create asked for stays: the ``advanced`` level's
+    execd-isolation grants (``SYS_ADMIN``, seccomp and AppArmor unconfined),
+    the dropped ``NET_RAW`` and ``NET_ADMIN``, the PID limit and the egress
+    sidecar. Whoever reaches root in such a box can write host-global kernel
+    settings through its ``/proc``; ``docs/runtime-profiles.md`` states who may
+    be given one.
+
+    opensandbox-server 0.2.3 has no create field for either grant, and
+    docker-py 7.2 no ``HostConfig`` parameter for the path lists. The hook
+    wraps ``DockerContainerOpsMixin._create_and_start_container``, which builds
+    the box's ``HostConfig`` with one ``APIClient.create_host_config`` call, and
+    adds the fields to that call's result through a thread-local, the way
+    :func:`mount_volume_subpaths_through_docker` hands its mounts across.
+    """
+    _require_attributes(
+        container_ops_module,
+        (CONTAINER_OPS_MIXIN_ATTR,),
+        "grant container-engine boxes",
+    )
+    _require_attributes(
+        docker_api_client_module,
+        (DOCKER_API_CLIENT_ATTR,),
+        "grant container-engine boxes",
+    )
+    ops_mixin = getattr(container_ops_module, CONTAINER_OPS_MIXIN_ATTR)
+    api_client = getattr(docker_api_client_module, DOCKER_API_CLIENT_ATTR)
+    for owner, attribute in (
+        (ops_mixin, CREATE_AND_START_ATTR),
+        (api_client, CREATE_HOST_CONFIG_ATTR),
+    ):
+        if not hasattr(owner, attribute):
+            raise SandboxServerConfigError(
+                "the installed opensandbox-server or docker SDK no longer exposes "
+                f"{owner.__module__}.{owner.__name__}.{attribute}, so AstraBox "
+                "cannot grant container-engine boxes. Pin the versions in "
+                "pyproject.toml, or update astrabox/deploy/sandbox_server.py."
+            )
+    upstream_create = getattr(ops_mixin, CREATE_AND_START_ATTR)
+    upstream_host_config = getattr(api_client, CREATE_HOST_CONFIG_ATTR)
+
+    def _astrabox_create_host_config(self: Any, *args: Any, **kwargs: Any) -> Any:
+        host_config = upstream_host_config(self, *args, **kwargs)
+        host_config.update(getattr(_container_engine_host_config, "fields", None) or {})
+        return host_config
+
+    def _astrabox_create_and_start_container(
+        self: Any,
+        sandbox_id: str,
+        image_uri: str,
+        bootstrap_command: list[str],
+        labels: dict[str, str],
+        environment: list[str],
+        host_config_kwargs: dict[str, Any],
+        exposed_ports: list[str] | None,
+        platform: Any,
+    ) -> Any:
+        if labels.get(CONTAINER_ENGINE_METADATA_KEY) == "docker":
+            host_config_kwargs["security_opt"] = [
+                option
+                for option in host_config_kwargs.get("security_opt") or []
+                if not str(option).startswith("no-new-privileges")
+            ]
+            _container_engine_host_config.fields = dict(_CONTAINER_ENGINE_HOST_CONFIG)
+        try:
+            return upstream_create(
+                self,
+                sandbox_id,
+                image_uri,
+                bootstrap_command,
+                labels,
+                environment,
+                host_config_kwargs,
+                exposed_ports,
+                platform,
+            )
+        finally:
+            _container_engine_host_config.fields = None
+
+    setattr(api_client, CREATE_HOST_CONFIG_ATTR, _astrabox_create_host_config)
+    setattr(ops_mixin, CREATE_AND_START_ATTR, _astrabox_create_and_start_container)
+
+
 def docker_engine_version() -> dict[str, Any]:
     """What the Docker daemon this server drives reports from ``GET /version``."""
     import docker
@@ -3037,6 +3154,11 @@ def prepare() -> dict[str, Any]:
             ),
         )
         mount_volume_subpaths_through_docker(volumes_module, container_ops_module)
+        try:
+            from docker.api import client as docker_api_client_module
+        except Exception as exc:
+            raise missing_extra_error(exc) from exc
+        grant_container_engine_boxes(container_ops_module, docker_api_client_module)
         redirect_proxy_host(networking_module, host_ip)
         redirect_public_endpoint_host(networking_module, host_ip)
         leave_other_installations_sandboxes_running(

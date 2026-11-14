@@ -5,7 +5,8 @@ Each rule is a failure that stays invisible until a user installs a release:
 
 * **Every default image is published.** A deployment that configures no image
   runs ``<prefix><component>:<version>`` (``astrabox.config.release_images``).
-  Each engine's default runtime image and the workspace mounter's must be a
+  Each engine's default runtime image, the workspace mounter's, execd's and the
+  egress sidecar's must be a
   component ``.github/workflows/release.yml`` builds and tags, at this package's
   version, and the workflow's build and merge matrices must name the same
   images, the all-in-one included.
@@ -92,7 +93,7 @@ def unpublished_default_images() -> list[str]:
     import astrabox
     from astrabox.common.utils.settings import load_astrabox_settings
     from astrabox.config.release_images import PUBLISHED_IMAGE_PREFIX
-    from astrabox.deploy.sandbox_server import execd_image
+    from astrabox.deploy.sandbox_server import egress, execd_image
     from astrabox.core.service.orchestrator.engine.registry import registered_engine_adapters
     from astrabox.providers import register_builtin_providers
 
@@ -104,6 +105,7 @@ def unpublished_default_images() -> list[str]:
     ]
     images.append(load_astrabox_settings().workspace_mounter_image)
     images.append(execd_image())
+    images.append(egress()["image"])
     for image in images:
         if not image or not image.startswith(PUBLISHED_IMAGE_PREFIX):
             problems.append(f"{image!r} is not under {PUBLISHED_IMAGE_PREFIX}")

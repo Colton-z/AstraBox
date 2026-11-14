@@ -246,6 +246,14 @@ to the SDK. AstraBox does not configure a deployment-wide egress token. See
 [Protect credentials used by Agents](../egress-credential-injection.md) for
 the supported request matches and verification flow.
 
+The deployment's sidecar image (`ASTRABOX_SANDBOX_EGRESS_IMAGE`) is, by
+default, the release's `egress` image: OpenSandbox egress v1.1.7 with one addon,
+loaded through its `OPENSANDBOX_EGRESS_MITMPROXY_SCRIPT` hook, that decrypts
+HTTPS only to hosts a credential is bound to in that sandbox
+(`containers/egress/decrypt_bound_hosts.py`). OpenSandbox's own image decrypts
+every HTTPS connection, which breaks any client that does not trust its
+certificate authority, such as a container the Agent runs in its sandbox.
+
 OpenSandbox does not offer
 [header delivery](../egress-credential-injection.md#header-delivery) for
 environment-variable credentials. Its credential substitution names whole
@@ -266,6 +274,25 @@ descendants, and `GET`, `HEAD`, or `POST`. Credentials are not injected into
 other repository paths. This is an authentication method, not a Git-specific
 engine capability. See the [Vault configuration example](../credentials.md#2-add-a-credential)
 and OpenSandbox's [native Git credential guide](https://github.com/opensandbox-group/OpenSandbox/blob/2f03f68c25644a68fee31d0759915de0b104b4ca/docs/guides/credential-vault.md#git-and-curl-with-vault-injected-credentials).
+
+## Run a container engine in sandboxes {#container-engine}
+
+A RuntimeProfile whose `sandbox_container_engine` is `docker` gets a rootless
+Docker Engine in each sandbox ([RuntimeProfiles](../runtime-profiles.md#container-engine)).
+Only the bundled lifecycle server on the Docker runtime creates such a sandbox;
+the Kubernetes runtime and an existing OpenSandbox service are refused when the
+RuntimeProfile is saved. The create carries the `advanced` level's
+execd-isolation extension, a create metadata entry
+`astrabox.container-engine=docker`, and a Docker volume of its own mounted at
+`/var/lib/astrabox/container-engine` with `deleteOnSandboxTermination`.
+OpenSandbox 0.2.3 has no create field for the remaining two grants, so a hook of
+the bundled server (`grant_container_engine_boxes` in
+`astrabox/deploy/sandbox_server.py`) gives a container carrying that label
+empty `MaskedPaths` and `ReadonlyPaths` and removes `no-new-privileges`; every
+other container is created as before. The sandbox is returned once
+`astrabox-container-engine ready` succeeds in it; otherwise it is deleted and
+the create fails with `SANDBOX_CONTAINER_ENGINE_UNAVAILABLE` and the sandbox's
+own diagnosis.
 
 ## Select a sandbox runtime
 

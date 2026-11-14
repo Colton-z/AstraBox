@@ -456,6 +456,14 @@ class SandboxCreateSpec:
     network policy, it is a security contract rather than a hint: a provider
     maps it to its create primitive or refuses it before returning a box.
 
+    ``container_engine`` is the RuntimeProfile's requested in-box engine
+    (:data:`SANDBOX_CONTAINER_ENGINES`). Its boot switch for the image travels
+    in ``env`` like every other boot value; this field is what the provider
+    reads to give the box the grants and the per-box storage the engine needs,
+    and to prove the engine answers before returning the box. A provider that
+    has not declared the engine in
+    :attr:`SandboxProvider.supported_container_engines` refuses it.
+
     ``metadata`` carries opaque platform facts that must stay attached to this
     physical box across a client-pool handoff. Providers transport these values
     without interpreting them and preserve them when runtime ownership is
@@ -505,6 +513,7 @@ class SandboxCreateSpec:
     death_callback_url: str | None = None
     network_policy: SandboxNetworkPolicy | None = None
     permission_level: str = "default"
+    container_engine: str = "none"
     credential_proxy_enabled: bool = False
     vault_write: SandboxEgressCredentialPlan | None = field(
         default=None,
@@ -847,9 +856,11 @@ SANDBOX_TENANCIES = (SANDBOX_TENANCY_CONVERSATION, SANDBOX_TENANCY_AGENT)
 #:     its ``workspace-write`` mode with it, and without this level that
 #:     enforcement silently degrades into asking a person instead.
 #: ``privileged``
-#:     The container-as-VM case — docker-in-docker and the like. Named here
-#:     because the tier exists and refusing an unknown value is better than
-#:     accepting one; a deployment that wants it says so deliberately.
+#:     The container-as-VM case. Named here because the tier exists and
+#:     refusing an unknown value is better than accepting one; a deployment
+#:     that wants it says so deliberately. A container engine in the box does
+#:     not need it: :data:`SANDBOX_CONTAINER_ENGINE_DOCKER` runs rootless at
+#:     ``advanced``.
 #:
 #: How a provider delivers and proves a level is its own contract. A provider
 #: must refuse a level it cannot attest rather than creating a box with less
@@ -863,6 +874,28 @@ SANDBOX_PERMISSION_LEVELS = (
     SANDBOX_PERMISSION_LEVEL_ADVANCED,
     SANDBOX_PERMISSION_LEVEL_PRIVILEGED,
 )
+
+
+#: A container engine the box runs for its Agent, a RuntimeProfile property
+#: like the two above.
+#:
+#: ``none``
+#:     The default: no engine.
+#: ``docker``
+#:     A rootless Docker Engine started by the image at boot as the workload
+#:     account, so the Agent can ``docker build``, ``docker run`` and ``docker
+#:     compose``. Its inner containers reach the network through a user-mode
+#:     stack, as ordinary sockets of the box, so the box's egress policy
+#:     applies to them. It needs ``advanced``, and a box of its own per
+#:     conversation: published inner ports and the box's CPU, memory and disk
+#:     belong to one conversation.
+#:
+#: A provider declares the engines it can create boxes for in
+#: :attr:`SandboxProvider.supported_container_engines`, and must prove the
+#: engine answers before it returns such a box.
+SANDBOX_CONTAINER_ENGINE_NONE = "none"
+SANDBOX_CONTAINER_ENGINE_DOCKER = "docker"
+SANDBOX_CONTAINER_ENGINES = (SANDBOX_CONTAINER_ENGINE_NONE, SANDBOX_CONTAINER_ENGINE_DOCKER)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1166,6 +1199,13 @@ class SandboxProvider(ABC):
     #: can only fail at sandbox start is not offered as working configuration.
     #: Registration validates the values against ``SANDBOX_PERMISSION_LEVELS``.
     supported_permission_levels: tuple[str, ...] = (SANDBOX_PERMISSION_LEVEL_DEFAULT,)
+    #: In-box container engines (:data:`SANDBOX_CONTAINER_ENGINES` other than
+    #: ``none``) this backend can create boxes for, grants and per-box engine
+    #: storage included. The write path refuses a RuntimeProfile that asks for
+    #: an engine the selected backend does not declare; a backend whose answer
+    #: depends on its deployment narrows it further in
+    #: :meth:`validate_runtime_profile_configuration`.
+    supported_container_engines: tuple[str, ...] = ()
     #: Whether creates honour a RuntimeProfile's provider-neutral
     #: ``network_policy`` by creating the box under it.
     #:
@@ -2491,6 +2531,16 @@ def register_sandbox(provider: SandboxProvider) -> None:
         raise RuntimeError(
             f"sandbox provider {name!r} declares the advanced permission level "
             "but does not override read_isolation_capability to attest it"
+        )
+    container_engines = getattr(provider, "supported_container_engines", ())
+    if (
+        not isinstance(container_engines, tuple)
+        or any(engine not in SANDBOX_CONTAINER_ENGINES for engine in container_engines)
+        or SANDBOX_CONTAINER_ENGINE_NONE in container_engines
+    ):
+        raise RuntimeError(
+            f"sandbox provider {name!r} capability supported_container_engines must be "
+            f"a tuple drawn from {SANDBOX_CONTAINER_ENGINES[1:]!r}"
         )
     profile_exclusive = getattr(provider, "sandbox_is_profile_exclusive", False)
     if not isinstance(profile_exclusive, bool):

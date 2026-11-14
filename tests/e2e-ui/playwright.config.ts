@@ -57,6 +57,12 @@ const sandboxQuotaDeployment = process.env.ASTRABOX_E2E_SANDBOX_QUOTA === '1';
 // is a different deployment shape from the lanes' four-hour one. Its specs are
 // collected only when the run declares ASTRABOX_E2E_SANDBOX_LEASE=1.
 const sandboxLeaseDeployment = process.env.ASTRABOX_E2E_SANDBOX_LEASE === '1';
+// A deployment whose sandboxes can run a container engine (the bundled server on
+// Docker, a host that allows unprivileged user namespaces: docs/deploy.md,
+// "A container engine in sandboxes") is a different deployment shape from the
+// lanes' one. Its specs are collected only when the run declares
+// ASTRABOX_E2E_CONTAINER_ENGINE=1.
+const containerEngineDeployment = process.env.ASTRABOX_E2E_CONTAINER_ENGINE === '1';
 // A dsh-superagent image built with its own Source (docs/assistants.md, "Your own
 // Sources") is a different deployment shape from the lanes' one. Its specs are
 // collected only when the run names that image's RuntimeProfile in
@@ -77,6 +83,7 @@ export default defineConfig({
     ...(sandboxEnvelopeDeployment ? [] : ['**/*.sandbox-envelope.spec.ts']),
     ...(sandboxQuotaDeployment ? [] : ['**/*.sandbox-quota.spec.ts']),
     ...(sandboxLeaseDeployment ? [] : ['**/*.sandbox-lease.spec.ts']),
+    ...(containerEngineDeployment ? [] : ['**/*.container-engine.spec.ts']),
     ...(superagentSourceDeployment ? [] : ['**/*.superagent-source.spec.ts']),
     ...(claudeCursorUpgrade ? [] : ['**/claude-compacted-result-reattach.exclusive.spec.ts']),
   ],

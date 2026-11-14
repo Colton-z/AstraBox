@@ -406,6 +406,9 @@ def _embedded_scripts() -> dict[str, str]:
         "sandbox-dsh-superagent/astrabox-dsh-superagent-serve": (
             REPO_ROOT / "containers/sandbox-dsh-superagent/astrabox-dsh-superagent-serve"
         ).read_text(encoding="utf-8"),
+        "container-engine/astrabox-container-engine": (
+            REPO_ROOT / "containers/container-engine/astrabox-container-engine"
+        ).read_text(encoding="utf-8"),
     }
 
 

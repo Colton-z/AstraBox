@@ -160,6 +160,16 @@ jobs:
           cache-from: type=gha,scope=installer-execd
           cache-to: type=gha,mode=max,scope=installer-execd
 
+      - name: Build the egress sidecar image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: containers/egress/Dockerfile
+          push: true
+          tags: ${{ env.REGISTRY_PREFIX }}egress:${{ steps.version.outputs.version }}
+          cache-from: type=gha,scope=installer-egress
+          cache-to: type=gha,mode=max,scope=installer-egress
+
       - name: Build the Claude Code sandbox image
         uses: docker/build-push-action@v6
         with:

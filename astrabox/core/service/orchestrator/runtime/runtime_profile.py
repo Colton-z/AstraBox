@@ -19,6 +19,8 @@ from astrabox.core.service.orchestrator.runtime.packages import (
     template_packages,
 )
 from astrabox.seams.sandbox import (
+    SANDBOX_CONTAINER_ENGINE_NONE,
+    SANDBOX_CONTAINER_ENGINES,
     SANDBOX_PERMISSION_LEVEL_DEFAULT,
     SANDBOX_PERMISSION_LEVELS,
     SANDBOX_TENANCIES,
@@ -48,6 +50,28 @@ def resolve_sandbox_permission_level(template: Any | None) -> str:
             ),
             status_code=409,
             data={"sandbox_permission_level": value},
+        )
+    return value
+
+
+def resolve_sandbox_container_engine(template: Any | None) -> str:
+    """The container engine a box of this environment runs; unset is ``none``.
+
+    An unrecognised value is refused, like an unrecognised permission level:
+    the field decides what a box is granted.
+    """
+    value = str(_template_value(template, "sandbox_container_engine") or "").strip().lower()
+    if not value:
+        return SANDBOX_CONTAINER_ENGINE_NONE
+    if value not in SANDBOX_CONTAINER_ENGINES:
+        raise APIError(
+            code="UNSUPPORTED_SANDBOX_CONTAINER_ENGINE",
+            message=(
+                f"sandbox_container_engine={value!r} is not one of "
+                f"{', '.join(repr(engine) for engine in SANDBOX_CONTAINER_ENGINES)}"
+            ),
+            status_code=409,
+            data={"sandbox_container_engine": value},
         )
     return value
 

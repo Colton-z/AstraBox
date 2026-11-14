@@ -721,6 +721,14 @@
           "privileged": "Privileged — container as a virtual machine (provider support required)"
         }
       },
+      "sandbox_container_engine": {
+        "label": "Container engine",
+        "help": "Run a container engine in each sandbox so the Agent can build images, run containers and use Docker Compose. Docker runs rootless as the sandbox's own user, and its containers reach the network through the sandbox, under this runtime profile's network policy. It requires a sandbox per conversation and the advanced permission level, and is available only with the bundled OpenSandbox server on Docker. Enable it only for teams you trust: whoever gains root in such a sandbox can affect the Docker host. Images, containers and build cache are deleted with the sandbox, and containers share the sandbox's CPU, memory and process limits.",
+        "options": {
+          "none": "None",
+          "docker": "Docker (rootless)"
+        }
+      },
       "endpoint_provider": {
         "label": "Model connection",
         "help": "Choose a registered model connection for Agents in this runtime profile. Leave blank to use the connection declared as the deployment default."

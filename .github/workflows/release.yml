@@ -9,6 +9,9 @@
 #     sandbox-dsh-superagent               the dsh-superagent Assistant runtime,
 #                                          built FROM the sandbox-deepseek-harness
 #                                          image this run pushed, by digest
+#     egress                               the sandbox egress sidecar: OpenSandbox's
+#                                          image plus an addon that decrypts only
+#                                          credential-bound hosts
 #     workspace-mounter                    the host-side helper for persistent
 #                                          workspaces
 #   ghcr.io/<owner>/astrabox               the all-in-one image
@@ -143,6 +146,7 @@ jobs:
           - sandbox-deepseek-harness
           - sandbox-hermes
           - sandbox-pi
+          - egress
           - workspace-mounter
         runner:
           - os: ubuntu-24.04
@@ -353,6 +357,7 @@ jobs:
           - sandbox-hermes
           - sandbox-pi
           - sandbox-dsh-superagent
+          - egress
           - workspace-mounter
           - all-in-one
     steps:

@@ -56,7 +56,8 @@ make dev                # == scripts/dev.sh  (Ctrl-C stops both)
 
 Then open <http://localhost:5173>. The backend boots without credentials — the UI and
 session list work — but a real Agent response additionally needs the agent image
-(`make build-agent-image`) and your LLM key. The dev stack and the e2e gate both read
+(`make build-agent-image`), the sandbox egress image (`make build-egress-image`) and
+your LLM key. The dev stack and the e2e gate both read
 your Anthropic-compatible endpoint and token from a gitignored repo-root `.env`
 (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` **or** `ANTHROPIC_API_KEY`, optional
 `ANTHROPIC_MODEL`). [`e2e/README.md`](e2e/README.md) covers the browser

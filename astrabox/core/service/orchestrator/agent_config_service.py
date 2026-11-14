@@ -553,6 +553,9 @@ class AgentConfigService:
         view.sandbox_permission_level = (
             str(env.get("sandbox_permission_level") or "").strip() or None
         )
+        view.sandbox_container_engine = (
+            str(env.get("sandbox_container_engine") or "").strip() or None
+        )
         networking = env.get("networking")
         view.networking = networking if isinstance(networking, dict) else None
         # One parser decides what a valid tracing document is, and it runs at

@@ -261,6 +261,10 @@
     "tests": 81
   },
   "suites": {
+    "container-engine": {
+      "entry": "ASTRABOX_E2E_CONTAINER_ENGINE=1 npm --prefix tests/e2e-ui run e2e -- <file>.container-engine.spec.ts",
+      "role": "deployment-shape"
+    },
     "exclusive": {
       "entry": "run-playwright.sh --lane exclusive",
       "role": "e2e"

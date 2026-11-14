@@ -71,6 +71,8 @@ from astrabox.providers.sandbox_image import (
 from astrabox.seams.egress_credentials import SandboxEgressCredentialPlan
 from astrabox.seams.sandbox import (
     SANDBOX_ASSIGNMENT_ID_METADATA_KEY,
+    SANDBOX_CONTAINER_ENGINE_DOCKER,
+    SANDBOX_CONTAINER_ENGINE_NONE,
     SANDBOX_DIAGNOSTIC_SCOPES,
     SANDBOX_INSTALLATION_METADATA_KEY,
     SANDBOX_DATA_PLANE_ALIVE,
@@ -855,6 +857,11 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         SANDBOX_PERMISSION_LEVEL_DEFAULT,
         SANDBOX_PERMISSION_LEVEL_ADVANCED,
     )
+    # The grants the engine needs (no masked /proc, no no_new_privileges) have
+    # no create field; the bundled server's Docker hooks apply them. Every
+    # other deployment of this backend is refused per RuntimeProfile
+    # (validate_runtime_profile_configuration).
+    supported_container_engines = (SANDBOX_CONTAINER_ENGINE_DOCKER,)
     # The unfenced pair (registration validates them together). Hard product
     # decision: this backend never adopts the generation fence.
 
@@ -1226,6 +1233,7 @@ class OpenSandboxSandboxProvider(SandboxProvider):
             transport=self._transport,
             network_policy=translated_network,
             permission_level=spec.permission_level,
+            container_engine=spec.container_engine,
             credential_proxy_enabled=bool(spec.credential_proxy_enabled),
             vault_write=translated_vault,
             volumes=volume_specs_from_planned_mounts(
@@ -1527,6 +1535,31 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         if not self._bundled_docker():
             return None
         return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+
+    def validate_runtime_profile_configuration(self, payload: Mapping[str, Any]) -> None:
+        """Refuse a container engine anywhere but the bundled server on Docker.
+
+        The engine's grants are applied by the bundled lifecycle server's Docker
+        hooks (``astrabox.deploy.sandbox_server.grant_container_engine_boxes``).
+        Its Kubernetes runtime has no such hook yet, and an existing OpenSandbox
+        service applies only its own configuration.
+        """
+        engine = str(
+            payload.get("sandbox_container_engine") or SANDBOX_CONTAINER_ENGINE_NONE
+        ).strip().lower()
+        if engine == SANDBOX_CONTAINER_ENGINE_NONE or self._bundled_docker():
+            return
+        raise APIError(
+            code="INVALID_REQUEST",
+            message=(
+                f"environment payload: sandbox_container_engine {engine!r} runs only with "
+                "the bundled OpenSandbox server on the Docker runtime "
+                "(ASTRABOX_SANDBOX_SERVER_RUNTIME=docker, no "
+                "ASTRABOX_SANDBOX_OPENAPI_BASE_URL); the Kubernetes runtime and an "
+                "existing OpenSandbox service do not apply the grants it needs"
+            ),
+            status_code=400,
+        )
 
     @staticmethod
     def _bundled_docker() -> bool:

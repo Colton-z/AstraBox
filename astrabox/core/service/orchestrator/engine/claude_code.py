@@ -51,6 +51,7 @@ from astrabox.core.service.orchestrator.engine.capabilities import (
 from astrabox.core.service.orchestrator.engine.extensions import EngineExtensions, PackageKind
 
 from astrabox.providers.sandbox_image import resolve_agent_image
+from astrabox.seams.sandbox import SANDBOX_CONTAINER_ENGINE_DOCKER
 
 
 class ClaudeCodeEngineAdapter(EngineAdapter):
@@ -200,6 +201,8 @@ class ClaudeCodeEngineAdapter(EngineAdapter):
             ),
             conversation_placement=CONVERSATION_PLACEMENT_PER_ACCOUNT,
             default_runtime_image=resolve_agent_image(),
+            # containers/sandbox-claude-code/Dockerfile, "container engine".
+            container_engines=(SANDBOX_CONTAINER_ENGINE_DOCKER,),
             permission_modes=tuple(get_args(PermissionMode)),
             permission_mode_defaults=(("agent_chat", "bypassPermissions"),),
             extensions=EngineExtensions(

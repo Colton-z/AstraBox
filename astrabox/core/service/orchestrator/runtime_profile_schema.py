@@ -26,8 +26,11 @@ from typing import Any
 
 from astrabox.bootstrap import SANDBOX_IDLE_ACTIONS
 from astrabox.seams.sandbox import (
+    SANDBOX_CONTAINER_ENGINE_NONE,
+    SANDBOX_CONTAINER_ENGINES,
     SANDBOX_NETWORK_MODES,
     SANDBOX_NETWORK_LIMITED,
+    SANDBOX_PERMISSION_LEVEL_ADVANCED,
     SANDBOX_PERMISSION_LEVEL_DEFAULT,
     SANDBOX_PERMISSION_LEVELS,
     SANDBOX_TENANCIES,
@@ -217,6 +220,12 @@ RUNTIME_PROFILE_FIELD_SCHEMA: list[dict[str, Any]] = [
     {"key": "sandbox_permission_level", "type": "enum",
      "enum": list(SANDBOX_PERMISSION_LEVELS), "advanced": True,
      "group": GROUP_RUNTIME, "default": SANDBOX_PERMISSION_LEVEL_DEFAULT},
+    # A container engine each box of this RuntimeProfile runs for its Agent.
+    # Opt-in: the grants it needs make a box on the Docker backend close to
+    # host root for whoever reaches root in it (docs/runtime-profiles.md).
+    {"key": "sandbox_container_engine", "type": "enum",
+     "enum": list(SANDBOX_CONTAINER_ENGINES), "advanced": True,
+     "group": GROUP_RUNTIME, "default": SANDBOX_CONTAINER_ENGINE_NONE},
     # ── model connectivity ────────────────────────────────
     # endpoint_provider selects a registered model gateway. The schema response
     # fills its default from the provider registry, so this domain schema does
@@ -348,6 +357,7 @@ def validate_runtime_profile_payload(payload: dict[str, Any]) -> None:
     _assert_idle_action_is_reachable(payload)
     _assert_permission_level_is_reachable(payload)
     _assert_tenancy_has_permission_level(payload)
+    _assert_container_engine_is_deliverable(payload)
     _assert_owner_credential_is_deliverable(payload)
     _assert_backend_capabilities(payload)
     _assert_provider_configuration_is_reachable(payload)
@@ -494,6 +504,55 @@ def _assert_tenancy_has_permission_level(payload: dict[str, Any]) -> None:
         "inside one box and therefore requires sandbox_permission_level "
         "'advanced' or 'privileged'"
     )
+
+
+def _assert_container_engine_is_deliverable(payload: dict[str, Any]) -> None:
+    """Refuse an in-box container engine where it cannot run as configured.
+
+    The engine needs a box of its own per conversation (its published ports
+    and the box's CPU, memory and disk belong to one conversation), the
+    ``advanced`` grant (it creates namespaces inside the box), an image that
+    carries it (the engine adapter declares whether its image does), and a
+    backend that declares it. The backend may refuse it further for its
+    deployment (``validate_runtime_profile_configuration``).
+    """
+    engine = str(
+        payload.get("sandbox_container_engine") or SANDBOX_CONTAINER_ENGINE_NONE
+    ).strip().lower()
+    if engine == SANDBOX_CONTAINER_ENGINE_NONE:
+        return
+    label = f"environment payload: sandbox_container_engine {engine!r}"
+    tenancy = str(payload.get("sandbox_tenancy") or SANDBOX_TENANCY_CONVERSATION).strip().lower()
+    if tenancy != SANDBOX_TENANCY_CONVERSATION:
+        raise invalid_request(
+            f"{label} requires sandbox_tenancy 'conversation': in an Agent's shared box "
+            "one conversation could reach another's published container ports"
+        )
+    level = str(
+        payload.get("sandbox_permission_level") or SANDBOX_PERMISSION_LEVEL_DEFAULT
+    ).strip().lower()
+    if level != SANDBOX_PERMISSION_LEVEL_ADVANCED:
+        raise invalid_request(
+            f"{label} creates namespaces inside the box and therefore requires "
+            "sandbox_permission_level 'advanced'"
+        )
+    engine_kind = str(payload.get("engine_kind") or "").strip()
+    if engine_kind:
+        from astrabox.core.service.orchestrator.engine.capabilities import (
+            capabilities_for_engine_kind,
+        )
+
+        if engine not in capabilities_for_engine_kind(engine_kind).container_engines:
+            raise invalid_request(
+                f"{label}: engine {engine_kind!r}'s image does not carry it"
+            )
+    from astrabox.seams.sandbox import sandbox_for_name
+
+    provider = sandbox_for_name(payload.get("sandbox_backend"))
+    if engine not in getattr(provider, "supported_container_engines", ()):
+        raise invalid_request(
+            f"{label}: sandbox backend {provider.name!r} does not declare it"
+        )
 
 
 def _assert_backend_capabilities(payload: dict[str, Any]) -> None:

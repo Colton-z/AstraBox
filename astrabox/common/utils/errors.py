@@ -291,6 +291,21 @@ for _code, _status, _category, _retryable, _owner in (
         False,
         "runtime",
     ),
+    # A RuntimeProfile naming a container engine the platform does not define;
+    # the same owner and reason as the permission-level refusal above.
+    ("UNSUPPORTED_SANDBOX_CONTAINER_ENGINE", 409, "state", False, "template"),
+    # A box created for a container engine could not prove the engine answers:
+    # a grant missing from the box, the host's user-namespace restriction, or
+    # an image without the engine. The message carries the box's own diagnosis.
+    # Not retryable: the next box of the same RuntimeProfile on the same host
+    # gets the same grants.
+    (
+        "SANDBOX_CONTAINER_ENGINE_UNAVAILABLE",
+        409,
+        "sandbox.container_engine",
+        False,
+        "runtime",
+    ),
     (
         "CHANNEL_CREDENTIALS_UNAVAILABLE",
         503,

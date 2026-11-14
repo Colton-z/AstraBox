@@ -721,6 +721,14 @@
           "privileged": "特权——把容器当虚拟机使用（需后端支持）"
         }
       },
+      "sandbox_container_engine": {
+        "label": "容器引擎",
+        "help": "在每个沙箱中运行容器引擎，让 Agent 可以构建镜像、运行容器并使用 Docker Compose。Docker 以沙箱自身的用户身份无 root 运行，容器经由沙箱访问网络，受本运行配置的网络策略约束。它要求每个会话使用独立沙箱、沙箱权限等级为高级，并且只适用于部署自带、运行在 Docker 上的 OpenSandbox 服务。仅为可信团队启用：在这种沙箱中取得 root 权限的人可以影响 Docker 宿主机。镜像、容器和构建缓存随沙箱一起删除，容器共用沙箱的 CPU、内存和进程数限制。",
+        "options": {
+          "none": "不启用",
+          "docker": "Docker（无 root）"
+        }
+      },
       "endpoint_provider": {
         "label": "模型连接方式",
         "help": "为本运行配置中的 Agent 选择已注册的模型连接方式。留空时使用声明为部署默认值的连接方式。"

@@ -63,7 +63,12 @@ Agent program's next turn, as described in
 [Add an outbound credential](#add-an-outbound-credential) below; the Agent program keeps the
 placeholder it started with, including one that started in prepared capacity.
 
-The proxy terminates TLS to substitute the value. In a sandbox with protected
+The proxy terminates TLS to substitute the value, and only for that: it
+decrypts an HTTPS connection only when its server name matches a host a
+credential is bound to in the sandbox, and passes every other connection
+through untouched, with the destination's own certificate. The release's
+egress image (`containers/egress`) adds this choice to OpenSandbox's proxy,
+which on its own decrypts every HTTPS connection. In a sandbox with protected
 delivery, the sandbox backend sets `SSL_CERT_FILE` and `REQUESTS_CA_BUNDLE`
 (OpenSSL-based tools such as `curl`, and Python `requests`) and
 `NODE_EXTRA_CA_CERTS` (Node.js) to bundles that include the proxy's certificate

@@ -137,6 +137,9 @@ class AgentView:
     #: still needs ``advanced`` when the engine enforces its permission mode
     #: inside. None == ``default``, so nothing is granted unasked.
     sandbox_permission_level: str | None = None
+    #: A container engine each box of this environment runs for its Agent
+    #: (``none`` or ``docker``). None == ``none``.
+    sandbox_container_engine: str | None = None
     #: Underlying sandbox backend selector; None == the default backend.
     sandbox_backend: str | None = None
     status: str | None = None

@@ -68,6 +68,7 @@ from astrabox.core.service.orchestrator.runtime.storage.mounts import (
     create_sandbox_with_storage,
 )
 from astrabox.core.service.orchestrator.runtime.runtime_profile import (
+    resolve_sandbox_container_engine,
     resolve_sandbox_permission_level,
     resolve_sandbox_tenancy,
 )
@@ -1482,6 +1483,7 @@ def engine_create_spec(
     resource_limits, resource_requests = backend.fit_resources(
         *sandbox_create_resources(shared=shared, assistant=assistant)
     )
+    container_engine = resolve_sandbox_container_engine(template)
     return SandboxCreateSpec(
         session_id=session_id,
         assignment_id=assignment_id,
@@ -1492,7 +1494,7 @@ def engine_create_spec(
         entrypoint=tuple(request.entrypoint),
         cwd=cwd,
         env={
-            **sandbox_boot_env(shared=shared),
+            **sandbox_boot_env(shared=shared, container_engine=container_engine),
             **dict(request.env),
             **dict(mirror_env),
             **dict(runtime_env),
@@ -1510,6 +1512,7 @@ def engine_create_spec(
         death_callback_url=callback_url,
         network_policy=network_policy,
         permission_level=permission_level,
+        container_engine=container_engine,
         vault_write=vault_write,
         workspace_mounts=planned_mounts,
     )
