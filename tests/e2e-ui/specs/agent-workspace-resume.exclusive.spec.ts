@@ -15,6 +15,7 @@ import { engineCases, engineProfileFor, type EngineProfile } from '../fixtures/e
 import { apiPath, appPath } from '../fixtures/env';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
 import { sendPrompt } from '../fixtures/sessionPage';
+import { requireServiceContainer, SERVER_CONTAINER_HANDLE } from '../fixtures/serviceContainer';
 import { requireSandboxHandle, sandboxExec, sandboxRunning, waitForSandboxStopped } from '../fixtures/sandboxOps';
 import { WorkspaceResumeNodes } from '../fixtures/workspaceResumeNodes';
 
@@ -290,6 +291,10 @@ function workspaceResumeScenario(engineKind: string, crossHost: boolean) {
   const title = 'the same Agent conversation reads its persisted workspace after sandbox rebuild';
   const engineTitle = engineKind === 'claude_code' ? title : `${engineKind}: ${title}`;
   test(crossHost ? `cross-host: ${engineTitle}` : engineTitle, async ({ page, context, request }) => {
+    const volume = execFileSync('docker', ['exec', requireServiceContainer(SERVER_CONTAINER_HANDLE), 'python', '-c',
+      'from astrabox.common.utils.settings import load_astrabox_settings; print(load_astrabox_settings().sandbox_workspace_volume or "")',
+    ], { encoding: 'utf8', timeout: 20_000 }).trim();
+    expect(volume, 'this journey needs a candidate with a persistent workspace volume (ASTRABOX_SANDBOX_WORKSPACE_VOLUME)').not.toBe('');
     const profile = engineProfileFor(engineKind);
     const api = new AstraApi(request);
     const observer = await context.newPage();
