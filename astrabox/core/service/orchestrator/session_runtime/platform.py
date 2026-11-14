@@ -218,7 +218,16 @@ def reader_hooks(
             await deliver_attachments(session, item)
             await prepare_input(session, connected, item)
             if connected.refresh is not None:
-                await connected.refresh()
+                try:
+                    await connected.refresh()
+                except APIError as exc:
+                    # A credential the turn needs could not be obtained (a
+                    # token endpoint that refuses, a model account to sign in
+                    # to again): this input fails with that reason, and the
+                    # conversation stays usable for the next one.
+                    raise InputPreparationRefused(
+                        {"code": exc.code, "message": exc.message, "status_code": exc.status_code}
+                    ) from exc
             expiry = session.get("expires_at")
             if (
                 expiry
