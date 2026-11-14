@@ -34,14 +34,26 @@ runuser -u nobody -- env DSH_HOME="$probe_home/.dsh" HOME="$probe_home" \
 harness=$!
 trap 'kill "$harness" 2>/dev/null || true; wait "$harness" 2>/dev/null || true; rm -rf "$probe_home"' EXIT
 
+# A first start in a build step spends 10-15 s of CPU loading the harness and its plugins,
+# so on a shared builder it takes from 10 s to over a minute. The wait ends as soon as the
+# harness exits; the deadline only bounds one that runs without ever answering.
 ready=0
-for _ in $(seq 1 150); do
+deadline=$((SECONDS + 300))
+while [ "$SECONDS" -lt "$deadline" ]; do
   if curl -fsS -H 'x-orchestrator-request: 1' http://127.0.0.1:44781/orchestrator/api/state \
        -o "$probe_home/state.json" 2>/dev/null; then ready=1; break; fi
   kill -0 "$harness" 2>/dev/null || break
   sleep 0.2
 done
-if [ "$ready" != 1 ]; then cat "$probe_home/boot.log"; exit 1; fi
+if [ "$ready" != 1 ]; then
+  cat "$probe_home/boot.log"
+  if kill -0 "$harness" 2>/dev/null; then
+    echo "the harness was still running without answering after 300 s" >&2
+  else
+    echo "the harness exited before its API answered" >&2
+  fi
+  exit 1
+fi
 python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert "setup" in s and "health" in s, s' \
   "$probe_home/state.json"
 
