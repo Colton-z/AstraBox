@@ -104,7 +104,7 @@ Set `COMPANY_MODEL_API_KEY` on the AstraBox service, restart the deployment, and
 use `company-code-model` in the Agent form. An explicit upstream model version
 keeps model changes under the route administrator's control.
 
-### Spread one model across several provider accounts
+### Spread one model across several provider accounts {#several-accounts}
 
 When one provider account reaches its rate or quota limit, every conversation
 on it stops. Give the route several accounts: list the model once per account

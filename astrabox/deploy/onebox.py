@@ -1330,6 +1330,28 @@ def wait_until_healthy(child: _Child, url: str, *, timeout: float) -> None:
     )
 
 
+def _exit_description(exit_code: int) -> str:
+    """How a child ended, naming the signal when one ended it.
+
+    This supervisor sends no signal to a child it is still waiting on, so a
+    SIGKILL here came from outside the container's processes: in practice the
+    kernel, enforcing the container's memory limit. That kill is recorded in
+    the host's kernel log, not in the child's output.
+    """
+    if exit_code >= 0:
+        return f"exited with code {exit_code}"
+    try:
+        name = signal.Signals(-exit_code).name
+    except ValueError:
+        name = f"signal {-exit_code}"
+    if -exit_code == signal.SIGKILL:
+        return (
+            f"was killed by {name}, which this supervisor did not send (check the "
+            "container's memory limit and the host's kernel log for an out-of-memory kill)"
+        )
+    return f"was killed by {name}"
+
+
 def wait_until_ready(
     child: _Child, probe: Callable[[], bool], *, pending: str, timeout: float
 ) -> None:
@@ -1343,7 +1365,7 @@ def wait_until_ready(
         exit_code = child.process.poll()
         if exit_code is not None:
             raise OneBoxError(
-                f"{child.name} exited with code {exit_code} before it "
+                f"{child.name} {_exit_description(exit_code)} before it "
                 f"became healthy. Its output:\n{child.output_tail()}"
             )
         if probe():

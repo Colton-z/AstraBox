@@ -134,6 +134,7 @@ mounted Docker daemon.
 |---|---|
 | Docker Engine 26.0 or later (Engine API 1.45) | Persistent workspaces reach each sandbox through a mount of a sub-directory of a Docker volume (`VolumeOptions.Subpath`), which Engine API 1.45 added. Everything else the stack uses is older. |
 | Docker Compose plugin 2.17.0 or later | `containers/compose.yaml` restarts the server when a sandbox edge is recreated (`depends_on` with `restart: true`), which Compose 2.17.0 introduced. |
+| 4 GiB of memory for the server container | The server container also runs the bundled LiteLLM gateway and the sandbox lifecycle server. It holds about 1.6 GiB once started and more during its first start, when LiteLLM migrates its database. Under a lower limit the kernel kills LiteLLM during that start and the container restarts in a loop. Sandboxes need their own memory on top. |
 
 The installer and the server both check the daemon and refuse an older one,
 naming the version they found; the server checks at every start, so upgrading
