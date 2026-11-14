@@ -597,7 +597,7 @@ index b1a6099..7eab6e6 100644
        }).strict(),
        execute: async (args, signal) => {
 diff --git a/src/app/tools/main.ts b/src/app/tools/main.ts
-index d499004..63cd916 100644
+index d499004..ffffda7 100644
 --- a/src/app/tools/main.ts
 +++ b/src/app/tools/main.ts
 @@ -52,6 +52,8 @@ const RouteItemSchema = z.object({
@@ -644,7 +644,7 @@ index d499004..63cd916 100644
      tool({
        name: 'orchestrator_reply',
 -      description: `Send an answer to a human question, a ready result, or attention requiring human action, as the replies section says; the gate refuses anything else, such as progress. purpose=result needs a ticket in person/review after a ready report, a completed or merged one, or a dropped one whose matched rule asks for a closing message. IM limit: ${IM_WORDS} words.`,
-+      description: `Send an answer to a human question, a ready result, or attention requiring human action, as the replies section says; the gate refuses anything else, such as progress. purpose=result needs a ticket in person/review after a ready report, a completed or merged one, or a dropped one whose matched rule asks for a closing message or whose agent declined a person's request, who is told why. IM limit: ${IM_WORDS} words.`,
++      description: `Send an answer to a human question, a ready result, or attention requiring human action, as the replies section says; the gate refuses anything else, such as progress. purpose=result needs a ticket in person/review after a ready report, a completed or merged one, or a dropped one whose matched rule asks for a closing message or whose agent declined a person's request, who is told why. Where tickets go to agents, an agent posts nothing on a thread, not even an acknowledgement: a worker_report with answer_to is its answer to that message, which reaches the person only when you send it with purpose=answer. IM limit: ${IM_WORDS} words.`,
        schema: z.object({
          trigger_id: z.string().optional().describe('The original human question, for an answer only.'),
          ticket_id: z.string().optional(),
@@ -1087,10 +1087,10 @@ index 76340cb..ac21c90 100644
    let cli: string
 diff --git a/src/executor/a2a.ts b/src/executor/a2a.ts
 new file mode 100644
-index 0000000..cca816f
+index 0000000..971c3e2
 --- /dev/null
 +++ b/src/executor/a2a.ts
-@@ -0,0 +1,449 @@
+@@ -0,0 +1,451 @@
 +/**
 + * A2A executor: works each Ticket as a conversation of an agent reached over the A2A 1.0 protocol, the one the main Session
 + * chose when it accepted the Ticket, instead of a DSH worker Session in this process.
@@ -1232,6 +1232,8 @@ index 0000000..cca816f
 +    'Reply, when you are done, with what you did. If you need a person to decide or tell you something, ask in your reply and stop: '
 +      + 'their answer arrives as your next message. Later messages here are follow-ups on the same request, such as replies on its '
 +      + 'thread or CI results.',
++    'You post nothing on the request\'s thread yourself: dsh-superagent answers the person from your report and reply, so give the '
++      + 'answer itself rather than saying you sent it.',
 +    'Before your final reply to this message and to each later one, report its outcome with your report_outcome tool: '
 +      + 'TASK_STATE_COMPLETED with what you did, or TASK_STATE_REJECTED with why you will not do it, with handback when it is for '
 +      + 'another agent or must be split, saying what should happen instead.'
