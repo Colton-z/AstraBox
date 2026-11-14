@@ -104,7 +104,9 @@ class ReaderHooks:
     written to the runtime and raises :class:`InputPreparationRefused` when the
     input must not be. ``committed`` receives each batch after it is durable,
     for consumers that act on recorded facts. ``status`` receives the
-    runtime's own status as it changes. ``permission_mode`` applies the
+    runtime's own status as it changes, and again with every renewal of the
+    reader's lease while it holds: one response can run for hours without a
+    change of status. ``permission_mode`` applies the
     session's stored permission mode to the runtime.
     """
 
@@ -244,6 +246,9 @@ class SessionReader:
         self._commit_lock = asyncio.Lock()
         self._closing = False
         self._protocol_error = False
+        #: The runtime status last committed, and when it was last reported.
+        self._status: str | None = None
+        self._status_reported = 0.0
         #: Responses whose first text this reader has read (for the delay stamp).
         self._texted: set[str] = set()
         self._positioned_responses: set[str] = set()
@@ -464,13 +469,16 @@ class SessionReader:
             except TimeoutError:
                 if not await self._repo.renew_reader(self._lease, ttl_s=LEASE_TTL_S):
                     raise _LeaseLost() from None
-                continue
-            if not self._closing:
-                with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(self._urgent.wait(), timeout=COMMIT_INTERVAL_S)
-            await self._commit()
-            if self._closing:
-                return
+            else:
+                if not self._closing:
+                    with contextlib.suppress(TimeoutError):
+                        await asyncio.wait_for(self._urgent.wait(), timeout=COMMIT_INTERVAL_S)
+                await self._commit()
+                if self._closing:
+                    return
+            if self._status is not None and time.monotonic() - self._status_reported >= renew_every:
+                self._status_reported = time.monotonic()
+                await self._hooks.status(self._status)
 
     async def _commit(self) -> None:
         """Commit the pending batch and run its hooks.
@@ -493,6 +501,8 @@ class SessionReader:
             if cursor is not None:
                 await self._client.committed(cursor)
             if batch.status is not None:
+                self._status = batch.status
+                self._status_reported = time.monotonic()
                 await self._hooks.status(batch.status)
         await self._hooks.committed(batch)
 

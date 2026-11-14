@@ -1037,7 +1037,8 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ASTRABOX_SANDBOX_LEASE_SECONDS",
         "internal",
         "14400",
-        "The conversation sandbox lease; renewed on turn/mirror activity. An "
+        "The conversation sandbox lease; renewed while the runtime reports work "
+        "(working, waiting or background), however long one response runs. An "
         "abandoned session dies roughly one lease after its last activity.",
         "astrabox.common.utils.settings",
     ),

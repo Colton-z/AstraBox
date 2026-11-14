@@ -921,6 +921,9 @@ export class AstraApi {
     // The response's own frames, as the SSE the stream carried them in.
     const raw = () => frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join('');
     let answering = false;
+    // A start that names this input opens its response; a later start of the
+    // same message (a reopen, or the parts closing a lost response) continues it.
+    let responseId = '';
     while (Date.now() < deadline) {
       const read = await this.resumeStream(sessionId, cursor, Math.max(1_000, deadline - Date.now()));
       for (const frame of sseFrames(read.raw)) {
@@ -931,7 +934,12 @@ export class AstraApi {
         }
         if (type === 'start' && frame.messageMetadata) {
           const inputIds = (frame.messageMetadata as { input_ids?: unknown }).input_ids;
-          answering = Array.isArray(inputIds) && inputIds.map(String).includes(inputId);
+          if (Array.isArray(inputIds) && inputIds.map(String).includes(inputId)) {
+            responseId = String(frame.messageId || '');
+            answering = true;
+          } else {
+            answering = Boolean(responseId) && frame.messageId === responseId;
+          }
         }
         if (!answering) continue;
         frames.push(frame);

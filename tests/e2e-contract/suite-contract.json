@@ -284,6 +284,10 @@
       "entry": "ASTRABOX_E2E_SANDBOX_ENVELOPE='<json>' npm --prefix tests/e2e-ui run e2e -- <file>.sandbox-envelope.spec.ts",
       "role": "deployment-shape"
     },
+    "sandbox-lease": {
+      "entry": "ASTRABOX_E2E_SANDBOX_LEASE=1 npm --prefix tests/e2e-ui run e2e -- <file>.sandbox-lease.spec.ts",
+      "role": "deployment-shape"
+    },
     "sandbox-quota": {
       "entry": "ASTRABOX_E2E_SANDBOX_QUOTA=1 npm --prefix tests/e2e-ui run e2e -- <file>.sandbox-quota.spec.ts",
       "role": "deployment-shape"
