@@ -265,18 +265,14 @@ you run the installer for the new release:
    ```
 
 2. Remove the 0.1.8 installation's sandboxes from the Docker host. Each
-   sandbox carries its installation's identifier in the `astrabox.installation`
-   label, and each egress proxy names the sandbox it serves, so these commands
-   leave other installations' sandboxes on the host running. Run them from
+   sandbox and the egress proxy beside it carry their installation's
+   identifier in the `astrabox.installation` label, so this leaves other
+   installations' sandboxes on the host running. Run it from
    `~/astrabox/containers` while the 0.1.8 database is still in place:
 
    ```bash
    installation=$(docker compose exec -T postgres psql -U postgres -d astrabox -tAc 'SELECT installation_id FROM installation')
-   for box in $(docker ps -aq --filter "label=astrabox.installation=$installation"); do
-     sandbox=$(docker inspect -f '{{index .Config.Labels "opensandbox.io/id"}}' "$box")
-     docker ps -aq --filter "label=opensandbox.io/egress-sidecar-for=$sandbox" | xargs -r docker rm -f
-     docker rm -f "$box"
-   done
+   docker ps -aq --filter "label=astrabox.installation=$installation" | xargs -r docker rm -f
    ```
 
    When sandboxes run on Kubernetes or an existing OpenSandbox service, delete
