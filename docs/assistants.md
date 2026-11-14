@@ -253,8 +253,9 @@ its `report_outcome` tool ([Task outcomes](a2a.md#task-outcomes)):
 
 - **Done.** Its report, the branch and last commit it pushed, and its reply
   make the Ticket's result, which the Assistant answers the request with on
-  its thread; a pull request it names from the Ticket's branch becomes the
-  Ticket's to follow. A reply without a report counts as done.
+  its thread, and a person's follow-up with an answer to that person; a pull
+  request it names from the Ticket's branch becomes the Ticket's to follow. A
+  reply without a report counts as done.
 - **Declined.** The Ticket ends dropped with the Agent's reason, and the
   Assistant tells the person why.
 - **Handed back.** The Agent says the request is for another Agent or must be
