@@ -104,6 +104,54 @@ Set `COMPANY_MODEL_API_KEY` on the AstraBox service, restart the deployment, and
 use `company-code-model` in the Agent form. An explicit upstream model version
 keeps model changes under the route administrator's control.
 
+### Spread one model across several provider accounts
+
+When one provider account reaches its rate or quota limit, every conversation
+on it stops. Give the route several accounts: list the model once per account
+under the same `model_name`.
+
+```yaml
+model_list:
+  - model_name: "company-code-model"
+    litellm_params:
+      model: "openai/provider-model-id"
+      api_key: os.environ/OPENAI_API_KEY_TEAM_A
+  - model_name: "company-code-model"
+    litellm_params:
+      model: "openai/provider-model-id"
+      api_key: os.environ/OPENAI_API_KEY_TEAM_B
+
+router_settings:
+  cooldown_time: 600
+```
+
+LiteLLM spreads requests for `company-code-model` across the entries. When an
+account answers 429, LiteLLM sends that request to another entry of the same
+name and stops using the limited account for `cooldown_time` seconds (5 when
+unset). The conversation does not see the 429. Choose a `cooldown_time` near
+how long the provider's limit lasts: each time it ends, one request tries the
+account again before moving on.
+
+When every account of the name is limited, the request fails with 429 and the
+conversation's response fails with the provider's message. To continue on
+another model instead, name it as a fallback:
+
+```yaml
+router_settings:
+  cooldown_time: 600
+  fallbacks: [{"company-code-model": ["backup-code-model"]}]
+```
+
+`backup-code-model` is another `model_name` in `model_list`. LiteLLM retries
+the original name before it falls back, which adds a few seconds to that
+request.
+
+This behaviour was measured on the bundled LiteLLM (1.99.0) for the Responses
+API (`/v1/responses`, streaming and not), which Codex uses: with one of two
+accounts answering 429, every request succeeded and the limited account
+received one request per cooldown period. Entries with an exact `model_name`
+were measured; several entries under one wildcard name (`gpt-*`) were not.
+
 ## Connect an existing LiteLLM gateway
 
 Set the URL that sandboxes can reach and a key limited to inference routes:

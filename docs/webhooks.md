@@ -68,7 +68,7 @@ invocation.
 
 ---
 
-### One conversation that continues {#continuing-conversation}
+### One conversation that continues
 
 A Webhook trigger starts a new Session for every request. To send several
 events into one conversation, create a trigger with the scene
