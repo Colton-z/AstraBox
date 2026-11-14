@@ -9,6 +9,7 @@ import uuid
 import weakref
 from datetime import timedelta
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 from opensandbox import Sandbox
 from opensandbox.models.sandboxes import CredentialProxyConfig
@@ -1358,7 +1359,7 @@ async def create_open_sandbox_box(
     handle = OpenSandboxHandle(sdk_sandbox)
     try:
         if execd_access_required_here:
-            await _require_execd_access(handle)
+            await _require_execd_access(provider, handle)
         await require_open_sandbox_permission_level(handle, permission_level)
         if require_execd_command_stream:
             await _wait_for_execd_command_stream(handle, session_id=str(session_id))
@@ -1414,8 +1415,18 @@ async def create_open_sandbox_box(
     return handle
 
 
-async def _require_execd_access(handle: OpenSandboxHandle) -> None:
+async def _require_execd_access(
+    provider: OpenSandboxSandboxProvider, handle: OpenSandboxHandle
+) -> None:
     """Refuse a new box unless its execd admits only the box's own credential.
+
+    The check goes where another container goes: execd's published port
+    itself. OpenSandbox's Docker endpoint for an in-box port, execd's own
+    included, is ``<host>:<published execd port>/proxy/<port>``
+    (``_resolve_host_mapped_endpoint`` in ``services/docker/networking.py``), so
+    the direct endpoint without its path is execd's root. A request through
+    ``/proxy`` would meet execd's credential check twice and prove nothing about
+    the root routes.
 
     A box returned by assignment recovery may predate the credential; it has
     none to prove and is refused like one whose execd ignores it.
@@ -1431,12 +1442,21 @@ async def _require_execd_access(handle: OpenSandboxHandle) -> None:
             ),
             status_code=502,
         )
-    raw = await handle.sidecar_faces.get_endpoint(EXECD_PORT)
+    direct = await provider._connect_handle(
+        handle.sandbox_id, use_server_proxy_override=False
+    )
+    try:
+        endpoint = await direct.get_endpoint(EXECD_PORT)
+    finally:
+        await direct.close()
+    root = urlsplit(endpoint.url)._replace(path="", query="", fragment="").geturl()
     await require_execd_access_enforced(
-        _config.endpoint_url(raw.endpoint),
+        root,
         token=access[EXECD_ACCESS_TOKEN_HEADER],
         routing_headers={
-            str(name): str(value) for name, value in dict(raw.headers or {}).items()
+            name: value
+            for name, value in endpoint.headers.items()
+            if name != EXECD_ACCESS_TOKEN_HEADER
         },
     )
 

@@ -52,9 +52,12 @@ an empty `POST /internal/init` without the token answers 401 from this build
 and 400 from the supplier's; AstraBox uses that answer to refuse an execd image
 without the patch (`astrabox/providers/open_sandbox/execd_access.py`). The patch
 also removes `X-EXECD-ACCESS-TOKEN` from requests that `/proxy/<port>` passes
-to an in-box service, as the supplier's per-user filesystem proxy
+to another in-box service, as the supplier's per-user filesystem proxy
 (`filesystem_identity_linux.go`) already does, so a service running as the
-workload's account never receives execd's credential.
+workload's account never receives execd's credential. A request for execd's own
+port keeps it: on the Docker runtime the lifecycle server's endpoint for execd
+is `/proxy/44772` on execd itself, so every SDK request to execd passes through
+that route.
 
 The Claude Code, Codex, DeepSeek Harness and Pi image targets build the default
 execd image first. An explicit `EXECD_IMAGE` selects an existing image without

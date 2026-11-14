@@ -15,12 +15,14 @@ import hashlib
 import os
 import socket
 import threading
+from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from typing import Any
 from uuid import uuid4
 
-from opensandbox import Sandbox, SandboxPoolAsync
+from opensandbox import Sandbox, SandboxManager, SandboxPoolAsync
 from opensandbox.async_redis_pool_store import AsyncRedisPoolStateStore
+from opensandbox.config import ConnectionConfig
 from opensandbox.exceptions import (
     PoolAcquireFailedException,
     PoolDestroyedException,
@@ -36,6 +38,10 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.settings import load_astrabox_settings
 from astrabox.providers.open_sandbox import _config
+from astrabox.providers.open_sandbox.execd_access import (
+    execd_access_headers,
+    with_execd_access,
+)
 from astrabox.seams.sandbox import (
     SandboxClientPoolCreator,
     SandboxClientPoolMember,
@@ -93,6 +99,46 @@ def _pool_unavailable(
         ),
         status_code=503,
     )
+
+
+class _MemberSandbox(Sandbox):
+    """How the SDK pool connects a member it hands out: with that member's execd credential.
+
+    The pool connects an acquired member with the pool's own connection
+    config, which carries no member's credential, and then checks the
+    member's execd through it. A member whose execd requires one would answer
+    that check 401 and be discarded. The pool's ``sandbox_factory`` is the
+    SDK's place to change how a member is connected; this one reads the
+    member's credential from its metadata (:mod:`.execd_access`), as
+    :meth:`OpenSandboxSandboxProvider.connect` does.
+    """
+
+    @classmethod
+    async def connect(
+        cls,
+        sandbox_id: str,
+        connection_config: ConnectionConfig | None = None,
+        health_check: Callable[[Sandbox], Awaitable[bool]] | None = None,
+        connect_timeout: timedelta = timedelta(seconds=30),
+        health_check_polling_interval: timedelta = timedelta(milliseconds=200),
+        skip_health_check: bool = False,
+    ) -> Sandbox:
+        config = connection_config or ConnectionConfig()
+        manager = await SandboxManager.create(connection_config=config)
+        try:
+            info = await manager.get_sandbox_info(str(sandbox_id))
+        finally:
+            await manager.close()
+        return await super().connect(
+            sandbox_id,
+            connection_config=with_execd_access(
+                config, execd_access_headers(getattr(info, "metadata", None))
+            ),
+            health_check=health_check,
+            connect_timeout=connect_timeout,
+            health_check_polling_interval=health_check_polling_interval,
+            skip_health_check=skip_health_check,
+        )
 
 
 def _client_pool_session_id(pool_name: str) -> str:
@@ -204,6 +250,7 @@ class OpenSandboxClientPoolRegistry:
                 idle_timeout=timedelta(seconds=int(spec.idle_timeout_seconds)),
                 drain_timeout=timedelta(seconds=30),
                 sandbox_creator=self._creator(spec, creator),
+                sandbox_factory=_MemberSandbox,
             )
             try:
                 await pool.start()
@@ -386,28 +433,14 @@ class OpenSandboxClientPoolRegistry:
                 exc,
             ) from exc
 
-        from astrabox.providers.open_sandbox.executor import destroy_open_sandbox_box
-        from astrabox.providers.open_sandbox.sandbox import OpenSandboxSandboxProvider
+        from astrabox.providers.open_sandbox.sandbox import OpenSandboxHandle
 
         logger.info(
             "OpenSandbox client pool acquired: pool=%s sandbox=%s",
             spec.pool_name,
             sdk_sandbox.id,
         )
-        # The pool connects a member with the pool's connection config, which
-        # carries no member's execd credential (execd_access). connect() reads
-        # it from the member's own metadata. The member is this caller's now,
-        # so a failed connect destroys it rather than leaving it unowned.
-        sandbox_id = str(sdk_sandbox.id)
-        provider = OpenSandboxSandboxProvider(transport=self._transport)
-        try:
-            return await provider.connect(sandbox_id)
-        except BaseException:
-            await destroy_open_sandbox_box(provider, sandbox_id)
-            raise
-        finally:
-            with contextlib.suppress(Exception):
-                await sdk_sandbox.close()
+        return OpenSandboxHandle(sdk_sandbox)
 
     async def describe(self, pool_name: str) -> SandboxClientPoolStatus:
         """Read shared inventory without starting or changing the pool."""

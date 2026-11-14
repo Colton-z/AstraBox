@@ -16,7 +16,7 @@ vendor's (``components/execd/pkg/flag/parser.go`` and
 ``components/execd/pkg/web/model/header.go``). AstraBox's execd build adds
 ``containers/execd/access-token.patch``: ``/internal/init``, which replaces that
 credential, then requires it too, and ``/proxy/<port>`` does not forward it to
-the in-box service.
+any in-box service but execd itself.
 
 **Custody.** The token is derived, not stored: an HMAC of the deployment's
 secret root (:func:`derive_platform_key` under :func:`platform_secret_root`, as

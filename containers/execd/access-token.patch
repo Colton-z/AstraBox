@@ -20,9 +20,17 @@
 +	return legacyToken != ""
 --- a/components/execd/pkg/web/proxy.go
 +++ b/components/execd/pkg/web/proxy.go
-@@ -27,0 +28 @@
+@@ -21,0 +22 @@
++	"strconv"
+@@ -26,0 +28 @@
++	"github.com/alibaba/opensandbox/execd/pkg/flag"
+@@ -27,0 +30 @@
 +	"github.com/alibaba/opensandbox/execd/pkg/web/model"
-@@ -76,0 +78,3 @@
-+			// AstraBox modification: the in-box service never receives execd's
-+			// own credential, as filesystem_identity_linux.go already does.
-+			req.Header.Del(model.ApiAccessTokenHeader)
+@@ -76,0 +80,7 @@
++			// AstraBox modification: another in-box service never receives
++			// execd's own credential, as filesystem_identity_linux.go already
++			// does. A request for execd's own port keeps it: OpenSandbox's
++			// Docker endpoint for execd is this proxy route to itself.
++			if port != strconv.Itoa(flag.ServerPort) {
++				req.Header.Del(model.ApiAccessTokenHeader)
++			}
