@@ -3056,6 +3056,69 @@ for _spec in ENV_REGISTRY:
 del _seen, _spec
 
 
+#: Operator-facing names a client process reads (the developer CLI), which the
+#: server never sees.
+CLIENT_SIDE: frozenset[str] = frozenset(
+    {
+        "ASTRABOX_ENDPOINT",
+        "ASTRABOX_TOKEN",
+        "ASTRABOX_CLIENT_ID",
+        "ASTRABOX_CLIENT_SECRET",
+        "ASTRABOX_TOKEN_URL",
+        "ASTRABOX_SCOPE",
+    }
+)
+
+#: Operator-facing server settings the Compose deployment decides itself, each
+#: with what an operator sets instead.
+COMPOSE_FIXED: dict[str, str] = {
+    "ASTRABOX_HOST": "the server image listens on every interface inside its container; "
+    "Compose publishes it on the host's loopback",
+    "ASTRABOX_PORT": "the port inside the container is fixed; ASTRABOX_SERVER_HOST_PORT "
+    "chooses the host port",
+}
+
+#: Settings whose default is a decision about this particular host or team, in
+#: the order an installer presents them, each with why an operator looks at it
+#: before the deployment takes work. A setting here is forwarded by Compose
+#: whatever its tier.
+SETUP_REVIEW: dict[str, str] = {
+    "ASTRABOX_SANDBOX_QUOTA_MEMORY": "Sandboxes may take all of this host's memory but 4 GiB. "
+    "Set a ceiling when the host runs anything else.",
+    "ASTRABOX_SANDBOX_QUOTA_CPU": "Sandboxes may take every CPU of this host. "
+    "Set a ceiling when the host runs anything else.",
+    "ASTRABOX_SANDBOX_QUOTA_BOXES": "No limit on how many sandboxes run at once.",
+    "ASTRABOX_SANDBOX_CPU_LIMIT": "CPU of each conversation's sandbox. Builds and test suites need more.",
+    "ASTRABOX_SANDBOX_MEMORY_LIMIT": "Memory of each conversation's sandbox. Builds and test suites need more.",
+    "ASTRABOX_SANDBOX_LEASE_SECONDS": "A conversation's sandbox, with the files in it, is removed "
+    "this long after its last work.",
+    "ASTRABOX_SANDBOX_IDLE_ACTION": "What new RuntimeProfiles do with an idle sandbox: "
+    "terminate removes it when its lease ends, pause keeps it parked.",
+    "ASTRABOX_AUTHORING_ADMIN_ONLY": "Every signed-in user may create Agents and Assistants.",
+    "ASTRABOX_ENVIRONMENT_ENTRY_POLICY": "Every account the identity provider signs in may use "
+    "this deployment; members admits only the Environment's member list.",
+}
+
+
+def compose_settable() -> list[EnvVarSpec]:
+    """The settings an operator of the Compose deployment sets in ``containers/.env``.
+
+    Every operator-facing setting the server reads and Compose does not decide
+    itself, and every setting an installer asks an operator to review.
+    """
+    return sorted(
+        (
+            spec
+            for spec in ENV_REGISTRY
+            if not spec.is_pattern
+            and spec.name not in CLIENT_SIDE
+            and spec.name not in COMPOSE_FIXED
+            and (spec.tier == "public" or spec.name in SETUP_REVIEW)
+        ),
+        key=lambda spec: spec.name,
+    )
+
+
 def by_tier(tier: Tier) -> list[EnvVarSpec]:
     """Registry rows for one tier, sorted by name."""
     return sorted((s for s in ENV_REGISTRY if s.tier == tier), key=lambda s: s.name)

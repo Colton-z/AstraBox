@@ -142,6 +142,62 @@ def test_choosing_another_service_removes_the_previous_services_settings(
     }
 
 
+# ── settings to review ───────────────────────────────────────────────────────
+
+
+def test_a_first_install_goes_through_the_settings_that_depend_on_the_host(
+    tmp_path: Path,
+) -> None:
+    """The installer asks about exactly the registry's review settings, in its reference file.
+
+    A value from the environment is taken without a question, a setting the
+    operator already wrote is kept, an answer that differs from the default is
+    written, and Enter leaves the setting out so the server's default stands.
+    """
+    from astrabox.config.env_registry import SETUP_REVIEW
+
+    env_file = tmp_path / ".env"
+    reference = _REPO_ROOT / "containers/settings.reference.env"
+    asked = [
+        name
+        for name in SETUP_REVIEW
+        if name not in ("ASTRABOX_SANDBOX_QUOTA_MEMORY", "ASTRABOX_SANDBOX_LEASE_SECONDS")
+    ]
+    # Yes to going through them, then one answer per question: a value for the
+    # box's CPU, Enter for every other.
+    answers = ["y"] + ["8" if name == "ASTRABOX_SANDBOX_CPU_LIMIT" else "" for name in asked]
+    (tmp_path / "answers").write_text("".join(f"{answer}\n" for answer in answers), encoding="utf-8")
+    result = _run(
+        f"""
+        create_env_file "{env_file}"
+        env_set "{env_file}" ASTRABOX_SANDBOX_LEASE_SECONDS 86400
+        export ASTRABOX_SANDBOX_QUOTA_MEMORY=24Gi
+        exec 3<"{tmp_path / 'answers'}"
+        have_tty=1
+        configure_review_settings "{env_file}" "{reference}"
+        IFS= read -r unread <&3 && echo "unread answer: $unread"
+        have_tty=1
+        configure_review_settings "{env_file}" "{reference}"
+        show_review_settings "{env_file}" "{reference}"
+        """,
+        tmp_path=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "unread answer" not in result.stdout
+
+    assert _settings(env_file) == {
+        "ASTRABOX_SANDBOX_LEASE_SECONDS": "86400",
+        "ASTRABOX_SANDBOX_QUOTA_MEMORY": "24Gi",
+        "ASTRABOX_SANDBOX_CPU_LIMIT": "8",
+        "ASTRABOX_INSTALL_SETTINGS_REVIEWED": "1",
+    }
+    # The questions name each remaining setting once; the second run asks none.
+    for name in asked:
+        assert result.stderr.count(f"{name} [") == 1, result.stderr
+    for name in SETUP_REVIEW:
+        assert name in result.stdout, result.stdout
+
+
 # ── team login ───────────────────────────────────────────────────────────────
 
 

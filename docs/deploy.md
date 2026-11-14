@@ -360,6 +360,21 @@ other Compose value, then re-run the installer:
 printf '%s\n' "ASTRABOX_SERVER_HOST_PORT='9000'" >> ~/astrabox/containers/.env
 ```
 
+Every setting of the deployment goes in that file. `containers/settings.reference.env`,
+beside it, lists each one with its default and what it does; a setting the
+file leaves out keeps its default. [The complete list](configuration.md) has
+the same settings.
+
+A few defaults are decisions about this host and your team: how much of the
+host's memory and CPU sandboxes may take (all but 4 GiB of memory, and every
+CPU, unless you set a ceiling), how large each conversation's sandbox is, how
+long an idle conversation keeps its sandbox, and who may create Agents and use
+the deployment. They are the first section of the reference file. On a first
+install from a terminal the installer offers to go through them; it takes any
+of them from the environment (`ASTRABOX_SANDBOX_QUOTA_MEMORY=24Gi bash
+install.sh`) whether or not it can ask; and every run ends by listing them
+with the value each has.
+
 Manage the installed stack from that directory with the ordinary Compose
 commands, `docker compose ps`, `docker compose logs -f server` and
 `docker compose down`. With team login on, they include Casdoor.

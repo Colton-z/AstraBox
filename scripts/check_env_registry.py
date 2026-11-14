@@ -65,7 +65,7 @@ IMAGE_PROGRAMS_ROOT = REPO_ROOT / "scripts" / "runtime"
 
 sys.path.insert(0, str(REPO_ROOT))
 
-from astrabox.config.env_registry import ENV_REGISTRY, concrete_names  # noqa: E402
+from astrabox.config.env_registry import ENV_REGISTRY, compose_settable, concrete_names  # noqa: E402
 from astrabox.secrets import secret_env_key  # noqa: E402
 
 #: Wrapper functions that compose an env-var name from a literal argument, so a
@@ -526,7 +526,12 @@ def _stale_configuration_doc() -> bool:
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     on_disk = (REPO_ROOT / "docs" / "configuration.md").read_text(encoding="utf-8")
-    return bool(module.render_markdown() != on_disk)
+    reference = REPO_ROOT / "containers" / "settings.reference.env"
+    return bool(
+        module.render_markdown() != on_disk
+        or not reference.is_file()
+        or module.render_settings_reference() != reference.read_text(encoding="utf-8")
+    )
 
 
 # ── the rules ────────────────────────────────────────────────────────────────
@@ -597,6 +602,17 @@ def evaluate() -> list[tuple[str, list[str]]]:
             if base.get(name) != expected
         ],
     )
+    compose_text = (REPO_ROOT / "containers" / "compose.yaml").read_text(encoding="utf-8")
+    report(
+        "an operator setting containers/compose.yaml neither forwards to the server nor "
+        "interpolates, so a value in containers/.env never takes effect. Name it in the "
+        "server's environment, or list it in env_registry.CLIENT_SIDE or COMPOSE_FIXED",
+        [
+            spec.name
+            for spec in compose_settable()
+            if spec.name not in base and f"${{{spec.name}" not in compose_text
+        ],
+    )
     report(
         "declared on AstraBoxRuntimeSettings and read by no module outside the "
         "declaration. Wire each field to its real authority or remove it",
@@ -609,7 +625,7 @@ def evaluate() -> list[tuple[str, list[str]]]:
     if _stale_configuration_doc():
         report(
             "out of date. Run `python scripts/gen_config_docs.py` and commit the result",
-            ["docs/configuration.md"],
+            ["docs/configuration.md or containers/settings.reference.env"],
         )
     return failures
 

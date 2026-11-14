@@ -536,6 +536,71 @@ configure_model() {
   write_model_settings "$env_file"
 }
 
+# ── settings to review ──────────────────────────────────────────────────────
+#
+# containers/settings.reference.env lists every setting with its default. Its
+# first section holds the ones whose default is a decision about this host or
+# team: a "#? reason" line, the description, then "#NAME=default".
+
+# Prints name, default and reason for each setting to review, separated by
+# the unit separator: a default can be empty, and `read` merges adjacent tabs.
+review_settings() {
+  local reference="$1" line reason="" inside=0
+  [ -f "$reference" ] || die "The bundle has no $reference."
+  while IFS= read -r line; do
+    case "$line" in
+      '# >>> review at first install') inside=1 ;;
+      '# <<< review at first install') inside=0 ;;
+      '#? '*) [ "$inside" = 1 ] && reason="${line#\#? }" ;;
+      '#'[A-Z]*=*)
+        if [ "$inside" = 1 ]; then
+          line="${line#\#}"
+          printf '%s\037%s\037%s\n' "${line%%=*}" "${line#*=}" "$reason"
+        fi
+        ;;
+    esac
+  done <"$reference"
+}
+
+# Takes each setting to review from the environment when it is set there, and
+# on a first interactive install offers to go through the rest. A setting
+# already in the settings file is kept.
+configure_review_settings() {
+  local env_file="$1" reference="$2" key default reason value ask=0
+  if [ -z "$(env_get "$env_file" ASTRABOX_INSTALL_SETTINGS_REVIEWED)" ] && [ "$have_tty" = 1 ]; then
+    printf '\nSome defaults depend on this host and your team, such as how much of\n' >&2
+    printf 'the host sandboxes may use. Enter keeps the default shown.\n' >&2
+    if confirm 'Go through them now?'; then ask=1; fi
+  fi
+  # Descriptor 4: the questions below read the terminal on descriptor 3.
+  while IFS=$'\037' read -r key default reason <&4; do
+    if [ -n "${!key:-}" ]; then
+      env_set "$env_file" "$key" "${!key}"
+    elif [ "$ask" = 1 ] && [ -z "$(env_get "$env_file" "$key")" ]; then
+      printf '\n%s\n' "$reason" >&2
+      value="$(prompt "$key" "${default:-unset}")"
+      if [ "$value" != "${default:-unset}" ]; then env_set "$env_file" "$key" "$value"; fi
+    fi
+  done 4< <(review_settings "$reference")
+  env_set "$env_file" ASTRABOX_INSTALL_SETTINGS_REVIEWED 1
+}
+
+# The settings to review with the value each has now.
+show_review_settings() {
+  local env_file="$1" reference="$2" key default reason value
+  printf '\n  Settings that depend on this host and your team. Change one in\n'
+  printf '  %s and run the installer again:\n' "$env_file"
+  while IFS=$'\037' read -r key default reason; do
+    value="$(env_get "$env_file" "$key")"
+    if [ -n "$value" ]; then
+      printf '    %s=%s\n' "$key" "$value"
+    else
+      printf '    %s  (default: %s)\n      %s\n' "$key" "${default:-unset}" "$reason"
+    fi
+  done < <(review_settings "$reference")
+  printf '  Every setting and its default: %s\n' "$reference"
+}
+
 # ── team login ──────────────────────────────────────────────────────────────
 
 # Prints casdoor or none: what the settings file's COMPOSE_FILE runs now.
@@ -830,6 +895,8 @@ main() {
 
   configure_model "$env_file"
   configure_team_login "$env_file"
+  local reference="$install_dir/containers/settings.reference.env"
+  configure_review_settings "$env_file" "$reference"
 
   compose config --quiet || die "Docker Compose rejected the configuration in $install_dir/containers."
   step "Pulling the AstraBox $version images"
@@ -867,6 +934,7 @@ EOF
              docker compose logs -f server
              docker compose down      (keeps data; add -v to delete it)
 EOF
+  show_review_settings "$env_file" "$reference"
   if [ "$(env_get "$env_file" ASTRABOX_INSTALL_MODEL_PROVIDER)" = none ]; then
     printf '\n  No model service is configured. Add one in the console under\n'
     printf '  Integrated services > LiteLLM gateway, or re-run the installer.\n'

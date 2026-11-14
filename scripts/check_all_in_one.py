@@ -17,7 +17,9 @@ exactly once:
 
 A new Compose variable fails this check until someone decides which. A
 pass-through entry that Compose does not set fails too, so the list stays a
-statement about the current file.
+statement about the current file. A variable Compose only names, with no
+value, is an operator setting it forwards from ``containers/.env`` when set;
+Compose decides nothing about it, so it needs no row here.
 
 The image also creates Compose's two sandbox edges itself
 (``EDGE_SPECS``). Their image, configuration files and environment must stay
@@ -202,7 +204,12 @@ def main() -> int:
 
     services = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))["services"]
     compose = list(_environment(services["server"]))
+    forwarded = {
+        str(name) for name, value in (services["server"].get("environment") or {}).items() if value is None
+    }
     for name in compose:
+        if name in forwarded and name not in PASS_THROUGH:
+            continue
         if name not in refused | PASS_THROUGH:
             problems.append(
                 f"{name} is set by containers/compose.yaml's server but not "
