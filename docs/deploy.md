@@ -1013,25 +1013,11 @@ shared sandbox holds about five. A larger shared sandbox holds more
 conversations for its size, because the runtime underneath is paid for once:
 an 8 GiB sandbox holds about twelve.
 
-Each sandbox runs beside an egress sidecar limited to 1 CPU and 128 MiB. On a
-Docker host the bundled sandbox server sets that limit. On Kubernetes,
-OpenSandbox 0.2.3 creates the sidecar without resources, so give the sandbox
-namespace a LimitRange whose container default is the same:
-
-```yaml
-apiVersion: v1
-kind: LimitRange
-metadata:
-  name: astrabox-sandbox-sidecars
-spec:
-  limits:
-    - type: Container
-      default: {cpu: "1", memory: 128Mi}
-      defaultRequest: {cpu: 50m, memory: 128Mi}
-```
-
-The default applies to every container in the namespace that states no
-resources of its own, OpenSandbox's execd init container included.
+Each sandbox runs beside an egress sidecar limited to 1 CPU and 128 MiB, which
+the bundled sandbox server sets on both runtimes. On Kubernetes it also gives
+the sidecar and OpenSandbox's execd init container a request of 50m CPU and
+128 MiB, through OpenSandbox's `[egress]` and `[kubernetes]` resource settings.
+An existing OpenSandbox service sizes its sidecar itself.
 
 ### Cap what a sandbox backend runs {#cap-what-a-sandbox-backend-runs}
 

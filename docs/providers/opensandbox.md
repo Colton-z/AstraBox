@@ -33,9 +33,15 @@ container runtime, or cluster network described there.
 ## Run sandboxes on Kubernetes
 
 Install the OpenSandbox controller and CRDs, then create the namespace where
-sandbox Pods will run. AstraBox checks that the namespace, selected workload
-CRD, Kubernetes API access, and required permissions are available; it does not
-create cluster-scoped resources or namespaces.
+sandbox Pods will run. AstraBox's bundled lifecycle server is opensandbox-server
+1.2.1, and OpenSandbox ships its server, controller, CRDs, ingress Gateway and
+images as one release, so install them from the same release: render the charts
+under `manifests/charts/` at the `release-1.2.1` tag and use the
+`opensandbox/<component>:release-1.2.1` images. The `agent-sandbox` workload
+type needs Agent Sandbox 1.0 (`agents.x-k8s.io/v1beta1`). AstraBox checks that
+the namespace, selected workload CRD, Kubernetes API access, and required
+permissions are available; it does not create cluster-scoped resources or
+namespaces.
 
 The maintained Compose overlay runs AstraBox outside the cluster and creates
 sandbox Pods inside it. Copy a kubeconfig to a location readable by the
@@ -251,7 +257,7 @@ to the SDK. AstraBox does not configure a deployment-wide egress token. See
 the supported request matches and verification flow.
 
 The deployment's sidecar image (`ASTRABOX_SANDBOX_EGRESS_IMAGE`) is, by
-default, the release's `egress` image: OpenSandbox egress v1.1.7 with one addon,
+default, the release's `egress` image: OpenSandbox egress 1.2.1 with one addon,
 loaded through its `OPENSANDBOX_EGRESS_MITMPROXY_SCRIPT` hook, that decrypts
 HTTPS only to hosts a credential is bound to in that sandbox
 (`containers/egress/decrypt_bound_hosts.py`). OpenSandbox's own image decrypts
@@ -289,11 +295,14 @@ RuntimeProfile is saved. The create carries the `advanced` level's
 execd-isolation extension, a create metadata entry
 `astrabox.container-engine=docker`, and a Docker volume of its own mounted at
 `/var/lib/astrabox/container-engine` with `deleteOnSandboxTermination`.
-OpenSandbox 0.2.3 has no create field for the remaining two grants, so a hook of
-the bundled server (`grant_container_engine_boxes` in
-`astrabox/deploy/sandbox_server.py`) gives a container carrying that label
-empty `MaskedPaths` and `ReadonlyPaths` and removes `no-new-privileges`; every
-other container is created as before. The sandbox is returned once
+OpenSandbox's Docker runtime creates every sandbox that carries the
+execd-isolation extension with empty `MaskedPaths` and `ReadonlyPaths`, which
+the engine's inner containers need to mount their own `/proc`. It has no create
+field for `no-new-privileges`, so a hook of the bundled server
+(`grant_container_engine_boxes` in `astrabox/deploy/sandbox_server.py`) removes
+that option from a container carrying the label, refuses one created without
+execd isolation, and checks at startup that the server still empties both path
+lists; every other container is created as before. The sandbox is returned once
 `astrabox-container-engine ready` succeeds in it; otherwise it is deleted and
 the create fails with `SANDBOX_CONTAINER_ENGINE_UNAVAILABLE` and the sandbox's
 own diagnosis.
@@ -317,7 +326,7 @@ exactly and hands it to Docker as a bind mount, which Docker refuses when the
 source does not exist. A named volume is a `pvc` volume with
 `createIfNotExists` and `deleteOnSandboxTermination` off.
 
-OpenSandbox 0.2.3 has no create field for a second network: one
+OpenSandbox has no create field for a second network: one
 `docker.network_mode` applies to every sandbox, and it refuses a network
 policy with a user-defined network because the egress sidecar runs on the
 default bridge. A sandbox shares its sidecar's network namespace, so the
@@ -383,7 +392,8 @@ Lifecycle API to relay HTTP, SSE, and WebSocket traffic
 deployment connects directly: its bundled Lifecycle API runs in the AstraBox
 container and publishes sandbox ports on the Docker bridge gateway, which
 AstraBox reaches from the same container. Use the relay only when AstraBox
-cannot reach the sandbox endpoints. The relay removes `Cookie` and
+cannot reach the sandbox endpoints; OpenSandbox keeps it in maintenance mode
+and directs new deployments to its ingress Gateway. The relay removes `Cookie` and
 `Authorization` headers and replaces `Host` on every request, so the DeepSeek
 Harness and Hermes engines cannot authenticate to their in-box services
 through it.
@@ -412,9 +422,10 @@ Install the official OpenSandbox ingress Gateway in `opensandbox-system`, with
 `gateway.secureAccess.existingSecret` naming a Secret in that namespace. Its
 `keys` entry contains `a=<base64-encoded-secret>`; key ID `a` must match the
 server configuration. Keep the Secret and the lifecycle server's key private.
-The [official chart](https://github.com/opensandbox-group/OpenSandbox/tree/c806a49c62ee1fc3baa036165e9044e7b0efd97f/manifests/charts/ingress-gateway)
-at commit `c806a49c62ee1fc3baa036165e9044e7b0efd97f` has chart and image version
-1.1.1. With that checkout and a provisioned signing Secret, install it using:
+The [official chart](https://github.com/opensandbox-group/OpenSandbox/tree/release-1.2.1/manifests/charts/ingress-gateway)
+at tag `release-1.2.1` has chart and image version 1.2.1, the release of the
+bundled lifecycle server. With that checkout and a provisioned signing Secret,
+install it using:
 
 ```bash
 helm upgrade --install opensandbox-ingress \
@@ -457,7 +468,7 @@ Header routing cannot be used by an ordinary browser link. When connecting an
 external lifecycle service, configure its native `[ingress]` settings with the
 same topology; AstraBox's `ASTRABOX_SANDBOX_SERVER_*` settings configure only
 the bundled server. See the vendor's
-[Secure Access guide](https://github.com/opensandbox-group/OpenSandbox/blob/c806a49c62ee1fc3baa036165e9044e7b0efd97f/docs/guides/secure-access.md).
+[Secure Access guide](https://github.com/opensandbox-group/OpenSandbox/blob/release-1.2.1/docs/guides/secure-access.md).
 
 Enable Secure Access before creating the sandboxes that will use it; changing
 the server configuration does not enable it on existing boxes. Check the

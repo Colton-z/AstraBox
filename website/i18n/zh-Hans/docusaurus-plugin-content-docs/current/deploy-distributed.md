@@ -46,11 +46,12 @@ OpenSandbox 生命周期 API、LiteLLM 和消息网关。沙箱由 Kubernetes �
 
 ### OpenSandbox 版本边界
 
-使用 OpenSandbox Server 0.2.3 时，应运行一个外部生命周期服务，并使用它自己的持久
-SQLite 存储。这支持多个 AstraBox 副本和沙箱节点，但**不提供生命周期控制面的高可用**。不要
+AstraBox 为 OpenSandbox 生命周期服务配置它自己的持久 SQLite 存储，因此应运行一个外部
+生命周期服务。这支持多个 AstraBox 副本和沙箱节点，但**不提供生命周期控制面的高可用**。不要
 运行多个各自使用 SQLite 的生命周期副本，并认为共享 Kubernetes 就能共享快照记录。
-[0.2.3 配置参考](https://github.com/opensandbox-group/OpenSandbox/blob/c39b814/server/configuration.md#store)
-仅支持 SQLite 管理服务端元数据。采用其他上游版本时，应根据其共享存储保证另行验收。
+OpenSandbox 1.2.1 还提供 PostgreSQL 存储，让多个服务进程在 Kubernetes 上协调快照
+（[配置参考](https://github.com/opensandbox-group/OpenSandbox/blob/release-1.2.1/server/configuration.md#store)）；
+AstraBox 不配置它，采用它需要另行验收。
 
 内置生命周期进程监听容器 loopback，单独发布主机端口不会使其可被外部访问。外部服务
 应遵循 OpenSandbox 官方服务配置，包括 API key 鉴权。迁移生命周期服务时，保留持久

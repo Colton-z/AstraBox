@@ -129,8 +129,8 @@ and invokes AIO's `/opt/gem/run.sh`; Codex and DeepSeek Harness use
 Changing only the derived image's Docker `ENTRYPOINT` does not change
 that platform-supplied command.
 
-Every bundled image also carries OpenSandbox's execution service, execd
-`v1.1.0`, at `/opt/astrabox/opensandbox/execd`, with OpenSandbox's
+Every bundled image also carries OpenSandbox's execution service, execd from
+OpenSandbox release `1.2.1`, at `/opt/astrabox/opensandbox/execd`, with OpenSandbox's
 `bootstrap.sh` launcher and the image's isolation policy, `isolation.toml`,
 beside it. AstraBox reaches a sandbox's files, commands, and long-lived
 processes, such as the terminal's shell and the Pi program, through an execd on

@@ -658,24 +658,10 @@ AstraBox 使用独立的主机名。
 共享沙箱越大，单位内存能容纳的对话越多，因为底层运行时只占用一次：8 GiB 的沙箱大约容纳
 十二个。
 
-每个沙箱旁边运行一个出网 sidecar，上限为 1 个 CPU 和 128 MiB。在 Docker 主机上由随附的
-沙箱服务设置这个上限。在 Kubernetes 上，OpenSandbox 0.2.3 创建的 sidecar 不带资源设置，
-请为沙箱所在的命名空间配置一个 LimitRange，让容器默认值与之相同：
-
-```yaml
-apiVersion: v1
-kind: LimitRange
-metadata:
-  name: astrabox-sandbox-sidecars
-spec:
-  limits:
-    - type: Container
-      default: {cpu: "1", memory: 128Mi}
-      defaultRequest: {cpu: 50m, memory: 128Mi}
-```
-
-这个默认值作用于该命名空间中所有没有自行声明资源的容器，包括 OpenSandbox 的 execd 初始化
-容器。
+每个沙箱旁边运行一个出网 sidecar，上限为 1 个 CPU 和 128 MiB，随附的沙箱服务在两种运行时
+上都会设置这个上限。在 Kubernetes 上，它还通过 OpenSandbox 的 `[egress]` 和 `[kubernetes]`
+资源设置，为 sidecar 和 OpenSandbox 的 execd 初始化容器申请 50m CPU 和 128 MiB。已有的
+OpenSandbox 服务自行决定其 sidecar 的资源。
 
 ### 限制沙箱后端的总用量 {#cap-what-a-sandbox-backend-runs}
 
