@@ -187,6 +187,13 @@ its own Linux user and workspace, but the conversations share a container and
 network namespace. It therefore requires the advanced sandbox permission level
 and an OpenSandbox deployment configured for isolated sessions.
 
+The advanced level asks OpenSandbox for its execd-isolation extension. On
+Docker, OpenSandbox creates such a sandbox with `SYS_ADMIN`, without seccomp
+and AppArmor confinement, and with no masked or read-only paths under `/proc`
+and `/sys`, so that each isolated session can mount its own `/proc`. A process
+that gains root in such a sandbox can change kernel settings of the Docker
+host; give this level only to trusted teams.
+
 Every bundled Agent program runs each conversation under its own account in
 shared-sandbox mode. AstraBox refuses a claimed sandbox that cannot attest
 isolated-session support; it does not fall back to unisolated execution.
