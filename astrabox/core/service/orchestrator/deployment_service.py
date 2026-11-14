@@ -48,6 +48,7 @@ from astrabox.persistence.repository.session_runtime_repository import SessionRu
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
+from astrabox.common.utils.webhook_signature import signed_request_refusal
 from astrabox.core.service.orchestrator.agent_access import can_manage_agent, is_platform_admin
 from astrabox.seams.channel_response import (
     MAX_RESPONSE_INSTRUCTION_CHARS,
@@ -103,30 +104,6 @@ SCENE_HMAC = "hmac"
 SCENE_SCHEDULER = "scheduler"
 SCENE_SCHEDULE = "schedule"
 _VALID_SCENES = (SCENE_HMAC, SCENE_SCHEDULER, SCENE_SCHEDULE)
-
-
-def _hmac_window_seconds() -> int:
-    """Freshness window for the HMAC scene (default 300s = 5 min)."""
-    try:
-        return max(1, int(os.getenv("ASTRABOX_WEBHOOK_HMAC_WINDOW_SECONDS", "300")))
-    except ValueError:
-        return 300
-
-
-def _hmac_signature(secret: str, timestamp: str, raw_body: bytes) -> str:
-    """HMAC webhook signature: Base64(HMAC-SHA256(secret, "timestamp.sha256(body)")).
-
-    The signature binds both the request timestamp and the exact body, so a
-    captured (timestamp, signature) pair cannot be replayed with a different
-    body — critical here because the webhook body becomes the prompt fed to the
-    agent (replay + prompt-injection). Combined with the freshness-window check
-    in :meth:`DeploymentService._verify_signature`, a captured pair is unusable
-    once the window lapses.
-    """
-    body_digest = hashlib.sha256(raw_body or b"").hexdigest()
-    signed = f"{timestamp}.{body_digest}"
-    mac = hmac.new(secret.encode("utf-8"), signed.encode("utf-8"), hashlib.sha256)
-    return base64.b64encode(mac.digest()).decode("utf-8")
 
 
 #: ``scheduler=`` default: resolve the deployment's selected provider per call.
@@ -1823,45 +1800,13 @@ class DeploymentService:
         scene = str(webhook.get("scene") or "")
         # headers are normalized to lower-case keys by the caller
         if scene == SCENE_HMAC:
-            timestamp = str(headers.get("x-webhook-timestamp") or "")
-            signature = str(headers.get("x-webhook-signature") or "")
-            if not timestamp or not signature:
-                raise APIError(
-                    code="DEPLOYMENT_UNAUTHORIZED",
-                    message="missing X-WEBHOOK-TIMESTAMP / X-WEBHOOK-SIGNATURE",
-                    status_code=401,
-                )
-            # Freshness window: reject a stale timestamp before the signature
-            # check, so a captured (timestamp, signature, body) triple is
-            # unusable once the window lapses. Timestamp is unix epoch seconds.
-            #
-            # Residual, by design: within the window the exact same triple
-            # replays (this scene keeps no nonce state — stateless verify
-            # across replicas). Exactly-once here would need a shared
-            # nonce/dedup store; channel scenes get precisely that via their
-            # dedup_key inbound claims. An operator who needs replay-tight raw
-            # hmac should front it with a channel scene (dedup_key) or narrow
-            # ASTRABOX_WEBHOOK_HMAC_WINDOW_SECONDS to their sender's real skew.
-            window = _hmac_window_seconds()
-            try:
-                ts = float(timestamp)
-            except ValueError:
-                raise APIError(
-                    code="DEPLOYMENT_UNAUTHORIZED",
-                    message="X-WEBHOOK-TIMESTAMP must be unix epoch seconds",
-                    status_code=401,
-                ) from None
-            if abs(time.time() - ts) > window:
-                raise APIError(
-                    code="DEPLOYMENT_UNAUTHORIZED",
-                    message=f"webhook timestamp outside the {window}s freshness window",
-                    status_code=401,
-                )
-            expected = _hmac_signature(secret, timestamp, raw_body)
-            if not hmac.compare_digest(expected, signature):
-                raise APIError(
-                    code="DEPLOYMENT_UNAUTHORIZED", message="invalid webhook signature", status_code=401
-                )
+            # Within the freshness window the same signed request verifies
+            # again: this scene keeps no nonce state, so that verification
+            # needs nothing shared between replicas. A channel scene's
+            # dedup key is what gives exactly-once.
+            refusal = signed_request_refusal(secret, headers, raw_body)
+            if refusal is not None:
+                raise APIError(code="DEPLOYMENT_UNAUTHORIZED", message=refusal, status_code=401)
         elif scene == SCENE_SCHEDULER:
             # Scheduler uses the deployment's issued secret directly as a bearer-style token.
             provided = str(

@@ -14,9 +14,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from astrabox.common.utils.errors import APIError
+from astrabox.common.utils.webhook_signature import webhook_signature as _hmac_signature
 from astrabox.core.service.orchestrator.deployment_service import (
     DeploymentService,
-    _hmac_signature,
 )
 
 
@@ -81,4 +81,48 @@ def test_non_numeric_timestamp_is_rejected() -> None:
     }
     with pytest.raises(APIError) as exc:
         svc._verify_signature(_hmac_binding(), headers, body)
+    assert exc.value.status_code == 401
+
+
+# ── the generic_json channel accepts the same signed requests ────────────────
+
+
+def _channel_binding(*, signed_only: bool) -> dict:
+    return {"secret": "shared-secret", "channel_config": {"signed_requests": signed_only}}
+
+
+def test_a_signed_channel_request_is_accepted_and_binds_its_body() -> None:
+    from astrabox.providers.channel_generic import GenericJsonChannelProvider
+
+    provider = GenericJsonChannelProvider()
+    body = b'{"text":"review requested","conversation_id":"lane-1","message_id":"m-1"}'
+    headers = _signed_headers("shared-secret", body)
+    inbound = provider.verify_and_resolve(
+        headers=headers, raw_body=body, binding=_channel_binding(signed_only=True)
+    )
+    assert (inbound.content, inbound.conversation_key, inbound.dedup_key) == (
+        "review requested", "lane-1", "m-1",
+    )
+    with pytest.raises(APIError) as exc:
+        provider.verify_and_resolve(
+            headers=headers,
+            raw_body=b'{"text":"delete everything"}',
+            binding=_channel_binding(signed_only=True),
+        )
+    assert exc.value.status_code == 401
+
+
+def test_a_channel_that_requires_signed_requests_refuses_the_bare_secret() -> None:
+    from astrabox.providers.channel_generic import GenericJsonChannelProvider
+
+    provider = GenericJsonChannelProvider()
+    body = b'{"text":"hi"}'
+    bearer = {"x-channel-secret": "shared-secret"}
+    assert provider.verify_and_resolve(
+        headers=bearer, raw_body=body, binding=_channel_binding(signed_only=False)
+    ).content == "hi"
+    with pytest.raises(APIError) as exc:
+        provider.verify_and_resolve(
+            headers=bearer, raw_body=body, binding=_channel_binding(signed_only=True)
+        )
     assert exc.value.status_code == 401

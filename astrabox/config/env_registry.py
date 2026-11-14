@@ -1552,11 +1552,12 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ASTRABOX_WEBHOOK_HMAC_WINDOW_SECONDS",
         "public",
         "300",
-        "Freshness window (seconds) for the hmac webhook scene: a request whose "
+        "Freshness window (seconds) for signed webhook requests (the hmac scene and "
+        "signed generic_json channel requests): a request whose "
         "X-WEBHOOK-TIMESTAMP is outside +/- this is rejected 401, so a captured "
         "(timestamp, signature, body) triple expires. The signature binds the "
         "body, so it also cannot be replayed with a different body.",
-        "astrabox.core.service.orchestrator.deployment_service",
+        "astrabox.common.utils.webhook_signature",
     ),
     (
         "ASTRABOX_CHANNEL_CLAIM_STALE_SECONDS",
