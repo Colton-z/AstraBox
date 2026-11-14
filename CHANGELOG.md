@@ -23,6 +23,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Changed
 
+- Codex and DeepSeek Harness conversations start in `danger-full-access` when no permission mode is selected, as Claude Code conversations already start in `bypassPermissions`. They used to start in `workspace-write`, where the program's own sandbox inside the AstraBox sandbox asked for approval to reach the network or a container engine. Select a narrower mode per conversation to keep approvals.
 - The sandbox egress sidecar is the release's own `egress` image (OpenSandbox egress v1.1.7 plus an addon). With protected credentials on, it decrypts HTTPS only to hosts a credential is bound to; every other connection keeps its own certificate. A deployment built from a checkout needs `make build-egress-image`.
 - Codex is told the client's name is `AstraBox` (was `astrabox`), the name a ChatGPT account is asked to authorize.
 - Update the bundled Codex to 0.169.0.

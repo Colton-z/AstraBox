@@ -628,7 +628,9 @@ class CodexEngineAdapter(EngineAdapter):
             # containers/sandbox-codex/Dockerfile, "container engine".
             container_engines=(SANDBOX_CONTAINER_ENGINE_DOCKER,),
             permission_modes=CODEX_SANDBOX_MODES,
-            permission_mode_defaults=(("agent_chat", "workspace-write"),),
+            # The sandbox is the isolation boundary, so a conversation starts with
+            # the program's widest mode; a person narrows it per conversation.
+            permission_mode_defaults=(("agent_chat", "danger-full-access"),),
             # Codex writes the rollout and mentions it to nobody: no protocol
             # frame carries a line of it, and `thread/resume` rebuilds a thread
             # from that file and nothing else. Declaring it is what makes the

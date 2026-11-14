@@ -17,9 +17,13 @@ box. The selector appears only when the Agent program supports changing modes.
 
 The selector lists only the modes declared by the Agent program installed in
 the Agent's RuntimeProfile. Their names and descriptions come from that program.
-The program also declares the default when no mode is selected. AstraBox does
-not parse a command to override that decision or reinterpret the program's
-approval request.
+A conversation that selects no mode starts in the program's widest one
+(`bypassPermissions` for Claude Code, `danger-full-access` for Codex and the
+DeepSeek Harness): the sandbox, with the RuntimeProfile's network policy, is
+what confines the Agent, and a narrower mode inside it mostly adds approval
+requests. Choose a narrower mode for a conversation where a person should
+approve actions. AstraBox does not parse a command to override the selected
+mode or reinterpret the program's approval request.
 Some programs also expose a separate approval setting in the Agent's
 **Advanced** section; it remains separate from the permission selector.
 

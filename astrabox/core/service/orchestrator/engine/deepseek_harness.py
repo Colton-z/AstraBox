@@ -633,7 +633,9 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
             # without changing this declaration. Removing one of these is a
             # breaking profile change because the default depends on it.
             permission_modes=DSH_PERMISSION_PRESETS,
-            permission_mode_defaults=(("agent_chat", "workspace-write"),),
+            # The sandbox is the isolation boundary, so a conversation starts with
+            # the program's widest mode; a person narrows it per conversation.
+            permission_mode_defaults=(("agent_chat", "danger-full-access"),),
             # The harness writes one append-only log per conversation and, like
             # Codex, hands none of it over its protocol — the session id it
             # minted is a handle to a file, and a box without that file answers
