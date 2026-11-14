@@ -15,6 +15,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Changed
 
+- Update the bundled Codex to 0.169.0.
 - Every account that can sign in may now use the deployment by default (`ASTRABOX_ENVIRONMENT_ENTRY_POLICY=authenticated`); the identity provider decides who that is. The Environment member list applies only when `members` is selected, for an identity provider shared with other deployments. Under the previous default, an administrator who was not on the member list could use the console, but work that runs with nobody signed in and carries only their account ID, such as their Assistant's recovery after its box was lost or their channel and schedule work, was refused and recorded only in the server log. **Upgrading opens a deployment to every account its identity provider signs in;** set `ASTRABOX_ENVIRONMENT_ENTRY_POLICY=members` before upgrading to keep admitting only the member list.
 
 ### Fixed

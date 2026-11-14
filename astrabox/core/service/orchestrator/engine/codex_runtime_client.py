@@ -729,9 +729,14 @@ class CodexRuntimeClient:
             # not: `model_providers` is configuration the app-server process
             # holds, and a resume on a NEW box reaches a server that was never
             # told where the model is ("Model provider `astrabox` not found").
-            # The model is not re-sent: it is thread state, and overriding it
-            # on every rejoin would move a conversation to another model.
+            # Nor does its model: a resume on a new box comes back on the
+            # server's default model, which the gateway does not route. The
+            # Agent's model is therefore sent too;
+            # a server that still holds the thread loaded for another client
+            # ignores resume overrides and keeps the thread as it is.
             params: dict[str, Any] = {"threadId": resume_thread_id, "excludeTurns": True}
+            if self._model:
+                params["model"] = self._model
             if self._thread_config:
                 params["config"] = dict(self._thread_config)
             answered = await self._link.call("thread/resume", params)
