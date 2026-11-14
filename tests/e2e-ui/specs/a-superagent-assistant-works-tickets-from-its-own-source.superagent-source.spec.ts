@@ -23,6 +23,11 @@
  * Profile package.json, configures it once it appears, and it answers before
  * and after the box is lost, on a box that installs it again.
  *
+ * The outcome case: the Agent declines one item, which its A2A task reports as
+ * rejected; that Ticket ends dropped with the Agent's reason and the person is
+ * told it. It does another item, whose report reaches the Ticket's result ahead
+ * of its reply, and the person's answer.
+ *
  * Needs ASTRABOX_E2E_SUPERAGENT_SOURCE_RUNTIME_PROFILE (a dsh_superagent
  * RuntimeProfile on that image), ASTRABOX_E2E_SUPERAGENT_RUNTIME_PROFILE (one
  * on the plain image), ..._WORKER_RUNTIME_PROFILE (the working Agent's),
@@ -37,7 +42,7 @@ import { expect, test, type Page } from '@playwright/test';
 
 import { AstraApi } from '../fixtures/astraApi';
 import { PlatformApi } from '../fixtures/platformApi';
-import { sessionInputRows } from '../fixtures/dbOracle';
+import { postgresRows, sessionInputRows, sqlLiteral } from '../fixtures/dbOracle';
 import { onPassOnly } from '../fixtures/sessionCleanup';
 import { a2aConversations, loseTheBoxAndRecover, openOnPanel, panelApi, type Ticket } from '../fixtures/superagentPanel';
 
@@ -103,6 +108,30 @@ async function fileAndAwaitAnswer(work: Work, marker: string, timeout: number): 
   expect(told.map((conversation) => conversation.user_id), `one conversation of the owner's Agent works ${marker}`)
     .toEqual([work.owner]);
   return item.id;
+}
+
+/** A text whose SHA-256 hex digest begins with a digit, or with a letter. */
+function digestStarting(base: string, withDigit: boolean): { text: string; digest: string } {
+  for (let index = 0; ; index += 1) {
+    const text = `${base}-${index}`;
+    const digest = createHash('sha256').update(text).digest('hex');
+    if (/^[0-9]/.test(digest) === withDigit) return { text, digest };
+  }
+}
+
+/** The outcomes the Agent reported with report_outcome in the conversations A2A started, oldest first. */
+function outcomeReports(agentId: string): Array<{ state: string; message: string }> {
+  return postgresRows<{ data: { state: string; message: string } }>(
+    'SELECT c.data FROM tool_cards c JOIN sessions s ON s.session_id = c.session_id '
+      + `WHERE s.agent_id = ${sqlLiteral(agentId)} AND s.source_type = 'a2a' AND c.kind = 'a2a_task_outcome' ORDER BY c.created_at`,
+  ).map((row) => row.data);
+}
+
+/** Wait for the agent's comment on an item that names `text`. */
+async function answered(item: string, text: string, timeout: number): Promise<void> {
+  await expect.poll(async () => (await service<Comment[]>('GET', `/admin/items/${item}/comments`))
+    .some((comment) => comment.author === 'agent' && comment.text.toLowerCase().includes(text)),
+  { message: `the agent's comment on item ${item} names ${text}`, timeout, intervals: [10_000] }).toBe(true);
 }
 
 /** The Ticket that follows the item, open or ended (the panel lists them apart). */
@@ -276,4 +305,42 @@ test('an owner adds the Source to a dsh-superagent Assistant as a plugin Bundle'
   await loseTheBoxAndRecover(api, assistantId);
   await context.newPage();
   await fileAndAwaitAnswer(work, `${marker}-b`, 15 * 60_000);
+});
+
+test('a person hears why the Agent declined an item, and the Agent\'s report reaches a done item\'s answer', async ({ page, request }) => {
+  test.setTimeout(45 * 60_000);
+  const api = new AstraApi(request);
+  const platform = new PlatformApi(request);
+  const marker = `todo-outcome-${Date.now().toString(36)}`;
+  const token = randomUUID();
+  child = await startService(token);
+  const { assistantId, work } = await createAssistant(api, profile, marker);
+  await configureSource(page, assistantId, 60_000);
+  await assignVault(api, platform, assistantId, `__e2e_${marker}`, token);
+
+  // Whether the work is done turns on a digest only a command finds, so the Agent alone decides it, and the person's
+  // reply names a value no acknowledgement can.
+  const declined = digestStarting(`${marker}-no`, true);
+  const done = digestStarting(`${marker}-yes`, false);
+  const ask = (text: string) => `@agent please have the ${work.agentName} agent compute, with a command, the SHA-256 of the exact `
+    + `text "${text}" (no trailing newline). If the hex digest begins with a digit, the agent must not do anything more: it declines `
+    + 'this request, with the digest as its reason. Otherwise it writes the digest to digest.txt in its workspace and reports the '
+    + 'request done, with the digest in its report. Either way, reply on this item with the digest and whether the work was done.';
+  const no = await service<{ id: string }>('POST', '/admin/items', { title: `Outcome ${declined.text}`, author: REQUESTER, text: ask(declined.text) });
+  const yes = await service<{ id: string }>('POST', '/admin/items', { title: `Outcome ${done.text}`, author: REQUESTER, text: ask(done.text) });
+
+  await answered(no.id, declined.digest, 25 * 60_000);
+  const rejected = outcomeReports(work.agentId).find((report) => report.message.toLowerCase().includes(declined.digest));
+  expect(rejected?.state, 'the Agent reports the declined task as rejected').toEqual('TASK_STATE_REJECTED');
+  const closed = await ticketFollowing(page, assistantId, no.id);
+  expect(closed?.ended?.outcome, 'the declined item\'s Ticket ends dropped, not done').toEqual('dropped');
+  expect((closed?.summary ?? '').startsWith('The agent declined this request.'), 'its report says the Agent declined it').toBe(true);
+  expect((closed?.summary ?? '').toLowerCase(), 'its report carries the Agent\'s reason').toContain(declined.digest);
+
+  await answered(yes.id, done.digest, 20 * 60_000);
+  const completed = outcomeReports(work.agentId).find((report) => report.message.toLowerCase().includes(done.digest));
+  expect(completed?.state, 'the Agent reports the done task as completed').toEqual('TASK_STATE_COMPLETED');
+  const finished = await ticketFollowing(page, assistantId, yes.id);
+  expect(finished?.ended?.outcome, 'the done item\'s Ticket completes').toEqual('completed');
+  expect((finished?.summary ?? '').startsWith(completed!.message), 'the Agent\'s report leads the Ticket\'s result').toBe(true);
 });

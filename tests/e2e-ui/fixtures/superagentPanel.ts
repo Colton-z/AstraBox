@@ -6,7 +6,11 @@ import { postgresRows, sqlLiteral } from './dbOracle';
 import { appPath } from './env';
 import { killSandbox, requireSandboxHandle, waitForSandboxStopped } from './sandboxOps';
 
-export type Ticket = { id: string; title: string; directory?: string; threads: Array<{ url?: string }> };
+export type Ticket = {
+  id: string; title: string; directory?: string; threads: Array<{ url?: string }>;
+  /** How it ended, once it has; and the summary of its latest Report. */
+  ended?: { outcome: string }; summary?: string;
+};
 
 /** The conversations of `agentId` that A2A started, oldest first: how an Assistant's Tickets reach its owner's Agents. */
 export function a2aConversations(agentId: string): Array<{ session_id: string; user_id: string }> {
