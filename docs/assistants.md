@@ -248,14 +248,36 @@ it; the request's follow-ups, such as new comments on the issue, go to the
 same conversation. The Agent works in its own sandbox with its own program and
 model, and the prepare command above runs in its workspace, so the panel's
 execution settings leave out the bundle's own worker model, execution
-directory and blocked commands. When the Agent's work on a message completes,
-its reply is the Ticket's result, which the Assistant answers the request with
-on its thread; a pull request the reply names from the Ticket's branch becomes
-the Ticket's to follow. A question the Agent asks, or an approval it waits
-for, shows on the Ticket and is answered in the Agent's conversation. Stopping
-a Ticket cancels its conversation's work ([cancellation](a2a.md)). The Agents
-the Assistant can choose are the ones its owner can use when its runtime
-starts; an Agent added later is offered after the next start.
+directory and blocked commands. The Agent reports each message's outcome with
+its `report_outcome` tool ([Task outcomes](a2a.md#task-outcomes)):
+
+- **Done.** Its report, the branch and last commit it pushed, and its reply
+  make the Ticket's result, which the Assistant answers the request with on
+  its thread; a pull request it names from the Ticket's branch becomes the
+  Ticket's to follow. A reply without a report counts as done.
+- **Declined.** The Ticket ends dropped with the Agent's reason, and the
+  Assistant tells the person why.
+- **Handed back.** The Agent says the request is for another Agent or must be
+  split. A later message on the Ticket's thread goes back to the bundle's main
+  Session with the Agent's reason, which routes it again, and the Ticket keeps
+  its work. The Ticket's own request cannot be routed again: the bundle starts
+  only one Ticket from a message, so that Ticket ends dropped like a declined
+  one, saying it was handed back, and the person asks again.
+
+A question the Agent asks, or an approval it waits for, shows on the Ticket and
+is answered in the Agent's conversation. Stopping a Ticket cancels its
+conversation's work ([cancellation](a2a.md)). The Agents the Assistant can
+choose are the ones its owner can use when its runtime starts; an Agent added
+later is offered after the next start.
+
+The Agent commits and pushes the Ticket's branch after each meaningful step,
+not only at the end, so its work outlives the Agent's workspace: an Agent that
+starts on a Ticket in a workspace without the work, such as on a new sandbox
+without a workspace volume, looks for the Ticket's branch on the remote and
+continues from it. When the bundle's main Session tells a Ticket's Agent a
+fact from other Tickets, naming them, the message refers to those Tickets'
+latest tasks (`referenceTaskIds`), and the Agent is given what each of them
+last reported.
 
 Give the Agents that do code work access to GitHub as the bot. The bundle
 follows only pull requests the bot opened from a Ticket's branch, so an Agent

@@ -1,12 +1,12 @@
 diff --git a/docs/007-architecture.md b/docs/007-architecture.md
-index 184ea54..f048487 100644
+index 184ea54..05be654 100644
 --- a/docs/007-architecture.md
 +++ b/docs/007-architecture.md
 @@ -353,12 +353,15 @@ Some generic modules still refer directly to GitHub or Feishu:
  | `src/app/views/overview.ts` | The overview: Tickets that need a person, problems, the last day's flow and the Executor's load |
  | `src/executor/dsh.ts` | The DshExecutor, `WorkerSlots`, `ticketExecution`, `inputMessage` and `mandateInstructions` |
  | `src/executor/background.ts` | A worker's background work in DeepSeek Harness, the shell jobs its Session owns (`ctx.jobs`) and its subagents (`ctx.subagents`): `runningJobs`, `untilQuiet`, `killJobs`, `collectJobs`, `stopSubagents`, `stopBackground`, `until`, and `cancelled`, the workers whose turn a stop of their subagents cancelled |
-+| `src/executor/a2a.ts` | The A2A executor, used when the deployment lists agents (`DSH_SUPERAGENT_A2A_AGENTS_FILE`): each Ticket as a conversation of the agent the main Session chose over A2A 1.0, `assignmentMessage`, and its tasks followed to the Ticket's Report |
++| `src/executor/a2a.ts` | The A2A executor, used when the deployment lists agents (`DSH_SUPERAGENT_A2A_AGENTS_FILE`): each Ticket as a conversation of the agent the main Session chose over A2A 1.0, `assignmentMessage`, and its tasks followed to the Ticket's Report: a rejected task drops the Ticket, or hands a follow-up back, as the host's task outcome extension (`TASK_OUTCOME_EXTENSION`) says; a note naming related tickets refers to their latest tasks |
  | `src/infra/commands.ts` | `Commands`, the CLI transport: `run`; `api` and `pages`, limited to the configured repository and validated; `lark` as the bot; `git`. `CliError` carries the code a command's output reports, such as a GitHub HTTP status, and a command that prints nothing fails with how it ended, never with its arguments; `validItems` skips and counts the malformed items of a list |
  | `src/infra/environment.ts` | The agent's process environment: command shims, the git configuration and credential helper, `runAsWorker`, and the checks of the environment and of a Ticket's directory |
 +| `src/github-account.ts` | The deployment's GitHub account, for code that runs only when the GitHub Source has one: `githubOf` and `hasGithub` |
@@ -597,7 +597,7 @@ index b1a6099..7eab6e6 100644
        }).strict(),
        execute: async (args, signal) => {
 diff --git a/src/app/tools/main.ts b/src/app/tools/main.ts
-index d499004..47f6144 100644
+index d499004..63cd916 100644
 --- a/src/app/tools/main.ts
 +++ b/src/app/tools/main.ts
 @@ -52,6 +52,8 @@ const RouteItemSchema = z.object({
@@ -626,6 +626,28 @@ index d499004..47f6144 100644
        // A Decision that created no ticket is the item's refusal; one that existed before keeps what it was accepted with.
        if (decision.kind !== 'accept' || !decision.ticketId) return { refused: `Ticket was not created: ${reasonText(decision.reason)}` }
        if (decision.id === before) {
+@@ -179,9 +182,11 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
+       schema: z.object({
+         ticket_id: z.string(),
+         text: z.string().trim().min(1).refine(text => wordCount(text) <= IM_WORDS, `At most ${IM_WORDS} words`),
++        related_ticket_ids: z.array(z.string()).max(10).optional().describe('The tickets the fact comes from; where tickets go to '
++          + 'agents, the worker\'s agent also receives what their agents last reported.'),
+       }).strict(),
+       execute: async args => {
+-        host.engine.note(args.ticket_id, args.text)
++        host.engine.note(args.ticket_id, args.text, args.related_ticket_ids)
+         return routed(host, { reason: 'Noted for the worker', ticketId: args.ticket_id })
+       },
+     }),
+@@ -222,7 +227,7 @@ export function mainTools(host: MainToolsHost, agent: Agent): Tool[] {
+     }),
+     tool({
+       name: 'orchestrator_reply',
+-      description: `Send an answer to a human question, a ready result, or attention requiring human action, as the replies section says; the gate refuses anything else, such as progress. purpose=result needs a ticket in person/review after a ready report, a completed or merged one, or a dropped one whose matched rule asks for a closing message. IM limit: ${IM_WORDS} words.`,
++      description: `Send an answer to a human question, a ready result, or attention requiring human action, as the replies section says; the gate refuses anything else, such as progress. purpose=result needs a ticket in person/review after a ready report, a completed or merged one, or a dropped one whose matched rule asks for a closing message or whose agent declined a person's request, who is told why. IM limit: ${IM_WORDS} words.`,
+       schema: z.object({
+         trigger_id: z.string().optional().describe('The original human question, for an answer only.'),
+         ticket_id: z.string().optional(),
 diff --git a/src/app/views/records.ts b/src/app/views/records.ts
 index 74dab2e..09cd545 100644
 --- a/src/app/views/records.ts
@@ -918,6 +940,21 @@ index 9ddb0f5..75c5c1f 100644
  export function ExternalLink({ href, children, icon = 'external' }: { href: string; children: ReactNode; icon?: IconName }) {
    return <a className="dt-inline-link dt-icon-link" href={href} {...external}><Icon name={icon} size={13} />{children}</a>
  }
+diff --git a/src/core/engine.ts b/src/core/engine.ts
+index c2198ad..fd276b2 100644
+--- a/src/core/engine.ts
++++ b/src/core/engine.ts
+@@ -218,7 +218,9 @@ export class Engine {
+    * A fact the main Session gives an open ticket's Executor: see `Tickets.note`.
+    * @throws UserError when the ticket is unknown or has ended.
+    */
+-  note(ticketId: string, text: string): Ticket { return this.repo.atomic(() => this.tickets.note(ticketId, text)) }
++  note(ticketId: string, text: string, related?: readonly string[]): Ticket {
++    return this.repo.atomic(() => this.tickets.note(ticketId, text, related))
++  }
+   /**
+    * An Executor's hand-back of a message that reached its ticket but asks for more than it: see `Evals.handback`.
+    * @returns whether it was queued for Eval: false while another ticket still decides it, and for one this ticket did not decide (see `Evals.handback`).
 diff --git a/src/core/errors.ts b/src/core/errors.ts
 index 9c7096a..2781a05 100644
 --- a/src/core/errors.ts
@@ -932,10 +969,24 @@ index 9c7096a..2781a05 100644
  export type UserErrorCode = keyof typeof USER_ERRORS
  
 diff --git a/src/core/model.ts b/src/core/model.ts
-index 5778312..fa65dd3 100644
+index 5778312..ff9ca30 100644
 --- a/src/core/model.ts
 +++ b/src/core/model.ts
-@@ -312,7 +312,8 @@ export interface Ticket {
+@@ -253,8 +253,11 @@ export type TicketInput =
+   /** A human's message on one of its Threads resumed the ended ticket under its unchanged Mandate. */
+   | { id: string; kind: 'resumed'; triggerId: string; at: string }
+   | { id: string; kind: 'text'; text: string; at: string }
+-  /** A fact the main Session gave the ticket from other work: context, which asks for nothing and grants nothing. */
+-  | { id: string; kind: 'note'; text: string; at: string }
++  /**
++   * A fact the main Session gave the ticket from other work: context, which asks for nothing and grants nothing; `tickets`
++   * are the tickets the fact comes from, when it names them.
++   */
++  | { id: string; kind: 'note'; text: string; at: string; tickets?: string[] }
+ 
+ /**
+  * How a Policy change bears on a ticket: the rules it was accepted under that changed, with their instruction now, or no
+@@ -312,7 +315,8 @@ export interface Ticket {
   * Thread closed; the ticket then ends unless its work has not finished (see `Tickets.unfinished`).
   */
  export interface Follow { thread: string; own: boolean; closed?: { at: string; outcome: 'merged' | 'closed' } }
@@ -974,6 +1025,32 @@ index 08c7a1c..dabd4eb 100644
  export interface Executor {
    /** Queue a pending assignment for launch; reports back through `Engine.assignmentStarted` or a `failed` report. */
    start(ticket: Ticket, assignment: Assignment): void
+diff --git a/src/core/tickets.ts b/src/core/tickets.ts
+index 21376e1..3446d1c 100644
+--- a/src/core/tickets.ts
++++ b/src/core/tickets.ts
+@@ -389,14 +389,17 @@ export class Tickets extends EnginePart {
+     this.emit('assignment.ended', { ticketId: ticket.id, assignmentId: assignment.id, reason })
+   }
+   /**
+-   * Give an open ticket's Executor a fact as a note Input, such as what another ticket found; it grants nothing (see `TicketInput`).
+-   * @throws UserError when the ticket is unknown or has ended.
++   * Give an open ticket's Executor a fact as a note Input, such as what another ticket found, from the `related` tickets it
++   * names; it grants nothing (see `TicketInput`).
++   * @throws UserError when the ticket or a related ticket is unknown, or the ticket has ended.
+    */
+-  note(ticketId: string, text: string): Ticket {
++  note(ticketId: string, text: string, related: readonly string[] = []): Ticket {
+     const ticket = this.require(ticketId)
+     if (!liveTicket(ticket)) throw new UserError('ticketEnded')
++    const tickets = [...new Set(related)].filter(id => id !== ticketId)
++    for (const id of tickets) this.require(id)
+     const at = this.now()
+-    this.addInput(ticket, { id: key('input', ticketId, 'note', at, text), kind: 'note', text, at })
++    this.addInput(ticket, { id: key('input', ticketId, 'note', at, text), kind: 'note', text, at, ...tickets.length ? { tickets } : {} })
+     return this.require(ticketId)
+   }
+   /**
 diff --git a/src/deployment.ts b/src/deployment.ts
 index 76340cb..ac21c90 100644
 --- a/src/deployment.ts
@@ -1010,10 +1087,10 @@ index 76340cb..ac21c90 100644
    let cli: string
 diff --git a/src/executor/a2a.ts b/src/executor/a2a.ts
 new file mode 100644
-index 0000000..566766b
+index 0000000..cf3d1d4
 --- /dev/null
 +++ b/src/executor/a2a.ts
-@@ -0,0 +1,392 @@
+@@ -0,0 +1,445 @@
 +/**
 + * A2A executor: works each Ticket as a conversation of an agent reached over the A2A 1.0 protocol, the one the main Session
 + * chose when it accepted the Ticket, instead of a DSH worker Session in this process.
@@ -1023,13 +1100,20 @@ index 0000000..566766b
 + * agent; each message's id is its Assignment's id, or the Assignment's and the Input's, so a delivery repeated after a
 + * restart is the same A2A task. The tasks are kept in KV and followed until they end, also after a restart.
 + *
-+ * What the agent did becomes the Ticket's Report when its task ends: a completed task is `ready`, its reply the result
-+ * the main Session delivers, and a pull request its results name that this Ticket can claim is claimed; a task that asks a
-+ * person (`input-required`, `auth-required`) asks it as the Ticket's question; a failed one is `failed`. The main Session
-+ * hears each Report as it hears a worker's.
++ * What the agent did becomes the Ticket's Report when its task ends: a completed task is `ready`, its status message (the
++ * agent's own account of what it did), the code it pushed and its reply the result the main Session delivers, and a pull
++ * request its results name that this Ticket can claim is claimed; a rejected task is `dropped` with the agent's reason,
++ * unless the agent handed back a follow-up, which goes back to Eval as a worker's hand-back does (`Engine.handback`); a
++ * task that asks a person (`input-required`, `auth-required`) asks it as the Ticket's question; a failed one is `failed`.
++ * The main Session hears each Report as it hears a worker's.
++ *
++ * Every request activates the host's task outcome extension (`TASK_OUTCOME_EXTENSION`), through which it says what core A2A
++ * has no element for: that a rejected task was handed back, and the repository, branch, commit and pull request of the work.
++ * A note of the main Session that names related tickets goes out with their latest tasks as `referenceTaskIds`.
 + */
 +import { readFile } from 'node:fs/promises'
-+import { ClientFactory, ClientFactoryOptions, DefaultAgentCardResolver, JsonRpcTransportFactory, type Client } from '@a2a-js/sdk/client'
++import { ClientFactory, ClientFactoryOptions, DefaultAgentCardResolver, JsonRpcTransportFactory, ServiceParameters, withA2AExtensions,
++  type Client } from '@a2a-js/sdk/client'
 +import { Role, TaskState, type Message, type Task } from '@a2a-js/sdk'
 +import { UserError, latestAssignment, liveTicket, runningAssignment, type AssessmentOutcome, type Assignment, type ConversationLink,
 +  type EngineForExecutor, type Execution, type Executor, type Ticket, type Trigger } from '../core/index.ts'
@@ -1056,7 +1140,7 @@ index 0000000..566766b
 +
 +export interface A2AExecutorHost {
 +  readonly engine: Pick<EngineForExecutor, 'assignmentStarted' | 'inputsDelivered' | 'inputsRead' | 'turnEnded' | 'deliveryFailed' | 'report'
-+    | 'assignmentInterrupted'>
++    | 'assignmentInterrupted' | 'handback'>
 +  readonly store: Pick<Store, 'tickets' | 'triggers' | 'settings' | 'atomic' | 'afterCommit' | 'get' | 'set'>
 +  readonly effects: Pick<Effects, 'enqueue' | 'handle'>
 +  /** The `worker` health entry: whether the agents can be reached. */
@@ -1076,6 +1160,16 @@ index 0000000..566766b
 +  instructions(): string
 +}
 +
++/**
++ * The A2A extension of AstraBox, the agents' host, for what core A2A has no element for (AstraBox's docs/a2a.md, "Task outcome
++ * extension"): `handback` on a rejected task's status message, and the work's code references on its result artifact.
++ */
++export const TASK_OUTCOME_EXTENSION = 'https://www.astrabox.ai/docs/a2a#task-outcome-v1'
++/** The request options that activate the task outcome extension, as the SDK sends them (the `A2A-Extensions` header). */
++const activated = () => ({ serviceParameters: ServiceParameters.create(withA2AExtensions(TASK_OUTCOME_EXTENSION)) })
++/** The extension's data on a message or artifact that names it, else undefined. */
++const extensionData = (object: { extensions: string[]; metadata: { [key: string]: unknown } | undefined } | undefined) =>
++  object?.extensions.includes(TASK_OUTCOME_EXTENSION) ? object.metadata?.[TASK_OUTCOME_EXTENSION] as Record<string, unknown> | undefined : undefined
 +const terminal = (state: TaskState) => state === TaskState.TASK_STATE_COMPLETED || state === TaskState.TASK_STATE_FAILED
 +  || state === TaskState.TASK_STATE_CANCELED || state === TaskState.TASK_STATE_REJECTED
 +const asking = (state: TaskState) => state === TaskState.TASK_STATE_INPUT_REQUIRED || state === TaskState.TASK_STATE_AUTH_REQUIRED
@@ -1084,11 +1178,25 @@ index 0000000..566766b
 +  const parts = [...task.status?.message?.parts ?? [], ...task.artifacts.flatMap(artifact => artifact.parts)]
 +  return parts.flatMap(part => part.content?.$case === 'text' ? [part.content.value] : []).join('\n\n').trim()
 +}
++const texts = (parts: Task['artifacts'][number]['parts']) => parts.flatMap(part => part.content?.$case === 'text' ? [part.content.value] : [])
++/** The text of a task's status message: in a task that ended, why it ended as it did, in the agent's words. */
++const statusText = (task: Task): string => texts(task.status?.message?.parts ?? []).join('\n\n').trim()
++/** Whether the agent handed a rejected task back for routing elsewhere. */
++const handedBack = (task: Task): boolean => extensionData(task.status?.message)?.handback === true
++/** The code the agent's work left, as its result artifact names it. */
++function pushed(task: Task): string {
++  const named = task.artifacts.map(extensionData).find(Boolean) ?? {}
++  const fields = ['repository', 'branch', 'commit', 'pull_request'].flatMap(name => typeof named[name] === 'string' ? [`${name} ${named[name]}`] : [])
++  return fields.length ? `Pushed: ${fields.join(', ')}` : ''
++}
++/** A finished task as the Ticket's Report summary: the agent's account first, then the code, then its reply. */
++const resultSummary = (task: Task): string => [statusText(task), pushed(task), ...task.artifacts.flatMap(artifact => texts(artifact.parts))]
++  .filter(Boolean).join('\n\n').trim()
 +/** Everything a task carries, as text, where a pull request it opened is named. */
 +const taskEvidence = (task: Task): string => JSON.stringify([task.status?.message, task.artifacts])
-+const message = (contextId: string, messageId: string, text: string): Message => ({ messageId, contextId, taskId: '', role: Role.ROLE_USER,
-+  parts: [{ content: { $case: 'text', value: text }, metadata: undefined, filename: '', mediaType: 'text/plain' }],
-+  metadata: undefined, extensions: [], referenceTaskIds: [] })
++const message = (contextId: string, messageId: string, text: string, referenceTaskIds: string[]): Message => ({ messageId, contextId,
++  taskId: '', role: Role.ROLE_USER, parts: [{ content: { $case: 'text', value: text }, metadata: undefined, filename: '', mediaType: 'text/plain' }],
++  metadata: undefined, extensions: [], referenceTaskIds })
 +
 +/** The first message of a Ticket's conversation: what is asked, by whom and where, and how the work is delivered. */
 +export function assignmentMessage(ticket: Ticket, request: object | undefined, batch: object[], environment: Variable[],
@@ -1106,9 +1214,12 @@ index 0000000..566766b
 +  ] : []
 +  const github = repository ? [
 +    `The work is in the GitHub repository ${repository}. ${prepare.trim() ? 'Make' : 'Clone it into your workspace and make'} the change `
-+      + `on a branch whose last path segment is exactly \`${name}\`, such as \`agent/${name}\`.`,
-+    `Commit as ${value('DSH_SUPERAGENT_GITHUB_ACCOUNT')} <${value('DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL')}>, push the branch, and open a pull `
-+      + 'request from it with the GitHub CLI. That pull request is how this request is followed; name its URL in your reply.',
++      + `on a branch whose last path segment is exactly \`${name}\`, such as \`agent/${name}\`. This request may have been worked `
++      + 'before, in a workspace you do not have: unless your workspace already has its branch, look for one on the remote first '
++      + `(\`git ls-remote --heads origin ${name}\`) and continue from it; start a new branch only when there is none.`,
++    `Commit as ${value('DSH_SUPERAGENT_GITHUB_ACCOUNT')} <${value('DSH_SUPERAGENT_GITHUB_COMMIT_EMAIL')}>, and push the branch after each `
++      + 'meaningful step, not only at the end, so the work outlives your workspace. Open a pull request from it with the GitHub CLI; that '
++      + 'pull request is how this request is followed; name its URL in your reply.',
 +  ] : []
 +  return [
 +    `You are working one request that dsh-superagent took on: ${ticket.title}.`,
@@ -1121,6 +1232,10 @@ index 0000000..566766b
 +    'Reply, when you are done, with what you did. If you need a person to decide or tell you something, ask in your reply and stop: '
 +      + 'their answer arrives as your next message. Later messages here are follow-ups on the same request, such as replies on its '
 +      + 'thread or CI results.',
++    'Before your final reply to this message and to each later one, report its outcome with your report_outcome tool: '
++      + 'TASK_STATE_COMPLETED with what you did, or TASK_STATE_REJECTED with why you will not do it, with handback when it is for '
++      + 'another agent or must be split, saying what should happen instead.'
++      + (repository ? ' Name the repository, the branch and the last commit you pushed, and the pull request.' : ''),
 +    ...instructions ? [instructions] : [],
 +  ].join('\n\n')
 +}
@@ -1239,12 +1354,12 @@ index 0000000..566766b
 +    const current = this.host.store.get(CONVERSATIONS(ticketId))
 +    if (current) this.host.store.set(CONVERSATIONS(ticketId), { ...current, tasks: current.tasks.map(task => task.id === taskId ? { ...task, settled: true } : task) })
 +  }
-+  /** Sends one message of a Ticket's conversation and returns its task. */
-+  private async send(ticket: Ticket, messageId: string, text: string): Promise<Task> {
++  /** Sends one message of a Ticket's conversation, which refers to the tasks `references`, and returns its task. */
++  private async send(ticket: Ticket, messageId: string, text: string, references: string[] = []): Promise<Task> {
 +    const agent = await this.agent(ticket.execution?.agent ?? '')
-+    const result = await (await this.client(agent)).sendMessage({ tenant: '', message: message(ticket.id, messageId, text),
++    const result = await (await this.client(agent)).sendMessage({ tenant: '', message: message(ticket.id, messageId, text, references),
 +      configuration: { acceptedOutputModes: [], taskPushNotificationConfig: undefined, historyLength: 0, returnImmediately: true },
-+      metadata: undefined }, { signal: this.host.lifetime })
++      metadata: undefined }, { signal: this.host.lifetime, ...activated() })
 +    if (!('status' in result)) throw new Error('The agent answered with a message instead of a task')
 +    this.host.health.set({ state: 'ready', detail: 'The agents answer', at: new Date().toISOString() })
 +    return result
@@ -1282,8 +1397,11 @@ index 0000000..566766b
 +        const trigger = input?.kind === 'trigger' ? this.host.store.triggers.get(input.triggerId) : undefined
 +        const card = trigger ? triggerMessage(trigger, await this.host.sourceLink(trigger, this.host.lifetime), input?.kind === 'trigger' ? input.note : undefined) : undefined
 +        const text = input ? inputMessage(input, card) : undefined
++        // A note from related tickets refers to the task each of them sent last.
++        const references = input?.kind === 'note'
++          ? (input.tickets ?? []).flatMap(id => this.host.store.get(CONVERSATIONS(id))?.tasks.at(-1)?.id ?? []) : []
 +        if (text !== undefined) {
-+          const task = await this.send(ticket, `${assignment.id}:${inputId}`, text)
++          const task = await this.send(ticket, `${assignment.id}:${inputId}`, text, references)
 +          this.host.store.atomic(() => {
 +            this.record(ticket.id, ticket.execution?.agent ?? '', { id: task.id, assignment: assignment.id, input: inputId })
 +            this.host.engine.inputsDelivered(ticketId, assignment.id, [inputId])
@@ -1313,10 +1431,10 @@ index 0000000..566766b
 +          const ticket = this.host.store.tickets.get(ticketId)
 +          if (!ticket) return
 +          const client = await this.client(await this.agent(ticket.execution?.agent ?? ''))
-+          let current = await client.getTask({ tenant: '', id: task.id, historyLength: 0 }, { signal })
++          let current = await client.getTask({ tenant: '', id: task.id, historyLength: 0 }, { signal, ...activated() })
 +          if (!terminal(current.status?.state ?? TaskState.TASK_STATE_UNSPECIFIED)) {
 +            this.observe(ticketId, task, current)
-+            for await (const event of client.resubscribeTask({ tenant: '', id: task.id }, { signal })) {
++            for await (const event of client.resubscribeTask({ tenant: '', id: task.id }, { signal, ...activated() })) {
 +              const payload = event.payload
 +              if (payload?.$case === 'task') current = payload.value
 +              else if (payload?.$case === 'statusUpdate') current = { ...current, status: payload.value.status }
@@ -1327,7 +1445,7 @@ index 0000000..566766b
 +              this.observe(ticketId, task, current)
 +              if (terminal(current.status?.state ?? TaskState.TASK_STATE_UNSPECIFIED)) break
 +            }
-+            current = await client.getTask({ tenant: '', id: task.id, historyLength: 0 }, { signal })
++            current = await client.getTask({ tenant: '', id: task.id, historyLength: 0 }, { signal, ...activated() })
 +          }
 +          if (terminal(current.status?.state ?? TaskState.TASK_STATE_UNSPECIFIED)) { await this.ended(ticketId, task, current); return }
 +        } catch (error) {
@@ -1361,7 +1479,7 @@ index 0000000..566766b
 +    const ticket = this.host.store.tickets.get(ticketId)
 +    const record = this.host.store.get(CONVERSATIONS(ticketId))?.tasks.find(item => item.id === task.id)
 +    const state = current.status?.state
-+    const summary = taskText(current) || 'The agent ended without a reply.'
++    const summary = resultSummary(current) || 'The agent ended without a reply.'
 +    const github = this.host.github()
 +    const repository = github?.deployment.repository
 +    const numbers = repository && state === TaskState.TASK_STATE_COMPLETED
@@ -1376,8 +1494,20 @@ index 0000000..566766b
 +        this.report(ticketId, { state: 'ready', summary })
 +        this.host.engine.turnEnded(ticketId, task.assignment)
 +      } else if (state === TaskState.TASK_STATE_FAILED) this.report(ticketId, { state: 'failed', summary })
-+      else if (state === TaskState.TASK_STATE_REJECTED) this.report(ticketId, { state: 'dropped', summary })
-+      else this.report(ticketId, { state: 'blocked', summary: `The agent's work was stopped outside this ticket. ${summary}` })
++      else if (state === TaskState.TASK_STATE_REJECTED) {
++        const reason = statusText(current) || 'The agent gave no reason.'
++        const input = task.input ? ticket.inputs.find(item => item.id === task.input) : undefined
++        if (handedBack(current) && input?.kind === 'trigger') {
++          // A follow-up the agent will not take is handed back as a worker hands one back: to a fresh assessment, with the
++          // agent's reason, while the ticket keeps its work.
++          this.host.engine.handback(ticketId, input.triggerId, reason)
++          this.host.engine.turnEnded(ticketId, task.assignment)
++        } else {
++          // The ticket's own request: a Trigger that started a ticket starts no other (Evals.decide), so it ends here.
++          const why = handedBack(current) ? 'The agent handed this request back for another agent or for splitting' : 'The agent declined this request'
++          this.report(ticketId, { state: 'dropped', summary: `${why}. ${reason}` })
++        }
++      } else this.report(ticketId, { state: 'blocked', summary: `The agent's work was stopped outside this ticket. ${summary}` })
 +    })
 +  }
 +  private report(ticketId: string, report: { state: 'progress' | 'waiting' | 'ready' | 'blocked' | 'failed' | 'dropped'; summary: string;
@@ -1407,7 +1537,7 @@ index 0000000..566766b
 +  return typeof path === 'string' && path ? path : undefined
 +}
 diff --git a/src/executor/dsh.ts b/src/executor/dsh.ts
-index 26234f3..b771261 100644
+index 26234f3..3f58527 100644
 --- a/src/executor/dsh.ts
 +++ b/src/executor/dsh.ts
 @@ -5,7 +5,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -1427,7 +1557,18 @@ index 26234f3..b771261 100644
  import type { HealthEntry } from '../infra/health.ts'
  import { cancelled, collectJob, killJobs, runningJobs, stopBackground, stopSubagents, until, untilQuiet } from './background.ts'
  
-@@ -205,6 +206,7 @@ export class WorkerSlots {
+@@ -159,7 +160,9 @@ export function inputMessage(input: TicketInput, trigger?: object): string | und
+     ...input.context ? { context: true } : {} })
+   if (input.kind === 'policy-changed') return policyMessage(input.effect)
+   if (input.kind === 'resumed') return RESUMED
+-  if (input.kind === 'note') return `Note from the orchestrator, for context only: ${input.text}`
++  if (input.kind === 'note') {
++    return `Note from the orchestrator, for context only${input.tickets?.length ? ` (from ticket ${input.tickets.join(', ')})` : ''}: ${input.text}`
++  }
+   return input.kind === 'text' ? input.text : undefined
+ }
+ /**
+@@ -205,6 +208,7 @@ export class WorkerSlots {
   * Runtime, Engine, worker tools, and management routes use this class to prepare, launch, deliver to, stop, and resume ticket assignments.
   */
  export class DshExecutor implements Executor {
@@ -1435,7 +1576,7 @@ index 26234f3..b771261 100644
    private readonly disposers: (() => void)[] = []
    private readonly slots: WorkerSlots
    /** Transient failure counts tried so far: keyed by `assignment.id` for worker turns and `launch:<assignment.id>` for launches. */
-@@ -402,6 +404,15 @@ export class DshExecutor implements Executor {
+@@ -402,6 +406,15 @@ export class DshExecutor implements Executor {
    }
    /** Number of open tickets whose worker holds a worker slot: its turn runs, or its shell jobs or subagents still run after its turn ended. */
    activeCount(): number { return this.host.store.tickets.open().filter(ticket => this.running(ticket)).length }
