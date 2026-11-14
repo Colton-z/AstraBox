@@ -2922,6 +2922,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/model-accounts/team-pool": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Model Account Team Pool */
+        get: operations["get_model_account_team_pool_api_v1_me_model_accounts_team_pool_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/model-accounts/{account_id}": {
         parameters: {
             query?: never;
@@ -5913,6 +5930,8 @@ export interface components {
             last_response?: components["schemas"]["ResponseView"] | null;
             /** Mcp Connections */
             mcp_connections: unknown[];
+            /** Model Account Id */
+            model_account_id?: string | null;
             /** Model Name */
             model_name?: string | null;
             /** Output Seq */
@@ -7163,6 +7182,14 @@ export interface components {
             /** Code */
             code: string;
             data: components["schemas"]["ModelAccountAuthorization"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[ModelAccountTeamPool] */
+        ApiEnvelope_ModelAccountTeamPool_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["ModelAccountTeamPool"];
             /** Message */
             message: string;
         };
@@ -11473,12 +11500,18 @@ export interface components {
             last_error_at: string | null;
             /** Last Error Code */
             last_error_code: string | null;
+            /** Pool Last Used At */
+            pool_last_used_at: string | null;
             /** Scopes */
             scopes: string[];
+            /** Shared */
+            shared: boolean;
             /** Status */
             status: string;
             /** Updated At */
             updated_at: string;
+            /** Usage Limited Until */
+            usage_limited_until: string | null;
             /** Vendor */
             vendor: string;
         } & {
@@ -11507,6 +11540,16 @@ export interface components {
             display_name: string;
             /** Id */
             id: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * ModelAccountTeamPool
+         * @description Whether the deployment's team pool of model accounts is on.
+         */
+        ModelAccountTeamPool: {
+            /** Enabled */
+            enabled: boolean;
         } & {
             [key: string]: unknown;
         };
@@ -12118,6 +12161,8 @@ export interface components {
             /** Last Output At */
             last_output_at?: string | null;
             last_response?: components["schemas"]["ResponseView"] | null;
+            /** Model Account Id */
+            model_account_id?: string | null;
             /** Model Name */
             model_name?: string | null;
             /** Output Seq */
@@ -12483,6 +12528,8 @@ export interface components {
             is_default?: boolean | null;
             /** Label */
             label?: string | null;
+            /** Shared */
+            shared?: boolean | null;
         };
         /** UserActionCommandView */
         UserActionCommandView: {
@@ -15019,6 +15066,13 @@ export interface operations {
                     sandbox_container_engine?: ("none" | "docker") | null;
                     sandbox_cpu?: string | null;
                     sandbox_memory?: string | null;
+                    sandbox_mounts?: {
+                        /** @default true */
+                        read_only?: boolean | null;
+                        source: string;
+                        target: string;
+                    }[] | null;
+                    sandbox_networks?: string[] | null;
                     /** @default default */
                     sandbox_permission_level?: ("default" | "advanced" | "privileged") | null;
                     /** @default conversation */
@@ -21967,6 +22021,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_ModelAccount_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_model_account_team_pool_api_v1_me_model_accounts_team_pool_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_ModelAccountTeamPool_"];
                 };
             };
             /** @description Request validation failed (INVALID_REQUEST). */

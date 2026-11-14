@@ -3594,6 +3594,17 @@
             "title": "Mcp Connections",
             "type": "array"
           },
+          "model_account_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Account Id"
+          },
           "model_name": {
             "anyOf": [
               {
@@ -7110,6 +7121,28 @@
           "data"
         ],
         "title": "ApiEnvelope[ModelAccountAuthorization]",
+        "type": "object"
+      },
+      "ApiEnvelope_ModelAccountTeamPool_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ModelAccountTeamPool"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[ModelAccountTeamPool]",
         "type": "object"
       },
       "ApiEnvelope_ModelAccount_": {
@@ -17667,12 +17700,27 @@
             ],
             "title": "Last Error Code"
           },
+          "pool_last_used_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pool Last Used At"
+          },
           "scopes": {
             "items": {
               "type": "string"
             },
             "title": "Scopes",
             "type": "array"
+          },
+          "shared": {
+            "title": "Shared",
+            "type": "boolean"
           },
           "status": {
             "title": "Status",
@@ -17681,6 +17729,17 @@
           "updated_at": {
             "title": "Updated At",
             "type": "string"
+          },
+          "usage_limited_until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Usage Limited Until"
           },
           "vendor": {
             "title": "Vendor",
@@ -17698,6 +17757,9 @@
           "access_expires_at",
           "last_error_code",
           "last_error_at",
+          "shared",
+          "usage_limited_until",
+          "pool_last_used_at",
           "created_at",
           "updated_at"
         ],
@@ -17747,6 +17809,21 @@
           "display_name"
         ],
         "title": "ModelAccountModel",
+        "type": "object"
+      },
+      "ModelAccountTeamPool": {
+        "additionalProperties": true,
+        "description": "Whether the deployment's team pool of model accounts is on.",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "ModelAccountTeamPool",
         "type": "object"
       },
       "MoveSessionFilesRequest": {
@@ -19262,6 +19339,17 @@
               }
             ]
           },
+          "model_account_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Account Id"
+          },
           "model_name": {
             "anyOf": [
               {
@@ -20209,6 +20297,17 @@
               }
             ],
             "title": "Label"
+          },
+          "shared": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shared"
           }
         },
         "title": "UpdateModelAccountRequest",
@@ -24479,6 +24578,56 @@
                               }
                             ]
                           },
+                          "sandbox_mounts": {
+                            "anyOf": [
+                              {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "read_only": {
+                                      "anyOf": [
+                                        {
+                                          "type": "boolean"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ],
+                                      "default": true
+                                    },
+                                    "source": {
+                                      "type": "string"
+                                    },
+                                    "target": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "source",
+                                    "target"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "sandbox_networks": {
+                            "anyOf": [
+                              {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "sandbox_permission_level": {
                             "anyOf": [
                               {
@@ -24961,6 +25110,56 @@
                       }
                     ]
                   },
+                  "sandbox_mounts": {
+                    "anyOf": [
+                      {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "read_only": {
+                              "anyOf": [
+                                {
+                                  "type": "boolean"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "default": true
+                            },
+                            "source": {
+                              "type": "string"
+                            },
+                            "target": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "source",
+                            "target"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "sandbox_networks": {
+                    "anyOf": [
+                      {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "sandbox_permission_level": {
                     "anyOf": [
                       {
@@ -25340,6 +25539,56 @@
                           "anyOf": [
                             {
                               "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "sandbox_mounts": {
+                          "anyOf": [
+                            {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "read_only": {
+                                    "anyOf": [
+                                      {
+                                        "type": "boolean"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "default": true
+                                  },
+                                  "source": {
+                                    "type": "string"
+                                  },
+                                  "target": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "source",
+                                  "target"
+                                ],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "sandbox_networks": {
+                          "anyOf": [
+                            {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
                             },
                             {
                               "type": "null"
@@ -38755,6 +39004,56 @@
           "Model Accounts"
         ],
         "x-required-api-scope": "astrabox:write"
+      }
+    },
+    "/api/v1/me/model-accounts/team-pool": {
+      "get": {
+        "operationId": "get_model_account_team_pool_api_v1_me_model_accounts_team_pool_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_ModelAccountTeamPool_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Get Model Account Team Pool",
+        "tags": [
+          "Model Accounts"
+        ],
+        "x-required-api-scope": "astrabox:read"
       }
     },
     "/api/v1/me/model-accounts/{account_id}": {
