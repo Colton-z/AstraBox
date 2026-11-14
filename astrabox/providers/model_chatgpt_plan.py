@@ -53,7 +53,10 @@ class ChatGPTPlanModelEndpointProvider(ModelEndpointProvider):
         )
 
     async def _token(self, context: ModelRequestContext, *, keep: bool) -> Any:
-        from astrabox.core.service.model_accounts.service import get_model_account_service
+        from astrabox.core.service.model_accounts.service import (
+            VENDOR_CHATGPT_PLAN,
+            get_model_account_service,
+        )
 
         user_id = str(context.user_id or "").strip()
         if not user_id:
@@ -67,6 +70,7 @@ class ChatGPTPlanModelEndpointProvider(ModelEndpointProvider):
             )
         return await get_model_account_service().conversation_token(
             user_id=user_id,
+            vendor=VENDOR_CHATGPT_PLAN,
             account_id=str(context.account_id or "").strip() or None,
             session_id=str(context.conversation_id or "").strip() or None,
             keep=keep,
@@ -80,5 +84,5 @@ class ChatGPTPlanModelEndpointProvider(ModelEndpointProvider):
     ) -> datetime | None:
         # The expiry of the token the conversation spends now, which the last
         # ensure_session_credential chose.
-        expires_at: datetime = (await self._token(context, keep=True)).expires_at
+        expires_at: datetime | None = (await self._token(context, keep=True)).expires_at
         return expires_at

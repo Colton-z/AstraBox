@@ -17,20 +17,24 @@ from astrabox.persistence.sql.types import KeyText, payload_text
 
 
 class ModelAccount(Base):
-    """One user's account at a model vendor, whose plan pays for their model requests.
+    """One user's account at a model vendor, which pays for their model requests.
 
-    The tokens live in the configured secret store under the scope
-    ``model-account/<account_id>``; this row holds the identity the vendor
+    ``vendor`` is the kind of account: ``chatgpt_plan``, a ChatGPT account
+    linked by OpenAI's sign-in, or ``anthropic_api_key``, an Anthropic API key
+    the user stored. The secrets live in the configured secret store under the
+    scope ``model-account/<account_id>``; this row holds the identity the vendor
     validated, the state, and the renewal bookkeeping.
 
-    An account is one registration at the vendor: the client id the vendor
+    A ChatGPT account is one registration at OpenAI: the client id OpenAI
     issued for it and the subject its validated ID token named. The same
-    vendor account linked twice is two registrations with two issued client
-    ids, so the unique key spans both.
+    ChatGPT account linked twice is two registrations with two issued client
+    ids, so the unique key spans both. An API key has no such identity, so
+    both columns stay ``NULL`` for it.
 
-    An owner has at most one default account; the partial unique index holds
-    that against concurrent changes. Deleting the default account leaves the
-    owner without one until they choose another.
+    An owner has at most one default account of each vendor; the partial
+    unique index holds that against concurrent changes. Deleting a default
+    account leaves the owner without one of that vendor until they choose
+    another.
 
     ``refresh_claimed_until`` is the refresh claim: a replica renewing the
     access token holds it until then, and no other replica may renew the token
@@ -38,16 +42,21 @@ class ModelAccount(Base):
 
     ``shared`` is the owner's consent to the team pool: only a shared account
     is ever spent by another member's conversation, and only while the
-    deployment's pool is on (``ASTRABOX_MODEL_ACCOUNT_POOL_ENABLED``).
+    deployment's pool is on (``ASTRABOX_MODEL_ACCOUNT_POOL_ENABLED``). The
+    model-account service shares only ChatGPT accounts.
     """
 
     __tablename__ = "model_accounts"
     __table_args__ = (
-        CheckConstraint("vendor IN ('chatgpt_plan')", name="known_vendor"),
+        CheckConstraint("vendor IN ('chatgpt_plan', 'anthropic_api_key')", name="known_vendor"),
+        CheckConstraint(
+            "vendor <> 'chatgpt_plan' OR (subject IS NOT NULL AND issued_client_id IS NOT NULL)",
+            name="chatgpt_registration",
+        ),
         CheckConstraint("status IN ('active', 'sign_in_required')", name="known_status"),
         UniqueConstraint("owner_user_id", "subject", "issued_client_id"),
         *conditional_unique(
-            "ix_model_accounts_owner_default", "owner_user_id",
+            "ix_model_accounts_owner_default", "owner_user_id", "vendor",
             predicate=text("is_default"), marker="_default_slot",
         ),
         Index(None, "owner_user_id", "created_at"),
@@ -58,13 +67,13 @@ class ModelAccount(Base):
     account_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
     org_id: Mapped[str] = mapped_column(payload_text())
     owner_user_id: Mapped[str] = mapped_column(KeyText(512))
-    vendor: Mapped[str] = mapped_column(payload_text())
+    vendor: Mapped[str] = mapped_column(KeyText(64))
     label: Mapped[str] = mapped_column(payload_text())
     #: The email the validated ID token carried; a label for people, not an identifier.
     email: Mapped[str | None] = mapped_column(payload_text())
-    #: The validated ID token's ``sub``.
-    subject: Mapped[str] = mapped_column(KeyText(512))
-    issued_client_id: Mapped[str] = mapped_column(KeyText(512))
+    #: The validated ID token's ``sub``; ``NULL`` for an API key.
+    subject: Mapped[str | None] = mapped_column(KeyText(512))
+    issued_client_id: Mapped[str | None] = mapped_column(KeyText(512))
     #: The granted scopes, space-separated as the token endpoint returned them.
     scopes: Mapped[str] = mapped_column(payload_text())
     status: Mapped[str] = mapped_column(payload_text())

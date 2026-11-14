@@ -116,7 +116,7 @@ async def test_a_limited_account_gives_way_to_the_owners_others_then_to_shared_o
     await _session("s1", "alice")
 
     async def spent() -> tuple[str, str]:
-        token = await service.conversation_token(user_id="alice", account_id=a_named, session_id="s1")
+        token = await service.conversation_token(user_id="alice", vendor="chatgpt_plan", account_id=a_named, session_id="s1")
         assert await _spends("s1") == token.account_id
         return token.account_id, token.access_token
 
@@ -162,7 +162,7 @@ async def test_a_limit_holds_an_account_for_an_hour_and_never_moves_a_running_re
     mine = await _account("alice", "mine")
     theirs = await _account("bob", "theirs", shared=True)
     await _session("s1", "alice")
-    assert (await service.conversation_token(user_id="alice", session_id="s1")).account_id == mine
+    assert (await service.conversation_token(user_id="alice", vendor="chatgpt_plan", session_id="s1")).account_id == mine
 
     reading = await service.record_usage_limit(mine)
     assert reading == {"code": "MODEL_PLAN_USAGE_LIMIT", "account_id": mine, "resets_at": None}
@@ -170,17 +170,17 @@ async def test_a_limit_holds_an_account_for_an_hour_and_never_moves_a_running_re
     held = parse_iso(view["usage_limited_until"]) - utcnow()
     assert timedelta(minutes=59) < held <= timedelta(hours=1)
 
-    kept = await service.conversation_token(user_id="alice", session_id="s1", keep=True)
+    kept = await service.conversation_token(user_id="alice", vendor="chatgpt_plan", session_id="s1", keep=True)
     assert kept.account_id == mine
-    chosen = await service.conversation_token(user_id="alice", session_id="s1")
+    chosen = await service.conversation_token(user_id="alice", vendor="chatgpt_plan", session_id="s1")
     assert (chosen.account_id, await _spends("s1")) == (theirs, theirs)
-    kept = await service.conversation_token(user_id="alice", session_id="s1", keep=True)
+    kept = await service.conversation_token(user_id="alice", vendor="chatgpt_plan", session_id="s1", keep=True)
     assert kept.account_id == theirs
 
     await _hold_until(mine, datetime.now(timezone.utc) - timedelta(seconds=1))
     [view] = await service.list_accounts(UserContext(user_id="alice"))
     assert view["usage_limited_until"] is None
-    chosen = await service.conversation_token(user_id="alice", session_id="s1")
+    chosen = await service.conversation_token(user_id="alice", vendor="chatgpt_plan", session_id="s1")
     assert (chosen.account_id, await _spends("s1")) == (mine, mine)
 
 
@@ -202,7 +202,7 @@ async def test_with_the_pool_off_nothing_switches_and_nothing_can_be_shared(
     await _session("s1", "alice")
 
     await service.record_usage_limit(mine)
-    chosen = await service.conversation_token(user_id="alice", session_id="s1")
+    chosen = await service.conversation_token(user_id="alice", vendor="chatgpt_plan", session_id="s1")
     assert (chosen.account_id, await _spends("s1")) == (mine, mine)
 
     assert await service.team_pool(alice) == {"enabled": False}
@@ -289,7 +289,7 @@ async def test_a_codex_usage_limit_failure_fails_the_response_with_the_account_t
     mine = await _account("alice", "mine")
     await _session("s1", "alice")
     await _session("s-gateway", "alice")
-    await service.conversation_token(user_id="alice", session_id="s1")
+    await service.conversation_token(user_id="alice", vendor="chatgpt_plan", session_id="s1")
 
     async def nothing(*_args: Any) -> None:
         return None

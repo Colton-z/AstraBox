@@ -1,4 +1,14 @@
-"""People's ChatGPT accounts, linked through OpenAI's "Sign in with ChatGPT".
+"""People's model accounts: ChatGPT accounts and Anthropic API keys.
+
+A model account pays for its owner's model requests on a RuntimeProfile whose
+model endpoint spends the conversation owner's account. Its ``vendor`` is the
+kind: ``chatgpt_plan`` or ``anthropic_api_key``.
+
+An Anthropic API key is stored as the user gives it: the server checks it
+against Anthropic's model list (``GET /v1/models``) before keeping it in the
+secret store under ``model-account/<account_id>``, and no view returns it.
+Anthropic's terms ask each end user of a hosted Claude Code to authenticate
+with their own key, which is what this account is.
 
 OpenAI's plan usage for open-source clients
 (https://developers.openai.com/siwc/token-sharing-open-source) lets an
@@ -21,20 +31,25 @@ ChatGPT account, and charges that user's plan. AstraBox is the application:
   of its expiry. OpenAI rotates the refresh token on every renewal and refuses
   a used one, so renewal runs under a compare-and-set claim on the account's
   row: one caller renews, the others wait for its result.
-* **Accounts.** A user may link several accounts; one is their default. Each
-  registration keeps its own issued client id; the installation is one host
-  (``ext_agent_host_id``, derived from the installation id).
+* **Accounts.** A user may keep several accounts of each vendor; one of each
+  vendor is their default. Each ChatGPT registration keeps its own issued
+  client id; the installation is one host (``ext_agent_host_id``, derived from
+  the installation id).
 * **Which account a conversation spends.**
   :meth:`ModelAccountService.conversation_token` decides it, when a
   conversation starts and before each of its responses, and records it on the
-  session. A conversation spends its owner's preferred account: the one its
-  Agent names, or the owner's default. With the team pool off that is all.
-  With it on (``ASTRABOX_MODEL_ACCOUNT_POOL_ENABLED``), an account whose plan
-  usage limit was reported (:meth:`ModelAccountService.record_usage_limit`) is
-  passed over until the hold ends, and the conversation spends the owner's
-  other accounts, then the accounts other members of the organization shared
-  with the team. The response that met the limit stays failed; nothing
-  replays it, and a response never changes accounts while it runs.
+  session. It chooses only among accounts of the vendor the conversation's
+  model endpoint spends. A conversation spends its owner's preferred account:
+  the one its Agent names, or the owner's default of that vendor. With the
+  team pool off that is all. With it on
+  (``ASTRABOX_MODEL_ACCOUNT_POOL_ENABLED``), an account whose plan usage limit
+  was reported (:meth:`ModelAccountService.record_usage_limit`) is passed over
+  until the hold ends, and the conversation spends the owner's other accounts
+  of that vendor, then the accounts of that vendor other members of the
+  organization shared with the team. Only a ChatGPT account can be shared, and
+  only a ChatGPT plan reports a usage limit, so an Anthropic API key is always
+  its owner's preferred one. The response that met the limit stays failed;
+  nothing replays it, and a response never changes accounts while it runs.
 """
 
 from __future__ import annotations
@@ -98,6 +113,39 @@ DYNAMIC_CLIENT_ID = "dynamic_agent_client"
 AGENT_NAME_HINT = "AstraBox"
 
 VENDOR_CHATGPT_PLAN = "chatgpt_plan"
+VENDOR_ANTHROPIC_API_KEY = "anthropic_api_key"
+
+#: How each vendor's accounts are named to their owner.
+_VENDOR_NOUNS = {
+    VENDOR_CHATGPT_PLAN: "ChatGPT account",
+    VENDOR_ANTHROPIC_API_KEY: "Anthropic API key",
+}
+
+#: What a conversation with no account of the vendor it needs is told.
+_NO_DEFAULT = {
+    VENDOR_CHATGPT_PLAN: (
+        "no default ChatGPT account is linked for this user; link one with "
+        "`astrabox model-account login chatgpt` or choose a default"
+    ),
+    VENDOR_ANTHROPIC_API_KEY: (
+        "no default Anthropic API key is stored for this user; add one with "
+        "`astrabox model-account add anthropic` or on the console's Model accounts "
+        "page, or choose a default"
+    ),
+}
+
+#: Anthropic's model list for an API key (https://platform.claude.com/docs/en/api/models/list).
+ANTHROPIC_MODELS_ENDPOINT = "https://api.anthropic.com/v1/models"
+#: The API version every request to Anthropic names.
+ANTHROPIC_VERSION = "2026-10-21"
+#: The most models Anthropic answers in one page.
+_ANTHROPIC_PAGE_LIMIT = 1000
+#: The most pages read for one list, a bound on a cursor that never ends.
+_ANTHROPIC_MAX_PAGES = 20
+#: Printable ASCII without spaces: what an HTTP header value can carry as the key.
+_API_KEY_SHAPE = re.compile(r"[\x21-\x7e]+")
+#: How many trailing characters of a key a default label shows, to tell keys apart.
+_KEY_HINT_CHARS = 4
 
 #: How long a started sign-in can be completed.
 AUTHORIZATION_TTL_S = 600
@@ -150,16 +198,21 @@ USAGE_LIMIT_HOLD_S = 3600
 _ACCESS_TOKEN = "access_token"
 _REFRESH_TOKEN = "refresh_token"
 _ID_TOKEN = "id_token"
+_API_KEY = "api_key"
 
 
 @dataclass(frozen=True)
 class ModelAccountToken:
-    """An account's current access token, and when it expires."""
+    """An account's current credential, and when it expires.
+
+    ``access_token`` is a ChatGPT account's access token, or an Anthropic API
+    key, which has no expiry (``expires_at`` ``None``).
+    """
 
     account_id: str
     #: ``repr=False``: a logged token object must not print the token.
     access_token: str = field(repr=False)
-    expires_at: datetime
+    expires_at: datetime | None
 
 
 @dataclass(frozen=True)
@@ -178,11 +231,19 @@ def _scope(account_id: str) -> str:
     return f"model-account/{account_id}"
 
 
-def _not_found(account_id: str) -> APIError:
+def _not_found(account_id: str, vendor: str | None = None) -> APIError:
+    """No such account of the caller's, or none of ``vendor`` when one is named."""
+    message = f"model account {account_id!r} not found"
+    if vendor:
+        message += f" among your {_VENDOR_NOUNS[vendor]}s"
+    return APIError(code="MODEL_ACCOUNT_NOT_FOUND", message=message, status_code=404)
+
+
+def _api_key_rejected(message: str) -> APIError:
     return APIError(
-        code="MODEL_ACCOUNT_NOT_FOUND",
-        message=f"model account {account_id!r} not found",
-        status_code=404,
+        code="MODEL_ACCOUNT_API_KEY_REJECTED",
+        message=f"{message}; store a key Anthropic accepts",
+        status_code=409,
     )
 
 
@@ -346,6 +407,97 @@ async def _get_with_token(url: str, access_token: str) -> httpx.Response:
             )
 
 
+async def _get_with_api_key(url: str, api_key: str, params: Mapping[str, str]) -> httpx.Response:
+    # The key rides in ``x-api-key``, the header Claude Code sends it in, so a
+    # key this request accepts is accepted from the sandbox too.
+    async with asyncio.timeout(_HTTP_TIMEOUT_S):
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(_HTTP_TIMEOUT_S, connect=10.0), follow_redirects=False
+        ) as client:
+            return await client.get(
+                url,
+                params=dict(params),
+                headers={
+                    "Accept": "application/json",
+                    "x-api-key": api_key,
+                    "anthropic-version": ANTHROPIC_VERSION,
+                },
+            )
+
+
+def _anthropic_error(response: httpx.Response) -> str:
+    """The error type of an Anthropic refusal (``{"error": {"type": ...}}``), or ``unnamed``."""
+    error = _json_object(response).get("error")
+    kind = str(error.get("type") or "").strip() if isinstance(error, Mapping) else ""
+    return kind or "unnamed"
+
+
+async def _anthropic_models(api_key: str, *, account: str, limit: int | None = None) -> list[dict[str, str]]:
+    """The models an Anthropic API key can use, as ``{id, display_name}`` in Anthropic's order.
+
+    Anthropic lists the newest first and pages with ``has_more`` and
+    ``last_id``; with ``limit`` only the first page of that many is read.
+    ``account`` names the key in errors. A key Anthropic refuses (401 or 403)
+    raises ``MODEL_ACCOUNT_API_KEY_REJECTED``; an unreachable API, another
+    status or an answer without a ``data`` array raises
+    ``MODEL_ACCOUNT_MODELS_UNAVAILABLE``.
+    """
+    models: list[dict[str, str]] = []
+    after_id: str | None = None
+    for _ in range(_ANTHROPIC_MAX_PAGES):
+        params = {"limit": str(limit or _ANTHROPIC_PAGE_LIMIT)}
+        if after_id:
+            params["after_id"] = after_id
+        try:
+            response = await _get_with_api_key(ANTHROPIC_MODELS_ENDPOINT, api_key, params)
+        except (httpx.HTTPError, TimeoutError) as exc:
+            raise _models_unavailable(
+                account, f"Anthropic's model list could not be reached ({type(exc).__name__})"
+            ) from exc
+        if response.status_code in (401, 403):
+            raise _api_key_rejected(
+                f"Anthropic refused the API key (status {response.status_code}, "
+                f"{_anthropic_error(response)})"
+            )
+        if response.status_code != 200:
+            raise _models_unavailable(
+                account,
+                f"Anthropic's model list answered {response.status_code} "
+                f"({_anthropic_error(response)})",
+                retryable=response.status_code >= 500 or response.status_code == 429,
+            )
+        payload = _json_object(response)
+        entries = payload.get("data")
+        if not isinstance(entries, list):
+            raise _models_unavailable(
+                account, "Anthropic's model list answer has no data array", retryable=False
+            )
+        for entry in entries:
+            model_id = str(entry.get("id") or "").strip() if isinstance(entry, Mapping) else ""
+            if not model_id:
+                raise _models_unavailable(
+                    account, "Anthropic's model list names a model without an id", retryable=False
+                )
+            models.append(
+                {"id": model_id, "display_name": str(entry.get("display_name") or "").strip() or model_id}
+            )
+        after_id = str(payload.get("last_id") or "").strip() or None
+        if limit is not None or payload.get("has_more") is not True or not after_id:
+            return models
+    raise _models_unavailable(
+        account,
+        f"Anthropic's model list did not end within {_ANTHROPIC_MAX_PAGES} pages",
+        retryable=False,
+    )
+
+
+def _checked_api_key(api_key: str) -> str:
+    key = str(api_key or "").strip()
+    if not key or _API_KEY_SHAPE.fullmatch(key) is None:
+        raise _invalid("api_key must be a non-empty Anthropic API key without spaces")
+    return key
+
+
 async def _get_json(url: str) -> dict[str, Any]:
     async with asyncio.timeout(_HTTP_TIMEOUT_S):
         async with httpx.AsyncClient(
@@ -414,10 +566,17 @@ class ModelAccountService:
             self._store(), _scope(account_id), put=put, remove=remove, purge=purge
         )
 
-    async def _owned(self, user_id: str, account_id: str) -> dict[str, Any]:
+    async def _owned(
+        self, user_id: str, account_id: str, *, vendor: str | None = None
+    ) -> dict[str, Any]:
+        """The user's account ``account_id``, of ``vendor`` when one is named."""
         account = await self._repo.get_account(account_id)
-        if account is None or account["owner_user_id"] != user_id:
-            raise _not_found(account_id)
+        if (
+            account is None
+            or account["owner_user_id"] != user_id
+            or (vendor is not None and account["vendor"] != vendor)
+        ):
+            raise _not_found(account_id, vendor)
         return account
 
     # ── linking ─────────────────────────────────────────────────────────────
@@ -440,7 +599,11 @@ class ModelAccountService:
                 "redirect_uri must be http://127.0.0.1:<port>/auth/callback, the loopback "
                 "address the signing-in client listens on"
             )
-        account = await self._owned(user.user_id, account_id) if account_id else None
+        account = (
+            await self._owned(user.user_id, account_id, vendor=VENDOR_CHATGPT_PLAN)
+            if account_id
+            else None
+        )
         params: dict[str, str] = {}
         if account is None:
             params["client_id"] = DYNAMIC_CLIENT_ID
@@ -681,7 +844,9 @@ class ModelAccountService:
         email = str(claims.get("email") or "").strip() or None
         scopes = tokens.scopes or ""
         if pending["account_id"] is not None:
-            account = await self._owned(user.user_id, pending["account_id"])
+            account = await self._owned(
+                user.user_id, pending["account_id"], vendor=VENDOR_CHATGPT_PLAN
+            )
             if account["subject"] != subject:
                 raise _authorization_failed(
                     f"this sign-in is for another ChatGPT account than {account['label']!r}",
@@ -748,6 +913,55 @@ class ModelAccountService:
         """The user's accounts, oldest first."""
         return [_public_view(account) for account in await self._repo.list_accounts(user.user_id)]
 
+    async def add_api_key(
+        self, user: UserContext, *, api_key: str, label: str | None = None
+    ) -> dict[str, Any]:
+        """Keep an Anthropic API key as one of the user's accounts; the account's view.
+
+        Anthropic must accept the key: it is checked by reading one page of
+        Anthropic's model list with it before anything is stored. Without a
+        ``label`` the account is named after the key's last characters. The
+        user's first key becomes their default Anthropic API key.
+        """
+        key = _checked_api_key(api_key)
+        name = self._label(label) if label is not None else (
+            f"Anthropic API key …{key[-_KEY_HINT_CHARS:]}"
+        )
+        await _anthropic_models(key, account=name, limit=1)
+        account_id = new_account_id()
+        change = await self._secret_change(account_id, put={_API_KEY: key})
+        try:
+            account = await self._repo.create_account(
+                {
+                    "account_id": account_id,
+                    "org_id": getattr(user, "org_id", None) or default_org_id(),
+                    "owner_user_id": user.user_id,
+                    "vendor": VENDOR_ANTHROPIC_API_KEY,
+                    "label": name,
+                    "email": None,
+                    "subject": None,
+                    "issued_client_id": None,
+                    "scopes": "",
+                },
+                access_expires_at=None,
+                secrets=change.apply,
+            )
+        except BaseException:
+            await change.discard()
+            raise
+        logger.info(
+            "model account added: account=%s user=%s vendor=%s",
+            account_id, user.user_id, VENDOR_ANTHROPIC_API_KEY,
+        )
+        return _public_view(account)
+
+    @staticmethod
+    def _label(label: str) -> str:
+        label = label.strip()
+        if not label or len(label) > _LABEL_MAX_CHARS:
+            raise _invalid(f"label must be 1 to {_LABEL_MAX_CHARS} characters")
+        return label
+
     async def update_account(
         self,
         user: UserContext,
@@ -756,19 +970,38 @@ class ModelAccountService:
         label: str | None = None,
         is_default: bool | None = None,
         shared: bool | None = None,
+        api_key: str | None = None,
     ) -> dict[str, Any]:
-        """Rename an account, make it (or stop it being) the user's default, or share it with the team.
+        """Rename an account, make it (or stop it being) the user's default, share it, or replace its key.
+
+        ``is_default`` is about the account's vendor: making an account the
+        default stops the user's other account of that vendor being it.
 
         A shared account may be spent by other members' conversations whose
-        own accounts reached their plan usage limit. Sharing is refused with
-        ``MODEL_ACCOUNT_POOL_DISABLED`` while the deployment's team pool is
-        off; stopping sharing is always accepted, and takes effect from the
-        next response of each conversation spending the account.
+        own accounts reached their plan usage limit. Only a ChatGPT account can
+        be shared: the team pool is a ChatGPT-plan arrangement, and sharing an
+        Anthropic API key is refused with ``MODEL_ACCOUNT_NOT_SHAREABLE``.
+        Sharing is refused with ``MODEL_ACCOUNT_POOL_DISABLED`` while the
+        deployment's team pool is off; stopping sharing is always accepted, and
+        takes effect from the next response of each conversation spending the
+        account.
+
+        ``api_key`` replaces an Anthropic API key account's key, after
+        Anthropic accepts the new one, as :meth:`add_api_key` checks it; a
+        running conversation sends the new key from its next response.
         """
         if label is not None:
-            label = label.strip()
-            if not label or len(label) > _LABEL_MAX_CHARS:
-                raise _invalid(f"label must be 1 to {_LABEL_MAX_CHARS} characters")
+            label = self._label(label)
+        current = await self._owned(user.user_id, account_id) if shared or api_key is not None else None
+        if shared and current is not None and current["vendor"] != VENDOR_CHATGPT_PLAN:
+            raise APIError(
+                code="MODEL_ACCOUNT_NOT_SHAREABLE",
+                message=(
+                    f"model account {account_id!r} is a {_VENDOR_NOUNS[current['vendor']]}; "
+                    "only a ChatGPT account can be shared with the team pool"
+                ),
+                status_code=409,
+            )
         if shared and not _pool_enabled():
             raise APIError(
                 code="MODEL_ACCOUNT_POOL_DISABLED",
@@ -779,6 +1012,20 @@ class ModelAccountService:
                 ),
                 status_code=409,
             )
+        if api_key is not None and current is not None:
+            key = _checked_api_key(api_key)
+            if current["vendor"] != VENDOR_ANTHROPIC_API_KEY:
+                raise _invalid(
+                    f"model account {account_id!r} is a {_VENDOR_NOUNS[current['vendor']]}, "
+                    "which has no API key to replace"
+                )
+            await _anthropic_models(key, account=account_id, limit=1)
+            change = await self._secret_change(account_id, put={_API_KEY: key})
+            if await self._repo.replace_secret(
+                account_id, owner_user_id=user.user_id, secrets=change.apply
+            ) is None:
+                raise _not_found(account_id)
+            logger.info("model account key replaced: account=%s user=%s", account_id, user.user_id)
         account = await self._repo.update_account(
             account_id,
             owner_user_id=user.user_id,
@@ -801,14 +1048,16 @@ class ModelAccountService:
         return {"enabled": _pool_enabled()}
 
     async def delete_account(self, user: UserContext, account_id: str) -> dict[str, Any]:
-        """Sign the account out at OpenAI, then delete it and its tokens.
+        """Delete an account and its secrets; a ChatGPT account is signed out at OpenAI first.
 
-        The refresh token is revoked at OpenAI's revocation endpoint first.
-        A failed revocation is logged and does not stop the deletion; the
-        answer's ``revocation_confirmed`` is then false, and the user can end
-        the session by disconnecting AstraBox in their ChatGPT settings. It is
-        ``None`` when the account held no refresh token to revoke. Deleting the
-        default account leaves the user without one.
+        A ChatGPT account's refresh token is revoked at OpenAI's revocation
+        endpoint. A failed revocation is logged and does not stop the deletion;
+        the answer's ``revocation_confirmed`` is then false, and the user can
+        end the session by disconnecting AstraBox in their ChatGPT settings. It
+        is ``None`` when the account held no refresh token to revoke, which is
+        always so for an Anthropic API key: AstraBox cannot revoke a key, and
+        its owner revokes it in the Claude Console. Deleting a default account
+        leaves the user without one of that vendor.
         """
         account = await self._owned(user.user_id, account_id)
         refresh_token = await self._store().get(scope=_scope(account_id), key=_REFRESH_TOKEN)
@@ -828,21 +1077,39 @@ class ModelAccountService:
         )
         return {"account_id": account_id, "revocation_confirmed": revoked}
 
-    async def list_models(self, user: UserContext, account_id: str) -> list[dict[str, str]]:
-        """The models an account can use, as ``{id, display_name}`` in OpenAI's order.
+    async def list_models(
+        self, user: UserContext, account_id: str, *, vendor: str | None = None
+    ) -> list[dict[str, str]]:
+        """The models an account can use, as ``{id, display_name}`` in its vendor's order.
 
         ``account_id`` is one of the user's accounts, or :data:`DEFAULT_ACCOUNT`
-        for their default. OpenAI's ``GET /v1/models`` answers the models the
-        account's plan offers; only those whose ``visibility`` is ``list`` are
-        meant for a model picker. ``id`` is the ``slug`` an Agent names as its
-        model. Raises what :meth:`access_token` raises, and
-        ``MODEL_ACCOUNT_MODELS_UNAVAILABLE`` when OpenAI's list could not be
-        read.
+        for their default account of ``vendor``, which then has to be named.
+        ``id`` is what an Agent names as its model.
+
+        For a ChatGPT account, OpenAI's ``GET /v1/models`` answers the models
+        the account's plan offers; only those whose ``visibility`` is ``list``
+        are meant for a model picker, and ``id`` is the ``slug``. This raises
+        what :meth:`access_token` raises. For an Anthropic API key,
+        Anthropic's ``GET /v1/models`` answers every model the key can call,
+        newest first. Either raises ``MODEL_ACCOUNT_MODELS_UNAVAILABLE`` when
+        the list could not be read, and an Anthropic key the API refuses
+        raises ``MODEL_ACCOUNT_API_KEY_REJECTED``.
         """
-        token = await self.access_token(
-            user_id=user.user_id,
-            account_id=None if account_id == DEFAULT_ACCOUNT else account_id,
-        )
+        if account_id == DEFAULT_ACCOUNT:
+            if vendor not in _VENDOR_NOUNS:
+                raise _invalid(
+                    "the default account is one per vendor; name vendor as one of "
+                    f"{sorted(_VENDOR_NOUNS)}"
+                )
+            account_vendor = str(vendor)
+            named: str | None = None
+        else:
+            account_vendor = (await self._owned(user.user_id, account_id, vendor=vendor))["vendor"]
+            named = account_id
+        if account_vendor == VENDOR_ANTHROPIC_API_KEY:
+            key = await self.api_key(user_id=user.user_id, account_id=named)
+            return await _anthropic_models(key, account=account_id)
+        token = await self.access_token(user_id=user.user_id, account_id=named)
         try:
             response = await _get_with_token(MODELS_ENDPOINT, token.access_token)
         except (httpx.HTTPError, TimeoutError) as exc:
@@ -905,73 +1172,95 @@ class ModelAccountService:
             return False
         return True
 
-    # ── access tokens ───────────────────────────────────────────────────────
+    # ── credentials ─────────────────────────────────────────────────────────
+
+    async def api_key(self, *, user_id: str, account_id: str | None = None) -> str:
+        """The Anthropic API key of ``account_id``, or of the user's default Anthropic API key.
+
+        ``account_id`` must be one of ``user_id``'s Anthropic API key accounts.
+        Raises ``MODEL_ACCOUNT_REQUIRED`` when the user has no default one and
+        ``MODEL_ACCOUNT_NOT_FOUND`` for an account that is not theirs or not
+        an Anthropic API key.
+        """
+        account = await self._preferred(user_id, account_id, vendor=VENDOR_ANTHROPIC_API_KEY)
+        return (await self._account_token(account)).access_token
 
     async def access_token(
         self, *, user_id: str, account_id: str | None = None
     ) -> ModelAccountToken:
         """The current access token of ``account_id``, or of the user's default account.
 
-        ``account_id`` must belong to ``user_id``. A token inside
+        ``account_id`` must be one of ``user_id``'s ChatGPT accounts. A token inside
         :data:`~astrabox.seams.egress_credentials.ACCESS_TOKEN_RENEWAL_WINDOW_S`
         of its expiry is renewed first, once across every replica. Raises
-        ``MODEL_ACCOUNT_REQUIRED`` when the user has no default account,
-        ``MODEL_ACCOUNT_NOT_FOUND`` for an account that is not theirs,
+        ``MODEL_ACCOUNT_REQUIRED`` when the user has no default ChatGPT account,
+        ``MODEL_ACCOUNT_NOT_FOUND`` for an account that is not theirs or not a
+        ChatGPT account,
         ``MODEL_ACCOUNT_SIGN_IN_REQUIRED`` when OpenAI refused renewal for good,
         ``MODEL_ACCOUNT_PLAN_USAGE_NOT_ENABLED`` when the grant lacks plan
         usage, and ``MODEL_ACCOUNT_REFRESH_FAILED`` when renewal failed
         otherwise.
         """
-        return await self._account_token(await self._preferred(user_id, account_id))
+        return await self._account_token(
+            await self._preferred(user_id, account_id, vendor=VENDOR_CHATGPT_PLAN)
+        )
 
     async def conversation_token(
         self,
         *,
         user_id: str,
+        vendor: str,
         account_id: str | None = None,
         session_id: str | None = None,
         keep: bool = False,
     ) -> ModelAccountToken:
-        """The access token a conversation of ``user_id`` spends now.
+        """The credential a conversation of ``user_id`` spends now, from an account of ``vendor``.
 
-        ``account_id`` is one of the user's accounts the conversation's Agent
-        names; without it the user's default account is preferred. The account
-        chosen is recorded on the session ``session_id`` names
-        (``model_account_id``):
+        ``vendor`` is the kind of account the conversation's model endpoint
+        spends; no account of another vendor is ever chosen. ``account_id`` is
+        one of the user's accounts of that vendor the conversation's Agent
+        names; without it the user's default account of that vendor is
+        preferred. The account chosen is recorded on the session
+        ``session_id`` names (``model_account_id``):
 
         * With the team pool off (``ASTRABOX_MODEL_ACCOUNT_POOL_ENABLED``),
           the preferred account.
         * With it on, the preferred account unless a reported usage limit
           holds it back (:meth:`record_usage_limit`). Then the user's other
-          active accounts, the default first, and after them the active
-          accounts other members of the session's organization shared, oldest
-          first; an account held back is skipped, and one whose token cannot be
-          obtained is logged and skipped. ``MODEL_PLAN_USAGE_LIMIT`` (429) when
-          none is left, with the preferred account in its evidence.
+          active accounts of the vendor, the default first, and after them the
+          active accounts of the vendor other members of the session's
+          organization shared, oldest first; an account held back is skipped,
+          and one whose credential cannot be obtained is logged and skipped.
+          ``MODEL_PLAN_USAGE_LIMIT`` (429) when none is left, with the
+          preferred account in its evidence. Only a ChatGPT plan reports a
+          usage limit and only a ChatGPT account can be shared, so for an
+          Anthropic API key this is always the preferred key.
 
-        ``keep`` is for a response in progress: it renews the token of the
+        ``keep`` is for a response in progress: it renews the credential of the
         account the session already spends instead of choosing, so a running
         response never changes accounts, even when a limit reported elsewhere
         holds that account back. ``MODEL_ACCOUNT_NOT_FOUND`` when that account
-        was deleted, or its owner stopped sharing it. Otherwise raises what
-        :meth:`access_token` raises.
+        was deleted, or its owner stopped sharing it. An account of another
+        vendor recorded on the session was spent at another model endpoint and
+        is not kept: the account is chosen as without ``keep``. Otherwise raises
+        what :meth:`access_token` or :meth:`api_key` raises.
         """
         sessions = SessionRepository()
         session = await sessions.get_session(session_id) if session_id else None
         current = str((session or {}).get("model_account_id") or "").strip()
         org_id = str((session or {}).get("org_id") or "").strip() or default_org_id()
         pool = _pool_enabled()
-        if keep and current:
-            account = await self._repo.get_account(current)
-            if account is None or not (
-                account["owner_user_id"] == user_id
-                or (pool and account["shared"] and account["org_id"] == org_id)
+        kept = await self._repo.get_account(current) if keep and current else None
+        if keep and current and (kept is None or kept["vendor"] == vendor):
+            if kept is None or not (
+                kept["owner_user_id"] == user_id
+                or (pool and kept["shared"] and kept["org_id"] == org_id)
             ):
                 raise _not_found(current)
             try:
-                return await self._account_token(account)
+                return await self._account_token(kept)
             except APIError as exc:
-                if account["owner_user_id"] == user_id:
+                if kept["owner_user_id"] == user_id:
                     raise
                 # The errors name the account by its label, which is its
                 # owner's, and tell its owner how to sign in again.
@@ -981,7 +1270,7 @@ class ModelAccountService:
                     status_code=exc.status_code,
                     retryable=exc.retryable,
                 ) from exc
-        preferred = await self._preferred(user_id, account_id)
+        preferred = await self._preferred(user_id, account_id, vendor=vendor)
         if pool and _usage_limited(preferred):
             token = await self._pooled_token(preferred, user_id=user_id, org_id=org_id)
         else:
@@ -999,18 +1288,22 @@ class ModelAccountService:
     async def _pooled_token(
         self, preferred: Mapping[str, Any], *, user_id: str, org_id: str
     ) -> ModelAccountToken:
-        """The token of the first account the pool offers in place of ``preferred``."""
+        """The credential of the first account of ``preferred``'s vendor the pool offers in its place."""
+        vendor = str(preferred["vendor"])
         # sorted() keeps the repository's oldest-first order among equals.
         own = sorted(
             (
                 account
                 for account in await self._repo.list_accounts(user_id)
                 if account["account_id"] != preferred["account_id"]
+                and account["vendor"] == vendor
                 and account["status"] == STATUS_ACTIVE
             ),
             key=lambda account: not account["is_default"],
         )
-        shared = await self._repo.list_pool_accounts(org_id=org_id, excluding_owner=user_id)
+        shared = await self._repo.list_pool_accounts(
+            org_id=org_id, excluding_owner=user_id, vendor=vendor
+        )
         for account in [*own, *shared]:
             if _usage_limited(account):
                 continue
@@ -1043,24 +1336,27 @@ class ModelAccountService:
         )
         return {"code": PLAN_USAGE_LIMIT, "account_id": account_id, "resets_at": None}
 
-    async def _preferred(self, user_id: str, account_id: str | None) -> dict[str, Any]:
-        """``account_id``, which must be the user's, or the user's default account."""
+    async def _preferred(
+        self, user_id: str, account_id: str | None, *, vendor: str
+    ) -> dict[str, Any]:
+        """``account_id``, which must be the user's and of ``vendor``, or the user's default of ``vendor``."""
         if account_id:
-            return await self._owned(user_id, account_id)
-        found = await self._repo.get_default_account(user_id)
+            return await self._owned(user_id, account_id, vendor=vendor)
+        found = await self._repo.get_default_account(user_id, vendor=vendor)
         if found is None:
             raise APIError(
-                code="MODEL_ACCOUNT_REQUIRED",
-                message=(
-                    "no default ChatGPT account is linked for this user; link one with "
-                    "`astrabox model-account login chatgpt` or choose a default"
-                ),
-                status_code=409,
+                code="MODEL_ACCOUNT_REQUIRED", message=_NO_DEFAULT[vendor], status_code=409
             )
         return found
 
     async def _account_token(self, account: Mapping[str, Any]) -> ModelAccountToken:
-        """The account's current access token, renewed first when it is due."""
+        """The account's current credential: an Anthropic API key as stored, or a ChatGPT
+        access token, renewed first when it is due."""
+        if account["vendor"] == VENDOR_ANTHROPIC_API_KEY:
+            key = await self._store().get(scope=_scope(account["account_id"]), key=_API_KEY)
+            if not key:
+                raise _not_found(account["account_id"], VENDOR_ANTHROPIC_API_KEY)
+            return ModelAccountToken(account_id=account["account_id"], access_token=key, expires_at=None)
         if account["status"] != STATUS_ACTIVE:
             raise _sign_in_required(account, f"OpenAI refused renewal ({account['last_error_code']})")
         if _due(account["access_expires_at"]):
@@ -1232,11 +1528,15 @@ def get_model_account_service() -> ModelAccountService:
 
 
 __all__ = [
+    "ANTHROPIC_MODELS_ENDPOINT",
+    "ANTHROPIC_VERSION",
     "AUTHORIZE_ENDPOINT",
     "DEFAULT_ACCOUNT",
     "MODELS_ENDPOINT",
     "ModelAccountService",
     "ext_agent_host_id",
     "ModelAccountToken",
+    "VENDOR_ANTHROPIC_API_KEY",
+    "VENDOR_CHATGPT_PLAN",
     "get_model_account_service",
 ]

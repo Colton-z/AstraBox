@@ -225,9 +225,10 @@ for _code, _status, _category, _retryable, _owner in (
     # raise site gives the status (400 for a bad response, 502 for an
     # unreachable or failing server).
     ("CONNECTOR_AUTHORIZATION_FAILED", 502, "auth", True, "platform"),
-    # A conversation that spends its owner's ChatGPT plan found no linked
-    # account, or none chosen as the owner's default; the owner links one or
-    # chooses a default (astrabox/core/service/model_accounts/service.py).
+    # A conversation that spends its owner's model account (a ChatGPT plan or
+    # an Anthropic API key) found none of that vendor, or none chosen as the
+    # owner's default; the owner adds one or chooses a default
+    # (astrabox/core/service/model_accounts/service.py).
     ("MODEL_ACCOUNT_REQUIRED", 409, "state", False, "client"),
     # OpenAI refused for good to renew the account's access token (its refresh
     # token expired, was revoked or was reused); the owner signs in again.
@@ -265,6 +266,13 @@ for _code, _status, _category, _retryable, _owner in (
     # An account was to be shared while the deployment's team pool of model
     # accounts is off; an administrator sets ASTRABOX_MODEL_ACCOUNT_POOL_ENABLED.
     ("MODEL_ACCOUNT_POOL_DISABLED", 409, "configuration", False, "platform"),
+    # Anthropic refuses an API key (401 or 403) that is being added, replacing
+    # another, or listing models; the owner stores a key Anthropic accepts
+    # (astrabox/core/service/model_accounts/service.py).
+    ("MODEL_ACCOUNT_API_KEY_REJECTED", 409, "auth", False, "client"),
+    # An account other than a ChatGPT account was to be shared with the team
+    # pool, which pools ChatGPT plans only; the owner shares a ChatGPT account.
+    ("MODEL_ACCOUNT_NOT_SHAREABLE", 409, "request", False, "client"),
     # An ASGI host mounted AstraBox at a path other than
     # ASTRABOX_PUBLIC_PATH_PREFIX; the operator sets the variable to the mount
     # path (astrabox/web/public_path_middleware.py).

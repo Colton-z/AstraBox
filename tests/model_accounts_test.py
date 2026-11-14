@@ -366,7 +366,7 @@ async def test_an_accounts_models_are_its_listed_ones_in_openai_order(openai: _O
 
     OpenAI answers every model the plan knows; ``visibility: "list"`` marks the
     ones meant for a picker, in the order to offer them. ``default`` names the
-    caller's default account, and another user's account is not the caller's.
+    caller's default ChatGPT account, and another user's account is not the caller's.
     """
     service = ModelAccountService()
     account = await _link(service, openai)
@@ -380,7 +380,7 @@ async def test_an_accounts_models_are_its_listed_ones_in_openai_order(openai: _O
         {"id": "gpt-5.6-luna", "display_name": "GPT-5.6 Luna"},
     ]
 
-    assert await service.list_models(_USER, "default") == listed
+    assert await service.list_models(_USER, "default", vendor="chatgpt_plan") == listed
     assert await service.list_models(_USER, account["account_id"]) == listed
     assert openai.model_requests == ["Bearer at-signed-in", "Bearer at-signed-in"]
 
@@ -390,7 +390,7 @@ async def test_an_accounts_models_are_its_listed_ones_in_openai_order(openai: _O
 
     openai.models_status = 401
     with pytest.raises(APIError) as refused:
-        await service.list_models(_USER, "default")
+        await service.list_models(_USER, "default", vendor="chatgpt_plan")
     assert (refused.value.code, refused.value.retryable) == (
         "MODEL_ACCOUNT_MODELS_UNAVAILABLE", False,
     )

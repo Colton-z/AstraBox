@@ -10,8 +10,9 @@ transaction, after its statements have succeeded; a store that keeps its values
 in this database then commits with the row or not at all.
 
 The database enforces what the model-account service relies on: one row per
-owner and registration (subject and issued client id), and at most one default
-account per owner (:class:`astrabox.persistence.sql.models.model_accounts.ModelAccount`).
+owner and ChatGPT registration (subject and issued client id), and at most one
+default account per owner and vendor
+(:class:`astrabox.persistence.sql.models.model_accounts.ModelAccount`).
 
 Times are handed to the service as ISO-8601 strings.
 """
@@ -115,10 +116,12 @@ class ModelAccountRepository:
         row = await fetch_one(select(_ACCOUNTS).where(_ACCOUNTS.c.account_id == account_id))
         return _account_view(row) if row is not None else None
 
-    async def get_default_account(self, owner_user_id: str) -> dict[str, Any] | None:
+    async def get_default_account(self, owner_user_id: str, *, vendor: str) -> dict[str, Any] | None:
         row = await fetch_one(
             select(_ACCOUNTS).where(
-                _ACCOUNTS.c.owner_user_id == owner_user_id, _ACCOUNTS.c.is_default.is_(True)
+                _ACCOUNTS.c.owner_user_id == owner_user_id,
+                _ACCOUNTS.c.vendor == vendor,
+                _ACCOUNTS.c.is_default.is_(True),
             )
         )
         return _account_view(row) if row is not None else None
@@ -149,18 +152,19 @@ class ModelAccountRepository:
         self,
         values: Mapping[str, Any],
         *,
-        access_expires_at: str,
+        access_expires_at: str | None,
         secrets: SecretChange,
     ) -> dict[str, Any]:
-        """Insert an active account, and its tokens through ``secrets``.
+        """Insert an active account, and its secrets through ``secrets``.
 
-        The account becomes its owner's default when the owner has none. The
-        owner's rows are locked first, so a concurrent change of the default
-        waits for this insert; two concurrent first accounts both find no
-        default, the unique index refuses the second, and that one is inserted
-        again as not the default.
+        The account becomes its owner's default of its vendor when the owner
+        has none. The owner's rows are locked first, so a concurrent change of
+        the default waits for this insert; two concurrent first accounts both
+        find no default, the unique index refuses the second, and that one is
+        inserted again as not the default.
         """
         owner_user_id = str(values["owner_user_id"])
+        vendor = str(values["vendor"])
         row_values = {
             **values,
             "status": STATUS_ACTIVE,
@@ -169,11 +173,11 @@ class ModelAccountRepository:
 
         async def work(conn: AsyncConnection, *, may_default: bool) -> dict[str, Any]:
             owned = await conn.execute(
-                select(_ACCOUNTS.c.is_default)
+                select(_ACCOUNTS.c.is_default, _ACCOUNTS.c.vendor)
                 .where(_ACCOUNTS.c.owner_user_id == owner_user_id)
                 .with_for_update()
             )
-            has_default = any(bool(row.is_default) for row in owned)
+            has_default = any(bool(row.is_default) and row.vendor == vendor for row in owned)
             await conn.execute(
                 insert(_ACCOUNTS).values(
                     **row_values, is_default=may_default and not has_default
@@ -245,7 +249,7 @@ class ModelAccountRepository:
         is_default: bool | None = None,
         shared: bool | None = None,
     ) -> dict[str, Any] | None:
-        """Rename the account, make it (or stop it being) the owner's default, share it or stop sharing it.
+        """Rename the account, make it (or stop it being) the owner's default of its vendor, share it or stop sharing it.
 
         ``None`` leaves that field as it is. The owner's rows are locked first,
         so two concurrent changes of the default apply one after the other.
@@ -254,17 +258,19 @@ class ModelAccountRepository:
 
         async def work(conn: AsyncConnection) -> dict[str, Any] | None:
             owned = await conn.execute(
-                select(_ACCOUNTS.c.account_id)
+                select(_ACCOUNTS.c.account_id, _ACCOUNTS.c.vendor)
                 .where(_ACCOUNTS.c.owner_user_id == owner_user_id)
                 .with_for_update()
             )
-            if account_id not in {row.account_id for row in owned}:
+            vendors = {row.account_id: row.vendor for row in owned}
+            if account_id not in vendors:
                 return None
             if is_default:
                 await conn.execute(
                     update(_ACCOUNTS)
                     .where(
                         _ACCOUNTS.c.owner_user_id == owner_user_id,
+                        _ACCOUNTS.c.vendor == vendors[account_id],
                         _ACCOUNTS.c.account_id != account_id,
                         _ACCOUNTS.c.is_default.is_(True),
                     )
@@ -284,6 +290,32 @@ class ModelAccountRepository:
                     .values(**values, updated_at=func.now())
                 )
             return await _account_row(conn, account_id)
+
+        row = await transaction(work)
+        return _account_view(row) if row is not None else None
+
+    async def replace_secret(
+        self, account_id: str, *, owner_user_id: str, secrets: SecretChange
+    ) -> dict[str, Any] | None:
+        """Write the account's new secret through ``secrets`` and mark it updated.
+
+        ``None``, with nothing written, when the owner has no such account.
+        """
+
+        async def work(conn: AsyncConnection) -> dict[str, Any] | None:
+            updated = await conn.execute(
+                update(_ACCOUNTS)
+                .where(
+                    _ACCOUNTS.c.account_id == account_id,
+                    _ACCOUNTS.c.owner_user_id == owner_user_id,
+                )
+                .values(updated_at=func.now())
+            )
+            if updated.rowcount == 0:
+                return None
+            row = await _account_row(conn, account_id)
+            await secrets(conn)
+            return row
 
         row = await transaction(work)
         return _account_view(row) if row is not None else None
@@ -313,13 +345,16 @@ class ModelAccountRepository:
 
     # ── the team pool ───────────────────────────────────────────────────────
 
-    async def list_pool_accounts(self, *, org_id: str, excluding_owner: str) -> list[dict[str, Any]]:
-        """The active accounts other owners of ``org_id`` shared with the team, oldest first."""
+    async def list_pool_accounts(
+        self, *, org_id: str, excluding_owner: str, vendor: str
+    ) -> list[dict[str, Any]]:
+        """The active accounts of ``vendor`` other owners of ``org_id`` shared with the team, oldest first."""
         rows = await fetch_all(
             select(_ACCOUNTS)
             .where(
                 _ACCOUNTS.c.org_id == org_id,
                 _ACCOUNTS.c.owner_user_id != excluding_owner,
+                _ACCOUNTS.c.vendor == vendor,
                 _ACCOUNTS.c.shared.is_(True),
                 _ACCOUNTS.c.status == STATUS_ACTIVE,
             )

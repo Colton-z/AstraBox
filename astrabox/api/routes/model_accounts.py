@@ -1,22 +1,26 @@
-"""A signed-in user's model accounts: link a ChatGPT account, list, change, remove.
+"""A signed-in user's model accounts: link a ChatGPT account, add an Anthropic API key, list, change, remove.
 
-Linking is OpenAI's "Sign in with ChatGPT". ``POST
+Linking a ChatGPT account is OpenAI's "Sign in with ChatGPT". ``POST
 /api/v1/me/model-accounts/chatgpt/authorizations`` starts a sign-in for the
 loopback redirect URI the user's client listens on and answers the URL to open
 in the browser; the client posts the query OpenAI redirected the browser to
 ``…/authorizations/{authorization_id}/callback``, and the server completes the
 sign-in. ``astrabox model-account login chatgpt`` is that client.
 
-``GET /api/v1/me/model-accounts/{account_id}/models`` lists the models an
-account can use (``default`` names the caller's default account), for choosing
-an Agent's model on a ChatGPT plan RuntimeProfile.
+``POST /api/v1/me/model-accounts/anthropic`` keeps an Anthropic API key the
+caller gives, once Anthropic accepts it; ``PATCH`` with ``api_key`` replaces it.
 
-``PATCH …/{account_id}`` with ``shared`` shares an account with the team pool,
-or stops sharing it; ``GET /api/v1/me/model-accounts/team-pool`` answers
+``GET /api/v1/me/model-accounts/{account_id}/models`` lists the models an
+account can use (``default`` with ``?vendor=`` names the caller's default
+account of that vendor), for choosing an Agent's model on a RuntimeProfile that
+spends the conversation owner's account.
+
+``PATCH …/{account_id}`` with ``shared`` shares a ChatGPT account with the team
+pool, or stops sharing it; ``GET /api/v1/me/model-accounts/team-pool`` answers
 whether the deployment's pool is on, without which nothing can be shared.
 
-Each route acts on the caller's own accounts only. No answer carries a token:
-the tokens stay in the server's secret store
+Each route acts on the caller's own accounts only. No answer carries a token or
+a key: they stay in the server's secret store
 (:mod:`astrabox.core.service.model_accounts.service`).
 """
 
@@ -24,7 +28,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import Request
+from fastapi import Query, Request
 from pydantic import BaseModel, ConfigDict
 
 from astrabox.api.routes.response_envelope import ApiEnvelope
@@ -57,15 +61,28 @@ class CompleteAuthorizationRequest(BaseModel):
     error: str | None = None
 
 
+class AddAnthropicApiKeyRequest(BaseModel):
+    """Body for keeping an Anthropic API key as one of the caller's accounts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    api_key: str
+    #: How the account is named; without one, after the key's last characters.
+    label: str | None = None
+
+
 class UpdateModelAccountRequest(BaseModel):
     """Body for changing an account; an absent or null field is left as it is."""
 
     model_config = ConfigDict(extra="forbid")
 
     label: str | None = None
+    #: Make the account the caller's default of its vendor.
     is_default: bool | None = None
-    #: Share the account with the team pool (true) or stop sharing it (false).
+    #: Share a ChatGPT account with the team pool (true) or stop sharing it (false).
     shared: bool | None = None
+    #: Replace an Anthropic API key account's key.
+    api_key: str | None = None
 
 
 # ── response payloads ───────────────────────────────────────────────────────
@@ -86,16 +103,18 @@ class ModelAccountAuthorization(BaseModel):
 
 
 class ModelAccount(BaseModel):
-    """One linked account, without its tokens."""
+    """One account, without its tokens or key."""
 
     model_config = ConfigDict(extra="allow")
 
     account_id: str
+    #: ``chatgpt_plan`` or ``anthropic_api_key``.
     vendor: str
     label: str
     email: str | None
     #: ``active``, or ``sign_in_required`` once OpenAI refused renewal for good.
     status: str
+    #: The caller's default account of its vendor.
     is_default: bool
     scopes: list[str]
     access_expires_at: str | None
@@ -135,7 +154,7 @@ class ModelAccountModel(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    #: OpenAI's model slug, the value an Agent names as its ``model``.
+    #: The value an Agent names as its ``model``: OpenAI's model slug, or Anthropic's model id.
     id: str
     display_name: str
 
@@ -181,6 +200,21 @@ def register_model_account_routes(app: Any) -> None:
             )
         )
 
+    @app.post(
+        "/api/v1/me/model-accounts/anthropic",
+        response_model=ApiEnvelope[ModelAccount],
+        response_model_exclude_unset=True,
+    )
+    async def add_anthropic_api_key(
+        body: AddAnthropicApiKeyRequest, request: Request
+    ) -> dict[str, Any]:
+        user = await get_current_user_context(request)
+        return success_response(
+            await get_model_account_service().add_api_key(
+                user, api_key=body.api_key, label=body.label
+            )
+        )
+
     @app.get(
         "/api/v1/me/model-accounts",
         response_model=ApiEnvelope[list[ModelAccount]],
@@ -204,10 +238,20 @@ def register_model_account_routes(app: Any) -> None:
         response_model=ApiEnvelope[list[ModelAccountModel]],
         response_model_exclude_unset=True,
     )
-    async def list_model_account_models(account_id: str, request: Request) -> dict[str, Any]:
+    async def list_model_account_models(
+        account_id: str,
+        request: Request,
+        vendor: str | None = Query(
+            default=None,
+            description=(
+                "The account's vendor, chatgpt_plan or anthropic_api_key; required with "
+                "the account id default."
+            ),
+        ),
+    ) -> dict[str, Any]:
         user = await get_current_user_context(request)
         return success_response(
-            await get_model_account_service().list_models(user, account_id)
+            await get_model_account_service().list_models(user, account_id, vendor=vendor)
         )
 
     @app.patch(
@@ -221,7 +265,8 @@ def register_model_account_routes(app: Any) -> None:
         user = await get_current_user_context(request)
         return success_response(
             await get_model_account_service().update_account(
-                user, account_id, label=body.label, is_default=body.is_default, shared=body.shared
+                user, account_id, label=body.label, is_default=body.is_default,
+                shared=body.shared, api_key=body.api_key,
             )
         )
 
