@@ -481,9 +481,13 @@ Enable Secure Access before creating the sandboxes that will use it; changing
 the server configuration does not enable it on existing boxes. Check the
 Gateway's `/status.ok` endpoint and TLS certificate for deployment health.
 Acceptance still requires opening HTML resources and controlling the Browser
-from the actual console origin. Local Docker requires its published execd
-endpoint to be reachable by the user's browser; Kubernetes Gateway settings
-do not configure the Docker runtime.
+from the actual console origin. On local Docker a browser opens these through
+the sandbox's published execd, which must be reachable from the user's
+browser and must answer without a credential: by default each Docker
+sandbox's execd requires a per-sandbox token that a browser cannot send, and
+these features are refused until `ASTRABOX_SANDBOX_UNAUTHENTICATED_EXECD=true`
+([Deploy](../deploy.md#sandbox-execd-authentication)). Kubernetes Gateway
+settings do not configure the Docker runtime.
 
 ### Isolate sandbox Pods from the rest of the cluster {#sandbox-network-policy}
 
@@ -497,8 +501,11 @@ accepts ingress only from the platform, not from other Pods.
 
 The control runner and the Codex backend forwarder also refuse a connection
 that does not carry a credential derived from the deployment's own secret, so
-reaching those two ports is not enough to use them. The policy is what keeps
-other Pods from reaching the rest.
+reaching those two ports is not enough to use them. AstraBox gives execd an
+access token only on the bundled Docker runtime
+([Deploy](../deploy.md#sandbox-execd-authentication)); a Kubernetes sandbox's
+execd answers any caller that reaches the Pod. The policy is what keeps other
+Pods from reaching it and the rest.
 
 AstraBox ships one at
 [`containers/kubernetes/sandbox-ingress-networkpolicy.yaml`](https://github.com/colton-z/astrabox/blob/main/containers/kubernetes/sandbox-ingress-networkpolicy.yaml).

@@ -2,8 +2,8 @@
 
 This image carries OpenSandbox execd from release 1.2.1, source commit
 `72e9feda4356a3087ae279af254ac67bb98c0129` (the commit the release's images
-are built from, per `docs/releases/1.2.1.yaml`), with `stream-upload.patch`
-and `pty-refusal-frames.patch` applied. The source archive is checksum-pinned.
+are built from, per `docs/releases/1.2.1.yaml`), with `stream-upload.patch`,
+`pty-refusal-frames.patch` and `access-token.patch` applied. The source archive is checksum-pinned.
 The Apache-2.0 licence is retained in the image. Bootstrap, supervisor and
 isolation helpers come from the matching official image
 `opensandbox/execd:release-1.2.1`, pinned by digest; both ordinary and eBPF
@@ -38,6 +38,23 @@ existing holder lock and post-upgrade takeover ordering are unchanged; refusing
 another attachment does not evict the holder. The SDK maps these machine codes
 to its existing exceptions and refuses unexpected initial control frames as
 protocol errors. It does not infer occupancy from a proxy message or disconnect.
+
+The supplier's execd admits callers by its access token (`EXECD_ACCESS_TOKEN`,
+sent as `X-EXECD-ACCESS-TOKEN`) on every route except `/ping`, `/ready` and
+`POST /internal/init`. That last route replaces the token: given
+`preserveRuntimeState` and a caller-chosen `accessTokenHash`, execd then admits
+the caller's token and refuses the configured one, so any caller that reaches
+the port can take the token over. With `access-token.patch`,
+`/internal/init` is open only while no token is in force (neither the
+environment token nor an applied token hash); afterwards it requires the token
+like every other route. execd authenticates before it validates a request, so
+an empty `POST /internal/init` without the token answers 401 from this build
+and 400 from the supplier's; AstraBox uses that answer to refuse an execd image
+without the patch (`astrabox/providers/open_sandbox/execd_access.py`). The patch
+also removes `X-EXECD-ACCESS-TOKEN` from requests that `/proxy/<port>` passes
+to an in-box service, as the supplier's per-user filesystem proxy
+(`filesystem_identity_linux.go`) already does, so a service running as the
+workload's account never receives execd's credential.
 
 The Claude Code, Codex, DeepSeek Harness and Pi image targets build the default
 execd image first. An explicit `EXECD_IMAGE` selects an existing image without
