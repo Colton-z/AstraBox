@@ -49,6 +49,8 @@ from astrabox.core.service.orchestrator.runtime.runtime_profile import (
     probe_sandbox_runtime_profile,
     resolve_runtime_profile,
     resolve_sandbox_container_engine,
+    resolve_sandbox_mounts,
+    resolve_sandbox_networks,
     resolve_sandbox_permission_level,
     resolve_sandbox_tenancy,
 )
@@ -378,6 +380,8 @@ async def build_agent_client_pool_plan(
             network_policy=network_policy,
             permission_level=resolve_sandbox_permission_level(template),
             container_engine=resolve_sandbox_container_engine(template),
+            networks=resolve_sandbox_networks(template),
+            shared_mounts=resolve_sandbox_mounts(template),
             credential_proxy_enabled=vault_enabled,
             vault_write=vault_plan,
         )

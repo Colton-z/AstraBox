@@ -740,6 +740,14 @@
           "docker": "Docker (rootless)"
         }
       },
+      "sandbox_networks": {
+        "label": "Host networks",
+        "help": "Docker networks of the sandbox host that each sandbox joins, so the Agent reaches services there by their container names. Only networks the deployment allows (ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS) can be named. A joined network is reachable on every port, in both network access modes; connections from it into the sandbox are refused. Available only with the bundled OpenSandbox server on Docker. Enable it only for teams you trust with every service on that network."
+      },
+      "sandbox_mounts": {
+        "label": "Host storage",
+        "help": "Host directories and named volumes mounted into each sandbox, as a list of {\"source\", \"target\", \"read_only\"}. A source starting with / is a host directory from ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS; any other is a volume from ASTRABOX_SANDBOX_MOUNTABLE_VOLUMES. Mounts are read-only unless read_only is false. A target cannot be at, under or above /workspace, /home, /tmp or another directory the platform or system uses; mount under /mnt or /srv instead. A read-write mount lets the sandbox change those host files, and every sandbox that mounts it shares them. Available only with the bundled OpenSandbox server on Docker."
+      },
       "endpoint_provider": {
         "label": "Model connection",
         "help": "Choose a registered model connection for Agents in this runtime profile. Leave blank to use the connection declared as the deployment default."

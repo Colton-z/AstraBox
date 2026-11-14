@@ -57,6 +57,12 @@ _SCALAR_COLUMNS = {
     "endpoint_provider": "endpoint_provider",
 }
 
+#: The form's top-level list fields and their columns.
+_LIST_COLUMNS = {
+    "sandbox_networks": "sandbox_networks",
+    "sandbox_mounts": "sandbox_mounts",
+}
+
 #: The form's nested objects: each sub-field and its column. Credentials are
 #: listed in :data:`_SECRET_REFERENCES` instead.
 _OBJECT_COLUMNS = {
@@ -109,6 +115,9 @@ def _view(row: dict[str, Any]) -> dict[str, Any]:
     for key, column in _SCALAR_COLUMNS.items():
         if row[column] is not None:
             doc[key] = row[column]
+    for key, column in _LIST_COLUMNS.items():
+        if row[column]:
+            doc[key] = list(row[column])
     networking: dict[str, Any] = {"type": row["network_type"]}
     if row["network_allowed_hosts"] is not None:
         networking["allowed_hosts"] = list(row["network_allowed_hosts"])
@@ -146,6 +155,8 @@ def _columns(doc: dict[str, Any]) -> dict[str, Any]:
         column: doc.get(key) for key, column in _SCALAR_COLUMNS.items()
     }
     values["enabled"] = doc.get("enabled") is not False
+    for key, column in _LIST_COLUMNS.items():
+        values[column] = list(doc[key]) if doc.get(key) else None
     networking = doc["networking"]
     values["network_type"] = networking["type"]
     values["network_allowed_hosts"] = networking.get("allowed_hosts")

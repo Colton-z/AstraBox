@@ -145,6 +145,12 @@ class AgentView:
     #: (``sandbox_create_resources``).
     sandbox_cpu: str | None = None
     sandbox_memory: str | None = None
+
+
+    #: Host networks each box of this environment joins, as stored.
+    sandbox_networks: list[str] | None = None
+    #: Host paths and named volumes each box mounts, as stored.
+    sandbox_mounts: list[dict[str, Any]] | None = None
     #: Underlying sandbox backend selector; None == the default backend.
     sandbox_backend: str | None = None
     status: str | None = None

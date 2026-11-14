@@ -69,6 +69,8 @@ from astrabox.core.service.orchestrator.runtime.storage.mounts import (
 )
 from astrabox.core.service.orchestrator.runtime.runtime_profile import (
     resolve_sandbox_container_engine,
+    resolve_sandbox_mounts,
+    resolve_sandbox_networks,
     resolve_sandbox_permission_level,
     resolve_sandbox_size,
     resolve_sandbox_tenancy,
@@ -1553,6 +1555,8 @@ def engine_create_spec(
         network_policy=network_policy,
         permission_level=permission_level,
         container_engine=container_engine,
+        networks=resolve_sandbox_networks(template),
+        shared_mounts=resolve_sandbox_mounts(template),
         vault_write=vault_write,
         workspace_mounts=planned_mounts,
     )

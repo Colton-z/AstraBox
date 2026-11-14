@@ -151,6 +151,15 @@ _NETWORKING_ITEM_SCHEMA: list[dict[str, Any]] = [
     {"key": "allow_mcp_servers", "type": "boolean"},
 ]
 
+# One sandbox_mounts item. ``source`` is a host path (starting with ``/``) or a
+# named volume; ``read_only`` is settled to true at write time when omitted, so
+# read-write is always stated.
+_SHARED_MOUNT_ITEM_SCHEMA: list[dict[str, Any]] = [
+    {"key": "source", "type": "string", "required": True},
+    {"key": "target", "type": "string", "required": True},
+    {"key": "read_only", "type": "boolean", "default": True},
+]
+
 # The authoritative editable field list. Order = render order on the form.
 # Field `key` is the stable contract; label/help are owned by frontend i18n
 # (manage:runtime_profile_form.fields.<key>.{label,help}) — the schema carries shape, not copy.
@@ -227,6 +236,15 @@ RUNTIME_PROFILE_FIELD_SCHEMA: list[dict[str, Any]] = [
     {"key": "sandbox_container_engine", "type": "enum",
      "enum": list(SANDBOX_CONTAINER_ENGINES), "advanced": True,
      "group": GROUP_RUNTIME, "default": SANDBOX_CONTAINER_ENGINE_NONE},
+    # Host networks each box joins and host storage it mounts: reach beyond
+    # the box itself. Opt-in, and limited to what the operator allow-listed
+    # (ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS, ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS,
+    # ASTRABOX_SANDBOX_MOUNTABLE_VOLUMES); docs/runtime-profiles.md says what
+    # each one grants.
+    {"key": "sandbox_networks", "type": "string_list", "advanced": True,
+     "group": GROUP_RUNTIME},
+    {"key": "sandbox_mounts", "type": "object_list", "advanced": True,
+     "group": GROUP_RUNTIME, "item_schema": _SHARED_MOUNT_ITEM_SCHEMA},
     # ── model connectivity ────────────────────────────────
     # endpoint_provider selects a registered model gateway. The schema response
     # fills its default from the provider registry, so this domain schema does
@@ -313,6 +331,12 @@ def normalize_runtime_profile_payload(payload: dict[str, Any]) -> dict[str, Any]
 
         action = str(load_astrabox_settings().sandbox_idle_action or "").strip().lower()
     normalized["idle_action"] = action
+    mounts = normalized.get("sandbox_mounts")
+    if isinstance(mounts, list):
+        normalized["sandbox_mounts"] = [
+            {**item, "read_only": item.get("read_only", True)} if isinstance(item, dict) else item
+            for item in mounts
+        ]
     from astrabox.core.service.orchestrator.runtime_profile_networking import (
         normalized_runtime_profile_networking,
     )
@@ -360,6 +384,7 @@ def validate_runtime_profile_payload(payload: dict[str, Any]) -> None:
     _assert_tenancy_has_permission_level(payload)
     _assert_container_engine_is_deliverable(payload)
     _assert_sandbox_size_is_a_quantity(payload)
+    _assert_networks_and_mounts_are_deliverable(payload)
     _assert_owner_credential_is_deliverable(payload)
     _assert_backend_capabilities(payload)
     _assert_provider_configuration_is_reachable(payload)
@@ -653,6 +678,43 @@ async def validate_runtime_profile_capacity(payload: dict[str, Any]) -> None:
 
 def _gib(value: float) -> str:
     return f"{value / 2**30:.2f}Gi"
+
+
+def _assert_networks_and_mounts_are_deliverable(payload: dict[str, Any]) -> None:
+    """Refuse host networks and mounts the deployment or its backend does not allow.
+
+    Each network, host path and volume must be on the operator's allowlist and
+    each mount target outside the directories the box's platform and system
+    own; the resolvers that decide that run again for every box created. The
+    selected backend must declare the capability, and may refuse it further
+    for its deployment (``validate_runtime_profile_configuration``).
+    """
+    from astrabox.common.utils.errors import APIError
+    from astrabox.core.service.orchestrator.runtime.runtime_profile import (
+        resolve_sandbox_mounts,
+        resolve_sandbox_networks,
+    )
+    from astrabox.seams.sandbox import sandbox_for_name
+
+    networks = resolve_sandbox_networks(payload)
+    mounts = resolve_sandbox_mounts(payload)
+    if not networks and not mounts:
+        return
+    provider = sandbox_for_name(payload.get("sandbox_backend"))
+    if networks and not provider.supports_network_attachment:
+        raise APIError(
+            code="SANDBOX_NETWORK_NOT_ALLOWED",
+            message=f"sandbox backend {provider.name!r} cannot join a sandbox to host networks",
+            status_code=409,
+            data={"sandbox_networks": list(networks)},
+        )
+    if mounts and not provider.supports_shared_mounts:
+        raise APIError(
+            code="SANDBOX_MOUNT_NOT_ALLOWED",
+            message=f"sandbox backend {provider.name!r} cannot mount host paths or volumes",
+            status_code=409,
+            data={"sandbox_mounts": [mount.source for mount in mounts]},
+        )
 
 
 def _assert_backend_capabilities(payload: dict[str, Any]) -> None:

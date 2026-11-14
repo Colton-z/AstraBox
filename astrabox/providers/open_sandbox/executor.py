@@ -18,7 +18,11 @@ from astrabox.providers.execd import EXECD_PORT
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.settings import load_astrabox_settings
-from astrabox.deploy.sandbox_server import CONTAINER_ENGINE_METADATA_KEY
+from astrabox.deploy.sandbox_server import (
+    CONTAINER_ENGINE_METADATA_KEY,
+    NETWORK_METADATA_PREFIX,
+    network_metadata,
+)
 from astrabox.providers.open_sandbox import _config
 from astrabox.providers.open_sandbox.aio_auth import (
     AIO_SANDBOX_API_KEY_ENV,
@@ -65,6 +69,7 @@ from astrabox.seams.sandbox import (
     SandboxUnreachable,
     sandbox_installation_id,
     environment_name_metadata,
+    SandboxSharedMount,
 )
 
 logger = get_logger(__name__)
@@ -672,25 +677,31 @@ def _volumes_from_specs(specs: list[dict[str, Any]] | None) -> list[Any]:
     volumes: list[Any] = []
     for spec in specs or []:
         pvc = dict(spec.get("pvc") or {})
-        if not pvc:
-            raise RuntimeError(
-                "a workspace volume must name a backend; only pvc is built here"
-            )
+        host = dict(spec.get("host") or {})
+        if bool(pvc) == bool(host):
+            raise RuntimeError("a create volume must name exactly one backend, pvc or host")
+        # By alias throughout: these models declare their fields under the wire
+        # names and do not populate by field name, so the alias IS the key.
+        # Validating the whole nested payload also lets the model build the
+        # backend struct itself.
+        backend: dict[str, Any] = (
+            {
+                "pvc": {
+                    "claimName": str(pvc["claimName"]),
+                    "createIfNotExists": bool(pvc.get("createIfNotExists", True)),
+                    "deleteOnSandboxTermination": bool(
+                        pvc.get("deleteOnSandboxTermination", False)
+                    ),
+                }
+            }
+            if pvc
+            else {"host": {"path": str(host["path"])}}
+        )
         volumes.append(
             Volume.model_validate(
                 {
                     "name": str(spec["name"]),
-                    # By alias throughout: these models declare their fields
-                    # under the wire names and do not populate by field name, so
-                    # the alias IS the key. Validating the whole nested payload
-                    # also lets the model build the backend struct itself.
-                    "pvc": {
-                        "claimName": str(pvc["claimName"]),
-                        "createIfNotExists": bool(pvc.get("createIfNotExists", True)),
-                        "deleteOnSandboxTermination": bool(
-                            pvc.get("deleteOnSandboxTermination", False)
-                        ),
-                    },
+                    **backend,
                     "mountPath": str(spec["mountPath"]),
                     "subPath": str(spec["subPath"]) if spec.get("subPath") else None,
                     "readOnly": bool(spec.get("readOnly", False)),
@@ -928,6 +939,37 @@ def _container_engine_volume(container_engine: str) -> list[dict[str, Any]]:
     ]
 
 
+def _shared_mount_volumes(mounts: tuple[SandboxSharedMount, ...]) -> list[dict[str, Any]]:
+    """The create's volumes for a RuntimeProfile's host paths and named volumes.
+
+    A host path is OpenSandbox's ``host`` backend, which the bundled server
+    hands Docker as a bind mount that refuses a missing source
+    (``sandbox_server.mount_volumes_through_docker``). A named volume is the
+    ``pvc`` backend with neither ``createIfNotExists`` nor
+    ``deleteOnSandboxTermination``: the operator's volume must already exist,
+    and it outlives every box.
+    """
+    return [
+        {
+            "name": f"shared-mount-{index}",
+            **(
+                {"host": {"path": mount.source}}
+                if mount.is_host_path
+                else {
+                    "pvc": {
+                        "claimName": mount.source,
+                        "createIfNotExists": False,
+                        "deleteOnSandboxTermination": False,
+                    }
+                }
+            ),
+            "mountPath": mount.target,
+            "readOnly": mount.read_only,
+        }
+        for index, mount in enumerate(mounts)
+    ]
+
+
 async def require_open_sandbox_container_engine(
     handle: OpenSandboxHandle,
     container_engine: str,
@@ -983,6 +1025,8 @@ async def create_open_sandbox_box(
     network_policy: Any = None,
     permission_level: str = SANDBOX_PERMISSION_LEVEL_DEFAULT,
     container_engine: str = SANDBOX_CONTAINER_ENGINE_NONE,
+    networks: tuple[str, ...] = (),
+    shared_mounts: tuple[SandboxSharedMount, ...] = (),
     credential_proxy_enabled: bool = False,
     vault_write: tuple[list[Any], list[Any]] | None = None,
     volumes: list[dict[str, Any]] | None = None,
@@ -1020,7 +1064,10 @@ async def create_open_sandbox_box(
     called. ``container_engine`` ``docker`` is created only through the bundled
     server on Docker, whose hooks grant it (``CONTAINER_ENGINE_METADATA_KEY``),
     with a per-box engine volume, and the box is returned only once its engine
-    answers (:func:`require_open_sandbox_container_engine`).
+    answers (:func:`require_open_sandbox_container_engine`). ``networks`` and
+    ``shared_mounts`` are likewise created only through that server: the
+    networks travel as create metadata its hook joins the box to, the mounts
+    as the create's ``host`` and ``pvc`` volumes (:func:`_shared_mount_volumes`).
     ``credential_proxy_enabled`` creates the credential proxy without writing a
     vault yet; this is the safe Agent-prewarm state. A non-empty ``vault_write``
     also enables the proxy and immediately writes its contents. ``cwd``, when
@@ -1064,6 +1111,17 @@ async def create_open_sandbox_box(
             status_code=409,
             data={"sandbox_container_engine": container_engine},
         )
+    if (networks or shared_mounts) and not OpenSandboxSandboxProvider._bundled_docker():
+        raise APIError(
+            code=(
+                "SANDBOX_NETWORK_NOT_ALLOWED" if networks else "SANDBOX_MOUNT_NOT_ALLOWED"
+            ),
+            message=(
+                "open_sandbox joins host networks and mounts host paths and volumes "
+                "only through the bundled lifecycle server on the Docker runtime"
+            ),
+            status_code=409,
+        )
     assignment_metadata = assignment_metadata_value(assignment)
     session_metadata = session_metadata_value(session_id)
     caller_metadata = {
@@ -1079,7 +1137,10 @@ async def create_open_sandbox_box(
         SANDBOX_INSTALLATION_METADATA_KEY,
         CONTAINER_ENGINE_METADATA_KEY,
     }
-    collisions = sorted(reserved_metadata & set(caller_metadata))
+    collisions = sorted(
+        (reserved_metadata & set(caller_metadata))
+        | {key for key in caller_metadata if key.startswith(NETWORK_METADATA_PREFIX)}
+    )
     if collisions:
         raise APIError(
             code="SANDBOX_CONFIG_INVALID",
@@ -1147,7 +1208,11 @@ async def create_open_sandbox_box(
     # metadata projection — the exact string stored on the box. The key stays
     # in its create environment and is never returned in a browser URL.
     create_env[AIO_SANDBOX_API_KEY_ENV] = derive_aio_api_key(assignment_metadata)
-    create_volumes = [*(volumes or []), *_container_engine_volume(container_engine)]
+    create_volumes = [
+        *(volumes or []),
+        *_container_engine_volume(container_engine),
+        *_shared_mount_volumes(shared_mounts),
+    ]
     provider = OpenSandboxSandboxProvider(transport=transport)
     recovered = await provider.find_sandbox_by_assignment(assignment)
     if recovered is not None and recovered.session_id != session_metadata:
@@ -1236,6 +1301,9 @@ async def create_open_sandbox_box(
                         if container_engine != SANDBOX_CONTAINER_ENGINE_NONE
                         else {}
                     ),
+                    # The bundled server's hook joins the box to these
+                    # (sandbox_server.attach_allowlisted_networks).
+                    **network_metadata(networks),
                 },
                 connection_config=connection_config,
                 # Durable storage, when the caller planned any. Passed at CREATE

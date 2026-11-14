@@ -29,6 +29,7 @@ class RuntimeProfile(Base):
     __table_args__ = (
         string_list_check("network_allowed_hosts"),
         string_list_check("tracing_signals"),
+        string_list_check("sandbox_networks"),
         *boolean_checks("enabled", "network_allow_mcp_servers", "tracing_enabled", "tracing_log_user_prompt"),
         MYSQL_TABLE_OPTIONS,
     )
@@ -53,6 +54,13 @@ class RuntimeProfile(Base):
     #: Kubernetes quantities; empty leaves each to the deployment's size for the kind of box.
     sandbox_cpu: Mapped[str | None] = mapped_column(payload_text())
     sandbox_memory: Mapped[str | None] = mapped_column(payload_text())
+
+
+    #: Host networks each box joins, by name.
+    sandbox_networks: Mapped[list[str] | None] = mapped_column(StringList())
+    #: Host paths and named volumes each box mounts: ``source``, ``target``,
+    #: ``read_only`` objects.
+    sandbox_mounts: Mapped[list[dict[str, Any]] | None] = mapped_column(payload_json())
     endpoint_provider: Mapped[str | None] = mapped_column(payload_text())
     provider_base_url: Mapped[str | None] = mapped_column(payload_text())
     provider_api_key_ref: Mapped[str | None] = mapped_column(KeyText(512))

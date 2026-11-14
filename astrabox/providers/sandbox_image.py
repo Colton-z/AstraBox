@@ -62,6 +62,40 @@ CONTAINER_ENGINE_DATA_ROOT = "/var/lib/astrabox/container-engine"
 #: path; otherwise prints why it cannot and exits non-zero.
 CONTAINER_ENGINE_READY_COMMAND = "/usr/local/bin/astrabox-container-engine ready"
 
+#: Directories a sandbox's platform, sandbox service or operating system owns.
+#: A RuntimeProfile's shared mount may not be placed at, under or above one: it
+#: would hide what the box runs from (the control server and engine homes, the
+#: AIO base, OpenSandbox's execd and its isolation layers, the container
+#: engine's data), put host storage inside the user's Workspace, or replace
+#: system directories. ``/home`` holds every workload account's private home
+#: and ``/tmp`` the runner's logs, spool and clone staging.
+RESERVED_MOUNT_TARGETS: tuple[str, ...] = (
+    "/workspace",
+    "/home",
+    "/tmp",
+    "/opt/astrabox",
+    "/opt/conversation-runtime",
+    "/opt/gem",
+    "/opt/opensandbox",
+    "/var/lib/astrabox",
+    "/var/lib/execd",
+    "/bin",
+    "/boot",
+    "/dev",
+    "/etc",
+    "/lib",
+    "/lib32",
+    "/lib64",
+    "/libx32",
+    "/proc",
+    "/root",
+    "/run",
+    "/sbin",
+    "/sys",
+    "/usr",
+    "/var/run",
+)
+
 
 def sandbox_boot_env(*, shared: bool, container_engine: str) -> dict[str, str]:
     return {

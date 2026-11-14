@@ -588,6 +588,84 @@ async def test_secure_access_setting_reaches_the_opensandbox_create_request(
     assert fake.create_bodies[-1]["secureAccess"] is True
 
 
+async def test_a_create_names_its_networks_and_mounts_the_operators_storage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Networks travel as metadata for the bundled server's hook; storage as volumes.
+
+    A named volume must already exist and outlives the box; read-write is
+    carried only where the RuntimeProfile stated it.
+    """
+    from astrabox.providers.open_sandbox.executor import create_open_sandbox_box
+    from astrabox.seams.sandbox import SandboxSharedMount
+
+    monkeypatch.setattr(OpenSandboxSandboxProvider, "_bundled_docker", staticmethod(lambda: True))
+    fake = _FakeLifecycle()
+    handle = await create_open_sandbox_box(
+        environment_name="astrabox",
+        session_id="sess-shared",
+        assignment_id="assignment-shared",
+        image="astrabox/agent:1",
+        env={},
+        resource_limits={"cpu": "4", "memory": "4Gi"},
+        resource_requests={"cpu": "200m", "memory": "768Mi"},
+        cwd=None,
+        networks=("foundry-shared", "git"),
+        shared_mounts=(
+            SandboxSharedMount(source="/srv/git-objects", target="/mnt/git-objects"),
+            SandboxSharedMount(source="npm-cache", target="/mnt/npm", read_only=False),
+        ),
+        transport=fake.transport(),
+    )
+    await handle.close()
+
+    body = fake.create_bodies[-1]
+    assert body["metadata"]["astrabox.network.0"] == "foundry-shared"
+    assert body["metadata"]["astrabox.network.1"] == "git"
+    assert [
+        {
+            key: {k: v for k, v in value.items() if v is not None}
+            if isinstance(value, dict)
+            else value
+            for key, value in volume.items()
+            if key in ("host", "pvc", "mountPath", "readOnly")
+        }
+        for volume in body["volumes"]
+    ] == [
+        {"host": {"path": "/srv/git-objects"}, "mountPath": "/mnt/git-objects", "readOnly": True},
+        {
+            "pvc": {
+                "claimName": "npm-cache",
+                "createIfNotExists": False,
+                "deleteOnSandboxTermination": False,
+            },
+            "mountPath": "/mnt/npm",
+            "readOnly": False,
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "code"),
+    [
+        ("sandbox_networks", ["foundry-shared"], "SANDBOX_NETWORK_NOT_ALLOWED"),
+        (
+            "sandbox_mounts",
+            [{"source": "npm-cache", "target": "/mnt/npm", "read_only": True}],
+            "SANDBOX_MOUNT_NOT_ALLOWED",
+        ),
+    ],
+)
+def test_networks_and_mounts_are_refused_without_the_bundled_docker_server(
+    field: str, value: Any, code: str
+) -> None:
+    # The fixture points at an existing OpenSandbox service, which applies only
+    # its own configuration; Kubernetes is refused by the same check.
+    with pytest.raises(APIError) as refused:
+        OpenSandboxSandboxProvider().validate_runtime_profile_configuration({field: value})
+    assert refused.value.code == code
+
+
 async def test_diagnostics_keeps_a_tail_line_aligned_so_a_fragment_is_not_prose() -> None:
     """A tail cut mid-line must not hand the tail of a secret to the redactor.
 

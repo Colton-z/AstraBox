@@ -1941,6 +1941,41 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "astrabox.deploy.sandbox_server",
     ),
     (
+        "ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS",
+        "public",
+        "",
+        "Comma-separated Docker networks of this host that a RuntimeProfile may join "
+        "its sandboxes to, so they reach services there (sandbox_networks). Empty "
+        "allows none. A joined network's subnet is reachable from the sandbox in "
+        "both network-access modes; connections from it into the sandbox are "
+        "refused. Bundled OpenSandbox server on the Docker runtime only. Checked "
+        "when a RuntimeProfile is saved and each time a sandbox is created; the "
+        "lifecycle server checks it again.",
+        "astrabox.common.utils.settings",
+    ),
+    (
+        "ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS",
+        "public",
+        "",
+        "Comma-separated absolute host directories that a RuntimeProfile may mount "
+        "into its sandboxes (sandbox_mounts), each named exactly; a sub-directory "
+        "is not allowed by its parent. Empty allows none. A read-write mount gives "
+        "the sandbox write access to that host directory. Bundled OpenSandbox "
+        "server on the Docker runtime only, which also renders it as its "
+        "storage.allowed_host_paths.",
+        "astrabox.common.utils.settings",
+    ),
+    (
+        "ASTRABOX_SANDBOX_MOUNTABLE_VOLUMES",
+        "public",
+        "",
+        "Comma-separated Docker named volumes that a RuntimeProfile may mount into "
+        "its sandboxes (sandbox_mounts). Empty allows none. Each must already "
+        "exist when a sandbox is created; names use lowercase letters, digits and "
+        "'-'. Bundled OpenSandbox server on the Docker runtime only.",
+        "astrabox.common.utils.settings",
+    ),
+    (
         "ASTRABOX_PUBLISH_HOST_IP",
         "public",
         "127.0.0.1",

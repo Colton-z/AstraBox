@@ -157,6 +157,27 @@ class SandboxNetworkPolicy:
             raise ValueError("unrestricted sandbox networking cannot carry allowed_hosts")
 
 
+@dataclass(frozen=True, slots=True)
+class SandboxSharedMount:
+    """One host path or named volume a RuntimeProfile mounts into its boxes.
+
+    ``source`` is an absolute host path (it starts with ``/``) or the name of a
+    volume of the sandbox host; either one the deployment allows
+    (``ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS``,
+    ``ASTRABOX_SANDBOX_MOUNTABLE_VOLUMES``). ``target`` is where the box sees
+    it. Unlike a workspace mount the storage outlives every box and is shared
+    by every box that mounts it.
+    """
+
+    source: str
+    target: str
+    read_only: bool = True
+
+    @property
+    def is_host_path(self) -> bool:
+        return self.source.startswith("/")
+
+
 #: How long a confirmed destruction may wait for an ACCEPTED delete to settle.
 #: Kubernetes deletes a workload asynchronously — the record stays visible
 #: until pod teardown completes — so the second observation re-asks within
@@ -464,6 +485,13 @@ class SandboxCreateSpec:
     has not declared the engine in
     :attr:`SandboxProvider.supported_container_engines` refuses it.
 
+    ``networks`` names the host networks the RuntimeProfile joins its boxes to
+    and ``shared_mounts`` the host paths and named volumes it mounts into them,
+    each already checked against the deployment's allowlists. They give a box
+    reach beyond its own sandbox, so a provider that has not declared
+    :attr:`SandboxProvider.supports_network_attachment` or
+    :attr:`SandboxProvider.supports_shared_mounts` refuses a non-empty value.
+
     ``metadata`` carries opaque platform facts that must stay attached to this
     physical box across a client-pool handoff. Providers transport these values
     without interpreting them and preserve them when runtime ownership is
@@ -514,6 +542,8 @@ class SandboxCreateSpec:
     network_policy: SandboxNetworkPolicy | None = None
     permission_level: str = "default"
     container_engine: str = "none"
+    networks: tuple[str, ...] = ()
+    shared_mounts: tuple[SandboxSharedMount, ...] = ()
     credential_proxy_enabled: bool = False
     vault_write: SandboxEgressCredentialPlan | None = field(
         default=None,
@@ -1206,6 +1236,17 @@ class SandboxProvider(ABC):
     #: depends on its deployment narrows it further in
     #: :meth:`validate_runtime_profile_configuration`.
     supported_container_engines: tuple[str, ...] = ()
+    #: Whether creates join a box to the host networks its RuntimeProfile names
+    #: (:attr:`SandboxCreateSpec.networks`), so it reaches services there while
+    #: its egress policy still governs everything else. The write path refuses
+    #: a RuntimeProfile naming networks on a backend that does not declare it;
+    #: a backend whose answer depends on its deployment narrows it further in
+    #: :meth:`validate_runtime_profile_configuration`.
+    supports_network_attachment: bool = False
+    #: Whether creates mount the host paths and named volumes a RuntimeProfile
+    #: names (:attr:`SandboxCreateSpec.shared_mounts`), with the read-only flag
+    #: each carries. Refused and narrowed like the flag above.
+    supports_shared_mounts: bool = False
     #: Whether creates honour a RuntimeProfile's provider-neutral
     #: ``network_policy`` by creating the box under it.
     #:
@@ -2825,6 +2866,7 @@ __all__ = [
     "SandboxClientPoolSpec",
     "SandboxClientPoolStatus",
     "SandboxCreateSpec",
+    "SandboxSharedMount",
     "SandboxDescriptor",
     "SandboxDiagnostics",
     "ConversationIdentity",

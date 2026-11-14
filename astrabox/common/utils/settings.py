@@ -572,6 +572,32 @@ class AstraBoxRuntimeSettings(BaseSettings):
             AliasPath("astrabox", "sandbox_egress_deny_cidrs"),
         ),
     )
+    # What a RuntimeProfile may give its sandboxes beyond the sandbox itself,
+    # each a comma-separated list the operator owns: host networks a sandbox
+    # may join, host paths and named volumes it may mount. Empty allows none.
+    # A RuntimeProfile is checked against them when it is saved and again
+    # each time a sandbox is created (docs/runtime-profiles.md).
+    sandbox_attachable_networks: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS",
+            AliasPath("astrabox", "sandbox_attachable_networks"),
+        ),
+    )
+    sandbox_mountable_host_paths: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS",
+            AliasPath("astrabox", "sandbox_mountable_host_paths"),
+        ),
+    )
+    sandbox_mountable_volumes: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "ASTRABOX_SANDBOX_MOUNTABLE_VOLUMES",
+            AliasPath("astrabox", "sandbox_mountable_volumes"),
+        ),
+    )
     # The model credential is held by the egress sidecar instead of being handed
     # to the sandbox. On by default; callers synthesize a deny-by-default policy
     # when the RuntimeProfile has none. A requested path that the backend cannot

@@ -48,6 +48,9 @@ _ALL_ENV = (
     launcher.INGRESS_SIGNING_KEY_ENV,
     launcher.INGRESS_SIGNING_KEY_ID_ENV,
     launcher.SECURE_ACCESS_ENV,
+    launcher.ATTACHABLE_NETWORKS_ENV,
+    launcher.MOUNTABLE_HOST_PATHS_ENV,
+    launcher.MOUNTABLE_VOLUMES_ENV,
 )
 
 
@@ -178,11 +181,36 @@ def test_document_binds_loopback_and_sets_no_endpoint_host(
     assert document["docker"]["host_ip"] == "127.0.0.1"
 
 
-def test_document_denies_every_host_bind_mount(document: dict[str, Any]) -> None:
+def test_host_mounts_are_denied_unless_the_operator_lists_each_directory(
+    document: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
     # An empty allowlist REJECTS (upstream's shipped example config comments the
-    # opposite meaning for the same value); the open_sandbox backend never
-    # requests a host mount.
+    # opposite meaning for the same value).
     assert document["storage"]["allowed_host_paths"] == []
+    monkeypatch.setenv(launcher.MOUNTABLE_HOST_PATHS_ENV, "/srv/git-objects, /srv/cache")
+    assert launcher.config_document()["storage"]["allowed_host_paths"] == [
+        "/srv/git-objects",
+        "/srv/cache",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("env", "value"),
+    [
+        ("ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS", "srv/cache"),
+        ("ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS", "/"),
+        ("ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS", "/srv/../etc"),
+        ("ASTRABOX_SANDBOX_MOUNTABLE_VOLUMES", "foundry_cache"),
+        ("ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS", "bridge"),
+        ("ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS", "-shared"),
+    ],
+)
+def test_an_allowlist_entry_the_lifecycle_server_cannot_apply_stops_startup(
+    monkeypatch: pytest.MonkeyPatch, env: str, value: str
+) -> None:
+    monkeypatch.setenv(env, value)
+    with pytest.raises(launcher.SandboxServerConfigError, match=env):
+        (launcher.mountable_host_paths(), launcher.mountable_volumes(), launcher.attachable_networks())
 
 
 # ---------------------------------------------------------------------------
@@ -422,6 +450,7 @@ def upstream_docker_service(
         (networking.DockerNetworkingMixin, launcher.START_EGRESS_SIDECAR_ATTR),
         (container_ops.DockerContainerOpsMixin, launcher.CREATE_AND_START_ATTR),
         (volumes.DockerVolumesMixin, launcher.BUILD_VOLUME_BINDS_ATTR),
+        (volumes.DockerVolumesMixin, launcher.VALIDATE_HOST_VOLUME_ATTR),
     ):
         monkeypatch.setattr(owner, attribute, getattr(owner, attribute))
     document["docker"]["host_ip"] = "172.17.0.1"
@@ -431,7 +460,7 @@ def upstream_docker_service(
     launcher.let_docker_assign_published_ports(
         service, networking, container_ops, constants, "172.17.0.1", ports=(20000, 20100)
     )
-    launcher.mount_volume_subpaths_through_docker(volumes, container_ops)
+    launcher.mount_volumes_through_docker(volumes, container_ops)
     instance = object.__new__(service.DockerSandboxService)
     instance.app_config = config_module.AppConfig(**document)
     instance.network_mode = "bridge"
@@ -485,6 +514,113 @@ def test_a_sandbox_without_a_network_policy_is_refused_before_any_container(
     assert raised.value.status_code == 400
     assert "networkPolicy" in raised.value.detail["message"]
     assert daemon.created == {}
+
+
+def test_a_host_path_is_bind_mounted_by_docker_and_checked_only_by_exact_name(
+    upstream_docker_service: Any,
+) -> None:
+    """Docker binds the operator's directory; the server never touches its own filesystem.
+
+    Upstream's check resolves and creates the path in the lifecycle server's
+    container, which is not the host. A bind ``Mount`` has Docker refuse a
+    missing source rather than create it, as a ``-v`` bind would.
+    """
+    from fastapi import HTTPException
+
+    schema = _upstream("opensandbox_server.api.schema")
+    volume = schema.Volume.model_validate(
+        {
+            "name": "shared-mount-0",
+            "host": {"path": "/srv/astrabox-test-cache"},
+            "mountPath": "/mnt/cache",
+            "readOnly": True,
+        }
+    )
+    upstream_docker_service._validate_host_volume(volume, ["/srv/astrabox-test-cache"])
+    assert not Path("/srv/astrabox-test-cache").exists()
+    beneath = volume.model_copy(update={"host": schema.Host(path="/srv/astrabox-test-cache/x")})
+    with pytest.raises(HTTPException) as raised:
+        upstream_docker_service._validate_host_volume(beneath, ["/srv/astrabox-test-cache"])
+    assert raised.value.status_code == 400
+
+    daemon = _FakeDockerDaemon(held=())
+    _provision(
+        upstream_docker_service,
+        daemon,
+        volumes=[
+            {
+                "name": "shared-mount-0",
+                "host": {"path": "/srv/astrabox-test-cache"},
+                "mountPath": "/mnt/cache",
+                "readOnly": True,
+            },
+            {
+                "name": "shared-mount-1",
+                "pvc": {"claimName": "npm-cache", "createIfNotExists": False},
+                "mountPath": "/mnt/npm",
+                "readOnly": False,
+            },
+        ],
+        pvc_inspect_cache={"npm-cache": {"Driver": "local", "Mountpoint": "/var/lib/docker/volumes/npm-cache/_data"}},
+    )
+    box = next(
+        record["host_config"]
+        for record in daemon.created.values()
+        if str(record["host_config"].get("network_mode", "")).startswith("container:")
+    )
+    assert [dict(mount) for mount in box["mounts"]] == [
+        {
+            "Target": "/mnt/cache",
+            "Source": "/srv/astrabox-test-cache",
+            "Type": "bind",
+            "ReadOnly": True,
+        }
+    ]
+    assert "npm-cache:/mnt/npm:rw" in box["binds"]
+    assert not any("/srv/astrabox-test-cache" in bind for bind in box["binds"])
+
+
+def test_a_box_resolves_single_label_names_of_a_joined_networks_services() -> None:
+    def container(name: str, aliases: list[str], address: str, labels: dict[str, str]) -> dict[str, Any]:
+        return {
+            "Id": "0123456789abcdef",
+            "Name": f"/{name}",
+            "Config": {"Labels": labels},
+            "NetworkSettings": {
+                "Networks": {
+                    "foundry": {
+                        "IPAddress": address,
+                        "Aliases": aliases,
+                        "DNSNames": [name, "0123456789ab", *aliases],
+                    }
+                }
+            },
+        }
+
+    lines = launcher.network_host_entries(
+        "foundry",
+        [
+            container("foundry-postgres-1", ["postgres"], "192.168.16.2", {}),
+            # A dotted alias could stand in for a host a credential is bound to.
+            container("kafka", ["api.anthropic.com", "kafka"], "192.168.16.3", {}),
+            container("sandbox-egress-x", [], "192.168.16.9", {"opensandbox.io/egress-sidecar-for": "x"}),
+        ],
+        sidecar_label="opensandbox.io/egress-sidecar-for",
+    )
+    assert lines == ["192.168.16.2\tfoundry-postgres-1 postgres", "192.168.16.3\tkafka"]
+
+
+def test_a_joined_box_keeps_dns_in_its_sidecar_and_refuses_the_network_inbound() -> None:
+    import ipaddress
+
+    rules = launcher.network_isolation_rules(
+        [ipaddress.ip_network("192.168.16.0/20"), ipaddress.ip_network("10.30.0.0/24")]
+    )
+    assert "ip daddr 127.0.0.11 drop" in rules
+    assert "ip saddr { 192.168.16.0/20, 10.30.0.0/24 } ct state new drop" in rules
+    assert launcher.networks_from_labels(
+        {**launcher.network_metadata(["foundry", "git"]), "astrabox.network-wiring": "x"}
+    ) == ["foundry", "git"]
 
 
 def test_a_restarted_server_leaves_another_installations_sandbox_running(

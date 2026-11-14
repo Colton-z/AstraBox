@@ -315,6 +315,18 @@ for _code, _status, _category, _retryable, _owner in (
         False,
         "runtime",
     ),
+    # A RuntimeProfile names a host network the deployment does not let a
+    # sandbox join (ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS), or one its sandbox
+    # service cannot join. Raised when the RuntimeProfile is saved and when a
+    # sandbox is created, since the allowlist can shrink in between; the
+    # operator widens the list or an administrator edits the RuntimeProfile.
+    ("SANDBOX_NETWORK_NOT_ALLOWED", 409, "configuration", False, "template"),
+    # A RuntimeProfile mounts a host path or named volume the deployment does
+    # not allow (ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS,
+    # ASTRABOX_SANDBOX_MOUNTABLE_VOLUMES), mounts one over a directory the
+    # platform or the system owns in the sandbox, or uses a sandbox service
+    # that cannot mount it. Raised at save and at create, like the above.
+    ("SANDBOX_MOUNT_NOT_ALLOWED", 409, "configuration", False, "template"),
     (
         "CHANNEL_CREDENTIALS_UNAVAILABLE",
         503,

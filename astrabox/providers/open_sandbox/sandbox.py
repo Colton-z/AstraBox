@@ -862,6 +862,12 @@ class OpenSandboxSandboxProvider(SandboxProvider):
     # other deployment of this backend is refused per RuntimeProfile
     # (validate_runtime_profile_configuration).
     supported_container_engines = (SANDBOX_CONTAINER_ENGINE_DOCKER,)
+    # Joining a host network goes through the bundled server's Docker hook
+    # (``attach_allowlisted_networks``); host paths and volumes through the
+    # create's ``volumes``. Both are refused per RuntimeProfile on every other
+    # deployment of this backend (validate_runtime_profile_configuration).
+    supports_network_attachment = True
+    supports_shared_mounts = True
     # The unfenced pair (registration validates them together). Hard product
     # decision: this backend never adopts the generation fence.
 
@@ -1234,6 +1240,8 @@ class OpenSandboxSandboxProvider(SandboxProvider):
             network_policy=translated_network,
             permission_level=spec.permission_level,
             container_engine=spec.container_engine,
+            networks=tuple(spec.networks),
+            shared_mounts=tuple(spec.shared_mounts),
             credential_proxy_enabled=bool(spec.credential_proxy_enabled),
             vault_write=translated_vault,
             volumes=volume_specs_from_planned_mounts(
@@ -1537,13 +1545,42 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
 
     def validate_runtime_profile_configuration(self, payload: Mapping[str, Any]) -> None:
-        """Refuse a container engine anywhere but the bundled server on Docker.
+        """Refuse a container engine, host networks and host mounts anywhere but
+        the bundled server on Docker.
 
-        The engine's grants are applied by the bundled lifecycle server's Docker
-        hooks (``astrabox.deploy.sandbox_server.grant_container_engine_boxes``).
-        Its Kubernetes runtime has no such hook yet, and an existing OpenSandbox
-        service applies only its own configuration.
+        The engine's grants and a box's network attachment are applied by the
+        bundled lifecycle server's Docker hooks
+        (``astrabox.deploy.sandbox_server.grant_container_engine_boxes``,
+        ``attach_allowlisted_networks``), and only that server renders the
+        host-path allowlist and mounts host paths through Docker. Its
+        Kubernetes runtime has no such hooks: a Pod has one network, and a
+        host path or claim there is a cluster decision AstraBox has not
+        verified. An existing OpenSandbox service applies only its own
+        configuration.
         """
+        if not self._bundled_docker():
+            if payload.get("sandbox_networks"):
+                raise APIError(
+                    code="SANDBOX_NETWORK_NOT_ALLOWED",
+                    message=(
+                        "environment payload: sandbox_networks joins sandboxes to host "
+                        "networks only with the bundled OpenSandbox server on the Docker "
+                        "runtime (ASTRABOX_SANDBOX_SERVER_RUNTIME=docker, no "
+                        "ASTRABOX_SANDBOX_OPENAPI_BASE_URL)"
+                    ),
+                    status_code=409,
+                )
+            if payload.get("sandbox_mounts"):
+                raise APIError(
+                    code="SANDBOX_MOUNT_NOT_ALLOWED",
+                    message=(
+                        "environment payload: sandbox_mounts mounts host paths and volumes "
+                        "only with the bundled OpenSandbox server on the Docker runtime "
+                        "(ASTRABOX_SANDBOX_SERVER_RUNTIME=docker, no "
+                        "ASTRABOX_SANDBOX_OPENAPI_BASE_URL)"
+                    ),
+                    status_code=409,
+                )
         engine = str(
             payload.get("sandbox_container_engine") or SANDBOX_CONTAINER_ENGINE_NONE
         ).strip().lower()

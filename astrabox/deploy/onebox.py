@@ -331,6 +331,33 @@ def needs_sandbox_server() -> bool:
     return not _env(BASE_URL_ENV, "")
 
 
+#: Settings that only the bundled lifecycle server on the Docker runtime
+#: applies: what a RuntimeProfile may give a sandbox beyond itself.
+BUNDLED_DOCKER_SANDBOX_GRANT_ENVS = (
+    "ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS",
+    "ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS",
+    "ASTRABOX_SANDBOX_MOUNTABLE_VOLUMES",
+)
+
+
+def warn_about_sandbox_grants_without_a_bundled_server() -> None:
+    """Say so when a sandbox-grant allowlist is set with no bundled server to apply it.
+
+    The AstraBox server refuses a RuntimeProfile that uses one unless sandboxes
+    come from the bundled server on Docker, so with an existing OpenSandbox
+    service or another backend the setting allows nothing. That server's own
+    launcher warns under its Kubernetes runtime.
+    """
+    present = [name for name in BUNDLED_DOCKER_SANDBOX_GRANT_ENVS if name in os.environ]
+    if present:
+        logger.warning(
+            "%s set, but this deployment runs no bundled OpenSandbox server, so no "
+            "RuntimeProfile can use them: they apply only to sandboxes that server "
+            "creates on Docker",
+            ", ".join(present),
+        )
+
+
 def needs_litellm_gateway() -> bool:
     """Whether this container must run the embedded LiteLLM proxy.
 
@@ -1592,6 +1619,8 @@ def main(
     ensure_database_wiring()
 
     run_sandbox_server = needs_sandbox_server()
+    if not run_sandbox_server:
+        warn_about_sandbox_grants_without_a_bundled_server()
     run_litellm = needs_litellm_gateway()
     if _env("ASTRABOX_MODEL_GATEWAY_OIDC_CONFIG_FILE", "") and not run_litellm:
         raise OneBoxError(

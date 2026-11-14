@@ -39,9 +39,13 @@ import ipaddress
 import json
 import logging
 import os
+import posixpath
+import re
 import sys
 import tempfile
 import threading
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -151,7 +155,7 @@ EXECD_IMAGE_ENV = "ASTRABOX_SANDBOX_SERVER_EXECD_IMAGE"
 #: version it speaks (https://docs.docker.com/reference/api/engine/, "API
 #: version matrix"). API 1.45 added ``VolumeOptions.Subpath`` (Engine 26.0
 #: release notes, moby/moby#45687), which persistent workspaces depend on: see
-#: :func:`mount_volume_subpaths_through_docker`. Everything else the stack
+#: :func:`mount_volumes_through_docker`. Everything else the stack
 #: uses is older (opensandbox-server 0.2.3 documents Engine 20.10). The
 #: installer checks the same pair (``scripts/install.sh``).
 MIN_DOCKER_ENGINE: Final = "26.0"
@@ -174,6 +178,13 @@ EPHEMERAL_PORT_RANGE_FILE = "/proc/sys/net/ipv4/ip_local_port_range"
 #: different defaults (4096 PIDs; a 0.0.0.0 publish).
 PIDS_LIMIT_ENV = "ASTRABOX_SANDBOX_PIDS_LIMIT"
 DEFAULT_PIDS_LIMIT = "512"
+#: The operator's allowlists of what a RuntimeProfile may give its sandboxes
+#: beyond the sandbox: host networks to join, host paths and named volumes to
+#: mount. The AstraBox server checks a RuntimeProfile against them; this server
+#: validates them at startup and enforces the first two again at create.
+ATTACHABLE_NETWORKS_ENV = "ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS"
+MOUNTABLE_HOST_PATHS_ENV = "ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS"
+MOUNTABLE_VOLUMES_ENV = "ASTRABOX_SANDBOX_MOUNTABLE_VOLUMES"
 #: Docker's CFS period; a CPU limit is a quota of microseconds per period.
 _CPU_PERIOD_MICROSECONDS = 100_000
 #: The ceiling of the egress sidecar beside each Docker sandbox. It is part of
@@ -276,6 +287,9 @@ _DOCKER_ONLY_ENV = (
     PIDS_LIMIT_ENV,
     PUBLISH_HOST_IP_ENV,
     EGRESS_DNS_UPSTREAM_ENV,
+    ATTACHABLE_NETWORKS_ENV,
+    MOUNTABLE_HOST_PATHS_ENV,
+    MOUNTABLE_VOLUMES_ENV,
 )
 _KUBERNETES_ONLY_ENV = (
     KUBECONFIG_ENV,
@@ -539,6 +553,62 @@ def pids_limit() -> int:
     if value <= 0:
         raise SandboxServerConfigError(f"{PIDS_LIMIT_ENV}={configured!r} must be positive")
     return value
+
+
+def _allowlist(raw: str) -> tuple[str, ...]:
+    return tuple(item for item in (part.strip() for part in raw.split(",")) if item)
+
+
+#: OpenSandbox's metadata (Docker label) value grammar, which a network name
+#: travels in (:func:`network_metadata`).
+_LABEL_VALUE = re.compile(r"[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?")
+#: OpenSandbox's ``pvc.claimName`` grammar, which a named volume travels in.
+_CLAIM_NAME = re.compile(r"[a-z0-9]([-a-z0-9]{0,251}[a-z0-9])?")
+#: Networks every sandbox already has or that would replace its own.
+_UNATTACHABLE_NETWORKS = frozenset({"bridge", "host", "none"})
+
+
+def attachable_networks() -> tuple[str, ...]:
+    """``ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS``, each name usable as create metadata."""
+    names = _allowlist(_env(ATTACHABLE_NETWORKS_ENV, ""))
+    for name in names:
+        if name in _UNATTACHABLE_NETWORKS:
+            raise SandboxServerConfigError(
+                f"{ATTACHABLE_NETWORKS_ENV} names {name!r}: a sandbox cannot join Docker's "
+                "bridge, host or none network; name a user-defined network"
+            )
+        if not _LABEL_VALUE.fullmatch(name):
+            raise SandboxServerConfigError(
+                f"{ATTACHABLE_NETWORKS_ENV} names {name!r}: a network a sandbox joins must "
+                "have a name of at most 63 letters, digits, '-', '_' or '.', starting and "
+                "ending with a letter or digit"
+            )
+    return names
+
+
+def mountable_host_paths() -> tuple[str, ...]:
+    """``ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS``: absolute, normalized directories."""
+    paths = _allowlist(_env(MOUNTABLE_HOST_PATHS_ENV, ""))
+    for path in paths:
+        if not path.startswith("/") or path == "/" or posixpath.normpath(path) != path or ":" in path:
+            raise SandboxServerConfigError(
+                f"{MOUNTABLE_HOST_PATHS_ENV} names {path!r}: each entry is an absolute, "
+                "normalized host directory below / without ':'"
+            )
+    return paths
+
+
+def mountable_volumes() -> tuple[str, ...]:
+    """``ASTRABOX_SANDBOX_MOUNTABLE_VOLUMES``, each name usable as an OpenSandbox claim name."""
+    names = _allowlist(_env(MOUNTABLE_VOLUMES_ENV, ""))
+    for name in names:
+        if not _CLAIM_NAME.fullmatch(name):
+            raise SandboxServerConfigError(
+                f"{MOUNTABLE_VOLUMES_ENV} names {name!r}: OpenSandbox mounts a named volume "
+                "whose name is lowercase letters, digits and '-', starting and ending with "
+                "a letter or digit"
+            )
+    return names
 
 
 def egress() -> dict[str, Any]:
@@ -1246,10 +1316,11 @@ def _docker_config_document() -> dict[str, Any]:
     ``apparmor_profile`` and ``seccomp_profile`` stay unset, matching upstream's
     default of Docker's built-in seccomp profile with no AppArmor override.
 
-    ``storage.allowed_host_paths = []`` denies every host bind mount because
-    ``ensure_valid_host_path`` has no allowed prefix. The ``open_sandbox``
-    backend declares ``uses_create_oss_mounts`` and never requests a host mount,
-    so there is no deployment knob for this allowlist.
+    ``storage.allowed_host_paths`` is :func:`mountable_host_paths`: the host
+    directories a RuntimeProfile may mount. Empty denies every host mount,
+    because ``ensure_valid_host_path`` then has no allowed prefix. Upstream
+    reads each entry as a prefix; AstraBox mounts only an entry itself
+    (:func:`mount_volumes_through_docker`).
 
     ``store`` is OpenSandbox's snapshot-repository SQLite path. It stays under
     AstraBox's state root even though this deployment does not use that snapshot
@@ -1283,7 +1354,7 @@ def _docker_config_document() -> dict[str, Any]:
             "port_range_max": high,
             "host_ip": publish_host_ip(),
         },
-        "storage": {"allowed_host_paths": []},
+        "storage": {"allowed_host_paths": list(mountable_host_paths())},
         "store": {
             "type": "sqlite",
             "path": str(metadata_root.parent / SNAPSHOT_STORE_FILENAME),
@@ -1889,14 +1960,16 @@ def let_docker_assign_published_ports(
 #: Per provisioning thread: the volume mounts ``_build_volume_binds`` left out of
 #: the bind list, for ``_create_and_start_container`` to pass to Docker. Upstream
 #: provisions each sandbox on its own thread and calls the two in that order.
-_volume_subpath_mounts = threading.local()
+_docker_volume_mounts = threading.local()
+
+VALIDATE_HOST_VOLUME_ATTR = "_validate_host_volume"
 
 
-def mount_volume_subpaths_through_docker(
+def mount_volumes_through_docker(
     volumes_module: ModuleType,
     container_ops_module: ModuleType,
 ) -> None:
-    """Mount a named volume's ``subPath`` through Docker, not through its Mountpoint.
+    """Hand Docker a named volume's ``subPath`` and a host path as mounts, not binds.
 
     opensandbox-server 0.2.3 maps a ``pvc`` volume with a ``subPath`` on Docker to
     a plain bind of ``<volume Mountpoint>/<subPath>`` (OSEP-0003, "Docker
@@ -1920,35 +1993,62 @@ def mount_volume_subpaths_through_docker(
     would mount the whole volume, which for a workspace view includes the
     mergerfs control entry; :func:`require_docker_engine` refuses such a daemon
     before the server starts.
+
+    A ``host`` volume (a RuntimeProfile's shared host path) goes the same way,
+    as a bind mount. Upstream checks one in its own process: it resolves
+    symlinks against ``storage.allowed_host_paths`` and creates the directory
+    when it is missing. This server runs in AstraBox's container, where the
+    host's paths are not mounted, so that check reads another filesystem and
+    the creation fails or lands in the container. The hook replaces it with
+    exact membership in the allowlist, which leaves no path component for a
+    caller to choose, and the bind mount has Docker refuse a source that does
+    not exist on the host instead of creating it (a ``-v`` bind would).
     """
     from docker.types import Mount
 
     _require_attributes(
         volumes_module,
         (VOLUMES_MIXIN_ATTR,),
-        "mount volume sub-paths through Docker",
+        "mount volumes through Docker",
     )
     _require_attributes(
         container_ops_module,
         (CONTAINER_OPS_MIXIN_ATTR,),
-        "mount volume sub-paths through Docker",
+        "mount volumes through Docker",
     )
     volumes_mixin = getattr(volumes_module, VOLUMES_MIXIN_ATTR)
     ops_mixin = getattr(container_ops_module, CONTAINER_OPS_MIXIN_ATTR)
     for owner, attribute in (
         (volumes_mixin, BUILD_VOLUME_BINDS_ATTR),
+        (volumes_mixin, VALIDATE_HOST_VOLUME_ATTR),
         (ops_mixin, CREATE_AND_START_ATTR),
     ):
         if not hasattr(owner, attribute):
             raise SandboxServerConfigError(
                 "the installed opensandbox-server no longer exposes "
                 f"{owner.__module__}.{owner.__name__}.{attribute}, so AstraBox "
-                "cannot mount volume sub-paths through Docker. Pin "
+                "cannot mount volumes through Docker. Pin "
                 "opensandbox-server to a 0.2.x release, or update "
                 "astrabox/deploy/sandbox_server.py."
             )
     upstream_binds = getattr(volumes_mixin, BUILD_VOLUME_BINDS_ATTR)
     upstream_create = getattr(ops_mixin, CREATE_AND_START_ATTR)
+
+    def _astrabox_validate_host_volume(volume: Any, allowed_prefixes: list[str] | None) -> None:
+        from fastapi import HTTPException, status
+
+        if volume.sub_path or volume.host.path not in (allowed_prefixes or []):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "HOST_PATH_NOT_ALLOWED",
+                    "message": (
+                        f"Volume '{volume.name}': host path {volume.host.path!r} "
+                        f"{'with a subPath ' if volume.sub_path else ''}is not one of "
+                        f"{MOUNTABLE_HOST_PATHS_ENV}"
+                    ),
+                },
+            )
 
     def _astrabox_build_volume_binds(
         self: Any, volumes: list[Any] | None, *args: Any, **kwargs: Any
@@ -1956,10 +2056,18 @@ def mount_volume_subpaths_through_docker(
         through_docker = [
             volume
             for volume in volumes or []
-            if getattr(volume, "pvc", None) is not None and getattr(volume, "sub_path", None)
+            if getattr(volume, "host", None) is not None
+            or (getattr(volume, "pvc", None) is not None and getattr(volume, "sub_path", None))
         ]
-        _volume_subpath_mounts.mounts = [
+        _docker_volume_mounts.mounts = [
             Mount(
+                target=volume.mount_path,
+                source=volume.host.path,
+                type="bind",
+                read_only=bool(volume.read_only),
+            )
+            if getattr(volume, "host", None) is not None
+            else Mount(
                 target=volume.mount_path,
                 source=volume.pvc.claim_name,
                 type="volume",
@@ -1983,8 +2091,8 @@ def mount_volume_subpaths_through_docker(
         exposed_ports: list[str] | None,
         platform: Any,
     ) -> Any:
-        mounts = list(getattr(_volume_subpath_mounts, "mounts", None) or [])
-        _volume_subpath_mounts.mounts = []
+        mounts = list(getattr(_docker_volume_mounts, "mounts", None) or [])
+        _docker_volume_mounts.mounts = []
         if mounts:
             host_config_kwargs["mounts"] = [*(host_config_kwargs.get("mounts") or []), *mounts]
         return upstream_create(
@@ -1999,7 +2107,365 @@ def mount_volume_subpaths_through_docker(
             platform,
         )
 
+    setattr(volumes_mixin, VALIDATE_HOST_VOLUME_ATTR, staticmethod(_astrabox_validate_host_volume))
     setattr(volumes_mixin, BUILD_VOLUME_BINDS_ATTR, _astrabox_build_volume_binds)
+    setattr(ops_mixin, CREATE_AND_START_ATTR, _astrabox_create_and_start_container)
+
+
+#: Create metadata keys (Docker labels once OpenSandbox copies them) naming the
+#: host networks a box joins, one per key because a label value cannot hold a
+#: list. The OpenSandbox executor writes them; :func:`attach_allowlisted_networks`
+#: reads them.
+NETWORK_METADATA_PREFIX = "astrabox.network."
+
+
+def network_metadata(networks: Iterable[str]) -> dict[str, str]:
+    """The create metadata that asks this server to join a box to ``networks``."""
+    return {f"{NETWORK_METADATA_PREFIX}{index}": name for index, name in enumerate(networks)}
+
+
+def networks_from_labels(labels: dict[str, str]) -> list[str]:
+    """The networks :func:`network_metadata` recorded, in their order."""
+    indexed = [
+        (int(key[len(NETWORK_METADATA_PREFIX):]), value)
+        for key, value in labels.items()
+        if key.startswith(NETWORK_METADATA_PREFIX)
+        and key[len(NETWORK_METADATA_PREFIX):].isdigit()
+    ]
+    return [name for _index, name in sorted(indexed)]
+
+
+#: Docker's embedded DNS server in a container that joined a user-defined
+#: network. It answers that network's names and forwards every other name from
+#: the host's network namespace, past the egress sidecar's DNS proxy and filter.
+DOCKER_EMBEDDED_DNS = "127.0.0.11"
+#: One name of a container on a joined network that a box may resolve: a single
+#: DNS label. A dotted name, such as an alias that looks like a public host, is
+#: never written, so a container on the network cannot take over a name a
+#: protected credential is bound to.
+_HOST_NAME_LABEL = re.compile(r"[A-Za-z0-9]([A-Za-z0-9_-]{0,61}[A-Za-z0-9])?")
+#: The egress API's policy endpoint, inside the sidecar (OpenSandbox egress
+#: ``PATCH /policy``: merges rules by target and keeps ``defaultAction``).
+_EGRESS_POLICY_PATH = "/policy"
+_EGRESS_API_PORT = "18080"
+EGRESS_AUTH_HEADER_ATTR = "OPEN_SANDBOX_EGRESS_AUTH_HEADER"
+EGRESS_AUTH_TOKEN_LABEL_ATTR = "SANDBOX_EGRESS_AUTH_TOKEN_METADATA_KEY"
+EGRESS_RULES_ENV_ATTR = "EGRESS_RULES_ENV"
+
+
+def network_isolation_rules(subnets: Iterable[Any]) -> str:
+    """The nftables table a joined box's sidecar namespace gets beside the egress one.
+
+    ``output`` drops Docker's embedded DNS server: a joined box keeps resolving
+    through the sidecar's DNS proxy (its ``resolv.conf`` is written back), and a
+    direct query to the embedded server would resolve, and leak, any name past
+    the egress policy. ``input`` refuses new connections from the joined
+    subnets, so a box is a client of the network and never a server on it: the
+    boxes of other conversations joined to the same network cannot reach its
+    in-box services. Both chains run before the egress table's, at priority
+    -200, and the egress sidecar replaces only its own table on a policy change.
+    """
+    targets = ", ".join(str(subnet) for subnet in subnets)
+    return (
+        "table inet astrabox_networks {\n"
+        "  chain output {\n"
+        "    type filter hook output priority -200; policy accept;\n"
+        f"    ip daddr {DOCKER_EMBEDDED_DNS} drop\n"
+        "  }\n"
+        "  chain input {\n"
+        "    type filter hook input priority -200; policy accept;\n"
+        f"    ip saddr {{ {targets} }} ct state new drop\n"
+        "  }\n"
+        "}\n"
+    )
+
+
+def network_host_entries(
+    network_name: str,
+    containers: Iterable[dict[str, Any]],
+    *,
+    sidecar_label: str,
+) -> list[str]:
+    """``/etc/hosts`` lines for the containers on a joined network.
+
+    Each container's name and its aliases on that network that are single DNS
+    labels, at its address there. The sidecars of sandboxes (``sidecar_label``)
+    are left out: a box refuses connections from the network, so another box's
+    name would lead nowhere. ``containers`` are inspect documents.
+    """
+    lines: list[str] = []
+    for container in containers:
+        config_labels = (container.get("Config") or {}).get("Labels") or {}
+        if sidecar_label in config_labels:
+            continue
+        endpoint = ((container.get("NetworkSettings") or {}).get("Networks") or {}).get(
+            network_name
+        ) or {}
+        address = str(endpoint.get("IPAddress") or "").strip()
+        if not address:
+            continue
+        short_id = str(container.get("Id") or "")[:12]
+        names: list[str] = []
+        for candidate in (
+            str(container.get("Name") or "").lstrip("/"),
+            *(endpoint.get("Aliases") or []),
+            *(endpoint.get("DNSNames") or []),
+        ):
+            name = str(candidate or "")
+            if (
+                _HOST_NAME_LABEL.fullmatch(name)
+                and name not in names
+                and name != short_id
+                and name != "localhost"
+            ):
+                names.append(name)
+        if names:
+            lines.append(f"{address}\t{' '.join(names)}")
+    return lines
+
+
+def attach_allowlisted_networks(
+    container_ops_module: ModuleType,
+    networking_module: ModuleType,
+    constants_module: ModuleType,
+    allowed: tuple[str, ...],
+) -> None:
+    """Join a box to the host networks its create names, under its egress sidecar.
+
+    OpenSandbox 0.2.3 has no create field for a second network: its Docker
+    runtime takes one ``docker.network_mode`` for every sandbox and refuses a
+    network policy with a user-defined one, since the egress sidecar always
+    runs on the default bridge (``DockerNetworkingMixin._ensure_network_policy_support``).
+    A box shares its sidecar's network namespace, so the hook connects the
+    sidecar to each network named by :data:`NETWORK_METADATA_PREFIX` metadata,
+    before ``_create_and_start_container`` creates the box, and keeps the
+    sidecar in charge of what leaves it:
+
+    * The network must be in ``allowed`` (``ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS``),
+      exist, be IPv4-only, and lie outside every network the sidecar's policy
+      denies; otherwise the create is refused. A denied subnet could never be
+      reached, and the sidecar disables IPv6 in its namespace.
+    * Connecting a user-defined network makes Docker point ``resolv.conf`` at
+      its embedded DNS server, whose NAT rule precedes the sidecar's DNS
+      redirect: every name would bypass the egress DNS proxy, so a Limited
+      policy's named hosts would never be admitted and private names such as
+      the model gateway's would not resolve. The hook writes the previous
+      ``resolv.conf`` back and drops the embedded server
+      (:func:`network_isolation_rules`).
+    * The network's containers' single-label names go into ``/etc/hosts``
+      (:func:`network_host_entries`), as of this create: a service that moves
+      to another address later is reached by that address only from boxes
+      created after it moved.
+    * The sidecar's policy is patched to allow each joined subnet, which a
+      Limited policy otherwise drops: joining a network is the RuntimeProfile's
+      grant to reach it. The policy's deny rules still apply.
+    * New connections from the joined subnets into the box are refused.
+
+    The box shares the sidecar's ``resolv.conf`` and ``/etc/hosts``. Removing
+    the sidecar disconnects it; a failure here raises, and upstream's create
+    removes the sidecar.
+    """
+    _require_attributes(
+        container_ops_module,
+        (CONTAINER_OPS_MIXIN_ATTR,),
+        "join sandboxes to host networks",
+    )
+    _require_attributes(
+        networking_module,
+        (EGRESS_SIDECAR_LABEL_ATTR,),
+        "join sandboxes to host networks",
+    )
+    _require_attributes(
+        constants_module,
+        (
+            ERROR_CODES_ATTR,
+            EGRESS_AUTH_HEADER_ATTR,
+            EGRESS_AUTH_TOKEN_LABEL_ATTR,
+            EGRESS_RULES_ENV_ATTR,
+        ),
+        "join sandboxes to host networks",
+    )
+    ops_mixin = getattr(container_ops_module, CONTAINER_OPS_MIXIN_ATTR)
+    if not hasattr(ops_mixin, CREATE_AND_START_ATTR):
+        raise SandboxServerConfigError(
+            "the installed opensandbox-server no longer exposes "
+            f"{ops_mixin.__module__}.{ops_mixin.__name__}.{CREATE_AND_START_ATTR}, so "
+            "AstraBox cannot join sandboxes to host networks. Pin opensandbox-server "
+            "to a 0.2.x release, or update astrabox/deploy/sandbox_server.py."
+        )
+    from fastapi import HTTPException as http_exception
+    from fastapi import status as http_status
+
+    upstream_create = getattr(ops_mixin, CREATE_AND_START_ATTR)
+    error_codes = getattr(constants_module, ERROR_CODES_ATTR)
+    sidecar_label = str(getattr(networking_module, EGRESS_SIDECAR_LABEL_ATTR))
+    auth_header = str(getattr(constants_module, EGRESS_AUTH_HEADER_ATTR))
+    token_label = str(getattr(constants_module, EGRESS_AUTH_TOKEN_LABEL_ATTR))
+    rules_env = str(getattr(constants_module, EGRESS_RULES_ENV_ATTR))
+
+    def _refused(message: str) -> Any:
+        return http_exception(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail={"code": error_codes.INVALID_PARAMETER, "message": message},
+        )
+
+    def _failed(message: str) -> Any:
+        return http_exception(
+            status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"code": error_codes.CONTAINER_START_FAILED, "message": message},
+        )
+
+    def _denied_networks(sidecar: Any) -> list[Any]:
+        for entry in (sidecar.attrs.get("Config") or {}).get("Env") or []:
+            name, _, value = str(entry).partition("=")
+            if name != rules_env:
+                continue
+            denied = []
+            for rule in json.loads(value).get("egress") or []:
+                if rule.get("action") != "deny":
+                    continue
+                try:
+                    denied.append(ipaddress.ip_network(str(rule.get("target")), strict=False))
+                except ValueError:
+                    continue
+            return denied
+        raise _failed(f"egress sidecar {sidecar.id} carries no {rules_env}")
+
+    def _run(sidecar: Any, command: list[str]) -> str:
+        result = sidecar.exec_run(command, user="root")
+        output = bytes(result.output or b"").decode("utf-8", "replace")
+        if result.exit_code != 0:
+            raise _failed(
+                f"egress sidecar {sidecar.id} refused {command[0]!r} "
+                f"(exit {result.exit_code}): {output.strip()[-500:]}"
+            )
+        return output
+
+    def _join(service: Any, sandbox_id: str, names: list[str], sidecar_id: str, labels: dict[str, str]) -> None:
+        refused = [name for name in names if name not in allowed]
+        if refused:
+            raise _refused(
+                f"sandbox {sandbox_id}: {ATTACHABLE_NETWORKS_ENV} does not allow "
+                f"{', '.join(refused)}"
+            )
+        client = service.docker_client
+        sidecar = client.containers.get(sidecar_id)
+        denied = _denied_networks(sidecar)
+        resolv_conf = _run(sidecar, ["cat", "/etc/resolv.conf"])
+        subnets: list[Any] = []
+        hosts: list[str] = []
+        for name in names:
+            try:
+                network = client.networks.get(name)
+            except Exception as exc:
+                raise _refused(f"sandbox {sandbox_id}: Docker network {name!r}: {exc}") from exc
+            if network.attrs.get("EnableIPv6"):
+                raise _refused(
+                    f"sandbox {sandbox_id}: Docker network {name!r} has IPv6 enabled; "
+                    "a sandbox's namespace runs IPv4 only"
+                )
+            joined = [
+                ipaddress.ip_network(str(config["Subnet"]), strict=False)
+                for config in ((network.attrs.get("IPAM") or {}).get("Config") or [])
+                if config.get("Subnet")
+            ]
+            if not joined or any(subnet.version != 4 for subnet in joined):
+                raise _refused(
+                    f"sandbox {sandbox_id}: Docker network {name!r} has no IPv4-only subnet"
+                )
+            covered = sorted(
+                {str(deny) for deny in denied for subnet in joined if subnet.overlaps(deny)}
+            )
+            if covered:
+                raise _refused(
+                    f"sandbox {sandbox_id}: Docker network {name!r} "
+                    f"({', '.join(map(str, joined))}) is inside networks every sandbox's "
+                    f"egress denies ({', '.join(covered)}), so it could never be reached"
+                )
+            network.connect(sidecar)
+            network.reload()
+            members = [
+                client.api.inspect_container(container_id)
+                for container_id in (network.attrs.get("Containers") or {})
+                if container_id != sidecar.id
+            ]
+            hosts.extend(network_host_entries(name, members, sidecar_label=sidecar_label))
+            subnets.extend(joined)
+        _run(
+            sidecar,
+            [
+                "sh",
+                "-c",
+                'printf %s "$1" > /etc/resolv.conf && printf %s "$2" >> /etc/hosts '
+                '&& printf %s "$3" | nft -f -',
+                "astrabox-networks",
+                resolv_conf,
+                "".join(f"{line}\n" for line in hosts),
+                network_isolation_rules(subnets),
+            ],
+        )
+        host = service._resolve_proxy_host()
+        port = _published_host_ports(sidecar, [_EGRESS_API_PORT])[_EGRESS_API_PORT]
+        request = urllib.request.Request(
+            f"http://{host}:{port}{_EGRESS_POLICY_PATH}",
+            data=json.dumps(
+                [{"action": "allow", "target": str(subnet)} for subnet in subnets]
+            ).encode("utf-8"),
+            headers={auth_header: labels.get(token_label, ""), "Content-Type": "application/json"},
+            method="PATCH",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:  # nosec B310 - the sidecar's published port
+                status = response.status
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+        except OSError as exc:
+            raise _failed(f"sandbox {sandbox_id}: egress policy update failed: {exc}") from exc
+        if not 200 <= status < 300:
+            raise _failed(
+                f"sandbox {sandbox_id}: egress sidecar answered {status} to allowing "
+                f"{', '.join(map(str, subnets))}"
+            )
+        logger.info(
+            "sandbox %s joined %s (%s); %d name(s) of those networks resolve in it",
+            sandbox_id,
+            ", ".join(names),
+            ", ".join(map(str, subnets)),
+            len(hosts),
+        )
+
+    def _astrabox_create_and_start_container(
+        self: Any,
+        sandbox_id: str,
+        image_uri: str,
+        bootstrap_command: list[str],
+        labels: dict[str, str],
+        environment: list[str],
+        host_config_kwargs: dict[str, Any],
+        exposed_ports: list[str] | None,
+        platform: Any,
+    ) -> Any:
+        names = networks_from_labels(labels)
+        if names:
+            network_mode = str(host_config_kwargs.get("network_mode") or "")
+            if not network_mode.startswith("container:"):
+                raise _refused(
+                    f"sandbox {sandbox_id}: this lifecycle server joins a sandbox to host "
+                    "networks only through its egress sidecar; create it with a networkPolicy"
+                )
+            _join(self, sandbox_id, names, network_mode.partition(":")[2], labels)
+        return upstream_create(
+            self,
+            sandbox_id,
+            image_uri,
+            bootstrap_command,
+            labels,
+            environment,
+            host_config_kwargs,
+            exposed_ports,
+            platform,
+        )
+
     setattr(ops_mixin, CREATE_AND_START_ATTR, _astrabox_create_and_start_container)
 
 
@@ -2050,7 +2516,7 @@ def grant_container_engine_boxes(
     wraps ``DockerContainerOpsMixin._create_and_start_container``, which builds
     the box's ``HostConfig`` with one ``APIClient.create_host_config`` call, and
     adds the fields to that call's result through a thread-local, the way
-    :func:`mount_volume_subpaths_through_docker` hands its mounts across.
+    :func:`mount_volumes_through_docker` hands its mounts across.
     """
     _require_attributes(
         container_ops_module,
@@ -3153,12 +3619,16 @@ def prepare() -> dict[str, Any]:
                 int(document["docker"]["port_range_max"]),
             ),
         )
-        mount_volume_subpaths_through_docker(volumes_module, container_ops_module)
+        mount_volumes_through_docker(volumes_module, container_ops_module)
         try:
             from docker.api import client as docker_api_client_module
         except Exception as exc:
             raise missing_extra_error(exc) from exc
         grant_container_engine_boxes(container_ops_module, docker_api_client_module)
+        mountable_volumes()
+        attach_allowlisted_networks(
+            container_ops_module, networking_module, constants_module, attachable_networks()
+        )
         redirect_proxy_host(networking_module, host_ip)
         redirect_public_endpoint_host(networking_module, host_ip)
         leave_other_installations_sandboxes_running(
@@ -3295,7 +3765,7 @@ __all__ = [
     "kubernetes_ingress",
     "leave_other_installations_sandboxes_running",
     "let_docker_assign_published_ports",
-    "mount_volume_subpaths_through_docker",
+    "mount_volumes_through_docker",
     "lifecycle_base_url",
     "main",
     "metadata_dir",

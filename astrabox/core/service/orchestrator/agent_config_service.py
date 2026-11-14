@@ -559,6 +559,10 @@ class AgentConfigService:
         )
         view.sandbox_cpu = str(env.get("sandbox_cpu") or "").strip() or None
         view.sandbox_memory = str(env.get("sandbox_memory") or "").strip() or None
+        networks = env.get("sandbox_networks")
+        view.sandbox_networks = list(networks) if isinstance(networks, list) else None
+        mounts = env.get("sandbox_mounts")
+        view.sandbox_mounts = list(mounts) if isinstance(mounts, list) else None
         networking = env.get("networking")
         view.networking = networking if isinstance(networking, dict) else None
         # One parser decides what a valid tracing document is, and it runs at

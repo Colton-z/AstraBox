@@ -26,6 +26,7 @@ from astrabox.seams.sandbox import (
     SANDBOX_TENANCIES,
     SANDBOX_TENANCY_AGENT,
     SANDBOX_TENANCY_CONVERSATION,
+    SandboxSharedMount,
 )
 
 
@@ -88,6 +89,137 @@ def resolve_sandbox_size(template: Any | None) -> dict[str, str]:
         for kind, field in (("cpu", "sandbox_cpu"), ("memory", "sandbox_memory"))
         if (value := str(_template_value(template, field) or "").strip())
     }
+
+
+def deployment_allowlist(raw: Any) -> tuple[str, ...]:
+    """One of the operator's comma-separated sandbox allowlists, as its entries."""
+    return tuple(item for item in (part.strip() for part in str(raw or "").split(",")) if item)
+
+
+def resolve_sandbox_networks(template: Any | None) -> tuple[str, ...]:
+    """The host networks a box of this RuntimeProfile joins; unset is none.
+
+    Each must be one the deployment allows now
+    (``ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS``). This runs when the RuntimeProfile
+    is saved and for every box created from it, because the operator can
+    shrink the list after the RuntimeProfile was saved.
+    """
+    from astrabox.common.utils.settings import load_astrabox_settings
+
+    raw = _template_value(template, "sandbox_networks")
+    if raw is None:
+        return ()
+    if not isinstance(raw, (list, tuple)) or any(not isinstance(item, str) for item in raw):
+        raise _network_refusal("sandbox_networks must be a list of network names", raw)
+    names = tuple(item.strip() for item in raw)
+    if len(set(names)) != len(names) or not all(names):
+        raise _network_refusal("sandbox_networks names each network once", list(names))
+    allowed = set(deployment_allowlist(load_astrabox_settings().sandbox_attachable_networks))
+    refused = [name for name in names if name not in allowed]
+    if refused:
+        raise _network_refusal(
+            f"this deployment does not let a sandbox join {', '.join(map(repr, refused))}; "
+            "ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS allows "
+            f"{', '.join(map(repr, sorted(allowed))) or 'none'}",
+            refused,
+        )
+    return names
+
+
+def _network_refusal(message: str, networks: Any) -> APIError:
+    return APIError(
+        code="SANDBOX_NETWORK_NOT_ALLOWED",
+        message=message,
+        status_code=409,
+        data={"sandbox_networks": networks},
+    )
+
+
+#: The fields of one ``sandbox_mounts`` item.
+_SHARED_MOUNT_FIELDS = frozenset({"source", "target", "read_only"})
+
+
+def resolve_sandbox_mounts(template: Any | None) -> tuple[SandboxSharedMount, ...]:
+    """The host paths and named volumes a box of this RuntimeProfile mounts.
+
+    A source that starts with ``/`` is a host path and must be named exactly
+    in ``ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS``; any other source is a named
+    volume and must be in ``ASTRABOX_SANDBOX_MOUNTABLE_VOLUMES``. A target is
+    an absolute, normalized path that is neither at, under nor above a
+    directory the box's platform or system owns (:data:`RESERVED_MOUNT_TARGETS`),
+    and each target is used once. Read-only unless ``read_only`` is false.
+    Checked at save and for every box created, like the networks above.
+    """
+    from astrabox.common.utils.settings import load_astrabox_settings
+    from astrabox.providers.sandbox_image import RESERVED_MOUNT_TARGETS
+
+    raw = _template_value(template, "sandbox_mounts")
+    if raw is None:
+        return ()
+    if not isinstance(raw, (list, tuple)):
+        raise _mount_refusal("sandbox_mounts must be a list of mounts", raw)
+    settings = load_astrabox_settings()
+    host_paths = set(deployment_allowlist(settings.sandbox_mountable_host_paths))
+    volumes = set(deployment_allowlist(settings.sandbox_mountable_volumes))
+    mounts: list[SandboxSharedMount] = []
+    for index, item in enumerate(raw):
+        label = f"sandbox_mounts[{index}]"
+        if not isinstance(item, dict):
+            raise _mount_refusal(f"{label} must be an object", item)
+        unknown = sorted(set(item) - _SHARED_MOUNT_FIELDS)
+        if unknown:
+            raise _mount_refusal(f"{label} has unsupported fields {unknown}", item)
+        source, target = item.get("source"), item.get("target")
+        read_only = item.get("read_only", True)
+        if not isinstance(source, str) or not isinstance(target, str):
+            raise _mount_refusal(f"{label} needs a source and a target", item)
+        if not isinstance(read_only, bool):
+            raise _mount_refusal(f"{label}.read_only must be true or false", item)
+        mount = SandboxSharedMount(source=source, target=target, read_only=read_only)
+        if mount.is_host_path and source not in host_paths:
+            raise _mount_refusal(
+                f"{label}: this deployment does not let a sandbox mount host path "
+                f"{source!r}; ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS allows "
+                f"{', '.join(map(repr, sorted(host_paths))) or 'none'}",
+                item,
+            )
+        if not mount.is_host_path and source not in volumes:
+            raise _mount_refusal(
+                f"{label}: this deployment does not let a sandbox mount volume "
+                f"{source!r}; ASTRABOX_SANDBOX_MOUNTABLE_VOLUMES allows "
+                f"{', '.join(map(repr, sorted(volumes))) or 'none'}",
+                item,
+            )
+        problem = _mount_target_problem(target, RESERVED_MOUNT_TARGETS)
+        if problem:
+            raise _mount_refusal(f"{label}: target {target!r} {problem}", item)
+        if any(existing.target == target for existing in mounts):
+            raise _mount_refusal(f"{label}: target {target!r} is mounted twice", item)
+        mounts.append(mount)
+    return tuple(mounts)
+
+
+def _mount_target_problem(target: str, reserved: tuple[str, ...]) -> str | None:
+    """Why ``target`` cannot take a shared mount, or None when it can."""
+    if not target.startswith("/") or target == "/":
+        return "must be an absolute path below /"
+    if posixpath.normpath(target) != target or ":" in target or "," in target:
+        return "must be a normalized path without ':' or ','"
+    for owned in reserved:
+        if target == owned or target.startswith(f"{owned}/"):
+            return f"is inside {owned}, which the sandbox's platform or system owns"
+        if owned.startswith(f"{target}/"):
+            return f"would hide {owned}, which the sandbox's platform or system owns"
+    return None
+
+
+def _mount_refusal(message: str, mount: Any) -> APIError:
+    return APIError(
+        code="SANDBOX_MOUNT_NOT_ALLOWED",
+        message=message,
+        status_code=409,
+        data={"sandbox_mount": mount},
+    )
 
 
 def resolve_sandbox_tenancy(template: Any | None) -> str:
