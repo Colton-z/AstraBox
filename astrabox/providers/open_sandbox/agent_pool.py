@@ -52,10 +52,6 @@ logger = get_logger(__name__)
 # would be too long here.
 _POOL_TOMBSTONE_TTL = timedelta(minutes=5)
 
-# The SDK replenishes on its reconcile tick and offers no public way to start
-# one, so a claimed member is replaced within one interval.
-_RECONCILE_SECONDS = 2
-
 # Members prepared concurrently per pool. A refill of a large pool starts this
 # many creates at once instead of all of them, so one Agent's refill cannot
 # exhaust a single Docker host or node. The SDK creates at most the deficit, and
@@ -63,13 +59,10 @@ _RECONCILE_SECONDS = 2
 # derived from the size the pool started with.
 _WARMUP_CONCURRENCY_LIMIT = 8
 
-# The replica that replenishes a pool holds the SDK's primary lock, which the
-# SDK renews only between commits. A lock long enough to outlast one create and
-# its preparation left a pool unreplenished that long after its holder died, so
-# a heartbeat renews the lock while this process holds it and the lock outlasts
-# only the heartbeat. It stays above the SDK's warmup ready timeout, which the
-# SDK requires of it.
-_PRIMARY_LOCK_HEARTBEAT_SECONDS = 10
+# The replica that replenishes a pool holds the SDK's primary lock. The SDK
+# renews it on its own heartbeat while this process holds it and fences
+# in-flight warmups when a renewal fails, and warns unless the lock outlasts its
+# warmup ready timeout, so the lock is that timeout plus this margin.
 _PRIMARY_LOCK_TTL_MARGIN_SECONDS = 30
 
 _POOL_ACQUIRE_FAILURES = (
@@ -134,7 +127,6 @@ class OpenSandboxClientPoolRegistry:
         self._pool_factory = pool_factory
         self._pools: dict[str, Any] = {}
         self._sizes: dict[str, int] = {}
-        self._heartbeats: dict[str, asyncio.Task[None]] = {}
         self._lock = asyncio.Lock()
         # Stable across restarts of this process on the same host, so a restart
         # takes back the lock it held instead of waiting for it to expire; the
@@ -206,7 +198,6 @@ class OpenSandboxClientPoolRegistry:
                 creation_spec=PoolCreationSpec(image=spec.creation_image),
                 warmup_concurrency=_WARMUP_CONCURRENCY_LIMIT,
                 primary_lock_ttl=lock_ttl,
-                reconcile_interval=timedelta(seconds=_RECONCILE_SECONDS),
                 warmup_ready_timeout=timedelta(seconds=int(settings.sandbox_ready_timeout_seconds)),
                 warmup_skip_health_check=True,
                 warmup_sandbox_preparer=self._preparer(spec, preparer),
@@ -250,45 +241,11 @@ class OpenSandboxClientPoolRegistry:
                 ) from exc
             self._pools[spec.pool_name] = pool
             self._sizes[spec.pool_name] = int(spec.max_idle)
-            self._heartbeats[spec.pool_name] = asyncio.create_task(
-                self._renew_primary_lock(spec.pool_name, state_store, lock_ttl),
-                name=f"client-pool-lock-heartbeat-{spec.pool_name}",
-            )
 
         logger.info(
             "OpenSandbox client-pool scheduler started: pool=%s",
             spec.pool_name,
         )
-
-    async def _renew_primary_lock(
-        self, pool_name: str, state_store: Any, ttl: timedelta
-    ) -> None:
-        """Keep the primary lock alive while this process holds it.
-
-        Renewal succeeds only for the current holder, so a replica that is not
-        primary renews nothing and takes nothing over.
-        """
-
-        while True:
-            await asyncio.sleep(_PRIMARY_LOCK_HEARTBEAT_SECONDS)
-            try:
-                await state_store.renew_primary_lock(pool_name, self._owner_id, ttl)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.warning(
-                    "OpenSandbox client-pool lock renewal failed: pool=%s error=%s",
-                    pool_name,
-                    _error_detail(exc),
-                )
-
-    async def _stop_heartbeat(self, pool_name: str) -> None:
-        task = self._heartbeats.pop(pool_name, None)
-        if task is None:
-            return
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
 
     def _creator(
         self,
@@ -538,7 +495,6 @@ class OpenSandboxClientPoolRegistry:
         async with self._lock:
             pool = self._pools.pop(name, None)
             self._sizes.pop(name, None)
-        await self._stop_heartbeat(name)
         if pool is not None:
             try:
                 await pool.shutdown(graceful=True)
@@ -588,8 +544,6 @@ class OpenSandboxClientPoolRegistry:
             pools = dict(self._pools)
             self._pools.clear()
             self._sizes.clear()
-        for name in pools:
-            await self._stop_heartbeat(name)
         await asyncio.gather(
             *(pool.shutdown(graceful=True) for pool in pools.values()),
             return_exceptions=True,

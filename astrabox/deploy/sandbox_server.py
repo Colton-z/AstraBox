@@ -5,14 +5,12 @@ runs the bundled server on loopback. OpenSandbox remains a separate process so
 Docker and Kubernetes share its published HTTP contract while its synchronous
 SDK work stays outside the AstraBox event loop.
 
-This module owns four integration boundaries:
+This module owns three integration boundaries:
 
 * configuration rendering and validation for the selected runtime;
-* Docker-only hooks where upstream exposes no public setting: published ports
-  (their address, and Docker choosing them), volume sub-paths mounted by
-  Docker, metadata storage, and leaving other installations' sandboxes and
-  sidecars alone;
-* a Docker proxy-host compatibility hook for OpenSandbox 0.2.x; and
+* Docker-only hooks where upstream exposes no public setting: Docker choosing
+  published ports, volume sub-paths mounted by Docker, metadata storage, and
+  leaving other installations' sandboxes and sidecars alone; and
 * Kubernetes startup checks for the API server, namespace, and workload CRD.
 
 On one Docker host, sandbox traffic uses OpenSandbox execd's native port proxy.
@@ -35,6 +33,7 @@ upstream provides the corresponding field.
 from __future__ import annotations
 
 import base64
+import contextlib
 import ipaddress
 import json
 import logging
@@ -155,7 +154,7 @@ EXECD_IMAGE_ENV = "ASTRABOX_SANDBOX_SERVER_EXECD_IMAGE"
 #: version matrix"). API 1.45 added ``VolumeOptions.Subpath`` (Engine 26.0
 #: release notes, moby/moby#45687), which persistent workspaces depend on: see
 #: :func:`mount_volumes_through_docker`. Everything else the stack
-#: uses is older (opensandbox-server 0.2.3 documents Engine 20.10). The
+#: uses is older (opensandbox-server documents Engine 20.10). The
 #: installer checks the same pair (``scripts/install.sh``).
 MIN_DOCKER_ENGINE: Final = "26.0"
 MIN_DOCKER_API_VERSION: Final = "1.45"
@@ -186,11 +185,16 @@ MOUNTABLE_HOST_PATHS_ENV = "ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS"
 MOUNTABLE_VOLUMES_ENV = "ASTRABOX_SANDBOX_MOUNTABLE_VOLUMES"
 #: Docker's CFS period; a CPU limit is a quota of microseconds per period.
 _CPU_PERIOD_MICROSECONDS = 100_000
-#: The ceiling of the egress sidecar beside each Docker sandbox. It is part of
-#: what one sandbox costs, not a separate setting: it measured 64-76MiB at its
-#: peak on the test cluster.
+#: The ceiling of the egress sidecar beside each sandbox. It is part of what
+#: one sandbox costs, not a separate setting: it measured 64-76MiB at its peak
+#: on the test cluster.
 EGRESS_SIDECAR_CPU = 1.0
 EGRESS_SIDECAR_MEMORY_BYTES = 128 * 1024 * 1024
+#: What the Kubernetes scheduler reserves for the sidecar and for execd's init
+#: container: the sidecar's memory ceiling and a twentieth of its CPU.
+#: Kubernetes would otherwise reserve the whole limit.
+SIDECAR_KUBERNETES_REQUESTS: Final = {"cpu": "50m", "memory": "128Mi"}
+SIDECAR_KUBERNETES_LIMITS: Final = {"cpu": "1", "memory": "128Mi"}
 #: Linux capabilities dropped from every sandbox container: Docker's
 #: ``cap_drop``, and on Kubernetes the sandbox container's
 #: ``securityContext.capabilities.drop``. ``NET_RAW`` removes raw/packet
@@ -245,7 +249,7 @@ DEFAULT_KUBE_WORKLOAD_PROVIDER = "batchsandbox"
 #: rather than deferred to a create-time ``ValueError``.
 WORKLOAD_RESOURCES: dict[str, tuple[str, str, str]] = {
     "batchsandbox": ("sandbox.opensandbox.io", "v1alpha1", "batchsandboxes"),
-    "agent-sandbox": ("agents.x-k8s.io", "v1alpha1", "sandboxes"),
+    "agent-sandbox": ("agents.x-k8s.io", "v1beta1", "sandboxes"),
 }
 
 KUBE_IMAGE_PULL_POLICY_ENV = "ASTRABOX_SANDBOX_SERVER_KUBE_IMAGE_PULL_POLICY"
@@ -253,10 +257,6 @@ DEFAULT_KUBE_IMAGE_PULL_POLICY = "IfNotPresent"
 #: Kubernetes' own three; upstream passes the string through to the Pod spec, so
 #: a typo would be a create-time API rejection instead of a startup refusal.
 _IMAGE_PULL_POLICIES = ("Always", "IfNotPresent", "Never")
-
-KUBE_INFORMER_ENV = "ASTRABOX_SANDBOX_SERVER_KUBE_INFORMER"
-#: Upstream's own default for ``kubernetes.informer_enabled``.
-DEFAULT_KUBE_INFORMER = "true"
 
 KUBE_CREATE_TIMEOUT_ENV = "ASTRABOX_SANDBOX_SERVER_KUBE_CREATE_TIMEOUT_SECONDS"
 #: Upstream's own default for ``kubernetes.sandbox_create_timeout_seconds``.
@@ -296,7 +296,6 @@ _KUBERNETES_ONLY_ENV = (
     KUBE_NAMESPACE_ENV,
     KUBE_WORKLOAD_PROVIDER_ENV,
     KUBE_IMAGE_PULL_POLICY_ENV,
-    KUBE_INFORMER_ENV,
     INGRESS_MODE_ENV,
     INGRESS_GATEWAY_ADDRESS_ENV,
     INGRESS_ROUTE_MODE_ENV,
@@ -329,7 +328,8 @@ def _env(name: str, default: str) -> str:
 
 #: Spellings accepted for a boolean knob, matching what the rest of AstraBox's
 #: settings layer accepts. Anything else is refused rather than read as false —
-#: ``informer=off`` silently meaning "on" is the failure this prevents.
+#: a value outside both sets silently meaning one of them is the failure this
+#: prevents.
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _FALSE = frozenset({"0", "false", "no", "off"})
 
@@ -464,7 +464,7 @@ def network_mode() -> str:
     if mode != DEFAULT_NETWORK_MODE and _flag(CREDENTIAL_VAULT_ENV, "true"):
         raise SandboxServerConfigError(
             f"{NETWORK_MODE_ENV}={configured!r} cannot be used while Credential "
-            "Vault is on: OpenSandbox 0.2.x supports networkPolicy and its egress "
+            "Vault is on: opensandbox-server supports networkPolicy and its egress "
             "sidecar only on Docker's 'bridge' network. Use 'bridge', or turn "
             f"{CREDENTIAL_VAULT_ENV} off explicitly."
         )
@@ -698,8 +698,9 @@ def publish_host_ip() -> str:
     HTTP service and execd. ``0.0.0.0`` is accepted for deployments that put
     their own authenticated proxy or firewall in front, but emits a warning.
 
-    An explicit value must be an IP address (Docker's ``HostIp`` is an address,
-    not a name).
+    An explicit value must be an IPv4 address: Docker's ``HostIp`` is an
+    address, not a name, and opensandbox-server's ``docker.publish_host``
+    accepts IPv4 only because its port probe binds an IPv4 socket.
     """
     configured = _env(PUBLISH_HOST_IP_ENV, DEFAULT_PUBLISH_HOST_IP)
     try:
@@ -709,6 +710,11 @@ def publish_host_ip() -> str:
             f"{PUBLISH_HOST_IP_ENV}={configured!r} must be an IP address "
             "(Docker publishes to an address, not a hostname)."
         ) from exc
+    if address.version != 4:
+        raise SandboxServerConfigError(
+            f"{PUBLISH_HOST_IP_ENV}={configured!r} must be an IPv4 address: "
+            "opensandbox-server publishes sandbox ports on IPv4 only."
+        )
     if address.is_unspecified:
         logger.warning(
             "%s=%s publishes every sandbox's host ports on ALL interfaces. "
@@ -1291,10 +1297,12 @@ def _docker_config_document() -> dict[str, Any]:
 
     ``server.host`` stays on loopback because the lifecycle API can control the
     host Docker daemon and has no public authentication in the bundled setup.
-    ``docker.host_ip`` is the address used for Docker host-port mappings. It can
-    be loopback for a host process or the bridge gateway for a containerized
-    process. ``server.eip`` remains unset because upstream treats it as a full
-    URL base rather than an IP address.
+    ``docker.publish_host`` is the address Docker publishes sandbox ports on,
+    and ``docker.host_ip`` the address the server dials them at and returns in
+    endpoint URLs when it runs in a container; both are
+    :func:`publish_host_ip`, loopback for a host process or the bridge gateway
+    for a containerized one. ``server.eip`` remains unset because upstream
+    treats it as a full URL base rather than an IP address.
 
     The ``docker`` block states the container hardening profile required by
     agent workloads:
@@ -1351,7 +1359,11 @@ def _docker_config_document() -> dict[str, Any]:
             "pids_limit": pids_limit(),
             "port_range_min": low,
             "port_range_max": high,
-            "host_ip": publish_host_ip(),
+            # Docker publishes every sandbox port, the egress sidecar's
+            # included, on publish_host; the server dials them and names them
+            # in endpoint URLs at host_ip (require_reachable_published_ports).
+            "host_ip": (publish_host := publish_host_ip()),
+            "publish_host": publish_host,
         },
         "storage": {"allowed_host_paths": list(mountable_host_paths())},
         "store": {
@@ -1370,8 +1382,8 @@ def _kubernetes_config_document() -> dict[str, Any]:
     ``AppConfig`` validator makes the two runtime blocks exclusive, and every
     field in the Docker one describes something Kubernetes does not have — there
     is no network mode to pick, no host port range to publish into and no host
-    interface to publish on. :func:`prepare` skips the publish-host rebind here
-    for the same reason, by runtime rather than by the block's absence.
+    interface to publish on. :func:`prepare` skips the Docker hooks here for the
+    same reason, by runtime rather than by the block's absence.
 
     The container hardening profile the Docker block states explicitly has no
     counterpart in upstream's ``[kubernetes]`` block, which carries no
@@ -1396,6 +1408,11 @@ def _kubernetes_config_document() -> dict[str, Any]:
 
     ``kubeconfig_path`` is omitted entirely when :data:`KUBECONFIG_ENV` is unset,
     which is how upstream spells "use the in-cluster ServiceAccount".
+
+    The egress sidecar and execd's init container get the sidecar's ceiling
+    (:data:`EGRESS_SIDECAR_CPU`, :data:`EGRESS_SIDECAR_MEMORY_BYTES`) through
+    ``egress.limits`` and ``kubernetes.execd_init_resources``; without them
+    upstream creates both containers without resources.
     """
     metadata_root = metadata_dir()
     kubeconfig = kubeconfig_for_server()
@@ -1409,8 +1426,11 @@ def _kubernetes_config_document() -> dict[str, Any]:
             "namespace": kube_namespace(),
             "workload_provider": kube_workload_provider(),
             "image_pull_policy": kube_image_pull_policy(),
-            "informer_enabled": _flag(KUBE_INFORMER_ENV, DEFAULT_KUBE_INFORMER),
             "sandbox_create_timeout_seconds": kube_create_timeout_seconds(),
+            "execd_init_resources": {
+                "requests": dict(SIDECAR_KUBERNETES_REQUESTS),
+                "limits": dict(SIDECAR_KUBERNETES_LIMITS),
+            },
         }
     )
     return {
@@ -1431,7 +1451,11 @@ def _kubernetes_config_document() -> dict[str, Any]:
             "path": str(metadata_root.parent / SNAPSHOT_STORE_FILENAME),
         },
         **({"secure_runtime": hardened} if (hardened := secure_runtime()) else {}),
-        **({"egress": sidecar} if (sidecar := egress()) else {}),
+        "egress": {
+            **egress(),
+            "requests": dict(SIDECAR_KUBERNETES_REQUESTS),
+            "limits": dict(SIDECAR_KUBERNETES_LIMITS),
+        },
     }
 
 
@@ -1547,7 +1571,6 @@ EXPIRE_SANDBOX_ATTR = "_expire_sandbox"
 GET_CONTAINER_ATTR = "_get_container_by_sandbox_id"
 REMOVE_EXPIRATION_ATTR = "_remove_expiration_tracking"
 CLEANUP_SIDECAR_ATTR = "_cleanup_egress_sidecar"
-CONTAINER_TO_SANDBOX_ATTR = "_container_to_sandbox"
 VOLUMES_MIXIN_ATTR = "DockerVolumesMixin"
 BUILD_VOLUME_BINDS_ATTR = "_build_volume_binds"
 EGRESS_SIDECAR_LABEL_ATTR = "EGRESS_SIDECAR_LABEL"
@@ -1556,7 +1579,6 @@ HTTP_PORT_LABEL_ATTR = "SANDBOX_HTTP_PORT_LABEL"
 RESOLVE_PROXY_HOST_ATTR = "_resolve_proxy_host"
 RESOLVE_PUBLIC_HOST_ATTR = "_resolve_public_host"
 START_EGRESS_SIDECAR_ATTR = "_start_egress_sidecar"
-SIDECAR_PORT_BINDINGS_ATTR = "normalize_port_bindings"
 #: The in-box ports the egress sidecar publishes for its sandbox: execd and the
 #: sandbox HTTP (file/terminal) server.
 SIDECAR_INBOX_PORTS: Final = ("44772", "8080")
@@ -1568,7 +1590,7 @@ def allow_host_controlled_egress_dns_upstream(module: ModuleType) -> None:
     """Permit AstraBox's private resolver through upstream's env splitter.
 
     OpenSandbox's egress component documents ``OPENSANDBOX_EGRESS_DNS_UPSTREAM``
-    but server 0.2.3 omits it from the create-env allowlist. AstraBox's lifecycle
+    but the server omits it from the create-env allowlist. AstraBox's lifecycle
     API is loopback-only, and the executor rejects every sandbox-provided
     ``OPENSANDBOX_EGRESS_*`` name before the request, so widening this single
     host-owned value does not hand DNS control to sandbox code.
@@ -1605,7 +1627,7 @@ def _require_attributes(module: ModuleType, attributes: Iterable[str], purpose: 
             raise SandboxServerConfigError(
                 f"the installed opensandbox-server no longer exposes "
                 f"{module.__name__}.{attribute}, so AstraBox cannot {purpose}. "
-                "Pin opensandbox-server to a 0.2.x release, or update "
+                "Pin opensandbox-server to the release in pyproject.toml, or update "
                 "astrabox/deploy/sandbox_server.py to whatever replaced it."
             )
 
@@ -1719,14 +1741,17 @@ def let_docker_assign_published_ports(
 ) -> None:
     """Have Docker choose each published sandbox port, then record its choice.
 
-    opensandbox-server 0.2.3 chooses host ports itself.
-    ``port_allocator.allocate_port_bindings`` binds a random candidate on
-    ``0.0.0.0`` in the lifecycle server's own network namespace, releases it,
-    and hands the number to Docker. The bundled server runs inside AstraBox's
-    container, and that namespace holds none of the host's bindings: the probe
-    reports a port free while a host process or another deployment's sandbox
-    holds it, and the egress sidecar's ``docker start`` then fails with
-    "address already in use" or "port is already allocated".
+    opensandbox-server chooses host ports itself.
+    ``port_allocator.allocate_port_bindings`` binds a random candidate in the
+    lifecycle server's own network namespace, on ``docker.publish_host`` or, when
+    that is not an address of the namespace, on ``0.0.0.0``, releases it, and
+    hands the number to Docker. The bundled server runs inside AstraBox's
+    container, where the bridge gateway it publishes on is not a local address
+    and the namespace holds none of the host's bindings: the probe reports a
+    port free while a host process or another deployment's sandbox holds it.
+    Upstream retries a port conflict only for a sandbox without a network
+    policy, so the egress sidecar's ``docker start`` then fails with "address
+    already in use" or "port is already allocated".
 
     Docker allocates the port itself when a binding names a range
     (``HostPort: "20000-32000"``). The daemon skips every port it has already
@@ -1735,9 +1760,9 @@ def let_docker_assign_published_ports(
     holds one. This hook hands Docker that range and reads the result back:
 
     * ``docker_service.allocate_port_bindings``, the name upstream's create
-      path calls, returns ``(host_ip, "min-max")`` for every container port.
-      ``host_ip`` is the publish address, so these bindings never reach every
-      interface.
+      path calls, returns ``(publish_host, "min-max")`` for every container
+      port. Upstream's release of its in-process reservations after the create
+      finds no number among these bindings and releases nothing.
     * ``DockerNetworkingMixin._start_egress_sidecar`` runs upstream's sidecar
       start without its readiness wait, which would dial the range string, then
       reads the ports Docker published and waits on the real egress API port.
@@ -1789,7 +1814,7 @@ def let_docker_assign_published_ports(
                 "the installed opensandbox-server no longer exposes "
                 f"{owner.__module__}.{owner.__name__}.{attribute}, so AstraBox "
                 "cannot let Docker choose published sandbox ports. Pin "
-                "opensandbox-server to a 0.2.x release, or update "
+                "opensandbox-server to the release in pyproject.toml, or update "
                 "astrabox/deploy/sandbox_server.py."
             )
     from fastapi import HTTPException as http_exception
@@ -1811,9 +1836,10 @@ def let_docker_assign_published_ports(
         container_ports: list[str],
         min_port: int = ports[0],
         max_port: int = ports[1],
+        publish_host: str = host_ip,
     ) -> dict[str, tuple[str, str]]:
         span = f"{int(min_port)}-{int(max_port)}"
-        return {port: (host_ip, span) for port in container_ports}
+        return {port: (publish_host, span) for port in container_ports}
 
     def _astrabox_start_egress_sidecar(
         self: Any,
@@ -1885,6 +1911,7 @@ def let_docker_assign_published_ports(
         host_config_kwargs: dict[str, Any],
         exposed_ports: list[str] | None,
         platform: Any,
+        unconfine_system_paths: bool = False,
     ) -> Any:
         if host_config_kwargs.get("port_bindings"):
             raise http_exception(
@@ -1922,6 +1949,7 @@ def let_docker_assign_published_ports(
             host_config_kwargs,
             exposed_ports,
             platform,
+            unconfine_system_paths=unconfine_system_paths,
         )
 
     setattr(service_module, SERVICE_ALLOCATE_PORTS_ATTR, _astrabox_allocate_port_bindings)
@@ -1930,7 +1958,7 @@ def let_docker_assign_published_ports(
 
     low, high = ports
     allocated = getattr(service_module, SERVICE_ALLOCATE_PORTS_ATTR)(
-        [*SIDECAR_INBOX_PORTS, "18080"], min_port=low, max_port=high
+        [*SIDECAR_INBOX_PORTS, "18080"], min_port=low, max_port=high, publish_host=host_ip
     )
     expected = {port: (host_ip, f"{low}-{high}") for port in (*SIDECAR_INBOX_PORTS, "18080")}
     if allocated != expected:
@@ -1951,7 +1979,7 @@ def let_docker_assign_published_ports(
         raise SandboxServerConfigError(
             f"{service_module.__name__}.{SERVICE_CLS_ATTR} overrides {shadowed}, "
             "so AstraBox cannot let Docker choose published sandbox ports. Pin "
-            "opensandbox-server to a 0.2.x release, or update "
+            "opensandbox-server to the release in pyproject.toml, or update "
             "astrabox/deploy/sandbox_server.py."
         )
 
@@ -1970,7 +1998,7 @@ def mount_volumes_through_docker(
 ) -> None:
     """Hand Docker a named volume's ``subPath`` and a host path as mounts, not binds.
 
-    opensandbox-server 0.2.3 maps a ``pvc`` volume with a ``subPath`` on Docker to
+    opensandbox-server maps a ``pvc`` volume with a ``subPath`` on Docker to
     a plain bind of ``<volume Mountpoint>/<subPath>`` (OSEP-0003, "Docker
     mapping"). That directory holds the volume's data only when the data lives
     there, as in a plain ``local`` volume. A ``local`` volume created with mount
@@ -2027,7 +2055,7 @@ def mount_volumes_through_docker(
                 "the installed opensandbox-server no longer exposes "
                 f"{owner.__module__}.{owner.__name__}.{attribute}, so AstraBox "
                 "cannot mount volumes through Docker. Pin "
-                "opensandbox-server to a 0.2.x release, or update "
+                "opensandbox-server to the release in pyproject.toml, or update "
                 "astrabox/deploy/sandbox_server.py."
             )
     upstream_binds = getattr(volumes_mixin, BUILD_VOLUME_BINDS_ATTR)
@@ -2089,6 +2117,7 @@ def mount_volumes_through_docker(
         host_config_kwargs: dict[str, Any],
         exposed_ports: list[str] | None,
         platform: Any,
+        unconfine_system_paths: bool = False,
     ) -> Any:
         mounts = list(getattr(_docker_volume_mounts, "mounts", None) or [])
         _docker_volume_mounts.mounts = []
@@ -2104,6 +2133,7 @@ def mount_volumes_through_docker(
             host_config_kwargs,
             exposed_ports,
             platform,
+            unconfine_system_paths=unconfine_system_paths,
         )
 
     setattr(volumes_mixin, VALIDATE_HOST_VOLUME_ATTR, staticmethod(_astrabox_validate_host_volume))
@@ -2305,7 +2335,7 @@ def attach_allowlisted_networks(
 ) -> None:
     """Join a box to the host networks its create names, under its egress sidecar.
 
-    OpenSandbox 0.2.3 has no create field for a second network: its Docker
+    opensandbox-server has no create field for a second network: its Docker
     runtime takes one ``docker.network_mode`` for every sandbox and refuses a
     network policy with a user-defined one, since the egress sidecar always
     runs on the default bridge (``DockerNetworkingMixin._ensure_network_policy_support``).
@@ -2386,7 +2416,7 @@ def attach_allowlisted_networks(
             "the installed opensandbox-server no longer exposes "
             f"{ops_mixin.__module__}.{ops_mixin.__name__}.{CREATE_AND_START_ATTR}, so "
             "AstraBox cannot join sandboxes to host networks. Pin opensandbox-server "
-            "to a 0.2.x release, or update astrabox/deploy/sandbox_server.py."
+            "to the release in pyproject.toml, or update astrabox/deploy/sandbox_server.py."
         )
     from fastapi import HTTPException as http_exception
     from fastapi import status as http_status
@@ -2594,6 +2624,7 @@ def attach_allowlisted_networks(
         host_config_kwargs: dict[str, Any],
         exposed_ports: list[str] | None,
         platform: Any,
+        unconfine_system_paths: bool = False,
     ) -> Any:
         names = networks_from_labels(labels)
         if names:
@@ -2614,6 +2645,7 @@ def attach_allowlisted_networks(
             host_config_kwargs,
             exposed_ports,
             platform,
+            unconfine_system_paths=unconfine_system_paths,
         )
 
     setattr(ops_mixin, CREATE_AND_START_ATTR, _astrabox_create_and_start_container)
@@ -2624,22 +2656,70 @@ def attach_allowlisted_networks(
 #: :func:`grant_container_engine_boxes` reads it.
 CONTAINER_ENGINE_METADATA_KEY = "astrabox.container-engine"
 
-#: What a container-engine box's HostConfig adds: the Docker CLI's
-#: ``--security-opt systempaths=unconfined``, which the API spells as empty
-#: path lists.
-_CONTAINER_ENGINE_HOST_CONFIG: Final[dict[str, list[str]]] = {"MaskedPaths": [], "ReadonlyPaths": []}
-
-#: Per provisioning thread: the HostConfig fields ``_create_and_start_container``
-#: hands to the one ``create_host_config`` call it makes.
-_container_engine_host_config = threading.local()
+#: The HostConfig fields that cover parts of a container's ``/proc`` and
+#: ``/sys``. The Docker CLI's ``--security-opt systempaths=unconfined`` spells
+#: them as empty lists.
+SYSTEM_PATH_FIELDS: Final = ("MaskedPaths", "ReadonlyPaths")
 
 DOCKER_API_CLIENT_ATTR = "APIClient"
-CREATE_HOST_CONFIG_ATTR = "create_host_config"
+
+
+class _HostConfigRecorded(Exception):
+    """Stops the system-paths probe at its container create, before Docker."""
+
+
+def _record_isolated_box_host_config(ops_mixin: type) -> dict[str, Any]:
+    """The HostConfig ``_create_and_start_container`` sends for an execd-isolation box.
+
+    The probe's Docker client records the ``create_container`` call and raises,
+    so no image is inspected and no container is created; everything the method
+    does to the HostConfig before that call is upstream's own code.
+    """
+    recorded: dict[str, Any] = {}
+
+    def create_container(**kwargs: Any) -> Any:
+        recorded.update(kwargs.get("host_config") or {})
+        raise _HostConfigRecorded
+
+    probe: Any = object.__new__(ops_mixin)
+    probe.docker_client = SimpleNamespace(
+        api=SimpleNamespace(
+            create_host_config=lambda **kwargs: {"Binds": None},
+            create_container=create_container,
+        )
+    )
+    probe._mask_inherited_system_labels = lambda _image, labels, _sandbox_id: labels
+    probe._docker_operation = lambda *_args, **_kwargs: contextlib.nullcontext()
+    try:
+        getattr(ops_mixin, CREATE_AND_START_ATTR)(
+            probe,
+            "astrabox-system-paths-probe",
+            "astrabox-system-paths-probe",
+            ["true"],
+            {},
+            [],
+            {},
+            None,
+            None,
+            unconfine_system_paths=True,
+        )
+    except Exception as exc:
+        if isinstance(exc, _HostConfigRecorded) or isinstance(exc.__cause__, _HostConfigRecorded):
+            return recorded
+        raise SandboxServerConfigError(
+            "cannot verify that opensandbox-server unconfines the system paths of an "
+            f"execd-isolation box: its {CREATE_AND_START_ATTR} failed before creating "
+            f"the container ({exc})"
+        ) from exc
+    raise SandboxServerConfigError(
+        "cannot verify that opensandbox-server unconfines the system paths of an "
+        f"execd-isolation box: its {CREATE_AND_START_ATTR} returned without creating "
+        "the container"
+    )
 
 
 def grant_container_engine_boxes(
-    container_ops_module: ModuleType,
-    docker_api_client_module: ModuleType,
+    container_ops_module: ModuleType, constants_module: ModuleType
 ) -> None:
     """Give a box created for an in-box container engine the two grants it needs.
 
@@ -2661,43 +2741,36 @@ def grant_container_engine_boxes(
     settings through its ``/proc``; ``docs/runtime-profiles.md`` states who may
     be given one.
 
-    opensandbox-server 0.2.3 has no create field for either grant, and
-    docker-py 7.2 no ``HostConfig`` parameter for the path lists. The hook
-    wraps ``DockerContainerOpsMixin._create_and_start_container``, which builds
-    the box's ``HostConfig`` with one ``APIClient.create_host_config`` call, and
-    adds the fields to that call's result through a thread-local, the way
-    :func:`mount_volumes_through_docker` hands its mounts across.
+    opensandbox-server empties both path lists itself for every box created
+    with execd isolation (``unconfine_system_paths`` of
+    ``DockerContainerOpsMixin._create_and_start_container``), and the platform
+    creates a container-engine box only at the ``advanced`` permission level,
+    which requests that isolation. The hook refuses a container-engine create
+    without it, and proves at startup, through upstream's real method and a
+    Docker client that stops at the container create, that the lists come out
+    empty. Upstream has no create field for ``no-new-privileges``, which it
+    applies to every box (``docker.no_new_privileges``), so the hook removes
+    that option from a container-engine box's ``security_opt``.
     """
     _require_attributes(
         container_ops_module,
         (CONTAINER_OPS_MIXIN_ATTR,),
         "grant container-engine boxes",
     )
-    _require_attributes(
-        docker_api_client_module,
-        (DOCKER_API_CLIENT_ATTR,),
-        "grant container-engine boxes",
-    )
+    _require_attributes(constants_module, (ERROR_CODES_ATTR,), "grant container-engine boxes")
     ops_mixin = getattr(container_ops_module, CONTAINER_OPS_MIXIN_ATTR)
-    api_client = getattr(docker_api_client_module, DOCKER_API_CLIENT_ATTR)
-    for owner, attribute in (
-        (ops_mixin, CREATE_AND_START_ATTR),
-        (api_client, CREATE_HOST_CONFIG_ATTR),
-    ):
-        if not hasattr(owner, attribute):
-            raise SandboxServerConfigError(
-                "the installed opensandbox-server or docker SDK no longer exposes "
-                f"{owner.__module__}.{owner.__name__}.{attribute}, so AstraBox "
-                "cannot grant container-engine boxes. Pin the versions in "
-                "pyproject.toml, or update astrabox/deploy/sandbox_server.py."
-            )
-    upstream_create = getattr(ops_mixin, CREATE_AND_START_ATTR)
-    upstream_host_config = getattr(api_client, CREATE_HOST_CONFIG_ATTR)
+    if not hasattr(ops_mixin, CREATE_AND_START_ATTR):
+        raise SandboxServerConfigError(
+            "the installed opensandbox-server no longer exposes "
+            f"{ops_mixin.__module__}.{ops_mixin.__name__}.{CREATE_AND_START_ATTR}, so "
+            "AstraBox cannot grant container-engine boxes. Pin opensandbox-server to "
+            "the release in pyproject.toml, or update astrabox/deploy/sandbox_server.py."
+        )
+    from fastapi import HTTPException as http_exception
+    from fastapi import status as http_status
 
-    def _astrabox_create_host_config(self: Any, *args: Any, **kwargs: Any) -> Any:
-        host_config = upstream_host_config(self, *args, **kwargs)
-        host_config.update(getattr(_container_engine_host_config, "fields", None) or {})
-        return host_config
+    upstream_create = getattr(ops_mixin, CREATE_AND_START_ATTR)
+    error_codes = getattr(constants_module, ERROR_CODES_ATTR)
 
     def _astrabox_create_and_start_container(
         self: Any,
@@ -2709,31 +2782,52 @@ def grant_container_engine_boxes(
         host_config_kwargs: dict[str, Any],
         exposed_ports: list[str] | None,
         platform: Any,
+        unconfine_system_paths: bool = False,
     ) -> Any:
         if labels.get(CONTAINER_ENGINE_METADATA_KEY) == "docker":
+            if not unconfine_system_paths:
+                raise http_exception(
+                    status_code=http_status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "code": error_codes.INVALID_PARAMETER,
+                        "message": (
+                            f"sandbox {sandbox_id}: a container-engine box must be "
+                            "created with execd isolation, the advanced permission level"
+                        ),
+                    },
+                )
             host_config_kwargs["security_opt"] = [
                 option
                 for option in host_config_kwargs.get("security_opt") or []
                 if not str(option).startswith("no-new-privileges")
             ]
-            _container_engine_host_config.fields = dict(_CONTAINER_ENGINE_HOST_CONFIG)
-        try:
-            return upstream_create(
-                self,
-                sandbox_id,
-                image_uri,
-                bootstrap_command,
-                labels,
-                environment,
-                host_config_kwargs,
-                exposed_ports,
-                platform,
-            )
-        finally:
-            _container_engine_host_config.fields = None
+        return upstream_create(
+            self,
+            sandbox_id,
+            image_uri,
+            bootstrap_command,
+            labels,
+            environment,
+            host_config_kwargs,
+            exposed_ports,
+            platform,
+            unconfine_system_paths=unconfine_system_paths,
+        )
 
-    setattr(api_client, CREATE_HOST_CONFIG_ATTR, _astrabox_create_host_config)
     setattr(ops_mixin, CREATE_AND_START_ATTR, _astrabox_create_and_start_container)
+    host_config = _record_isolated_box_host_config(ops_mixin)
+    covered = {
+        field: host_config.get(field, "<unset>")
+        for field in SYSTEM_PATH_FIELDS
+        if host_config.get(field) != []
+    }
+    if covered:
+        raise SandboxServerConfigError(
+            "the installed opensandbox-server no longer empties the system paths of an "
+            f"execd-isolation box (it sends {covered}), so the inner containers of a "
+            "container-engine box could not mount /proc. Pin opensandbox-server to the "
+            "release in pyproject.toml, or update astrabox/deploy/sandbox_server.py."
+        )
 
 
 def docker_engine_version() -> dict[str, Any]:
@@ -2863,7 +2957,7 @@ def leave_other_installations_sandboxes_running(
                 "the installed opensandbox-server no longer exposes "
                 f"{service_module.__name__}.{SERVICE_CLS_ATTR}.{attribute}, so "
                 "AstraBox cannot leave other installations' sandboxes running. "
-                "Pin opensandbox-server to a 0.2.x release, or update "
+                "Pin opensandbox-server to the release in pyproject.toml, or update "
                 "astrabox/deploy/sandbox_server.py."
             )
     sidecar_label = getattr(networking_module, EGRESS_SIDECAR_LABEL_ATTR)
@@ -2929,289 +3023,72 @@ def leave_other_installations_sandboxes_running(
             )
 
 
-class _ImageNamedByItsContainer:
-    """The ``image`` a container reports, answered from the container itself."""
+def require_reachable_published_ports(module: ModuleType, app_config: Any) -> None:
+    """Refuse a placement where upstream would dial sandbox ports where none listen.
 
-    __slots__ = ("short_id", "tags")
+    Docker publishes every sandbox port, the egress sidecar's included, on
+    ``docker.publish_host``. The lifecycle server dials those ports itself, for
+    the egress sidecar's readiness wait and proxied requests
+    (``DockerNetworkingMixin._resolve_proxy_host``), and names them in the
+    endpoint URLs AstraBox dials (``_resolve_public_host``). Upstream answers
+    both with ``docker.host_ip`` when it runs in a container and binds
+    loopback, and with its loopback bind on the host; this launcher always
+    binds loopback and renders ``host_ip`` as the publish address
+    (:func:`publish_host_ip`). Both supported placements therefore resolve to
+    an address where the ports listen: a server in AstraBox's container
+    publishing on the Docker bridge gateway, and a host process publishing on
+    loopback, or on every interface, which loopback reaches. A host process
+    publishing on any other address would dial loopback and fail the first
+    sandbox's create after the sidecar readiness timeout; it is refused here.
 
-    def __init__(self, reference: str) -> None:
-        self.tags = [reference]
-        self.short_id = reference
-
-
-class _ContainerWithoutImageInspect:
-    """A Docker container whose ``image`` is the reference it was created from.
-
-    Every other attribute is the wrapped container's own.
+    Proven by calling upstream's two resolvers with the rendered configuration
+    in this process, which is the one the server runs in.
     """
-
-    __slots__ = ("_container",)
-
-    def __init__(self, container: Any) -> None:
-        self._container = container
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._container, name)
-
-    @property
-    def image(self) -> _ImageNamedByItsContainer:
-        return _ImageNamedByItsContainer(str(self._container.attrs["Config"]["Image"]))
-
-
-def describe_sandbox_images_from_their_containers(service_module: ModuleType) -> None:
-    """Name a sandbox's image without asking Docker to inspect the image.
-
-    Upstream builds every sandbox description (get, list, renew, metadata
-    patch) through ``_container_to_sandbox``, which reads ``container.image``
-    only to report the image's first tag. docker-py answers that attribute
-    with an image inspect, and with Docker's containerd image store an image
-    inspect takes about 100 ms, so one description costs about 100 ms and a
-    list costs that much per sandbox on the host. The container inspect the
-    description already holds records the image reference the sandbox was
-    created from (``Config.Image``), which is the ``image.uri`` the create
-    request named. The description reports that reference, and Docker is not
-    asked about the image.
-    """
-
     _require_attributes(
-        service_module,
-        (SERVICE_CLS_ATTR,),
-        "describe sandboxes without an image inspect",
+        module,
+        (NETWORKING_MIXIN_ATTR,),
+        "verify where it reaches published sandbox ports",
     )
-    service_cls = getattr(service_module, SERVICE_CLS_ATTR)
-    if not hasattr(service_cls, CONTAINER_TO_SANDBOX_ATTR):
+    mixin = getattr(module, NETWORKING_MIXIN_ATTR)
+    missing = [
+        attribute
+        for attribute in (RESOLVE_PROXY_HOST_ATTR, RESOLVE_PUBLIC_HOST_ATTR)
+        if not hasattr(mixin, attribute)
+    ]
+    if missing:
         raise SandboxServerConfigError(
             "the installed opensandbox-server no longer exposes "
-            f"{service_module.__name__}.{SERVICE_CLS_ATTR}.{CONTAINER_TO_SANDBOX_ATTR}, "
-            "so AstraBox cannot describe sandboxes without an image inspect. "
-            "Pin opensandbox-server to a 0.2.x release, or update "
+            f"{module.__name__}.{NETWORKING_MIXIN_ATTR}.{', '.join(missing)}, so "
+            "AstraBox cannot verify where it reaches published sandbox ports. Pin "
+            "opensandbox-server to the release in pyproject.toml, or update "
             "astrabox/deploy/sandbox_server.py."
         )
-    upstream_container_to_sandbox = getattr(service_cls, CONTAINER_TO_SANDBOX_ATTR)
-
-    def _astrabox_container_to_sandbox(self: Any, container: Any, *args: Any, **kwargs: Any) -> Any:
-        return upstream_container_to_sandbox(
-            self, _ContainerWithoutImageInspect(container), *args, **kwargs
-        )
-
-    setattr(service_cls, CONTAINER_TO_SANDBOX_ATTR, _astrabox_container_to_sandbox)
-
-
-class _SidecarHostConfigRecorded(Exception):
-    """Stops the sidecar probe at its Docker host config, before any container."""
-
-
-def _record_egress_sidecar_port_bindings(mixin: type) -> dict[str, Any]:
-    """Run upstream's real ``_start_egress_sidecar`` up to its host config.
-
-    The probe's Docker client records the ``create_host_config`` arguments and
-    raises, so no image is pulled and no container is created; everything the
-    method does before that point is upstream's own code.
-    """
-    recorded: dict[str, Any] = {}
-
-    def create_host_config(**kwargs: Any) -> Any:
-        recorded.update(kwargs)
-        raise _SidecarHostConfigRecorded
-
+    publish_host = str(app_config.docker.publish_host)
+    published = ipaddress.ip_address(publish_host)
     probe: Any = object.__new__(mixin)
-    probe.app_config = SimpleNamespace(
-        egress=SimpleNamespace(
-            image="astrabox-publish-host-probe", mode="dns+nft", disable_ipv6=False
-        )
-    )
-    probe._ensure_image_available = lambda *_args, **_kwargs: None
-    probe.docker_client = SimpleNamespace(
-        api=SimpleNamespace(create_host_config=create_host_config)
-    )
-    try:
-        getattr(mixin, START_EGRESS_SIDECAR_ATTR)(
-            probe,
-            sandbox_id="astrabox-publish-host-probe",
-            network_policy=SimpleNamespace(model_dump=lambda **_kwargs: {}),
-            egress_token="astrabox-publish-host-probe",
-            host_execd_port=1,
-            host_http_port=2,
-        )
-    except _SidecarHostConfigRecorded:
-        return dict(recorded.get("port_bindings") or {})
-    except Exception as exc:
-        raise SandboxServerConfigError(
-            "cannot verify where the egress sidecar publishes execd: upstream's "
-            f"{START_EGRESS_SIDECAR_ATTR} failed before building its Docker host "
-            f"config ({exc})"
-        ) from exc
-    raise SandboxServerConfigError(
-        f"cannot verify where the egress sidecar publishes execd: upstream's "
-        f"{START_EGRESS_SIDECAR_ATTR} returned without building a Docker host config"
-    )
-
-
-def redirect_egress_sidecar_publish_host(module: ModuleType, host_ip: str) -> None:
-    """Publish the egress sidecar's execd and HTTP ports on ``host_ip`` too.
-
-    A sandbox created under a network policy shares its egress sidecar's
-    network namespace, so the sidecar publishes the sandbox's execd (44772) and
-    HTTP (8080) ports. opensandbox-server 0.2.3 writes those two bindings in
-    ``DockerNetworkingMixin._start_egress_sidecar`` with a literal
-    ``"0.0.0.0"`` instead of the address the allocator returns, so
-    :func:`let_docker_assign_published_ports` does not reach them. Every
-    AstraBox sandbox is created under a network policy, so without this hook
-    each sandbox's unauthenticated, root execd and file server listen on every
-    host interface.
-
-    The binding map passes through the networking module's
-    ``normalize_port_bindings`` on its way to Docker. The hook replaces that
-    name in the networking module only and rewrites an unspecified host address
-    to ``host_ip``; bindings upstream already narrowed pass through unchanged.
-
-    Upstream added ``[docker] publish_host`` for exactly this after 0.2.3
-    (commit ``2f5e56ab15``, not in any release up to 1.1.0); it applies one
-    address to every binding, the sidecar's included. When the pin moves to a
-    release carrying it, render that field and delete this hook.
-
-    Proven the way the allocator rebind is: upstream's real
-    ``_start_egress_sidecar`` runs against a probe that records the Docker host
-    config and stops before creating anything, and the recorded execd and HTTP
-    bindings must name ``host_ip``.
-    """
-    _require_attributes(
-        module,
-        (NETWORKING_MIXIN_ATTR, SIDECAR_PORT_BINDINGS_ATTR),
-        "keep the egress sidecar's execd and HTTP ports off every host interface",
-    )
-    mixin = getattr(module, NETWORKING_MIXIN_ATTR)
-    if not hasattr(mixin, START_EGRESS_SIDECAR_ATTR):
-        raise SandboxServerConfigError(
-            "the installed opensandbox-server no longer exposes "
-            f"{module.__name__}.{NETWORKING_MIXIN_ATTR}.{START_EGRESS_SIDECAR_ATTR}, "
-            "so AstraBox cannot keep the egress sidecar's execd and HTTP ports off "
-            "every host interface. Pin opensandbox-server to a 0.2.x release, or "
-            "update astrabox/deploy/sandbox_server.py."
-        )
-    upstream_normalize = getattr(module, SIDECAR_PORT_BINDINGS_ATTR)
-
-    def _astrabox_normalize_port_bindings(
-        port_bindings: dict[str, tuple[str, int]],
-    ) -> dict[str, tuple[str, int]]:
-        return upstream_normalize(
-            {
-                port: (
-                    host_ip if str(host).strip() in {"", "0.0.0.0", "::"} else host,
-                    host_port,
-                )
-                for port, (host, host_port) in dict(port_bindings).items()
-            }
-        )
-
-    setattr(module, SIDECAR_PORT_BINDINGS_ATTR, _astrabox_normalize_port_bindings)
-    bindings = _record_egress_sidecar_port_bindings(mixin)
-    published = {
-        port: str(binding[0]) if isinstance(binding, (tuple, list)) else repr(binding)
-        for port, binding in bindings.items()
-    }
-    wrong = {
-        port: published.get(port, "<not published>")
-        for port in SIDECAR_INBOX_PORTS
-        if published.get(port) != host_ip
-    }
-    if wrong:
-        raise SandboxServerConfigError(
-            "the installed opensandbox-server ignored AstraBox's egress sidecar "
-            f"publish address {host_ip!r}: it publishes {wrong}, which would expose "
-            "every sandbox's unauthenticated execd and file server on that "
-            "interface. Pin opensandbox-server to a 0.2.x release, or update "
-            "astrabox/deploy/sandbox_server.py."
-        )
-
-
-def redirect_proxy_host(module: ModuleType, host_ip: str) -> None:
-    """Make OpenSandbox's server proxy use the configured Docker host address.
-
-    OpenSandbox 0.2.x normally returns ``server.host`` from
-    ``_resolve_proxy_host`` whenever that host is explicit. The bundled server
-    must bind its unauthenticated lifecycle API to ``127.0.0.1``, but that
-    loopback belongs to the server container and cannot reach ports published
-    on the Docker host. Protected sandboxes therefore time out while the server
-    checks the egress sidecar, even when ``docker.host_ip`` is configured.
-
-    This hook changes only the server's outbound target. It does not widen the
-    lifecycle API bind. Remove it when upstream makes ``_resolve_proxy_host``
-    honor ``docker.host_ip`` with an explicit loopback server bind.
-    """
-    _require_attributes(
-        module,
-        (NETWORKING_MIXIN_ATTR,),
-        "route protected sandbox traffic through the Docker host",
-    )
-    mixin = getattr(module, NETWORKING_MIXIN_ATTR)
-    if not hasattr(mixin, RESOLVE_PROXY_HOST_ATTR):
-        raise SandboxServerConfigError(
-            "the installed opensandbox-server no longer exposes "
-            f"{module.__name__}.{NETWORKING_MIXIN_ATTR}."
-            f"{RESOLVE_PROXY_HOST_ATTR}, so AstraBox cannot route protected "
-            "sandbox traffic through the Docker host. Pin opensandbox-server "
-            "to a 0.2.x release, or update astrabox/deploy/sandbox_server.py."
-        )
-
-    def _astrabox_resolve_proxy_host(_self: Any) -> str:
-        return host_ip
-
-    setattr(mixin, RESOLVE_PROXY_HOST_ATTR, _astrabox_resolve_proxy_host)
-    try:
-        resolved = getattr(object.__new__(mixin), RESOLVE_PROXY_HOST_ATTR)()
-    except Exception as exc:
-        raise SandboxServerConfigError(
-            "cannot verify the OpenSandbox proxy address after applying the "
-            f"container-network compatibility hook: {exc}"
-        ) from exc
-    if resolved != host_ip:
-        raise SandboxServerConfigError(
-            "the installed opensandbox-server ignored AstraBox's protected "
-            f"sandbox proxy address: expected {host_ip!r}, got {resolved!r}."
-        )
-
-
-def redirect_public_endpoint_host(module: ModuleType, host_ip: str) -> None:
-    """Make native Docker endpoint URLs use the address that owns their ports.
-
-    The lifecycle API stays on loopback, while Docker may publish execd ports on
-    the host's bridge address. OpenSandbox otherwise derives the returned host
-    from ``server.host`` and produces a URL whose port is bound on a different
-    interface. This changes only endpoint generation; traffic still goes
-    directly to OpenSandbox execd's ``/proxy/{port}`` route.
-    """
-    _require_attributes(
-        module,
-        (NETWORKING_MIXIN_ATTR,),
-        "return the address that owns native sandbox ports",
-    )
-    mixin = getattr(module, NETWORKING_MIXIN_ATTR)
-    if not hasattr(mixin, RESOLVE_PUBLIC_HOST_ATTR):
-        raise SandboxServerConfigError(
-            "the installed opensandbox-server no longer exposes "
-            f"{module.__name__}.{NETWORKING_MIXIN_ATTR}."
-            f"{RESOLVE_PUBLIC_HOST_ATTR}, so AstraBox cannot return reachable "
-            "native sandbox URLs. Pin opensandbox-server to a 0.2.x release, "
-            "or update astrabox/deploy/sandbox_server.py."
-        )
-
-    def _astrabox_resolve_public_host(_self: Any) -> str:
-        return host_ip
-
-    setattr(mixin, RESOLVE_PUBLIC_HOST_ATTR, _astrabox_resolve_public_host)
-    try:
-        resolved = getattr(object.__new__(mixin), RESOLVE_PUBLIC_HOST_ATTR)()
-    except Exception as exc:
-        raise SandboxServerConfigError(
-            "cannot verify the OpenSandbox public endpoint address after "
-            f"applying the compatibility hook: {exc}"
-        ) from exc
-    if resolved != host_ip:
-        raise SandboxServerConfigError(
-            "the installed opensandbox-server ignored AstraBox's public "
-            f"sandbox endpoint address: expected {host_ip!r}, got {resolved!r}."
-        )
+    probe.app_config = app_config
+    for attribute in (RESOLVE_PROXY_HOST_ATTR, RESOLVE_PUBLIC_HOST_ATTR):
+        try:
+            resolved = str(getattr(probe, attribute)())
+        except Exception as exc:
+            raise SandboxServerConfigError(
+                f"cannot verify where opensandbox-server reaches published sandbox "
+                f"ports: its {attribute} failed ({exc})"
+            ) from exc
+        try:
+            reaches = resolved == publish_host or (
+                published.is_unspecified and ipaddress.ip_address(resolved).is_loopback
+            )
+        except ValueError:
+            reaches = False
+        if not reaches:
+            raise SandboxServerConfigError(
+                f"{PUBLISH_HOST_IP_ENV}={publish_host} publishes sandbox ports on an "
+                f"address the lifecycle server does not dial: it reaches them at "
+                f"{resolved} ({attribute}), its loopback bind, because it does not run "
+                f"in a container. Run it on the host with {PUBLISH_HOST_IP_ENV}=127.0.0.1, "
+                "or in a container with the Docker bridge gateway address."
+            )
 
 
 def redirect_metadata_store_root(module: ModuleType, root: Path) -> None:
@@ -3281,7 +3158,7 @@ def redirect_metadata_store_root(module: ModuleType, root: Path) -> None:
             f"{module.__name__}.{METADATA_DEFAULT_ROOT_ATTR}: a probe write left "
             f"nothing under {root}, so sandbox metadata would still go to "
             "upstream's $HOME default and lease renewals would be lost on "
-            "restart. Pin opensandbox-server to a 0.2.x release, or update "
+            "restart. Pin opensandbox-server to the release in pyproject.toml, or update "
             "astrabox/deploy/sandbox_server.py."
         )
     if read_back != stamp.isoformat():
@@ -3757,7 +3634,7 @@ def prepare() -> dict[str, Any]:
             allow_host_controlled_egress_dns_upstream(helpers_module)
         redirect_metadata_store_root(metadata_module, root)
         host_ip = str(document["docker"]["host_ip"])
-        redirect_egress_sidecar_publish_host(networking_module, host_ip)
+        require_reachable_published_ports(networking_module, app_config)
         let_docker_assign_published_ports(
             service_module,
             networking_module,
@@ -3774,7 +3651,7 @@ def prepare() -> dict[str, Any]:
             from docker.api import client as docker_api_client_module
         except Exception as exc:
             raise missing_extra_error(exc) from exc
-        grant_container_engine_boxes(container_ops_module, docker_api_client_module)
+        grant_container_engine_boxes(container_ops_module, constants_module)
         mountable_volumes()
         attach_allowlisted_networks(
             container_ops_module,
@@ -3783,12 +3660,9 @@ def prepare() -> dict[str, Any]:
             docker_api_client_module,
             attachable_networks(),
         )
-        redirect_proxy_host(networking_module, host_ip)
-        redirect_public_endpoint_host(networking_module, host_ip)
         leave_other_installations_sandboxes_running(
             service_module, networking_module, installation_id()
         )
-        describe_sandbox_images_from_their_containers(service_module)
     return {"app_config": app_config, "log_config": log_config}
 
 
@@ -3839,7 +3713,6 @@ __all__ = [
     "DEFAULT_INGRESS_SIGNING_KEY_ID",
     "DEFAULT_KUBE_API_SERVER",
     "DEFAULT_KUBE_IMAGE_PULL_POLICY",
-    "DEFAULT_KUBE_INFORMER",
     "DEFAULT_KUBE_NAMESPACE",
     "DEFAULT_KUBE_WORKLOAD_PROVIDER",
     "DEFAULT_LOG_LEVEL",
@@ -3867,7 +3740,6 @@ __all__ = [
     "KUBECONFIG_FILENAME",
     "KUBE_API_SERVER_ENV",
     "KUBE_IMAGE_PULL_POLICY_ENV",
-    "KUBE_INFORMER_ENV",
     "KUBE_NAMESPACE_ENV",
     "KUBE_WORKLOAD_PROVIDER_ENV",
     "INGRESS_GATEWAY_ADDRESS_ENV",
@@ -3899,7 +3771,6 @@ __all__ = [
     "SERVICE_ALLOCATE_PORTS_ATTR",
     "SERVICE_CLS_ATTR",
     "SIDECAR_INBOX_PORTS",
-    "SIDECAR_PORT_BINDINGS_ATTR",
     "SNAPSHOT_STORE_FILENAME",
     "START_EGRESS_SIDECAR_ATTR",
     "WAIT_FOR_SIDECAR_ATTR",
@@ -3930,12 +3801,10 @@ __all__ = [
     "port_range",
     "prepare",
     "publish_host_ip",
-    "redirect_egress_sidecar_publish_host",
     "redirect_metadata_store_root",
-    "redirect_proxy_host",
-    "redirect_public_endpoint_host",
     "render_config_toml",
     "require_docker_engine",
+    "require_reachable_published_ports",
     "sandbox_runtime",
     "secure_access_enabled",
     "server_port",

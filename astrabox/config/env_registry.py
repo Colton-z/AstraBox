@@ -2066,16 +2066,6 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "astrabox.deploy.sandbox_server",
     ),
     (
-        "ASTRABOX_SANDBOX_SERVER_KUBE_INFORMER",
-        "internal",
-        "true",
-        "Whether the lifecycle server keeps a watch-backed cache of sandbox workloads "
-        "(upstream's [beta] kubernetes.informer_enabled, on by default there too). It "
-        "trades a persistent watch for far fewer API reads; turn it off to take API "
-        "pressure off a shared control plane.",
-        "astrabox.deploy.sandbox_server",
-    ),
-    (
         "ASTRABOX_SANDBOX_SERVER_INGRESS_MODE",
         "public",
         "direct",
@@ -2174,7 +2164,7 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "derived",
         "OpenSandbox outbound proxy image used for provider network enforcement and "
         "protected credential injection. Unset, it is the release image "
-        "<ASTRABOX_IMAGE_PREFIX>egress:<ASTRABOX_IMAGE_TAG>: OpenSandbox egress v1.1.7 "
+        "<ASTRABOX_IMAGE_PREFIX>egress:<ASTRABOX_IMAGE_TAG>: OpenSandbox egress 1.2.1 "
         "with an addon that decrypts HTTPS only to hosts a protected credential is "
         "bound to, so every other connection, including those of containers an Agent "
         "runs in its sandbox, keeps the destination's own certificate. A missing "
@@ -2211,7 +2201,7 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "Image the lifecycle server copies the execd init binary from into every "
         "new sandbox, including prepared boxes. Unset, it is the release image "
         "<ASTRABOX_IMAGE_PREFIX>execd:<ASTRABOX_IMAGE_TAG>, which carries the "
-        "streaming-upload patch over OpenSandbox execd v1.1.0. A custom value "
+        "streaming-upload patch over OpenSandbox execd 1.2.1. A custom value "
         "must provide the compatible execd init image layout.",
         "astrabox.deploy.sandbox_server",
     ),

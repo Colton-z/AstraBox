@@ -2196,10 +2196,11 @@ class SandboxProvider(ABC):
         Events use the terminal-neutral ``stdout`` / ``stderr`` vocabulary and
         finish with one ``__done__`` event carrying ``exit_code``. Cancelling
         the consumer must close the provider stream. Providers do not promise
-        that a cancelled run leaves its stateful shell reusable: OpenSandbox
-        v1.1.0 cannot do that reliably. A caller that needs a deterministic
-        interrupt must put disposable work in a separate isolated session and
-        delete that session after cancellation.
+        that a cancelled run leaves its stateful shell reusable: OpenSandbox's
+        execd interrupts the run but kills the whole session when the command
+        ignores the interrupt. A caller that needs a deterministic interrupt
+        must put disposable work in a separate isolated session and delete that
+        session after cancellation.
 
         This is deliberately separate from the box-level PTY face. A provider
         must never implement it by silently falling back to a shell in the

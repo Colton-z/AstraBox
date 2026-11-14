@@ -24,7 +24,7 @@
 # (astrabox/config/release_images.py) and pulls it when the host lacks it.
 # compose only manages the long-lived server.
 #
-# NOTE on networking: OpenSandbox 0.2.x attaches sandbox/egress pairs to
+# NOTE on networking: opensandbox-server attaches sandbox/egress pairs to
 # Docker's built-in `bridge` network. Long-lived platform services do not need
 # to live there. PostgreSQL is on a separate user-defined network shared only
 # with the services that use it; only its host-development port is published,

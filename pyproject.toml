@@ -45,11 +45,12 @@ dependencies = [
   "cryptography==46.0.7",
   # OpenSandbox lifecycle CLIENT: the sandbox handle/manager the open_sandbox
   # backend drives, plus the request/response models the runtime speaks
-  # (execd commands, filesystem writes, network policy). Stay on the compatible
-  # 0.1 contract. Client-side pool coordination is OpenSandbox's maintained
-  # Redis-backed capability; the lifecycle SERVER is the separate
-  # `sandbox-server` extra below.
-  "opensandbox[pool-redis]==0.1.17.dev0",
+  # (execd commands, filesystem writes, network policy). OpenSandbox ships the
+  # server, SDKs, execd and egress as one release line, so this pin moves with
+  # the `sandbox-server` extra below and the execd and egress images.
+  # Client-side pool coordination is OpenSandbox's maintained Redis-backed
+  # capability.
+  "opensandbox[pool-redis]==1.2.1",
   # MCP (the Claude Agent SDK and AstraBox share this protocol implementation)
   "mcp==2.1.1",
   # Official A2A HTTP transport; tasks project the existing Session/turn ledger.
@@ -106,7 +107,7 @@ otel = [
 # service methods) that have no configuration field behind them. Every rebind
 # verifies itself and fails loud, but one reproducible server release must be
 # what development, CI, and images run.
-sandbox-server = ["opensandbox-server==0.2.3"]
+sandbox-server = ["opensandbox-server==1.2.1"]
 dev = [
   "pytest==9.2.0",
   "pytest-asyncio==1.4.1",

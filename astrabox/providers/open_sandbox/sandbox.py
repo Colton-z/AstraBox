@@ -1381,10 +1381,14 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         live = await sandbox.sidecar_faces.get_egress_policy()
         if live.default_action == "allow":
             return
+        # The wanted rules allow a target on every port, so a live allow that
+        # names only some ports, or ports without a target, does not cover one.
         allowed = {
-            rule.target.strip() for rule in (live.egress or []) if rule.action == "allow"
+            rule.target
+            for rule in (live.egress or [])
+            if rule.action == "allow" and rule.target and not rule.ports
         }
-        missing = [rule for rule in wanted if rule.target.strip() not in allowed]
+        missing = [rule for rule in wanted if rule.target not in allowed]
         if missing:
             await sandbox.sidecar_faces.patch_egress_rules(missing)
             logger.info(
@@ -1503,9 +1507,7 @@ class OpenSandboxSandboxProvider(SandboxProvider):
     def per_box_overhead(self) -> tuple[float, int]:
         """The egress sidecar's ceiling beside each box the bundled server runs.
 
-        On Docker the bundled server applies it to the sidecar. On Kubernetes
-        OpenSandbox 0.2.3 gives the sidecar no resources, and the sandbox
-        namespace's LimitRange applies the same ceiling (docs/deploy.md).
+        The bundled server applies it to the sidecar on Docker and Kubernetes.
         An existing service's sidecar is that service's.
         """
         from astrabox.providers.open_sandbox.workspace_route.mergerfs import (
@@ -3099,9 +3101,11 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         The SDK invokes handlers while it consumes the response, so a small
         queue turns those callbacks into the provider seam's async iterator.
         Cancelling this iterator cancels the SDK request and closes the SSE
-        connection. OpenSandbox v1.1.0 does not reliably stop the active run
-        on disconnect, so callers that need interruption must run disposable
-        work in a sibling isolated session and delete that session afterward.
+        connection. execd then interrupts the active run with SIGINT and keeps
+        the session's shell, but kills the whole session when the command
+        ignores SIGINT for ten seconds, so callers that need a deterministic
+        interruption run disposable work in a sibling isolated session and
+        delete that session afterward.
 
         Execd currently merges the isolated shell's stderr into stdout before
         scanning it, so ordinary command output arrives as ``stdout``. Its

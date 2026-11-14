@@ -139,13 +139,6 @@ jobs:
         # network/security topology.
         run: make build-server-image
 
-      - name: Pre-pull the execd image the lifecycle server injects
-        # The server injects this binary into every sandbox it creates, pulling it
-        # on first create. Pulling here turns a Docker Hub rate-limit into a clear
-        # step failure instead of a timeout in the middle of a turn. Tracks
-        # astrabox/deploy/sandbox_server.py::DEFAULT_EXECD_IMAGE.
-        run: docker pull opensandbox/execd:v1.1.0
-
       - name: Smoke — headless curl live turn (scripts/e2e_smoke.sh)
         # Boots a task-owned source-mounted Compose deployment, cold-starts an
         # agent, drives one turn, and ASSERTS a real text-delta containing "2".

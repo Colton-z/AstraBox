@@ -134,9 +134,10 @@ _EXECD_COMMAND_TRANSIENT_ERRORS = (
     SandboxCommandOutcomeUnknown,
 )
 
-# OpenSandbox server 0.2.3 consumes this exact extension on both its Docker and
+# opensandbox-server consumes this exact extension on both its Docker and
 # Kubernetes direct-create paths. It adds the namespace/mount privileges and
-# tmpfs that execd's isolation capability measures after the box starts.
+# tmpfs that execd's isolation capability measures after the box starts, and
+# on Docker empties the box's masked and read-only system paths.
 _EXECD_ISOLATION_EXTENSION_KEY = "bootstrap.execd.isolation"
 
 # Probes /health from INSIDE the box (urllib, no extra deps): readiness is
