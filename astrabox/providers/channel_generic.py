@@ -16,9 +16,13 @@ trigger endpoint):
   binding keeps its secret, and is adequate only for a trusted internal
   caller over TLS. A binding whose ``signed_requests`` setting is on accepts
   signed requests only. 401 on mismatch.
-* payload — ``{"text": "...", "message_id": "...", "conversation_id": "...",
-  "sender": "...", "reply_to": "...", "action": "...", "reply": {...}}``;
-  ``text`` (required unless ``action`` is set) becomes the turn message.
+* payload — ``{"text": "...", "data": {...}, "message_id": "...",
+  "conversation_id": "...", "sender": "...", "reply_to": "...", "action": "...",
+  "reply": {...}}``;
+  ``text`` becomes the turn message. ``data`` (optional, any JSON value)
+  carries an event's fields: it follows ``text`` as JSON after a blank line,
+  or is the whole message when there is no ``text``. One of ``text``,
+  ``data`` or ``action`` is required.
   ``message_id`` (optional) rides as the at-least-once dedup key — platform
   redeliveries of the same id get an idempotent ``duplicate`` ack.
   ``conversation_id`` (optional) rides as the conversation key — messages
@@ -140,10 +144,18 @@ class GenericJsonChannelProvider(ChannelProvider):
             )
         text = str(payload.get("text") or "").strip()
         action = str(payload.get("action") or "").strip() or None
+        data = payload.get("data")
+        if data is not None:
+            # The event's fields reach the Agent as the JSON the sender wrote,
+            # after the text and a blank line: the Webhook trigger's own
+            # "prefix, blank line, payload" shape. Reading them is the Agent's
+            # work; nothing here selects or renames a field.
+            fields = json.dumps(data, ensure_ascii=False)
+            text = f"{text}\n\n{fields}" if text else fields
         if not text and action is None:
             raise APIError(
                 code="CHANNEL_BAD_PAYLOAD",
-                message='payload.text is required (the turn message)',
+                message="payload.text or payload.data is required (the turn message)",
                 status_code=400,
             )
 

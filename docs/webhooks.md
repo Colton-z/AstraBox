@@ -91,6 +91,21 @@ address:
   has already accepted is acknowledged as a duplicate and starts nothing.
 - `text` is the message the Agent receives. `reply.callback_url`, when given,
   receives the Agent's reply as `{"text": ..., "message_id": ...}`.
+- `data` carries the event's fields as any JSON value. The Agent receives it as
+  that JSON after `text` and a blank line, or as the whole message when there
+  is no `text`:
+
+  ```json
+  {
+    "text": "Review requested on lane build-2",
+    "data": {"object": "change-4812", "type": "review", "state": "requested", "commit": "9f2c1e7"},
+    "conversation_id": "lane-build-2",
+    "message_id": "review-4812-requested"
+  }
+  ```
+
+  Say what the fields mean, and what to do with them, in the Agent's
+  instructions or in `text`.
 
 Sign each request as for a Webhook trigger (`X-Webhook-Timestamp` and
 `X-Webhook-Signature`, [Request headers](#request-headers)) with the trigger's

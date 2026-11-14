@@ -8,6 +8,8 @@ timestamp, so neither can be swapped in after capture.
 
 from __future__ import annotations
 
+import json
+
 import time
 from unittest.mock import AsyncMock
 
@@ -126,3 +128,28 @@ def test_a_channel_that_requires_signed_requests_refuses_the_bare_secret() -> No
             headers=bearer, raw_body=body, binding=_channel_binding(signed_only=True)
         )
     assert exc.value.status_code == 401
+
+
+def test_an_events_fields_reach_the_agent_as_the_json_the_sender_wrote() -> None:
+    from astrabox.providers.channel_generic import GenericJsonChannelProvider
+
+    provider = GenericJsonChannelProvider()
+    binding = _channel_binding(signed_only=False)
+    bearer = {"x-channel-secret": "shared-secret"}
+    event = {"object": "change-4812", "type": "review", "state": "requested", "commit": "9f2c1e7", "备注": "紧急"}
+
+    def content(body: dict) -> str:
+        return provider.verify_and_resolve(
+            headers=bearer, raw_body=json.dumps(body).encode(), binding=binding
+        ).content
+
+    with_text = content({"text": "Review requested on lane build-2", "data": event})
+    head, _, fields = with_text.partition("\n\n")
+    assert head == "Review requested on lane build-2"
+    assert json.loads(fields) == event and "紧急" in fields
+
+    assert json.loads(content({"data": event})) == event
+
+    with pytest.raises(APIError) as exc:
+        provider.verify_and_resolve(headers=bearer, raw_body=b"{}", binding=binding)
+    assert exc.value.status_code == 400
