@@ -42,7 +42,6 @@ from astrabox.core.service.orchestrator.engine.provisioning import (
     prepare_platform_workspace,
     provision_engine_sandbox,
     resolve_model_credential_delivery,
-    resolve_sandbox_websocket_endpoint,
     resolve_session_environment_credentials,
     session_credential_refresher,
     session_model_access,
@@ -56,6 +55,7 @@ from astrabox.core.service.orchestrator.runtime.mcp_servers import (
     sandbox_mcp_egress_hosts,
 )
 from astrabox.core.service.orchestrator.runtime.preparation import prepare_session_runtime_context
+from astrabox.core.service.orchestrator.runtime.pty_terminal import resolve_sandbox_endpoint
 from astrabox.seams.egress_credentials import SandboxEgressCredentialPlan
 from astrabox.secrets import SecretProvider
 
@@ -568,7 +568,7 @@ async def start_platform_runtime(
             service_credential=engine_service_credential(
                 request, provisioned.runtime_identity
             ),
-            runner_uri=provisioned.runner_uri,
+            runner_endpoint=provisioned.runner_endpoint,
             user_id=user_id,
             permission_mode=permission_mode,
             deployment_settings=platform.deployment_settings,
@@ -920,7 +920,7 @@ async def attach_platform_runtime(
                 runtime_identity=identity,
             )
 
-        runner_uri = None
+        runner_endpoint = None
         if placement is not None:
             await write_engine_env_file(
                 sandbox,
@@ -946,9 +946,9 @@ async def attach_platform_runtime(
                     engine_label=adapter.engine_kind,
                 )
             )
-            runner_uri = await resolve_sandbox_websocket_endpoint(sandbox, port)
+            runner_endpoint = await resolve_sandbox_endpoint(sandbox, port)
         elif request.wait_for_inbox_service_port is not None:
-            runner_uri = await resolve_sandbox_websocket_endpoint(
+            runner_endpoint = await resolve_sandbox_endpoint(
                 sandbox,
                 request.wait_for_inbox_service_port,
             )
@@ -990,7 +990,7 @@ async def attach_platform_runtime(
             runtime_env=dict(runtime_env),
             service_credential=engine_service_credential(request, identity),
             prepare_engine_input=prepare_engine_input,
-            runner_uri=runner_uri,
+            runner_endpoint=runner_endpoint,
             user_id=user_id,
             permission_mode=permission_mode,
             deployment_settings=platform.deployment_settings,

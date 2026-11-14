@@ -25,6 +25,7 @@ from astrabox.core.service.orchestrator.engine.runner_link import (
     RunnerLinkError,
 )
 from astrabox.core.service.orchestrator.engine.runtime import RuntimeInputRefused
+from astrabox.seams.sandbox_data import SandboxEndpoint
 from astrabox.core.service.orchestrator.sandbox_runner import (
     HostLink,
     RunnerSession,
@@ -48,7 +49,7 @@ def _delivered_token_file(directory: Any, token: str) -> str:
 class RunnerLink(_RunnerLink):
     def __init__(self, uri: str, **kwargs: Any) -> None:
         kwargs.setdefault("activation_token", HOST_ACTIVATION_TOKEN)
-        super().__init__(uri, **kwargs)
+        super().__init__(SandboxEndpoint(url="http://" + uri.removeprefix("ws://")), **kwargs)
 
 
 async def _frames_handed_over(link: _RunnerLink) -> list[dict[str, Any]]:

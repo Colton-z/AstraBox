@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from astrabox.common.utils.errors import APIError
+from astrabox.seams.sandbox_data import SandboxEndpoint
 
 from astrabox.core.service.orchestrator.engine.emissions import (
     ChildResourceFact,
@@ -151,7 +152,9 @@ class EngineStartupContext:
     prepare_engine_input: Any = None
     prepared_manifest: dict[str, Any] | None = None
     service_credential: str | None = field(default=None, repr=False)
-    runner_uri: str | None = None
+    #: The in-box runner's address and the headers every connection to it
+    #: carries, which can include the box's execd credential.
+    runner_endpoint: SandboxEndpoint | None = field(default=None, repr=False)
     user_id: str | None = None
     permission_mode: str | None = None
     deployment_settings: Any = None
@@ -202,7 +205,7 @@ class EnginePreparationContext:
     model_access: Any
     model_credential: str
     runtime_env: dict[str, str]
-    runner_uri: str | None
+    runner_endpoint: SandboxEndpoint | None = field(repr=False)
     preparation_fingerprint: str
     deployment_settings: Any = None
     workspace_id: str | None = None
@@ -473,7 +476,7 @@ class EngineAdapter(ABC):
         return True
 
     #: Whether this adapter's ``prepare_runtime`` prepares a whole
-    #: per-conversation box with NO in-box runner (``runner_uri=None``):
+    #: per-conversation box with NO in-box runner (``runner_endpoint=None``):
     #: preparation provisions the box and proves it can hold a conversation,
     #: rather than parking an engine process in a slot. What it proves differs
     #: by engine — a runtime resident in the image (Codex's app-server) is

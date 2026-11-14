@@ -17,6 +17,7 @@ from astrabox.core.service.orchestrator.engine.provisioning import (
 )
 from astrabox.core.service.orchestrator.runtime_manager import RemoteAgentRuntimeManager
 from astrabox.seams.sandbox import SandboxAllocation
+from astrabox.seams.sandbox_data import SandboxEndpoint
 from astrabox.seams.sandbox_disposal import SandboxDestruction
 
 SURPLUS_BOX = "box-surplus"
@@ -174,11 +175,11 @@ def _harness(
         lambda _kind: _Engine(),
     )
 
-    async def endpoint(_sandbox: Any, port: int) -> str:
+    async def endpoint(_sandbox: Any, port: int) -> SandboxEndpoint:
         assert port == 9001
-        return "ws://box:9001"
+        return SandboxEndpoint(url="http://box:9001")
 
-    monkeypatch.setattr(provisioning, "resolve_sandbox_websocket_endpoint", endpoint)
+    monkeypatch.setattr(provisioning, "resolve_sandbox_endpoint", endpoint)
 
     async def run() -> Any:
         return await provisioning._provision_shared_conversation(

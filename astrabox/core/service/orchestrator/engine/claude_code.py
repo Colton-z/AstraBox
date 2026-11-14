@@ -263,7 +263,7 @@ class ClaudeCodeEngineAdapter(EngineAdapter):
     async def prepare_runtime(
         self, context: EnginePreparationContext
     ) -> dict[str, Any]:
-        if not str(context.runner_uri or "").strip():
+        if context.runner_endpoint is None:
             # Claude's prepared unit is a parked CLI child behind the runner's
             # prepare/activate barriers; without a runner there is nothing to
             # park it in. Both whole-box and isolated-slot preparations must

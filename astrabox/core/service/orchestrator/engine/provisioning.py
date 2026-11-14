@@ -101,6 +101,10 @@ from astrabox.seams.egress_credentials import (
     workload_credential_name,
     workload_model_placeholder,
 )
+from astrabox.core.service.orchestrator.runtime.pty_terminal import (
+    resolve_sandbox_endpoint,
+)
+from astrabox.seams.sandbox_data import SandboxEndpoint
 from astrabox.seams.sandbox import (
     SANDBOX_LIFECYCLE_PROBE_NOT_FOUND,
     SANDBOX_PERMISSION_LEVEL_ADVANCED,
@@ -321,8 +325,8 @@ class ProvisionedEngineSandbox:
     #: adapter; allocation and cleanup stay in the platform.
     prepared_manifest: dict[str, Any] | None = None
     #: A platform-resolved endpoint to an already prepared runner, when the
-    #: unit includes one.
-    runner_uri: str | None = None
+    #: unit includes one, with the headers a connection to it carries.
+    runner_endpoint: SandboxEndpoint | None = field(default=None, repr=False)
 
 
 def plan_conversation_identity(
@@ -1075,34 +1079,6 @@ async def workspace_is_ready(
         await workspace_router.prepare(ref, box=box, box_path=box_path)
 
 
-async def resolve_sandbox_websocket_endpoint(sandbox: Any, port: int) -> str:
-    """Resolve one box service endpoint into the URI an engine client uses.
-
-    Endpoint publication and Secure Access signing are sandbox-platform work.
-    Keeping this beside provisioning means an engine receives an address; it
-    never asks a provider how the box is exposed.
-    """
-
-    endpoint = await sandbox.get_endpoint(int(port))
-    if endpoint.headers:
-        settings = load_astrabox_settings()
-        expires_at = datetime.now(timezone.utc) + timedelta(
-            seconds=int(settings.sandbox_endpoint_url_ttl_seconds)
-        )
-        endpoint = await sandbox.get_signed_endpoint(int(port), expires_at=expires_at)
-        if endpoint.headers:
-            raise RuntimeError(
-                "signed sandbox endpoint still requires routing headers the "
-                f"engine transport cannot carry (sandbox={sandbox.sandbox_id})"
-            )
-    base = endpoint.url
-    if base.startswith("https://"):
-        return "wss://" + base[len("https://") :]
-    if base.startswith("http://"):
-        return "ws://" + base[len("http://") :]
-    raise RuntimeError(f"sandbox endpoint has no http(s) scheme: {base!r}")
-
-
 async def prepare_platform_workspace(
     manager: Any,
     sandbox: Any,
@@ -1268,7 +1244,7 @@ async def _assemble_provisioned_sandbox(
     vault_enabled: bool = False,
     runtime_env: Mapping[str, str] | None = None,
     prepared_manifest: dict[str, Any] | None = None,
-    runner_uri: str | None = None,
+    runner_endpoint: SandboxEndpoint | None = None,
 ) -> ProvisionedEngineSandbox:
     """The tenancy-agnostic tail: transcript restore, then the result.
 
@@ -1344,7 +1320,7 @@ async def _assemble_provisioned_sandbox(
         resume_session_key=honoured_resume_key,
         runtime_env=dict(runtime_env or {}),
         prepared_manifest=prepared_manifest,
-        runner_uri=runner_uri,
+        runner_endpoint=runner_endpoint,
     )
 
 
@@ -1685,7 +1661,7 @@ async def _provision_shared_conversation(
     session_log: Any,
     progress_callback: Callable[[str], Awaitable[None]] | None = None,
     recover_assignment: bool = False,
-) -> tuple[Any, str, dict[str, Any], str]:
+) -> tuple[Any, str, dict[str, Any], SandboxEndpoint]:
     """Place one conversation into its Agent's shared box and start its service.
 
     The Agent-shared tenancy is a platform capability — an application of
@@ -1987,8 +1963,8 @@ async def _provision_shared_conversation(
             engine_label=engine_kind,
         )
     )
-    runner_uri = await resolve_sandbox_websocket_endpoint(sandbox, runner_port)
-    return sandbox, sandbox_id, runtime_identity, runner_uri
+    runner_endpoint = await resolve_sandbox_endpoint(sandbox, runner_port)
+    return sandbox, sandbox_id, runtime_identity, runner_endpoint
 
 
 async def require_engine_sandbox_permission(
@@ -2429,10 +2405,10 @@ async def claim_prepared_engine_sandbox(
             runtime_identity=identity, owner_label=f"Session {session_id!r}",
             additional_env=claimed_runtime_env,
         )
-    runner_uri = None
+    runner_endpoint = None
     runner_port = int(claimed.get("runner_port") or 0)
     if runner_port:
-        runner_uri = await resolve_sandbox_websocket_endpoint(sandbox, runner_port)
+        runner_endpoint = await resolve_sandbox_endpoint(sandbox, runner_port)
     return await _assemble_provisioned_sandbox(
         sandbox,
         manager=manager,
@@ -2449,7 +2425,7 @@ async def claim_prepared_engine_sandbox(
         vault_enabled=vault_enabled,
         prepared_manifest=claimed,
         runtime_env=claimed_runtime_env,
-        runner_uri=runner_uri,
+        runner_endpoint=runner_endpoint,
     )
 
 
@@ -2861,7 +2837,7 @@ async def provision_engine_sandbox(
         # session. The box-create recipe below cannot express any of that,
         # so the placement path takes over here and rejoins at the
         # tenancy-agnostic tail (transcript restore, result assembly).
-        sandbox, sandbox_id, runtime_identity, runner_uri = await _provision_shared_conversation(
+        sandbox, sandbox_id, runtime_identity, runner_endpoint = await _provision_shared_conversation(
             manager,
             backend_adapter,
             session_id=session_id,
@@ -2895,7 +2871,7 @@ async def provision_engine_sandbox(
             mcp_vault_write=mcp_vault_write,
             vault_enabled=vault_enabled,
             runtime_env=runtime_env,
-            runner_uri=runner_uri,
+            runner_endpoint=runner_endpoint,
         )
 
     planned_mounts = await plan_workspace_mounts(
@@ -2972,8 +2948,8 @@ async def provision_engine_sandbox(
         cwd=cwd,
     )
 
-    runner_uri = (
-        await resolve_sandbox_websocket_endpoint(sandbox, int(request.wait_for_inbox_service_port))
+    runner_endpoint = (
+        await resolve_sandbox_endpoint(sandbox, int(request.wait_for_inbox_service_port))
         if request.wait_for_inbox_service_port is not None
         else None
     )
@@ -2992,5 +2968,5 @@ async def provision_engine_sandbox(
         mcp_vault_write=mcp_vault_write,
         vault_enabled=vault_enabled,
         runtime_env=runtime_env,
-        runner_uri=runner_uri,
+        runner_endpoint=runner_endpoint,
     )

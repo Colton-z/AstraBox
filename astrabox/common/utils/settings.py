@@ -179,6 +179,16 @@ class AstraBoxRuntimeSettings(BaseSettings):
             AliasPath("astrabox", "sandbox_platform", "secure_access"),
         ),
     )
+    #: Create Docker sandboxes without execd's per-sandbox credential, so a
+    #: browser on the Docker host can use execd's proxy. See
+    #: ``providers/open_sandbox/execd_access``.
+    sandbox_unauthenticated_execd: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "ASTRABOX_SANDBOX_UNAUTHENTICATED_EXECD",
+            AliasPath("astrabox", "sandbox_platform", "unauthenticated_execd"),
+        ),
+    )
     sandbox_endpoint_url_ttl_seconds: int = Field(
         default=900,
         ge=60,

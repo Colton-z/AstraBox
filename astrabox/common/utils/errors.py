@@ -685,6 +685,15 @@ for _code, _status, _category, _retryable, _owner in (
     # the earlier execution made a box is unknown. The same command is never
     # retried; starting the conversation again is a new command.
     ("SANDBOX_CREATE_INTERRUPTED", 409, "runtime.startup", False, "platform"),
+    # A new Docker sandbox's execd did not prove that it admits only its
+    # per-sandbox credential, so the sandbox was destroyed rather than used.
+    # The next sandbox comes from the same execd image and fails the same way
+    # until the operator names AstraBox's execd build.
+    ("SANDBOX_EXECD_ACCESS_UNVERIFIED", 502, "runtime.startup", False, "platform"),
+    # The sandbox's execd requires a credential that a browser cannot send, and
+    # on the Docker runtime every browser route to an in-box port passes
+    # through execd. The deployment, not the request, decides this.
+    ("SANDBOX_BROWSER_ROUTE_UNAVAILABLE", 409, "configuration", False, "platform"),
     # Port 8080 is the sandbox's control API, not an application preview.
     ("EXPOSE_PORT_RESERVED", 400, "request", False, "client"),
     ("AGENT_RUNTIME_GENERATION_CONFLICT", 409, "state", True, "platform"),

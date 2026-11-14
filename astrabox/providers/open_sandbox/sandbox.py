@@ -46,6 +46,12 @@ from astrabox.providers.execd import EXECD_PORT, ExecdCommands, ExecdFiles, Exec
 from astrabox.providers.execd.commands import ReportedExitStatus, join_execd_lines
 from astrabox.providers.open_sandbox import _config
 from astrabox.providers.open_sandbox.aio_auth import AIO_HTTP_PORT
+from astrabox.providers.open_sandbox.execd_access import (
+    DIRECTLY_PUBLISHED_PORTS,
+    EXECD_ACCESS_TOKEN_HEADER,
+    execd_access_headers,
+    with_execd_access,
+)
 from astrabox.providers.open_sandbox._metadata import (
     assignment_metadata_value,
     is_client_pool_identity,
@@ -477,6 +483,22 @@ class OpenSandboxHandle:
         return str(self._sdk.id)
 
     @property
+    def execd_access(self) -> dict[str, str]:
+        """The header this box's execd requires; empty for a box created without one.
+
+        It rides the SDK object's connection config
+        (:func:`.execd_access.with_execd_access`), so every request the SDK
+        makes carries it; :meth:`get_endpoint` adds it for the transports this
+        module and the engines open themselves.
+        """
+        headers = dict(self._sdk.connection_config.headers or {})
+        return {
+            name: value
+            for name, value in headers.items()
+            if name == EXECD_ACCESS_TOKEN_HEADER
+        }
+
+    @property
     def id(self) -> str:
         """Alias of :attr:`sandbox_id` for the extractor's ``id`` probe."""
         return str(self._sdk.id)
@@ -546,7 +568,9 @@ class OpenSandboxHandle:
 
         The SDK returns a bare ``host:port``; the scheme comes from the
         deployment's lifecycle base URL (``_config.endpoint_url``). Required
-        routing headers are preserved on the returned value.
+        routing headers are preserved on the returned value, and so is this
+        box's execd credential for every port the Docker runtime reaches
+        through execd's ``/proxy/<port>``.
         """
         key = int(port)
         cached = self._endpoints.get(key)
@@ -564,7 +588,10 @@ class OpenSandboxHandle:
             ) from None
         resolved = SandboxEndpoint(
             url=_config.endpoint_url(raw.endpoint, settings=settings),
-            headers=_endpoint_headers(raw.headers),
+            headers={
+                **({} if key in DIRECTLY_PUBLISHED_PORTS else self.execd_access),
+                **_endpoint_headers(raw.headers),
+            },
         )
         self._endpoints[key] = resolved
         return resolved
@@ -1702,9 +1729,12 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         try:
             sdk_sandbox = await Sandbox.connect(
                 str(sandbox_id),
-                connection_config=self._sdk_connection_config(
-                    settings,
-                    use_server_proxy_override=use_server_proxy_override,
+                connection_config=with_execd_access(
+                    self._sdk_connection_config(
+                        settings,
+                        use_server_proxy_override=use_server_proxy_override,
+                    ),
+                    execd_access_headers(getattr(info, "metadata", None)),
                 ),
                 skip_health_check=True,
             )
@@ -2202,9 +2232,11 @@ class OpenSandboxSandboxProvider(SandboxProvider):
     ) -> SandboxBrowserEndpoint | None:
         """Resolve OpenSandbox's native execd/gateway URL by sandbox id.
 
-        Docker returns execd's ``/proxy/{port}`` URL. Kubernetes Secure Access
-        uses the SDK's signed-endpoint operation, which produces an OSEP-0011
-        URI or wildcard route suitable for direct browser navigation.
+        Docker returns execd's ``/proxy/{port}`` URL, and refuses a box whose
+        execd requires its credential (:mod:`.execd_access`): a browser cannot
+        send it. Kubernetes Secure Access uses the SDK's signed-endpoint
+        operation, which produces an OSEP-0011 URI or wildcard route suitable
+        for direct browser navigation.
 
         The AIO gateway port is refused. It serves the box's own file and
         command API behind the per-box ``SANDBOX_API_KEY``; a browser link to it
@@ -2259,6 +2291,20 @@ class OpenSandboxSandboxProvider(SandboxProvider):
             use_server_proxy_override=False,
         )
         try:
+            if handle.execd_access:
+                raise APIError(
+                    code="SANDBOX_BROWSER_ROUTE_UNAVAILABLE",
+                    message=(
+                        "this sandbox's execd requires a per-sandbox credential, "
+                        "and on the Docker runtime a browser reaches every in-box "
+                        "port through execd, which it cannot authenticate to. "
+                        "HTML preview, the Browser panel and exposed ports need "
+                        "the Kubernetes runtime with the OpenSandbox ingress "
+                        "Gateway, or ASTRABOX_SANDBOX_UNAUTHENTICATED_EXECD=true "
+                        "for sandboxes created afterwards (see docs/deploy.md)"
+                    ),
+                    status_code=409,
+                )
             if expires_at is None:
                 endpoint = await handle.get_endpoint(int(port))
             else:

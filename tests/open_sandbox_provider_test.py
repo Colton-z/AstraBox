@@ -600,6 +600,9 @@ async def test_a_create_names_its_networks_and_mounts_the_operators_storage(
     from astrabox.seams.sandbox import SandboxSharedMount
 
     monkeypatch.setattr(OpenSandboxSandboxProvider, "_bundled_docker", staticmethod(lambda: True))
+    # The fake lifecycle serves no execd to prove a credential against; this
+    # case is about the create body's networks and storage.
+    monkeypatch.setenv("ASTRABOX_SANDBOX_UNAUTHENTICATED_EXECD", "true")
     fake = _FakeLifecycle()
     handle = await create_open_sandbox_box(
         environment_name="astrabox",

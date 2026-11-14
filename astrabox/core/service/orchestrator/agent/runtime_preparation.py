@@ -34,8 +34,8 @@ async def prepare_pool_runtime(sandbox: Any, *, template: Any, manager: Any) -> 
         environment_credential_contract,
         resolve_model_credential_delivery,
         resolve_prepared_environment_credentials,
-        resolve_sandbox_websocket_endpoint,
     )
+    from astrabox.core.service.orchestrator.runtime.pty_terminal import resolve_sandbox_endpoint
     from astrabox.core.service.orchestrator.runtime.mcp_credentials import resolve_agent_mcp_credential_plan
     from astrabox.core.service.orchestrator.runtime.sandbox_client import extract_sandbox_id
     from astrabox.core.service.orchestrator.workspace.deployment_conversation import build_conversation_identity
@@ -78,7 +78,7 @@ async def prepare_pool_runtime(sandbox: Any, *, template: Any, manager: Any) -> 
             sandbox, unclaimed_for=timedelta(seconds=int(settings.sandbox_lease_seconds) + 300),
         )
     runner_port = int(request.wait_for_inbox_service_port or 0)
-    runner_uri = await resolve_sandbox_websocket_endpoint(sandbox, runner_port) if runner_port else None
+    runner_endpoint = await resolve_sandbox_endpoint(sandbox, runner_port) if runner_port else None
     try:
         await _publish_prepared_platform_mcp_binding(
             template, agent_id=template.agent_id, slot_id=slot_id,
@@ -89,7 +89,7 @@ async def prepare_pool_runtime(sandbox: Any, *, template: Any, manager: Any) -> 
                 template=template, slot_id=slot_id, placement="conversation_box", sandbox=sandbox, sandbox_id=sandbox_id,
                 cwd=str(identity["workspace_dir"]), runtime_identity=identity,
                 model_access=model_access, model_credential=credential, runtime_env=runtime_env,
-                runner_uri=runner_uri, preparation_fingerprint=template.runtime_generation,
+                runner_endpoint=runner_endpoint, preparation_fingerprint=template.runtime_generation,
                 deployment_settings=manager.deployment_settings, workspace_id=workspace_id,
                 gateway_substitution=bool(vault_plan is not None and vault_plan.model)
                 and credential == workload_model_placeholder(slot_id),

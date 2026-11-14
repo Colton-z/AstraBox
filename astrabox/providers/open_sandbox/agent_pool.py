@@ -386,14 +386,28 @@ class OpenSandboxClientPoolRegistry:
                 exc,
             ) from exc
 
-        from astrabox.providers.open_sandbox.sandbox import OpenSandboxHandle
+        from astrabox.providers.open_sandbox.executor import destroy_open_sandbox_box
+        from astrabox.providers.open_sandbox.sandbox import OpenSandboxSandboxProvider
 
         logger.info(
             "OpenSandbox client pool acquired: pool=%s sandbox=%s",
             spec.pool_name,
             sdk_sandbox.id,
         )
-        return OpenSandboxHandle(sdk_sandbox)
+        # The pool connects a member with the pool's connection config, which
+        # carries no member's execd credential (execd_access). connect() reads
+        # it from the member's own metadata. The member is this caller's now,
+        # so a failed connect destroys it rather than leaving it unowned.
+        sandbox_id = str(sdk_sandbox.id)
+        provider = OpenSandboxSandboxProvider(transport=self._transport)
+        try:
+            return await provider.connect(sandbox_id)
+        except BaseException:
+            await destroy_open_sandbox_box(provider, sandbox_id)
+            raise
+        finally:
+            with contextlib.suppress(Exception):
+                await sdk_sandbox.close()
 
     async def describe(self, pool_name: str) -> SandboxClientPoolStatus:
         """Read shared inventory without starting or changing the pool."""

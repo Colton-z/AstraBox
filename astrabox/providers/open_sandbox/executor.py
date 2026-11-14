@@ -32,6 +32,17 @@ from astrabox.providers.open_sandbox._metadata import (
     assignment_metadata_value,
     session_metadata_value,
 )
+from astrabox.providers.open_sandbox.execd_access import (
+    EXECD_ACCESS_TOKEN_ENV,
+    EXECD_ACCESS_TOKEN_HEADER,
+    SANDBOX_EXECD_ACCESS_METADATA_KEY,
+    entrypoint_without_token,
+    execd_access_headers,
+    execd_access_required,
+    new_execd_access_subject,
+    require_execd_access_enforced,
+    with_execd_access,
+)
 from astrabox.providers.open_sandbox.networking import (
     SANDBOX_NETWORK_WIRING_METADATA_KEY,
     sandbox_network_wiring,
@@ -1137,6 +1148,7 @@ async def create_open_sandbox_box(
         SANDBOX_NETWORK_WIRING_METADATA_KEY,
         SANDBOX_INSTALLATION_METADATA_KEY,
         CONTAINER_ENGINE_METADATA_KEY,
+        SANDBOX_EXECD_ACCESS_METADATA_KEY,
     }
     collisions = sorted(
         (reserved_metadata & set(caller_metadata))
@@ -1153,10 +1165,23 @@ async def create_open_sandbox_box(
         )
     installation = await sandbox_installation_id()
     settings = load_astrabox_settings()
-    connection_config = _config.sdk_connection_config(
-        settings,
-        transport=transport,
-        request_timeout_seconds=_config.create_request_timeout_seconds(settings),
+    # The box's execd credential is derived from a subject recorded in its
+    # metadata, so connect() reproduces it (execd_access). The create's own
+    # SDK object carries it from the start.
+    execd_access_required_here = execd_access_required(settings)
+    execd_access_metadata = (
+        {SANDBOX_EXECD_ACCESS_METADATA_KEY: new_execd_access_subject()}
+        if execd_access_required_here
+        else {}
+    )
+    execd_access = execd_access_headers(execd_access_metadata)
+    connection_config = with_execd_access(
+        _config.sdk_connection_config(
+            settings,
+            transport=transport,
+            request_timeout_seconds=_config.create_request_timeout_seconds(settings),
+        ),
+        execd_access,
     )
     # Key hygiene (the invariant the provider's _api_error enforces): every call
     # below is a lifecycle-face request carrying the API key header, and a
@@ -1181,13 +1206,18 @@ async def create_open_sandbox_box(
     if create_extensions:
         hardening["extensions"] = create_extensions
     create_env = dict(env)
-    reserved = sorted(key for key in create_env if str(key).startswith("OPENSANDBOX_EGRESS_"))
+    reserved = sorted(
+        key
+        for key in create_env
+        if str(key).startswith("OPENSANDBOX_EGRESS_") or key == EXECD_ACCESS_TOKEN_ENV
+    )
     if reserved:
         raise APIError(
             code="SANDBOX_CONFIG_INVALID",
             message=(
-                "sandbox environment variables under OPENSANDBOX_EGRESS_* are "
-                "reserved for the host; remove: " + ", ".join(reserved)
+                "sandbox environment variables under OPENSANDBOX_EGRESS_* and "
+                f"{EXECD_ACCESS_TOKEN_ENV} are reserved for the host; remove: "
+                + ", ".join(reserved)
             ),
             status_code=400,
         )
@@ -1209,6 +1239,9 @@ async def create_open_sandbox_box(
     # metadata projection — the exact string stored on the box. The key stays
     # in its create environment and is never returned in a browser URL.
     create_env[AIO_SANDBOX_API_KEY_ENV] = derive_aio_api_key(assignment_metadata)
+    if execd_access:
+        create_env[EXECD_ACCESS_TOKEN_ENV] = execd_access[EXECD_ACCESS_TOKEN_HEADER]
+        resolved_entrypoint = entrypoint_without_token(resolved_entrypoint)
     create_volumes = [
         *(volumes or []),
         *_container_engine_volume(container_engine),
@@ -1297,6 +1330,7 @@ async def create_open_sandbox_box(
                     # refuses a box whose record differs from the deployment's.
                     SANDBOX_NETWORK_WIRING_METADATA_KEY: sandbox_network_wiring(settings),
                     SANDBOX_INSTALLATION_METADATA_KEY: installation,
+                    **execd_access_metadata,
                     **(
                         {CONTAINER_ENGINE_METADATA_KEY: container_engine}
                         if container_engine != SANDBOX_CONTAINER_ENGINE_NONE
@@ -1323,6 +1357,8 @@ async def create_open_sandbox_box(
             ) from exc
     handle = OpenSandboxHandle(sdk_sandbox)
     try:
+        if execd_access_required_here:
+            await _require_execd_access(handle)
         await require_open_sandbox_permission_level(handle, permission_level)
         if require_execd_command_stream:
             await _wait_for_execd_command_stream(handle, session_id=str(session_id))
@@ -1376,6 +1412,33 @@ async def create_open_sandbox_box(
             data={"sandbox_id": leaked, "leaked_sandbox_id": leaked},
         ) from exc
     return handle
+
+
+async def _require_execd_access(handle: OpenSandboxHandle) -> None:
+    """Refuse a new box unless its execd admits only the box's own credential.
+
+    A box returned by assignment recovery may predate the credential; it has
+    none to prove and is refused like one whose execd ignores it.
+    """
+
+    access = handle.execd_access
+    if not access:
+        raise APIError(
+            code="SANDBOX_EXECD_ACCESS_UNVERIFIED",
+            message=(
+                f"sandbox {handle.sandbox_id!r} was created without an execd "
+                "credential, which this deployment requires"
+            ),
+            status_code=502,
+        )
+    raw = await handle.sidecar_faces.get_endpoint(EXECD_PORT)
+    await require_execd_access_enforced(
+        _config.endpoint_url(raw.endpoint),
+        token=access[EXECD_ACCESS_TOKEN_HEADER],
+        routing_headers={
+            str(name): str(value) for name, value in dict(raw.headers or {}).items()
+        },
+    )
 
 
 __all__ = [

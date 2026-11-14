@@ -76,6 +76,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from astrabox.common.logger.logger_factory import get_logger
+from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator.engine.base import EngineCapabilityManifest, EngineStreamDetached
 from astrabox.core.service.orchestrator.engine.input_ids import input_response_message_id
 from astrabox.core.service.orchestrator.engine.interaction_contract import (
@@ -1012,6 +1013,21 @@ async def box_process_faces(
     if not service_credential:
         raise RuntimeError("isolated pi service has no platform control credential")
     endpoint = await resolve_sandbox_endpoint(sandbox, port)
+    if "X-EXECD-ACCESS-TOKEN" in endpoint.headers:
+        # On the Docker runtime this execd is reached through the box's own
+        # execd proxy, and both read this one header: a request cannot present
+        # the box's credential and this conversation's at once.
+        raise APIError(
+            code="SANDBOX_ISOLATION_UNSUPPORTED",
+            message=(
+                "a Pi conversation in a shared sandbox runs its own execd behind "
+                "the sandbox's execd, and this sandbox's execd requires its own "
+                "credential in the same header. A Pi Agent cannot share a Docker "
+                "sandbox between conversations unless "
+                "ASTRABOX_SANDBOX_UNAUTHENTICATED_EXECD=true (see docs/deploy.md)"
+            ),
+            status_code=409,
+        )
     headers = {**endpoint.headers, "X-EXECD-ACCESS-TOKEN": service_credential}
     return (
         ExecdProcesses.at_endpoint(endpoint.url, headers, sandbox_id=sandbox.sandbox_id),

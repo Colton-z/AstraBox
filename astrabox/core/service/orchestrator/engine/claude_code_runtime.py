@@ -36,6 +36,7 @@ from astrabox.seams.egress_credentials import (
     EGRESS_HELD_PLACEHOLDER,
 )
 from astrabox.core.model import AgentView
+from astrabox.seams.sandbox_data import SandboxEndpoint
 from astrabox.core.service.orchestrator.engine.runtime import initialize_runtime_client
 from astrabox.core.service.orchestrator.engine.base import (
     EnginePreparationContext,
@@ -415,8 +416,8 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
             if signs_in_inside_sandbox(model_config.endpoint_provider)
             else None
         )
-        runner_uri = str(context.runner_uri or "").strip()
-        if not runner_uri:
+        runner_endpoint = context.runner_endpoint
+        if runner_endpoint is None:
             raise APIError(
                 code="AGENT_RUNTIME_ERROR",
                 message="the platform supplied Claude no ready runner endpoint",
@@ -442,7 +443,7 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
                 session_mcp,
             )
             engine_client, how = await _attach_runner_engine_client(
-                runner_uri,
+                runner_endpoint,
                 activation_token=activation_token,
                 session_id=context.session_id,
                 sdk_options=_session_mcp_options(runner_options, template),
@@ -467,7 +468,7 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
                     await engine_client.bind_environment(context.session_env)
         elif is_prepared:
             engine_client = await _activate_runner_engine_client(
-                runner_uri,
+                runner_endpoint,
                 slot_id=str(prepared.get("slot_id") or ""),
                 activation_token=activation_token,
                 session_id=context.session_id,
@@ -503,7 +504,7 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
                 token=activation_token,
             )
             engine_client = await _connect_runner_engine_client(
-                runner_uri,
+                runner_endpoint,
                 activation_token=activation_token,
                 session_id=context.session_id,
                 sdk_options=_session_mcp_options(runner_options, template),
@@ -745,7 +746,9 @@ async def prepare_runtime(context: EnginePreparationContext) -> dict[str, Any]:
         file_name=RUNNER_TOKEN_FILE_NAME,
         token=activation_token,
     )
-    link = RunnerLink(str(context.runner_uri or ""), activation_token=activation_token)
+    if context.runner_endpoint is None:
+        raise RuntimeError("a Claude preparation needs its runner endpoint")
+    link = RunnerLink(context.runner_endpoint, activation_token=activation_token)
     await link.__aenter__()
     try:
         await link.prepare(target_slot, options=wire_options)
@@ -764,7 +767,7 @@ _ENGINE_BOUNDARY_MESSAGE_TYPES = frozenset({"StreamEvent", "AssistantMessage"})
 
 
 async def _connect_runner_engine_client(
-    runner_uri: str,
+    runner_endpoint: SandboxEndpoint,
     *,
     activation_token: str,
     session_id: str,
@@ -810,7 +813,7 @@ async def _connect_runner_engine_client(
             message="the platform supplied Claude no sandbox death notice",
             status_code=500,
         )
-    link = RunnerLink(runner_uri, activation_token=activation_token)
+    link = RunnerLink(runner_endpoint, activation_token=activation_token)
     await link.__aenter__()
     try:
         hello = await link.configure(
@@ -833,7 +836,7 @@ async def _connect_runner_engine_client(
 
 
 async def _activate_runner_engine_client(
-    runner_uri: str,
+    runner_endpoint: SandboxEndpoint,
     *,
     slot_id: str,
     activation_token: str,
@@ -880,7 +883,7 @@ async def _activate_runner_engine_client(
             message="the platform supplied Claude no sandbox death notice",
             status_code=500,
         )
-    link = RunnerLink(runner_uri, activation_token=activation_token)
+    link = RunnerLink(runner_endpoint, activation_token=activation_token)
     await link.__aenter__()
     try:
         hello = await link.activate(
@@ -907,7 +910,7 @@ async def _activate_runner_engine_client(
 
 
 async def _attach_runner_engine_client(
-    runner_uri: str,
+    runner_endpoint: SandboxEndpoint,
     *,
     activation_token: str,
     session_id: str,
@@ -933,7 +936,7 @@ async def _attach_runner_engine_client(
     from astrabox.core.service.orchestrator.engine.claude_runtime_client import ClaudeRuntimeClient
     from astrabox.core.service.orchestrator.engine.runner_link import RunnerLink
 
-    link = RunnerLink(runner_uri, activation_token=activation_token)
+    link = RunnerLink(runner_endpoint, activation_token=activation_token)
     await link.__aenter__()
     try:
         hello = await link.attach(
@@ -961,7 +964,7 @@ async def _attach_runner_engine_client(
             attach_exc,
         )
     client = await _connect_runner_engine_client(
-        runner_uri,
+        runner_endpoint,
         activation_token=activation_token,
         session_id=session_id,
         sdk_options=sdk_options,
