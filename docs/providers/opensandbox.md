@@ -133,14 +133,18 @@ workspace layout. The deployment selects CPU and memory limits and scheduling
 requests through `ASTRABOX_SANDBOX_*` for conversation-owned boxes,
 `ASTRABOX_SHARED_SANDBOX_*` for Agent-shared boxes, and
 `ASTRABOX_ASSISTANT_SANDBOX_*` for Assistant workspace boxes. See the defaults in
-[Configuration](https://github.com/Colton-z/AstraBox/blob/main/docs/configuration.md). Each kind uses its one recipe for cold,
-prepared, and replacement creation; these are not RuntimeProfile fields. The
-provider-fitted limits and requests are part of an Agent's prepared generation,
-so a resource change retires unclaimed capacity without resizing Session-owned
-boxes. When the bundled lifecycle server runs sandboxes on this host's Docker,
-the CPU limit is lowered to the host's CPU count, because Docker refuses a limit
-above it; on Kubernetes, and with an existing OpenSandbox service, the recipe is
-sent as is. Disk, GPU access, and cluster admission remain OpenSandbox deployment
+[Configuration](https://github.com/Colton-z/AstraBox/blob/main/docs/configuration.md). A RuntimeProfile's
+`sandbox_cpu` and `sandbox_memory` replace those limits for every box of the
+profile ([Sandbox size](../runtime-profiles.md#sandbox-size)). Each box uses
+one recipe for cold, prepared, and replacement creation, and both runtimes
+receive it the same way: limits as the create's `resource` and requests as its
+`resource_requests`. The provider-fitted limits and requests are part of an
+Agent's prepared generation, so a resource change retires unclaimed capacity
+without resizing Session-owned boxes. When the bundled lifecycle server runs
+sandboxes on this host's Docker, a CPU limit above the host's CPU count is
+lowered to that count, because Docker refuses a limit above it, and saving a
+RuntimeProfile whose CPU would be lowered is refused; on Kubernetes, and with
+an existing OpenSandbox service, the recipe is sent as is. Disk, GPU access, and cluster admission remain OpenSandbox deployment
 concerns.
 
 ## Use prewarmed capacity

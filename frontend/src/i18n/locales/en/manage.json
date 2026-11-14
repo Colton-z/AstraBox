@@ -681,6 +681,16 @@
         "label": "Sandbox image or template",
         "help": "Leave blank to use the deployment default for the selected Agent program"
       },
+      "sandbox_cpu": {
+        "label": "Sandbox CPU",
+        "help": "The most CPU each sandbox of this runtime profile may use, as cores (2, 0.5) or millicores (500m); at least 250m. It applies to every sandbox: started on demand or prepared ahead, and, with sandbox sharing, the sandbox the Agent's conversations share. Leave blank to use the deployment's size for the kind of sandbox. A size the deployment's sandbox quota or host cannot hold is refused. Running sandboxes keep their size until they are replaced.",
+        "placeholder": "Deployment default"
+      },
+      "sandbox_memory": {
+        "label": "Sandbox memory",
+        "help": "The most memory each sandbox of this runtime profile may use, with its unit (4Gi, 1536Mi); at least 1Gi. It applies to every sandbox: started on demand or prepared ahead, and, with sandbox sharing, the sandbox the Agent's conversations share, which then holds as many conversations as its memory admits. Leave blank to use the deployment's size for the kind of sandbox. A size the deployment's sandbox quota or host cannot hold is refused. Running sandboxes keep their size until they are replaced.",
+        "placeholder": "Deployment default"
+      },
       "networking": {
         "label": "Networking",
         "type": {

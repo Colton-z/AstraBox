@@ -83,6 +83,8 @@ function optionLabel(key: string, value: string): string {
 
 function toFieldSpec(field: FormFieldSchema, opts: { nameEditable: boolean }): EditFieldSpec {
   const type = editType(field);
+  // A field whose empty value defers to the deployment says so in place of a value.
+  const placeholderKey = `manage:runtime_profile_form.fields.${field.key}.placeholder`;
   return {
     key: field.key,
     label: i18n.t(`manage:runtime_profile_form.fields.${field.key}.label`),
@@ -103,7 +105,9 @@ function toFieldSpec(field: FormFieldSchema, opts: { nameEditable: boolean }): E
           ? '{ }'
           : field.key === 'name'
             ? i18n.t('manage:runtime_profile_form.name_placeholder')
-            : undefined,
+            : i18n.exists(placeholderKey)
+              ? i18n.t(placeholderKey)
+              : undefined,
     rows: field.type === 'text' ? 3 : type === 'json' ? 5 : undefined,
   };
 }

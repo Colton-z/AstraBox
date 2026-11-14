@@ -76,6 +76,20 @@ def resolve_sandbox_container_engine(template: Any | None) -> str:
     return value
 
 
+def resolve_sandbox_size(template: Any | None) -> dict[str, str]:
+    """The limits this environment sets for each of its boxes: ``cpu``, ``memory`` or both.
+
+    A resource the environment leaves empty is absent, and the deployment's
+    size for the kind of box applies to it (``sandbox_create_resources``). The
+    values are Kubernetes quantities, checked when the RuntimeProfile is saved.
+    """
+    return {
+        kind: value
+        for kind, field in (("cpu", "sandbox_cpu"), ("memory", "sandbox_memory"))
+        if (value := str(_template_value(template, field) or "").strip())
+    }
+
+
 def resolve_sandbox_tenancy(template: Any | None) -> str:
     """How many conversations a box of this environment carries.
 

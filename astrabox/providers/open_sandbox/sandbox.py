@@ -1581,12 +1581,15 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         the Docker runtime runs boxes on this host, so only there is this
         host's count the right ceiling. A Kubernetes limit may exceed one node,
         and an existing OpenSandbox service runs on hosts this one cannot see:
-        both keep the recipe.
+        both keep the recipe. A limit within the count is returned as given.
         """
+        from astrabox.config.settings import cpu_quantity
+
         fitted = dict(limits)
         cpu = str(fitted.get("cpu") or "")
-        if cpu.isdigit() and self._bundled_docker():
-            fitted["cpu"] = str(min(int(cpu), os.cpu_count() or 1))
+        host_cpus = os.cpu_count() or 1
+        if cpu and self._bundled_docker() and cpu_quantity(cpu) > host_cpus:
+            fitted["cpu"] = str(host_cpus)
         return fitted, dict(requests)
 
     # --- in-box transport (data plane) ------------------------------------

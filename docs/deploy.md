@@ -924,7 +924,9 @@ scheduler reserves for it on a node; Docker ignores requests. Memory requests
 equal the limits, so a node never promises memory it does not have. CPU
 requests are lower, because a sandbox that finds the CPU busy only runs slower.
 A sandbox takes the size in effect when it is created and keeps it until it is
-replaced.
+replaced. A RuntimeProfile can set its own CPU and memory for every sandbox
+created from it, of either kind; see
+[Sandbox size](runtime-profiles.md#sandbox-size).
 
 A shared sandbox takes another conversation while its free memory, measured
 from what the sandbox uses rather than from its limit, leaves 640 MiB for it.

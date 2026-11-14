@@ -341,7 +341,7 @@ async def build_agent_client_pool_plan(
             else {}
         )
         resource_limits, resource_requests = provider.fit_resources(
-            *sandbox_create_resources(shared=not conversation_owned)
+            *sandbox_create_resources(template, shared=not conversation_owned)
         )
         create_spec = SandboxCreateSpec(
             session_id=member.session_id,

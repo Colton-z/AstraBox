@@ -70,6 +70,7 @@ from astrabox.core.service.orchestrator.runtime.storage.mounts import (
 from astrabox.core.service.orchestrator.runtime.runtime_profile import (
     resolve_sandbox_container_engine,
     resolve_sandbox_permission_level,
+    resolve_sandbox_size,
     resolve_sandbox_tenancy,
 )
 from astrabox.core.service.orchestrator.runtime.mcp_credentials import (
@@ -120,33 +121,46 @@ logger = get_logger(__name__)
 
 
 def sandbox_create_resources(
-    *, shared: bool, assistant: bool = False,
+    template: Any | None, *, shared: bool, assistant: bool = False,
 ) -> tuple[dict[str, str], dict[str, str]]:
-    """Return the deployment's ``(limits, requests)`` for one kind of box.
+    """Return ``(limits, requests)`` for one box of ``template``'s RuntimeProfile.
 
     ``shared`` selects an Agent's shared box and ``assistant`` an Assistant's
-    workspace box, otherwise a conversation's own box. Limits are the ceiling;
-    requests are only the Kubernetes scheduling reservation. A deployment sets
-    them with ``ASTRABOX_SANDBOX_*``, ``ASTRABOX_SHARED_SANDBOX_*`` and
+    workspace box, otherwise a conversation's own box. A deployment sizes each
+    kind with ``ASTRABOX_SANDBOX_*``, ``ASTRABOX_SHARED_SANDBOX_*`` and
     ``ASTRABOX_ASSISTANT_SANDBOX_*`` (defaults in
-    :class:`~astrabox.config.settings.AstraBoxSettings`). Every create passes
-    them through its backend's ``fit_resources``, which refuses what that
-    runtime cannot honour.
+    :class:`~astrabox.config.settings.AstraBoxSettings`). The RuntimeProfile's
+    ``sandbox_cpu`` and ``sandbox_memory`` replace that kind's limit for every
+    box of the profile, whichever kind it is (``resolve_sandbox_size``).
+
+    Limits are the ceiling; requests are only the Kubernetes scheduling
+    reservation. A profile's memory is also its boxes' memory request, so a
+    node reserves the memory such a box may use. A profile's CPU caps the
+    deployment's CPU request, which Kubernetes refuses above the limit, and
+    otherwise leaves it as the deployment set it: a box that finds the CPU busy
+    only runs slower. Every create passes the result through its backend's
+    ``fit_resources``, which refuses what that runtime cannot honour.
     """
-    from astrabox.config.settings import get_settings
+    from astrabox.config.settings import cpu_quantity, get_settings
 
     settings = get_settings()
     prefix = "shared_sandbox" if shared else "assistant_sandbox" if assistant else "sandbox"
-    return (
-        {
-            "cpu": getattr(settings, f"{prefix}_cpu_limit"),
-            "memory": getattr(settings, f"{prefix}_memory_limit"),
-        },
-        {
-            "cpu": getattr(settings, f"{prefix}_cpu_request"),
-            "memory": getattr(settings, f"{prefix}_memory_request"),
-        },
-    )
+    limits = {
+        "cpu": getattr(settings, f"{prefix}_cpu_limit"),
+        "memory": getattr(settings, f"{prefix}_memory_limit"),
+    }
+    requests = {
+        "cpu": getattr(settings, f"{prefix}_cpu_request"),
+        "memory": getattr(settings, f"{prefix}_memory_request"),
+    }
+    size = resolve_sandbox_size(template)
+    if "cpu" in size:
+        limits["cpu"] = size["cpu"]
+        if cpu_quantity(requests["cpu"]) > cpu_quantity(size["cpu"]):
+            requests["cpu"] = size["cpu"]
+    if "memory" in size:
+        limits["memory"] = requests["memory"] = size["memory"]
+    return limits, requests
 
 
 def _slot_model_substitution(
@@ -1481,7 +1495,7 @@ def engine_create_spec(
     """
 
     resource_limits, resource_requests = backend.fit_resources(
-        *sandbox_create_resources(shared=shared, assistant=assistant)
+        *sandbox_create_resources(template, shared=shared, assistant=assistant)
     )
     container_engine = resolve_sandbox_container_engine(template)
     return SandboxCreateSpec(

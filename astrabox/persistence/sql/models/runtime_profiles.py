@@ -50,6 +50,9 @@ class RuntimeProfile(Base):
     sandbox_tenancy: Mapped[str | None] = mapped_column(payload_text())
     sandbox_permission_level: Mapped[str | None] = mapped_column(payload_text())
     sandbox_container_engine: Mapped[str | None] = mapped_column(payload_text())
+    #: Kubernetes quantities; empty leaves each to the deployment's size for the kind of box.
+    sandbox_cpu: Mapped[str | None] = mapped_column(payload_text())
+    sandbox_memory: Mapped[str | None] = mapped_column(payload_text())
     endpoint_provider: Mapped[str | None] = mapped_column(payload_text())
     provider_base_url: Mapped[str | None] = mapped_column(payload_text())
     provider_api_key_ref: Mapped[str | None] = mapped_column(KeyText(512))

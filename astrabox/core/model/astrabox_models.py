@@ -140,6 +140,11 @@ class AgentView:
     #: A container engine each box of this environment runs for its Agent
     #: (``none`` or ``docker``). None == ``none``.
     sandbox_container_engine: str | None = None
+    #: CPU and memory limits of each box of this environment, as Kubernetes
+    #: quantities. None == the deployment's size for that kind of box
+    #: (``sandbox_create_resources``).
+    sandbox_cpu: str | None = None
+    sandbox_memory: str | None = None
     #: Underlying sandbox backend selector; None == the default backend.
     sandbox_backend: str | None = None
     status: str | None = None

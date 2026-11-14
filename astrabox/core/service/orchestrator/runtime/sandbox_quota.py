@@ -329,7 +329,10 @@ async def reserve_resume(provider: Any, sandbox_id: str) -> str | None:
     if box is not None:
         charge = SandboxCharge(cpu=box["cpu_millicores"] / 1000, memory=box["memory_bytes"])
     else:
-        charge = box_charge(provider, _shared_limits())
+        # No inventory has listed the box yet; it still carries what its
+        # create was charged, which its RuntimeProfile may have sized.
+        described = await provider.describe_sandbox(sandbox_id)
+        charge = _recorded_charge(provider, described.metadata)
     return await reserve(provider, charge, reason="resume", session_id="", assignment_id=sandbox_id)
 
 
@@ -360,7 +363,6 @@ async def settle_failed_create(provider: Any, key: str, *, assignment_id: str) -
 async def _inventory(provider: Any) -> dict[str, dict[str, Any]]:
     from astrabox.seams.sandbox import SANDBOX_INSTALLATION_METADATA_KEY, sandbox_installation_id
 
-    unknown = box_charge(provider, _shared_limits())
     releases_when_paused = bool(provider.paused_box_releases_resources())
     installation = await sandbox_installation_id()
     boxes: dict[str, dict[str, Any]] = {}
@@ -370,17 +372,10 @@ async def _inventory(provider: Any) -> dict[str, dict[str, Any]]:
             page=page, page_size=100, metadata={SANDBOX_INSTALLATION_METADATA_KEY: installation}
         )
         for item in listing.items:
-            metadata = dict(item.metadata or {})
-            try:
-                cpu = int(metadata[QUOTA_CPU_METADATA_KEY])
-                memory = int(metadata[QUOTA_MEMORY_METADATA_KEY])
-            except (KeyError, ValueError):
-                # Created before this deployment recorded charges: charge the
-                # larger kind of box, so the quota never counts it short.
-                cpu, memory = unknown.cpu_millicores, unknown.memory
+            charge = _recorded_charge(provider, item.metadata or {})
             boxes[str(item.sandbox_id)] = {
-                "cpu_millicores": cpu,
-                "memory_bytes": memory,
+                "cpu_millicores": charge.cpu_millicores,
+                "memory_bytes": charge.memory,
                 # Saved and released: it holds nothing until reserve_resume
                 # takes its charge back.
                 "released": releases_when_paused and str(item.state or "").upper() == "PAUSED",
@@ -392,10 +387,23 @@ async def _inventory(provider: Any) -> dict[str, dict[str, Any]]:
         page += 1
 
 
+def _recorded_charge(provider: Any, metadata: Mapping[str, str]) -> SandboxCharge:
+    """What a box's create wrote it was charged (``SandboxCharge.metadata``)."""
+    try:
+        return SandboxCharge(
+            cpu=int(metadata[QUOTA_CPU_METADATA_KEY]) / 1000,
+            memory=int(metadata[QUOTA_MEMORY_METADATA_KEY]),
+        )
+    except (KeyError, ValueError):
+        # Created before this deployment recorded charges: charge the larger
+        # kind of box, so the quota never counts it short.
+        return box_charge(provider, _shared_limits())
+
+
 def _shared_limits() -> dict[str, str]:
     from astrabox.core.service.orchestrator.engine.provisioning import sandbox_create_resources
 
-    return sandbox_create_resources(shared=True)[0]
+    return sandbox_create_resources(None, shared=True)[0]
 
 
 async def reconcile_sandbox_quota(provider: Any) -> dict[str, int]:

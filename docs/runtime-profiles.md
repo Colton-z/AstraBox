@@ -35,6 +35,8 @@ The console presents the following settings.
 | Enabled | No | Whether the RuntimeProfile can be selected for an Agent. |
 | Sandbox service | No | The service that creates and manages sandboxes. AstraBox includes OpenSandbox support. A RuntimeProfile is refused on a service that cannot create sandboxes under its network access rules. |
 | Sandbox image or template | No | The prebuilt sandbox image. When omitted, the selected Agent program uses its deployment default. |
+| Sandbox CPU | No | The most CPU each sandbox may use, such as `8` or `500m`; at least `250m`. When omitted, the deployment's size applies. See [Sandbox size](#sandbox-size). |
+| Sandbox memory | No | The most memory each sandbox may use, such as `16Gi`; at least `1Gi`. When omitted, the deployment's size applies. See [Sandbox size](#sandbox-size). |
 | Network access | No | `Limited` allows required platform connections plus selected destinations; `Unrestricted` allows all outbound destinations. |
 | Idle sandbox behavior | No | Terminates an idle sandbox or, when the sandbox service supports snapshots, pauses it for later recovery. |
 | Sandbox sharing | No | Gives each conversation its own sandbox or shares one sandbox across the same Agent's conversations. Sharing runs each conversation in an isolated session, and is refused on a sandbox service that cannot. Without sharing, an Agent program that runs as a long-lived process in the sandbox (pi), and an Agent's terminal panel, need a sandbox service that keeps such processes; they are refused on one that does not. |
@@ -61,6 +63,49 @@ For most installations, select an existing RuntimeProfile when creating an Agent
 Deployment operators can create additional RuntimeProfiles when Agents need a
   different Agent program, image, model connection, network rules, or sandbox
 lifecycle.
+
+## Sandbox size {#sandbox-size}
+
+**Sandbox CPU** and **Sandbox memory** size every sandbox created from the
+RuntimeProfile: a sandbox started for a conversation, one prepared ahead for an
+Agent, and one that replaces a lost sandbox. Agents that build software and
+Agents that only watch for events can then run side by side, for example one
+RuntimeProfile with `8` CPU and `16Gi` for build work and another with `1` CPU
+and `2Gi` for a watcher. A field left empty takes the deployment's size for
+that kind of sandbox (`ASTRABOX_SANDBOX_*`, `ASTRABOX_SHARED_SANDBOX_*` or
+`ASTRABOX_ASSISTANT_SANDBOX_*`, see
+[Deploy](deploy.md#size-sandboxes-and-cap-what-they-use)).
+
+Both are limits, the most a sandbox may use, written as Kubernetes quantities:
+CPU in cores (`2`, `0.5`) or millicores (`500m`), memory with its unit (`4Gi`,
+`1536Mi`). On Kubernetes, the scheduler also reserves the RuntimeProfile's
+memory for each sandbox. Its CPU reservation stays the deployment's
+(`ASTRABOX_SANDBOX_CPU_REQUEST` and its shared and Assistant counterparts),
+lowered to the RuntimeProfile's CPU when that is smaller, because a sandbox
+that finds the CPU busy only runs slower. On Docker, reservations do not apply.
+
+With **Sandbox sharing**, the size is that of the sandbox the Agent's
+conversations share. It takes another conversation while its free memory
+leaves 640 MiB for it, so a larger sandbox holds more conversations.
+
+Saving refuses a size that cannot be created:
+
+- CPU below `250m` or memory below `1Gi`, which also catches a missing unit:
+  `2` is two bytes of memory.
+- A size that, with the egress sidecar each sandbox runs beside it, is more
+  than the deployment's [sandbox quota](deploy.md#cap-what-a-sandbox-backend-runs)
+  allows in total, since the quota would refuse every such sandbox.
+- With the bundled sandbox server on Docker, more CPU than the host has, or
+  more memory than the host has.
+
+A size the deployment cannot see, such as more than any Kubernetes node offers
+without a quota configured, is not checked when saving: such a sandbox fails
+to start when it is created.
+
+The sandbox quota counts each sandbox at the size it was created with. A
+changed size applies to sandboxes created after the change. AstraBox retires
+the Agents' prepared sandboxes of the old size and prepares new ones; sandboxes
+in use keep their size until they are replaced.
 
 ## Preinstalled Packages
 

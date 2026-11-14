@@ -277,7 +277,8 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "replacing a lost one. A backend that cannot honour it refuses the "
         "create with SANDBOX_RESOURCES_UNSUPPORTED before anything is "
         "allocated; the bundled OpenSandbox server on Docker lowers a CPU limit "
-        "above the host's CPU count to that count.",
+        "above the host's CPU count to that count. A RuntimeProfile's sandbox_cpu "
+        "replaces it for that profile's boxes, and caps their CPU request.",
         "astrabox.config.settings",
     ),
     (
@@ -285,7 +286,9 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "public",
         "1Gi",
         "Memory limit of a conversation's own box, as a Kubernetes quantity "
-        "(1Gi, 768Mi). Startup refuses a value that is not a quantity.",
+        "(1Gi, 768Mi). Startup refuses a value that is not a quantity. A "
+        "RuntimeProfile's sandbox_memory replaces it, and the memory request, for "
+        "that profile's boxes.",
         "astrabox.config.settings",
     ),
     (
@@ -313,14 +316,17 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "CPU limit of an Agent's shared box (RuntimeProfile "
         "sandbox_tenancy=agent), as a Kubernetes quantity, for every such box. "
         "A shared box admits another conversation while its free memory allows, "
-        "so its size decides how many it holds.",
+        "so its size decides how many it holds. A RuntimeProfile's sandbox_cpu "
+        "replaces it for that profile's boxes, and caps their CPU request.",
         "astrabox.config.settings",
     ),
     (
         "ASTRABOX_SHARED_SANDBOX_MEMORY_LIMIT",
         "public",
         "4Gi",
-        "Memory limit of an Agent's shared box, as a Kubernetes quantity.",
+        "Memory limit of an Agent's shared box, as a Kubernetes quantity. A "
+        "RuntimeProfile's sandbox_memory replaces it, and the memory request, for "
+        "that profile's boxes.",
         "astrabox.config.settings",
     ),
     (
@@ -345,7 +351,9 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "1",
         "CPU limit of an Assistant's workspace box, as a Kubernetes quantity, "
         "for every such box. The box stays running between messages so the "
-        "Assistant can answer its channels and run its scheduled jobs.",
+        "Assistant can answer its channels and run its scheduled jobs. A "
+        "RuntimeProfile's sandbox_cpu replaces it for that profile's boxes, and "
+        "caps their CPU request.",
         "astrabox.config.settings",
     ),
     (
@@ -353,7 +361,9 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "public",
         "1Gi",
         "Memory limit of an Assistant's workspace box, as a Kubernetes quantity. "
-        "Hermes and its desktop use about 860Mi when idle.",
+        "Hermes and its desktop use about 860Mi when idle. A RuntimeProfile's "
+        "sandbox_memory replaces it, and the memory request, for that profile's "
+        "boxes.",
         "astrabox.config.settings",
     ),
     (

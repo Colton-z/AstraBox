@@ -164,10 +164,11 @@ RUNTIME_PROFILE_FIELD_SCHEMA: list[dict[str, Any]] = [
     # ── runtime ───────────────────────────────────────────────────────────
     {"key": "sandbox_backend", "type": "enum", "group": GROUP_RUNTIME},
     {"key": "runtime_template_name", "type": "string", "advanced": True, "group": GROUP_RUNTIME},
-    # There is deliberately no per-environment CPU/memory field. The sandbox
-    # backend's create path sends no resource request, so anything offered here
-    # would be recorded and never applied — see docs/deploy.md "Sandbox resource
-    # limits" for where the caps actually come from.
+    # The CPU and memory limits of every box of this RuntimeProfile, cold or
+    # prepared, a conversation's own or an Agent's shared; empty leaves each to
+    # the deployment's size for the kind of box (``sandbox_create_resources``).
+    {"key": "sandbox_cpu", "type": "string", "advanced": True, "group": GROUP_RUNTIME},
+    {"key": "sandbox_memory", "type": "string", "advanced": True, "group": GROUP_RUNTIME},
     {
         "key": "networking",
         "type": "object",
@@ -358,6 +359,7 @@ def validate_runtime_profile_payload(payload: dict[str, Any]) -> None:
     _assert_permission_level_is_reachable(payload)
     _assert_tenancy_has_permission_level(payload)
     _assert_container_engine_is_deliverable(payload)
+    _assert_sandbox_size_is_a_quantity(payload)
     _assert_owner_credential_is_deliverable(payload)
     _assert_backend_capabilities(payload)
     _assert_provider_configuration_is_reachable(payload)
@@ -553,6 +555,104 @@ def _assert_container_engine_is_deliverable(payload: dict[str, Any]) -> None:
         raise invalid_request(
             f"{label}: sandbox backend {provider.name!r} does not declare it"
         )
+
+
+#: The least CPU a RuntimeProfile may give its boxes: the deployment's default
+#: CPU request for a conversation's own box (``ASTRABOX_SANDBOX_CPU_REQUEST``).
+MIN_SANDBOX_CPU = "250m"
+#: The least memory a RuntimeProfile may give its boxes: the default size of a
+#: conversation's own box, which holds the idle footprint of every Agent
+#: program, up to about 940 MiB (docs/deploy.md, "Plan capacity for prepared
+#: sandboxes").
+MIN_SANDBOX_MEMORY = "1Gi"
+
+
+def _assert_sandbox_size_is_a_quantity(payload: dict[str, Any]) -> None:
+    """Refuse a box size that is not a Kubernetes quantity, or is below its floor.
+
+    A unit left off is the likely mistake: memory ``2`` is two bytes and CPU
+    ``500`` is five hundred cores. The floor catches the first; the capacity
+    check at save (:func:`validate_runtime_profile_capacity`) catches the
+    second wherever the deployment knows its capacity.
+    """
+    from astrabox.config.settings import cpu_quantity, memory_quantity
+
+    for key, parse, floor in (
+        ("sandbox_cpu", cpu_quantity, MIN_SANDBOX_CPU),
+        ("sandbox_memory", memory_quantity, MIN_SANDBOX_MEMORY),
+    ):
+        value = payload.get(key)
+        if value is None or value == "":
+            continue
+        try:
+            amount = parse(str(value))
+        except ValueError as exc:
+            raise invalid_request(f"{key}: {exc}") from None
+        if amount < parse(floor):
+            raise invalid_request(
+                f"{key} {value!r} is below {floor}, the least a box of a RuntimeProfile may have"
+            )
+
+
+async def validate_runtime_profile_capacity(payload: dict[str, Any]) -> None:
+    """Refuse a box size the deployment could never create.
+
+    Call after :func:`validate_runtime_profile_payload`. The sandbox quota
+    charges each box its limits plus what its backend runs beside it, and
+    refuses a create past a ceiling, so a size whose own charge passes a
+    ceiling would refuse every conversation. The same holds for memory beyond
+    the single host the backend runs every box on, and for a limit the backend
+    would lower (``SandboxProvider.fit_resources``). A ceiling the deployment
+    does not know, such as a Kubernetes cluster's nodes without a configured
+    quota, is not checked.
+    """
+    from astrabox.config.settings import memory_quantity
+    from astrabox.core.service.orchestrator.engine.provisioning import sandbox_create_resources
+    from astrabox.core.service.orchestrator.runtime import sandbox_quota
+    from astrabox.core.service.orchestrator.runtime.runtime_profile import resolve_sandbox_size
+    from astrabox.seams.sandbox import sandbox_for_name
+
+    size = resolve_sandbox_size(payload)
+    if not size:
+        return
+    provider = sandbox_for_name(payload.get("sandbox_backend"))
+    tenancy = str(payload.get("sandbox_tenancy") or SANDBOX_TENANCY_CONVERSATION).strip().lower()
+    limits, requests = sandbox_create_resources(payload, shared=tenancy == SANDBOX_TENANCY_AGENT)
+    fitted, _ = provider.fit_resources(limits, requests)
+    for kind in size:
+        if fitted[kind] != limits[kind]:
+            raise invalid_request(
+                f"sandbox_{kind} {size[kind]!r} is more than sandbox backend "
+                f"{provider.name!r} can give one box; it would create the box with "
+                f"{fitted[kind]}"
+            )
+    charge = sandbox_quota.box_charge(provider, limits)
+    quota = sandbox_quota.quota_for(str(provider.name))
+    if "memory" in size and quota.memory is not None and charge.memory > quota.memory:
+        raise invalid_request(
+            f"sandbox_memory {size['memory']!r}, with what sandbox backend "
+            f"{provider.name!r} runs beside each box, is more than the sandbox quota's "
+            f"memory ceiling of {_gib(quota.memory)} "
+            f"({quota.sources.get('memory', 'configured')}), so no box of this "
+            "RuntimeProfile could be created; lower it, or raise ASTRABOX_SANDBOX_QUOTA_MEMORY"
+        )
+    if "cpu" in size and quota.cpu is not None and charge.cpu > quota.cpu + 1e-9:
+        raise invalid_request(
+            f"sandbox_cpu {size['cpu']!r}, with what sandbox backend {provider.name!r} "
+            f"runs beside each box, is more than the sandbox quota's CPU ceiling of "
+            f"{quota.cpu:g}, so no box of this RuntimeProfile could be created; lower "
+            "it, or raise ASTRABOX_SANDBOX_QUOTA_CPU"
+        )
+    host = await provider.host_memory_bytes()
+    if "memory" in size and host is not None and memory_quantity(size["memory"]) > host:
+        raise invalid_request(
+            f"sandbox_memory {size['memory']!r} is more than the {_gib(host)} of the "
+            f"host sandbox backend {provider.name!r} runs every box on"
+        )
+
+
+def _gib(value: float) -> str:
+    return f"{value / 2**30:.2f}Gi"
 
 
 def _assert_backend_capabilities(payload: dict[str, Any]) -> None:

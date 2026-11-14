@@ -52,6 +52,8 @@ _SCALAR_COLUMNS = {
     "sandbox_tenancy": "sandbox_tenancy",
     "sandbox_permission_level": "sandbox_permission_level",
     "sandbox_container_engine": "sandbox_container_engine",
+    "sandbox_cpu": "sandbox_cpu",
+    "sandbox_memory": "sandbox_memory",
     "endpoint_provider": "endpoint_provider",
 }
 

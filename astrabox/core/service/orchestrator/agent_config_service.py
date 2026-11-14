@@ -49,6 +49,7 @@ from astrabox.core.service.orchestrator.author_boundary import (
 )
 from astrabox.core.service.orchestrator.runtime_profile_schema import (
     normalize_runtime_profile_payload,
+    validate_runtime_profile_capacity,
     validate_runtime_profile_payload,
 )
 from astrabox.core.service.orchestrator.engine.capabilities import (
@@ -556,6 +557,8 @@ class AgentConfigService:
         view.sandbox_container_engine = (
             str(env.get("sandbox_container_engine") or "").strip() or None
         )
+        view.sandbox_cpu = str(env.get("sandbox_cpu") or "").strip() or None
+        view.sandbox_memory = str(env.get("sandbox_memory") or "").strip() or None
         networking = env.get("networking")
         view.networking = networking if isinstance(networking, dict) else None
         # One parser decides what a valid tracing document is, and it runs at
@@ -1333,6 +1336,7 @@ class AgentConfigService:
         # Schema validation (types / required / enum / no undeclared fields);
         # does not rewrite the payload.
         validate_runtime_profile_payload({**payload, "name": name})
+        await validate_runtime_profile_capacity(payload)
         # The request is the whole RuntimeProfile: a field it leaves out is
         # cleared, and a credential sent back masked keeps the stored one.
         return await self._runtime_profile_repo.put(

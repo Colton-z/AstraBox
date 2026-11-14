@@ -164,6 +164,7 @@ async def runtime_generations(
     provider = sandbox_for_template(template)
     resource_limits, resource_requests = provider.fit_resources(
         *sandbox_create_resources(
+            template,
             shared=resolve_sandbox_tenancy(template) != SANDBOX_TENANCY_CONVERSATION,
         )
     )
