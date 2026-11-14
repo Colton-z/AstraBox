@@ -186,10 +186,6 @@ ENV ASTRABOX_WORKLOAD_USER=agent \
 
 WORKDIR /workspace
 
-# Foreground commands wait for execd to drain their SSE stream. Match the
-# supplier's 200ms drain without changing command execution timeouts.
-ENV EXECD_API_GRACE_SHUTDOWN=200ms
-
 # Image-owned static previews use nginx's expiring links and no-symlink file opens.
 COPY --chmod=u=rwX,go=rX containers/workspace-viewer/nginx.conf /opt/astrabox/workspace-viewer/nginx.conf
 COPY --chmod=0555 containers/workspace-viewer/astrabox-workspace-viewer /usr/local/bin/astrabox-workspace-viewer

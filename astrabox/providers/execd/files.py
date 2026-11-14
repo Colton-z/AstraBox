@@ -16,11 +16,11 @@ core:
   which become :class:`SandboxPathNotFound` and :class:`SandboxPathRejected`;
 * :meth:`ExecdFiles.remove` uses execd's recursive removal, which unlinks a
   symlink instead of following it;
-* the release's execd upload controller streams each file part to its target
-  and syncs it before answering
-  (``containers/execd/stream-upload.patch`` over OpenSandbox's controller),
-  so the wait for that answer grows with the file, as described at
-  :data:`_UPLOAD_SETTLE_FLOOR_BYTES_PER_SECOND`.
+* the release's execd upload controller streams each file part into a
+  staging file beside its target, syncs it and renames it into place before
+  answering (``containers/execd/stream-upload.patch`` over OpenSandbox's
+  controller), so the wait for that answer grows with the file, as described
+  at :data:`_UPLOAD_SETTLE_FLOOR_BYTES_PER_SECOND`.
 """
 
 from __future__ import annotations

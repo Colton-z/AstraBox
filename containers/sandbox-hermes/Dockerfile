@@ -166,15 +166,6 @@ RUN set -eux; \
 
 WORKDIR /home/conversations
 
-# execd keeps each command's event stream open for a fixed drain after the
-# command completes, and the SDK reads a foreground command to the end of that
-# stream, so every command the platform runs here costs the drain on top of
-# its own time; preparing a conversation's profile runs about twenty. The
-# pinned execd (v1.1.0) drains for 1s. EXECD_API_GRACE_SHUTDOWN is execd's
-# documented override, and 200ms is the default execd's source took after
-# v1.1.0, which no released execd image carries yet.
-ENV EXECD_API_GRACE_SHUTDOWN=200ms
-
 # Image-owned static previews use nginx's expiring links and no-symlink file opens.
 COPY --chmod=u=rwX,go=rX containers/workspace-viewer/nginx.conf /opt/astrabox/workspace-viewer/nginx.conf
 COPY --chmod=0555 containers/workspace-viewer/astrabox-workspace-viewer /usr/local/bin/astrabox-workspace-viewer

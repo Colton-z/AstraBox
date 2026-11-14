@@ -1,29 +1,33 @@
 # Execd transport
 
-This image carries OpenSandbox execd v1.1.0, source commit
-`48b0215f1bd097b31d0f022a44640e00c11ac49d`, with `stream-upload.patch` and
-`pty-output-drain.patch` and `pty-refusal-frames.patch` applied.
-The source archive is checksum-pinned. The Apache-2.0 licence is retained in the
-image. Bootstrap, supervisor and isolation helpers come from the matching
-official image; both ordinary and eBPF Linux execd binaries carry these patches.
+This image carries OpenSandbox execd from release 1.2.1, source commit
+`72e9feda4356a3087ae279af254ac67bb98c0129` (the commit the release's images
+are built from, per `docs/releases/1.2.1.yaml`), with `stream-upload.patch`
+and `pty-refusal-frames.patch` applied. The source archive is checksum-pinned.
+The Apache-2.0 licence is retained in the image. Bootstrap, supervisor and
+isolation helpers come from the matching official image
+`opensandbox/execd:release-1.2.1`, pinned by digest; both ordinary and eBPF
+Linux execd binaries carry these patches.
 
 The supplier's `specs/execd-api.yaml` defines ordered metadata/file pairs.
-The patched handler uses Go's `Request.MultipartReader` to stream each file
-part through the existing writer, without whole-body multipart spooling. The
-writer retains `io.Copy`, file sync and close, parent-directory sync, native
-error handling and ownership/mode operations. Metadata decoding is unchanged.
-No file-sized buffer or buffered alternate path is introduced.
+The supplier's handler parses the whole multipart body first, which spools
+every file part to memory or temporary files before writing any of them. The
+patched handler uses Go's `Request.MultipartReader` to pass each file part to
+the supplier's writer as it arrives. That writer stages the bytes beside the
+target, syncs them, renames them into place and syncs the directory; its
+error handling and ownership/mode operations are unchanged. Metadata decoding
+is unchanged. No file-sized buffer or buffered alternate path is introduced.
 
-Uploads remain non-atomic: a failed write can leave a partial destination, and
-an earlier file in a batch can already have completed.
+A failed write leaves the file it was replacing intact, except where the
+target's directory is not writable: the supplier then writes in place, and a
+failed write can leave a partial file. Within a batch, files before the
+failing one have already been written.
 
-Pipe-mode process holders wait for the output broadcasters and WebSocket pumps
-to finish before sending the exit frame and closing the connection. Detaching
-or taking over cancels that wait and joins the drainer before releasing the
-holder lock. This uses the supplier's output-completion signal; it does not
-depend on a client delay or replay to recover missing live output. Providers
-reusing `ExecdProcesses` need this patched binary for complete holder output;
-the unmodified `opensandbox/execd:v1.1.0` holder can close before output drains.
+Pipe-mode process holders send the exit frame only after the output the
+process wrote has reached the WebSocket: the supplier's holder drainer waits
+for the process to exit, then up to two seconds for its output broadcasters
+to finish, then for the WebSocket pumps (`startPTYHolderOutputDrainer` in
+`components/execd/pkg/web/controller/pty_ws.go`).
 
 `ExecdProcesses` requests `errors=frame` on holder WebSocket attachments. The
 patched daemon upgrades a refused attachment and sends its existing error frame
