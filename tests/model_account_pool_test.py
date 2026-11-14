@@ -316,3 +316,27 @@ async def test_a_codex_usage_limit_failure_fails_the_response_with_the_account_t
 
     # A session on a model endpoint the deployment pays for spends no account.
     assert await hooks("s-gateway").usage_limited(ended) == ended
+
+
+async def test_a_session_on_a_gateway_endpoint_names_no_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Session on an endpoint the deployment pays for names no account.
+
+    The usage-limit hook holds back whatever account the Session names, so a
+    Session that names its owner's ChatGPT account while running on the
+    deployment's gateway would hold that account back for a 429 the gateway
+    answered.
+    """
+    _pool(monkeypatch, True)
+    own = await _account("user-a", "own")
+    await _session("sess-moved", "user-a")
+    service = ModelAccountService()
+    token = await service.conversation_token(
+        user_id="user-a", session_id="sess-moved", vendor="chatgpt_plan"
+    )
+    assert token.account_id == own and await _spends("sess-moved") == own
+
+    await service.release_session_account("sess-moved")
+
+    assert await _spends("sess-moved") is None

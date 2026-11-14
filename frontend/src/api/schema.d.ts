@@ -2888,6 +2888,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/model-accounts/anthropic": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Add Anthropic Api Key */
+        post: operations["add_anthropic_api_key_api_v1_me_model_accounts_anthropic_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/model-accounts/chatgpt/authorizations": {
         parameters: {
             query?: never;
@@ -5263,6 +5280,16 @@ export interface components {
         A2ATimestamp: string;
         /** Value */
         A2AValue: unknown;
+        /**
+         * AddAnthropicApiKeyRequest
+         * @description Body for keeping an Anthropic API key as one of the caller's accounts.
+         */
+        AddAnthropicApiKeyRequest: {
+            /** Api Key */
+            api_key: string;
+            /** Label */
+            label?: string | null;
+        };
         /**
          * AdminAgentCategory
          * @description A category with the number of Agents it holds.
@@ -11481,7 +11508,7 @@ export interface components {
         };
         /**
          * ModelAccount
-         * @description One linked account, without its tokens.
+         * @description One account, without its tokens or key.
          */
         ModelAccount: {
             /** Access Expires At */
@@ -12524,6 +12551,8 @@ export interface components {
          * @description Body for changing an account; an absent or null field is left as it is.
          */
         UpdateModelAccountRequest: {
+            /** Api Key */
+            api_key?: string | null;
             /** Is Default */
             is_default?: boolean | null;
             /** Label */
@@ -21957,6 +21986,48 @@ export interface operations {
             };
         };
     };
+    add_anthropic_api_key_api_v1_me_model_accounts_anthropic_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddAnthropicApiKeyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_ModelAccount_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     start_chatgpt_authorization_api_v1_me_model_accounts_chatgpt_authorizations_post: {
         parameters: {
             query?: never;
@@ -22167,7 +22238,10 @@ export interface operations {
     };
     list_model_account_models_api_v1_me_model_accounts__account_id__models_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description The account's vendor, chatgpt_plan or anthropic_api_key; required with the account id default. */
+                vendor?: string | null;
+            };
             header?: never;
             path: {
                 account_id: string;

@@ -636,6 +636,9 @@ async def session_model_access(
     access: ResolvedModelAccess = platform.resolve_model_access(template.model_config or {})
     provider = model_endpoint_for_name(access.endpoint_provider)
     if provider.credential_owner != "session_owner":
+        from astrabox.core.service.model_accounts.service import get_model_account_service
+
+        await get_model_account_service().release_session_account(session_id)
         return access
     credential = await provider.ensure_session_credential(
         context=session_model_context(

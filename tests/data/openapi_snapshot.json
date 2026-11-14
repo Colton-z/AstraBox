@@ -1954,6 +1954,32 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "Value"
       },
+      "AddAnthropicApiKeyRequest": {
+        "additionalProperties": false,
+        "description": "Body for keeping an Anthropic API key as one of the caller's accounts.",
+        "properties": {
+          "api_key": {
+            "title": "Api Key",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          }
+        },
+        "required": [
+          "api_key"
+        ],
+        "title": "AddAnthropicApiKeyRequest",
+        "type": "object"
+      },
       "AdminAgentCategory": {
         "description": "A category with the number of Agents it holds.",
         "properties": {
@@ -17638,7 +17664,7 @@
       },
       "ModelAccount": {
         "additionalProperties": true,
-        "description": "One linked account, without its tokens.",
+        "description": "One account, without its tokens or key.",
         "properties": {
           "access_expires_at": {
             "anyOf": [
@@ -20276,6 +20302,17 @@
         "additionalProperties": false,
         "description": "Body for changing an account; an absent or null field is left as it is.",
         "properties": {
+          "api_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          },
           "is_default": {
             "anyOf": [
               {
@@ -38875,6 +38912,66 @@
         "x-required-api-scope": "astrabox:read"
       }
     },
+    "/api/v1/me/model-accounts/anthropic": {
+      "post": {
+        "operationId": "add_anthropic_api_key_api_v1_me_model_accounts_anthropic_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddAnthropicApiKeyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_ModelAccount_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Add Anthropic Api Key",
+        "tags": [
+          "Model Accounts"
+        ],
+        "x-required-api-scope": "astrabox:write"
+      }
+    },
     "/api/v1/me/model-accounts/chatgpt/authorizations": {
       "post": {
         "operationId": "start_chatgpt_authorization_api_v1_me_model_accounts_chatgpt_authorizations_post",
@@ -39197,6 +39294,24 @@
             "schema": {
               "title": "Account Id",
               "type": "string"
+            }
+          },
+          {
+            "description": "The account's vendor, chatgpt_plan or anthropic_api_key; required with the account id default.",
+            "in": "query",
+            "name": "vendor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The account's vendor, chatgpt_plan or anthropic_api_key; required with the account id default.",
+              "title": "Vendor"
             }
           }
         ],

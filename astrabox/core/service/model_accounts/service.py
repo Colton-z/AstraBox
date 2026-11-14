@@ -1205,6 +1205,22 @@ class ModelAccountService:
             await self._preferred(user_id, account_id, vendor=VENDOR_CHATGPT_PLAN)
         )
 
+    async def release_session_account(self, session_id: str) -> None:
+        """Record that ``session_id`` spends no model account.
+
+        A Session on a model endpoint the deployment pays for names no account:
+        an account named there would be held back for a usage limit the
+        deployment's gateway reported, and shown as the account in use.
+        """
+        if not session_id:
+            return
+        sessions = SessionRepository()
+        session = await sessions.get_session(session_id)
+        if str((session or {}).get("model_account_id") or "").strip():
+            await sessions.update_session(
+                session_id, {"model_account_id": None}, touch_updated_at=False
+            )
+
     async def conversation_token(
         self,
         *,
