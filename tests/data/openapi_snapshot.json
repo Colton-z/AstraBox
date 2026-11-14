@@ -24459,6 +24459,26 @@
                             ],
                             "default": "none"
                           },
+                          "sandbox_cpu": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "sandbox_memory": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "sandbox_permission_level": {
                             "anyOf": [
                               {
@@ -24921,6 +24941,26 @@
                     ],
                     "default": "none"
                   },
+                  "sandbox_cpu": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "sandbox_memory": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "sandbox_permission_level": {
                     "anyOf": [
                       {
@@ -25285,6 +25325,26 @@
                             }
                           ],
                           "default": "none"
+                        },
+                        "sandbox_cpu": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "sandbox_memory": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "sandbox_permission_level": {
                           "anyOf": [

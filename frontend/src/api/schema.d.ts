@@ -15017,6 +15017,8 @@ export interface operations {
                     sandbox_backend?: string | null;
                     /** @default none */
                     sandbox_container_engine?: ("none" | "docker") | null;
+                    sandbox_cpu?: string | null;
+                    sandbox_memory?: string | null;
                     /** @default default */
                     sandbox_permission_level?: ("default" | "advanced" | "privileged") | null;
                     /** @default conversation */

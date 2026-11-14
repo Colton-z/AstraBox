@@ -9,6 +9,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
+- A RuntimeProfile can set **Sandbox CPU** and **Sandbox memory** for every sandbox created from it: on demand, prepared, and the sandbox an Agent's conversations share. Unset keeps the deployment's size. Saving refuses a size below 250m CPU or 1Gi memory, or one the deployment's sandbox quota or Docker host could never hold. Changing it retires prepared sandboxes of the old size.
 - A RuntimeProfile can give each conversation's sandbox a container engine (`sandbox_container_engine: docker`): a rootless Docker Engine the Codex and Claude Code images start at boot, so the Agent can `docker build`, `docker run` and `docker compose`. Inner containers reach the network through the sandbox under the RuntimeProfile's network policy. It requires a sandbox per conversation, `advanced` permissions, the bundled OpenSandbox server on Docker and a host with `kernel.apparmor_restrict_unprivileged_userns=0`. Such a sandbox runs without masked `/proc` paths and without `no_new_privileges`, so enable it only for trusted teams. Images and build cache are deleted with the sandbox. See [Container engine](docs/runtime-profiles.md#container-engine).
 - The model guide describes how to give one model several provider accounts on the bundled gateway, so an account that reaches its limit does not stop conversations, and how to fall back to another model when all are limited. See [Spread one model across several provider accounts](docs/models.md#several-accounts).
 - The console has a **Model accounts** page (Configure → Model accounts) that lists your linked ChatGPT accounts and their status. You can rename them, choose your default, and remove them; removing revokes the account's session at OpenAI. The page shows the `astrabox model-account login chatgpt` command for this deployment and a Manage usage link to ChatGPT. On a ChatGPT plan RuntimeProfile, the Agent form offers a ChatGPT account choice beside the model and lists the models that account can use, read from the new `GET /api/v1/me/model-accounts/{account_id}/models` (`default` names your default account).
@@ -23,6 +24,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Changed
 
+- A first install now asks how much memory sandboxes may hold together, showing the Docker host's memory; without a terminal it stops until `ASTRABOX_SANDBOX_QUOTA_MEMORY` is set. While the memory ceiling is still derived from the whole host, the server logs a warning and the Sandboxes page says that other software on the host is not counted.
 - Codex and DeepSeek Harness conversations start in `danger-full-access` when no permission mode is selected, as Claude Code conversations already start in `bypassPermissions`. They used to start in `workspace-write`, where the program's own sandbox inside the AstraBox sandbox asked for approval to reach the network or a container engine. Select a narrower mode per conversation to keep approvals.
 - The sandbox egress sidecar is the release's own `egress` image (OpenSandbox egress v1.1.7 plus an addon). With protected credentials on, it decrypts HTTPS only to hosts a credential is bound to; every other connection keeps its own certificate. A deployment built from a checkout needs `make build-egress-image`.
 - Codex is told the client's name is `AstraBox` (was `astrabox`), the name a ChatGPT account is asked to authorize.
@@ -31,6 +33,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 
+- On the bundled Docker server, a sandbox CPU limit above the host's CPU count that is not a whole number (such as `12.5`) is lowered to the count instead of failing every create.
 - `POST /api/v1/sessions/{session_id}/inputs` refuses a field it does not take, naming it. It used to accept the request and drop the field, so a `permission_mode` sent with a message returned 200 and changed nothing; a mode is set with `POST /api/v1/sessions/{session_id}/permission-mode`.
 - When a bundled service is killed by a signal while the server container starts, the fatal line names the signal and, for SIGKILL, points at the container's memory limit and the host's kernel log. It used to read `exited with code -9`, which pointed at the supervisor. The deployment guide now states the server container's memory need (4 GiB).
 - The source-development stack (`make dev`, `containers/compose.source.yaml`) runs the server with the checkout's entry points. A provider or engine added in the checkout used to be missing there, because the server image's installed metadata listed only the entry points of the release it was built from.
