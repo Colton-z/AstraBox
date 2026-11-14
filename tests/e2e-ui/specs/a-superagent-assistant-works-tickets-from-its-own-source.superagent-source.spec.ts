@@ -26,7 +26,8 @@
  * The outcome case: the Agent declines one item, which its A2A task reports as
  * rejected; that Ticket ends dropped with the Agent's reason and the person is
  * told it. It does another item, whose report reaches the Ticket's result ahead
- * of its reply, and the person's answer.
+ * of its reply, and the person's answer; the person's follow-up on that item is
+ * answered there too.
  *
  * Needs ASTRABOX_E2E_SUPERAGENT_SOURCE_RUNTIME_PROFILE (a dsh_superagent
  * RuntimeProfile on that image), ASTRABOX_E2E_SUPERAGENT_RUNTIME_PROFILE (one
@@ -343,4 +344,11 @@ test('a person hears why the Agent declined an item, and the Agent\'s report rea
   const finished = await ticketFollowing(page, assistantId, yes.id);
   expect(finished?.ended?.outcome, 'the done item\'s Ticket completes').toEqual('completed');
   expect((finished?.summary ?? '').startsWith(completed!.message), 'the Agent\'s report leads the Ticket\'s result').toBe(true);
+
+  // A person's follow-up on the done item is answered on the item: the Agent posts nothing itself, so the answer is the
+  // Assistant's, sent because the Agent's report names the message it answers.
+  const seen = `seen-${done.digest.slice(0, 12)}`;
+  await service('POST', `/admin/items/${yes.id}/comments`, {
+    author: REQUESTER, text: `@agent thanks; reply on this item with the word ${seen} so I know you saw this.` });
+  await answered(yes.id, seen, 20 * 60_000);
 });

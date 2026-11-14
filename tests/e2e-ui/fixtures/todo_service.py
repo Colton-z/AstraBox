@@ -5,8 +5,8 @@
 The agent's side (``/api/...``) takes ``Authorization: Bearer <token>`` and
 refuses any other value, so a request that arrives with the sandbox's
 placeholder instead of the Vault's value is visible as a refusal. The test's
-side (``/admin/...``) takes ``X-Admin-Key``: it files items as a person, reads
-the replies the agent left, swaps the token the service accepts, and counts the
+side (``/admin/...``) takes ``X-Admin-Key``: it files items and comments as a
+person, reads the replies the agent left, swaps the token the service accepts, and counts the
 refused agent requests. ``--package`` also serves a file at
 ``/packages/<its name>``, as a registry serves a tarball an owner installs.
 Every request is printed as one JSON line.
@@ -113,10 +113,24 @@ def handler(state: State, admin_key: str, package: Path | None):
         def do_POST(self) -> None:  # noqa: N802 — http.server's name
             url = urlsplit(self.path)
             reply = re.fullmatch(r"/api/items/([\w-]+)/comments", url.path)
+            person = re.fullmatch(r"/admin/items/([\w-]+)/comments", url.path)
             if reply:
                 if not self._agent():
                     return
                 self._reply(reply.group(1), self._body())
+            elif person:
+                if not self._admin():
+                    return
+                body = self._body()
+                with state.lock:
+                    if person.group(1) not in state.items:
+                        self._send(404, {"error": "no such item"})
+                        return
+                    comment_id = f"c-{sum(len(c) for c in state.comments.values()) + 1}"
+                    state.comments.setdefault(person.group(1), []).append(
+                        {"id": comment_id, "author": str(body["author"]), "text": str(body.get("text") or ""), "key": ""})
+                    state.event(person.group(1), comment_id, str(body["author"]), str(body.get("text") or ""))
+                self._send(201, {"id": comment_id})
             elif url.path == "/admin/items":
                 if not self._admin():
                     return
