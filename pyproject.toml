@@ -206,6 +206,8 @@ codex = "astrabox.core.service.orchestrator.engine.codex:CodexEngineAdapter"
 [project.entry-points."astrabox.providers.model"]
 litellm = "astrabox.providers.model:LiteLLMModelEndpointProvider"
 chatgpt_plan = "astrabox.providers.model_chatgpt_plan:ChatGPTPlanModelEndpointProvider"
+anthropic_api_key = "astrabox.providers.model_anthropic:AnthropicAPIKeyModelEndpointProvider"
+claude_login = "astrabox.providers.model_anthropic:ClaudeLoginModelEndpointProvider"
 
 [project.entry-points."astrabox.providers.skills"]
 git = "astrabox.providers.skill_git:GitSkillContentProvider"

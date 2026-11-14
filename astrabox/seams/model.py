@@ -98,8 +98,18 @@ class ModelEndpointProvider(ABC):
     #: ``session_owner``: there is no such credential; each Session spends the
     #: one :meth:`ensure_session_credential` returns for its owner, which
     #: authorizes the request and can expire
-    #: (:meth:`session_credential_expires_at`).
-    credential_owner: Literal["deployment", "session_owner"] = "deployment"
+    #: (:meth:`session_credential_expires_at`). ``sandbox``: the platform holds
+    #: and delivers no credential at all; the runtime authenticates with a
+    #: login its user makes inside the sandbox, which the platform never reads
+    #: or keeps, and which lasts only as long as that sandbox.
+    credential_owner: Literal["deployment", "session_owner", "sandbox"] = "deployment"
+    #: The engines whose model wire this endpoint serves; empty for any engine.
+    #: A RuntimeProfile that selects the endpoint for another engine is refused.
+    engine_kinds: frozenset[str] = frozenset()
+    #: Hosts other than the endpoint's own that a sandbox has to reach for the
+    #: runtime to authenticate there, such as a vendor's sign-in service. A
+    #: RuntimeProfile with limited networking must allow each of them.
+    sandbox_hosts: tuple[str, ...] = ()
 
     @abstractmethod
     def resolve(self, *, requested: ModelEndpoint, settings: Any = None) -> ModelEndpoint:
@@ -191,8 +201,8 @@ class ModelEndpointProvider(ABC):
         attributes what it sees. ``None`` means this provider has no
         per-Session identity, and the caller keeps the shared credential. For
         a ``deployment`` provider the difference is attribution, never
-        authorization; a ``session_owner`` provider has no shared credential
-        to keep.
+        authorization; a ``session_owner`` or ``sandbox`` provider has no
+        shared credential to keep.
 
         Derived rather than looked up: a replica that did not mint the
         credential still has to name it when it composes egress state.

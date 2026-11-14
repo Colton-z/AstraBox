@@ -889,7 +889,7 @@ class AgentConfigService:
             # whose stored value is positive, so an absent key would stay cold.
             editable["prepared_capacity"] = (
                 0
-                if self._owner_pays_for_model(env)
+                if self._model_credential_owner(env) != "deployment"
                 else default_prepared_capacity(str(env.get("sandbox_backend") or ""))
             )
         self._check_prepared_capacity_owner(int(editable["prepared_capacity"]), environment=env)
@@ -901,6 +901,7 @@ class AgentConfigService:
             int(editable["prepared_capacity"]), agent_id=""
         )
         self._check_terminal_panel_backend(bool(editable.get("terminal_panel")), environment=env)
+        self._check_sign_in_terminal(bool(editable.get("terminal_panel")), environment=env)
 
         agent_id = str(uuid.uuid4())
         doc = {
@@ -1037,14 +1038,13 @@ class AgentConfigService:
                 int(updates["prepared_capacity"]), agent_id=target
             )
         if "terminal_panel" in updates or "runtime_profile_name" in updates:
-            self._check_terminal_panel_backend(
-                bool(
-                    updates["terminal_panel"]
-                    if "terminal_panel" in updates
-                    else existing.get("terminal_panel")
-                ),
-                environment=env,
+            effective_terminal_panel = bool(
+                updates["terminal_panel"]
+                if "terminal_panel" in updates
+                else existing.get("terminal_panel")
             )
+            self._check_terminal_panel_backend(effective_terminal_panel, environment=env)
+            self._check_sign_in_terminal(effective_terminal_panel, environment=env)
         # The whole effective definition, not only the changed fields: moving
         # an Agent to a stricter RuntimeProfile must meet that RuntimeProfile too.
         await validate_author_declarations(
@@ -1091,28 +1091,57 @@ class AgentConfigService:
         return self.sanitize_agent_doc(written)
 
     @staticmethod
-    def _owner_pays_for_model(environment: Mapping[str, Any]) -> bool:
-        """Whether the RuntimeProfile's model endpoint is paid by each conversation's owner."""
+    def _model_credential_owner(environment: Mapping[str, Any]) -> str:
+        """Whose credential the RuntimeProfile's model endpoint spends (``credential_owner``)."""
         from astrabox.seams.model import model_endpoint_for_name
 
         name = str(environment.get("endpoint_provider") or "").strip()
-        return bool(name) and model_endpoint_for_name(name).credential_owner == "session_owner"
+        return model_endpoint_for_name(name).credential_owner if name else "deployment"
 
     @classmethod
     def _check_prepared_capacity_owner(
         cls, capacity: int, *, environment: Mapping[str, Any]
     ) -> None:
-        """Refuse prepared capacity where a box needs its conversation's owner to exist.
+        """Refuse prepared capacity where the model credential is not the deployment's.
 
         A box prepared before a conversation claims it has no owner whose
-        account its model requests could spend.
+        account its model requests could spend. Where the runtime signs in
+        inside its box there is no credential at all, and a prepared box is
+        claimed by re-pointing a deployment credential it holds.
         """
-        if capacity > 0 and cls._owner_pays_for_model(environment):
+        if capacity <= 0:
+            return
+        owner = cls._model_credential_owner(environment)
+        provider = environment.get("endpoint_provider")
+        if owner == "session_owner":
             raise invalid_request(
                 "prepared_capacity must be 0 on a RuntimeProfile whose model endpoint "
-                f"({environment.get('endpoint_provider')!r}) is paid by each conversation's owner: "
+                f"({provider!r}) is paid by each conversation's owner: "
                 "a box prepared before a conversation exists has no owner"
             )
+        if owner == "sandbox":
+            raise invalid_request(
+                "prepared_capacity must be 0 on a RuntimeProfile whose model endpoint "
+                f"({provider!r}) has the runtime sign in inside each conversation's sandbox: "
+                "a prepared box is claimed by re-pointing a deployment model credential, "
+                "and this endpoint has none"
+            )
+
+    @classmethod
+    def _check_sign_in_terminal(cls, terminal_panel: bool, *, environment: Mapping[str, Any]) -> None:
+        """Refuse an Agent without a terminal where its users sign in from the terminal.
+
+        On a RuntimeProfile whose runtime signs in inside the sandbox
+        (``credential_owner`` ``sandbox``) each conversation's user signs in
+        from the conversation's terminal, and without the panel they cannot.
+        """
+        if terminal_panel or cls._model_credential_owner(environment) != "sandbox":
+            return
+        raise invalid_request(
+            "terminal_panel must be true on a RuntimeProfile whose model endpoint "
+            f"({environment.get('endpoint_provider')!r}) has the runtime sign in inside each "
+            "conversation's sandbox: its users sign in from the conversation's terminal"
+        )
 
     @staticmethod
     def _check_prepared_capacity_backend(capacity: int, *, sandbox_backend: str) -> None:

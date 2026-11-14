@@ -329,12 +329,13 @@ run on your computer; the page cannot link an account itself, because OpenAI
 returns the browser to `127.0.0.1`.
 
 - **Several accounts.** Each sign-in through `login chatgpt` links one account.
-  The first becomes the user's default. Unless the deployment's
-  [team pool](#share-accounts-with-the-team) is on, nothing switches between
-  accounts on its own. Make another the default on the Model accounts page, or
-  with `PATCH /api/v1/me/model-accounts/{account_id}` and
-  `{"is_default": true}`. Deleting the default account leaves the user without
-  one.
+  The first becomes the user's default ChatGPT account. Unless the
+  deployment's [team pool](#share-accounts-with-the-team) is on, nothing
+  switches between accounts on its own. Make another the default on the Model
+  accounts page, or with `PATCH /api/v1/me/model-accounts/{account_id}` and
+  `{"is_default": true}`. A user has one default account of each vendor, so a
+  default ChatGPT account and a default Anthropic API key coexist. Deleting the
+  default account leaves the user without one of that vendor.
 - **Status.** `astrabox model-account list` shows each account's status. An
   account whose renewal OpenAI refuses for good (an expired, revoked or reused
   refresh token) is `sign_in_required`; sign in to it again with
@@ -360,8 +361,8 @@ conversations.
 - The Agent's model is one the account can use, such as `gpt-6.1-sol`. On
   such a RuntimeProfile the Agent form offers the models of the chosen account,
   read from OpenAI with `GET /api/v1/me/model-accounts/{account_id}/models`
-  (`default` names your default account), and a ChatGPT account field beside
-  the model. Neither shows on any other RuntimeProfile, and the form does not
+  (`default?vendor=chatgpt_plan` names your default ChatGPT account), and a
+  ChatGPT account field beside the model. Neither shows on any other RuntimeProfile, and the form does not
   send `model_account_id` there.
 - The conversation's owner pays. A conversation started by someone with no
   linked account ends with `MODEL_ACCOUNT_REQUIRED`. An Agent can name one of
@@ -405,13 +406,17 @@ team** switch on the Model accounts page,
 is shared until its owner says so. `GET /api/v1/me/model-accounts/team-pool`
 answers whether the pool is on; while it is off, sharing is refused with
 `MODEL_ACCOUNT_POOL_DISABLED`, and conversations behave as described above.
+The pool holds ChatGPT accounts only: sharing an
+[Anthropic API key](#anthropic-api-key) is refused with
+`MODEL_ACCOUNT_NOT_SHAREABLE`, and a conversation is only ever given an account
+of the kind its RuntimeProfile spends.
 
 With the pool on, before each response a conversation spends:
 
-1. its owner's preferred account (the one its Agent names, or the default),
-   unless a usage limit holds that account back;
-2. otherwise the owner's other active accounts, the default first;
-3. otherwise the active accounts that other members of the same organization
+1. its owner's preferred account (the one its Agent names, or the default
+   ChatGPT account), unless a usage limit holds that account back;
+2. otherwise the owner's other active ChatGPT accounts, the default first;
+3. otherwise the active ChatGPT accounts that other members of the same organization
    shared, oldest-linked first.
 
 An account is held back for one hour after OpenAI reports its plan usage
@@ -447,6 +452,161 @@ AstraBox counts that report, and Codex's own `usageLimitExceeded`, as the
 plan usage limit. On a ChatGPT plan RuntimeProfile OpenAI documents HTTP 429
 only for the plan usage limit; any other 429 it sends would also hold the
 account back for an hour.
+## Use your own Anthropic API key {#anthropic-api-key}
+
+A user can keep their own Anthropic API key as one of their model accounts. A
+Claude Code conversation on a RuntimeProfile whose `endpoint_provider` is
+`anthropic_api_key` sends its model requests to Anthropic's API with the
+conversation owner's key, and Anthropic bills the key's organization. Nothing
+goes through the model gateway, so the gateway records no spend for these
+conversations. Anthropic's terms for Claude Code in hosted products ask each
+end user to authenticate with their own key or plan; this is the API key way.
+
+Add a key on the console's **Model accounts** page, with
+`astrabox model-account add anthropic`, or with:
+
+```http
+POST /api/v1/me/model-accounts/anthropic
+Content-Type: application/json
+
+{"api_key": "sk-ant-…", "label": "Personal key"}
+```
+
+The AstraBox server checks the key by reading Anthropic's model list with it
+(`GET https://api.anthropic.com/v1/models`, the key in `x-api-key`) and keeps
+it only when Anthropic accepts it; a refused key fails with
+`MODEL_ACCOUNT_API_KEY_REJECTED` and nothing is stored. The server must reach
+`https://api.anthropic.com`. The key is kept in the secret store and no answer
+or page shows it again. Use a key that belongs to a workspace: Anthropic
+requires an `anthropic-workspace-id` header for a key that is not scoped to
+one, and AstraBox sends none.
+
+- **Several keys.** A user can keep several keys; the first is their default
+  Anthropic API key, independent of their default ChatGPT account. A key
+  cannot be shared with the [team pool](#share-accounts-with-the-team): a
+  conversation spends its owner's key and no one else's.
+- **Replace a key** with `PATCH /api/v1/me/model-accounts/{account_id}` and
+  `{"api_key": "…"}`, or `astrabox model-account add anthropic --account
+  <account_id>`. The new key is checked the same way. A running conversation
+  sends the new key from its next response.
+- **Remove a key** with `DELETE /api/v1/me/model-accounts/{account_id}` or on
+  the Model accounts page. AstraBox deletes its copy; it cannot revoke the key
+  at Anthropic, so revoke it in the Claude Console when it should stop working
+  everywhere.
+
+### Run Claude Code conversations on it
+
+- The RuntimeProfile's `engine_kind` must be `claude_code` and its
+  `sandbox_tenancy` `conversation`, and the deployment must keep protected
+  credential delivery on. An Agent on it must have `prepared_capacity` 0.
+- The Agent's model is one the key can use, such as `claude-sonnet-4-5`. On
+  such a RuntimeProfile the Agent form offers the models of the chosen key,
+  read from Anthropic with `GET /api/v1/me/model-accounts/{account_id}/models`
+  (`default?vendor=anthropic_api_key` names your default key), and an
+  Anthropic API key field beside the model.
+- The conversation's owner pays. A conversation started by someone with no key
+  ends with `MODEL_ACCOUNT_REQUIRED`. An Agent can name one of its creator's
+  keys in `model_account_id`; the creator's conversations with it then use that
+  key, and other people's conversations use their own default key.
+- The sandbox holds a placeholder in `ANTHROPIC_API_KEY`, and Claude Code talks
+  to its own default endpoint, `https://api.anthropic.com`, with no
+  `ANTHROPIC_BASE_URL` set. The egress boundary puts the key in place of the
+  placeholder in `GET` and `POST` requests to `api.anthropic.com` under
+  `/v1/`, and nowhere else. Commands Claude Code runs inherit the placeholder,
+  so a request they make to Anthropic's API also spends the key.
+- When the key reaches its rate or spend limit the response fails with
+  Anthropic's error; nothing switches to another key or to the gateway.
+- Conversation titles are still generated through the deployment's model
+  gateway.
+
+## Sign in to Claude inside the sandbox {#claude-login}
+
+A RuntimeProfile whose `endpoint_provider` is `claude_login` runs Claude Code
+on the login its user makes inside the conversation's own sandbox, with their
+own Claude subscription. This is the user's own use of their own subscription
+in their own sandbox: AstraBox runs the unmodified Claude Code, the user signs
+in through Anthropic's own sign-in, and AstraBox never reads, stores, copies or
+forwards the resulting credential. Anthropic does not allow a third party to
+collect, store or relay Claude.ai credentials
+([Legal and compliance](https://code.claude.com/docs/en/legal-and-compliance)),
+which is why this connection holds none; check that your deployment's use fits
+Anthropic's terms before offering it.
+
+The RuntimeProfile and its Agents need:
+
+- `engine_kind` `claude_code` and `sandbox_tenancy` `conversation`. A shared
+  sandbox would put one user's login where other users' conversations can read
+  it.
+- Network access to the hosts Claude Code signs in through: `claude.ai` and
+  `platform.claude.com` (token exchange and renewal). With `limited` networking
+  the RuntimeProfile's `allowed_hosts` must list both, or saving it fails and
+  names the missing ones. `api.anthropic.com` is admitted as the model
+  endpoint. The sign-in page itself, on `claude.com`, opens in the user's own
+  browser.
+- On each Agent, `terminal_panel` on, because its users sign in from the
+  conversation's terminal, and `prepared_capacity` 0.
+
+AstraBox starts Claude Code with no Anthropic credential and no
+`ANTHROPIC_BASE_URL`. Anything Claude Code would rank above the login is
+refused: `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`,
+`ANTHROPIC_BASE_URL`, `ANTHROPIC_PROFILE`, `ANTHROPIC_FEDERATION_RULE_ID` and
+`CLAUDE_CODE_USE_BEDROCK`/`_VERTEX`/`_FOUNDRY` in the Agent's
+`sdk_options.env` or `sdk_options.settings.env` (`CLAUDE_OPTIONS_INVALID`) or
+as a Vault environment credential (`VAULT_CREDENTIAL_CONFLICT`), and an
+`apiKeyHelper` setting.
+
+### Sign in
+
+A conversation's first response before the sign-in fails with
+`CLAUDE_LOGIN_REQUIRED`, and its message gives the two commands below. Run
+them in the conversation's terminal:
+
+1. Start the sign-in. It runs as the sandbox's workload account with the
+   configuration directory Claude Code uses, waits in the background for the
+   code, and prints the address to open:
+
+   ```bash
+   rm -f /tmp/claude-login; mkfifo -m 600 /tmp/claude-login; (runuser -u agent -- env HOME=/home/agent CLAUDE_CONFIG_DIR=/home/agent/.claude claude auth login <>/tmp/claude-login >/tmp/claude-login.log 2>&1 &); for i in $(seq 30); do grep -q visit: /tmp/claude-login.log && break; sleep 1; done; cat /tmp/claude-login.log
+   ```
+
+2. Open the printed address in your browser, sign in to your Claude account,
+   and copy the code the page shows. Hand it to the waiting sign-in:
+
+   ```bash
+   echo '<code>' >/tmp/claude-login; for i in $(seq 30); do grep -q 'Login ' /tmp/claude-login.log && break; sleep 1; done; cat /tmp/claude-login.log
+   ```
+
+3. When the output says the login succeeded, send your message again. The
+   running Claude Code reads the new login on its next request; nothing
+   restarts.
+
+The terminal runs one command at a time and cannot answer a prompt from a
+command that is still running, so `claude auth login` waits on the named pipe
+`/tmp/claude-login` and the second command writes the code into it. The
+terminal's shell runs as root; `runuser` runs the sign-in as the account
+Claude Code runs as, so the login lands where Claude Code reads it. Do not run
+`claude auth login` on its own in the terminal: it would read the terminal's
+next line as the code. Do not run `claude setup-token` there either: it prints
+a long-lived token, and the terminal keeps every command's output in the
+conversation's terminal history.
+
+### Where the login lives
+
+Claude Code keeps the login in `/home/agent/.claude/.credentials.json` in the
+conversation's sandbox, readable only by the sandbox's workload account, and
+renews it itself. The sign-in code passes through the conversation's terminal,
+and stays in its history like every command; it works once, and only for the
+waiting `claude auth login`, which holds the verifier it was issued for. The
+conversation's terminal is open to the conversation's owner only.
+
+The login lasts as long as the sandbox does. A paused sandbox keeps its files,
+so the login survives a pause. It is not part of the conversation's history
+that AstraBox keeps in its database, nor of any backup, and it is not in the
+workspace, so a persistent workspace volume does not keep it either. When the
+sandbox is replaced, for example after it is lost or deleted, the login is
+gone: the next response fails with `CLAUDE_LOGIN_REQUIRED` and the user signs
+in again. Each conversation has a sandbox of its own, so each conversation
+signs in once. An expired or revoked login fails the same way.
 
 ## Verify the connection
 

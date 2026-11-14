@@ -381,14 +381,27 @@ def resolve_model_credential_delivery(
     -running child's identity. Provider-owned model delivery instead supplies
     only a workload placeholder and leaves its protected binding to Session
     preparation, independently of the platform Vault switch.
+
+    A model endpoint whose runtime signs in inside its sandbox
+    (``credential_owner`` ``sandbox``) has nothing to deliver: its endpoint is
+    admitted to the network policy, the image receives no credential, and no
+    binding is written for it.
     """
 
+    from astrabox.seams.model import model_endpoint_for_name
     from astrabox.seams.runtime_preparation import runtime_preparation_plan
 
     preparation = runtime_preparation_plan(template)
     model_api_key = str(credential.access.credential or "").strip()
     model_base_url = str(credential.access.base_url or "").strip()
-    if not model_base_url or (preparation.model_credential_delivery == "platform" and not model_api_key):
+    signs_in_inside = (
+        model_endpoint_for_name(credential.access.endpoint_provider).credential_owner == "sandbox"
+    )
+    if not model_base_url or (
+        preparation.model_credential_delivery == "platform"
+        and not model_api_key
+        and not signs_in_inside
+    ):
         raise APIError(
             code=credential.missing_code,
             message=credential.missing_message,
@@ -412,6 +425,8 @@ def resolve_model_credential_delivery(
             f"sandbox backend {backend_adapter.name!r} cannot enforce the "
             f"{engine_kind} RuntimeProfile's networking contract"
         )
+    if signs_in_inside:
+        return "", network_policy, additional_vault_write
     if preparation.model_credential_delivery == "provider":
         identity = target_slot or str(workload_id or "").strip()
         if not identity:

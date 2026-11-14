@@ -273,6 +273,11 @@ for _code, _status, _category, _retryable, _owner in (
     # An account other than a ChatGPT account was to be shared with the team
     # pool, which pools ChatGPT plans only; the owner shares a ChatGPT account.
     ("MODEL_ACCOUNT_NOT_SHAREABLE", 409, "request", False, "client"),
+    # A response of a Claude Code that signs in inside its sandbox (endpoint
+    # provider claude_login) ended because Claude Code had no login there that
+    # Anthropic accepts; the conversation's user signs in from its terminal
+    # (astrabox/core/service/orchestrator/engine/claude_runtime_client.py).
+    ("CLAUDE_LOGIN_REQUIRED", 409, "auth", False, "client"),
     # An ASGI host mounted AstraBox at a path other than
     # ASTRABOX_PUBLIC_PATH_PREFIX; the operator sets the variable to the mount
     # path (astrabox/web/public_path_middleware.py).

@@ -49,6 +49,30 @@ logger = get_logger(__name__)
 CLAUDE_API_KEY_ENV = "ANTHROPIC_API_KEY"
 CLAUDE_AUTH_TOKEN_ENV = "ANTHROPIC_AUTH_TOKEN"
 
+#: The API Claude Code talks to when ``ANTHROPIC_BASE_URL`` is unset.
+CLAUDE_CODE_DEFAULT_BASE_URL = "https://api.anthropic.com"
+
+#: What would make Claude Code authenticate with something other than the
+#: login its user made in the sandbox: every source the vendor ranks above a
+#: ``/login`` credential that an environment variable selects, and a base URL
+#: that sends the requests elsewhere
+#: (https://code.claude.com/docs/en/authentication, "Authentication precedence").
+CLAUDE_LOGIN_OUTRANKING_ENV = frozenset(
+    {
+        "CLAUDE_CODE_USE_BEDROCK",
+        "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_USE_FOUNDRY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "ANTHROPIC_PROFILE",
+        "ANTHROPIC_FEDERATION_RULE_ID",
+        "ANTHROPIC_BASE_URL",
+    }
+)
+#: The settings key the vendor ranks above a ``/login`` credential.
+_CLAUDE_API_KEY_HELPER_SETTING = "apiKeyHelper"
+
 
 @dataclass
 class ModelConfig:
@@ -64,11 +88,19 @@ class ModelConfig:
 def build_claude_model_config_kwargs(
     access: ResolvedModelAccess,
 ) -> dict[str, Any]:
-    """Map engine-neutral model access onto the Claude executor contract."""
+    """Map engine-neutral model access onto the Claude executor contract.
 
+    An endpoint at Claude Code's own default API is left unset rather than
+    named, so the CLI talks to Anthropic as its first-party API and not as a
+    gateway at a custom address.
+    """
+
+    base_url = normalize_claude_model_base_url(access.base_url or "")
+    if base_url.rstrip("/").lower() == CLAUDE_CODE_DEFAULT_BASE_URL:
+        base_url = ""
     return {
         "api_key": str(access.credential or ""),
-        "base_url": normalize_claude_model_base_url(access.base_url or ""),
+        "base_url": base_url,
         "model_name": str(access.model_name or "").strip() or None,
         "credential_header": (
             CLAUDE_API_KEY_ENV
@@ -157,6 +189,43 @@ def apply_claude_engine_options(
                 status_code=400,
             )
         options_kwargs["settings"] = json.dumps(native["settings"], allow_nan=False)
+
+
+def signs_in_inside_sandbox(endpoint_provider: str | None) -> bool:
+    """Whether Claude Code authenticates with a login its user makes in the sandbox."""
+
+    name = str(endpoint_provider or "").strip()
+    return bool(name) and model_endpoint_for_name(name).credential_owner == "sandbox"
+
+
+def _reject_login_overrides(options_kwargs: dict[str, Any]) -> None:
+    """Refuse native options that would outrank the login made in the sandbox.
+
+    Claude Code picks the first credential it finds in its own order, and an
+    environment variable or an ``apiKeyHelper`` setting ranks above a
+    ``/login`` credential, so either would run the conversation on another
+    account without a word.
+    """
+
+    _reject_native_overrides(options_kwargs.get("env"), set(CLAUDE_LOGIN_OUTRANKING_ENV), node="env")
+    raw_settings = options_kwargs.get("settings")
+    if not raw_settings:
+        return
+    settings = json.loads(raw_settings)
+    settings_env = settings.get("env") if isinstance(settings, dict) else None
+    named = sorted(
+        ({_CLAUDE_API_KEY_HELPER_SETTING} & set(settings if isinstance(settings, dict) else ()))
+        | (CLAUDE_LOGIN_OUTRANKING_ENV & set(settings_env if isinstance(settings_env, dict) else ()))
+    )
+    if named:
+        raise APIError(
+            code="CLAUDE_OPTIONS_INVALID",
+            message=(
+                "sdk_options.settings names credentials that would replace the Claude login "
+                f"made in the sandbox: {named}"
+            ),
+            status_code=400,
+        )
 
 
 def _reject_native_overrides(
@@ -503,6 +572,8 @@ def build_claude_options_kwargs(
         endpoint_provider = str(
             model_runtime_creds.get("endpoint_provider") or ""
         ).strip()
+        if signs_in_inside_sandbox(endpoint_provider):
+            _reject_login_overrides(options_kwargs)
         if endpoint_provider and session_id and base_url:
             provider = model_endpoint_for_name(endpoint_provider)
             request_headers = provider.request_headers(
@@ -563,6 +634,10 @@ def build_claude_options_kwargs(
                 status_code=400,
             )
         conflicts = sorted(set(merged_env) & set(runtime_env))
+        if model_runtime_creds and signs_in_inside_sandbox(
+            model_runtime_creds.get("endpoint_provider")
+        ):
+            conflicts = sorted(set(conflicts) | (CLAUDE_LOGIN_OUTRANKING_ENV & set(runtime_env)))
         if conflicts:
             raise APIError(
                 code="VAULT_CREDENTIAL_CONFLICT",

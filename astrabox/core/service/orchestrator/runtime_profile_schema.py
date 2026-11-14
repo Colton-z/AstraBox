@@ -30,6 +30,7 @@ from astrabox.seams.sandbox import (
     SANDBOX_CONTAINER_ENGINES,
     SANDBOX_NETWORK_MODES,
     SANDBOX_NETWORK_LIMITED,
+    SANDBOX_NETWORK_UNRESTRICTED,
     SANDBOX_PERMISSION_LEVEL_ADVANCED,
     SANDBOX_PERMISSION_LEVEL_DEFAULT,
     SANDBOX_PERMISSION_LEVELS,
@@ -483,35 +484,68 @@ def _assert_idle_action_is_reachable(payload: dict[str, Any]) -> None:
 
 
 def _assert_owner_credential_is_deliverable(payload: dict[str, Any]) -> None:
-    """Refuse a model endpoint paid by each conversation's owner where it cannot be kept to them.
+    """Refuse a model endpoint where its wire or its credential cannot be kept as it requires.
 
-    Such an endpoint (``credential_owner`` ``session_owner``, the ChatGPT plan)
-    gives every conversation its owner's credential. An Agent's shared box
-    serves several users' conversations behind one egress boundary, where one
-    could spend another's; the Codex wire is the one the ChatGPT plan route
-    accepts; and with protected delivery off the token would sit in the box's
-    environment, where it cannot be renewed.
+    An endpoint serves the engines it names (``engine_kinds``): the ChatGPT
+    plan serves Codex's Responses wire, the Anthropic endpoints Claude Code.
+
+    An endpoint whose credential is not the deployment's belongs to one
+    person's conversation. An Agent's shared box serves several users'
+    conversations behind one egress boundary and one file system, where one
+    could spend another's account (``credential_owner`` ``session_owner``) or
+    read another's login (``sandbox``), so such an endpoint requires a box per
+    conversation. An owner's credential also requires protected delivery: with
+    it off, the credential would sit in the box's environment. A runtime that
+    signs in inside its box must reach its sign-in service, so limited
+    networking must allow each host the endpoint names (``sandbox_hosts``).
     """
     from astrabox.common.utils.settings import load_astrabox_settings
+    from astrabox.core.service.orchestrator.runtime_profile_networking import (
+        parse_runtime_profile_networking,
+        runtime_profile_admits_host,
+    )
     from astrabox.seams.model import model_endpoint_for_name
 
     name = str(payload.get("endpoint_provider") or "").strip()
-    if not name or model_endpoint_for_name(name).credential_owner != "session_owner":
+    if not name:
+        return
+    provider = model_endpoint_for_name(name)
+    engine_kind = str(payload.get("engine_kind") or "").strip()
+    if provider.engine_kinds and engine_kind not in provider.engine_kinds:
+        raise invalid_request(
+            f"environment payload: endpoint_provider {name!r} requires engine_kind "
+            + " or ".join(repr(kind) for kind in sorted(provider.engine_kinds))
+        )
+    if provider.credential_owner == "deployment":
         return
     tenancy = str(payload.get("sandbox_tenancy") or SANDBOX_TENANCY_CONVERSATION).strip().lower()
     if tenancy != SANDBOX_TENANCY_CONVERSATION:
-        raise invalid_request(
-            f"environment payload: endpoint_provider {name!r} spends each conversation "
-            "owner's own account and requires sandbox_tenancy 'conversation'"
+        whose = (
+            "spends each conversation owner's own account"
+            if provider.credential_owner == "session_owner"
+            else "keeps the login each conversation's user makes inside its sandbox"
         )
-    if name == "chatgpt_plan" and str(payload.get("engine_kind") or "").strip() != "codex":
         raise invalid_request(
-            "environment payload: endpoint_provider 'chatgpt_plan' requires engine_kind 'codex'"
+            f"environment payload: endpoint_provider {name!r} {whose} and requires "
+            "sandbox_tenancy 'conversation'"
         )
-    if not bool(getattr(load_astrabox_settings(), "sandbox_credential_vault_enabled", False)):
+    if provider.credential_owner == "session_owner" and not bool(
+        getattr(load_astrabox_settings(), "sandbox_credential_vault_enabled", False)
+    ):
         raise invalid_request(
             f"environment payload: endpoint_provider {name!r} requires protected credential "
             "delivery (ASTRABOX_SANDBOX_CREDENTIAL_VAULT)"
+        )
+    networking = parse_runtime_profile_networking(payload.get("networking"))
+    missing = [
+        host for host in provider.sandbox_hosts
+        if networking.mode != SANDBOX_NETWORK_UNRESTRICTED
+        and not runtime_profile_admits_host(networking, host)
+    ]
+    if missing:
+        raise invalid_request(
+            f"environment payload: endpoint_provider {name!r} signs in from the sandbox and "
+            f"needs networking.allowed_hosts to include {', '.join(missing)}"
         )
 
 

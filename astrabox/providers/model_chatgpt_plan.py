@@ -36,7 +36,9 @@ class ChatGPTPlanModelEndpointProvider(ModelEndpointProvider):
     """Send a conversation's model requests to OpenAI as its owner's ChatGPT account."""
 
     name = "chatgpt_plan"
-    credential_owner: Literal["deployment", "session_owner"] = "session_owner"
+    credential_owner: Literal["deployment", "session_owner", "sandbox"] = "session_owner"
+    #: Plan usage serves the Responses API, which is Codex's wire.
+    engine_kinds = frozenset({"codex"})
 
     def resolve(self, *, requested: ModelEndpoint, settings: Any = None) -> ModelEndpoint:
         _ = settings

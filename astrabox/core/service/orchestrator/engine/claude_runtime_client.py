@@ -99,6 +99,13 @@ def _background_tasks(tasks: Any) -> tuple[BackgroundTask, ...]:
     return tuple(out)
 
 _ABORTED_TERMINAL_REASONS = frozenset({"aborted_streaming", "aborted_tools"})
+#: The SDK's verdict on an assistant message whose request was refused for its
+#: credential (``AssistantMessageError``). With no login at all the CLI makes
+#: no request and still answers with it.
+_AUTHENTICATION_FAILED = "authentication_failed"
+#: The error a response ends with when Claude Code, signing in inside its
+#: sandbox, has no login there that Anthropic accepts.
+CLAUDE_LOGIN_REQUIRED = "CLAUDE_LOGIN_REQUIRED"
 #: A frame index past every event one frame can produce: "after this whole frame".
 _WHOLE_FRAME = 1 << 30
 
@@ -121,10 +128,35 @@ def interaction_record(
     return record
 
 
-class _Translation:
-    """Runner frames to runtime events, retaining interrupted stream attribution."""
+def login_required_error(sign_in_hint: str, result: dict[str, Any]) -> dict[str, Any]:
+    """The response error for a run Claude Code ended for want of a login in its sandbox.
 
-    def __init__(self) -> None:
+    Built from the Result alone and the conversation's sign-in instructions,
+    so reading the Result again builds the same error. Claude Code's own
+    words follow, as it gave them.
+    """
+    said = str(result.get("result") or "").strip() or "; ".join(
+        str(item) for item in result.get("errors") or [] if str(item).strip()
+    )
+    return dict(
+        code=CLAUDE_LOGIN_REQUIRED,
+        message=f"{sign_in_hint} (Claude Code: {said})" if said else sign_in_hint,
+    )
+
+
+class _Translation:
+    """Runner frames to runtime events, retaining interrupted stream attribution.
+
+    ``sign_in_hint`` is set for a Claude Code that signs in inside its sandbox:
+    a response whose request Claude Code refused for want of a usable login
+    (an assistant message with the SDK's ``authentication_failed``) then ends
+    with :data:`CLAUDE_LOGIN_REQUIRED` and these instructions.
+    """
+
+    def __init__(self, *, sign_in_hint: str | None = None) -> None:
+        self.sign_in_hint = sign_in_hint
+        #: The open response's request was refused for its login.
+        self.login_refused = False
         self.children = ClaudeChildIdentities()
         self.stream = ClaudeStreamCursor(child_identities=self.children)
         #: The open response and how to interrupt it (the runner's command or response id).
@@ -198,6 +230,14 @@ class _Translation:
         if not isinstance(message, dict):
             return [RuntimeDiagnostic(None, "claude_code.unserialized_event", dict(frame))]
         self._observe_session_key(message)
+        if (
+            self.sign_in_hint is not None
+            and self.response_id is not None
+            and message.get("__sdk_type") == "AssistantMessage"
+            and message.get("parent_tool_use_id") is None
+            and message.get("error") == _AUTHENTICATION_FAILED
+        ):
+            self.login_refused = True
         if message.get("__sdk_type") == "ConversationResetMessage":
             # session_id is outgoing; new_conversation_id is a UI identity,
             # not a resume key. The next native message supplies the new key.
@@ -342,6 +382,7 @@ class _Translation:
         return events
 
     def _result(self, message: dict[str, Any], terminal: dict[str, Any]) -> list[RuntimeEvent]:
+        login_refused, self.login_refused = self.login_refused, False
         if self.response_id is None:
             self.interrupted_response_id = None
             return [RuntimeDiagnostic(None, "claude_code.result_outside_response", dict(message))]
@@ -355,6 +396,8 @@ class _Translation:
         else:
             outcome, reason = "failed", "error"
         error = terminal.get("error") if outcome == "failed" else None
+        if outcome == "failed" and login_refused and self.sign_in_hint is not None:
+            error = login_required_error(self.sign_in_hint, message)
         parts: list[dict[str, Any]] = [{"type": "data-result", "data": claude_result_data(message)}]
         if error:
             parts.append({"type": "error", "errorText": str(error.get("message") or error.get("code") or "")})
@@ -440,6 +483,7 @@ class _Translation:
         events += [ResponseOutput(None, response_id, part) for part in parts]
         events.append(ResponseEnded(None, response_id, outcome, native_reason, usage, error))
         self.interactions = {k: v for k, v in self.interactions.items() if v["response_id"] != response_id}
+        self.login_refused = False
         self.response_id = None
         self.interrupt_target = None
         self.input_ids = ()
@@ -522,6 +566,7 @@ class ClaudeRuntimeClient:
         session_id: str,
         hello: dict[str, Any],
         resume_session_key: str | None,
+        sign_in_hint: str | None = None,
     ) -> None:
         boot_id = str(hello.get("boot_id") or "").strip()
         if not boot_id:
@@ -530,7 +575,7 @@ class ClaudeRuntimeClient:
         self._session_id = session_id
         self._boot_id = boot_id
         self._runtime_versions = dict(hello.get("engine_contract", {}).get("runtime_versions") or {})
-        self._translation = _Translation()
+        self._translation = _Translation(sign_in_hint=sign_in_hint)
         self._translation.engine_session_key = resume_session_key
         self._next_sequence: int | None = None
         self._submit_lock = asyncio.Lock()
@@ -637,7 +682,10 @@ class ClaudeRuntimeClient:
             raise RuntimeProtocolError(failure)
         response_id = str(response["response_id"])
         tail, _ = await repo.response_output_tail(self._session_id, response_id, limit=3)
-        probe = _Translation()
+        probe = _Translation(sign_in_hint=self._translation.sign_in_hint)
+        # Whether the run's request was refused for its login is told by frames
+        # the runner has dropped; the committed error says which it was.
+        probe.login_refused = (response.get("error") or {}).get("code") == CLAUDE_LOGIN_REQUIRED
         probe.response_id = response_id
         probe.stream.emitted_text = True
         terminal = list(translate_claude_sdk_message(
