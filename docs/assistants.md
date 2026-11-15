@@ -324,8 +324,7 @@ A Source is a dsh-superagent plugin that reads a service's events and replies
 on it ([the bundle's cookbook](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/008-cookbook.md#add-a-source)).
 AstraBox's image patches the bundle so that GitHub is optional and a Source can
 live in its own package, importing the bundle's Source interface from
-`dsh-superagent/sources` (`containers/sandbox-dsh-superagent/upstream-changes.patch`,
-offered upstream). An organization adds its ticket or to-do service by building
+`dsh-superagent/sources` (`containers/sandbox-dsh-superagent/upstream-changes.patch`). An organization adds its ticket or to-do service by building
 its own image on AstraBox's:
 
 ```dockerfile
