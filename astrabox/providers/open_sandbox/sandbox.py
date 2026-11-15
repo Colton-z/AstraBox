@@ -1667,8 +1667,11 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         """Why this deployment cannot join a box to host networks, or None when it can.
 
         Only the bundled server's Docker runtime joins one
-        (``attach_allowlisted_networks``); a Kubernetes Pod has no Docker
-        network of its host to join. Shared by
+        (``attach_allowlisted_networks``). A Kubernetes Pod is already on the
+        cluster network, and what it may reach there is its egress policy's
+        decision, so the refusal names the setting that grants it: a Limited
+        RuntimeProfile's allowed hosts, which OpenSandbox's egress sidecar
+        admits by name and by the addresses it resolves. Shared by
         :meth:`validate_runtime_profile_configuration` and
         ``create_open_sandbox_box``.
         """
@@ -1687,7 +1690,13 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         if sandbox_runtime() == RUNTIME_KUBERNETES:
             return (
                 "sandbox_networks joins sandboxes to Docker networks of their host, and a "
-                "Kubernetes sandbox has none to join"
+                "Kubernetes sandbox has none to join: its Pod is on the cluster network, "
+                "where the RuntimeProfile's networking decides what it reaches. Remove "
+                "sandbox_networks and add the Service's name "
+                "(<service>.<namespace>.svc.cluster.local) to networking.allowed_hosts; "
+                "give a service outside the cluster a Service without a selector and an "
+                "EndpointSlice with its address (docs/providers/opensandbox.md, "
+                "'Reach services from a Kubernetes sandbox')"
             )
         return None
 

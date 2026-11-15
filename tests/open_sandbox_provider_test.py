@@ -677,6 +677,9 @@ def test_networks_and_mounts_are_saved_only_where_the_server_applies_them(
     with pytest.raises(APIError) as refused:
         provider.validate_runtime_profile_configuration({field: value})
     assert refused.value.code == code
+    if runtime == "kubernetes":
+        # The refusal says what reaches a cluster service instead.
+        assert "networking.allowed_hosts" in refused.value.message
 
 
 async def test_diagnostics_keeps_a_tail_line_aligned_so_a_fragment_is_not_prose() -> None:

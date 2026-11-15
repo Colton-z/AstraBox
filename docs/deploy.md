@@ -356,7 +356,9 @@ when it is saved and when a sandbox is created. With
 directories and PersistentVolumeClaims in the sandbox namespace instead
 ([OpenSandbox](providers/opensandbox.md#kubernetes-mounts)), and
 `ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS` has no effect: the server warns at
-startup, and RuntimeProfiles with host networks are refused. With an
+startup, RuntimeProfiles with host networks are refused, and a sandbox reaches
+a cluster Service through its RuntimeProfile's allowed hosts
+([OpenSandbox](providers/opensandbox.md#reach-cluster-services)). With an
 existing OpenSandbox service, the server warns at startup that none of the
 three has an effect, and RuntimeProfiles that use them are refused.
 

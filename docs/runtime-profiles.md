@@ -269,8 +269,11 @@ Requirements, checked when the RuntimeProfile is saved:
 - The sandbox service is the OpenSandbox server bundled with AstraBox. A
   separately operated OpenSandbox service is refused: AstraBox cannot tell
   what a host path or volume name means there.
-- Host networks need that server's Docker runtime: on its Kubernetes runtime
-  a sandbox has no host network to join. Host storage works on both runtimes.
+- Host networks need that server's Docker runtime. On its Kubernetes runtime a
+  sandbox has no host network to join, and the refusal says what to use
+  instead: the Service's name in a `Limited` RuntimeProfile's allowed hosts
+  ([OpenSandbox](providers/opensandbox.md#reach-cluster-services)). Host
+  storage works on both runtimes.
 - Host networks need Docker Engine 28.0 (API 1.48) or later, which can join a
   network without giving it the sandbox's default route and published ports.
   Docker 26 and 27, which AstraBox otherwise supports, are refused for this

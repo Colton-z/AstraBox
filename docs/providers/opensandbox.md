@@ -335,8 +335,9 @@ own diagnosis.
 A RuntimeProfile's `sandbox_mounts`
 ([RuntimeProfiles](../runtime-profiles.md#host-networks-and-storage)) are
 mounted by the lifecycle server bundled with AstraBox on both of its runtimes;
-its `sandbox_networks` are joined only on the Docker runtime, because a
-Kubernetes sandbox has no Docker network of its host to join. An
+its `sandbox_networks` are joined only on the Docker runtime. A Kubernetes
+sandbox reaches services through its RuntimeProfile's networking instead
+([Reach services from a Kubernetes sandbox](#reach-cluster-services)). An
 existing OpenSandbox service is refused both when the RuntimeProfile is saved:
 it checks host paths against its own `storage.allowed_host_paths`, and its
 Lifecycle API does not report which runtime it uses, so AstraBox cannot tell
@@ -441,6 +442,77 @@ A daemon older than API 1.48, or a network that is not allowed, missing,
 IPv6-enabled, or inside a network the sidecar's policy denies, refuses the
 create, and the sidecar is removed with
 it. Removing the sidecar disconnects it from the networks.
+
+### Reach services from a Kubernetes sandbox {#reach-cluster-services}
+
+A sandbox Pod is on the cluster network and has no other network to join, so
+`sandbox_networks` is refused on the Kubernetes runtime. What a sandbox may
+reach is its RuntimeProfile's networking, which the egress sidecar enforces in
+the Pod. Under `Limited` networking, add the Service's name to the allowed
+hosts:
+
+```json
+{"networking": {"type": "limited", "allowed_hosts": ["postgres.data.svc.cluster.local"]}}
+```
+
+The sidecar resolves an allowed name through the cluster's DNS service and
+admits the addresses in the answer, so the sandbox reaches the Service's
+ClusterIP, or a headless Service's Pod addresses, on every port. Use the
+Service's full name, `<service>.<namespace>.svc.<cluster domain>` (the domain
+is `cluster.local` unless the cluster sets another), and connect by that name:
+the sidecar answers a name that is not allowed with no address. An IP address
+or CIDR in the allowed hosts admits that address directly, but a Service's
+ClusterIP changes when the Service is recreated.
+
+Under `Unrestricted` networking a sandbox reaches every Service, Pod and node
+address the cluster routes, except `169.254.0.0/16` and the networks in
+`ASTRABOX_SANDBOX_EGRESS_DENY_CIDRS`, which nothing fills in on Kubernetes: it
+is empty unless the operator sets it. The sidecar drops a denied address
+before it consults any allow rule, so a Service whose ClusterIP lies in a
+denied range cannot be allowed by name; keep the ClusterIPs of the Services
+sandboxes may use out of the denied ranges, for example by giving those
+Services addresses from a reserved block with `spec.clusterIP`.
+
+For a service outside the cluster, such as one on a node's host network or on
+another machine, create a Service without a selector and an EndpointSlice that
+names the service's address, then allow the Service's name as above:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: build-cache
+  namespace: shared-services
+spec:
+  ports:
+    - name: http
+      port: 80
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: build-cache-host
+  namespace: shared-services
+  labels:
+    kubernetes.io/service-name: build-cache
+addressType: IPv4
+ports:
+  - name: http
+    port: 8080
+    protocol: TCP
+endpoints:
+  - addresses: ["10.0.1.7"]
+    conditions:
+      ready: true
+```
+
+The sandbox connects to `build-cache.shared-services.svc.cluster.local:80`,
+and the cluster forwards it to `10.0.1.7:8080`, the EndpointSlice port of the
+same name. Kubernetes does not route a Service to a loopback or link-local
+endpoint address; for a service on a node itself, use an address of the node
+the service listens on. A `NetworkPolicy` that selects the target's Pods must admit
+traffic from sandbox Pods; the one AstraBox ships for sandboxes
+([below](#sandbox-network-policy)) restricts only traffic into them.
 
 ## Select a sandbox runtime
 

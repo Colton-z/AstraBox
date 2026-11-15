@@ -385,10 +385,14 @@ def validate_runtime_profile_payload(payload: dict[str, Any]) -> None:
     _assert_tenancy_has_permission_level(payload)
     _assert_container_engine_is_deliverable(payload)
     _assert_sandbox_size_is_a_quantity(payload)
+    # Ahead of the allowlists: a field this deployment cannot apply at all is
+    # refused with that reason (and, for host networks on Kubernetes, with
+    # what to use instead), not with an allowlist the operator could extend
+    # to no effect.
+    _assert_provider_configuration_is_reachable(payload)
     _assert_networks_and_mounts_are_deliverable(payload)
     _assert_owner_credential_is_deliverable(payload)
     _assert_backend_capabilities(payload)
-    _assert_provider_configuration_is_reachable(payload)
 
 
 def _reject_undeclared_fields(payload: dict[str, Any]) -> None:

@@ -1965,8 +1965,10 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "allows none. A joined network's subnet is reachable from the sandbox in "
         "both network-access modes; connections from it into the sandbox are "
         "refused. Bundled OpenSandbox server on the Docker runtime only, with Docker "
-        "Engine 28.0 (API 1.48) or later. Checked when a RuntimeProfile is saved and "
-        "each time a sandbox is created; the lifecycle server checks it again.",
+        "Engine 28.0 (API 1.48) or later; on its Kubernetes runtime, name a cluster "
+        "Service in a Limited RuntimeProfile's allowed hosts instead. Checked when "
+        "a RuntimeProfile is saved and each time a sandbox is created; the "
+        "lifecycle server checks it again.",
         "astrabox.common.utils.settings",
     ),
     (
